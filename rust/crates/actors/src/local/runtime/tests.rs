@@ -2,6 +2,7 @@ use super::*;
 use crate::conformance::{self, Failure, Package, Target};
 use crate::guest::{AlarmChange, Checkpoint, GuestFuture, Manifest, Transition};
 use crate::local::{Branch, PreparedPublish, Subscription};
+use acyclic_stream::StreamCategory;
 use acyclic_stream::testing::{Counted, RequestLedger};
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, LocalStream,
@@ -1564,7 +1565,7 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
                 .tail(root()?)
                 .await
                 .map_err(|error| error.category()),
-            Ok(0) | Err(StreamError::NotFound)
+            Ok(0) | Err(StreamCategory::NotFound)
         ),
         "hosting must not append a synthetic root activation"
     );

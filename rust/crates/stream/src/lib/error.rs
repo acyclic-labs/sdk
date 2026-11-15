@@ -62,11 +62,111 @@ pub enum StreamError {
     RevisionForeign,
 }
 
+/// The typed category of a [`StreamError`], independent of any retained
+/// diagnostic or original cause. Failures are matched and compared only
+/// through [`StreamError::category`]: a failure carrying a cause is never
+/// equal to its bare variant, but always has the same category.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum StreamCategory {
+    InvalidResponse,
+    InvalidPath,
+    InvalidArgument,
+    LimitExceeded,
+    NotFound,
+    AlreadyExists,
+    PrefixNotRetained,
+    OutOfRange,
+    IdempotencyMismatch,
+    Capacity,
+    AccessDenied,
+    Unavailable,
+    HierarchyChanged,
+    DeadlineElapsed,
+    Unsupported,
+    RevisionForeign,
+}
+
+impl StreamCategory {
+    /// Every category, in canonical code order.
+    pub const ALL: [Self; 16] = [
+        Self::InvalidResponse,
+        Self::InvalidPath,
+        Self::InvalidArgument,
+        Self::LimitExceeded,
+        Self::NotFound,
+        Self::AlreadyExists,
+        Self::PrefixNotRetained,
+        Self::OutOfRange,
+        Self::IdempotencyMismatch,
+        Self::Capacity,
+        Self::AccessDenied,
+        Self::Unavailable,
+        Self::HierarchyChanged,
+        Self::DeadlineElapsed,
+        Self::Unsupported,
+        Self::RevisionForeign,
+    ];
+
+    /// Stable `snake_case` code shared by the HTTP, gRPC, and WASM transports.
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::InvalidResponse => "invalid_response",
+            Self::InvalidPath => "invalid_path",
+            Self::InvalidArgument => "invalid_argument",
+            Self::LimitExceeded => "limit_exceeded",
+            Self::NotFound => "not_found",
+            Self::AlreadyExists => "already_exists",
+            Self::PrefixNotRetained => "prefix_not_retained",
+            Self::OutOfRange => "out_of_range",
+            Self::IdempotencyMismatch => "idempotency_mismatch",
+            Self::Capacity => "capacity",
+            Self::AccessDenied => "access_denied",
+            Self::Unavailable => "unavailable",
+            Self::HierarchyChanged => "hierarchy_changed",
+            Self::DeadlineElapsed => "deadline_elapsed",
+            Self::Unsupported => "unsupported",
+            Self::RevisionForeign => "revision_foreign",
+        }
+    }
+
+    /// Parses a code produced by [`Self::code`].
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|category| category.code() == code)
+    }
+}
+
+impl From<StreamCategory> for StreamError {
+    fn from(category: StreamCategory) -> Self {
+        match category {
+            StreamCategory::InvalidResponse => Self::InvalidResponse,
+            StreamCategory::InvalidPath => Self::InvalidPath,
+            StreamCategory::InvalidArgument => Self::InvalidArgument,
+            StreamCategory::LimitExceeded => Self::LimitExceeded,
+            StreamCategory::NotFound => Self::NotFound,
+            StreamCategory::AlreadyExists => Self::AlreadyExists,
+            StreamCategory::PrefixNotRetained => Self::PrefixNotRetained,
+            StreamCategory::OutOfRange => Self::OutOfRange,
+            StreamCategory::IdempotencyMismatch => Self::IdempotencyMismatch,
+            StreamCategory::Capacity => Self::Capacity,
+            StreamCategory::AccessDenied => Self::AccessDenied,
+            StreamCategory::Unavailable => Self::Unavailable,
+            StreamCategory::HierarchyChanged => Self::HierarchyChanged,
+            StreamCategory::DeadlineElapsed => Self::DeadlineElapsed,
+            StreamCategory::Unsupported => Self::Unsupported,
+            StreamCategory::RevisionForeign => Self::RevisionForeign,
+        }
+    }
+}
+
 /// A retained diagnostic paired with the category the protocol declared.
 /// Category is independent of the diagnostic's original status message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamRefusal {
-    category: Box<StreamError>,
+    category: StreamCategory,
     diagnostic: acyclic_auth::refusal::Refusal,
 }
 
@@ -136,7 +236,7 @@ impl StreamError {
     #[must_use]
     pub fn with_refusal(self, diagnostic: acyclic_auth::refusal::Refusal) -> Self {
         Self::Refused(StreamRefusal {
-            category: Box::new(self.category()),
+            category: self.category(),
             diagnostic,
         })
     }
@@ -158,31 +258,14 @@ impl StreamError {
         Self::Unavailable.with_refusal(acyclic_auth::refusal::Refusal::caused(cause))
     }
 
-    /// Every failure, in canonical code order.
-    pub const ALL: [Self; 16] = [
-        Self::InvalidResponse,
-        Self::InvalidPath,
-        Self::InvalidArgument,
-        Self::LimitExceeded,
-        Self::NotFound,
-        Self::AlreadyExists,
-        Self::PrefixNotRetained,
-        Self::OutOfRange,
-        Self::IdempotencyMismatch,
-        Self::Capacity,
-        Self::AccessDenied,
-        Self::Unavailable,
-        Self::HierarchyChanged,
-        Self::DeadlineElapsed,
-        Self::Unsupported,
-        Self::RevisionForeign,
-    ];
-
     /// Whether the provider left the outcome undecided: it was unreachable or
     /// its deadline elapsed, so the same request may yet succeed unchanged.
     #[must_use]
     pub fn uncertain(&self) -> bool {
-        matches!(self.category(), Self::Unavailable | Self::DeadlineElapsed)
+        matches!(
+            self.category(),
+            StreamCategory::Unavailable | StreamCategory::DeadlineElapsed
+        )
     }
 
     /// A definitive `OutOfRange` refusal: the authority's commit-time rule
@@ -237,11 +320,26 @@ impl StreamError {
 
     /// The typed failure independently of a member's retained diagnostics.
     #[must_use]
-    pub fn category(&self) -> Self {
+    pub fn category(&self) -> StreamCategory {
         match self {
+            Self::InvalidResponse => StreamCategory::InvalidResponse,
+            Self::InvalidPath => StreamCategory::InvalidPath,
+            Self::InvalidArgument => StreamCategory::InvalidArgument,
+            Self::LimitExceeded => StreamCategory::LimitExceeded,
+            Self::NotFound => StreamCategory::NotFound,
+            Self::AlreadyExists => StreamCategory::AlreadyExists,
+            Self::PrefixNotRetained => StreamCategory::PrefixNotRetained,
+            Self::OutOfRange => StreamCategory::OutOfRange,
+            Self::IdempotencyMismatch => StreamCategory::IdempotencyMismatch,
+            Self::Capacity => StreamCategory::Capacity,
+            Self::AccessDenied => StreamCategory::AccessDenied,
+            Self::Unavailable => StreamCategory::Unavailable,
+            Self::HierarchyChanged => StreamCategory::HierarchyChanged,
+            Self::DeadlineElapsed => StreamCategory::DeadlineElapsed,
+            Self::Unsupported => StreamCategory::Unsupported,
+            Self::RevisionForeign => StreamCategory::RevisionForeign,
+            Self::Refused(refusal) => refusal.category,
             Self::Caused(failure) => failure.classification().category(),
-            Self::Refused(refusal) => (*refusal.category).clone(),
-            error => error.clone(),
         }
     }
 
@@ -270,32 +368,13 @@ impl StreamError {
     /// Stable `snake_case` code shared by the HTTP, gRPC, and WASM transports.
     #[must_use]
     pub fn code(&self) -> &'static str {
-        match self {
-            Self::InvalidResponse => "invalid_response",
-            Self::InvalidPath => "invalid_path",
-            Self::InvalidArgument => "invalid_argument",
-            Self::LimitExceeded => "limit_exceeded",
-            Self::NotFound => "not_found",
-            Self::AlreadyExists => "already_exists",
-            Self::PrefixNotRetained => "prefix_not_retained",
-            Self::OutOfRange => "out_of_range",
-            Self::IdempotencyMismatch => "idempotency_mismatch",
-            Self::Capacity => "capacity",
-            Self::AccessDenied => "access_denied",
-            Self::Unavailable => "unavailable",
-            Self::Refused(refusal) => refusal.category.code(),
-            Self::Caused(failure) => failure.classification().code(),
-            Self::HierarchyChanged => "hierarchy_changed",
-            Self::DeadlineElapsed => "deadline_elapsed",
-            Self::Unsupported => "unsupported",
-            Self::RevisionForeign => "revision_foreign",
-        }
+        self.category().code()
     }
 
     /// Parses a code produced by [`Self::code`].
     #[must_use]
     pub fn from_code(code: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|error| error.code() == code)
+        StreamCategory::from_code(code).map(Self::from)
     }
 
     /// Decodes a Session channel's close code: one of [`Self::code`], an

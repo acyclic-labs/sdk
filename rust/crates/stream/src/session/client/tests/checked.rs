@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::{CommitId, ReadRequest};
 
 pub(super) async fn anchor(
@@ -48,7 +49,7 @@ async fn checked_registration_fails_before_returning_a_cursor_and_keeps_siblings
             })
             .map_ok(crate::records_only)
             .await,
-        Err(StreamError::PrefixNotRetained)
+        Err(error) if error.category() == StreamCategory::PrefixNotRetained
     ));
     let mut checked = client
         .follow(crate::FollowRequest {
@@ -99,7 +100,7 @@ async fn unconfirmed_history_is_rejected_without_granting_credit_or_closing_sibl
             })
             .map_ok(crate::records_only)
             .await,
-        Err(StreamError::Unsupported)
+        Err(error) if error.category() == StreamCategory::Unsupported
     ));
     assert_eq!(fixture.counts.sent.load(Ordering::Relaxed), 0);
     append(&provider, "events", 1).await?;
@@ -227,7 +228,7 @@ async fn checked_delivery_reports_history_replacement_after_registration() -> Te
         .await?;
     assert!(matches!(
         records.next().await,
-        Some(Err(StreamError::PrefixNotRetained))
+        Some(Err(error)) if error.category() == StreamCategory::PrefixNotRetained
     ));
     Ok(())
 }

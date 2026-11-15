@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::{OwnedBytes, test_meter::Meter};
 use futures::StreamExt as _;
 type MemoryResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -251,7 +252,7 @@ async fn lazy_finite_reads_refuse_a_noncontiguous_page() -> MemoryResult<()> {
     });
     assert!(matches!(
         cursor.peek(|_| Ok::<_, StreamError>(()), || StreamError::Unavailable),
-        Err(StreamError::Unavailable)
+        Err(error) if error.category() == StreamCategory::Unavailable
     ));
     Ok(())
 }

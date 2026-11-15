@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 fn subscription(path: &str, delivery: wire::SessionDelivery) -> wire::SessionSubscription {
     wire::SessionSubscription {
@@ -71,7 +72,7 @@ async fn opening_cuts_do_not_claim_a_consumed_prefix() -> TestResult {
         fixture.controls.send(Ok(opening))?;
         assert!(matches!(
             source.next().await,
-            Some(Err(StreamError::InvalidResponse))
+            Some(Err(error)) if error.category() == StreamCategory::InvalidResponse
         ));
         assert!(source.next().await.is_none());
     }

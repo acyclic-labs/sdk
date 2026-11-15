@@ -227,7 +227,7 @@ impl Pool {
                 // Transport I/O failures use the reconnect path in `run`.
                 let error = if matches!(
                     error.category(),
-                    StreamError::Unavailable | StreamError::InvalidArgument
+                    StreamCategory::Unavailable | StreamCategory::InvalidArgument
                 ) {
                     StreamError::InvalidResponse
                 } else {
@@ -894,7 +894,7 @@ impl Pool {
         if node == self.home
             && matches!(
                 error.category(),
-                StreamError::Unavailable | StreamError::InvalidArgument
+                StreamCategory::Unavailable | StreamCategory::InvalidArgument
             )
         {
             self.reset_home();

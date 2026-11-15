@@ -159,7 +159,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                                 },
                                 Err(error)
                                     if error.category()
-                                        == acyclic_stream::StreamError::NotFound =>
+                                        == acyclic_stream::StreamCategory::NotFound =>
                                 {
                                     acyclic_stream::CommitCondition::Absent { path }
                                 }
@@ -270,7 +270,9 @@ async fn cancelled_key<P: acyclic_stream::StreamProvider + ?Sized>(
         .await;
     let mut records = match records {
         Ok(records) => records,
-        Err(error) if error.category() == acyclic_stream::StreamError::NotFound => return Ok(None),
+        Err(error) if error.category() == acyclic_stream::StreamCategory::NotFound => {
+            return Ok(None);
+        }
         Err(error) => return Err(Error::Stream(error)),
     };
     let Some(record) = records.try_next().await.map_err(Error::Stream)? else {

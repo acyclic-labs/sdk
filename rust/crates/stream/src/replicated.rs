@@ -1,4 +1,5 @@
 //! One ordered replica over a conditional command journal.
+use crate::StreamCategory;
 use crate::query_sync::SyncMutex as Mutex;
 use crate::{
     journal::{decode_command, replay},
@@ -275,9 +276,9 @@ impl<J: CommandJournal> Replicated<J> {
             None if attempt.started
                 && matches!(
                     result,
-                    Err(StreamError::Unavailable
-                        | StreamError::InvalidResponse
-                        | StreamError::Unsupported)
+                    Err(error) if matches!(error.category(), StreamCategory::Unavailable
+                        | StreamCategory::InvalidResponse
+                        | StreamCategory::Unsupported)
                 ) =>
             {
                 self.fail()

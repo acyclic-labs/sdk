@@ -1122,17 +1122,17 @@ impl Error {
         if let Self::Caused(failure) = self {
             return failure.classification().retains_guest_input();
         }
-        use acyclic_stream::StreamError;
+        use acyclic_stream::{StreamCategory, StreamError};
         if self.uncertain() {
             return true;
         }
         match self {
             Self::Agent(source) => match &**source {
                 crate::agent::Error::Stream(source) => {
-                    matches!(source.category(), StreamError::Capacity)
+                    matches!(source.category(), StreamCategory::Capacity)
                 }
                 crate::agent::Error::Actor(source) => {
-                    matches!(&**source, acyclic_actors::local::Error::Stream(source) if matches!(source.category(), StreamError::Capacity))
+                    matches!(&**source, acyclic_actors::local::Error::Stream(source) if matches!(source.category(), StreamCategory::Capacity))
                 }
                 crate::agent::Error::Turn(source) => source.retains_guest_input(),
                 _ => false,
@@ -1796,11 +1796,11 @@ impl Error {
 fn stream_refusal_code(source: &acyclic_stream::StreamError) -> ErrorCode {
     use acyclic_stream::StreamError;
     match source.category() {
-        StreamError::IdempotencyMismatch => ErrorCode::Conflict,
-        StreamError::AccessDenied => ErrorCode::Unauthorized,
-        StreamError::InvalidArgument | StreamError::InvalidPath | StreamError::InvalidResponse => {
-            ErrorCode::Invalid
-        }
+        StreamCategory::IdempotencyMismatch => ErrorCode::Conflict,
+        StreamCategory::AccessDenied => ErrorCode::Unauthorized,
+        StreamCategory::InvalidArgument
+        | StreamCategory::InvalidPath
+        | StreamCategory::InvalidResponse => ErrorCode::Invalid,
         _ => ErrorCode::Storage,
     }
 }
@@ -1929,7 +1929,7 @@ mod cleanup_tests {
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         use std::error::Error as _;
         let directory = tempfile::tempdir()?;
-        for category in acyclic_stream::StreamError::ALL {
+        for category in acyclic_stream::StreamCategory::ALL.map(acyclic_stream::StreamError::from) {
             let original = std::fs::read(directory.path().join("missing")).unwrap_err();
             let stream = category.clone().with_source(original);
             let retained = stream.clone();

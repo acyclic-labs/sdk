@@ -7,7 +7,7 @@ use crate::{
 
 #[test]
 fn stream_error_codes_are_closed_and_stable() {
-    for error in StreamError::ALL {
+    for error in StreamCategory::ALL.map(StreamError::from) {
         assert!(is_stream_error_code(error.code()));
     }
     assert!(!is_stream_error_code("stream_not_found"));

@@ -1,4 +1,4 @@
-use crate::{StreamError, StreamPath};
+use crate::{StreamCategory, StreamError, StreamPath};
 use std::borrow::Cow;
 
 /// Encodes a stream name as an injective canonical product resource.
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn malformed_and_alternate_resource_spellings_never_reach_a_stream() {
         let error = stream_path("streams:/%FF").unwrap_err();
-        assert_eq!(error.category(), StreamError::InvalidPath);
+        assert_eq!(error.category(), StreamCategory::InvalidPath);
         let mut cause = std::error::Error::source(&error);
         let mut original_utf8_error = false;
         while let Some(source) = cause {
@@ -221,12 +221,13 @@ mod tests {
             "streams:/",
             "fs:/volume",
         ] {
+            let temporary = temporary_stream_path(resource).map_err(|error| error.category());
             assert_eq!(
                 stream_path(resource).map_err(|error| error.category()),
-                temporary_stream_path(resource)
+                temporary
             );
-            let validated = match temporary_stream_path(resource) {
-                Err(StreamError::Unsupported) => Ok(()),
+            let validated = match temporary {
+                Err(StreamCategory::Unsupported) => Ok(()),
                 result => result.map(|_| ()),
             };
             assert_eq!(

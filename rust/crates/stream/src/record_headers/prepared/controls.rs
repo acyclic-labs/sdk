@@ -1,6 +1,7 @@
 //! Header controls can retain an existing admitted page without copying names.
 use super::super::attributes::PackedAttribute;
 use super::*;
+use crate::StreamCategory;
 use std::ops::Range;
 
 #[cfg(test)]
@@ -118,8 +119,10 @@ fn validate(
             .attribute(name, value)
             .map_err(|_| io::ErrorKind::InvalidData)?;
     }
-    validation.finish(maximum).map_err(|error| match error {
-        StreamError::LimitExceeded => io::ErrorKind::InvalidInput.into(),
-        _ => io::ErrorKind::InvalidData.into(),
-    })
+    validation
+        .finish(maximum)
+        .map_err(|error| match error.category() {
+            StreamCategory::LimitExceeded => io::ErrorKind::InvalidInput.into(),
+            _ => io::ErrorKind::InvalidData.into(),
+        })
 }

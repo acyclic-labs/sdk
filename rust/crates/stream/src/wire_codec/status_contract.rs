@@ -1,5 +1,5 @@
 //! Contract oracle for the actual tonic trailer parser and Stream decoder.
-use crate::{StreamError, wire_codec};
+use crate::{StreamCategory, StreamError, wire_codec};
 use tonic::{
     Code, Status,
     codegen::http::{HeaderMap, HeaderValue},
@@ -89,7 +89,7 @@ fn check_decoded(wire: &Status, actual: &StreamError) -> Result<(), &'static str
     if actual.uncertain() != expected.uncertain() {
         return Err("status mutation uncertainty");
     }
-    if *expected == StreamError::Unavailable {
+    if expected.category() == StreamCategory::Unavailable {
         let wrapped = actual
             .clone()
             .with_source(std::io::Error::other("original local context"));
@@ -171,7 +171,8 @@ pub fn check(input: &[u8]) -> Result<(), &'static str> {
 
 /// Capture corpus fields from the original SDK status writer and tonic encoder.
 pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, &'static str> {
-    crate::StreamError::ALL
+    crate::StreamCategory::ALL
+        .map(crate::StreamError::from)
         .iter()
         .map(|error| {
             let mut trailers = HeaderMap::new();
@@ -212,13 +213,13 @@ mod tests {
             proptest::prop_assert_eq!(check_with(&input, stripped), Err("wrapped original authority-time refusal"));
             // The removed round-trip-only property accepts this symmetric
             // path/limit swap. The independent contract must reject it.
-            let swap = |error| match error {
-                StreamError::InvalidPath => StreamError::LimitExceeded,
-                StreamError::LimitExceeded => StreamError::InvalidPath,
-                other => other,
+            let swap = |error: StreamError| match error.category() {
+                StreamCategory::InvalidPath => StreamError::LimitExceeded,
+                StreamCategory::LimitExceeded => StreamError::InvalidPath,
+                _ => error,
             };
             let symmetric = |wire: &Status| swap(wire_codec::status(wire));
-            for error in StreamError::ALL {
+            for error in StreamCategory::ALL.map(StreamError::from) {
                 let encoded = Status::from(&swap(error.clone()));
                 proptest::prop_assert_eq!(symmetric(&encoded), error);
             }

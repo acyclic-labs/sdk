@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 /// Registration precedes publication, but the consumer does not pull until
 /// after creation and a second append. A read-then-subscribe implementation
@@ -16,7 +17,8 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                 .await,
         )
         .await
-            != Some(StreamError::NotFound)
+        .map(|error| error.category())
+            != Some(StreamCategory::NotFound)
         {
             return Err(violated!());
         }
@@ -63,7 +65,11 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     let mut checked = crate::FollowRequest::new(missing, 1);
     checked.preceding = Some(crate::CommitId::from_bytes([1; 32]));
     checked.when_absent = crate::WhenAbsent::Wait;
-    if refusal(provider.follow(checked).await).await != Some(StreamError::PrefixNotRetained) {
+    if refusal(provider.follow(checked).await)
+        .await
+        .map(|error| error.category())
+        != Some(StreamCategory::PrefixNotRetained)
+    {
         return Err(violated!());
     }
     let source = path("absence/fork-source/status")?;

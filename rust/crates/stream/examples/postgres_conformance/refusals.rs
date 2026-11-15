@@ -1,4 +1,5 @@
 //! Observe actual SQL journal storage, rather than only logical Stream results.
+use acyclic_stream::StreamCategory;
 use acyclic_stream::{postgres::PostgresStream, *};
 
 async fn retained(
@@ -52,7 +53,7 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
         ));
         assert!(matches!(
             provider.fork(fork.clone()).await,
-            Err(StreamError::NotFound)
+            Err(error) if error.category() == StreamCategory::NotFound
         ));
         assert!(matches!(
             provider.commit(commit.clone()).await?,
@@ -66,7 +67,7 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
                 ..commit.clone()
             })
             .await,
-        Err(StreamError::DeadlineElapsed)
+        Err(error) if error.category() == StreamCategory::DeadlineElapsed
     ));
     for key in [
         append.idempotency_key.clone(),

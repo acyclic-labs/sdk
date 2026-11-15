@@ -1,5 +1,6 @@
 use super::fixture::fixture;
 use super::*;
+use crate::StreamCategory;
 
 mod follow_data;
 pub use follow_data::verify_follow_data;
@@ -241,7 +242,7 @@ pub fn verify_pool_lifetime(fault: u8) {
         for sender in senders {
             assert!(matches!(
                 loom::future::block_on(sender.next()),
-                Err(StreamError::Unavailable)
+                Err(error) if error.category() == StreamCategory::Unavailable
             ));
         }
     });
@@ -418,7 +419,7 @@ pub fn verify_link_isolation(broken: bool) {
         assert_eq!(retired.load(Ordering::Acquire), 1);
         assert!(matches!(
             loom::future::block_on(bad.next()),
-            Err(StreamError::Unavailable)
+            Err(error) if error.category() == StreamCategory::Unavailable
         ));
         let delivery = healthy.try_recv().unwrap().unwrap();
         let Some(Body::Data(wire::SessionData {

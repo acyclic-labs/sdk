@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamCategory;
 
 /// Shard routing and checkpoint custody survive node replacement without a
 /// root broadcast, rewriting producer keys or sharing checkpoint state.
@@ -30,7 +31,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
             .tail(root()?)
             .await
             .map_err(|error| error.category()),
-        Ok(0) | Err(StreamError::NotFound)
+        Ok(0) | Err(StreamCategory::NotFound)
     ));
     let host = Runtime::new(
         crate::guest::Requests::default(),

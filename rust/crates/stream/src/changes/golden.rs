@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::{FollowFilter, wire_codec};
 use prost::Message as _;
 
@@ -32,7 +33,10 @@ fn qualify_marker(
     );
     assert_eq!(take_marker_probes(), after);
 
-    assert_eq!(decode(&[], headers), Err(StreamError::InvalidArgument));
+    assert_eq!(
+        decode(&[], headers).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
+    );
     assert_eq!(take_marker_probes(), after);
     assert_eq!(
         validate(&[], headers),
@@ -189,8 +193,9 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
                 refused.value = value;
                 take_parsed_bytes();
                 assert_eq!(
-                    wire_codec::record(refused.clone(), Some(&followed)),
-                    Err(StreamError::InvalidArgument)
+                    wire_codec::record(refused.clone(), Some(&followed))
+                        .map_err(|error| error.category()),
+                    Err(StreamCategory::InvalidArgument)
                 );
                 assert_eq!(
                     take_parsed_bytes(),
@@ -206,6 +211,9 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
     );
     let mut malformed = retained;
     malformed.value = bytes::Bytes::new().into();
-    assert_eq!(filter.project(malformed), Err(StreamError::InvalidArgument));
+    assert_eq!(
+        filter.project(malformed).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
+    );
     Ok(())
 }

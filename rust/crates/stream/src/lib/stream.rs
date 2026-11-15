@@ -375,7 +375,9 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
                     .try_collect::<Vec<_>>()
                     .await?
             }
-            Err(error) if error.category() == StreamError::NotFound && self.next == 0 => Vec::new(),
+            Err(error) if error.category() == StreamCategory::NotFound && self.next == 0 => {
+                Vec::new()
+            }
             Err(error) => return Err(error),
         };
         if page.len() > limit as usize {

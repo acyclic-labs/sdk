@@ -37,8 +37,8 @@ use crate::guest::{
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     CommitCondition, CommitEffect, CommitId, CommitMutation, CommitOutcome, CommitReceipt,
-    CommitRequest, ForkCut, IdempotencyKey, PathHead, Provenance, Record, StreamError, StreamPath,
-    StreamProvider,
+    CommitRequest, ForkCut, IdempotencyKey, PathHead, Provenance, Record, StreamCategory,
+    StreamError, StreamPath, StreamProvider,
 };
 use futures::TryFutureExt as _;
 use serde::{Deserialize, Serialize};
@@ -236,7 +236,7 @@ impl<C> Error<C> {
     pub fn retryable(&self) -> bool {
         match self {
             Self::Stream(error) => {
-                error.uncertain() || matches!(error.category(), StreamError::Capacity)
+                error.uncertain() || matches!(error.category(), StreamCategory::Capacity)
             }
             Self::Handler(failure) => failure.retryable(),
             Self::CallSettled { .. }
@@ -959,7 +959,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 Some(cursor) => cursor,
                 None => match self.provider.head(path.clone()).await {
                     Ok(head) => head.tail,
-                    Err(error) if error.category() == StreamError::NotFound => 0,
+                    Err(error) if error.category() == StreamCategory::NotFound => 0,
                     Err(error) => return Err(error.into()),
                 },
             };
@@ -1084,7 +1084,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     async fn head(&self, path: &StreamPath) -> Result<Option<PathHead>, Error> {
         match self.provider.head(path.clone()).await {
             Ok(head) => Ok(Some(head)),
-            Err(error) if error.category() == StreamError::NotFound => Ok(None),
+            Err(error) if error.category() == StreamCategory::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
@@ -1719,7 +1719,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     if let Err(source) = &outcome
                         && matches!(
                             source.category(),
-                            StreamError::Unavailable | StreamError::InvalidResponse
+                            StreamCategory::Unavailable | StreamCategory::InvalidResponse
                         )
                     {
                         prepared.acknowledgement_unknown = true;

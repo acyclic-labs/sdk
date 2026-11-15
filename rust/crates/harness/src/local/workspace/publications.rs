@@ -1,8 +1,8 @@
 //! Durable fork publication debt: one stream and one lazy cursor per workspace.
 use super::*;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, IdempotencyKey, ReadRequest, StreamError, StreamPath,
-    StreamProvider, StreamProviderExt,
+    AppendOutcome, AppendRequest, IdempotencyKey, ReadRequest, StreamCategory, StreamError,
+    StreamPath, StreamProvider, StreamProviderExt,
 };
 use futures::TryStreamExt as _;
 
@@ -46,7 +46,7 @@ async fn cursor(
     let stream = filesystem.stream_provider();
     let record = match stream.head(path(workspace, "cursor")?).await {
         Ok(head) => head.last,
-        Err(error) if error.category() == StreamError::NotFound => None,
+        Err(error) if error.category() == StreamCategory::NotFound => None,
         Err(error) => return Err(storage(error)),
     };
     let Some(record) = record else {
@@ -78,7 +78,7 @@ async fn pending(
         .await
     {
         Ok(records) => records,
-        Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+        Err(error) if error.category() == StreamCategory::NotFound => return Ok(None),
         Err(error) => return Err(storage(error)),
     };
     let Some(record) = records.try_next().await.map_err(storage)? else {

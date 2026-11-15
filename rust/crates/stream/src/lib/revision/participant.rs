@@ -1,4 +1,5 @@
 use super::{Revision, RevisionScope, StreamError};
+use crate::StreamCategory;
 #[cfg(loom)]
 use loom::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(not(loom))]
@@ -99,8 +100,14 @@ pub(super) fn verify_concurrent_frontier(replace_maximum: bool) {
             index: 99,
             ..first.clone()
         });
-        assert_eq!(authority.revision(), Err(StreamError::RevisionForeign));
+        assert_eq!(
+            authority.revision().map_err(|error| error.category()),
+            Err(StreamCategory::RevisionForeign)
+        );
         authority.observe(&first);
-        assert_eq!(authority.revision(), Err(StreamError::RevisionForeign));
+        assert_eq!(
+            authority.revision().map_err(|error| error.category()),
+            Err(StreamCategory::RevisionForeign)
+        );
     });
 }

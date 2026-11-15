@@ -34,8 +34,8 @@ use acyclic_stream::session::{
 };
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, BoxProviderStream, CommitCondition, CommitEffect,
-    CommitMutation, IdempotencyKey, ReadRequest, RevisionCut, StreamError, StreamPath,
-    StreamProvider,
+    CommitMutation, IdempotencyKey, ReadRequest, RevisionCut, StreamCategory, StreamError,
+    StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
@@ -276,7 +276,7 @@ impl Undecided {
         if !matches!(
             &error,
             Error::Stream(source) | Error::Unknown { source, .. } if matches!(
-                source.category(), StreamError::Unavailable | StreamError::InvalidResponse
+                source.category(), StreamCategory::Unavailable | StreamCategory::InvalidResponse
             )
         ) {
             return Err(error);
@@ -315,7 +315,7 @@ async fn commit<P: StreamProvider + ?Sized>(
                 source,
             }) if matches!(
                 source.category(),
-                StreamError::Unavailable | StreamError::InvalidResponse
+                StreamCategory::Unavailable | StreamCategory::InvalidResponse
             ) =>
             {
                 publication = *retained;
@@ -432,7 +432,7 @@ async fn fold<P: StreamProvider + ?Sized>(
             .await
         {
             Ok(page) => page.try_collect::<Vec<_>>().await?,
-            Err(error) if error.category() == StreamError::NotFound => Vec::new(),
+            Err(error) if error.category() == StreamCategory::NotFound => Vec::new(),
             Err(error) => return Err(error.into()),
         };
         let count = page.len();
@@ -708,7 +708,7 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
         let epochs = layout.epochs.clone();
         let (tail, last) = match store.provider().head(epochs.clone()).await {
             Ok(head) => (head.tail, head.last),
-            Err(error) if error.category() == StreamError::NotFound => (0, None),
+            Err(error) if error.category() == StreamCategory::NotFound => (0, None),
             Err(error) => return Err(error.into()),
         };
         let (segment, from, incarnation) = match (tail, last) {

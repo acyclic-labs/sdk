@@ -1,6 +1,6 @@
 //! Atomic follow preconditions and legacy-peer confirmation compatibility.
 use acyclic_stream::{
-    CommitId, StreamError, wire,
+    CommitId, StreamCategory, StreamError, wire,
     wire_codec::session::{confirm_follow, preceding_follow, record_anchor, record_cursor},
 };
 use proptest::prelude::*;
@@ -104,7 +104,7 @@ proptest! {
         let expected = match (next, cursor.opaque.as_ref().try_into()) {
             (0, _) if cursor.opaque.is_empty() => Ok(None),
             (1.., Ok(anchor)) => Ok(Some(anchor)),
-            _ => Err(StreamError::InvalidArgument),
+            _ => Err(StreamCategory::InvalidArgument),
         };
         let actual = record_anchor(&decoded);
         if next != 0 && decoded.opaque.len() != 32 {
@@ -132,7 +132,7 @@ proptest! {
         prop_assert_eq!(record_anchor(&decoded).map(|id| id.map(|id| *id.as_bytes())), Ok(Some(anchor)));
         prop_assert_eq!(decoded.next, next);
         let error = record_cursor(0, CommitId::from_bytes(anchor)).unwrap_err();
-        prop_assert_eq!(error.category(), StreamError::InvalidArgument);
+        prop_assert_eq!(error.category(), StreamCategory::InvalidArgument);
         prop_assert!(std::error::Error::source(&error).is_some());
     }
 

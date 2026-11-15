@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 #[tokio::test]
 async fn admission_golden_frame_opens_without_another_request() -> TestResult {
@@ -92,7 +93,7 @@ async fn admission_refuses_versions_before_credentials_and_interests() -> TestRe
         )?;
         assert!(matches!(
             output.next().await,
-            Some(Err(StreamError::Unsupported))
+            Some(Err(error)) if error.category() == StreamCategory::Unsupported
         ));
         assert!(output.next().await.is_none());
     }

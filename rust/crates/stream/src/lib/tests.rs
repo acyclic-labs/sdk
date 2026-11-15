@@ -5,14 +5,14 @@ mod error_code_tests {
     #[test]
     fn local_causes_survive_cloning_without_changing_classification() {
         use std::error::Error as _;
-        for category in StreamError::ALL {
+        for category in StreamCategory::ALL.map(StreamError::from) {
             let original = category.clone().with_source(
                 StreamError::InvalidArgument.with_source("invalid".parse::<u64>().unwrap_err()),
             );
             let cloned = original.clone();
             assert_eq!(original, cloned);
             drop(original);
-            assert_eq!(cloned.category(), category);
+            assert_eq!(cloned.category(), category.category());
             assert_eq!(cloned.code(), category.code());
             assert_eq!(cloned.uncertain(), category.uncertain());
             let mut source = cloned.source();
@@ -43,13 +43,13 @@ mod error_code_tests {
         let scheduled =
             StreamError::not_before(73).with_source("invalid".parse::<u64>().unwrap_err());
         assert_eq!(scheduled.not_before_authority(), Some(73));
-        assert_eq!(scheduled.category(), StreamError::OutOfRange);
+        assert_eq!(scheduled.category(), StreamCategory::OutOfRange);
     }
 
     #[test]
     fn boxed_native_causes_survive_cloning_without_changing_classification() {
         use std::error::Error as _;
-        for category in StreamError::ALL {
+        for category in StreamCategory::ALL.map(StreamError::from) {
             let native: Box<dyn std::error::Error + Send + Sync + 'static> =
                 Box::new(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
             let original = category.clone().with_boxed_source(native);
@@ -81,7 +81,7 @@ mod error_code_tests {
 
     #[test]
     fn wire_codes_are_pinned_and_round_trip() {
-        let codes = StreamError::ALL.map(|error| error.code());
+        let codes = StreamCategory::ALL.map(StreamCategory::code);
         assert_eq!(
             codes,
             [
@@ -103,7 +103,7 @@ mod error_code_tests {
                 "revision_foreign"
             ]
         );
-        for error in StreamError::ALL {
+        for error in StreamCategory::ALL.map(StreamError::from) {
             assert_eq!(StreamError::from_code(error.code()), Some(error.clone()));
             #[cfg(feature = "serde")]
             {
@@ -130,7 +130,7 @@ mod error_code_tests {
 
     #[test]
     fn session_close_codes_keep_refusals_typed() {
-        for error in StreamError::ALL {
+        for error in StreamCategory::ALL.map(StreamError::from) {
             assert_eq!(StreamError::from_session_close(error.code()), error);
         }
         for (code, error) in [
@@ -150,8 +150,8 @@ mod error_code_tests {
         // Negative control: only an unknown code is unavailability.
         for code in ["internal", "unknown", "", "stream_not_found"] {
             assert_eq!(
-                StreamError::from_session_close(code),
-                StreamError::Unavailable,
+                StreamError::from_session_close(code).category(),
+                StreamCategory::Unavailable,
                 "{code}"
             );
         }
@@ -263,11 +263,14 @@ mod replay_tests {
             provider
                 .native_append(request.clone(), meter.original())
                 .await?,
-            Err(StreamError::Unsupported)
+            Err(error) if error.category() == StreamCategory::Unsupported
         ));
         assert_eq!(
-            provider.tail(path.clone()).await,
-            Err(StreamError::NotFound)
+            provider
+                .tail(path.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
         assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
         assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
@@ -282,7 +285,7 @@ mod replay_tests {
             provider
                 .native_latest_before(path.clone(), None, 1, Default::default(), meter.original())
                 .await?,
-            Err(StreamError::Unsupported)
+            Err(error) if error.category() == StreamCategory::Unsupported
         ));
         assert_eq!(meter.read_operations.load(Ordering::SeqCst), 0);
         meter.assert_refunded();
@@ -580,8 +583,11 @@ mod replay_tests {
             accepted
         );
         assert_eq!(
-            stream.append_at("changed", 1, key).await,
-            Err(StreamError::IdempotencyMismatch)
+            stream
+                .append_at("changed", 1, key)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::IdempotencyMismatch)
         );
         assert_eq!(provider.head(stream.path().clone()).await.unwrap().tail, 2);
     }
@@ -633,7 +639,7 @@ mod replay_tests {
 
     fn assert_original_replay_failure(result: Result<Vec<u64>, StreamError>) {
         let error = result.unwrap_err();
-        assert_eq!(error.category(), StreamError::Unavailable);
+        assert_eq!(error.category(), StreamCategory::Unavailable);
         let mut cause = std::error::Error::source(&error);
         let mut original = false;
         while let Some(source) = cause {
@@ -759,8 +765,11 @@ mod write_tests {
         // Reusing a key for another family must not recover or re-encode the append.
         commit.idempotency_key = append.idempotency_key;
         assert_eq!(
-            provider.write(WriteRequest::Commit(commit)).await,
-            Err(StreamError::IdempotencyMismatch)
+            provider
+                .write(WriteRequest::Commit(commit))
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::IdempotencyMismatch)
         );
         Ok(())
     }
@@ -882,7 +891,13 @@ mod indexed_trace_tests {
                     );
                     assert_eq!(inherited.last, original.last);
                 } else {
-                    assert_eq!(provider.tail(copied).await, Err(StreamError::NotFound));
+                    assert_eq!(
+                        provider
+                            .tail(copied)
+                            .await
+                            .map_err(|error| error.category()),
+                        Err(StreamCategory::NotFound)
+                    );
                 }
                 checkpoint.finish(None, Outcome::Succeeded).await?;
                 let completion = root.finish_submitted(None, Outcome::Succeeded)?;

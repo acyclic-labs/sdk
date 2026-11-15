@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
     let (commands, receiver) = mpsc::channel(1);
@@ -84,7 +85,7 @@ async fn registration_producer_loss_removes_only_its_interest() -> TestResult {
     let healthy = healthy.await?;
     assert!(futures::poll!(stalled.as_mut()).is_pending());
     drop(_held);
-    assert!(matches!(stalled.await, Err(StreamError::Unavailable)));
+    assert!(matches!(stalled.await, Err(error) if error.category() == StreamCategory::Unavailable));
     assert_eq!(client.pool.removed.next().await?, id);
     assert_eq!(client.pool.active.load(Ordering::Acquire), 1);
     drop(healthy);
@@ -207,7 +208,7 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
             let held = commands.recv().await.ok_or("missing Open")?;
             assert!(futures::poll!(stalled.as_mut()).is_pending());
             drop(held);
-            assert!(matches!(stalled.await, Err(StreamError::Unavailable)));
+            assert!(matches!(stalled.await, Err(error) if error.category() == StreamCategory::Unavailable));
             let memory = Arc::new(MemoryStream::default());
             append(&memory, "private/events", 1).await?;
             let fixture = Fixture::open(Arc::clone(&memory), "node").await?;
@@ -244,7 +245,7 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
                 .await
                 .ok_or("terminal follow ended")?
                 .unwrap_err();
-            assert_eq!(error.category(), StreamError::AccessDenied);
+            assert_eq!(error.category(), StreamCategory::AccessDenied);
             let original = tonic::Status::from(&error);
             assert_eq!(original.code(), tonic::Code::PermissionDenied);
             assert_eq!(original.message(), "terminal fixture failure");

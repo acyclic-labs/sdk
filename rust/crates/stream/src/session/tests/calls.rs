@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -115,29 +116,35 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     )?;
     for resource in ["fs:/volume/visible-neighbor", "fs:/volume/hidden/file"] {
         assert_eq!(
-            dependency.authorize(resource, &[], &attributes, PolicyDecision::Allow),
-            Err(StreamError::AccessDenied),
+            dependency
+                .authorize(resource, &[], &attributes, PolicyDecision::Allow)
+                .map_err(|error| error.category()),
+            Err(StreamCategory::AccessDenied),
             "dependent scope escaped its original declared boundary"
         );
     }
     assert_eq!(
-        original.authorize(
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Allow,
-        ),
-        Err(StreamError::AccessDenied)
+        original
+            .authorize(
+                "fs:/volume/visible/file",
+                &[],
+                &attributes,
+                PolicyDecision::Allow,
+            )
+            .map_err(|error| error.category()),
+        Err(StreamCategory::AccessDenied)
     );
     assert_eq!(
-        dependency.authorize_in_account(
-            b"other account",
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Allow,
-        ),
-        Err(StreamError::AccessDenied)
+        dependency
+            .authorize_in_account(
+                b"other account",
+                "fs:/volume/visible/file",
+                &[],
+                &attributes,
+                PolicyDecision::Allow,
+            )
+            .map_err(|error| error.category()),
+        Err(StreamCategory::AccessDenied)
     );
     crate::session::authority::tests::assert_verifier_denial(dependency.authorize(
         "fs:/volume/visible/file",
@@ -510,10 +517,13 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     let mut pending = Box::pin(cancelled.send(Bytes::from_static(b"blocked")));
     assert!(futures::poll!(pending.as_mut()).is_pending());
     drop(cancelled_reply);
-    assert_eq!(pending.await, Err(StreamError::Unavailable));
+    assert_eq!(
+        pending.await.map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
+    );
     assert!(matches!(
         input.next_chunk().await,
-        Err(StreamError::Unavailable)
+        Err(error) if error.category() == StreamCategory::Unavailable
     ));
     assert_eq!(cancelled_first.as_ref().as_ptr(), original.as_ptr());
     assert_eq!(cancelled_second.as_ref().as_ptr(), second_original.as_ptr());
@@ -523,7 +533,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     // disclosure. No separate socket authority or buffered fallback is used.
     assert!(matches!(
         client.actor_call_input(&invocation, 1, Some(128)).await,
-        Err(StreamError::AccessDenied)
+        Err(error) if error.category() == StreamCategory::AccessDenied
     ));
     assert!(dispatches.try_recv().is_err());
 
@@ -538,8 +548,8 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     assert!(futures::poll!(pending.as_mut()).is_pending());
     drop(input);
     assert_eq!(
-        pending.await,
-        Err(StreamError::Unavailable),
+        pending.await.map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable),
         "consumer loss must wake without escaped credit returning"
     );
     let mut abandoned_reply = core::pin::pin!(abandoned_reply);
@@ -568,14 +578,17 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
         .await
         .ok_or("no blocked terminal before host loss")?;
     drop(host);
-    assert_eq!(finish.await, Err(StreamError::Unavailable));
+    assert_eq!(
+        finish.await.map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
+    );
     let mut lost = core::pin::pin!(lost);
     assert_reply_failure(lost.next().await, StreamError::Unavailable);
     // The held EOF followed the queued data on the same ordered transport.
     // Once source loss is observed, a data-first adapter would disclose that
     // data instead of the original failure. Return the cause exactly once.
     assert!(
-        matches!(input.next_chunk().await, Err(StreamError::Unavailable)),
+        matches!(input.next_chunk().await, Err(error) if error.category() == StreamCategory::Unavailable),
         "producer loss must win over queued data"
     );
     assert!(input.next_chunk().await?.is_none());
@@ -591,8 +604,8 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     };
     assert_eq!(wire_codec::session::input_sequence(0, &data)?, 1);
     assert_eq!(
-        wire_codec::session::input_sequence(1, &data),
-        Err(StreamError::InvalidArgument)
+        wire_codec::session::input_sequence(1, &data).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     assert!(wire_codec::session::actor_call_sequence(0, &[], &data).is_err());
     Ok(())
@@ -652,8 +665,9 @@ async fn follow_authority_cannot_dispatch_calls_or_stop_healthy_follows() -> Tes
                 0,
                 Some(crate::MAX_RECORD_BYTES + 7),
             )
-            .await,
-        Err(StreamError::AccessDenied)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::AccessDenied)
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -721,7 +735,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
             .actor_call(&invalid, 0, maximum)
             .await
             .expect_err("invalid original invocation dispatched");
-        assert_eq!(error.category(), StreamError::InvalidArgument);
+        assert_eq!(error.category(), StreamCategory::InvalidArgument);
         assert!(
             std::error::Error::source(&error).is_some(),
             "original invocation evidence lost"
@@ -840,7 +854,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
         Some(Err(error)) => error,
         _ => return Err("oversized original reply was accepted".into()),
     };
-    assert_eq!(error.category(), StreamError::InvalidResponse);
+    assert_eq!(error.category(), StreamCategory::InvalidResponse);
     assert!(
         std::error::Error::source(&error).is_some(),
         "original reply bound cause was lost"
@@ -908,7 +922,7 @@ async fn input_producer_loss_retains_original_terminal_receive_error() -> TestRe
             Ok(_) => return Err("lost terminal producer returned a successful EOF".into()),
         }
     };
-    assert_eq!(error.category(), StreamError::Unavailable);
+    assert_eq!(error.category(), StreamCategory::Unavailable);
     let mut source = std::error::Error::source(&error);
     let mut retained = false;
     while let Some(cause) = source {

@@ -1,5 +1,6 @@
 //! In-process I/O uses the public pool, including checked admission and credit.
 use super::*;
+use crate::StreamCategory;
 
 #[tokio::test]
 async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult {
@@ -236,7 +237,7 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
                 })
                 .map_ok(crate::records_only)
                 .await,
-            Err(StreamError::PrefixNotRetained)
+            Err(error) if error.category() == StreamCategory::PrefixNotRetained
         ));
         let mut checked = client
             .follow(crate::FollowRequest {

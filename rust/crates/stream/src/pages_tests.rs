@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::{
     CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream, ReadRequest,
     StreamPath, StreamProvider, StreamProviderExt as _,
@@ -72,14 +73,14 @@ async fn required_ranges_refuse_missing_history_and_stop_at_the_original_cut()
     }
     assert!(matches!(
         required.try_next().await,
-        Err(StreamError::Unavailable)
+        Err(error) if error.category() == StreamCategory::Unavailable
     ));
     assert!(required.next().await.is_none(), "producer loss is terminal");
     // Dropping the first actual record cannot splice a later one into its cut.
     let mut gap = ExactRange::new(provider.read(read(0, 4)).await?.skip(1), 0..4)?;
     assert!(matches!(
         gap.try_next().await,
-        Err(StreamError::Unavailable)
+        Err(error) if error.category() == StreamCategory::Unavailable
     ));
     assert!(gap.next().await.is_none());
     // The original channel producer may disappear before the first pull.
@@ -89,7 +90,7 @@ async fn required_ranges_refuse_missing_history_and_stop_at_the_original_cut()
     let mut withdrawn = ExactRange::new(source, 0..1)?;
     assert!(matches!(
         withdrawn.try_next().await,
-        Err(StreamError::Unavailable)
+        Err(error) if error.category() == StreamCategory::Unavailable
     ));
     assert!(withdrawn.next().await.is_none());
     Ok(())

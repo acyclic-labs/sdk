@@ -9,8 +9,8 @@
 use crate::StreamProviderExt as _;
 use crate::{
     AppendOutcome, AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitOutcome,
-    CommitRequest, IdempotencyKey, IdempotencyOutcome, OwnedBytes, ReadRequest, StreamError,
-    StreamPath, StreamProvider,
+    CommitRequest, IdempotencyKey, IdempotencyOutcome, OwnedBytes, ReadRequest, StreamCategory,
+    StreamError, StreamPath, StreamProvider,
 };
 use futures::TryStreamExt as _;
 use sha2::{Digest as _, Sha256};
@@ -186,7 +186,7 @@ impl<'a, P: StreamProvider + ?Sized> History<'a, P> {
 
     async fn require_fresh(&self) -> Result<(), Failure> {
         match self.provider.tail(self.path.clone()).await {
-            Err(StreamError::NotFound) => (),
+            Err(error) if error.category() == StreamCategory::NotFound => (),
             Ok(_) => return self.check("fresh_path", Invariant::FreshNamespace, false),
             Err(source) => return Err(provider_failure(self.case, "fresh_path", source)),
         }
@@ -261,7 +261,7 @@ impl<'a, P: StreamProvider + ?Sized> History<'a, P> {
         result: Result<T, StreamError>,
     ) -> Result<(), Failure> {
         match result {
-            Err(StreamError::IdempotencyMismatch) => Ok(()),
+            Err(error) if error.category() == StreamCategory::IdempotencyMismatch => Ok(()),
             Ok(_) => self.check(step, Invariant::ChangedIntentRejected, false),
             Err(source) => Err(provider_failure(self.case, step, source)),
         }

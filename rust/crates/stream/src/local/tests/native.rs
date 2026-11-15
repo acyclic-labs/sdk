@@ -1,5 +1,6 @@
 use super::*;
 use crate::NativeStreamProviderExt as _;
+use crate::StreamCategory;
 
 mod follows;
 mod headers;
@@ -57,8 +58,13 @@ async fn lease_replays_pin_success_across_visibility_and_publication_waits()
         }
         lease.settle().await?;
         assert_eq!(
-            provider.inner.provider.tail(root.clone()).await,
-            Err(StreamError::NotFound)
+            provider
+                .inner
+                .provider
+                .tail(root.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
         drop(gate);
         let output = replay.await??;
@@ -155,7 +161,13 @@ async fn native_lease_receipts_preserve_exact_keys_and_retire_their_original_cus
                 .native_inspect_idempotency(key, lookup.original())
                 .await??;
             assert!(output.value().is_none());
-            assert_eq!(provider.read_commit(id).await, Err(StreamError::NotFound));
+            assert_eq!(
+                provider
+                    .read_commit(id)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
+            );
             drop(output);
             lookup.assert_refunded();
         }
@@ -220,7 +232,7 @@ async fn prepared_commits_cannot_spend_a_key_held_by_a_live_lease()
                             meter.original(),
                         )
                         .await?,
-                    Err(StreamError::InvalidArgument)
+                    Err(error) if error.category() == StreamCategory::InvalidArgument
                 ));
                 meter.assert_refunded();
             }
@@ -242,7 +254,9 @@ async fn prepared_commits_cannot_spend_a_key_held_by_a_live_lease()
                 )
                 .await?;
             if spent_before_preparation {
-                assert!(matches!(prepared, Err(StreamError::IdempotencyMismatch)));
+                assert!(
+                    matches!(prepared, Err(error) if error.category() == StreamCategory::IdempotencyMismatch)
+                );
             } else {
                 let (mut packet, guard) = prepared?.into_parts();
                 let recovery = packet.take_recovery_future().ok_or("missing recovery")?;
@@ -251,11 +265,11 @@ async fn prepared_commits_cannot_spend_a_key_held_by_a_live_lease()
                     packet
                         .finish(OwnedBytes::from_static(b"completion").into())
                         .await?,
-                    Err(StreamError::IdempotencyMismatch)
+                    Err(error) if error.category() == StreamCategory::IdempotencyMismatch
                 ));
                 assert!(matches!(
                     recovery.await?,
-                    Err(StreamError::IdempotencyMismatch)
+                    Err(error) if error.category() == StreamCategory::IdempotencyMismatch
                 ));
                 drop(guard);
             }
@@ -563,7 +577,7 @@ async fn native_append_lost_ack_reopens_exact_append_identity()
         .await?
         .err()
         .ok_or("Commit incorrectly reused an Append identity")?;
-    assert_eq!(&failure, &StreamError::IdempotencyMismatch);
+    assert_eq!(failure.category(), StreamCategory::IdempotencyMismatch);
     drop(reopened);
     meter.assert_refunded();
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
@@ -670,8 +684,11 @@ async fn native_durability_denial_precedes_semantic_cas() -> Result<(), Box<dyn 
     assert_original_denial(&error, "durability");
     assert!(provider.inspect_idempotency(key).await?.is_none());
     assert_eq!(
-        provider.tail(StreamPath::new("not-published")?).await,
-        Err(StreamError::NotFound)
+        provider
+            .tail(StreamPath::new("not-published")?)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     assert_eq!(
         std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(),
@@ -1224,7 +1241,7 @@ async fn native_commit_before_checks_actual_cas_and_preserves_replay()
         .await?;
     assert!(matches!(
         expired.as_ref(),
-        Err(StreamError::DeadlineElapsed)
+        Err(error) if error.category() == StreamCategory::DeadlineElapsed
     ));
     assert_eq!(clock.load(Ordering::SeqCst), 100);
     assert_eq!(

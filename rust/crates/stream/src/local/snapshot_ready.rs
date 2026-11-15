@@ -1,4 +1,5 @@
 #![cfg(all(not(target_arch = "wasm32"), not(loom)))]
+use crate::StreamCategory;
 use futures::TryFutureExt as _;
 
 use crate::*;
@@ -211,8 +212,14 @@ async fn prepare<P: StreamProvider>(
             .map_ok(crate::records_only)
     });
     let [old_error, candidate_error] = errors;
-    assert_eq!(old_error.await.err(), Some(StreamError::NotFound));
-    assert_eq!(candidate_error.await.err(), Some(StreamError::NotFound));
+    assert_eq!(
+        old_error.await.err().map(|error| error.category()),
+        Some(StreamCategory::NotFound)
+    );
+    assert_eq!(
+        candidate_error.await.err().map(|error| error.category()),
+        Some(StreamCategory::NotFound)
+    );
     {
         ReadyPair::Records(
             records(baseline.clone()).await,

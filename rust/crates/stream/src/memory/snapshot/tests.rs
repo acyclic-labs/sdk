@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::StreamProviderExt as _;
 use crate::{AppendRequest, MemoryLimits, ReadRequest, StreamProvider, UnixMillisClock};
 use crate::{OwnedBytes as Bytes, StreamPath};
@@ -75,8 +76,11 @@ async fn captured_snapshot_pins_facts_and_namespace_without_retaining_state_guar
         let empty = MemoryStream::default().encode_state().await;
         stream.install_state(&empty).await?;
         assert_eq!(
-            stream.tail(source.clone()).await,
-            Err(StreamError::NotFound)
+            stream
+                .tail(source.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
         assert_eq!(cut.encode(), expected);
         let restored = MemoryStream::default();
@@ -194,12 +198,21 @@ async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError
     let mut changed = request.clone();
     changed.records = vec![(Bytes::from_static(b"different")).into()];
     assert_eq!(
-        restored.append(changed).await,
-        Err(StreamError::IdempotencyMismatch)
+        restored
+            .append(changed)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::IdempotencyMismatch)
     );
     let mut fresh = request;
     fresh.idempotency_key = IdempotencyKey::new(Bytes::from_static(b"fresh"))?;
-    assert_eq!(restored.append(fresh).await, Err(StreamError::Capacity));
+    assert_eq!(
+        restored
+            .append(fresh)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Capacity)
+    );
     Ok(())
 }
 
@@ -414,8 +427,9 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
         assert_eq!(
             stream
                 .install_state(valid.get(..length).ok_or(StreamError::InvalidArgument)?)
-                .await,
-            Err(StreamError::InvalidArgument)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::InvalidArgument)
         );
         assert_eq!(stream.encode_state().await, valid);
     }
@@ -425,22 +439,31 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
         .ok_or(StreamError::InvalidArgument)?
         .copy_from_slice(&u64::MAX.to_le_bytes());
     assert_eq!(
-        stream.install_state(&impossible_decision).await,
-        Err(StreamError::InvalidArgument)
+        stream
+            .install_state(&impossible_decision)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     let mut trailing = valid.clone();
     trailing.push(0);
     assert_eq!(
-        stream.install_state(&trailing).await,
-        Err(StreamError::InvalidArgument)
+        stream
+            .install_state(&trailing)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     let mut wrong_magic = valid.clone();
     if let Some(first) = wrong_magic.first_mut() {
         *first ^= 1;
     }
     assert_eq!(
-        stream.install_state(&wrong_magic).await,
-        Err(StreamError::InvalidArgument)
+        stream
+            .install_state(&wrong_magic)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     // Refuse old and unknown versions as unsupported (the shared versioned
     // format contract), without changing live state.
@@ -450,8 +473,11 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
             .get_mut(MAGIC.len() - 2)
             .ok_or(StreamError::InvalidArgument)? = version;
         assert_eq!(
-            stream.install_state(&obsolete).await,
-            Err(StreamError::Unsupported)
+            stream
+                .install_state(&obsolete)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::Unsupported)
         );
         assert_eq!(stream.encode_state().await, valid);
     }
@@ -484,8 +510,11 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
         let constrained = MemoryStream::new(limits);
         let empty = constrained.encode_state().await;
         assert_eq!(
-            constrained.install_state(&valid).await,
-            Err(StreamError::Capacity)
+            constrained
+                .install_state(&valid)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::Capacity)
         );
         assert_eq!(constrained.encode_state().await, empty);
     }

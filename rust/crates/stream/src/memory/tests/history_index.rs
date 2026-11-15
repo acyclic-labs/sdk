@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::test_meter::Meter;
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -546,7 +547,7 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
     let mut pinned = PinnedHistory::new(&captured, captured.tail);
     HISTORY_METADATA_READS.with(|count| count.set(0));
     let refused = pinned.page(2, 64, |_| Err(StreamError::Capacity));
-    assert!(matches!(refused, Err(StreamError::Capacity)));
+    assert!(matches!(refused, Err(error) if error.category() == StreamCategory::Capacity));
     assert_eq!(HISTORY_METADATA_READS.with(std::cell::Cell::get), 0);
 
     // The fork cut falls inside the original batch. Growing the selected path

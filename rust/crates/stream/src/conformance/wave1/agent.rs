@@ -9,7 +9,7 @@ use crate::StreamProviderExt as _;
 use crate::{
     ChildrenPageRequest, CommitCondition, CommitEffect, CommitMutation, CommitOutcome,
     CommitRequest, CommittedEnvelope, IdempotencyOutcome, OwnedBytes, ReadRequest, Record,
-    StreamError, StreamPath, StreamProvider,
+    StreamCategory, StreamError, StreamPath, StreamProvider,
 };
 use futures::TryFutureExt as _;
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -510,11 +510,11 @@ pub(super) async fn inherited_follow<P: StreamProvider + ?Sized>(
         .map_ok(crate::records_only)
         .await
     {
-        Err(StreamError::NotFound) => {}
+        Err(error) if error.category() == StreamCategory::NotFound => {}
         Ok(mut follow) => history.check(
             "follow_missing",
             Invariant::MissingFollow,
-            matches!(follow.next().await, Some(Err(StreamError::NotFound))),
+            matches!(follow.next().await, Some(Err(error)) if error.category() == StreamCategory::NotFound),
         )?,
         Err(source) => {
             return Err(super::provider_failure(

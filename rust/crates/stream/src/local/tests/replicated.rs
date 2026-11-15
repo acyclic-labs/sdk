@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::StreamCategory;
 use crate::replicated::{
     AppendIf, CommandJournal, JournalFrame, JournalPage, ReplicaClock, Replicated,
 };
@@ -141,7 +142,7 @@ async fn a_lost_conditional_proposal_returns_before_an_explicit_resend()
         replica
             .execute(WriteRequest::Append(request.clone()), None, 1)
             .await,
-        Err(StreamError::PrefixNotRetained)
+        Err(error) if error.category() == StreamCategory::PrefixNotRetained
     ));
     assert_eq!(replica.journal.proposals.len(), 1);
     assert_eq!(source.tail(path.clone()).await?, 2);
@@ -207,11 +208,11 @@ async fn a_lost_durable_reply_closes_the_replica_and_recovers_the_original_ident
         replica
             .execute(WriteRequest::Append(request.clone()), None, 1)
             .await,
-        Err(StreamError::Unavailable)
+        Err(error) if error.category() == StreamCategory::Unavailable
     ));
     assert!(matches!(
         replica.refresh(1).await,
-        Err(StreamError::Unavailable)
+        Err(error) if error.category() == StreamCategory::Unavailable
     ));
     assert_eq!(replica.journal.proposals.len(), 1);
     drop(replica);
@@ -313,7 +314,7 @@ async fn a_cached_refusal_observes_once_without_reconsidering_the_command()
         replica
             .execute(WriteRequest::Append(request.clone()), None, 1)
             .await,
-        Err(StreamError::PrefixNotRetained)
+        Err(error) if error.category() == StreamCategory::PrefixNotRetained
     ));
     assert_eq!(replica.journal.pages.len() - reads, 1);
     assert!(replica.journal.proposals.is_empty());
@@ -368,7 +369,7 @@ async fn a_cached_refusal_observes_once_without_reconsidering_the_command()
         replica
             .execute(WriteRequest::Commit(expired.clone()), None, 1)
             .await,
-        Err(StreamError::DeadlineElapsed)
+        Err(error) if error.category() == StreamCategory::DeadlineElapsed
     ));
     assert_eq!(replica.journal.pages.len() - reads, 1);
     assert_eq!(replica.journal.proposals.len(), 1);
@@ -416,7 +417,7 @@ async fn a_lost_acceptance_clock_proposal_refreshes_only_the_next_invocation()
         replica
             .execute(WriteRequest::Append(request.clone()), None, 1)
             .await,
-        Err(StreamError::PrefixNotRetained)
+        Err(error) if error.category() == StreamCategory::PrefixNotRetained
     ));
     assert_eq!(replica.journal.pages.len(), reads);
     assert_eq!(replica.journal.proposals.len(), 1);

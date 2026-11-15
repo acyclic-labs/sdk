@@ -8,6 +8,7 @@
 //! and include `%a` in `log_line_prefix` when collecting those observations.
 
 use super::*;
+use crate::StreamCategory;
 use crate::replicated::{JournalNotifications as _, ReplayObserver};
 use futures::FutureExt as _;
 
@@ -80,7 +81,7 @@ async fn publication_uses_only_required_sql_observations()
                     at_least: crate::RevisionCut::of(future.clone()),
                 })
                 .now_or_never(),
-            Some(Err(StreamError::LimitExceeded))
+            Some(Err(error)) if error.category() == StreamCategory::LimitExceeded
         ));
     }
     // Foreign cuts cannot be satisfied by SQL or a later local publication.
@@ -98,7 +99,7 @@ async fn publication_uses_only_required_sql_observations()
                 at_least: foreign.clone(),
             })
             .now_or_never(),
-        Some(Err(StreamError::RevisionForeign))
+        Some(Err(error)) if error.category() == StreamCategory::RevisionForeign
     ));
     assert!(matches!(
         provider
@@ -107,7 +108,7 @@ async fn publication_uses_only_required_sql_observations()
                 ..FollowRequest::new(StreamPath::new("foreign")?, 0)
             })
             .now_or_never(),
-        Some(Err(StreamError::RevisionForeign))
+        Some(Err(error)) if error.category() == StreamCategory::RevisionForeign
     ));
     assert!(matches!(
         provider
@@ -122,7 +123,7 @@ async fn publication_uses_only_required_sql_observations()
                 at_least: foreign,
             })
             .now_or_never(),
-        Some(Err(StreamError::RevisionForeign))
+        Some(Err(error)) if error.category() == StreamCategory::RevisionForeign
     ));
     let original = AppendRequest {
         path: StreamPath::new("accepted")?,
@@ -210,7 +211,7 @@ async fn publication_uses_only_required_sql_observations()
         replica
             .execute(WriteRequest::Append(changed), None, PAGE)
             .await,
-        Err(StreamError::IdempotencyMismatch)
+        Err(error) if error.category() == StreamCategory::IdempotencyMismatch
     ));
     sql_case(&replica, "refusal").await?;
     let refused = AppendRequest {
@@ -247,14 +248,18 @@ async fn publication_uses_only_required_sql_observations()
     };
     sql_case(&replica, "stale-refusal").await?;
     assert_eq!(
-        replica.provider.tail(remote.path.clone()).await,
-        Err(StreamError::NotFound)
+        replica
+            .provider
+            .tail(remote.path.clone())
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     assert!(matches!(
         replica
             .execute(WriteRequest::Append(remote.clone()), None, PAGE)
             .await,
-        Err(StreamError::PrefixNotRetained)
+        Err(error) if error.category() == StreamCategory::PrefixNotRetained
     ));
     assert!(
         replica
@@ -289,7 +294,7 @@ async fn publication_uses_only_required_sql_observations()
         replica
             .execute(WriteRequest::Append(competing.clone()), None, PAGE)
             .await,
-        Err(StreamError::PrefixNotRetained)
+        Err(error) if error.category() == StreamCategory::PrefixNotRetained
     ));
     assert!(!replica.is_failed());
     assert!(
@@ -334,7 +339,7 @@ async fn publication_uses_only_required_sql_observations()
         replica
             .execute(WriteRequest::Commit(expired_conflict.clone()), None, PAGE)
             .await,
-        Err(StreamError::DeadlineElapsed)
+        Err(error) if error.category() == StreamCategory::DeadlineElapsed
     ));
     assert_eq!(replica.cursor, before);
     assert!(
@@ -376,7 +381,7 @@ async fn publication_uses_only_required_sql_observations()
         replica
             .execute(WriteRequest::Append(expired.clone()), Some(1), PAGE)
             .await,
-        Err(StreamError::DeadlineElapsed)
+        Err(error) if error.category() == StreamCategory::DeadlineElapsed
     ));
     assert!(
         replica
@@ -615,7 +620,7 @@ async fn stale_publication_returns_without_retaining_the_losing_identity()
             },
         )
         .await;
-    assert!(matches!(result, Err(StreamError::PrefixNotRetained)));
+    assert!(matches!(result, Err(error) if error.category() == StreamCategory::PrefixNotRetained));
     assert!(!replica.is_failed());
     let count = replica
         .journal
@@ -862,19 +867,27 @@ fn refresh_producer_retirement_ends_public_waits()
                 }
                 for waiting in &mut waits {
                     assert_eq!(
-                        waiting.as_mut().now_or_never(),
-                        Some(Err(StreamError::Unavailable)),
+                        waiting
+                            .as_mut()
+                            .now_or_never()
+                            .map(|result| result.map_err(|error| error.category())),
+                        Some(Err(StreamCategory::Unavailable)),
                         "retired refresh producer left a public revision wait parked"
                     );
                 }
                 assert_eq!(
-                    tail.as_mut().now_or_never(),
-                    Some(Err(StreamError::Unavailable)),
+                    tail.as_mut()
+                        .now_or_never()
+                        .map(|result| result.map_err(|error| error.category())),
+                    Some(Err(StreamCategory::Unavailable)),
                     "retired producer left a public session refresh parked"
                 );
                 assert_eq!(
-                    publication.as_mut().now_or_never(),
-                    Some(Err(StreamError::Unavailable)),
+                    publication
+                        .as_mut()
+                        .now_or_never()
+                        .map(|result| result.map_err(|error| error.category())),
+                    Some(Err(StreamCategory::Unavailable)),
                     "retired producer left a conditional publication parked"
                 );
                 for observer in observers {
@@ -886,7 +899,7 @@ fn refresh_producer_retirement_ends_public_waits()
                 drop(session);
                 assert!(matches!(
                     next.now_or_never(),
-                    Some(Some(Err(StreamError::Unavailable)))
+                    Some(Some(Err(error))) if error.category() == StreamCategory::Unavailable
                 ));
             } else {
                 // connect returns immediately after spawning refresh on this
@@ -900,13 +913,14 @@ fn refresh_producer_retirement_ends_public_waits()
             assert_eq!(
                 provider
                     .wait_applied(&RevisionCut::default())
-                    .now_or_never(),
-                Some(Err(StreamError::Unavailable)),
+                    .now_or_never()
+                    .map(|result| result.map_err(|error| error.category())),
+                Some(Err(StreamCategory::Unavailable)),
                 "retired refresh producer served a later observer"
             );
             assert!(matches!(
                 provider.tail(path.clone()).now_or_never(),
-                Some(Err(StreamError::Unavailable))
+                Some(Err(error)) if error.category() == StreamCategory::Unavailable
             ));
             // The authority still makes progress through another member. Its
             // successful conditional publication cannot resurrect the lost replica.

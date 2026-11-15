@@ -123,7 +123,7 @@ where
                 },
                 tail,
             ),
-            Err(error) if error.category() == acyclic_stream::StreamError::NotFound => (
+            Err(error) if error.category() == acyclic_stream::StreamCategory::NotFound => (
                 acyclic_stream::CommitCondition::Absent {
                     path: registry.clone(),
                 },

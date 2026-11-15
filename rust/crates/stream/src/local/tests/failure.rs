@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::NativeStreamProviderExt as _;
+use crate::StreamCategory;
 use futures::FutureExt as _;
 use std::{
     sync::atomic::{AtomicBool, Ordering},
@@ -40,7 +41,7 @@ async fn lost_flush_producer_terminates_original_waiters() -> Result<(), Box<dyn
     drop(submitted);
     assert!(matches!(
         waiting.as_mut().now_or_never(),
-        Some(Err(StreamError::Unavailable))
+        Some(Err(error)) if error.category() == StreamCategory::Unavailable
     ));
     assert_eq!(
         stream.failure().map(|failure| failure.cause),
@@ -255,7 +256,13 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                         .is_pending()
                 );
             }
-            assert_eq!(stream.persist(frame).await, Err(StreamError::Unavailable));
+            assert_eq!(
+                stream
+                    .persist(frame)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::Unavailable)
+            );
             for (index, ((waiting, waker), observer)) in
                 waits.iter_mut().zip(&wakers).zip(&observers).enumerate()
             {
@@ -271,7 +278,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                 assert!(
                     matches!(
                         waiting.as_mut().poll(&mut Context::from_waker(waker)),
-                        Poll::Ready(Err(StreamError::Unavailable))
+                        Poll::Ready(Err(error)) if error.category() == StreamCategory::Unavailable
                     ),
                     "{diagnostic}"
                 );
@@ -300,7 +307,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
             drop(visibility);
             assert!(matches!(
                 acyclic_native_runtime::testing::untracked(follow.next()).now_or_never(),
-                Some(Some(Err(StreamError::Unavailable)))
+                Some(Some(Err(error))) if error.category() == StreamCategory::Unavailable
             ));
             assert!(matches!(
                 acyclic_native_runtime::testing::untracked(follow.next()).now_or_never(),

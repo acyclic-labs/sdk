@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 /// Validates the canonical mixed observation request before provider admission.
 pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest, StreamError> {
@@ -284,12 +285,12 @@ mod tests {
                 let mut malformed = response;
                 malformed.retained[0].path.clear();
                 let error = heads_from_response(malformed).unwrap_err();
-                prop_assert_eq!(error.category(), StreamError::InvalidResponse);
+                prop_assert_eq!(error.category(), StreamCategory::InvalidResponse);
                 let mut cause = std::error::Error::source(&error);
                 let mut original_path_error = false;
                 while let Some(source) = cause {
                     original_path_error |= source.downcast_ref::<StreamError>()
-                        .is_some_and(|error| error.category() == StreamError::InvalidPath);
+                        .is_some_and(|error| error.category() == StreamCategory::InvalidPath);
                     cause = source.source();
                 }
                 prop_assert!(original_path_error, "original path validation failure was lost");
@@ -300,7 +301,7 @@ mod tests {
                 prop_assert!(heads_from_wire(malformed).is_err());
                 let mut too_small = wire;
                 too_small.limit = too_small.retained.len() as u32 - 1;
-                prop_assert_eq!(heads_from_wire(too_small), Err(StreamError::InvalidArgument));
+                prop_assert_eq!(heads_from_wire(too_small).map_err(|error| error.category()), Err(StreamCategory::InvalidArgument));
             }
         }
     }

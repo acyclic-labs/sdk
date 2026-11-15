@@ -1,4 +1,3 @@
-use crate::StreamError;
 #[cfg(any(all(feature = "wasm", target_arch = "wasm32"), loom))]
 use crate::change::{
     Change, Subscription,
@@ -6,6 +5,7 @@ use crate::change::{
 };
 #[cfg(not(any(all(feature = "wasm", target_arch = "wasm32"), loom)))]
 use crate::query_sync::{Arc, SyncMutex as Mutex};
+use crate::{StreamCategory, StreamError};
 use std::collections::{BTreeMap, btree_map::Entry};
 
 struct Registration<V> {
@@ -253,7 +253,7 @@ mod tests {
             registry.keys_in::<u8, _>(..).unwrap_err(),
         ];
         for error in errors {
-            assert_eq!(error.category(), StreamError::Unavailable);
+            assert_eq!(error.category(), StreamCategory::Unavailable);
             assert!(error.uncertain());
             let cause = error
                 .source()

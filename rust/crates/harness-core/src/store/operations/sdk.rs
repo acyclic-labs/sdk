@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamCategory;
 use acyclic_stream::StreamProviderExt as _;
 use futures::Stream as _;
 use futures::TryStreamExt as _;
@@ -309,7 +310,7 @@ pub(crate) async fn tail_optional_with_work<P: crate::store::JournalProvider + ?
     let result = tail_result_with_work(client, path, work).await?;
     match result {
         Ok(tail) => Ok(Some(tail)),
-        Err(error) if error.category() == StreamError::NotFound => Ok(None),
+        Err(error) if error.category() == StreamCategory::NotFound => Ok(None),
         Err(error) => Err(stream_error_with_work(error, work)),
     }
 }
@@ -375,7 +376,7 @@ pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Size
     let mut quota = CodecQuota::new(work, 0)?;
     let mut records = match read_selection(client, request, quota.work()).await? {
         Ok(records) => records,
-        Err(error) if error.category() == StreamError::NotFound => {
+        Err(error) if error.category() == StreamCategory::NotFound => {
             return Ok(None);
         }
         Err(error) => {

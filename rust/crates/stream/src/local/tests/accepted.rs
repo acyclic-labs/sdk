@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::TryFutureExt as _;
 
 #[tokio::test]
@@ -24,11 +25,11 @@ async fn immutable_commit_reads_bypass_pending_publication_but_absence_does_not(
     let mut missing = std::pin::pin!(provider.read_commit(crate::CommitId::from_bytes([0; 32])));
     assert!(futures::poll!(missing.as_mut()).is_pending());
     drop(held);
-    assert!(matches!(missing.await, Err(StreamError::NotFound)));
+    assert!(matches!(missing.await, Err(error) if error.category() == StreamCategory::NotFound));
     provider.inner.poison();
     assert!(matches!(
         provider.read_commit(receipt.commit_id).await,
-        Err(StreamError::Unavailable)
+        Err(error) if error.category() == StreamCategory::Unavailable
     ));
     Ok(())
 }
@@ -242,7 +243,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                 })
                 .map_ok(crate::records_only)
                 .await;
-            assert!(matches!(lost, Err(StreamError::OutOfRange)));
+            assert!(matches!(lost, Err(error) if error.category() == StreamCategory::OutOfRange));
             assert_eq!(
                 provider.watermarks(path.clone()).await?,
                 crate::StreamWatermarks {

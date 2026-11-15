@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamCategory;
 use acyclic_stream::{AppendRequest, assert_requests, testing::Counted};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1212,7 +1213,7 @@ async fn filed<P: StreamProvider + ?Sized>(
         .window_actors(store.scheduling_shard(actor), window, 0)
         .await
     {
-        Err(Error::Stream(error)) if error.category() == StreamError::NotFound => Ok(Vec::new()),
+        Err(Error::Stream(error)) if error.category() == StreamCategory::NotFound => Ok(Vec::new()),
         filed => Ok(filed?.0),
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use prost::Message as _;
 
 fn stored(origin: &str) -> Record {
@@ -35,8 +36,8 @@ fn only_an_inherited_origin_is_spelled_and_each_record_has_one_encoding() {
     // Spelling the followed path, or omitting an origin with no followed
     // path, is a decode error rather than a second encoding.
     assert_eq!(
-        record(inherited.clone(), Some(&source)),
-        Err(StreamError::InvalidArgument)
+        record(inherited.clone(), Some(&source)).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     assert_eq!(
         record(record_wire(stored("source"), Some(&source)), None),
@@ -68,7 +69,9 @@ fn a_committed_mutation_owns_its_records_and_spells_no_origin() {
     ));
     let foreign = record_wire(stored("other"), Some(&path));
     assert_eq!(
-        committed_mutation(committed(vec![foreign])).err(),
-        Some(StreamError::InvalidArgument)
+        committed_mutation(committed(vec![foreign]))
+            .err()
+            .map(|error| error.category()),
+        Some(StreamCategory::InvalidArgument)
     );
 }

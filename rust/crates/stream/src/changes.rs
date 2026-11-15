@@ -14,7 +14,9 @@
 //!
 //! Retained v1 records use the original canonical protobuf ChangeRecord and
 //! indexed headers. Reading never rewrites either format or its retry identity.
-use crate::{AppendRecord, Attribute, OwnedBytes, RecordHeaders, StreamError, wire};
+use crate::{
+    AppendRecord, Attribute, OwnedBytes, RecordHeaders, StreamCategory, StreamError, wire,
+};
 
 #[cfg(test)]
 mod golden;
@@ -191,7 +193,9 @@ pub fn changes_chunk_len(
         match size.push(entry) {
             Ok(()) => {}
             Err(_) if size.count > 0 && size.previous.is_some_and(|key| key == entry.key) => break,
-            Err(StreamError::LimitExceeded) if size.count > 0 => break,
+            Err(error) if error.category() == StreamCategory::LimitExceeded && size.count > 0 => {
+                break;
+            }
             Err(error) => return Err(error),
         }
     }

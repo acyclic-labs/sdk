@@ -1,3 +1,4 @@
+use crate::StreamCategory;
 use crate::*;
 use futures::TryFutureExt as _;
 use futures::{FutureExt as _, StreamExt as _};
@@ -163,9 +164,9 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
         assert!(
             matches!(
                 item,
-                Err(StreamError::NotFound
-                    | StreamError::OutOfRange
-                    | StreamError::PrefixNotRetained)
+                Err(error) if matches!(error.category(), StreamCategory::NotFound
+                    | StreamCategory::OutOfRange
+                    | StreamCategory::PrefixNotRetained)
             ),
             "{loss}: {item:?}"
         );

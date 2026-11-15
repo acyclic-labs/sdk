@@ -2,7 +2,7 @@ use super::*;
 use crate::{AgentId, Phase};
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    AppendRecord, AppendRequest, BoxProviderFuture, MemoryStream, StreamError,
+    AppendRecord, AppendRequest, BoxProviderFuture, MemoryStream, StreamCategory, StreamError,
     runtime::PlatformExecutor,
     session::{self, transport},
 };
@@ -805,7 +805,7 @@ async fn selected_subscription_failures_retain_resource_and_original_cause()
             expected.contains(&resource),
             "unexpected failed producer: {resource}"
         );
-        assert_eq!(cause.category(), StreamError::AccessDenied);
+        assert_eq!(cause.category(), StreamCategory::AccessDenied);
     }
     Ok(())
 }

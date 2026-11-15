@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::verification::{block_on, park};
 use futures::TryFutureExt as _;
 use std::{
@@ -73,7 +74,7 @@ pub(crate) fn publication(retain_state: bool, release_order: bool, cancel: bool)
             drop(finish);
             assert!(matches!(
                 writer.join().unwrap(),
-                Err(StreamError::Unavailable)
+                Err(error) if error.category() == StreamCategory::Unavailable
             ));
         } else {
             finish.send_replace(());
@@ -250,7 +251,7 @@ pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: 
                     follow
                         .as_mut()
                         .poll_next(&mut Context::from_waker(Waker::noop())),
-                    std::task::Poll::Ready(Some(Err(StreamError::Unavailable)))
+                    std::task::Poll::Ready(Some(Err(error))) if error.category() == StreamCategory::Unavailable
                 ),
                 "lost snapshot producer left its public follow parked"
             );

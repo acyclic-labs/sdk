@@ -4,8 +4,8 @@ use crate::local::{
     tests::{text, volume, volume_config},
 };
 use acyclic_stream::{
-    AppendRequest, IdempotencyKey, PersistenceCut, StreamError, StreamPath, StreamProvider,
-    StreamProviderExt,
+    AppendRequest, IdempotencyKey, PersistenceCut, StreamCategory, StreamError, StreamPath,
+    StreamProvider, StreamProviderExt,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -297,7 +297,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 .await
                 .err()
                 .map(|error| error.category()),
-            Some(StreamError::AccessDenied)
+            Some(StreamCategory::AccessDenied)
         );
         assert_eq!(
             session
@@ -315,7 +315,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 .await
                 .err()
                 .map(|error| error.category()),
-            Some(StreamError::AccessDenied)
+            Some(StreamCategory::AccessDenied)
         );
         assert!(connection.select(foreign.clone()).await.is_err());
         // The same transport constructor must honor an authenticated directory

@@ -171,8 +171,9 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
                 deadline_unix_millis: Some(10),
                 ..expired
             })
-            .await,
-        Err(StreamError::DeadlineElapsed)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::DeadlineElapsed)
     );
     drop(provider);
 
@@ -184,8 +185,11 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
         1
     );
     assert_eq!(
-        reopened.tail(StreamPath::new("deadline/expired")?).await,
-        Err(StreamError::NotFound)
+        reopened
+            .tail(StreamPath::new("deadline/expired")?)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     Ok(())
 }
@@ -382,8 +386,11 @@ async fn a_zero_filled_or_garbage_last_frame_is_a_torn_tail()
             "{fill:#x}"
         );
         assert_eq!(
-            reopened.tail(StreamPath::new("torn")?).await,
-            Err(StreamError::NotFound),
+            reopened
+                .tail(StreamPath::new("torn")?)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound),
             "torn final frame must be absent: {fill:#x}"
         );
         drop(reopened);

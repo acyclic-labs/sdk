@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::{
     AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _,
     testing::Counted,
@@ -141,7 +142,7 @@ async fn native_search_keeps_original_cuts_custody_and_observer_failures()
             let before = meter.allocations.load(Ordering::SeqCst);
             assert!(matches!(
                 invalid.to_native(&meter.original())?,
-                Err(StreamError::InvalidArgument)
+                Err(error) if error.category() == StreamCategory::InvalidArgument
             ));
             assert_eq!(meter.allocations.load(Ordering::SeqCst), before);
         }
@@ -417,7 +418,7 @@ async fn search_uses_current_session_grants_even_for_a_retained_cursor()
                 NonZeroU32::new(2).ok_or(StreamError::InvalidArgument)?
             )
             .await,
-        Err(StreamError::AccessDenied)
+        Err(error) if error.category() == StreamCategory::AccessDenied
     ));
     client
         .session_client()?
@@ -429,7 +430,7 @@ async fn search_uses_current_session_grants_even_for_a_retained_cursor()
                 NonZeroU32::new(2).ok_or(StreamError::InvalidArgument)?
             )
             .await,
-        Err(StreamError::AccessDenied)
+        Err(error) if error.category() == StreamCategory::AccessDenied
     ));
     Ok(())
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::{CommitId, runtime::PlatformExecutor};
 use proptest::prelude::*;
 
@@ -346,7 +347,7 @@ async fn buffered_observation_ends_when_its_original_response_producer_fails() -
         .await
         .expect_err("a closed producer cannot deliver its missing buffer");
     let error = error.downcast_ref::<StreamError>().expect("Stream failure");
-    assert_eq!(error.category(), StreamError::AccessDenied);
+    assert_eq!(error.category(), StreamCategory::AccessDenied);
     let original = tonic::Status::from(error);
     assert_eq!(original.code(), tonic::Code::PermissionDenied);
     assert_eq!(original.message(), "original response refused");

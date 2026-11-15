@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::grpc;
 use crate::{AppendRequest, MemoryStream, OwnedBytes, RecordStream};
 use futures::TryFutureExt as _;
@@ -149,7 +150,7 @@ async fn refused_channel_does_not_close_the_shared_session() -> TestResult {
     let refused = client
         .follow(crate::FollowRequest::new(StreamPath::new("missing")?, 0))
         .await;
-    assert!(matches!(refused, Err(StreamError::NotFound)));
+    assert!(matches!(refused, Err(error) if error.category() == StreamCategory::NotFound));
     append(&provider, "fast", 1).await?;
     assert_eq!(next(&mut fast).await?.sequence, 1);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
@@ -293,7 +294,7 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
         }),
     )))?;
     assert!(
-        matches!(next(&mut moving).await, Err(error) if error.downcast_ref::<StreamError>() == Some(&StreamError::AccessDenied))
+        matches!(next(&mut moving).await, Err(error) if error.downcast_ref::<StreamError>().map(StreamError::category) == Some(StreamCategory::AccessDenied))
     );
     assert_eq!(dials.load(Ordering::Relaxed), 1);
     Ok(())
@@ -662,7 +663,7 @@ async fn blocked_registration_and_one_shot_reply_are_reported_waits() -> TestRes
     let mut reply = Box::pin(opened.receive());
     assert!(futures::poll!(reply.as_mut()).is_pending());
     provider.revisions.close();
-    assert!(matches!(reply.await, Err(StreamError::Unavailable)));
+    assert!(matches!(reply.await, Err(error) if error.category() == StreamCategory::Unavailable));
     assert_eq!(report()?, "");
     Ok(())
 }

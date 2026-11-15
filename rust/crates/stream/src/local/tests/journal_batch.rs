@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::StreamCategory;
 
 fn frames(
     count: u64,
@@ -166,7 +167,7 @@ mod cuts {
             }
             assert!(matches!(
                 stream.persist_frames(frames(3, None)?.into_iter()).await,
-                Err(StreamError::Unavailable)
+                Err(error) if error.category() == StreamCategory::Unavailable
             ));
             assert!(cut.crashed.load(Ordering::SeqCst));
             assert_eq!(
@@ -209,8 +210,11 @@ mod cuts {
         }
         stream.cut_persistence(cut.clone()).await?;
         assert_eq!(
-            stream.cut_persistence(cut.clone()).await,
-            Err(StreamError::AlreadyExists)
+            stream
+                .cut_persistence(cut.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::AlreadyExists)
         );
         let visibility = stream.inner.visibility.write().await;
         let installation = stream.cut_persistence(cut);
@@ -273,7 +277,7 @@ mod deadlines {
         request.deadline_unix_millis = Some(20);
         assert!(matches!(
             stream.commit(request.clone()).await,
-            Err(StreamError::DeadlineElapsed)
+            Err(error) if error.category() == StreamCategory::DeadlineElapsed
         ));
         assert_eq!(
             std::fs::metadata(root.path().join(JOURNAL_FILE))?.len(),
@@ -314,11 +318,11 @@ mod deadlines {
         }
         assert!(matches!(
             stream.persist_frames(prepared.into_iter()).await,
-            Err(StreamError::Unavailable)
+            Err(error) if error.category() == StreamCategory::Unavailable
         ));
         assert!(matches!(
             stream.check_available(),
-            Err(StreamError::Unavailable)
+            Err(error) if error.category() == StreamCategory::Unavailable
         ));
         drop(stream);
         let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;

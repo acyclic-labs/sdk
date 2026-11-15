@@ -28,7 +28,8 @@ use acyclic_actors::{addressing::ActorReference, guest::Handler, local::SystemCl
 use acyclic_fs::StreamAuthorityStore;
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    ChildrenPageRequest, CommitId, ReadRequest, StreamError, StreamPath, StreamProvider,
+    ChildrenPageRequest, CommitId, ReadRequest, StreamCategory, StreamError, StreamPath,
+    StreamProvider,
 };
 use futures::{FutureExt as _, TryStreamExt as _, future::AbortHandle};
 use js_sys::Function;
@@ -768,7 +769,7 @@ impl WasmAgents {
             .tail(path.closed().map_err(agent_error)?)
             .await
         {
-            Err(error) if error.category() == StreamError::NotFound => {}
+            Err(error) if error.category() == StreamCategory::NotFound => {}
             Ok(_) => return to_js(&WasmDelivered::Closed),
             Err(error) => return Err(stream_error(error)),
         }
@@ -864,7 +865,7 @@ impl WasmAgents {
             .await
         {
             Ok(page) => page,
-            Err(error) if error.category() == StreamError::NotFound => {
+            Err(error) if error.category() == StreamCategory::NotFound => {
                 return to_js(&WasmAgentPage {
                     agents: Vec::new(),
                     version: Vec::new(),
@@ -912,7 +913,7 @@ impl WasmAgents {
                 .try_collect::<Vec<_>>()
                 .await
                 .map_err(stream_error)?,
-            Err(error) if error.category() == StreamError::NotFound => Vec::new(),
+            Err(error) if error.category() == StreamCategory::NotFound => Vec::new(),
             Err(error) => return Err(stream_error(error)),
         };
         let records = records

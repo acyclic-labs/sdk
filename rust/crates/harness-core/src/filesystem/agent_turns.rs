@@ -2898,7 +2898,7 @@ where
                 .await
             {
                 Ok(_) => return Ok(()),
-                Err(error) if error.category() == acyclic_stream::StreamError::NotFound => {}
+                Err(error) if error.category() == acyclic_stream::StreamCategory::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
             let mut records = acyclic_stream::records_only(

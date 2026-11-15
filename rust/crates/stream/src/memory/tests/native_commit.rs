@@ -1,5 +1,6 @@
 use super::*;
 use crate::NativeStreamProviderExt as _;
+use crate::StreamCategory;
 use crate::{OwnedBytes, test_meter::Meter};
 use std::sync::atomic::{AtomicU64, Ordering};
 type MemoryResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -148,7 +149,13 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
         125_000
     );
     lease.settle().await?;
-    assert_eq!(provider.tail(private).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider
+            .tail(private)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     let mut canonical = provider
         .read(ReadRequest {
             key: None,
@@ -332,7 +339,7 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
                 lookup_meter.original(),
             ))
             .await?;
-        assert!(matches!(missing, Err(StreamError::NotFound)));
+        assert!(matches!(missing, Err(error) if error.category() == StreamCategory::NotFound));
         lookup_meter.assert_refunded();
         let parent = root.id();
         let _completion = root.finish_submitted(None, crate::trace::Outcome::Succeeded)?;
@@ -431,12 +438,15 @@ async fn native_commit_projection_keeps_earliest_deadline_and_exact_retry() -> M
             provider
                 .native_commit(request.clone(), supplied, meter.original())
                 .await?,
-            Err(StreamError::DeadlineElapsed)
+            Err(error) if error.category() == StreamCategory::DeadlineElapsed
         ));
         meter.assert_refunded();
         assert_eq!(
-            provider.tail(target.clone()).await,
-            Err(StreamError::NotFound)
+            provider
+                .tail(target.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
         assert!(
             provider

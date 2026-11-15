@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::StreamCategory;
 use futures::TryStreamExt as _;
 use proptest::prelude::*;
 
@@ -102,7 +103,7 @@ proptest! {
             assert_eq!(provider.tail(StreamPath::new("tree")?).await?, 2);
             for (index, value) in values.iter().enumerate() {
                 let target = StreamPath::new(format!("tree/children/new/items/{index}"))?;
-                if exclude_items { assert_eq!(provider.tail(target).await, Err(StreamError::NotFound)); }
+                if exclude_items { assert_eq!(provider.tail(target).await.map_err(|error| error.category()), Err(StreamCategory::NotFound)); }
                 else {
                     let records: Vec<_> = provider.read(ReadRequest {
  key: None, path: target.clone(), from: 0, limit: 2, at_least: Default::default() }).await?.try_collect().await?;
@@ -235,10 +236,17 @@ async fn page_projection_skips_a_child_whose_named_tail_cannot_exist() -> Result
                 exclude: Vec::new(),
                 idempotency_key: IdempotencyKey::unique(),
             })
-            .await,
-        Err(StreamError::InvalidPath)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidPath)
     );
-    assert_eq!(provider.tail(destination).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider
+            .tail(destination)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     let page = provider
         .children_page(ChildrenPageRequest {
             offset: 0,

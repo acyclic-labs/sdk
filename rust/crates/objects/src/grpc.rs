@@ -8,7 +8,9 @@ use crate::{
 pub use acyclic_auth::credential::CredentialProvider;
 use acyclic_stream::query_sync::Arc as RevisionArc;
 use acyclic_stream::wire_codec::{cut_from_wire, revision_from_wire, revision_to_wire};
-use acyclic_stream::{OwnedBytes, Revision, RevisionCut, RevisionTracker, StreamError};
+use acyclic_stream::{
+    OwnedBytes, Revision, RevisionCut, RevisionTracker, StreamCategory, StreamError,
+};
 use prost::Message;
 use std::sync::Arc;
 use tonic::{
@@ -575,7 +577,7 @@ async fn applied(blobs: &dyn Blobs, metadata: &MetadataMap) -> Result<(), Error>
     match futures::future::select(wait, deadline).await {
         futures::future::Either::Left((Ok(_), _)) => Ok(()),
         futures::future::Either::Left((Err(error), _))
-            if error.category() == StreamError::RevisionForeign =>
+            if error.category() == StreamCategory::RevisionForeign =>
         {
             Err(wire::ErrorCode::RevisionForeign.into())
         }

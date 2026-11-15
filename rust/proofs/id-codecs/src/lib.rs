@@ -241,7 +241,7 @@ mod version {
     #[kani::proof]
     #[kani::unwind(16)]
     fn version_admission_borrows_payload_and_refuses_before_decoding() {
-        use acyclic_stream::{StreamError, persistence::header};
+        use acyclic_stream::{StreamCategory, StreamError, persistence::header};
         use std::cell::Cell;
         let bytes: [u8; 12] = kani::any();
         let length: usize = kani::any();
@@ -561,7 +561,7 @@ mod framing {
         assert_eq!(decoder.read(&mut prefix), Ok(None));
         assert_eq!(
             decoder.finish().map_err(|error| error.category()),
-            Err(StreamError::InvalidResponse)
+            Err(StreamCategory::InvalidResponse)
         );
         let mut body: &[u8] = &[0];
         assert_eq!(decoder.read(&mut body), Ok(Some(1)));
@@ -596,12 +596,12 @@ mod framing {
         );
         let length = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
         match header[0] {
-            1 => assert_eq!(result, Err(StreamError::Unsupported)),
+            1 => assert_eq!(result, Err(StreamCategory::Unsupported)),
             0 if length > acyclic_stream::MAX_COMMAND_BYTES => {
-                assert_eq!(result, Err(StreamError::LimitExceeded));
+                assert_eq!(result, Err(StreamCategory::LimitExceeded));
             }
             0 if length == 0 => assert_eq!(result, Ok(Some(wire::SessionFrame::default()))),
-            _ => assert_eq!(result, Err(StreamError::InvalidResponse)),
+            _ => assert_eq!(result, Err(StreamCategory::InvalidResponse)),
         }
     }
 

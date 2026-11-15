@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::StreamCategory;
 use proptest::prelude::*;
 
 pub(in crate::local) fn request(body: Vec<u8>) -> CommitRequest {
@@ -55,7 +56,7 @@ async fn replay<const ELIDE: bool>(count: usize, bytes: Vec<u8>) -> (u64, u64) {
     }
     assert!(matches!(
         stream.commit(mismatched).await,
-        Err(StreamError::IdempotencyMismatch)
+        Err(error) if error.category() == StreamCategory::IdempotencyMismatch
     ));
     drop(stream);
     let reopened = LocalStream::open(root.path(), LocalStreamLimits::default())
@@ -131,13 +132,13 @@ async fn append_and_fork_retries_reuse_and_flush_their_original_frames()
         .push(Bytes::from_static(b"changed").into());
     assert!(matches!(
         stream.append(changed_append).await,
-        Err(StreamError::IdempotencyMismatch)
+        Err(error) if error.category() == StreamCategory::IdempotencyMismatch
     ));
     let mut changed_fork = fork.clone();
     changed_fork.destination = StreamPath::new("different-fork")?;
     assert!(matches!(
         stream.fork(changed_fork).await,
-        Err(StreamError::IdempotencyMismatch)
+        Err(error) if error.category() == StreamCategory::IdempotencyMismatch
     ));
     assert_eq!(std::fs::metadata(&journal_path)?.len(), fork_bytes);
 

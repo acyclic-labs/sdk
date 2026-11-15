@@ -1,5 +1,6 @@
 //! Observe the real local journal's durable cut at each Actors acknowledgement.
 use super::*;
+use acyclic_stream::StreamCategory;
 use acyclic_stream::{LocalDurability, LocalStream, LocalStreamLimits};
 
 async fn durable(provider: &LocalStream, path: StreamPath, through: u64) -> Result<bool, Failure> {
@@ -261,7 +262,7 @@ async fn control_replay_requires_durability(
         let schedule = store.scheduling_path(store.scheduling_shard(&target))?;
         // A fork's child shard may hold no wake log before the fork.
         let activations = match provider.inner.tail(schedule.clone()).await {
-            Err(error) if error.category() == StreamError::NotFound => 0,
+            Err(error) if error.category() == StreamCategory::NotFound => 0,
             tail => tail?,
         };
         assert!(matches!(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use std::sync::atomic::AtomicBool;
 
 use crate::{OwnedBytes, test_meter::Meter};
@@ -40,7 +41,10 @@ async fn native_append_replay_cannot_spend_unreserved_write_credit_after_lease_r
         std::task::Poll::Pending => replay.as_mut().await??,
     };
     assert_eq!(output.value(), &crate::WriteOutcome::Append(original));
-    assert_eq!(provider.tail(root).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider.tail(root).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
     assert_eq!(meter.write_bytes.load(Ordering::SeqCst), 0);
     drop(output);
@@ -87,9 +91,12 @@ async fn cancelled_lease_settlement(owned: bool) -> MemoryResult<()> {
     drop(blocked);
     assert!(matches!(
         follow.next().await,
-        Some(Err(StreamError::NotFound))
+        Some(Err(error)) if error.category() == StreamCategory::NotFound
     ));
-    assert_eq!(provider.tail(root).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider.tail(root).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     Ok(())
 }
 
@@ -856,9 +863,9 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
             );
         };
         assert!(if larger_commit {
-            matches!(&failure, StreamError::LimitExceeded)
+            matches!(failure.category(), StreamCategory::LimitExceeded)
         } else {
-            matches!(&failure, StreamError::IdempotencyMismatch)
+            matches!(failure.category(), StreamCategory::IdempotencyMismatch)
         });
         assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
         assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
@@ -964,7 +971,10 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
         .finish((OwnedBytes::from_static(b"different-scalars")).into())
         .await?
         .err();
-    assert_eq!(failed, Some(StreamError::IdempotencyMismatch));
+    assert_eq!(
+        failed.map(|error| error.category()),
+        Some(StreamCategory::IdempotencyMismatch)
+    );
     assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
     assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
     assert_eq!(
@@ -1088,11 +1098,23 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
             idempotency_key: key(b"unrelated")?,
         };
         assert_eq!(
-            provider.append(append.clone()).await,
-            Err(StreamError::Capacity)
+            provider
+                .append(append.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::Capacity)
         );
-        assert_eq!(provider.fork(fork).await, Err(StreamError::Capacity));
-        assert_eq!(provider.commit(commit).await, Err(StreamError::Capacity));
+        assert_eq!(
+            provider.fork(fork).await.map_err(|error| error.category()),
+            Err(StreamCategory::Capacity)
+        );
+        assert_eq!(
+            provider
+                .commit(commit)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::Capacity)
+        );
         if abandon {
             drop(issued);
             assert!(matches!(
@@ -1107,7 +1129,13 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
                 .finish((OwnedBytes::from_static(b"settled")).into())
                 .await??;
             assert!(matches!(completion.value(), CommitOutcome::Committed(_)));
-            assert_eq!(provider.append(append).await, Err(StreamError::Capacity));
+            assert_eq!(
+                provider
+                    .append(append)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::Capacity)
+            );
         }
         drop(provider);
         meter.assert_refunded();
@@ -1166,6 +1194,12 @@ async fn canonical_publications_do_not_pin_private_namespace_nodes() -> MemoryRe
         "canonical publication cannot retain a private namespace node"
     );
     assert_eq!(provider.tail(public).await?, 2);
-    assert_eq!(provider.tail(private).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider
+            .tail(private)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     Ok(())
 }

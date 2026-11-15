@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use futures::TryStreamExt as _;
 
 fn body() -> Result<crate::AppendRecord, StreamError> {
@@ -170,14 +171,16 @@ async fn prepared_recovery_refuses_unreserved_header_counts_before_codec_work()
             meter.deny_allocation.store(true, Ordering::SeqCst);
             meter.deny_codec.store(true, Ordering::SeqCst);
             meter.cancelled.store(true, Ordering::SeqCst);
-            assert!(matches!(recovery.await?, Err(StreamError::LimitExceeded)));
+            assert!(
+                matches!(recovery.await?, Err(error) if error.category() == StreamCategory::LimitExceeded)
+            );
             assert_eq!(meter.hashed.load(Ordering::SeqCst), hashed);
             assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
             // Await the original completion as well: Local's accepted writer
             // owns its reservations until the closed ingress has drained.
             assert!(matches!(
                 packet.finish(unreserved).await?,
-                Err(StreamError::LimitExceeded)
+                Err(error) if error.category() == StreamCategory::LimitExceeded
             ));
             assert_eq!(meter.hashed.load(Ordering::SeqCst), hashed);
             assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);

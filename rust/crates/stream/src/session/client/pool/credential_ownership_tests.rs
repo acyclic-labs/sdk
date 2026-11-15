@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Drive the actual client admission, pool dispatch and final-owner Drop.
@@ -34,7 +35,7 @@ async fn custody(broken: bool) -> Result {
         drop(clone);
         assert!(matches!(
             client.with_credential(credential.clone()).await,
-            Err(StreamError::Capacity)
+            Err(error) if error.category() == StreamCategory::Capacity
         ));
         for _ in 0..3 {
             pool.command(commands.recv().await.ok_or("renewal producer lost")?)?;
@@ -58,7 +59,7 @@ async fn custody(broken: bool) -> Result {
     let mut pending = Box::pin(client.with_credential(credential.clone()));
     assert!(futures::poll!(pending.as_mut()).is_pending());
     drop(commands.recv().await.ok_or("missing admitted command")?);
-    assert!(matches!(pending.await, Err(StreamError::Unavailable)));
+    assert!(matches!(pending.await, Err(error) if error.category() == StreamCategory::Unavailable));
 
     // Cancellation before dispatch creates no slot or retained queue credit.
     let mut pending = Box::pin(client.with_credential(credential.clone()));

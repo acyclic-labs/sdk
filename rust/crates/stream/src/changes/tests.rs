@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::StreamProviderExt as _;
 use crate::{FollowFilter, MemoryStream, StreamPath, StreamProvider};
 use futures::StreamExt;
@@ -69,8 +70,8 @@ fn compact_ingress_rejects_expansion_before_allocating_keys() {
         }];
         let actual = acyclic_test_support::measure(|| {
             assert_eq!(
-                record_headers(&value, vec![], attributes),
-                Err(StreamError::LimitExceeded)
+                record_headers(&value, vec![], attributes).map_err(|error| error.category()),
+                Err(StreamCategory::LimitExceeded)
             );
         });
         if width > crate::MAX_RECORD_BYTES {
@@ -123,8 +124,8 @@ fn every_wire_form_stores_each_key_once_and_derives_the_index() {
         bytes::Bytes::from_static(b"z"),
     ];
     assert_eq!(
-        crate::wire_codec::append_record(doubled),
-        Err(StreamError::InvalidArgument)
+        crate::wire_codec::append_record(doubled).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     // The negative control: an opaque record keeps its keys on the wire.
     let opaque = AppendRecord {
@@ -193,8 +194,8 @@ fn canonical_change_validation_rejects_wire_malleability() {
     for bytes in cases {
         assert!(decode_changes(&bytes).is_err(), "{bytes:?}");
         assert_eq!(
-            validate(&bytes, &headers),
-            Err(StreamError::InvalidArgument),
+            validate(&bytes, &headers).map_err(|error| error.category()),
+            Err(StreamCategory::InvalidArgument),
             "{bytes:?}"
         );
     }
@@ -225,7 +226,10 @@ fn canonical_change_validation_rejects_wire_malleability() {
         }],
     )
     .unwrap();
-    assert_eq!(validate(b"", &stale), Err(StreamError::InvalidArgument));
+    assert_eq!(
+        validate(b"", &stale).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -323,8 +327,14 @@ fn admitted_decode_reserves_once_without_trusting_opaque_or_forged_keys() {
                 let (validation, validation_cost, validation_parsed) =
                     measure(|| validate(bytes, headers));
                 let (refused, decode_cost, decode_parsed) = measure(|| decode(bytes, headers));
-                assert_eq!(validation, Err(StreamError::InvalidArgument));
-                assert_eq!(refused, Err(StreamError::InvalidArgument));
+                assert_eq!(
+                    validation.map_err(|error| error.category()),
+                    Err(StreamCategory::InvalidArgument)
+                );
+                assert_eq!(
+                    refused.map_err(|error| error.category()),
+                    Err(StreamCategory::InvalidArgument)
+                );
                 assert_eq!(
                     decode_cost, validation_cost,
                     "capacity admission must add no allocation before validation"
@@ -389,7 +399,7 @@ async fn prepared_ingress(provider: &impl crate::NativeStreamProvider) {
         .into_parts();
     assert!(matches!(
         prepared.finish(body).await.unwrap(),
-        Err(StreamError::InvalidArgument)
+        Err(error) if error.category() == StreamCategory::InvalidArgument
     ));
     assert_eq!(provider.tail(target.clone()).await.unwrap(), 1);
     assert!(

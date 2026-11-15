@@ -7,7 +7,7 @@ use acyclic_actors::{
     addressing::ActorReference, domain::ActorLimits, guest::Handler, local::SystemClock,
 };
 use acyclic_harness_core::agent::*;
-use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{ReadRequest, StreamCategory, StreamError, StreamPath, StreamProvider};
 use futures::TryStreamExt;
 use std::sync::Arc;
 
@@ -72,7 +72,7 @@ pub(crate) async fn values(
             .map_ok(|record| record.value.to_vec())
             .try_collect()
             .await?),
-        Err(error) if error.category() == StreamError::NotFound => Ok(Vec::new()),
+        Err(error) if error.category() == StreamCategory::NotFound => Ok(Vec::new()),
         Err(error) => Err(error.into()),
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -229,7 +230,7 @@ async fn commit_index_work_is_admitted_before_append_or_coordinated_publication(
         assert_eq!(provider.tail(path.clone()).await?, 1);
         assert!(matches!(
             provider.tail(destination.clone()).await,
-            Err(StreamError::NotFound)
+            Err(error) if error.category() == StreamCategory::NotFound
         ));
         denied.assert_refunded();
         assert_eq!(denied.held.load(std::sync::atomic::Ordering::SeqCst), 0);

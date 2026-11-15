@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use proptest::prelude::*;
 
 proptest! {
@@ -29,15 +30,19 @@ proptest! {
 fn negative_control_strict_consumption_cannot_apply_a_conflated_jump() {
     let progress = Progress::new(1);
     assert_eq!(
-        progress.consume_record(1, 7, [7; 32]),
-        Err(StreamError::Unavailable)
+        progress
+            .consume_record(1, 7, [7; 32])
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
     );
     assert_eq!(progress.next().unwrap(), 1);
     assert_eq!(progress.consume_latest(1, 7), Ok(true));
     assert_eq!(progress.next().unwrap(), 8);
     assert_eq!(
-        progress.consume_record(1, 9, [7; 32]),
-        Err(StreamError::Unavailable)
+        progress
+            .consume_record(1, 9, [7; 32])
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
     );
     assert_eq!(progress.next().unwrap(), 8);
 }
@@ -46,12 +51,19 @@ fn negative_control_strict_consumption_cannot_apply_a_conflated_jump() {
 fn overflow_and_checked_history_cannot_partially_apply_a_latest_cut() {
     let progress = Progress::new(1);
     assert_eq!(
-        progress.consume_latest(1, u64::MAX),
-        Err(StreamError::OutOfRange)
+        progress
+            .consume_latest(1, u64::MAX)
+            .map_err(|error| error.category()),
+        Err(StreamCategory::OutOfRange)
     );
     assert_eq!(progress.next().unwrap(), 1);
     let guarded = Progress::with_preceding(1, Some([7; 32]));
-    assert_eq!(guarded.consume_latest(1, 3), Err(StreamError::Unavailable));
+    assert_eq!(
+        guarded
+            .consume_latest(1, 3)
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
+    );
     assert_eq!(
         guarded.subscription().unwrap(),
         Position {

@@ -23,7 +23,7 @@ use crate::{
     },
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
-use acyclic_stream::{ReadRequest, StreamError, StreamProvider as _};
+use acyclic_stream::{ReadRequest, StreamCategory, StreamError, StreamProvider as _};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
@@ -384,7 +384,7 @@ impl HostDriver {
             .await
         {
             Ok(records) => records.try_collect::<Vec<_>>().await?,
-            Err(error) if error.category() == StreamError::NotFound => Vec::new(),
+            Err(error) if error.category() == StreamCategory::NotFound => Vec::new(),
             Err(error) => return Err(error.into()),
         };
         let Some(record) = records.pop() else {

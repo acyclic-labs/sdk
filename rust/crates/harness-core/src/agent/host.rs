@@ -20,7 +20,8 @@ use acyclic_actors::{
     local::{Clock, Runtime, Store},
 };
 use acyclic_stream::{
-    CommitRequest, ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    CommitRequest, ReadRequest, StreamCategory, StreamError, StreamPath, StreamProvider,
+    StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use std::{convert::Infallible, sync::Arc};
@@ -416,7 +417,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         let conversation = agent.conversation()?;
         match self.provider.tail(conversation.clone()).await {
             Ok(_) => return self.conversation_cursor(conversation, from).await,
-            Err(error) if from == 0 && error.category() == StreamError::NotFound => {}
+            Err(error) if from == 0 && error.category() == StreamCategory::NotFound => {}
             Err(error) => return Err(Error::Stream(error)),
         }
         let actor = self.actor(agent)?;
@@ -582,7 +583,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 }
                 return Ok(SpawnOutcome::Spawned { child });
             }
-            Err(error) if error.category() == StreamError::NotFound => {}
+            Err(error) if error.category() == StreamCategory::NotFound => {}
             Err(error) => return Err(Error::Stream(error)),
         }
         let mut state = super::checkpoint_head(checkpoint.ok_or(Error::Record(

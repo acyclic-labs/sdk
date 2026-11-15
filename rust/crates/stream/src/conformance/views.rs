@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::StreamProviderExt as _;
 
 pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Failure> {
@@ -110,20 +111,33 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         }
         let mut too_small = request.clone();
         too_small.limit = 6;
-        if provider.heads(too_small).await != Err(StreamError::InvalidArgument) {
+        if provider
+            .heads(too_small)
+            .await
+            .map_err(|error| error.category())
+            != Err(StreamCategory::InvalidArgument)
+        {
             return Err(violated!());
         }
         let mut wrong_position = view.clone();
         // Both records have identical publication/sequence and different bytes.
         // Swapping their observations must fail solely on destination binding.
         wrong_position.retained.swap(0, 1);
-        if wrong_position.validate_for(&request) != Err(StreamError::InvalidResponse) {
+        if wrong_position
+            .validate_for(&request)
+            .map_err(|error| error.category())
+            != Err(StreamCategory::InvalidResponse)
+        {
             return Err(violated!());
         }
         // Missing results retain the same destination binding.
         let mut wrong_absence = view.clone();
         wrong_absence.retained.swap(2, 3);
-        if wrong_absence.validate_for(&request) != Err(StreamError::InvalidResponse) {
+        if wrong_absence
+            .validate_for(&request)
+            .map_err(|error| error.category())
+            != Err(StreamCategory::InvalidResponse)
+        {
             return Err(violated!());
         }
         for (index, head) in (0u8..).zip(view.heads.iter().take(2)) {
@@ -183,7 +197,11 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                 return Err(violated!());
             }
             // A response for another projection cannot stand in for this request.
-            if projected.validate_for(&request) != Err(StreamError::InvalidResponse) {
+            if projected
+                .validate_for(&request)
+                .map_err(|error| error.category())
+                != Err(StreamCategory::InvalidResponse)
+            {
                 return Err(violated!());
             }
         }
@@ -338,7 +356,11 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
         if remove_record {
             child.tail_record = None;
         }
-        if torn.validate_for(&request) != Err(StreamError::InvalidResponse) {
+        if torn
+            .validate_for(&request)
+            .map_err(|error| error.category())
+            != Err(StreamCategory::InvalidResponse)
+        {
             return Err(violated!());
         }
         let mut torn_json = json.clone();

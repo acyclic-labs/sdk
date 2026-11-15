@@ -1,6 +1,6 @@
 //! Conflated connection generations, independent of task record delivery.
 use super::sync::{Arc, Mutex};
-use crate::StreamError;
+use crate::{StreamCategory, StreamError};
 use std::{
     collections::BTreeMap,
     future::Future,
@@ -193,18 +193,23 @@ pub fn verify_connection_retirement(omit_retirement: bool) {
             );
             assert!(matches!(
                 waiting.as_mut().poll(&mut cx),
-                Poll::Ready(Err(StreamError::AccessDenied))
+                Poll::Ready(Err(error)) if error.category() == StreamCategory::AccessDenied
             ));
         } else {
-            assert!(matches!(first, Poll::Ready(Err(StreamError::AccessDenied))));
+            assert!(
+                matches!(first, Poll::Ready(Err(error)) if error.category() == StreamCategory::AccessDenied)
+            );
         }
         drop(waiting);
         connections.close(StreamError::Unavailable);
         assert!(matches!(
             Box::pin(connections.changed(0)).as_mut().poll(&mut cx),
-            Poll::Ready(Err(StreamError::AccessDenied))
+            Poll::Ready(Err(error)) if error.category() == StreamCategory::AccessDenied
         ));
-        assert_eq!(connections.advance(), Err(StreamError::AccessDenied));
+        assert_eq!(
+            connections.advance().map_err(|error| error.category()),
+            Err(StreamCategory::AccessDenied)
+        );
         assert!(connections.0.lock().unwrap().waiters.is_empty());
 
         // Counter exhaustion is also terminal and must release a parked wait.
@@ -213,14 +218,17 @@ pub fn verify_connection_retirement(omit_retirement: bool) {
         let mut waiting = Box::pin(exhausted.changed(u64::MAX));
         assert!(waiting.as_mut().poll(&mut cx).is_pending());
         wake.0.store(0, Ordering::SeqCst);
-        assert_eq!(exhausted.advance(), Err(StreamError::Capacity));
+        assert_eq!(
+            exhausted.advance().map_err(|error| error.category()),
+            Err(StreamCategory::Capacity)
+        );
         assert!(
             wake.0.load(Ordering::SeqCst) > 0,
             "connection exhaustion lost its terminal wakeup"
         );
         assert!(matches!(
             waiting.as_mut().poll(&mut cx),
-            Poll::Ready(Err(StreamError::Capacity))
+            Poll::Ready(Err(error)) if error.category() == StreamCategory::Capacity
         ));
     });
 }

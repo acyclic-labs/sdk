@@ -532,7 +532,7 @@ include!("http/follow.rs");
 
 #[cfg(test)]
 mod tests {
-    use super::{HttpStream, StreamError, wire};
+    use super::{HttpStream, StreamCategory, StreamError, wire};
     use prost::Message;
 
     #[test]
@@ -584,7 +584,7 @@ mod tests {
                     );
                     let error = result
                         .expect_err("exhausted original credential source must refuse dispatch");
-                    prop_assert_eq!(error.category(), StreamError::AccessDenied);
+                    prop_assert_eq!(error.category(), StreamCategory::AccessDenied);
                     prop_assert!(
                         std::iter::successors(std::error::Error::source(&error), |source| source
                             .source())

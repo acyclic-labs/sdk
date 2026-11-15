@@ -1,5 +1,6 @@
 use super::*;
 use crate::OwnedBytes as Bytes;
+use crate::StreamCategory;
 use crate::StreamProviderExt as _;
 use crate::{
     AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitRequest, ForkRequest,
@@ -152,18 +153,19 @@ fn malformed_persistence_fails_closed() -> Result<(), Box<dyn std::error::Error>
     let mut unknown = bytes;
     unknown.extend_from_slice(&[0xa0, 0x06, 1]);
     assert_eq!(
-        decode_observation(&unknown, BOUND),
-        Err(StreamError::InvalidArgument)
+        decode_observation(&unknown, BOUND).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     let mut wire = wire_codec::observation_wire(value);
     wire.request_digest = bytes::Bytes::from_static(b"short");
     assert_eq!(
-        decode_observation(&encode(&wire, BOUND, OBSERVATION_MAGIC)?, BOUND),
-        Err(StreamError::InvalidArgument)
+        decode_observation(&encode(&wire, BOUND, OBSERVATION_MAGIC)?, BOUND)
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     assert_eq!(
-        decode_envelope(&[], BOUND),
-        Err(StreamError::InvalidArgument)
+        decode_envelope(&[], BOUND).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     Ok(())
 }
@@ -210,8 +212,8 @@ async fn invalid_record_identity_sequence_time_and_positions_are_rejected()
             _ => first.value = Bytes::from(vec![0; MAX_RECORD_BYTES + 1]),
         }
         assert_eq!(
-            encode_envelope(&broken, BOUND),
-            Err(StreamError::InvalidArgument)
+            encode_envelope(&broken, BOUND).map_err(|error| error.category()),
+            Err(StreamCategory::InvalidArgument)
         );
         let bytes = encode(
             &wire_codec::envelope_to_wire(broken),
@@ -219,8 +221,8 @@ async fn invalid_record_identity_sequence_time_and_positions_are_rejected()
             ENVELOPE_MAGIC,
         )?;
         assert_eq!(
-            decode_envelope(&bytes, BOUND),
-            Err(StreamError::InvalidArgument)
+            decode_envelope(&bytes, BOUND).map_err(|error| error.category()),
+            Err(StreamCategory::InvalidArgument)
         );
     }
     Ok(())
@@ -260,8 +262,9 @@ async fn a_retained_receipt_without_its_revision_is_refused()
     };
     receipt.revision = None;
     assert_eq!(
-        decode_observation(&encode(&wire, BOUND, OBSERVATION_MAGIC)?, BOUND),
-        Err(StreamError::InvalidArgument)
+        decode_observation(&encode(&wire, BOUND, OBSERVATION_MAGIC)?, BOUND)
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
     );
     Ok(())
 }
@@ -288,8 +291,8 @@ fn old_and_unknown_fact_versions_refuse_before_payload() -> Result<(), Box<dyn s
     for (current, magic, decode) in frames {
         decode(&current, current.len())?;
         assert_eq!(
-            decode(&current[magic.len()..], BOUND),
-            Err(StreamError::InvalidArgument)
+            decode(&current[magic.len()..], BOUND).map_err(|error| error.category()),
+            Err(StreamCategory::InvalidArgument)
         );
         for version in (u8::MIN..=u8::MAX).filter(|version| *version != b'1') {
             let mut refused = current[..magic.len()].to_vec();
@@ -300,11 +303,14 @@ fn old_and_unknown_fact_versions_refuse_before_payload() -> Result<(), Box<dyn s
                 "persisted fuzz oracle: incomplete foreign version {version}"
             );
             assert_eq!(
-                decode(&refused[..magic.len() - 1], BOUND),
-                Err(StreamError::InvalidArgument),
+                decode(&refused[..magic.len() - 1], BOUND).map_err(|error| error.category()),
+                Err(StreamCategory::InvalidArgument),
                 "foreign version {version} was classified before its header completed"
             );
-            assert_eq!(decode(&refused, BOUND), Err(StreamError::Unsupported));
+            assert_eq!(
+                decode(&refused, BOUND).map_err(|error| error.category()),
+                Err(StreamCategory::Unsupported)
+            );
         }
     }
     Ok(())

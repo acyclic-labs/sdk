@@ -16,7 +16,7 @@ use acyclic_harness_core::{
     tool::ToolDefinition,
 };
 use acyclic_stream::{
-    BoxProviderFuture, ProviderPlatform, ReadRequest, StreamError, StreamProvider,
+    BoxProviderFuture, ProviderPlatform, ReadRequest, StreamCategory, StreamError, StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -126,7 +126,7 @@ async fn records(
         .await
     {
         Ok(records) => Ok(records.try_collect().await?),
-        Err(error) if error.category() == StreamError::NotFound => Ok(Vec::new()),
+        Err(error) if error.category() == StreamCategory::NotFound => Ok(Vec::new()),
         Err(error) => Err(error.into()),
     }
 }

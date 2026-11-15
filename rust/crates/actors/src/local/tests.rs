@@ -1,5 +1,6 @@
 use super::*;
 use crate::guest::CodecIdentity;
+use acyclic_stream::StreamCategory;
 use acyclic_stream::{AppendRequest, LocalStream, MemoryStream, ReadRequest};
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -1684,7 +1685,7 @@ pub(super) async fn orphans<P: StreamProvider + ?Sized>(
                 .await
             {
                 Ok(page) => page,
-                Err(error) if error.category() == StreamError::NotFound => break,
+                Err(error) if error.category() == StreamCategory::NotFound => break,
                 Err(error) => return Err(error.into()),
             };
             scheduled.extend(page.children.into_iter().map(|child| child.path));

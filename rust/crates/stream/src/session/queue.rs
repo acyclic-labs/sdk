@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 impl<P: StreamProvider + ?Sized> Session<P> {
     pub(super) fn record(
@@ -115,9 +116,9 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 if channel.revalidate.is_some()
                     && matches!(
                         error.category(),
-                        StreamError::AccessDenied
-                            | StreamError::NotFound
-                            | StreamError::PrefixNotRetained
+                        StreamCategory::AccessDenied
+                            | StreamCategory::NotFound
+                            | StreamCategory::PrefixNotRetained
                     )
                 {
                     self.remove(identity.channel_id)?;

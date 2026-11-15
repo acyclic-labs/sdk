@@ -653,7 +653,7 @@ async fn selected_discovery_survives_a_serving_process_restart() {
     use acyclic_harness_client::{
         AgentBinding, AgentCommand, AgentControls, AgentExchangeError, AgentReply, PreparedCommand,
     };
-    use acyclic_stream::StreamError;
+    use acyclic_stream::{StreamCategory, StreamError};
 
     let directory = tempfile::tempdir().unwrap();
     let model = model(directory.path()).await;
@@ -712,7 +712,7 @@ async fn selected_discovery_survives_a_serving_process_restart() {
             matches!(
                 &failure,
                 AgentExchangeError::Session(error)
-                    if error.category() == StreamError::Unavailable
+                    if error.category() == StreamCategory::Unavailable
             ),
             "retired serving process returned {failure:?}"
         );

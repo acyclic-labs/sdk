@@ -1,5 +1,6 @@
 use super::tests::{TestResult, client};
 use super::*;
+use crate::StreamCategory;
 use crate::{AppendRequest, CommitOutcome, CommitRequest};
 
 async fn append(provider: &impl StreamProvider, path: &StreamPath) -> TestResult {
@@ -129,8 +130,11 @@ async fn accepted_projection(provider: &impl StreamProvider) -> TestResult<Commi
     };
     records[0].value = crate::OwnedBytes::from_static(b"substituted caller body");
     assert_eq!(
-        provider.commit_accepted(changed).await,
-        Err(StreamError::IdempotencyMismatch)
+        provider
+            .commit_accepted(changed)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::IdempotencyMismatch)
     );
     let mut conflict = request.clone();
     conflict.idempotency_key = IdempotencyKey::unique();

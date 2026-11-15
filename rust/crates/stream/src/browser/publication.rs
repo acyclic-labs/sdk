@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -185,7 +186,7 @@ impl Before {
 async fn tail(provider: &MemoryStream, path: StreamPath) -> Result<Option<u64>, StreamError> {
     match provider.tail(path).await {
         Ok(tail) => Ok(Some(tail)),
-        Err(error) if error.category() == StreamError::NotFound => Ok(None),
+        Err(error) if error.category() == StreamCategory::NotFound => Ok(None),
         Err(error) => Err(error),
     }
 }

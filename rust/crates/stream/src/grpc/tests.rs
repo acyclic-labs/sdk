@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::{AppendRequest, MemoryStream, OwnedBytes, wire_codec};
 use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -169,8 +170,11 @@ async fn grpc_heads_refuse_an_oversized_view_without_poisoning_the_session() -> 
     let mut request = crate::head_tests::large_retained_view(&provider).await?;
     let transport = client(provider)?;
     assert_eq!(
-        transport.heads(request.clone()).await,
-        Err(StreamError::LimitExceeded)
+        transport
+            .heads(request.clone())
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::LimitExceeded)
     );
     request.retained.truncate(1);
     request.limit = 1;
@@ -360,7 +364,13 @@ async fn source_eof_is_unavailable_without_reopening() -> TestResult {
         .map_ok(crate::records_only)
         .await?;
     // The provider's EOF is terminal: one Unavailable, no second provider follow.
-    assert_eq!(records.next().await, Some(Err(StreamError::Unavailable)));
+    assert_eq!(
+        records
+            .next()
+            .await
+            .map(|result| result.map_err(|error| error.category())),
+        Some(Err(StreamCategory::Unavailable))
+    );
     assert_eq!(records.next().await, None);
     assert_eq!(follows.load(Ordering::SeqCst), 1);
     Ok(())
@@ -380,7 +390,7 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResul
             0,
         ))
         .await;
-    assert!(matches!(result, Err(StreamError::AccessDenied)));
+    assert!(matches!(result, Err(error) if error.category() == StreamCategory::AccessDenied));
     Ok(())
 }
 
@@ -496,7 +506,7 @@ async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> Tes
         .err()
         .ok_or("refused endpoint connected")?;
     let failure = crate::session::transport::Failure::from(ConnectError::Endpoint(error));
-    assert_eq!(failure.error, StreamError::Unavailable);
+    assert_eq!(failure.error.category(), StreamCategory::Unavailable);
     assert!(
         !failure.transient,
         "a refused connect must not poll for a listener"
@@ -540,7 +550,7 @@ async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> Tes
 #[tokio::test]
 async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_resend()
 -> TestResult {
-    for error in StreamError::ALL {
+    for error in StreamCategory::ALL.map(StreamError::from) {
         let attempts = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&attempts);
         let provider = MemoryStream::default();
@@ -777,7 +787,10 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
             Ok(u64::try_from(sequence)?)
         );
     }
-    assert_eq!(result.last(), Some(&Err(StreamError::Unavailable)));
+    assert!(matches!(
+        result.last(),
+        Some(Err(error)) if error.category() == StreamCategory::Unavailable
+    ));
     Ok(())
 }
 
@@ -874,11 +887,11 @@ fn attributed_unavailability_survives_transport_round_trips() {
     let cause = acyclic_auth::refusal::Cause::new("stream.lock", "poisoned");
     let original = StreamError::unavailable(cause.clone());
     let encoded = Status::from(original);
-    for category in StreamError::ALL {
+    for category in StreamCategory::ALL.map(StreamError::from) {
         let mut attributed = Status::from(&category);
         *attributed.metadata_mut() = encoded.metadata().clone();
         let decoded = status(&attributed);
-        assert_eq!(decoded.category(), category);
+        assert_eq!(decoded.category(), category.category());
         assert_eq!(decoded.uncertain(), category.uncertain());
         assert_eq!(
             self::original(&Status::from(decoded)),
@@ -888,7 +901,7 @@ fn attributed_unavailability_survives_transport_round_trips() {
     let decoded = status(&encoded);
     let refusal = decoded.member_refusal().unwrap();
     assert!(refusal.original().is_none());
-    assert_eq!(decoded.category(), StreamError::Unavailable);
+    assert_eq!(decoded.category(), StreamCategory::Unavailable);
     assert!(decoded.uncertain());
     assert_eq!(
         decoded
@@ -947,7 +960,7 @@ proptest::proptest! {
         details in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..8),
         reason in proptest::option::of("[a-z-]{1,24}"),
     ) {
-        for error in StreamError::ALL {
+        for error in StreamCategory::ALL.map(StreamError::from) {
             for encoded in [Status::from(&error), Status::from(error.clone())] {
                 proptest::prop_assert_eq!(status(&encoded), error.clone());
             }
@@ -1120,7 +1133,9 @@ async fn server_read_custody_settles_only_at_original_body_eof() -> TestResult {
         Arc::new(MemoryStream::default()),
         "agents/grpc-server/trace",
     )?;
-    assert!(matches!(trace.tail().await, Err(StreamError::NotFound)));
+    assert!(
+        matches!(trace.tail().await, Err(error) if error.category() == StreamCategory::NotFound)
+    );
     let recorder = Arc::new(Recorder::new(trace.clone(), [99; 16]));
     let root = recorder
         .start("owner", Mechanism::ToolCall, None, Some("original_request"))

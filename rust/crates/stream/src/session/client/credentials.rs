@@ -1,5 +1,6 @@
 //! The existing pool serializes slot enrollment, withdrawal and reuse.
 use super::*;
+use crate::StreamCategory;
 
 const WORDS: usize = super::super::DEFAULT_CHANNELS.div_ceil(64);
 const GROUPS: usize = WORDS.div_ceil(64);
@@ -202,8 +203,10 @@ impl Pool {
             .err()
             .filter(|error| {
                 !matches!(
-                    error,
-                    StreamError::AccessDenied | StreamError::Capacity | StreamError::LimitExceeded
+                    error.category(),
+                    StreamCategory::AccessDenied
+                        | StreamCategory::Capacity
+                        | StreamCategory::LimitExceeded
                 )
             })
             .cloned();
@@ -288,7 +291,12 @@ impl Pool {
         let failure = result
             .as_ref()
             .err()
-            .filter(|error| !matches!(error, StreamError::Capacity | StreamError::LimitExceeded))
+            .filter(|error| {
+                !matches!(
+                    error.category(),
+                    StreamCategory::Capacity | StreamCategory::LimitExceeded
+                )
+            })
             .cloned();
         let _ = ready.send(result);
         match failure {

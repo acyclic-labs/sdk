@@ -126,7 +126,7 @@ impl Connection {
                         || source
                             .downcast_ref::<acyclic_stream::StreamError>()
                             .is_some_and(|cause| {
-                                cause.category() == acyclic_stream::StreamError::Unavailable
+                                cause.category() == acyclic_stream::StreamCategory::Unavailable
                             })
                 }
                 _ => false,

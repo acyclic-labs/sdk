@@ -1,5 +1,6 @@
 use super::super::*;
 use super::TestClock;
+use crate::StreamCategory;
 use crate::{WriteOutcome, WriteRequest};
 use futures::{FutureExt as _, TryFutureExt as _, TryStreamExt as _};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -67,7 +68,7 @@ async fn refusals_and_retries_never_enter_the_durable_boundary() -> Result<(), S
     };
     assert!(matches!(
         apply(&core, WriteRequest::Fork(fork), None, persist()).await,
-        Err(StreamError::NotFound)
+        Err(error) if error.category() == StreamCategory::NotFound
     ));
     let commit = CommitRequest {
         deadline_unix_millis: None,
@@ -111,7 +112,7 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
         Err(StreamError::Unavailable)
     })
     .await;
-    assert!(matches!(refused, Err(StreamError::Unavailable)));
+    assert!(matches!(refused, Err(error) if error.category() == StreamCategory::Unavailable));
     assert_eq!(core.tail(append.path.clone()).await?, 1);
     assert!(futures::poll!(follow.next()).is_pending());
     {
@@ -209,7 +210,7 @@ async fn pending_durability_preserves_reads_registration_and_writer_order()
     let mut pending = std::pin::pin!(pending);
     assert!(futures::poll!(pending.as_mut()).is_pending());
     drop(send);
-    assert!(matches!(pending.await, Err(StreamError::Unavailable)));
+    assert!(matches!(pending.await, Err(error) if error.category() == StreamCategory::Unavailable));
     assert_eq!(core.tail(path).await?, 3);
     assert!(core.inspect_idempotency(key).await?.is_none());
     assert!(futures::poll!(follow.next()).is_pending());
@@ -378,11 +379,15 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
             let mut pending = std::pin::pin!(pending);
             assert!(futures::poll!(pending.as_mut()).is_pending());
             drop(send);
-            assert!(matches!(pending.await, Err(StreamError::Unavailable)));
+            assert!(
+                matches!(pending.await, Err(error) if error.category() == StreamCategory::Unavailable)
+            );
             assert!(core.inspect_idempotency(key).await?.is_none());
             assert_eq!(
-                core.tail(destination.clone()).await,
-                Err(StreamError::NotFound)
+                core.tail(destination.clone())
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
             );
         }
         let persist = std::pin::pin!(async {
@@ -395,7 +400,10 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
         meter.deny_allocation.store(false, Ordering::SeqCst);
         if let Some(lease) = lease {
             lease.settle().await?;
-            assert_eq!(core.tail(private).await, Err(StreamError::NotFound));
+            assert_eq!(
+                core.tail(private).await.map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
+            );
         }
         assert_eq!(core.tail(destination).await?, 1);
         if let Some(at_millis) = at_millis {

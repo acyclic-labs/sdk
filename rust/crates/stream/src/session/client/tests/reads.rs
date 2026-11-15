@@ -1,5 +1,6 @@
 //! Provider reads and children pages are finite subscriptions on the session.
 use super::*;
+use crate::StreamCategory;
 use futures::FutureExt as _;
 
 fn local(provider: &Arc<MemoryStream>) -> Result<Client, StreamError> {
@@ -165,8 +166,12 @@ async fn revision_scope_selection_preserves_other_views_and_explicit_minima() ->
     client.session_client()?.revisions().observe(&foreign);
     for _ in 0..2 {
         assert_eq!(
-            client.head(StreamPath::new("events")?).await.err(),
-            Some(StreamError::RevisionForeign),
+            client
+                .head(StreamPath::new("events")?)
+                .await
+                .err()
+                .map(|error| error.category()),
+            Some(StreamCategory::RevisionForeign),
             "one refusal cannot retire another required authority"
         );
     }
@@ -183,16 +188,21 @@ async fn revision_scope_selection_preserves_other_views_and_explicit_minima() ->
         ..own.clone()
     });
     assert_eq!(
-        selected.follow(conflicting).await.err(),
-        Some(StreamError::RevisionForeign)
+        selected
+            .follow(conflicting)
+            .await
+            .err()
+            .map(|error| error.category()),
+        Some(StreamCategory::RevisionForeign)
     );
     append(&provider, "events", 1).await?;
     assert_eq!(healthy.next().await.transpose()?.unwrap().sequence, 1);
     assert_eq!(
         selected
             .wait_applied(&crate::RevisionCut::of(foreign))
-            .await,
-        Err(StreamError::RevisionForeign),
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::RevisionForeign),
         "routing never filters an explicit minimum"
     );
     assert_eq!(
@@ -212,8 +222,12 @@ async fn revision_scope_selection_preserves_other_views_and_explicit_minima() ->
             ..own
         });
     assert_eq!(
-        selected.head(StreamPath::new("events")?).await.err(),
-        Some(StreamError::RevisionForeign),
+        selected
+            .head(StreamPath::new("events")?)
+            .await
+            .err()
+            .map(|error| error.category()),
+        Some(StreamCategory::RevisionForeign),
         "a new incarnation cannot retire either incarnation's writes"
     );
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
@@ -257,8 +271,12 @@ async fn scoped_revision_waits_and_forwarded_reads_need_no_root_read_grant() -> 
         request.at_least = cut.clone();
         assert_eq!(sequences(client.read(request).await?).await?, vec![0]);
         assert_eq!(
-            client.head(StreamPath::new("outside")?).await.err(),
-            Some(StreamError::AccessDenied),
+            client
+                .head(StreamPath::new("outside")?)
+                .await
+                .err()
+                .map(|error| error.category()),
+            Some(StreamCategory::AccessDenied),
         );
     }
     Ok(())
@@ -375,7 +393,9 @@ async fn indexed_reads_share_session_credit_and_count_delivered_records() -> Tes
     let rejected = client.read(oversized);
     let mut outcome = None;
     let refused = acyclic_test_support::measure(|| outcome = rejected.now_or_never());
-    assert!(matches!(outcome, Some(Err(StreamError::LimitExceeded))));
+    assert!(
+        matches!(outcome, Some(Err(error)) if error.category() == StreamCategory::LimitExceeded)
+    );
     assert_eq!(refused.count_total, 0);
     assert_eq!(refused.bytes_total, 0);
     crate::conformance::key_seek::verify_with(&*provider, async |request| {
@@ -425,12 +445,15 @@ async fn indexed_reads_share_session_credit_and_count_delivered_records() -> Tes
         opaque: Bytes::new(),
     });
     assert_eq!(
-        wire_codec::session::follow_data_sequence(&follow, 0, &data),
-        Err(StreamError::InvalidResponse)
+        wire_codec::session::follow_data_sequence(&follow, 0, &data)
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidResponse)
     );
     assert_eq!(
-        crate::ReadKeySeek::exact(&b"a"[..], 4).advance(&mut 0, 0, &[&b"a\0"[..]]),
-        Err(StreamError::InvalidResponse)
+        crate::ReadKeySeek::exact(&b"a"[..], 4)
+            .advance(&mut 0, 0, &[&b"a\0"[..]])
+            .map_err(|error| error.category()),
+        Err(StreamCategory::InvalidResponse)
     );
     Ok(())
 }
@@ -535,7 +558,7 @@ async fn bounded_follow_at_or_past_its_end_closes_without_data() -> TestResult {
     latest.delivery = wire::SessionDelivery::Latest as i32;
     assert!(matches!(
         wire_codec::session::follow_bound(&latest),
-        Err(StreamError::InvalidArgument)
+        Err(error) if error.category() == StreamCategory::InvalidArgument
     ));
     // `until` is optional: zero is an explicit empty bound, not "unbounded".
     assert_eq!(
@@ -776,8 +799,10 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
             // denied follow could hide it. Mutate only the captured request path.
             let oversized = StreamPath::new("x".repeat(crate::MAX_PATH_BYTES))?;
             assert_eq!(
-                visibility.page(original.clone(), Some(&oversized)),
-                Err(StreamError::InvalidPath)
+                visibility
+                    .page(original.clone(), Some(&oversized))
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::InvalidPath)
             );
         }
         let mut projected = None;
@@ -824,8 +849,12 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
             tail_stream.ok_or("missing tail path")?,
         ))?);
         assert_eq!(
-            client.heads(named, 1).await.err(),
-            Some(StreamError::AccessDenied)
+            client
+                .heads(named, 1)
+                .await
+                .err()
+                .map(|error| error.category()),
+            Some(StreamCategory::AccessDenied)
         );
     }
     assert!(construction.count_total > 0);
@@ -1029,7 +1058,10 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
             if index == 0 {
                 assert_eq!(preserved, Ok(complete));
             } else if index >= 2 {
-                assert_eq!(preserved, Err(StreamError::InvalidArgument));
+                assert_eq!(
+                    preserved.map_err(|error| error.category()),
+                    Err(StreamCategory::InvalidArgument)
+                );
             }
         }
         client.register_credential(2, credential.into())?;
@@ -1048,8 +1080,11 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
             // Exact read admission still requires record facts, even when
             // the complete record would pass its independently checked filter.
             assert_eq!(
-                client.heads(selected, 2).await,
-                Err(StreamError::AccessDenied)
+                client
+                    .heads(selected, 2)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::AccessDenied)
             );
         }
     }
@@ -1099,17 +1134,26 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
     );
     selected_only.retained[0].path = StreamPath::new("tree/absent")?;
     assert_eq!(
-        client.heads(selected_only, 1).await,
-        Err(StreamError::AccessDenied)
+        client
+            .heads(selected_only, 1)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::AccessDenied)
     );
     allowed.retained[0].path = StreamPath::new("tree/absent")?;
     assert_eq!(
-        client.heads(allowed, 1).await,
-        Err(StreamError::AccessDenied)
+        client
+            .heads(allowed, 1)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::AccessDenied)
     );
     assert_eq!(
-        client.heads(request, 1).await,
-        Err(StreamError::AccessDenied)
+        client
+            .heads(request, 1)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::AccessDenied)
     );
     Ok(())
 }
@@ -1211,7 +1255,7 @@ async fn interrupted_read(moved: bool) -> TestResult {
         match record {
             Ok(record) => assert!(record.sequence < 5, "read crossed its original snapshot"),
             Err(error) => {
-                assert_eq!(error, StreamError::Unavailable);
+                assert_eq!(error.category(), StreamCategory::Unavailable);
                 refused = true;
                 break;
             }

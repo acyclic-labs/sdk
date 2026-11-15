@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 use crate::{CommitCondition, CommitEffect, CommitMutation};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -112,7 +113,13 @@ async fn releasing_a_lease_cannot_make_captured_heads_durable() -> Result {
         }
     }
     lease.settle().await?;
-    assert_eq!(provider.tail(private).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider
+            .tail(private)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     for (request, (capture, revision)) in captures {
         let view = provider
             .complete_head_capture(request.clone(), capture, revision)
@@ -193,8 +200,11 @@ async fn an_unreleased_ephemeral_fork_never_outlives_its_incarnation() -> Result
     restored.install_state(&snapshot.state).await?;
     for gone in [&root, &adopted] {
         assert_eq!(
-            restored.tail(gone.clone()).await,
-            Err(StreamError::NotFound)
+            restored
+                .tail(gone.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
     }
     assert_eq!(restored.tail(durable.clone()).await?, 1);
@@ -203,8 +213,11 @@ async fn an_unreleased_ephemeral_fork_never_outlives_its_incarnation() -> Result
     let reopened = LocalStream::open(directory.path(), limits).await?;
     for gone in [&root, &ephemeral, &adopted] {
         assert_eq!(
-            reopened.tail(gone.clone()).await,
-            Err(StreamError::NotFound)
+            reopened
+                .tail(gone.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
     }
     assert_eq!(reopened.tail(durable.clone()).await?, 1);
@@ -274,19 +287,25 @@ async fn dropping_a_lease_removes_its_subtree_and_wakes_its_followers() -> Resul
     for follow in &mut follows {
         assert!(matches!(
             follow.next().await,
-            Some(Err(StreamError::NotFound))
+            Some(Err(error)) if error.category() == StreamCategory::NotFound
         ));
     }
     for gone in [&ephemeral, &adopted] {
         assert_eq!(
-            provider.tail(gone.clone()).await,
-            Err(StreamError::NotFound)
+            provider
+                .tail(gone.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
     }
     assert_eq!(provider.tail(sibling).await?, 1);
     assert_eq!(
-        provider.tail(StreamPath::new("scratch")?).await,
-        Err(StreamError::NotFound)
+        provider
+            .tail(StreamPath::new("scratch")?)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     assert_eq!(provider.tail(source).await?, 1);
     Ok(())
@@ -348,8 +367,11 @@ async fn skipped_effects_do_not_change_the_selected_publication_scope() -> Resul
             );
             assert_eq!(provider.tail(kept.clone()).await?, 1);
             assert_eq!(
-                provider.tail(omitted.clone()).await,
-                Err(StreamError::NotFound)
+                provider
+                    .tail(omitted.clone())
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
             );
 
             // The skipped condition now passes, but an exact retry still owns
@@ -361,8 +383,11 @@ async fn skipped_effects_do_not_change_the_selected_publication_scope() -> Resul
             assert_eq!(retry.commit_id, receipt.commit_id);
             assert_eq!(retry.skipped, receipt.skipped);
             assert_eq!(
-                provider.tail(omitted.clone()).await,
-                Err(StreamError::NotFound)
+                provider
+                    .tail(omitted.clone())
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
             );
             assert_eq!(
                 frames(&provider)?.0,
@@ -398,12 +423,18 @@ async fn skipped_effects_do_not_change_the_selected_publication_scope() -> Resul
                 idempotency_key: IdempotencyKey::unique(),
             };
             assert_eq!(
-                provider.commit(unsafe_request).await,
-                Err(StreamError::InvalidArgument)
+                provider
+                    .commit(unsafe_request)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::InvalidArgument)
             );
             assert_eq!(
-                provider.tail(unsafe_path.clone()).await,
-                Err(StreamError::NotFound)
+                provider
+                    .tail(unsafe_path.clone())
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
             );
             assert_eq!(frames(&provider)?.0, before.0 + 1);
 
@@ -454,9 +485,24 @@ async fn skipped_effects_do_not_change_the_selected_publication_scope() -> Resul
             let reopened = LocalStream::open(directory.path(), limits).await?;
             assert_eq!(reopened.tail(kept.clone()).await?, 1);
             assert_eq!(reopened.tail(base).await?, 1);
-            assert_eq!(reopened.tail(root).await, Err(StreamError::NotFound));
-            assert_eq!(reopened.tail(omitted).await, Err(StreamError::NotFound));
-            assert_eq!(reopened.tail(unsafe_path).await, Err(StreamError::NotFound));
+            assert_eq!(
+                reopened.tail(root).await.map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
+            );
+            assert_eq!(
+                reopened
+                    .tail(omitted)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
+            );
+            assert_eq!(
+                reopened
+                    .tail(unsafe_path)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
+            );
             let CommitOutcome::Committed(replayed) = reopened.commit(request).await? else {
                 return Err("reopened retry conflicted".into());
             };
@@ -552,8 +598,11 @@ async fn saved_commit_retries_keep_their_original_scope_after_conditions_change(
             );
             assert_eq!(provider.tail(kept.clone()).await?, 1);
             assert_eq!(
-                provider.tail(omitted.clone()).await,
-                Err(StreamError::NotFound)
+                provider
+                    .tail(omitted.clone())
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
             );
             drop(provider);
             drop(journal);
@@ -567,7 +616,13 @@ async fn saved_commit_retries_keep_their_original_scope_after_conditions_change(
             assert_eq!(replayed.commit_id, receipt.commit_id);
             assert_eq!(replayed.skipped, receipt.skipped);
             assert_eq!(reopened.tail(kept).await?, 1);
-            assert_eq!(reopened.tail(omitted).await, Err(StreamError::NotFound));
+            assert_eq!(
+                reopened
+                    .tail(omitted)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
+            );
             assert_eq!(Some(frames(&reopened)?), before_retry);
         }
     }

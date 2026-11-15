@@ -1,5 +1,6 @@
 //! Independent state machine at the real Cursor drop/Open dispatch boundary.
 use super::*;
+use crate::StreamCategory;
 use futures::FutureExt;
 use proptest::{
     prelude::*,
@@ -540,8 +541,9 @@ fn credential_actions(actions: &[(u32, u8)]) -> TestCaseResult {
         pool.command(Command::Credential {
             slot: 1,
             credential: Bytes::from_static(b"x")
-        }),
-        Err(StreamError::Capacity)
+        })
+        .map_err(|error| error.category()),
+        Err(StreamCategory::Capacity)
     );
     prop_assert_eq!(&pool.credentials, &expected);
     prop_assert_eq!(pool.credential_bytes, crate::MAX_COMMAND_BYTES);
