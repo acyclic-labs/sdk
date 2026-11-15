@@ -1,16 +1,16 @@
 //! Ordinary replay and fuzzing share the original public owner-envelope path.
 #[path = "owner_codec/oracle.rs"]
-mod native_owner_record;
+mod oracle;
 
 #[test]
 fn retained_owner_corpus_satisfies_the_shared_oracle() -> std::io::Result<()> {
-    native_owner_record::check(&[])?;
+    oracle::check(&[])?;
     let corpus = [
         include_bytes!("owner_codec/corpus/minimal").as_slice(),
         include_bytes!("owner_codec/corpus/binary").as_slice(),
         include_bytes!("owner_codec/corpus/text").as_slice(),
     ];
-    let produced = native_owner_record::seeds()?;
+    let produced = oracle::seeds()?;
     assert_eq!(produced.len(), corpus.len());
     for ((name, encoded), bytes) in produced.into_iter().zip(corpus) {
         // Retained Unix writer bytes are portable parser inputs. Windows DPAPI
@@ -19,9 +19,9 @@ fn retained_owner_corpus_satisfies_the_shared_oracle() -> std::io::Result<()> {
         assert_eq!(encoded, bytes, "original owner corpus changed: {name}");
         #[cfg(windows)]
         let _ = name;
-        native_owner_record::check_retained(bytes)?;
+        oracle::check_retained(bytes)?;
         #[cfg(windows)]
-        native_owner_record::check_retained(&encoded)?;
+        oracle::check_retained(&encoded)?;
     }
     Ok(())
 }
