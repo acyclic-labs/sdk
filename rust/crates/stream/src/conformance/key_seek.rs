@@ -69,7 +69,7 @@ pub(crate) async fn verify_with<P: StreamProvider + ?Sized>(
         .await?
         .try_collect()
         .await?;
-    if resumed.len() != 1 || resumed[0].sequence != 3 {
+    if resumed.len() != 1 || resumed.first().is_none_or(|record| record.sequence != 3) {
         return Err(violated!());
     }
     Ok(())

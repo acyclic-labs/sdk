@@ -12,10 +12,10 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                     Vec::new(),
                     paths
                         .iter()
-                        .enumerate()
-                        .map(|(index, path)| CommitMutation::Append {
+                        .zip(0u8..)
+                        .map(|(path, index)| CommitMutation::Append {
                             path: path.clone(),
-                            records: vec![vec![generation, index as u8].into()],
+                            records: vec![vec![generation, index].into()],
                         })
                         .collect(),
                 )],
@@ -32,12 +32,12 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                 crate::RetainedRecord {
                     commit_id: receipt.commit_id,
                     path: paths[0].clone(),
-                    sequence: generation as u64,
+                    sequence: u64::from(generation),
                 },
                 crate::RetainedRecord {
                     commit_id: receipt.commit_id,
                     path: paths[1].clone(),
-                    sequence: generation as u64,
+                    sequence: u64::from(generation),
                 },
                 crate::RetainedRecord {
                     commit_id: receipt.commit_id,
@@ -70,13 +70,32 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         };
         let view = provider.heads(request.clone()).await?;
         view.validate_for(&request)?;
-        if view.snapshot != receipt.revision || view.heads[2].is_some() {
+        if view.snapshot != receipt.revision || view.heads.get(2).is_none_or(|head| head.is_some())
+        {
             return Err(violated!());
         }
-        if view.retained[0].record != view.heads[0].as_ref().and_then(|head| head.last.clone())
-            || view.retained[1].record != view.heads[1].as_ref().and_then(|head| head.last.clone())
-            || view.retained[2].record.is_some()
-            || view.retained[3].record.is_some()
+        let head0 = view
+            .heads
+            .first()
+            .ok_or(violated!())?
+            .as_ref()
+            .and_then(|head| head.last.clone());
+        let head1 = view
+            .heads
+            .get(1)
+            .ok_or(violated!())?
+            .as_ref()
+            .and_then(|head| head.last.clone());
+        if view.retained.first().ok_or(violated!())?.record != head0
+            || view.retained.get(1).ok_or(violated!())?.record != head1
+            || view
+                .retained
+                .get(2)
+                .is_none_or(|retained| retained.record.is_some())
+            || view
+                .retained
+                .get(3)
+                .is_none_or(|retained| retained.record.is_some())
         {
             return Err(violated!());
         }
@@ -107,12 +126,12 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         if wrong_absence.validate_for(&request) != Err(StreamError::InvalidResponse) {
             return Err(violated!());
         }
-        for (index, head) in view.heads[..2].iter().enumerate() {
+        for (index, head) in (0u8..).zip(view.heads.iter().take(2)) {
             let record = head
                 .as_ref()
                 .and_then(|head| head.last.as_ref())
                 .ok_or(violated!())?;
-            if record.value.as_ref() != [generation, index as u8]
+            if record.value.as_ref() != [generation, index]
                 || record.commit_id != receipt.commit_id
                 || record.committed_at_micros != receipt.committed_at_micros
             {
@@ -219,7 +238,7 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
         .fork(ForkRequest {
             exclude: Vec::new(),
             source,
-            destination: selected[1].clone(),
+            destination: selected.get(1).cloned().ok_or(violated!())?,
             at_tail: Some(0),
             idempotency_key: key(b"selected-child-empty")?,
         })
@@ -234,14 +253,14 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
                         records: vec![Bytes::from_static(b"anchor").into()],
                     },
                     CommitMutation::Append {
-                        path: selected[2].clone(),
+                        path: selected.get(2).cloned().ok_or(violated!())?,
                         records: vec![
                             Bytes::from_static(b"first").into(),
                             Bytes::from_static(b"last").into(),
                         ],
                     },
                     CommitMutation::Append {
-                        path: selected[3].clone(),
+                        path: selected.get(3).cloned().ok_or(violated!())?,
                         records: vec![Bytes::from_static(b"single").into()],
                     },
                 ],
@@ -275,7 +294,7 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
     let page = view.children.as_ref().ok_or(violated!())?;
     if page.children.len() != names.len()
         || view.snapshot != receipt.revision
-        || view.heads[0].is_some()
+        || view.heads.first().is_none_or(|head| head.is_some())
         || page
             .children
             .iter()
@@ -308,7 +327,13 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
         (Some(1), false),
     ] {
         let mut torn = view.clone();
-        let child = &mut torn.children.as_mut().ok_or(violated!())?.children[2];
+        let child = torn
+            .children
+            .as_mut()
+            .ok_or(violated!())?
+            .children
+            .get_mut(2)
+            .ok_or(violated!())?;
         child.tail = tail;
         if remove_record {
             child.tail_record = None;
@@ -317,8 +342,11 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
             return Err(violated!());
         }
         let mut torn_json = json.clone();
-        let child = torn_json["children"]["children"][2]
-            .as_object_mut()
+        let child = torn_json
+            .get_mut("children")
+            .and_then(|children| children.get_mut("children"))
+            .and_then(|children| children.get_mut(2))
+            .and_then(serde_json::Value::as_object_mut)
             .ok_or(violated!())?;
         if let Some(tail) = tail {
             child.insert("tail".into(), serde_json::Value::String(tail.to_string()));
