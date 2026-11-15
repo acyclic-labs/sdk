@@ -84,7 +84,7 @@ async fn published(scratch: &MountedVolume, path: &str) -> Result<Vec<u8>> {
 #[tokio::test]
 async fn publications_keep_all_live_volume_projections_at_the_committed_head() -> Result<()> {
     use crate::agent::{WorkspaceEntry, WorkspaceRole};
-    use crate::conversation::{ContentAccess, ContentChange, ContentPublisher as _};
+    use crate::conversation::{ContentAccess, ContentChange};
 
     let root = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
