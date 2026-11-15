@@ -12,6 +12,7 @@ cargo_build_script(
     crate_root = "build.rs",
     srcs = [
         "build.rs",
+        "src/place.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + select({"//:linux-x86_64":["@crates__protoc-bin-vendored-linux-x86_64-3.3.0//:bin/protoc","@crates__protoc-bin-vendored-linux-x86_64-3.3.0//:include"]}, no_match_error = "acyclic-proto-build: build-script-env names no file for this platform"),

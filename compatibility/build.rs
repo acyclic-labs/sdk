@@ -11,13 +11,17 @@
 //! The crate's own shared protocols travel the same way. The bundle is copied
 //! into `OUT_DIR`, so the library embeds bytes, never a path that is valid only
 //! while this script runs or only inside this package.
-//! Every file the script writes carries bytes, never a source's mode, and is
-//! renamed over the previous run's file, so the script reruns over its own
-//! output whatever mode that output has.
+//! Every file the script writes goes through [`place`], so the script reruns
+//! over its own output whatever mode that output has.
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
 };
+
+// Shared with the library's tests, which prove it on every OS.
+#[path = "src/place.rs"]
+mod place;
+use place::place;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
@@ -99,18 +103,6 @@ fn runnable(candidate: &Path) -> bool {
         let executable = true;
         metadata.is_file() && executable
     })
-}
-
-/// Writes `bytes` to `to` as a new file beside it, created with the default
-/// mode, renamed into place: whatever mode a previous run's file has, it is
-/// replaced, never opened. `fs::copy` would instead carry a read-only source's
-/// mode to `to` and then fail to open that file on the next run.
-fn place(to: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut partial = to.as_os_str().to_owned();
-    partial.push(".partial");
-    let partial = PathBuf::from(partial);
-    fs::write(&partial, bytes)?;
-    fs::rename(&partial, to)
 }
 
 /// Copies every file under `directory` into `OUT_DIR/<name>` and lists it, by its

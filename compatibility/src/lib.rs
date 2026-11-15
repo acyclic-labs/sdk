@@ -11,6 +11,9 @@ mod compiler;
 pub use compiler::Compiler;
 mod descriptor;
 mod method;
+// The build script's writer, compiled here only so its tests run on every OS.
+#[cfg(test)]
+mod place;
 pub use descriptor::canonicalize;
 pub use method::{
     authorization, product_authorization, typescript_authorization, write_authorization,
