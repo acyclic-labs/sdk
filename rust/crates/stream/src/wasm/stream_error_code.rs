@@ -17,4 +17,5 @@ pub enum StreamErrorCode {
     DeadlineElapsed,
     Unsupported,
     RevisionForeign,
+    Failed,
 }

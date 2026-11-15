@@ -44,6 +44,7 @@ const statuses = {
   hierarchy_changed: [Code.FailedPrecondition, "hierarchy_changed"],
   deadline_elapsed: [Code.FailedPrecondition, "deadline_elapsed"],
   revision_foreign: [Code.FailedPrecondition, "revision_foreign"],
+  failed: [Code.FailedPrecondition, "failed"],
   unsupported: [Code.Unimplemented, "unsupported_capability"],
 } satisfies Record<StreamErrorCode, readonly [Code, string]>;
 const codes = streamErrorCodes();

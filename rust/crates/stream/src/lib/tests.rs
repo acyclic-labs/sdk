@@ -100,7 +100,8 @@ mod error_code_tests {
                 "hierarchy_changed",
                 "deadline_elapsed",
                 "unsupported",
-                "revision_foreign"
+                "revision_foreign",
+                "failed"
             ]
         );
         for error in StreamCategory::ALL.map(StreamError::from) {

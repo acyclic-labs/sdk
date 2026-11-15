@@ -60,6 +60,9 @@ pub enum StreamError {
     /// A minimum revision names another authority scope or incarnation.
     #[error("stream revision belongs to another authority or incarnation")]
     RevisionForeign,
+    /// The request failed definitively; repeating it unchanged cannot succeed.
+    #[error("stream request failed")]
+    Failed,
 }
 
 /// The typed category of a [`StreamError`], independent of any retained
@@ -100,11 +103,13 @@ pub enum StreamCategory {
     Unsupported,
     /// The category of [`StreamError::RevisionForeign`].
     RevisionForeign,
+    /// The category of [`StreamError::Failed`].
+    Failed,
 }
 
 impl StreamCategory {
     /// Every category, in canonical code order.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::InvalidResponse,
         Self::InvalidPath,
         Self::InvalidArgument,
@@ -121,6 +126,7 @@ impl StreamCategory {
         Self::DeadlineElapsed,
         Self::Unsupported,
         Self::RevisionForeign,
+        Self::Failed,
     ];
 
     /// Stable `snake_case` code shared by the HTTP, gRPC, and WASM transports.
@@ -143,6 +149,7 @@ impl StreamCategory {
             Self::DeadlineElapsed => "deadline_elapsed",
             Self::Unsupported => "unsupported",
             Self::RevisionForeign => "revision_foreign",
+            Self::Failed => "failed",
         }
     }
 
@@ -174,6 +181,7 @@ impl From<StreamCategory> for StreamError {
             StreamCategory::DeadlineElapsed => Self::DeadlineElapsed,
             StreamCategory::Unsupported => Self::Unsupported,
             StreamCategory::RevisionForeign => Self::RevisionForeign,
+            StreamCategory::Failed => Self::Failed,
         }
     }
 }
@@ -354,6 +362,7 @@ impl StreamError {
             Self::DeadlineElapsed => StreamCategory::DeadlineElapsed,
             Self::Unsupported => StreamCategory::Unsupported,
             Self::RevisionForeign => StreamCategory::RevisionForeign,
+            Self::Failed => StreamCategory::Failed,
             Self::Refused(refusal) => refusal.category,
             Self::Caused(failure) => failure.classification().category(),
         }
@@ -375,6 +384,7 @@ impl StreamError {
             (9, "idempotency_mismatch") => Self::IdempotencyMismatch,
             (9, "prefix_not_retained") => Self::PrefixNotRetained,
             (9, "revision_foreign") => Self::RevisionForeign,
+            (9, "failed") => Self::Failed,
             (12, _) => Self::Unsupported,
             _ => Self::Unavailable,
         }

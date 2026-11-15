@@ -73,6 +73,14 @@ pub enum GuestError {
     /// it returned, timed out, was cancelled or lost its placement epoch.
     #[error("host request is revoked")]
     Revoked,
+    /// A manifest binding or host endpoint the handler required failed or is
+    /// absent. Definitive for this delivery; the name is never prose.
+    #[error("guest dependency {dependency} is unavailable")]
+    DependencyUnavailable {
+        /// Manifest binding or host endpoint name, in the environment name grammar.
+        #[serde(deserialize_with = "dependency_name")]
+        dependency: String,
+    },
     /// Original local cause, independent of the guest's wire classification.
     #[serde(untagged, skip_deserializing)]
     #[ts(skip)]
@@ -84,6 +92,17 @@ pub enum GuestError {
     ),
 }
 
+fn dependency_name<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let name = String::deserialize(deserializer)?;
+    if crate::domain::valid_environment_name(&name) {
+        Ok(name)
+    } else {
+        Err(serde::de::Error::custom(
+            "guest dependency is not a binding name",
+        ))
+    }
+}
+
 fn serialize_guest_cause<S: serde::Serializer>(
     failure: &acyclic_auth::failure::Failure<GuestError>,
     serializer: S,
@@ -92,6 +111,37 @@ fn serialize_guest_cause<S: serde::Serializer>(
 }
 
 impl GuestError {
+    /// A required binding or host endpoint failed; `None` unless `dependency`
+    /// is a manifest binding or endpoint name, so it can never carry prose.
+    #[must_use]
+    pub fn dependency_unavailable(dependency: &str) -> Option<Self> {
+        crate::domain::valid_environment_name(dependency).then(|| Self::DependencyUnavailable {
+            dependency: dependency.to_owned(),
+        })
+    }
+
+    /// Stable, path-free snake_case name of the variant; a retained local
+    /// cause reports its classification's name. Exhaustive, so each new
+    /// variant is named where it is declared.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Caused(failure) => failure.classification().kind(),
+            Self::PreconditionChanged => "precondition_changed",
+            Self::UnsupportedAbi(_) => "unsupported_abi",
+            Self::UnsupportedFormat => "unsupported_format",
+            Self::NestedMutation => "nested_mutation",
+            Self::MissingIdentity => "missing_identity",
+            Self::IncompatibleCodec => "incompatible_codec",
+            Self::Decode(_) => "decode",
+            Self::Encode(_) => "encode",
+            Self::Handler(_) => "handler",
+            Self::Pending(_) => "pending",
+            Self::Revoked => "revoked",
+            Self::DependencyUnavailable { .. } => "dependency_unavailable",
+        }
+    }
+
     /// Keep the original local failure without changing the wire refusal.
     #[must_use]
     pub fn with_source(self, source: impl acyclic_auth::failure::Source) -> Self {
@@ -121,7 +171,8 @@ impl GuestError {
             | Self::Decode(_)
             | Self::Encode(_)
             | Self::Handler(_)
-            | Self::Revoked => false,
+            | Self::Revoked
+            | Self::DependencyUnavailable { .. } => false,
         }
     }
 

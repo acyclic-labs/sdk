@@ -35,6 +35,7 @@ pub fn error_status(error: wire::ErrorCode, cause: Option<acyclic_auth::refusal:
         E::AdmissionDenied => (Code::PermissionDenied, "ERROR_CODE_ADMISSION_DENIED"),
         E::CheckpointFailed => (Code::Aborted, "ERROR_CODE_CHECKPOINT_FAILED"),
         E::DependencyUnavailable => (Code::Unavailable, "ERROR_CODE_DEPENDENCY_UNAVAILABLE"),
+        E::Failed => (Code::FailedPrecondition, "ERROR_CODE_FAILED"),
     };
     let mut detail = crate::domain::ServiceError::new(error, name.into());
     if let Some(cause) = cause {
@@ -43,6 +44,37 @@ pub fn error_status(error: wire::ErrorCode, cause: Option<acyclic_auth::refusal:
     let detail: wire::Error = detail.into();
     let bytes = detail.encode_to_vec();
     Status::with_details(code, detail.message, bytes.into())
+}
+
+/// Whether the same request may succeed when repeated, decided by the decoded
+/// Actors detail code: one gRPC code carries both a retryable `CONFLICT` and a
+/// terminal `FAILED`. A status without a canonical Actors detail that agrees
+/// with its gRPC code is not classified as retryable.
+#[must_use]
+pub fn retryable(status: &Status) -> bool {
+    use wire::ErrorCode as E;
+    let Some(code) = wire::Error::decode(status.details())
+        .ok()
+        .and_then(|detail| E::try_from(detail.code).ok())
+    else {
+        return false;
+    };
+    if error_status(code, None).code() != status.code() {
+        return false;
+    }
+    match code {
+        E::Conflict | E::DependencyUnavailable => true,
+        E::Unspecified
+        | E::InvalidArgument
+        | E::CapabilityDenied
+        | E::CapabilityExpired
+        | E::ActorNotFound
+        | E::SubscriptionNotFound
+        | E::IdempotencyMismatch
+        | E::AdmissionDenied
+        | E::CheckpointFailed
+        | E::Failed => false,
+    }
 }
 
 /// Statically named actors RPC span factory.

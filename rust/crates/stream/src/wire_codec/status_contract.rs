@@ -58,6 +58,7 @@ const CONTRACT: &[(Code, &str, StreamError)] = &[
         "revision_foreign",
         StreamError::RevisionForeign,
     ),
+    (Code::FailedPrecondition, "failed", StreamError::Failed),
     (Code::Unimplemented, "", StreamError::Unsupported),
     (Code::Ok, "", StreamError::Unavailable),
     (Code::Cancelled, "", StreamError::Unavailable),
@@ -225,5 +226,29 @@ mod tests {
             }
             proptest::prop_assert!(check_with(&input, symmetric).is_err());
         }
+    }
+
+    #[test]
+    fn failed_is_terminal_and_separate_from_unavailability() {
+        let wire = Status::from(&StreamError::Failed);
+        assert_eq!(wire.code(), Code::FailedPrecondition);
+        assert_eq!(wire.message(), "failed");
+        let decoded = wire_codec::status(&wire);
+        assert_eq!(decoded, StreamError::Failed);
+        assert!(!decoded.uncertain());
+        assert_eq!(StreamError::from_code("failed"), Some(StreamError::Failed));
+        // Negative control: the decoder as it was, falling back to Unavailable
+        // for this row, violates the contract on the same input.
+        let fallback = |wire: &Status| match wire_codec::status(wire) {
+            StreamError::Failed => StreamError::Unavailable,
+            other => other,
+        };
+        assert_eq!(
+            check_with(b"", fallback),
+            Err("status contract classification")
+        );
+        // Another FailedPrecondition message stays undecided, never terminal.
+        let other = wire_codec::status(&Status::new(Code::FailedPrecondition, "failed later"));
+        assert_eq!(other, StreamError::Unavailable);
     }
 }

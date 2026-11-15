@@ -314,6 +314,15 @@ pub fn encode_invoke_response(
             "response header names and values differ in length",
         ));
     }
+    if names
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(acyclic_actors::wire::GUEST_FAILURE_HEADER))
+    {
+        return Err(js_error(
+            "invalid_argument",
+            "a guest response cannot carry the reserved guest failure header",
+        ));
+    }
     Ok(acyclic_actors::wire::InvokeActorResponse {
         status: status.into(),
         body,

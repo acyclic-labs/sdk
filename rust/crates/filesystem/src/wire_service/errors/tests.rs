@@ -158,6 +158,7 @@ fn every_stream_category_survives_the_authority_wrapper() -> Result<(), Box<dyn 
         (E::DeadlineElapsed, Code::DeadlineExceeded),
         (E::Unsupported, Code::Unimplemented),
         (E::RevisionForeign, Code::FailedPrecondition),
+        (E::Failed, Code::FailedPrecondition),
     ];
     assert_eq!(cases.len(), acyclic_stream::StreamCategory::ALL.len());
     for (error, expected) in cases {

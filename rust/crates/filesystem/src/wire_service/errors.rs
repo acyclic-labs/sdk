@@ -237,7 +237,8 @@ fn stream_code(error: &acyclic_stream::StreamError) -> Code {
         E::PrefixNotRetained
         | E::HierarchyChanged
         | E::IdempotencyMismatch
-        | E::RevisionForeign => Code::FailedPrecondition,
+        | E::RevisionForeign
+        | E::Failed => Code::FailedPrecondition,
         E::OutOfRange => Code::OutOfRange,
         E::Capacity => Code::ResourceExhausted,
         E::AccessDenied => Code::PermissionDenied,
