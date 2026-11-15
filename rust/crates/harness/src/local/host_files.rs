@@ -1083,7 +1083,7 @@ impl CarrierIo {
         )
         .map_err(storage)?;
         acyclic_stream::trace::observe(
-            acyclic_stream::trace::Request {
+            &acyclic_stream::trace::Request {
                 name: "native-workspace-files",
                 mechanism: acyclic_stream::trace::Mechanism::Wait,
                 parent: None,

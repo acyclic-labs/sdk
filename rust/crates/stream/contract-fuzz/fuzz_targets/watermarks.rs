@@ -29,6 +29,6 @@ fuzz_target!(|input: &[u8]| {
                 durable,
             }),
         };
-        assert_eq!(watermarks_from_wire(response), expected);
+        assert_eq!(watermarks_from_wire(&response), expected);
     }
 });

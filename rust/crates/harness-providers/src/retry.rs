@@ -114,7 +114,7 @@ pub(crate) fn events<'a>(
         let started = transport.now();
         let timer = crate::deadline::timer(transport, duration, work)?;
         acyclic_stream::trace::observe(
-            acyclic_stream::trace::Request {
+            &acyclic_stream::trace::Request {
                 name: primitive,
                 mechanism: acyclic_stream::trace::Mechanism::Wait,
                 parent: None,

@@ -215,7 +215,7 @@ impl<'a> PreparedPhase<'a> {
             let result = acyclic_stream::deferring_durability(future).await;
             // Includes errors and the winning branch of a cancellation race.
             acyclic_stream::trace::observe(
-                acyclic_stream::trace::Request {
+                &acyclic_stream::trace::Request {
                     name: "journal-durability.prepared-phase",
                     mechanism: acyclic_stream::trace::Mechanism::Wait,
                     parent: None,

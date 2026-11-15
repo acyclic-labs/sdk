@@ -1601,7 +1601,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     let bytes = crate::contract::canonical_json_bytes(&output)
                         .map_err(|error| host_error(error.into()))?;
                     let output = acyclic_stream::trace::observe(
-                        acyclic_stream::trace::Request {
+                        &acyclic_stream::trace::Request {
                             name: "output-commit",
                             mechanism: acyclic_stream::trace::Mechanism::Wait,
                             parent: None,

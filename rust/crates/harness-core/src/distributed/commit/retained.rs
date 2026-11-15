@@ -30,7 +30,7 @@ fn prepare<P: crate::store::JournalProvider + ?Sized>(
             "retained commit requires its original construction custody",
         )
     })?;
-    NativePending::prepare_native(provider, request, storage, original.runtime_meter()).map_err(
+    NativePending::prepare_native(provider, request, storage, &original.runtime_meter()).map_err(
         |error| Error::NativeWork {
             cause: original.runtime_error(error),
             custody: None,
