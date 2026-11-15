@@ -605,6 +605,19 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
+    /// Bytes a shared cache first used by this invocation may hold: a quarter
+    /// of its original peak allowance. What the invocation holds when it
+    /// first uses the cache never shrinks the cache.
+    pub(crate) fn shared_cache_capacity(&self) -> u64 {
+        match self {
+            Self::Standalone { budget, .. } | Self::BorrowedStandalone { budget, .. } => {
+                budget.peak_allocation_bytes / 4
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { work, .. } => work.shared_cache_capacity(),
+        }
+    }
+
     /// Returns the remaining bounded allowances.
     pub fn remaining(&self) -> Result<WorkBudget, crate::FsError> {
         self.ensure_active()?;
