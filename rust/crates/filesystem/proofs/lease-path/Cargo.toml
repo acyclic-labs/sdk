@@ -21,3 +21,4 @@ cbmc-args = ["--object-bits", "8"]
 [package.metadata.kani.unstable]
 function-contracts = true
 stubbing = true
+unstable-options = true

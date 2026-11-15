@@ -190,7 +190,7 @@ def scan_file(path, root):
                     item['classification'] = 'needs_typed_error_semantic_review'
                 signals.append(item)
     for kind, regex in [
-        ('kani', r'#\[\s*kani::proof(?:\s*\]|_for_contract\s*\()'),
+        ('kani', r'#\[\s*(?:cfg_attr\s*\((?:[^()\]]|\([^()]*\))*,\s*)?kani::proof(?:\s*[\])]|_for_contract\s*\()'),
         ('loom', r'\bloom::(?:model|sync|thread)\b'),
         ('proptest', r'\b(?:proptest::)?proptest\s*!'),
         ('fuzz', r'\bfuzz_target\s*!|\bbolero::check\s*!'),
@@ -242,14 +242,38 @@ def reached_files(crate_root):
     return reached
 
 
+def cfg_holds(predicates, test):
+    """A conjunction of cfg predicates under Kani: True, False, or None when other cfgs decide it."""
+    def value(tokens, i):
+        word, i = tokens[i], i + 1
+        if word in ('all', 'any', 'not') and tokens[i] == '(':
+            args, i = [], i + 1
+            while tokens[i] != ')':
+                arg, i = value(tokens, i)
+                args.append(arg)
+                i += tokens[i] == ','
+            i += 1
+            if word == 'not':
+                return (None if args[0] is None else not args[0]), i
+            decisive = word == 'any'
+            return (decisive if decisive in args else None if None in args else not decisive), i
+        if tokens[i] == '=':
+            return None, i + 1
+        return {'test': test, 'kani': True}.get(word), i
+    values = [value(re.findall(r'\w+|[(),=]', p), 0)[0] for p in predicates]
+    return False if False in values else None if None in values else True
+
+
 def kani_units(root, metadata, paths):
     """Declared Kani proofs grouped by the unit Kani compiles them in.
 
     A file belongs to each package whose library or test target reaches it from
     its crate root, or whose library's source directory holds it (modules can be
     declared by macros); any other file is its own crate root (`kani FILE`).
-    A package unit includes its test build when a proof is reached only through
-    a test target or sits under cfg(test). A proof attribute that precedes no
+    A package proof that only a test build compiles (reached only through a test
+    target, or under cfg(test)) is refused as KANI_PROOF_IN_TEST_TARGET: a test
+    build compiles the package's dev-dependencies, and any one Kani cannot
+    compile stops every proof in the package. A proof attribute that precedes no
     function is refused.
     """
     root = Path(root).resolve()
@@ -260,7 +284,7 @@ def kani_units(root, metadata, paths):
             if library or 'test' in target['kind']:
                 held = Path(target['src_path']).resolve().parent if library else None
                 targets.append((package['name'], not library, held, reached_files(target['src_path'])))
-    units = {}
+    units, in_test_build = {}, []
     for path in paths:
         proofs = [p for p in scan_file(path, root)['proofs'] if p['kind'] == 'kani']
         if not proofs:
@@ -277,18 +301,40 @@ def kani_units(root, metadata, paths):
             owners = {None: []}
         code = mask(file.read_text(encoding='utf-8-sig'))
         pairs = brace_pairs(code)
-        tested = [(m.start(), pairs[b]) for m in re.finditer(r'#\[\s*cfg\s*\(\s*test\s*\)\s*\]', code)
-                  if (b := code.find('{', m.end())) in pairs]
-        starts = [0] + [m.end() for m in re.finditer('\n', code)]
-        under_test = any(a <= starts[p['line'] - 1] <= b for p in proofs for a, b in tested)
+        def predicate(m):
+            # The text inside cfg( or cfg_attr( up to its closing paren or, for cfg_attr, its top-level comma.
+            depth, i = 0, m.end()
+            while depth or code[i] not in '),':
+                depth += {'(': 1, ')': -1}.get(code[i], 0)
+                i += 1
+            return code[m.end():i]
+        # A cfg scopes the braced item it precedes; one before a braceless item (`mod x;`) scopes nothing here.
+        scopes = [(m.start(), pairs[b], predicate(m)) for m in re.finditer(r'#\[\s*cfg\s*\(', code)
+                  if (b := code.find('{', m.end())) in pairs and ';' not in re.sub(r'\[[^\[\]]*\]', '', code[m.end():b])]
+        starts = [0] + [m.end() for m in re.finditer('\n', code)] + [len(code)]
+        attributed = re.compile(r'#\[\s*cfg_attr\s*\((?=(?:[^()\]]|\([^()]*\))*,\s*kani::proof\b)')
+        def test_only(proof):
+            at = starts[proof['line'] - 1]
+            held = [p for a, b, p in scopes if a <= at <= b]
+            if attr := attributed.search(code, at, starts[proof['line']]):
+                held.append(predicate(attr))
+            return cfg_holds(held, test=False) is False and cfg_holds(held, test=True) is not False
         for package, test_targets in owners.items():
             if package is None:
                 unit = units.setdefault('file:' + path, dict(unit='file:' + path, file=path, files=[], proofs=[]))
+                compiled = proofs
             else:
-                unit = units.setdefault('package:' + package, dict(unit='package:' + package, package=package, tests=False, files=[], proofs=[]))
-                unit['tests'] = unit['tests'] or under_test or all(test_targets)
+                refused = [p for p in proofs if all(test_targets) or test_only(p)]
+                in_test_build.extend(f"{p['location']} {p['name']} (package {package})" for p in refused)
+                compiled = [p for p in proofs if p not in refused]
+                if not compiled:
+                    continue
+                unit = units.setdefault('package:' + package, dict(unit='package:' + package, package=package, files=[], proofs=[]))
             unit['files'].append(path)
-            unit['proofs'].extend(p['name'] for p in proofs)
+            unit['proofs'].extend(p['name'] for p in compiled)
+    if in_test_build:
+        raise ValueError('KANI_PROOF_IN_TEST_TARGET only a test build compiles these proofs; '
+                         'declare them in the library under cfg(kani):\n  ' + '\n  '.join(in_test_build))
     return sorted(units.values(), key=lambda unit: unit['unit'])
 
 
