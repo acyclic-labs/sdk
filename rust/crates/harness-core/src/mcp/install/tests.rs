@@ -625,12 +625,7 @@ fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Re
 
 /// Writes a file that executable search accepts at `path`; its contents are never run.
 pub(super) fn executable_file(path: &Path) {
-    std::fs::write(path, "").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    acyclic_test_support::executable_file(path);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

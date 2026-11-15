@@ -1,5 +1,32 @@
 use std::path::{Path, PathBuf};
 
+/// Writes a runnable fixture at `path` for the host that runs the test.
+///
+/// Windows admits a real image or a batch script, while Unix admits a file
+/// with its execute bit. Fixtures that only need to satisfy executable search
+/// use this instead of writing empty bytes under a Windows image name.
+pub fn executable_file(path: &Path) {
+    #[cfg(windows)]
+    if path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+    }) {
+        std::fs::write(path, b"@echo off\r\n").expect("write batch fixture");
+    } else {
+        std::fs::copy(std::env::current_exe().expect("test executable"), path)
+            .expect("copy executable fixture");
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::write(path, []).expect("write executable fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+                .expect("mark executable fixture");
+        }
+    }
+}
+
 /// Locates the original named Cargo executable after runtime relocation.
 ///
 /// Runtime Cargo metadata wins over the compiled path. Nextest's portable
