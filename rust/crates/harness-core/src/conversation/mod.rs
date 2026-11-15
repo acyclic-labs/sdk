@@ -306,8 +306,8 @@ pub(crate) use files::{PublicationDomain, PublicationWitness};
 pub use message::{ConversationMessage, MessageKind};
 pub use outcome::TaskOutcomeRecord;
 pub use volumes::{
-    ContentGrant, PRIVATE_VOLUME, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
-    journal_volume, private_volume,
+    ContentGrant, JOURNAL_VOLUME, PRIVATE_VOLUME, VolumeClass, VolumeOperation, VolumeOwner,
+    VolumeRef, journal_volume, private_volume,
 };
 #[doc(hidden)]
 pub use volumes::{contains_content_label, content_label};

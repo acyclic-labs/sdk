@@ -1135,6 +1135,7 @@ impl ToolContext {
         kind: crate::tool::ReadPathKind,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        refuse_journal(path)?;
         crate::executor::with_history_io(io, |history| {
             kind.validate_address(path, history)
                 .map_err(Error::tool_input)?;
@@ -1777,6 +1778,7 @@ impl ToolContext {
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        refuse_journal(path)?;
         let (binding, path) = self.task().tool_publication_path(path, io)?;
         let (_, volume, relative) = super::content_write::publication_destination(
             binding,
@@ -1821,4 +1823,18 @@ impl ToolContext {
             )
             .await
     }
+}
+
+/// Every agent journal is harness custody, whatever owner an address names: a
+/// model file tool never selects one, by any route that would resolve it. The
+/// journal's tool outputs stay readable only through `OUTPUT_PATH`.
+fn refuse_journal(path: &str) -> Result<()> {
+    if crate::workspace::split_address(path).is_ok_and(|(volume, _)| {
+        volume.rsplit('/').next() == Some(crate::conversation::JOURNAL_VOLUME)
+    }) {
+        return Err(
+            Error::Unauthorized("the agent journal is not a model file volume".into()).tool_input(),
+        );
+    }
+    Ok(())
 }

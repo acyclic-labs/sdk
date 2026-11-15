@@ -396,6 +396,19 @@ mod tests {
                 for await (const entry of list('.system')) throw new Error('private storage yielded');
                 throw new Error('private storage succeeded');
             } catch (error) { if (!(error instanceof DeniedError)) throw error; }
+            // Every agent journal refuses each file call, before any route resolves it.
+            for (const reach of [
+                () => read('volume:///journal/inputs/messages/first'),
+                () => write('volume:///journal/forged.txt', 'forged', 'absent'),
+                () => remove('volume:///journal/inputs/messages/first', 'any'),
+                async () => { for await (const entry of list('volume:///journal/inputs')) throw new Error('journal listing yielded'); },
+            ]) {
+                try { await reach(); throw new Error('a journal file call succeeded'); }
+                catch (error) {
+                    if (!(error instanceof DeniedError) || !error.message.includes('the agent journal is not a model file volume'))
+                        throw error;
+                }
+            }
             let missingError;
             try {
                 for await (const entry of list('missing-directory')) throw new Error('missing directory yielded');
@@ -620,13 +633,14 @@ mod tests {
                 "lines":["β"],"conflict":"changed","absent":null,
             })
         );
-        // Ten original operations, two notebook operations and one large write.
+        // Ten original operations, two notebook operations, one large write and
+        // three journal refusals.
         // Only the source pages add calls; lines() has no host round trip.
         assert!(large_pages > 1);
-        // One initial page, two resumed pages, one root page and three refusals.
+        // One initial page, two resumed pages, one root page and four refusals.
         // Breaking after the first entry does not prefetch the next page.
-        assert_eq!(directory_pages, 7);
-        assert_eq!(calls, 13 + 22 + 18 + large_pages + directory_pages);
+        assert_eq!(directory_pages, 8);
+        assert_eq!(calls, 16 + 22 + 18 + large_pages + directory_pages);
         Ok(())
     }
 

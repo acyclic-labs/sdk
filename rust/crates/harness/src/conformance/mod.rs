@@ -11,6 +11,7 @@ mod dispatcher;
 pub mod fixtures;
 mod identity;
 mod interrupt;
+mod journal;
 mod observe;
 mod performance;
 pub mod protocol;
@@ -155,6 +156,7 @@ async fn verify_vectors(backend: &dyn Backend) -> Result {
     identified("identity", identity::verify(backend).await)?;
     identified("roots", roots::verify(backend).await)?;
     identified("approvals", approvals::verify(backend).await)?;
+    identified("journal refusal", journal::verify(backend).await)?;
     identified("guest wire", wire::verify(backend).await)?;
     identified("runtime interrupt (G41)", interrupt::verify(backend).await)?;
     identified(

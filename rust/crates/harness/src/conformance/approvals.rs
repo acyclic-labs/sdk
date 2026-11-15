@@ -171,6 +171,46 @@ struct Asked {
 }
 
 async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> Result<Asked> {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let Hosted {
+        bound,
+        root,
+        _storage,
+        stream,
+    } = hosted(
+        backend,
+        Arc::new(Approving(Arc::clone(&calls))),
+        policy,
+        capture,
+    )
+    .await?;
+    send(&bound, &root, "ask", "call the tool")
+        .await
+        .map_err(|error| format!("initial approval drain: {error}"))?;
+    Ok(Asked {
+        bound,
+        root,
+        calls,
+        _storage,
+        stream,
+    })
+}
+
+/// A root on a fresh domain of `backend`, admitted under host journal
+/// custody, whose turns run on `executors` under the host preset `policy`.
+pub(crate) struct Hosted {
+    pub(crate) bound: Bound<Observed, Objects>,
+    pub(crate) root: AgentPath,
+    pub(crate) _storage: Box<dyn crate::conformance::Storage>,
+    pub(crate) stream: Arc<Observed>,
+}
+
+pub(crate) async fn hosted(
+    backend: &dyn Backend,
+    executors: Arc<dyn TurnExecutors>,
+    policy: ApprovalPolicy,
+    capture: bool,
+) -> Result<Hosted> {
     let storage = backend.fresh().await?;
     let provider = storage.open().await?;
     let stream = Arc::new(if capture {
@@ -208,7 +248,6 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
     let scope = issuer.bootstrap_scope("root", &Capabilities::new(grants), None, &mut None)?;
     let objects = storage.objects().await?;
     let capabilities = objects.capabilities;
-    let calls = Arc::new(AtomicUsize::new(0));
     let bound = Bound::admitted(
         issuer,
         VerifiedCaller { audience, scope },
@@ -222,7 +261,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
             within: ActorReference::new(b"conformance", b"agents", b"host")?,
         },
         Turns {
-            executors: Arc::new(Approving(Arc::clone(&calls))),
+            executors,
             limits: TurnLimits {
                 maximum_bytes: Some(64 * 1024),
                 history_turns: 8,
@@ -248,45 +287,45 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
     else {
         return Err("the root's creation was uncertain".into());
     };
+    Ok(Hosted {
+        bound,
+        root,
+        _storage: storage,
+        stream,
+    })
+}
+
+/// Stages `text` as the human's message `intent`, sends it to `root`, and
+/// drains its turns. Returns the staged message file.
+pub(crate) async fn send(
+    bound: &Bound<Observed, Objects>,
+    root: &AgentPath,
+    intent: &str,
+    text: &str,
+) -> Result<acyclic_harness_core::conversation::FileRef> {
     let human = Sender::User {
         principal: HUMAN.into(),
     };
-    let id = vectors::intent("ask")?;
+    let id = vectors::intent(intent)?;
     let body = bound
-        .stage_text(
-            &root,
-            "message",
-            &human,
-            &id,
-            ("call the tool", "call the tool"),
-        )
+        .stage_text(root, "message", &human, &id, (text, text))
         .await?;
     bound
         .agents()
         .send(
-            &root,
+            root,
             &human,
             &InboxRecord::Message(Message {
                 from: human.clone(),
                 id,
                 re: None,
-                body: Box::new(body),
+                body: Box::new(body.clone()),
                 attachments: None,
             }),
         )
         .await?;
-    bound
-        .agents()
-        .drain(&root)
-        .await
-        .map_err(|error| format!("initial approval drain: {error}"))?;
-    Ok(Asked {
-        bound,
-        root,
-        calls,
-        _storage: storage,
-        stream,
-    })
+    bound.agents().drain(root).await?;
+    Ok(body)
 }
 
 /// The generic default asks the human, and the decision path completes.

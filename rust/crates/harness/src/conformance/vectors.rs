@@ -58,6 +58,18 @@ pub(crate) async fn values(
     provider: &dyn StreamProvider,
     path: StreamPath,
 ) -> Result<Vec<Vec<u8>>> {
+    Ok(records(provider, path)
+        .await?
+        .into_iter()
+        .map(|record| record.value.to_vec())
+        .collect())
+}
+
+/// A small stream's records, each with its committed sequence.
+pub(crate) async fn records(
+    provider: &dyn StreamProvider,
+    path: StreamPath,
+) -> Result<Vec<acyclic_stream::Record>> {
     match provider
         .read(ReadRequest {
             key: None,
@@ -68,10 +80,7 @@ pub(crate) async fn values(
         })
         .await
     {
-        Ok(records) => Ok(records
-            .map_ok(|record| record.value.to_vec())
-            .try_collect()
-            .await?),
+        Ok(records) => Ok(records.try_collect().await?),
         Err(error) if error.category() == StreamError::NotFound => Ok(Vec::new()),
         Err(error) => Err(error.into()),
     }

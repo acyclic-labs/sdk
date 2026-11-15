@@ -191,7 +191,7 @@ impl VolumeRef {
     pub(crate) fn is_agent_journal(&self) -> bool {
         self.class == VolumeClass::AgentPrivate
             && matches!(self.owner, VolumeOwner::Agent(_))
-            && self.id == "journal"
+            && self.id == JOURNAL_VOLUME
     }
 
     /// Enforces owner-only agent mutations.
@@ -780,6 +780,9 @@ crate::core::ownership::owned_struct!(VolumeRef {
 /// Name of the model-visible private volume binding.
 pub const PRIVATE_VOLUME: &str = "private";
 
+/// Name of every agent's harness journal; no model file tool selects it.
+pub const JOURNAL_VOLUME: &str = "journal";
+
 /// The private volume of `agent`, which every portable host creates and binds
 /// as [`PRIVATE_VOLUME`]. A platform selecting an Actor-hosted agent's volume
 /// for its Machine passes the manifest's volume provider and
@@ -799,7 +802,7 @@ pub fn private_volume(provider: ProviderRef, agent: &crate::agent::AgentId) -> R
 pub fn journal_volume(provider: ProviderRef, agent: &crate::agent::AgentId) -> Result<VolumeRef> {
     VolumeRef::new(
         provider,
-        "journal".to_owned(),
+        JOURNAL_VOLUME.to_owned(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
         &mut None,
