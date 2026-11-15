@@ -19,7 +19,20 @@ async fn refuse_repeatedly(
     fork: &ForkRequest,
     commit: &CommitRequest,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    refuse_repeatedly(&provider, &append, &fork, &commit).await?;
+    for _ in 0..16 {
+        assert!(matches!(
+            provider.append(append.clone()).await?,
+            AppendOutcome::TailConflict { actual_tail: 0 }
+        ));
+        assert!(matches!(
+            provider.fork(fork.clone()).await,
+            Err(error) if error.category() == StreamCategory::NotFound
+        ));
+        assert!(matches!(
+            provider.commit(commit.clone()).await?,
+            CommitOutcome::Conflict(_)
+        ));
+    }
     Ok(())
 }
 
