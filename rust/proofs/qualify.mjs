@@ -4,8 +4,8 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 // One manifest names every retained mutation, the production source it
@@ -14,6 +14,9 @@ const manifest = JSON.parse(readFileSync(new URL("mutations.json", import.meta.u
 if (manifest.version !== 1) throw new Error(`unsupported mutation manifest version ${manifest.version}`);
 const { claims } = manifest;
 const fromRoot = path => fileURLToPath(new URL(path, new URL("../../", import.meta.url)));
+// Logs and fuzz artifacts go to Cargo's target directory, never into the tree a
+// qualification must leave byte for byte as it found it.
+const targetDir = resolve(root, process.env.CARGO_TARGET_DIR ?? "target");
 
 /** The repository paths a patch changes, from its `+++` headers. */
 function patchTargets(patch) {
@@ -160,7 +163,7 @@ function qualify(claim, entry, instrumented, from, detail = false) {
   const fuzzCommand = runs => ["run", "--locked", "-p", crate, ...features, "--bin", options.fuzz.bin,
     "--target", fuzzTarget,
     "--", options.fuzz.corpus, `-runs=${runs}`, "-seed=71", "-print_final_stats=1",
-    `-artifact_prefix=target/${claim}/`];
+    `-artifact_prefix=${join(targetDir, claim)}/`];
   const command = instrumented
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", "corpus/stream_persistence/projection-v1-append", "--", "-runs=1000", "-seed=1697"]
     : options.command ?? (options.fuzz ? fuzzCommand(1) : options.nextest
@@ -173,8 +176,8 @@ function qualify(claim, entry, instrumented, from, detail = false) {
       options.positive.map(name => `test(=${name})`).join(" | "), ...(options.nextest ?? ["--no-tests=fail"])]
     : command);
   const sources = [...new Set([source, ...(options.mutations ?? []).map(mutation => mutation.source ?? source)])];
-  const recovery = `git diff -- ${sources.join(" ")}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}${instrumented ? " --instrumented" : from === undefined ? "" : ` --from ${from}`}`;
-  const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
+  const recovery = `git diff -- ${sources.join(" ")}; inspect ${join(targetDir, claim)}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}${instrumented ? " --instrumented" : from === undefined ? "" : ` --from ${from}`}`;
+  const directory = pathToFileURL(`${join(targetDir, claim)}/`);
   const oraclePath = options.oracle && new URL(options.oracle, new URL("../../", import.meta.url));
   let oracle;
   const phases = [];
