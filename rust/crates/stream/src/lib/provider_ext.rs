@@ -748,14 +748,9 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
     }
 }
 
-async fn named_head<P: StreamProvider + ?Sized>(
-    provider: &P,
-    path: StreamPath,
-    projection: HeadProjection,
-) -> Result<PathHead, StreamError> {
-    #[cfg(feature = "serde")]
-    let diagnostic = crate::trace::is_source(&path);
-    let request = HeadsRequest {
+/// The one named-head request: a pure function of its path and projection.
+fn named_request(path: StreamPath, projection: HeadProjection) -> HeadsRequest {
+    HeadsRequest {
         at: None,
         retained: Default::default(),
         durable_through: None,
@@ -764,10 +759,23 @@ async fn named_head<P: StreamProvider + ?Sized>(
         children: None,
         limit: 1,
         at_least: Default::default(),
-    };
+    }
+}
+
+async fn named_head<P: StreamProvider + ?Sized>(
+    provider: &P,
+    path: StreamPath,
+    projection: HeadProjection,
+) -> Result<PathHead, StreamError> {
+    #[cfg(feature = "serde")]
+    let diagnostic = crate::trace::is_source(&path);
+    // Validation rebuilds the forwarded request from the same inputs, so no
+    // head, tail or watermark future holds it across the provider await.
     let work = async {
-        let mut view = provider.heads(request.clone()).await?;
-        view.validate_for(&request)?;
+        let mut view = provider
+            .heads(named_request(path.clone(), projection))
+            .await?;
+        view.validate_for(&named_request(path, projection))?;
         view.heads.pop().flatten().ok_or(StreamError::NotFound)
     };
     #[cfg(feature = "serde")]

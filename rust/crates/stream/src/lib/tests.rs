@@ -1400,3 +1400,26 @@ mod indexed_trace_tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod named_head_tests {
+    use super::*;
+
+    // Every consumer's await chain carries these leaves. The forwarded request
+    // is rebuilt for validation, so no leaf may retain one across its await.
+    #[test]
+    fn named_head_futures_do_not_retain_their_request() {
+        let provider = MemoryStream::default();
+        let path = StreamPath::new("named-head-size").unwrap();
+        let bound = std::mem::size_of::<HeadsRequest>();
+        let sizes = [
+            std::mem::size_of_val(&provider.head(path.clone())),
+            std::mem::size_of_val(&provider.tail(path.clone())),
+            std::mem::size_of_val(&provider.watermarks(path)),
+        ];
+        assert!(
+            sizes.iter().all(|size| *size < bound),
+            "{sizes:?} >= {bound}"
+        );
+    }
+}
