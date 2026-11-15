@@ -213,6 +213,97 @@ async fn writes_over_unobserved_moves_and_links_publish() -> Result<()> {
     Ok(())
 }
 
+/// A native rename the watch has not delivered still describes the identity
+/// the head binds at its source. A write that publishes a new file at that
+/// source leaves the identity to the move: once the rename is captured, the
+/// moved file keeps it at its destination and the new file has its own.
+#[tokio::test]
+async fn a_write_over_an_unobserved_rename_source_leaves_its_identity_to_the_move() -> Result<()> {
+    let (directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
+    publisher.tools.publish_baseline().await?;
+    let root = directory.path();
+    let original = head_identity(&publisher, "source-3.txt")
+        .await?
+        .ok_or_else(|| Error::NotFound("the baseline lacks source-3.txt".into()))?;
+    std::fs::rename(root.join("source-3.txt"), root.join("renamed.txt")).map_err(storage)?;
+    publisher
+        .stage_once(
+            OperationId::new(),
+            "source-3.txt",
+            b"replacement\n",
+            "text/plain",
+            "source-3.txt",
+            Default::default(),
+        )?
+        .await?;
+    {
+        let mut state =
+            crate::sync::owned::lock_owned(crate::sync::owned::Arc::clone(&publisher.tools.state))
+                .await;
+        let State {
+            active, watcher, ..
+        } = &mut *state;
+        let view = active
+            .as_ref()
+            .unwrap_or_else(|| publisher.tools.workspace.view());
+        publisher
+            .tools
+            .capture(
+                (&publisher.tools.workspace, view),
+                watcher,
+                OperationId::new(),
+                0,
+                PublicationPermit::Unrestricted,
+            )?
+            .await?;
+    }
+    assert_eq!(
+        head_identity(&publisher, "renamed.txt").await?,
+        Some(original),
+        "the moved file lost its identity"
+    );
+    let replacement = head_identity(&publisher, "source-3.txt").await?;
+    assert!(
+        replacement.is_some_and(|identity| identity != original),
+        "the new file took the moved file's identity: {replacement:?}"
+    );
+    harness.disconnect().await?;
+    Ok(())
+}
+
+async fn head_identity(
+    publisher: &CheckoutPublisher,
+    path: &str,
+) -> Result<Option<acyclic_fs::FileId>> {
+    let workspace = publisher.tools.workspace.view().workspace();
+    let config = workspace.volume_config();
+    let portable = acyclic_fs::path::PortablePath::parse(&format!("/{path}"), config.limits)
+        .map_err(storage)?;
+    let name = acyclic_fs::kernel::NamespacePath::from_portable_in_profile(
+        &portable,
+        config.profile,
+        config.limits,
+    )
+    .map_err(storage)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut checkout = workspace
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Head,
+            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    let lookup = checkout
+        .lookup_no_follow(&name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    Ok(lookup.record.map(|record| record.file_id))
+}
+
 async fn measure_publications(publishers: &[&CheckoutPublisher], layout: &str) -> Result<()> {
     measure_writer_batch(&publishers[..1], layout).await?;
     measure_writer_batch(publishers, layout).await

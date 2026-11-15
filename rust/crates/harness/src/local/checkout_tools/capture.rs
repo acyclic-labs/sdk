@@ -525,9 +525,12 @@ where
 ///
 /// Returns `false`, committing nothing, when the paths cannot be captured on
 /// their own: a native move the watch has not yet delivered still binds the
-/// file's identity elsewhere, and a linked file's other names are unknown.
-/// The caller then takes the ordinary capture, which is exact by
-/// construction.
+/// file's identity elsewhere, a linked file's other names are unknown, and a
+/// queued hint may still describe any identity the head binds at a path. A
+/// path capture therefore binds new names and updates files in place, but
+/// never removes or replaces a bound identity. The caller then takes the
+/// ordinary capture, which replays every hint against the state it describes
+/// and is exact by construction.
 pub(in crate::local) async fn record_paths<F, Fut>(
     (options, policy): (&CaptureOptions, &CapturePolicy),
     selected: (&LocalWorkspace, &workspace::View),
@@ -546,7 +549,7 @@ where
     let cancellation = CancellationToken::new();
     let workspace = view.workspace();
     let config = workspace.volume_config();
-    let mut changes: Vec<acyclic_fs::WatchChange> = Vec::new();
+    let mut names: Vec<acyclic_fs::kernel::NamespacePath> = Vec::new();
     for path in paths {
         // Only the written paths: a hinted directory is walked on hosts whose
         // hints do not name changed children, so an ancestor hint would walk
@@ -559,16 +562,17 @@ where
             config.limits,
         )
         .map_err(storage)?;
-        let known = changes.iter().any(
-            |change| matches!(change, acyclic_fs::WatchChange::Modified(known) if *known == name),
-        );
-        if !known {
-            changes
+        if !names.contains(&name) {
+            names
                 .try_reserve(1)
                 .map_err(|_| Error::Storage("capture path allocation failed".into()))?;
-            changes.push(acyclic_fs::WatchChange::Modified(name));
+            names.push(name);
         }
     }
+    let allocation = || Error::Storage("capture path allocation failed".into());
+    let mut changes: Vec<acyclic_fs::WatchChange> = Vec::new();
+    changes.try_reserve(names.len()).map_err(|_| allocation())?;
+    changes.extend(names.iter().cloned().map(acyclic_fs::WatchChange::Modified));
     let mut checkout = workspace
         .checkout(
             GenerationSelector::Head,
@@ -579,6 +583,17 @@ where
         .await
         .map_err(storage)?
         .value;
+    let mut bound = Vec::new();
+    bound.try_reserve(names.len()).map_err(|_| allocation())?;
+    for name in &names {
+        let Ok(lookup) = checkout
+            .lookup_no_follow(name, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+        else {
+            return Ok(false);
+        };
+        bound.push(lookup.value.record.map(|record| record.file_id));
+    }
     let captured = capture_watch_batch(
         &mut checkout,
         WatchBatch::Changes {
@@ -598,6 +613,20 @@ where
     // records the state exactly or fails with its own cause.
     if captured.is_err() {
         return Ok(false);
+    }
+    for (name, before) in names.iter().zip(&bound) {
+        let Some(before) = before else {
+            continue;
+        };
+        let Ok(lookup) = checkout
+            .lookup_no_follow(name, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+        else {
+            return Ok(false);
+        };
+        if lookup.value.record.map(|record| record.file_id) != Some(*before) {
+            return Ok(false);
+        }
     }
     #[cfg(all(test, not(loom)))]
     PATH_CAPTURES.set(PATH_CAPTURES.get() + 1);
