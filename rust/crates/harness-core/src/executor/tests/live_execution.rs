@@ -210,3 +210,69 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
     assert_eq!(provider.requests().len(), 2);
     Ok(())
 }
+
+/// The fenced twin of the live retry above. A reopened incarnation took the
+/// delivery after its predecessor died with the call's producer, so nothing
+/// can still settle the started call: an inconclusive reconciliation is
+/// decided as the model's interrupted failure, the effect never runs again,
+/// and the turn continues instead of staying indeterminate.
+#[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
+async fn a_fenced_started_call_settles_interrupted_and_the_turn_continues() -> Result<()> {
+    let journal = Journal::default();
+    let provider = Arc::new(scripted_model());
+    let (accepted, acceptance) = tokio::sync::oneshot::channel();
+    let tool = Arc::new(PendingTool {
+        calls: AtomicUsize::new(0),
+        result: Mutex::new(None),
+        accepted: Mutex::new(Some(accepted)),
+    });
+    let tools = echo_tools(
+        tool.clone(),
+        json!({"type":"object"}),
+        json!({"type":"object"}),
+        crate::tool::json_projection_schema(json!({"type":"object"})),
+    )?;
+    let executor = uncompacted_executor(
+        Model::new("example".into(), "model".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        tools,
+    )
+    .with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new(["tool:call:example.echo"]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    let input = input();
+    let mut first = Box::pin(executor.execute(input.clone(), &journal));
+    tokio::select! {
+        outcome = &mut first => panic!("execution ended before tool acceptance: {outcome:?}"),
+        accepted = acceptance => accepted.expect("tool acceptance producer was dropped"),
+    }
+    // The incarnation dies with its producer; the next one reopens the cut.
+    drop(first);
+    let reopened = journal.reopen_before_tool_completion("call-1");
+    let settled = executor.execute(input.clone(), &reopened).await?;
+    assert_eq!(settled.text, "done");
+    let text = super::tools_1::tool_error_text(&provider.requests()[1].messages, "call-1")
+        .expect("the next model request carries the call's failure");
+    assert!(
+        text.starts_with(ToolFailureKind::Interrupted.message()),
+        "{text}"
+    );
+    assert!(reopened.0.lock().unwrap().iter().any(|record| matches!(
+        &record.event,
+        ExecutionEvent::ToolFailed { call_id, reason: ToolFailureKind::Interrupted, .. }
+            if call_id == "call-1"
+    )));
+    assert_eq!(
+        tool.calls.load(Ordering::SeqCst),
+        1,
+        "the effect never runs again"
+    );
+    assert_eq!(settled, executor.execute(input, &reopened).await?);
+    Ok(())
+}
