@@ -1,0 +1,12 @@
+diff --git a/rust/crates/native-runtime/src/lines.rs b/rust/crates/native-runtime/src/lines.rs
+index 4a202c56f9e..8c210f8cff2 100644
+--- a/rust/crates/native-runtime/src/lines.rs
++++ b/rust/crates/native-runtime/src/lines.rs
+@@ -2,6 +2,7 @@
+ //!
+ //! Tokio's `LinesCodec` is the sole framer (also used by rmcp's JSON-RPC codec).
+ //! Callers decide whether a malformed frame ends a protocol or is discarded.
++//! A planted comment no oracle can observe.
+ use bytes::BytesMut;
+ use futures_core::Stream;
+ use std::{
