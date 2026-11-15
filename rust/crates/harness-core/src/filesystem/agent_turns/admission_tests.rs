@@ -11,7 +11,7 @@ use crate::{
 mod prefix_tests;
 
 #[tokio::test]
-async fn child_activity_uses_host_custody_without_rebinding_workload_identity() -> Result<()> {
+async fn child_activity_verifies_under_the_admission_that_signed_it() -> Result<()> {
     use crate::executor::ExecutionJournal as _;
     let parent = AgentPath::root(&crate::agent::AgentId::from_bytes([195; 16]));
     let child = parent
@@ -35,11 +35,19 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
     for volume in [&parent_volume, &child_volume, &journal_volume] {
         host.create_volume(volume).await?;
     }
+    // A served tree: every agent's turns run under one admission.
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: parent.id().to_string(),
     };
     let root = AuthorityRoot::new("activity-admission", [197; 32], audience.clone());
+    let broad = Capabilities::new([
+        acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        crate::contract::capability::HARNESS_HOST.to_owned(),
+    ]);
+    let broad = root.bootstrap_scope("served", &broad, None, &mut None)?;
     let workload_grants = Capabilities::new([
         parent_volume.capability(VolumeOperation::Read, &mut None)?,
         parent_volume.capability(VolumeOperation::Write, &mut None)?,
@@ -53,7 +61,7 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
     )?;
     let admission = TurnAdmission::Admitted {
         audience: audience.clone(),
-        scope: scope.clone(),
+        scope: broad.clone(),
     };
     let issuer = RuntimeAuthority::from(root.clone());
     admission.verify(&issuer, &parent)?;
@@ -77,17 +85,11 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
     )
     .map_err(Error::from)?;
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
-    // Negative control: the former query really rejects this valid parent.
-    assert!(matches!(
-        query_journal(&stream, &host, &issuer, &admission, &state).await,
-        Err(Error::Unauthorized(_))
-    ));
     let operation = OperationId::new();
-    let journal = query_activity_journal(&stream, &host, &issuer, &state)
+    // The child's own turn signs its checkpoint under the served admission.
+    query_journal(&stream, &host, &issuer, &admission, &state)
         .await?
-        .ok_or_else(|| Error::Storage("native host lost child activity authority".into()))?
-        .with_turn(operation, operation);
-    journal
+        .with_turn(operation, operation)
         .append(
             operation,
             "start",
@@ -97,6 +99,11 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
             None,
         )?
         .await?;
+    // The parent's wait verifies that checkpoint under the same identity.
+    let journal = query_activity_journal(&stream, &host, &issuer, &admission, &state)
+        .await?
+        .ok_or_else(|| Error::Storage("native host lost child activity authority".into()))?
+        .with_turn(operation, operation);
     assert!(
         journal
             .activity(operation, &acyclic_actors::local::SystemClock)
@@ -104,13 +111,6 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
             .is_some()
     );
 
-    let broad = Capabilities::new([
-        acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
-            .to_scope_label()
-            .map_err(|error| Error::Invalid(error.to_string()))?,
-        crate::contract::capability::HARNESS_HOST.to_owned(),
-    ]);
-    let broad = root.bootstrap_scope("unbound-host", &broad, None, &mut None)?;
     for (scope, expected) in [(scope, false), (broad, true)] {
         let (_producer, stopped) = futures::channel::oneshot::channel::<()>();
         let context = acyclic_auth::operation::Context::from_stopped(
@@ -123,7 +123,7 @@ async fn child_activity_uses_host_custody_without_rebinding_workload_identity() 
             },
         );
         let issuer = RuntimeAuthority::admitted(root.admit(scope, context)?, OperationId::new());
-        let observed = query_activity_journal(&stream, &host, &issuer, &state).await?;
+        let observed = query_activity_journal(&stream, &host, &issuer, &admission, &state).await?;
         assert_eq!(observed.is_some(), expected, "delegated ceiling changed");
         if let Some(journal) = observed {
             assert!(
