@@ -385,7 +385,8 @@ function specs() {
     return `${rule("crate.spec", [
       ["package", q(name)],
       ["version", q(`=${version}`)],
-      ["package_alias", named.get(name).length > 1 ? q(`${name}-${version}`) : undefined],
+      // A splicing dependency key: a Cargo package name, so the version spells only XID characters.
+      ["package_alias", named.get(name).length > 1 ? q(`${name}-${version.replace(/[^A-Za-z0-9_-]/g, "_")}`) : undefined],
       ["default_features", "False"],
       ["features", list([...features].sort())],
     ])}\n`;
