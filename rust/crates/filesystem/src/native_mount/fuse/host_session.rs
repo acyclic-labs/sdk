@@ -369,10 +369,7 @@ pub(super) fn publish_expired_packet_for_test(
 
 /// Exercise the real pending-reply publisher with a kernel-expired identity.
 #[cfg(test)]
-pub(super) fn publish_expired_reply_for_test(
-    io: &Arc<HostIo>,
-    old_abort: bool,
-) -> std::io::Result<()> {
+pub(super) fn publish_expired_reply_for_test(io: &Arc<HostIo>) -> std::io::Result<()> {
     let mut input = [0; acyclic_native_runtime::fuse_protocol::INPUT_HEADER];
     let length = u32::try_from(input.len()).map_err(std::io::Error::other)?;
     input[..4].copy_from_slice(&length.to_ne_bytes());
@@ -389,15 +386,9 @@ pub(super) fn publish_expired_reply_for_test(
         Some(libc::EIO),
     )
     .map_err(std::io::Error::from_raw_os_error)?;
-    let slices = [std::io::IoSlice::new(&reply)];
-    if old_abort {
-        // Exact former policy: a confirmed device rejection is flattened to
-        // an I/O error, aborts the connection, and escapes to worker teardown.
-        pending.unique.set(None);
-        io.publish(&slices).inspect_err(|_| pending.abort())
-    } else {
-        pending.publish(&slices).map(|_| ())
-    }
+    pending
+        .publish(&[std::io::IoSlice::new(&reply)])
+        .map(|_| ())
 }
 
 #[cfg(test)]
