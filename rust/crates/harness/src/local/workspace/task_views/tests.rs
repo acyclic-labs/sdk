@@ -222,6 +222,25 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         private_ui
     );
     assert!(logical.mounts.named(Some("results"))?.1.mode.read_only());
+    let mut foreign_primary = session_bindings.clone();
+    foreign_primary[0].source = crate::agent::WorkspaceSource::Volume(private_home.clone());
+    for opened in [
+        workspace
+            .context_task_view(view().await?, &foreign_primary, &authority)
+            .map(drop),
+        workspace
+            .bound_task_view(view().await?, &foreign_primary, &owner.original, &authority)
+            .await
+            .map(drop),
+    ] {
+        match opened {
+            Err(Error::Unauthorized(message)) => assert_eq!(
+                message,
+                "task view does not open the table's primary volume"
+            ),
+            other => panic!("a view of another volume opened this table: {other:?}"),
+        }
+    }
     let remounted = second.mounts_at(&second.path).await?;
     for entry in &session_bindings {
         for table in [&second.mounts, &logical.mounts, &remounted] {
