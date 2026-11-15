@@ -4,6 +4,15 @@ use crate::agent::{Approval, ApprovalSelection, InboxRecord, OpenTriage, Out};
 use crate::approvals::{ApprovalResponder, RuleVerdict};
 use serde::Serialize;
 
+/// Reason an agent that can no longer run gives each ask it refuses.
+const PARENT_ENDED: &str = "approval parent has ended";
+
+/// An agent that completed or was archived runs no turn and reviews nothing,
+/// yet its children's asks still reach it; it refuses each one.
+fn ended(agent: &AgentState) -> bool {
+    agent.closed || matches!(agent.phase, crate::agent::Phase::Done { .. })
+}
+
 #[derive(Serialize)]
 struct Escalation<'a> {
     child: &'a AgentPath,
@@ -24,23 +33,28 @@ where
         inbox: u64,
         cursor: u64,
     ) -> Result<ApprovalSelection> {
-        let (_, bindings, _) = self.parent_review_binding(agent, None).await?;
-        let selected = bindings
-            .content
-            .reader
-            .read_private_path(
-                &bindings.content.volume,
-                "",
-                "policy/attention.md",
-                None,
-                self.executors.content_limits().file_bytes,
-                crate::conversation::ContentAccess::default(),
-            )?
-            .await?;
+        let policy = if ended(agent) {
+            None
+        } else {
+            let (_, bindings, _) = self.parent_review_binding(agent, None).await?;
+            bindings
+                .content
+                .reader
+                .read_private_path(
+                    &bindings.content.volume,
+                    "",
+                    "policy/attention.md",
+                    None,
+                    self.executors.content_limits().file_bytes,
+                    crate::conversation::ContentAccess::default(),
+                )?
+                .await?
+                .map(|(file, _, _)| file)
+        };
         let selection = ApprovalSelection {
             source: agent.path.clone(),
             range: inbox..cursor.min(inbox.saturating_add(crate::agent::MAX_QUEUED as u64)),
-            policy: selected.map(|(file, _, _)| file),
+            policy,
         };
         selection
             .validate(&agent.path, inbox)
@@ -56,11 +70,21 @@ where
         selection
             .validate(&agent.path, selection.range.start)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let (journal, bindings, policy_bytes) = self
-            .parent_review_binding(agent, selection.policy.as_ref())
-            .await?;
-        let policy = std::str::from_utf8(&policy_bytes)
-            .map_err(|_| Error::Invalid("review policy is not UTF-8".into()))?;
+        let review = if ended(agent) {
+            None
+        } else {
+            Some(
+                self.parent_review_binding(agent, selection.policy.as_ref())
+                    .await?,
+            )
+        };
+        let policy = review
+            .as_ref()
+            .map(|(_, _, bytes)| {
+                std::str::from_utf8(bytes)
+                    .map_err(|_| Error::Invalid("review policy is not UTF-8".into()))
+            })
+            .transpose()?;
         let inbox = agent
             .path
             .inbox()
@@ -102,9 +126,13 @@ where
             let child = crate::agent::observe_state(&self.stream, &self.within, &request.child)
                 .await
                 .map_err(Error::from)?;
-            let (verdict, reason, action) = self
-                .review_child_action(agent, &child, &request.id, &journal, policy)
-                .await?;
+            let (verdict, reason, action) = match (&review, policy) {
+                (Some((journal, _, _)), Some(policy)) => {
+                    self.review_child_action(agent, &child, &request.id, journal, policy)
+                        .await?
+                }
+                _ => (RuleVerdict::Deny, Some(PARENT_ENDED.to_owned()), Vec::new()),
+            };
             let decision = match verdict {
                 RuleVerdict::Allow => Some(crate::interaction::ApprovalVerdict::Approve),
                 RuleVerdict::Deny => Some(crate::interaction::ApprovalVerdict::Deny),
@@ -149,6 +177,9 @@ where
             None
         } else {
             use crate::conversation::ContentPublisher as _;
+            let (_, bindings, _) = review
+                .as_ref()
+                .ok_or_else(|| Error::Invalid("an ended agent escalates no approval".into()))?;
             let mut hasher = blake3::Hasher::new_derive_key("acyclic.parent-approval-page.v1");
             let identity =
                 serde_json::to_vec(selection).map_err(|error| Error::Invalid(error.to_string()))?;

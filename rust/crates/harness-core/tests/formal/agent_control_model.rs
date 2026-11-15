@@ -41,6 +41,8 @@ struct Model {
     approval_queued: bool,
     pending: usize,
     reports: u8,
+    /// Children's asks accepted and not yet answered by a review step.
+    asks: u8,
 }
 
 fn any_wait() -> Wait {
@@ -57,11 +59,21 @@ fn any_wait() -> Wait {
 }
 
 fn any_wake() -> Option<Admit> {
-    match kani::any::<u8>() % 4 {
+    match kani::any::<u8>() % 5 {
         0 => Some(Admit::Input),
         1 => Some(Admit::Cancel),
         2 => Some(Admit::Archive),
+        3 => Some(Admit::Ask),
         _ => None,
+    }
+}
+
+/// A review step selects or answers part of the queued asks; once no review
+/// control remains, every accepted ask has its answer.
+fn review(model: &mut Model) {
+    model.control.review = kani::any();
+    if !model.control.review {
+        model.asks = 0;
     }
 }
 
@@ -79,9 +91,10 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
         if kind == Admit::Archive && !closed {
             model.pending = open_children;
         }
-        let review = admitted.enqueue && kani::any::<bool>();
-        model.control.review |= review;
-        if admitted.enqueue && !review && model.queued < 3 {
+        if kind == Admit::Ask {
+            model.asks = model.asks.saturating_add(1);
+            model.control.review |= admitted.enqueue;
+        } else if admitted.enqueue && model.queued < 3 {
             model.queued += 1;
             model.approval_queued |=
                 matches!(model.control.mode, Mode::Approval) && kani::any::<bool>();
@@ -111,6 +124,25 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
         }
         model.control = cascade.control;
         model.reports += u8::from(cascade.report);
+        let picked = (kernel.pick)(
+            model.control,
+            wake.is_none(),
+            model.queued > 0,
+            model.approval_queued,
+        );
+        assert!(
+            picked == Pick::Nothing || picked == Pick::Review,
+            "turn after archive"
+        );
+        if model.control.review {
+            assert!(
+                picked == Pick::Review,
+                "an archived agent left an ask unanswered"
+            );
+        }
+        if picked == Pick::Review {
+            review(model);
+        }
         return;
     }
     let picked = (kernel.pick)(
@@ -120,7 +152,16 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
         model.approval_queued,
     );
     if matches!(model.control.mode, Mode::Done) {
-        assert!(picked == Pick::Nothing, "turn after completion");
+        assert!(
+            picked == Pick::Nothing || picked == Pick::Review,
+            "turn after completion"
+        );
+        if model.control.review {
+            assert!(
+                picked == Pick::Review,
+                "a completed agent left an ask unanswered"
+            );
+        }
     }
     if matches!(model.control.mode, Mode::Await(_)) {
         assert!(
@@ -132,7 +173,7 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
         Pick::Nothing => return,
         Pick::Review => {
             // Selection and completion leave the original worker parked.
-            model.control.review = kani::any();
+            review(model);
             return;
         }
         Pick::Resume => {}
@@ -173,6 +214,10 @@ fn check_alarm(kernel: Kernel, model: &Model) {
         model.pending,
     );
     assert!(set.is_some() == runnable, "lost or spurious wake-up");
+    assert!(
+        model.asks == 0 || control.review,
+        "an ask was accepted and then dropped"
+    );
     if control.closed || matches!(control.mode, Mode::Done) {
         assert!(!control.turn, "turn retained after completion or archive");
     }
@@ -187,6 +232,7 @@ fn exactly_once_and_never_loses_a_wake(kernel: Kernel) {
         approval_queued: false,
         pending: 0,
         reports: 0,
+        asks: 0,
     };
     for _ in 0..STEPS {
         let closed_before = model.control.closed;
@@ -240,6 +286,7 @@ fn archive_drains_and_reports_exactly_once(kernel: Kernel) {
         approval_queued: false,
         pending: 0,
         reports: 0,
+        asks: 0,
     };
     step(kernel, &mut model, Some(Admit::Archive), open_children);
     // Only the alarm wakes an archived agent that receives no further input.

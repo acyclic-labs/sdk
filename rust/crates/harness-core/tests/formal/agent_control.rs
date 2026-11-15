@@ -8,7 +8,9 @@
 //! - `ChildDone` is sent at most once, and exactly once after archive drains;
 //! - no turn runs or is retained after completion or archive;
 //! - no lost wake-up: whenever work is runnable without new input, an alarm is set;
-//! - every alarm is a real deadline (at least `CONTINUE_NOW`).
+//! - every alarm is a real deadline (at least `CONTINUE_NOW`);
+//! - no lost ask: an accepted ask stays queued for review until a review step
+//!   answers it, and a completed or archived agent still picks that review;
 //! - a condition wait parks only when its open children can meet it;
 //! - a condition wait starts no step for its arrivals; only its condition
 //!   (`satisfy`) or its deadline resumes it, and `satisfy` touches no other
@@ -52,13 +54,23 @@ fn released_generation_is_terminal_and_has_no_committed_turn() {
         input: false,
         review: kani::any(),
     };
-    for kind in [Admit::Input, Admit::Cancel, Admit::Archive] {
+    for kind in [Admit::Input, Admit::Cancel, Admit::Archive, Admit::Ask] {
         let admitted = production::admit(before, kind);
         assert_eq!(admitted.control.mode, Mode::Done);
-        assert!(!admitted.enqueue);
+        // Only an ask is queued, and only for the review that refuses it.
+        assert_eq!(admitted.enqueue, kind == Admit::Ask);
+        let review = admitted.control.review || admitted.enqueue;
         assert_eq!(
-            production::pick(admitted.control, true, true, true),
-            Pick::Nothing
+            production::pick(
+                Control {
+                    review,
+                    ..admitted.control
+                },
+                true,
+                true,
+                true
+            ),
+            if review { Pick::Review } else { Pick::Nothing }
         );
     }
     assert!(release::released(true, tail, base, actions));
