@@ -6,7 +6,7 @@ use futures::TryStreamExt as _;
 async fn large_retained_catalogs_chunk_and_replay_without_losing_source_keys() -> Result<()> {
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
-    let root = tempfile::tempdir_in(".").map_err(storage)?;
+    let root = tempfile::tempdir().map_err(storage)?;
     let native = root.path().join("skills");
     for index in 0..192 {
         let directory = native.join(format!("skill-{index:03}-{}", "x".repeat(64)));
@@ -154,7 +154,7 @@ async fn large_retained_catalogs_chunk_and_replay_without_losing_source_keys() -
 async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()> {
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
-    let root = tempfile::tempdir_in(".").map_err(storage)?;
+    let root = tempfile::tempdir().map_err(storage)?;
     for name in ["greet2", "other"] {
         let directory = root.path().join("skills").join(name);
         std::fs::create_dir_all(&directory).map_err(storage)?;
