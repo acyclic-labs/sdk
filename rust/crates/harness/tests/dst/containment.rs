@@ -70,6 +70,49 @@ fn plan(origin: &str) -> Plan {
     }
 }
 
+/// The faulted turn's own outcome. A tool-level fault reaches the model,
+/// which finishes the turn. A model-level fault either fails the turn naming
+/// its cause or, when the harness retries a transient one, completes it with
+/// the plan's answer; nothing else is a contained fault.
+fn faulted(origin: &str, outcome: Option<&Prompted>) -> std::result::Result<(), String> {
+    let cause = match origin {
+        "rate_limit" => "rate limited",
+        "transport" => "connection reset",
+        "internal_error" => "provider internal error",
+        _ => return Ok(()),
+    };
+    let transient = origin != "internal_error";
+    match outcome {
+        Some(Prompted::Failed(message)) if message.contains(cause) => Ok(()),
+        Some(Prompted::Settled(text)) if transient && *text == done("f1") => Ok(()),
+        other => Err(format!("{origin} ended its turn as {other:?}")),
+    }
+}
+
+#[test]
+fn a_misreported_model_fault_is_not_contained() {
+    // Planted control: wrong outcomes must fail the containment check.
+    let wrong = [
+        ("internal_error", Some(Prompted::Settled(done("f1")))),
+        ("rate_limit", Some(Prompted::Failed("unrelated".into()))),
+        ("transport", Some(Prompted::Settled("other".into()))),
+        ("internal_error", None),
+    ];
+    for (origin, outcome) in wrong {
+        assert!(
+            faulted(origin, outcome.as_ref()).is_err(),
+            "{origin} {outcome:?}"
+        );
+    }
+    assert!(
+        faulted(
+            "internal_error",
+            Some(&Prompted::Failed("provider internal error".into()))
+        )
+        .is_ok()
+    );
+}
+
 pub(super) fn world(seed: u64, coverage: &mut Coverage) -> std::result::Result<(), String> {
     let origin = ORIGINS
         .get(usize::try_from(seed % ORIGINS.len() as u64).unwrap_or(0))
@@ -100,6 +143,7 @@ pub(super) fn world(seed: u64, coverage: &mut Coverage) -> std::result::Result<(
             if outcomes.last() != Some(&&Prompted::Settled(done("next"))) {
                 return Err(format!("{origin} reached the owner: {outcomes:?}"));
             }
+            faulted(origin, outcomes.first().copied())?;
             if matches!(origin, "tool_error" | "malformed_output") {
                 // A tool-level fault is the model's to read and correct.
                 if outcomes.first() != Some(&&Prompted::Settled(done("f1"))) {

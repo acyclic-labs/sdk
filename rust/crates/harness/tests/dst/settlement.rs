@@ -91,7 +91,7 @@ fn prompt(name: &str) -> (&'static str, String) {
 
 /// Effects equal visible successes: the edit applied once per successful
 /// edit, the file written iff a write succeeded, removed iff a remove did.
-fn effects_match(history: &[Settled]) -> std::result::Result<(), String> {
+fn effects_match(history: &[Settled], step_ran: bool) -> std::result::Result<(), String> {
     let successes = |name: &str| {
         history
             .iter()
@@ -105,8 +105,10 @@ fn effects_match(history: &[Settled]) -> std::result::Result<(), String> {
             .find(|settled| settled.call.name == "read" && settled.path() == Some(path))
             .ok_or_else(|| format!("the check never read {path}"))
     };
-    // Every entry must have worked: a world where all four tools fail
-    // would otherwise match unchanged files.
+    // Every entry must have worked when the step's turn finished: a world
+    // where all four tools fail would otherwise match unchanged files. A
+    // turn that failed visibly (duplicate call ids are refused whole) must
+    // instead have left no effect, which the checks below hold.
     let read = history
         .iter()
         .any(|settled| settled.path() == Some("a.txt") && settled.succeeded());
@@ -116,7 +118,7 @@ fn effects_match(history: &[Settled]) -> std::result::Result<(), String> {
         ("edit", successes("edit") > 0),
         ("remove", successes("remove") > 0),
     ] {
-        if !worked {
+        if step_ran && !worked {
             return Err(format!("no {entry} call succeeded: {history:?}"));
         }
     }
@@ -161,7 +163,11 @@ fn checked(incarnation: &oracle::Incarnation) -> std::result::Result<(), String>
         .requests
         .last()
         .ok_or("the check reached no model")?;
-    effects_match(&settlements(last)?)
+    let step_ran = incarnation
+        .prompts
+        .iter()
+        .any(|(outcome, _)| *outcome == Prompted::Settled(done("a1")));
+    effects_match(&settlements(last)?, step_ran)
 }
 
 pub(super) fn world(seed: u64, coverage: &mut Coverage) -> std::result::Result<(), String> {
