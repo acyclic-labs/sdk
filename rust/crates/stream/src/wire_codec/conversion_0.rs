@@ -560,13 +560,13 @@ pub fn commit_write_outcome_from_wire(
             if !receipt.matches_envelope(&envelope) {
                 return Err(StreamError::InvalidResponse);
             }
-            crate::AcceptedCommitOutcome::Committed { receipt, envelope }
+            Ok(crate::AcceptedCommit { receipt, envelope })
         }
         CommitOutcome::Conflict(conflicts) => {
             if envelope.is_some() {
                 return Err(StreamError::InvalidResponse);
             }
-            crate::AcceptedCommitOutcome::Conflict(conflicts)
+            Err(conflicts)
         }
     };
     Ok(crate::WriteOutcome::CommitAccepted(outcome))
@@ -578,10 +578,7 @@ pub fn commit_write_outcome_to_wire(
 ) -> Result<wire::CommitResponse, StreamError> {
     match outcome {
         crate::WriteOutcome::Commit(outcome) => Ok(commit_outcome_to_wire(outcome)),
-        crate::WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Committed {
-            receipt,
-            envelope,
-        }) => {
+        crate::WriteOutcome::CommitAccepted(Ok(crate::AcceptedCommit { receipt, envelope })) => {
             if !receipt.matches_envelope(&envelope) {
                 return Err(StreamError::InvalidResponse);
             }
@@ -589,7 +586,7 @@ pub fn commit_write_outcome_to_wire(
             response.envelope = Some(envelope_to_wire(envelope));
             Ok(response)
         }
-        crate::WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Conflict(conflicts)) => {
+        crate::WriteOutcome::CommitAccepted(Err(conflicts)) => {
             Ok(commit_outcome_to_wire(CommitOutcome::Conflict(conflicts)))
         }
         _ => Err(StreamError::InvalidResponse),

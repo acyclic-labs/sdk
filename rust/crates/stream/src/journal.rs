@@ -27,12 +27,10 @@ pub(crate) async fn replay(
         WriteOutcome::Append(crate::AppendOutcome::Committed(_))
         | WriteOutcome::Fork(_)
         | WriteOutcome::Commit(crate::CommitOutcome::Committed(_))
-        | WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Committed { .. }) => Ok(()),
+        | WriteOutcome::CommitAccepted(Ok(..)) => Ok(()),
         WriteOutcome::Append(crate::AppendOutcome::TailConflict { .. })
         | WriteOutcome::Commit(crate::CommitOutcome::Conflict(_))
-        | WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Conflict(_)) => {
-            Err(StreamError::InvalidResponse)
-        }
+        | WriteOutcome::CommitAccepted(Err(_)) => Err(StreamError::InvalidResponse),
     }
 }
 

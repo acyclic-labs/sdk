@@ -489,9 +489,7 @@ impl<J: CommandJournal> Replicated<J> {
                         outcome: WriteOutcome::Append(AppendOutcome::Committed(_))
                             | WriteOutcome::Fork(_)
                             | WriteOutcome::Commit(CommitOutcome::Committed(_))
-                            | WriteOutcome::CommitAccepted(
-                                crate::AcceptedCommitOutcome::Committed { .. }
-                            ),
+                            | WriteOutcome::CommitAccepted(Ok(..)),
                         ..
                     }) | Err(StreamError::IdempotencyMismatch)
                 );

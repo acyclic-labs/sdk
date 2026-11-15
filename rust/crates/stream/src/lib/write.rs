@@ -27,28 +27,28 @@ pub enum WriteOutcome {
 }
 
 /// A committed fact selected at the original publication boundary. This is
-/// observation data, not authorization to any path or resource.
+/// observation data, not authorization to any path or resource. Both projections
+/// describe the same installed publication. Record values share their original
+/// immutable byte owners; no payload is reconstructed.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AcceptedCommitOutcome {
-    /// Both projections describe the same installed publication. Record values
-    /// share their original immutable byte owners; no payload is reconstructed.
-    Committed {
-        /// Compact assigned ranges and authority revision.
-        receipt: CommitReceipt,
-        /// Original accepted records and fork cuts.
-        envelope: CommittedEnvelope,
-    },
-    /// Conditions refused without publishing or spending the retry identity.
-    Conflict(Vec<CommitConflict>),
+pub struct AcceptedCommit {
+    /// Compact assigned ranges and authority revision.
+    pub receipt: CommitReceipt,
+    /// Original accepted records and fork cuts.
+    pub envelope: CommittedEnvelope,
 }
+
+/// Successful original acceptance, or conditions refused without publishing or
+/// spending the retry identity.
+pub type AcceptedCommitOutcome = Result<AcceptedCommit, Vec<CommitConflict>>;
+
+const _: () = assert!(core::mem::size_of::<WriteOutcome>() <= 272);
 
 impl WriteOutcome {
     pub(crate) fn commit_receipt(&self) -> Option<&CommitReceipt> {
         match self {
             Self::Commit(CommitOutcome::Committed(receipt))
-            | Self::CommitAccepted(AcceptedCommitOutcome::Committed { receipt, .. }) => {
-                Some(receipt)
-            }
+            | Self::CommitAccepted(Ok(AcceptedCommit { receipt, .. })) => Some(receipt),
             _ => None,
         }
     }

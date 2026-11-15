@@ -254,10 +254,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         .provider
                         .commit_accepted(publication.request.clone())
                         .await?;
-                    if matches!(
-                        &outcome,
-                        acyclic_stream::AcceptedCommitOutcome::Committed { .. }
-                    ) {
+                    if matches!(&outcome, Ok(..)) {
                         self.confirm_durable(publication).await?;
                     }
                     outcome
@@ -266,9 +263,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         .commit_accepted(publication.into_request()?)
                         .await?
                 };
-                let acyclic_stream::AcceptedCommitOutcome::Committed { receipt, envelope } =
-                    outcome
-                else {
+                let Ok(acyclic_stream::AcceptedCommit { receipt, envelope }) = outcome else {
                     return Err(Error::Conflict);
                 };
                 // Both views come from the original acceptance or exact-key replay.

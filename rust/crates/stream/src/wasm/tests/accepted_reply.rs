@@ -1,7 +1,6 @@
 use super::super::*;
 use crate::{
-    AcceptedCommitOutcome, CommitCondition, CommitEffect, CommitMutation, CommitRequest,
-    IdempotencyKey,
+    AcceptedCommit, CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey,
 };
 use std::cell::Cell;
 
@@ -120,7 +119,7 @@ async fn accepted_reply_metadata_fits_both_browser_adapters_and_exact_replay() {
             accepted
         );
         assert_eq!(remote.commit_accepted(replay).await.unwrap(), accepted);
-        let AcceptedCommitOutcome::Committed { receipt, envelope } = accepted else {
+        let Ok(AcceptedCommit { receipt, envelope }) = accepted else {
             panic!("original accepted publication");
         };
         assert!(receipt.matches_envelope(&envelope));

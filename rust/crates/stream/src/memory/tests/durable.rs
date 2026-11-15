@@ -406,10 +406,7 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
                     assert_eq!(receipt.committed_at_micros, at_millis * 1000);
                     receipt.commit_id
                 }
-                WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Committed {
-                    receipt,
-                    envelope,
-                }) => {
+                WriteOutcome::CommitAccepted(Ok(crate::AcceptedCommit { receipt, envelope })) => {
                     assert!(receipt.matches_envelope(&envelope));
                     assert_eq!(envelope, core.read_commit(receipt.commit_id).await?);
                     assert_eq!(receipt.committed_at_micros, at_millis * 1000);

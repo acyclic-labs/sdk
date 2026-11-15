@@ -637,9 +637,7 @@ impl MemoryStream {
                 let CommitOutcome::Conflict(conflicts) = result else {
                     return Err(StreamError::InvalidResponse);
                 };
-                crate::WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Conflict(
-                    conflicts,
-                ))
+                crate::WriteOutcome::CommitAccepted(Err(conflicts))
             } else {
                 crate::WriteOutcome::Commit(result)
             };
@@ -820,11 +818,9 @@ fn commit_projection(
     envelope: Option<CommittedEnvelope>,
 ) -> Result<crate::WriteOutcome, StreamError> {
     match (outcome, envelope) {
-        (CommitOutcome::Committed(receipt), Some(envelope)) => {
-            Ok(crate::WriteOutcome::CommitAccepted(
-                crate::AcceptedCommitOutcome::Committed { receipt, envelope },
-            ))
-        }
+        (CommitOutcome::Committed(receipt), Some(envelope)) => Ok(
+            crate::WriteOutcome::CommitAccepted(Ok(crate::AcceptedCommit { receipt, envelope })),
+        ),
         (outcome, None) => Ok(crate::WriteOutcome::Commit(outcome)),
         _ => Err(StreamError::InvalidResponse),
     }

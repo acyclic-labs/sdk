@@ -858,7 +858,7 @@ mod indexed_trace_tests {
                     } else {
                         assert!(matches!(
                             root.within(provider.commit_accepted(request)).await?,
-                            AcceptedCommitOutcome::Committed { .. }
+                            Ok(..)
                         ));
                     }
                 }
@@ -972,7 +972,7 @@ mod indexed_trace_tests {
             if accepted {
                 assert!(matches!(
                     root.within(provider.commit_accepted(request)).await?,
-                    AcceptedCommitOutcome::Committed { .. }
+                    Ok(..)
                 ));
             } else {
                 assert!(matches!(
@@ -1076,7 +1076,7 @@ mod indexed_trace_tests {
         let accepted = root
             .within(provider.commit_accepted(accepted_request.clone()))
             .await?;
-        assert!(matches!(accepted, AcceptedCommitOutcome::Committed { .. }));
+        assert!(matches!(accepted, Ok(..)));
         assert_eq!(
             root.within(provider.commit_accepted(accepted_request))
                 .await?,
