@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "features": [
+    {
+      "name": "context-management",
+      "placement": "off-turn",
+      "description": "Automatic context summaries written by a separate context-management call (seed sys/context-manager.md) when a turn's input outgrows the model window. Off sends every turn whole and lets the provider enforce its window.",
+      "on": {"flags": [], "home_files": {}},
+      "off": {"flags": ["--no-compaction"], "home_files": {}}
+    }
+  ]
+}

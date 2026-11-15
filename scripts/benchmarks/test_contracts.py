@@ -203,5 +203,20 @@ class BenchmarkContracts(unittest.TestCase):
         self.assertEqual(result.returncode, 7)
 
 
+    def test_negative_control_runner_reports_every_stale_anchor(self):
+        """One run shows every stale control instead of stopping at the first."""
+        from .negative_controls import evaluate
+        with tempfile.TemporaryDirectory(prefix="predictor-controls-") as temporary:
+            source = Path(temporary)
+            (source / "module.py").write_text("value = 1\n")
+            problems = evaluate([
+                ("first stale", "module.py", "value = 2", "value = 3", "unused.Case.test"),
+                ("second stale", "missing.py", "value = 1", "value = 3", "unused.Case.test"),
+            ], source)
+        self.assertEqual([label for label, _ in problems], ["first stale", "second stale"])
+        self.assertTrue(all("no longer targets one production boundary" in problem
+                            for _, problem in problems))
+
+
 if __name__ == "__main__":
     unittest.main()
