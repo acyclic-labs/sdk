@@ -132,12 +132,10 @@ impl HttpStream {
         StreamError,
     > {
         if let Some(provider) = &self.credential {
-            let token = provider
-                .resolve()
+            let token = crate::transport_credential::resolve(provider)
                 .await
                 .map_err(|error| StreamError::AccessDenied.with_source(error))?;
-            token
-                .check()
+            crate::transport_credential::check(&token)
                 .await
                 .map_err(|error| StreamError::AccessDenied.with_source(error))?;
             Ok((
@@ -207,8 +205,7 @@ impl HttpStream {
             .map_err(|error| StreamError::Unavailable.with_source(error))?;
         if response.status().as_u16() == 401 {
             if let Some(lease) = &lease {
-                lease
-                    .reject()
+                crate::transport_credential::reject(lease)
                     .await
                     .map_err(|error| StreamError::AccessDenied.with_source(error))?;
             }
@@ -234,8 +231,7 @@ impl HttpStream {
         }
 
         if success && let Some(lease) = &lease {
-            lease
-                .check()
+            crate::transport_credential::check(lease)
                 .await
                 .map_err(|error| StreamError::AccessDenied.with_source(error))?;
         }
@@ -261,8 +257,7 @@ impl HttpStream {
             ))
         })?;
         if let Some(lease) = &lease {
-            lease
-                .check()
+            crate::transport_credential::check(lease)
                 .await
                 .map_err(|error| StreamError::AccessDenied.with_source(error))?;
         }

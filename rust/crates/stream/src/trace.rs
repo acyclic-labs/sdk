@@ -9,9 +9,9 @@ use crate::RetainedRecord;
 #[cfg(feature = "serde")]
 mod context;
 #[cfg(feature = "serde")]
-pub(crate) use context::{any_source, inherit, is_source, records, source_matches};
+pub use context::{accompany_sync, observe, observe_outcome, observe_sync, observe_value};
 #[cfg(feature = "serde")]
-pub use context::{observe, observe_outcome, observe_sync, observe_value};
+pub(crate) use context::{any_source, inherit, inherit_stream, is_source, records, source_matches};
 #[cfg(feature = "serde")]
 mod guard;
 #[cfg(feature = "serde")]

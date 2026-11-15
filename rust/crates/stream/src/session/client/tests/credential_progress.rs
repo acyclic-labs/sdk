@@ -217,9 +217,9 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                         matches!(
                             operation.now_or_never(),
                             Some(Err(transport::Failure {
-                                error: StreamError::AccessDenied,
+                                error,
                                 transient: false,
-                            }))
+                            })) if error.category() == StreamError::AccessDenied
                         ),
                         "{stage}: source change must cancel the owner wait immediately"
                     );
@@ -230,9 +230,9 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                     assert!(matches!(
                         operation.now_or_never(),
                         Some(Err(transport::Failure {
-                            error: StreamError::AccessDenied,
+                            error,
                             transient: false,
-                        }))
+                        })) if error.category() == StreamError::AccessDenied
                     ));
                 }
                 _ => {

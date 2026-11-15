@@ -107,7 +107,29 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
         let source = stream::unfold(receive, |mut receive| async {
             receive.recv().await.map(|frame| (frame, receive))
         });
-        let mut response = endpoint.session(Box::pin(source)).await?;
+        #[cfg(feature = "serde")]
+        let trace = crate::Stream::new(
+            Arc::new(MemoryStream::default()),
+            "agents/session-auth/trace",
+        )?;
+        #[cfg(feature = "serde")]
+        let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [97; 16]));
+        #[cfg(feature = "serde")]
+        let root = recorder
+            .start(
+                "owner",
+                crate::trace::Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        #[cfg(feature = "serde")]
+        let parent = root.id();
+        let connection = endpoint.session(Box::pin(source));
+        #[cfg(feature = "serde")]
+        let connection = root.within(connection);
+        let mut response = connection.await?;
         assert!(matches!(
             response
                 .next()
@@ -142,6 +164,42 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
                 .next()
                 .await
                 .ok_or("session result producer ended")?;
+            #[cfg(feature = "serde")]
+            if revision == 1 {
+                use crate::trace::{Mechanism, Observation, Outcome, TraceQuery};
+                let mut query = TraceQuery::new(
+                    trace.follow(0, Default::default()).await?,
+                    Default::default(),
+                );
+                let mut completed = 0;
+                let mut checks = 0;
+                let mut resolutions = 0;
+                while completed < 6 {
+                    if let Some(Observation::Completed {
+                        start,
+                        bytes,
+                        result,
+                        ..
+                    }) = query.next().await?
+                    {
+                        completed += 1;
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(start.mechanism, Mechanism::AuthCheck);
+                        assert_eq!(result, Outcome::Succeeded);
+                        assert_eq!(bytes, None);
+                        match start.name.as_str() {
+                            "credential.resolve" => resolutions += 1,
+                            "credential.check" => checks += 1,
+                            _ => {
+                                return Err(
+                                    "unexpected credential rejection before lease changed".into()
+                                );
+                            }
+                        }
+                    }
+                }
+                assert_eq!((resolutions, checks), (1, 5));
+            }
             if revision == 1 || change == "unchanged" {
                 assert!(
                     matches!(result?.into_wire().body, Some(Body::InterestApplied(applied)) if applied.revision == revision)
@@ -151,9 +209,9 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
                 assert!(matches!(
                     result,
                     Err(transport::Failure {
-                        error: StreamError::AccessDenied,
+                        error,
                         transient: false,
-                    })
+                    }) if error.category() == StreamError::AccessDenied
                 ));
                 assert_eq!(
                     fixture.counts.received_bytes.load(Ordering::Relaxed),
@@ -170,10 +228,7 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
             assert!(
                 matches!(
                     waiting.now_or_never(),
-                    Some(Some(Err(transport::Failure {
-                        error: StreamError::AccessDenied,
-                        transient: false,
-                    })))
+                    Some(Some(Err(transport::Failure { error, transient: false }))) if error.category() == StreamError::AccessDenied
                 ),
                 "source notification must retire an idle session without another frame"
             );
@@ -185,6 +240,8 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
         // Local dispatch refusal never records an authenticated rejection.
         let current = cache.resolve().await?;
         cache.check(&current)?;
+        #[cfg(feature = "serde")]
+        let _completion = root.finish_submitted(None, crate::trace::Outcome::Succeeded)?;
     }
     Ok(())
 }
@@ -365,6 +422,10 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
             Err(error) => error,
         };
         assert_eq!(error.category(), StreamError::AccessDenied);
+        assert!(
+            std::iter::successors(std::error::Error::source(&error), |source| source.source())
+                .any(|source| source.is::<grpc::CredentialError>())
+        );
         let original = tonic::Status::from(&error);
         assert_eq!(original.code(), tonic::Code::Unauthenticated);
         assert_eq!(original.message(), "credential provider failed");

@@ -448,6 +448,12 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         Reply::ok(response.clone()),
     ])
     .await;
+    let resolutions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls = resolutions.clone();
+    server.client.credential = Some(CredentialProvider::new(move || {
+        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        futures::future::ready(Ok("original-secret-credential".into()))
+    }));
     let trace = Stream::new(Arc::new(MemoryStream::default()), "agents/http/trace")?;
     // No active owner: no diagnostic publication, even for an actual exchange.
     assert_eq!(
@@ -513,7 +519,11 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
     );
     let mut completed = 0;
     let mut exchanges = 0;
-    while completed < 2 {
+    let mut auth_checks = 0;
+    let mut auth_parents = Vec::new();
+    let mut exchange_id = None;
+    let mut refused_credentials = 0;
+    while completed < 7 {
         if let Some(Observation::Completed {
             id,
             start,
@@ -523,9 +533,31 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         }) = query.next().await?
         {
             completed += 1;
-            assert_eq!(result, Outcome::Succeeded);
-            if id != parent {
+            if start.mechanism != Mechanism::AuthCheck {
+                assert_eq!(result, Outcome::Succeeded);
+            }
+            if start.mechanism == Mechanism::AuthCheck {
+                if result == Outcome::Unsettled {
+                    assert_eq!(start.name, "credential.resolve");
+                    assert_eq!(start.parent, Some(parent));
+                    refused_credentials += 1;
+                } else {
+                    assert_eq!(result, Outcome::Succeeded);
+                }
+                auth_checks += 1;
+                auth_parents.push(start.parent);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some(if start.name == "credential.resolve" {
+                        "original_credential_source_admission"
+                    } else {
+                        "original_credential_lease_valid_at_boundary"
+                    })
+                );
+                assert_eq!(bytes, None);
+            } else if id != parent {
                 exchanges += 1;
+                exchange_id = Some(id);
                 assert_eq!(start.parent, Some(parent));
                 assert_eq!(start.name, "stream.http.request");
                 assert_eq!(start.mechanism, Mechanism::RoundTrip);
@@ -538,5 +570,22 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         }
     }
     assert_eq!(exchanges, 1);
+    assert_eq!(auth_checks, 5);
+    assert_eq!(refused_credentials, 1);
+    assert_eq!(
+        auth_parents
+            .iter()
+            .filter(|value| **value == Some(parent))
+            .count(),
+        3
+    );
+    assert_eq!(
+        auth_parents
+            .iter()
+            .filter(|value| **value == exchange_id)
+            .count(),
+        2
+    );
+    assert_eq!(resolutions.load(std::sync::atomic::Ordering::SeqCst), 2);
     Ok(())
 }
