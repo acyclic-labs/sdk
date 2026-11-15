@@ -265,10 +265,12 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             projection!(PathHead, c::head_from_wire, c::head_to_wire)
         }
         "acyclic.stream.v1.ForkOrigin" => {
-            projection!(ForkOrigin, c::fork_origin_from_wire, c::fork_origin_to_wire)
+            projection!(ForkOrigin, c::fork_origin_from_wire, |value| {
+                c::fork_origin_to_wire(&value)
+            })
         }
         "acyclic.stream.v1.Revision" => {
-            projection!(Revision, c::revision_from_wire, |value| {
+            projection!(Revision, |value| c::revision_from_wire(&value), |value| {
                 c::revision_to_wire(&value)
             })
         }
@@ -293,7 +295,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             admission!(w::HeadsResponse, c::heads_from_response)
         }
         "acyclic.stream.v1.TailResponse" => {
-            admission!(w::TailResponse, c::watermarks_from_wire)
+            admission!(w::TailResponse, |value| c::watermarks_from_wire(&value))
         }
         "acyclic.stream.v1.ReadKeySeek" => {
             project::<w::ReadKeySeek, _, _>(

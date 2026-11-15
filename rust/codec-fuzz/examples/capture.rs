@@ -887,7 +887,7 @@ fn capture_protobuf(
 
 #[cfg(feature = "storage-schedules")]
 fn capture_storage(manifest: &mut String) -> Result<(), Box<dyn Error>> {
-    for (name, bytes) in acyclic_codec_fuzz::object_schedule::seeds() {
+    for (name, bytes) in acyclic_codec_fuzz::object_schedule::seeds()? {
         save(
             "object_schedule",
             &name,

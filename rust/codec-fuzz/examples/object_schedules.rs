@@ -15,7 +15,7 @@ fn replay() -> Result<(), Box<dyn Error>> {
         if names.is_empty() {
             return Err("seed selection needs names; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into());
         }
-        let producers = seeds();
+        let producers = seeds()?;
         return replay_inputs(names.iter().map(|name| {
             producers
                 .iter()

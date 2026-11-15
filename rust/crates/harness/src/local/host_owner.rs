@@ -143,7 +143,7 @@ impl HostWorkspaceOwner {
         // The original dispatch future owns this diagnostic lifetime. The key
         // is the same opaque identity the file bridge publishes and answers.
         Box::pin(acyclic_stream::trace::observe(
-            acyclic_stream::trace::Request {
+            &acyclic_stream::trace::Request {
                 name: "native-workspace-dispatch",
                 mechanism: acyclic_stream::trace::Mechanism::Wait,
                 parent: None,

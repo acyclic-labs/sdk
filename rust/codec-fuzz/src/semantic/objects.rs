@@ -422,10 +422,13 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                 ready(client.put_manifest(manifest())).inspect(|put| {
                     let original = wire::PutResponse::decode(bytes)
                         .expect("admitted original manifest publication wire");
+                    let canonical = manifest()
+                        .encode()
+                        .expect("default manifest encodes within its limits");
                     publication(
                         put,
                         &original,
-                        (Digest::of(&manifest().encode()), BODY.len() as u64),
+                        (Digest::of(&canonical), BODY.len() as u64),
                     );
                 })
             });
