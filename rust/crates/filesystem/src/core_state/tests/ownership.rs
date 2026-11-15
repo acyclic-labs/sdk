@@ -131,6 +131,22 @@ fn measured_admission_reads(root: &Path) -> u64 {
     measured_admission(root).backend_read_operations
 }
 
+/// Backend reads one metered claim check of `root`'s owner record makes.
+#[track_caller]
+fn measured_check_reads(root: &Path) -> u64 {
+    let cancellation = crate::CancellationToken::new();
+    let work =
+        crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation).unwrap();
+    let lock = acyclic_native_runtime::FileLock::try_acquire(
+        std::fs::File::open(root.join(OWNER_LOCK)).unwrap(),
+        acyclic_native_runtime::FileLockMode::Shared,
+    )
+    .unwrap();
+    acyclic_native_runtime::StoreClaim::check_metered(&lock, &work.runtime_meter()).unwrap();
+    drop(lock);
+    work.receipt().backend_read_operations
+}
+
 #[test]
 fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -138,6 +154,7 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     measured_admission_reads(&root);
     // The lock, and the claim check's read of an empty record.
     let free = measured_admission_reads(&root);
+    let empty = measured_check_reads(&root);
 
     // A dead owner's record stays behind, so each check also probes it.
     let mut child = acyclic_native_runtime::ProcessTree::spawn(
@@ -149,12 +166,15 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     acyclic_test_support::readiness::wait(&mut std::io::BufReader::new(output), "OWNER_READY")?;
     child.terminate_descendants()?;
     child.wait(Duration::from_secs(5))?;
+    let probing = measured_check_reads(&root);
     let probed = measured_admission_reads(&root);
-    // One probe while the owner's process lock remains, three once another
-    // process's sweep has removed it.
-    assert!(
-        probed > free && probed - free < acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
-        "free admission {free} reads, after a dead owner {probed}"
+    // Admission charges exactly the physical reads its claim check makes,
+    // every record read and owner probe, on the admission's own ledger.
+    assert!(probing > empty, "a dead owner's check probes it");
+    assert_eq!(
+        probed - free,
+        probing - empty,
+        "free admission {free} reads, after a dead owner {probed};          its check {empty} reads, after a dead owner {probing}"
     );
     Ok(())
 }
