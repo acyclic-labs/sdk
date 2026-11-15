@@ -261,7 +261,7 @@ fn issued(metadata: &MetadataMap) -> Result<Option<Revision>, Error> {
                 .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
             acyclic_stream::wire::Revision::decode(bytes)
                 .ok()
-                .and_then(|revision| revision_from_wire(revision).ok())
+                .and_then(|revision| revision_from_wire(&revision).ok())
                 .ok_or_else(|| wire::ErrorCode::Unavailable.into())
         })
         .transpose()
