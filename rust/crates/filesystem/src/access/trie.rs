@@ -36,6 +36,7 @@ pub struct PathTrie {
     valid_until: Option<u64>,
     config: crate::VolumeConfig,
     volume: String,
+    reference: Option<String>,
     subject: (super::PrincipalKind, String),
     capability_binding: [u8; 32],
     policy_revision: Option<(
@@ -306,6 +307,7 @@ impl PathTrie {
             + self.rules.capacity() * size_of::<String>()
             + self.rules.iter().map(String::capacity).sum::<usize>()
             + self.volume.capacity()
+            + self.reference.as_ref().map_or(0, String::capacity)
             + self.subject.1.capacity()) as u64
             + self
                 .shared
@@ -341,6 +343,7 @@ impl PathTrie {
     pub(crate) fn same_authority(&self, other: &Self) -> bool {
         self.config == other.config
             && self.volume == other.volume
+            && self.reference == other.reference
             && self.subject == other.subject
             && self.capability_binding == other.capability_binding
     }
@@ -463,7 +466,8 @@ impl PathTrie {
             let bindings = resource
                 .volume
                 .len()
-                .checked_add(principal.id.len())
+                .checked_add(resource.reference.map_or(0, str::len))
+                .and_then(|bytes| bytes.checked_add(principal.id.len()))
                 .and_then(|bytes| bytes.checked_mul(2))
                 .and_then(|bindings| bindings.checked_add(bytes))
                 .ok_or(InvalidPolicy("glob compilation storage overflow"))?;
@@ -504,6 +508,7 @@ impl PathTrie {
                 valid_until,
                 config: resource.config,
                 volume: resource.volume.to_owned(),
+                reference: resource.reference.map(str::to_owned),
                 subject: (principal.kind, principal.id.clone()),
                 capability_binding: super::capability::binding(capability)?,
                 policy_revision: None,
