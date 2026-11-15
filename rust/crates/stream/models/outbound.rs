@@ -1,4 +1,5 @@
 use super::{Arc, Ordering, wake_probe};
+use acyclic_stream::StreamCategory;
 use std::future::Future as _;
 
 #[test]
