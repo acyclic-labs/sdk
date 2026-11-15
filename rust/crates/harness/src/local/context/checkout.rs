@@ -101,7 +101,7 @@ impl LocalHarness {
             directory: crate::context::native_discovery::LazyDiscovery {
                 view,
                 cut: cut.clone(),
-                work: &work,
+                cancellation: &cancellation,
             },
         };
         let instructions = crate::context::capture_instructions(
@@ -309,10 +309,10 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(Self::Revision, u32)>>> {
         Box::pin(async move {
             let cut = revision.unwrap_or(&self.directory.cut);
-            let mut accounting = acyclic_fs::kernel::KernelAccounting::native(
-                self.directory.work,
-                self.directory.work.cancellation(),
-            );
+            // Each stat and read is one unit of native work.
+            let work = &crate::context::native_discovery::native_work(self.directory.cancellation)?;
+            let mut accounting =
+                acyclic_fs::kernel::KernelAccounting::native(work, self.directory.cancellation);
             let Some(stat) = self
                 .directory
                 .view
@@ -350,10 +350,10 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                     "instruction archive exceeds path bound".into(),
                 ));
             }
-            let mut accounting = acyclic_fs::kernel::KernelAccounting::native(
-                self.directory.work,
-                self.directory.work.cancellation(),
-            );
+            // Each stat and read is one unit of native work.
+            let work = &crate::context::native_discovery::native_work(self.directory.cancellation)?;
+            let mut accounting =
+                acyclic_fs::kernel::KernelAccounting::native(work, self.directory.cancellation);
             let (bytes, _allocation) = match self
                 .directory
                 .view

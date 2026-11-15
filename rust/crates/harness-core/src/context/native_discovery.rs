@@ -21,7 +21,8 @@ pub type DiscoveryView = acyclic_fs::LazyWorkspace<
 /// record read or a published record chunk. Each unit has its own ledger, so
 /// every unit stays within the boundary budget however large the catalog it
 /// belongs to; the catalog as a whole is bounded only by its caller's limits.
-pub(crate) fn native_work(cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {
+#[doc(hidden)]
+pub fn native_work(cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {
     NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, cancellation)
         .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })
 }
