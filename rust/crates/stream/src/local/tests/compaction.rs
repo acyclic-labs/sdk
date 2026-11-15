@@ -1,5 +1,4 @@
 use super::*;
-use crate::NativeStreamProviderExt as _;
 use crate::{CommitMutation, Record};
 use futures::TryFutureExt as _;
 use std::time::Instant;
@@ -304,13 +303,24 @@ fn unrelated_mutations_complete_before_snapshot_device_release() -> Result {
                     assert!(matches!(outcome, AppendOutcome::Committed(_)));
                 } else {
                     let meter = Arc::new(crate::test_meter::Meter::local());
+                    let prepared = index % 3 == 2;
                     let request = CommitRequest {
                         deadline_unix_millis: None,
                         effects: vec![crate::CommitEffect::hard(
-                            vec![crate::CommitCondition::Absent { path: path.clone() }],
+                            if prepared {
+                                vec![
+                                    crate::CommitCondition::Tail {
+                                        path: StreamPath::new("volumes/project/commits")?,
+                                        expected: 2,
+                                    },
+                                    crate::CommitCondition::Tail { path: path.clone(), expected: 0 },
+                                ]
+                            } else {
+                                vec![crate::CommitCondition::Absent { path: path.clone() }]
+                            },
                             vec![crate::CommitMutation::Append {
                                 path,
-                                records: vec![Bytes::from_static(b"tool intent").into()],
+                                records: vec![if prepared { Bytes::new() } else { Bytes::from_static(b"tool intent") }.into()],
                             }],
                         )],
                         idempotency_key: IdempotencyKey::unique(),
