@@ -76,7 +76,9 @@ impl RegionScroll {
         let Some(checked) = Band::checked(self, shown.area, shown.content.len()) else {
             return Ok(false);
         };
-        let band = &mut shown.content[checked.cells];
+        let Some(band) = shown.content.get_mut(checked.cells) else {
+            return Ok(false);
+        };
         let exposed = if checked.up {
             band.rotate_left(checked.moved);
             band.len() - checked.moved..band.len()
@@ -84,7 +86,11 @@ impl RegionScroll {
             band.rotate_right(checked.moved);
             0..checked.moved
         };
-        for cell in &mut band[exposed] {
+        for cell in band
+            .iter_mut()
+            .skip(exposed.start)
+            .take(exposed.len())
+        {
             cell.reset();
         }
         // DECSTBM bounds the scroll to the band, SU/SD scroll it, and the

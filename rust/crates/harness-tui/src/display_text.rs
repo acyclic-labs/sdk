@@ -7,7 +7,10 @@ pub fn display_text_prefix(bytes: &[u8], complete: bool) -> Result<&str, std::st
     match std::str::from_utf8(bytes) {
         Ok(text) => Ok(text),
         Err(error) if !complete && error.error_len().is_none() => {
-            std::str::from_utf8(&bytes[..error.valid_up_to()])
+            match bytes.get(..error.valid_up_to()) {
+                Some(valid) => std::str::from_utf8(valid),
+                None => Err(error),
+            }
         }
         Err(error) => Err(error),
     }

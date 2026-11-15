@@ -61,7 +61,9 @@ impl Hyperlinks {
             }
             let index = usize::from(*y - next.area.y) * usize::from(next.area.width)
                 + usize::from(*x - next.area.x);
-            let cell = &mut next.content[index];
+            let Some(cell) = next.content.get_mut(index) else {
+                continue;
+            };
             if cell.diff_option == CellDiffOption::None {
                 cell.diff_option = CellDiffOption::AlwaysUpdate;
                 repaired.push(index);

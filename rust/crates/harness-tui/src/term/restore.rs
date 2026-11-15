@@ -136,16 +136,27 @@ impl<W: Write> RestoreGuard<W> {
                 .iter()
                 .position(|(journaled, _, _)| group.contains(journaled))
         });
-        let original = existing.map_or(displaced, |index| self.undo[index].2);
+        let original = match existing {
+            Some(index) => match self.undo.get(index) {
+                Some((_, _, original)) => *original,
+                None => return Err(io::ErrorKind::InvalidData.into()),
+            },
+            None => displaced,
+        };
         // One record per exclusive selection, installed before writing. Keeping
         // intermediate switches as separate undos could replay a failed inner
         // undo AFTER the original selection had already been restored.
-        let index = existing.unwrap_or_else(|| {
-            self.undo.push((mode, Cow::Owned(Vec::new()), original));
-            self.undo.len() - 1
-        });
-        self.undo[index].0 = mode;
-        let pending = self.undo[index].1.to_mut();
+        let index = match existing {
+            Some(index) => index,
+            None => {
+                self.undo.push((mode, Cow::Owned(Vec::new()), original));
+                self.undo.len() - 1
+            }
+        };
+        let Some((journaled, pending, _)) = self.undo.get_mut(index) else {
+            return Err(io::ErrorKind::InvalidData.into());
+        };
+        *journaled = mode;
         let compact_from = if original.is_none() { pending.len() } else { 0 };
         if existing.is_none() || original.is_none() {
             // Until SET completes, either selection can be active. Append to
@@ -176,7 +187,10 @@ impl<W: Write> RestoreGuard<W> {
         // A completed SET proves the new exclusive selection displaced every
         // earlier candidate. Only now may its undo replace the pending union.
         if compact_from != 0 {
-            let pending = self.undo[index].1.to_mut();
+            let Some((_, pending, _)) = self.undo.get_mut(index) else {
+                return Err(io::ErrorKind::InvalidData.into());
+            };
+            let pending = pending.to_mut();
             let length = pending.len() - compact_from;
             pending.copy_within(compact_from.., 0);
             pending.truncate(length);
@@ -243,9 +257,9 @@ const END_SYNCHRONIZED: (u16, &[u8]) = (2026, b"[?2026l");
 const BEGIN_SYNCHRONIZED: &[u8] = b"[?2026h";
 /// Full-screen margins (DECSTBM without parameters). Margins are not a DEC
 /// mode; 0 is no mode number, so the key cannot collide with one.
-const RESET_MARGINS: (u16, &'static [u8]) = (0, b"\x1b[r");
+const RESET_MARGINS: (u16, &[u8]) = (0, b"\x1b[r");
 /// Undo records scoped to one frame: undone when the frame is cut short.
-const CLOSE_LINK: (u16, &'static [u8]) = (u16::MAX, b"\x1b]8;;\x1b\\");
+const CLOSE_LINK: (u16, &[u8]) = (u16::MAX, b"\x1b]8;;\x1b\\");
 const FRAME_SCOPED: [u16; 3] = [END_SYNCHRONIZED.0, RESET_MARGINS.0, CLOSE_LINK.0];
 
 /// Frame presentation under the restoration journal: a synchronized update's
@@ -334,7 +348,10 @@ impl<W: Write> RestoreGuard<W> {
         {
             // CAN cancels any partial escape sequence the failed write left open.
             self.writer.write_all(b"\x18")?;
-            self.writer.write_all(&self.undo[index].1)?;
+            let Some((_, pending, _)) = self.undo.get(index) else {
+                break;
+            };
+            self.writer.write_all(pending)?;
             self.writer.flush()?;
             self.undo.remove(index);
         }

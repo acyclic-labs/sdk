@@ -279,12 +279,18 @@ impl Probe {
             // always precedes unread bytes; the same framer consumes the body
             // using the buffer retained from the preceding envelope.
             for at in 7..frame.len().saturating_sub(2) {
-                let byte = frame[at];
+                let Some(byte) = frame.get(at).copied() else {
+                    break;
+                };
                 if byte == 0x1b && !previous_escape {
                     previous_escape = true;
                     continue;
                 }
-                frame[decoded] = byte;
+                let (_, rest) = frame.split_at_mut(decoded);
+                let Some(slot) = rest.first_mut() else {
+                    break;
+                };
+                *slot = byte;
                 decoded += 1;
                 previous_escape = false;
             }
