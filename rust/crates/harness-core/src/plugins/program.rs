@@ -54,6 +54,36 @@ impl LoadedProgram {
         &self.definition
     }
 
+    /// A hook's admitted source selector; `None` for a tool.
+    pub fn on(&self) -> Option<&config::ProgramTrigger> {
+        self.on.as_ref()
+    }
+
+    /// The hook's pinned command as one wildcard rule of the stock hook
+    /// runner, which owns its exactly-once outcome, failure policy and
+    /// workspace capture. Authority still comes from admitting
+    /// [`bind_hook`](Self::bind_hook)'s canonical call.
+    ///
+    /// # Errors
+    /// Refuses a tool manifest.
+    pub fn hook_rules(&self) -> Result<crate::hooks::Hooks> {
+        let on = self
+            .on
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("tool programs have no hook source".into()))?;
+        let mut hooks = crate::hooks::Hooks::default();
+        hooks.add_rules([crate::hooks::HookRule {
+            on: on.event(),
+            matcher: String::new(),
+            hooks: vec![crate::hooks::HookSpec {
+                run: self.run.clone(),
+                timeout_ms: None,
+                failure: crate::hooks::HookFailure::Report,
+            }],
+        }])?;
+        Ok(hooks)
+    }
+
     /// Binds a hook through the same canonical shell adapter as authored tools.
     /// Retains the selected source and its original native credit independently
     /// of the executable's transferred ownership, including on failed binding.

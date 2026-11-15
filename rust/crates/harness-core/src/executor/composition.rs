@@ -435,6 +435,11 @@ impl Executor for StockExecutor {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn source_hook<'a>(&'a self, hook: &'a crate::agent::HookTrigger) -> BoxFuture<'a, Result<()>> {
+        Box::pin(StockExecutor::source_hook(self, hook))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,

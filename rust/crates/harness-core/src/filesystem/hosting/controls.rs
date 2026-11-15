@@ -14,12 +14,18 @@ use acyclic_stream::{
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod hooks;
+
 const PREFIX: &str = "file-controls-";
 const PAUSE: &str = "file-pause";
 const STOP: &str = "file-stop";
 const STEER: &str = "file-steer";
 const CLOSED: &str = "file-closed";
 const JOBS: &str = "job-created";
+/// The home volume's publications; `hooks/<name>` programs register below.
+const HOOKS: &str = "file-hooks";
+const VERSION: u32 = 6;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +36,25 @@ struct State {
     steer: Option<crate::resources::GenerationRef>,
     source_sequence: Option<u64>,
     paused: bool,
+    /// The agent's workspace table at creation: its home holds `hooks/`, and
+    /// a file selector names one of these volumes.
+    volumes: Vec<WorkspaceEntry>,
+    /// Registered `hooks/<name>` sources, each followed as `hook/<name>`.
+    hooks: std::collections::BTreeMap<String, Registered>,
+}
+
+/// One admitted source selector. Its subscription keeps its cursor while the
+/// followed path is unchanged, so editing a program never replays records.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Registered {
+    /// The followed stream: a volume's changes path or a stream path.
+    path: String,
+    /// `FileChanged` or `StreamRecord`.
+    event: crate::config::HookEvent,
+    /// A file selector's volume key prefix and the bound root that the
+    /// agent sees it under; `None` for a stream.
+    keys: Option<(String, String)>,
 }
 
 impl State {
@@ -54,7 +79,7 @@ impl State {
 fn codec() -> CodecIdentity {
     CodecIdentity {
         name: "harness.file-controls".into(),
-        version: "5".into(),
+        version: VERSION.to_string(),
     }
 }
 fn guest(error: impl std::fmt::Display) -> GuestError {
@@ -87,6 +112,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             STEER,
             CLOSED,
             JOBS,
+            HOOKS,
             super::quiet::ACTIVITY,
             super::quiet::COMPLETED,
             super::quiet::LIFECYCLE,
@@ -97,6 +123,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         .collect();
         let mut code = blake3::Hasher::new();
         code.update(include_bytes!("controls.rs"));
+        code.update(include_bytes!("controls/hooks.rs"));
         code.update(include_bytes!("quiet.rs"));
         code.update(include_bytes!("../../supervision/tool_jobs.rs"));
         Ok(Self {
@@ -151,6 +178,20 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         acyclic_fs::session::changes_path(&self.volumes.filesystem, volume).map_err(Into::into)
     }
 
+    /// The home volume's changes path, followed for `hooks/<name>` programs.
+    fn hook_source(&self, volumes: &[WorkspaceEntry]) -> Result<Option<StreamPath>, Error> {
+        if cfg!(target_arch = "wasm32") {
+            return Ok(None);
+        }
+        match volumes
+            .iter()
+            .find(|volume| volume.role == crate::agent::WorkspaceRole::Home)
+        {
+            Some(home) => Ok(Some(self.source(home.volume()?).map_err(turn)?)),
+            None => Ok(None),
+        }
+    }
+
     async fn transition(
         &self,
         delivery: Delivery,
@@ -172,7 +213,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             .ok_or(Error::Record("control checkpoint codec"))?;
         let mut state: State = serde_json::from_slice(&checkpoint.bytes)
             .map_err(|_| Error::Record("control checkpoint"))?;
-        if state.version != 5 || self.actor(&delivery.actor, &state.agent)? != delivery.actor {
+        if state.version != VERSION || self.actor(&delivery.actor, &state.agent)? != delivery.actor
+        {
             return Err(Error::Record("control checkpoint identity"));
         }
         let (subscription, sequence) = delivery
@@ -209,6 +251,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 record,
             )?);
             return state.transition(effects, false);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if subscription == HOOKS {
+            return self.register_hooks(state, &delivery, record).await;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(name) = subscription.strip_prefix(hooks::HOOK) {
+            return self.deliver_hook(state, &delivery, name, record).await;
         }
         let mut retired = subscription == CLOSED;
         if !retired {
@@ -470,58 +520,74 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     Err(error) => return Err(error),
                 }
                 if !lifecycle.is_empty() {
-                    let path = crate::supervision::streams::path(&state.agent).map_err(turn)?;
-                    let fence = match lifecycle_fence {
-                        Some(fence) => fence,
-                        None => match self.store.provider().tail(path.clone()).await {
-                            Ok(expected) => CommitCondition::Tail {
-                                path: path.clone(),
-                                expected,
-                            },
-                            Err(acyclic_stream::StreamError::NotFound) => {
-                                CommitCondition::Absent { path: path.clone() }
-                            }
-                            Err(error) => return Err(Error::Stream(error)),
-                        },
-                    };
-                    let mut records = Vec::new();
-                    for event in lifecycle {
-                        let record = crate::supervision::Event {
-                            version: 1,
-                            agent: state.agent.clone(),
-                            run: None,
-                            source: position.clone(),
-                            event,
-                        };
-                        let admission = matches!(
-                            record.event,
-                            crate::supervision::Lifecycle::Paused { .. }
-                                | crate::supervision::Lifecycle::Resumed { .. }
-                                | crate::supervision::Lifecycle::Stopped { .. }
-                        );
-                        let bytes = serde_json::to_vec(&record)
-                            .map_err(|_| Error::Record("control event"))?;
-                        let record = if admission {
-                            acyclic_stream::AppendRecord::latest(
-                                bytes,
-                                crate::supervision::OWNER_CONTROL_KEY,
-                                false,
-                            )
-                            .map_err(Error::Stream)?
-                        } else {
-                            bytes.into()
-                        };
-                        records.push(record);
-                    }
-                    effects.push(CommitEffect::hard(
-                        vec![fence],
-                        vec![CommitMutation::Append { path, records }],
-                    ));
+                    effects.push(
+                        self.lifecycle(&state.agent, &position, lifecycle, lifecycle_fence)
+                            .await?,
+                    );
                 }
                 state.source_sequence = Some(sequence);
             }
         }
         state.transition(effects, retired)
+    }
+}
+
+impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Controls<P, O> {
+    /// One append of `events` to the agent's lifecycle stream, fenced by
+    /// `fence` or else by the stream's observed tail.
+    async fn lifecycle(
+        &self,
+        agent: &AgentPath,
+        position: &crate::supervision::Position,
+        events: Vec<crate::supervision::Lifecycle>,
+        fence: Option<CommitCondition>,
+    ) -> Result<CommitEffect, Error> {
+        let path = crate::supervision::streams::path(agent).map_err(turn)?;
+        let fence = match fence {
+            Some(fence) => fence,
+            None => match self.store.provider().tail(path.clone()).await {
+                Ok(expected) => CommitCondition::Tail {
+                    path: path.clone(),
+                    expected,
+                },
+                Err(acyclic_stream::StreamError::NotFound) => {
+                    CommitCondition::Absent { path: path.clone() }
+                }
+                Err(error) => return Err(Error::Stream(error)),
+            },
+        };
+        let mut records = Vec::new();
+        for event in events {
+            let record = crate::supervision::Event {
+                version: 1,
+                agent: agent.clone(),
+                run: None,
+                source: position.clone(),
+                event,
+            };
+            let admission = matches!(
+                record.event,
+                crate::supervision::Lifecycle::Paused { .. }
+                    | crate::supervision::Lifecycle::Resumed { .. }
+                    | crate::supervision::Lifecycle::Stopped { .. }
+            );
+            let bytes = serde_json::to_vec(&record).map_err(|_| Error::Record("control event"))?;
+            let record = if admission {
+                acyclic_stream::AppendRecord::latest(
+                    bytes,
+                    crate::supervision::OWNER_CONTROL_KEY,
+                    false,
+                )
+                .map_err(Error::Stream)?
+            } else {
+                bytes.into()
+            };
+            records.push(record);
+        }
+        Ok(CommitEffect::hard(
+            vec![fence],
+            vec![CommitMutation::Append { path, records }],
+        ))
     }
 }
 
@@ -625,12 +691,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
         let source = self.source(private.volume()?).map_err(turn)?;
         let actor = self.actor(within, agent)?;
         let state = State {
-            version: 5,
+            version: VERSION,
             agent: agent.clone(),
             private: private.clone(),
             steer: Default::default(),
             source_sequence: None,
             paused: false,
+            volumes: volumes.to_vec(),
+            hooks: Default::default(),
         };
         let subscriptions = [PAUSE, STOP, STEER]
             .into_iter()
@@ -662,6 +730,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                     },
                 ),
             ])
+            .chain(self.hook_source(volumes)?.map(|path| {
+                (
+                    HOOKS.into(),
+                    Subscription {
+                        path,
+                        cursor: 0,
+                        paused: false,
+                    },
+                )
+            }))
             .collect();
         Ok(vec![
             self.store

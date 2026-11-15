@@ -406,6 +406,13 @@ mod tests {
                 id: intent(),
                 event: Box::new(file()),
             }),
+            InboxRecord::SourceHook(crate::agent::HookTrigger {
+                name: widest(FIXTURE_LABEL_BYTES),
+                event: crate::config::HookEvent::StreamRecord,
+                path: widest(FIXTURE_PATH_BYTES),
+                sequence: u64::MAX,
+                operation: crate::OperationId::from_bytes([u8::MAX; 16]),
+            }),
             InboxRecord::Awaited,
             InboxRecord::ChildSettled(crate::agent::ChildSettled {
                 child: deepest.clone(),

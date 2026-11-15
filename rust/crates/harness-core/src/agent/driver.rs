@@ -635,6 +635,57 @@ impl<H: TurnHost> ExecutorDriver<H> {
     pub const fn new(host: H) -> Self {
         Self { host }
     }
+
+    /// Runs one registered program for its selected source record in the
+    /// agent's ordinary turn context, without a model request. The turn
+    /// identity derives from the record's delivery identity, so a redelivered
+    /// or rebuilt step reopens the same journal and the hook runner's
+    /// retained outcome keeps execution exactly once. A definitive refusal
+    /// settles the event without failing the agent.
+    async fn source_hook(
+        &self,
+        agent: &AgentState,
+        (inbox, cursor): (u64, u64),
+        input: &TurnInput,
+        hook: &super::HookTrigger,
+        stop: acyclic_actors::guest::CancellationToken,
+    ) -> Result<TurnStep, Error> {
+        let turn = turn_id(agent, input)?;
+        let content = model_input_at(&agent.path, inbox, input)?;
+        let Some(open) = opened(
+            self.host
+                .open(
+                    agent,
+                    TurnIdentity::new(turn, inbox, cursor),
+                    &content,
+                    stop.clone(),
+                )
+                .await,
+            &stop,
+        )?
+        else {
+            return Ok(cancelled_open(agent, inbox));
+        };
+        let ran = opened(
+            crate::core::until_turn_stopped(Some(stop.clone()), open.executor.source_hook(hook))
+                .await,
+            &stop,
+        );
+        match ran {
+            Ok(Some(())) => self.host.settle(agent, turn).await.map_err(host_error)?,
+            Ok(None) => return Ok(cancelled_open(agent, inbox)),
+            Err(error) if error.uncertain() => return Err(error),
+            Err(error) => {
+                tracing::warn!(hook = %hook.name, %error, "source hook refused");
+            }
+        }
+        Ok(TurnStep {
+            checkpoint: None,
+            outs: Vec::new(),
+            wait: Wait::Input,
+            drops: None,
+        })
+    }
 }
 
 /// Operation identity of the turn `input` starts. Every input is unique within an
@@ -1354,6 +1405,11 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     return Ok(cancelled_open(agent, inbox));
                 };
                 return settle_selection(agent, &open, turn, inbox, input, refusal).await;
+            }
+            if let TurnInput::SourceHook { hook } = &input {
+                return self
+                    .source_hook(agent, (inbox, cursor), &input, hook, cancellation)
+                    .await;
             }
             if agent.turn.is_none()
                 && let Some(notices) = super::NoticeSelection::pending(agent)

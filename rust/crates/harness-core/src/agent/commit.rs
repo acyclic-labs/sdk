@@ -74,6 +74,7 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
         InboxRecord::Hook(_) => "hook",
         InboxRecord::Spawn(_) => "spawn",
         InboxRecord::Context(_) => "context",
+        InboxRecord::SourceHook(_) => "source-hook",
     };
     let intent = intent_of(record);
     let mut request = CommitRequest {
@@ -131,6 +132,7 @@ fn intent_of(record: &InboxRecord) -> String {
         InboxRecord::Hook(hook) => hook.id.as_str().to_owned(),
         InboxRecord::Spawn(spawn) => spawn.id.as_str().to_owned(),
         InboxRecord::Context(request) => request.id.as_str().to_owned(),
+        InboxRecord::SourceHook(hook) => hook.operation.to_string(),
         InboxRecord::ForkAdopted(adopted) => adopted.agent.as_str().to_owned(),
     }
 }

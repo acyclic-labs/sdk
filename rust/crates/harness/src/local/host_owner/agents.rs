@@ -415,7 +415,8 @@ impl HostDriver {
             TurnInput::Approval { .. }
             | TurnInput::ApprovalRequested { .. }
             | TurnInput::Notice { .. }
-            | TurnInput::Context { .. } => {
+            | TurnInput::Context { .. }
+            | TurnInput::SourceHook { .. } => {
                 return Ok(idle(Vec::new()));
             }
             TurnInput::Hook { host, id, event } if host == HOST => {

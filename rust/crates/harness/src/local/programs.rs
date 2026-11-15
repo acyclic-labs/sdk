@@ -37,44 +37,67 @@ impl ToolSource for Programs {
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Arc<Tool>>>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            if !crate::contract::is_valid_component_label(name)
-                || crate::conversation::validate_content_path(name, &mut None).is_err()
-                || name.contains('/')
-            {
-                return Ok(None);
-            }
-            let local = self
-                .local
-                .upgrade()
-                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
-            let volumes = agent_settings::Volumes {
-                decisions: crate::config::SettingsAdmissions::new(
-                    local.agent_stream.as_ref().ok_or_else(|| {
-                        Error::Unsupported("settings needs its owner stream".into())
-                    })?,
-                ),
-                files: &local.files,
-                verifier: &self.verifier,
-                signed: &self.scope,
-                home: &self.home,
-                seed: (&local.seed.0, &local.seed.1),
-                configuration: local.harness.issuer_configuration(),
-                maximum_bytes: local.limits.file_bytes,
-            };
-            let attempt = io.map(crate::executor::PreparationIo::scoped).transpose()?;
-            let temporary = attempt.as_ref();
-            let directory = crate::executor::with_history_io(temporary, |work| {
-                crate::executor::preparation_format(format_args!("tools/{name}"), work)
-            })?;
-            let entrypoint = crate::executor::with_history_io(temporary, |work| {
-                crate::executor::preparation_format(format_args!("{directory}/program.ts"), work)
-            })?;
-            let tree = agent_settings::Tree::new(&volumes, &entrypoint, io).await?;
-            match crate::plugins::load_program(&tree, &directory).await {
-                Ok(program) => program.bind(Arc::clone(&self.shell)).map(Some),
-                Err(Error::NotFound(path)) if path == entrypoint => Ok(None),
-                Err(error) => Err(error),
+            match self.program("tools", name, io).await? {
+                Some(program) => program.bind(Arc::clone(&self.shell)).map(Some),
+                None => Ok(None),
             }
         })
+    }
+
+    fn load_hook<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> BoxProviderFuture<'a, Result<Option<crate::plugins::LoadedProgram>>> {
+        Box::pin(self.program("hooks", name, None))
+    }
+}
+
+impl Programs {
+    /// One `tools/<name>` or `hooks/<name>` program from the agent's layered
+    /// home at its current generation, or `None` when it is absent.
+    async fn program(
+        &self,
+        kind: &str,
+        name: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<crate::plugins::LoadedProgram>> {
+        if !crate::contract::is_valid_component_label(name)
+            || crate::conversation::validate_content_path(name, &mut None).is_err()
+            || name.contains('/')
+        {
+            return Ok(None);
+        }
+        let local = self
+            .local
+            .upgrade()
+            .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
+        let volumes = agent_settings::Volumes {
+            decisions: crate::config::SettingsAdmissions::new(
+                local.agent_stream.as_ref().ok_or_else(|| {
+                    Error::Unsupported("settings needs its owner stream".into())
+                })?,
+            ),
+            files: &local.files,
+            verifier: &self.verifier,
+            signed: &self.scope,
+            home: &self.home,
+            seed: (&local.seed.0, &local.seed.1),
+            configuration: local.harness.issuer_configuration(),
+            maximum_bytes: local.limits.file_bytes,
+        };
+        let attempt = io.map(crate::executor::PreparationIo::scoped).transpose()?;
+        let temporary = attempt.as_ref();
+        let directory = crate::executor::with_history_io(temporary, |work| {
+            crate::executor::preparation_format(format_args!("{kind}/{name}"), work)
+        })?;
+        let entrypoint = crate::executor::with_history_io(temporary, |work| {
+            crate::executor::preparation_format(format_args!("{directory}/program.ts"), work)
+        })?;
+        let tree = agent_settings::Tree::new(&volumes, &entrypoint, io).await?;
+        match crate::plugins::load_program(&tree, &directory).await {
+            Ok(program) => Ok(Some(program)),
+            Err(Error::NotFound(path)) if path == entrypoint => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 }

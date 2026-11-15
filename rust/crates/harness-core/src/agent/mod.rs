@@ -131,9 +131,9 @@ pub use machine::{
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, Cancellation, ChildDone, ChildSettled,
     ChildSettlement, ChildWake, ChildWakes, Closed, ContextAction, ContextRequest, Control,
-    CreationConfig, ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
-    MAX_RECORD_BYTES, Membership, Message, NoticePayload, Phase, RECORD_VERSION, Sender,
-    SpawnContext, SpawnRequest, SpawnTemplates, StatusRecord, UnsupportedRecordVersion,
+    CreationConfig, ForkAdopted, Hook, HookTrigger, InboxRecord, IntentId, MAX_INTENT_BYTES,
+    MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, Membership, Message, NoticePayload, Phase, RECORD_VERSION,
+    Sender, SpawnContext, SpawnRequest, SpawnTemplates, StatusRecord, UnsupportedRecordVersion,
     decode_record,
 };
 pub use reply::{Reply, SteeringReply, reply};
