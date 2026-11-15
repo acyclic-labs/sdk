@@ -44,12 +44,12 @@ fn squeeze(text: &str) -> String {
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         match (c, chars.peek()) {
-            ('/', Some('/')) => {
+            ('/', Some(&'/')) => {
                 chars.by_ref().take_while(|c| *c != '\n').for_each(drop);
                 spaced = true;
                 continue;
             }
-            ('/', Some('*')) => {
+            ('/', Some(&'*')) => {
                 chars.next();
                 let (mut depth, mut last) = (1, ' ');
                 for c in chars.by_ref() {
@@ -79,15 +79,19 @@ fn squeeze(text: &str) -> String {
         // A string or character literal is copied through its closing quote. A lifetime has
         // no closing quote within two characters and is copied as written.
         if c == '"' {
-            let stem = squeezed[..squeezed.len() - 1].trim_end_matches('#');
-            let hashes = squeezed.len() - 1 - stem.len();
-            let prefix = &stem[stem.trim_end_matches(word).len()..];
-            if matches!(prefix, "r" | "br" | "cr") {
+            let before = &squeezed[..squeezed.len() - 1];
+            let stem = before.trim_end_matches('#');
+            let (opened, hashes) = (squeezed.len(), before.len() - stem.len());
+            let raw = matches!(
+                &stem[stem.trim_end_matches(word).len()..],
+                "r" | "br" | "cr"
+            );
+            if raw {
                 // A raw string ends at a quote followed by its own number of hashes.
                 let close = format!("\"{}", "#".repeat(hashes));
                 for c in chars.by_ref() {
                     squeezed.push(c);
-                    if squeezed.ends_with(&close) && squeezed.len() > stem.len() + 2 * hashes + 1 {
+                    if squeezed.len() > opened + hashes && squeezed.ends_with(&close) {
                         break;
                     }
                 }
