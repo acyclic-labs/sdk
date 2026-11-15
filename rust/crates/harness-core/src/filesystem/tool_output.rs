@@ -27,6 +27,20 @@ pub struct AgentObservation {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
+    /// Original publication stream on the same authority owner as this volume.
+    pub(in crate::filesystem) fn volume_changes(
+        &self,
+        volume: &VolumeRef,
+    ) -> Result<acyclic_stream::StreamPath> {
+        let (name, _) = self.volume_creation(volume)?;
+        let volume = self
+            .filesystem
+            .workspace_id(name)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .volume_id();
+        acyclic_fs::session::changes_path(&self.filesystem, volume).map_err(Into::into)
+    }
+
     /// Native enrollment derives an [`AgentObservation`] of `agent`, whose output volume is
     /// `volume`, from `authority`'s scope at `clock`'s time. With `calls`, the
     /// credential also invokes that actor resource, the hosting server of
@@ -67,7 +81,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         volume: &VolumeRef,
         prefix: &str,
         clock: Arc<dyn UnixMillisClock>,
-    ) -> Result<AgentObservation> {
+    ) -> Result<(AgentObservation, acyclic_fs::session::ChangeSelection)> {
         if authority.scope.agent() != Some(crate::AgentId::from_bytes(agent.id_bytes())) {
             return Err(Error::Unauthorized(
                 "a directory observation derives from its original agent scope".into(),
@@ -77,29 +91,33 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             .issuer
             .native()
             .ok_or_else(|| Error::Invalid("source enrollment requires native custody".into()))?;
-        let resource = self
-            .observation_directory_resource(authority, volume, prefix)
+        let selection = self
+            .observation_directory_selection(authority, volume, prefix)
             .await?;
+        let resource = selection.resource().to_owned();
         let (credential, principal) = issuer.resource_credential(
             &authority.scope,
             &[(&resource, true, &["fs/list"])],
             issuer.audience_resource()?,
             seconds(clock.as_ref()),
         )?;
-        Ok(AgentObservation {
-            resource,
-            credential,
-            principal,
-            authority: Arc::new(session_authority(issuer, clock)?),
-        })
+        Ok((
+            AgentObservation {
+                resource,
+                credential,
+                principal,
+                authority: Arc::new(session_authority(issuer, clock)?),
+            },
+            selection,
+        ))
     }
 
-    async fn observation_directory_resource(
+    async fn observation_directory_selection(
         &self,
         authority: &AgentAuthority<'_>,
         volume: &VolumeRef,
         prefix: &str,
-    ) -> Result<String> {
+    ) -> Result<acyclic_fs::session::ChangeSelection> {
         ContentGrant::verify_directory_read(
             &authority.verifier,
             &authority.scope,
@@ -141,7 +159,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 ));
             }
         }
-        acyclic_fs::session::resource(workspace.id().volume_id(), prefix)
+        let config = workspace.volume_config();
+        let path = acyclic_fs::kernel::NamespacePath::from_text_in_profile(
+            &format!("/{prefix}"),
+            config.profile,
+            config.limits,
+        )
+        .map_err(|error| Error::Invalid(format!("directory observation path: {error}")))?;
+        acyclic_fs::session::ChangeSelection::new(workspace.id().volume_id(), &path, config)
             .map_err(|error| Error::Invalid(format!("directory observation resource: {error}")))
     }
 
@@ -205,8 +230,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 ));
             }
             let resource = self
-                .observation_directory_resource(authority, volume, TOOL_OUTPUT)
+                .observation_directory_selection(authority, volume, TOOL_OUTPUT)
                 .await?;
+            let resource = resource.resource().to_owned();
             let stream = |path: std::result::Result<
                 acyclic_stream::StreamPath,
                 crate::agent::Error,

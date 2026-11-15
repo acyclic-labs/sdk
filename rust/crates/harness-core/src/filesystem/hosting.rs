@@ -53,6 +53,8 @@ mod controls;
 mod input_preview;
 mod journal;
 pub(super) mod policy;
+#[cfg(not(target_arch = "wasm32"))]
+mod programs;
 mod quiet;
 mod run_admission;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -496,6 +498,7 @@ where
             issuer.clone(),
             admission.clone(),
             volumes.clone(),
+            turner.clone(),
             maximum_bytes,
             turns.actors,
         )?);

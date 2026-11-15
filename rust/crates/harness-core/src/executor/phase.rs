@@ -12,7 +12,7 @@ impl PreDispatchFailure {
         &self.message
     }
 
-    pub(super) fn into_error(self) -> Error {
+    pub(crate) fn into_error(self) -> Error {
         match self.original {
             Some(error) => *error,
             None => Error::Invalid(self.message),

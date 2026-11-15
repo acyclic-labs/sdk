@@ -3,14 +3,18 @@ use crate::kernel::NamespacePath;
 use crate::{VolumeConfig, VolumeId};
 use acyclic_stream::{FollowFilter, StreamError, wire};
 
-pub(super) struct Selection {
+/// Indexed candidates for one native filesystem subtree. This selector grants
+/// no authority: consumers must read candidates through the owning filesystem's
+/// authenticated projection before disclosing publication facts.
+pub struct ChangeSelection {
     resource: String,
     path: NamespacePath,
     filter: FollowFilter,
 }
 
-impl Selection {
-    pub(super) fn new(
+impl ChangeSelection {
+    /// Selects the producer's index buckets using the immutable volume semantics.
+    pub fn new(
         volume: VolumeId,
         path: &NamespacePath,
         config: VolumeConfig,
@@ -69,15 +73,23 @@ impl Selection {
         })
     }
 
-    pub(super) fn filter(&self) -> &FollowFilter {
+    /// Indexed wake selection, including referenced namespace deltas.
+    pub fn filter(&self) -> &FollowFilter {
         &self.filter
     }
 
-    pub(super) fn path(&self) -> &NamespacePath {
+    /// Original complete path, retained beyond any truncated index key.
+    pub fn path(&self) -> &NamespacePath {
         &self.path
     }
 
-    pub(super) fn contains(&self, resource: &str) -> bool {
+    /// Canonical resource under the volume's native case semantics.
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
+
+    /// Tests the lossless namespace boundary after candidate selection.
+    pub fn contains(&self, resource: &str) -> bool {
         resource
             .strip_prefix(self.resource.as_str())
             .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
@@ -136,7 +148,7 @@ mod tests {
             let path = |text: &str| {
                 NamespacePath::from_text_in_profile(text, config.profile, config.limits).unwrap()
             };
-            let selected = Selection::new(volume, &path("/watched"), config).unwrap();
+            let selected = ChangeSelection::new(volume, &path("/watched"), config).unwrap();
             for (text, expected) in [
                 ("/watched", true),
                 ("/watched/nested", true),
@@ -162,7 +174,7 @@ mod tests {
             let common = vec!["component"; 130].join("/");
             let selected_path = path(&format!("/{common}/a"));
             let outside_path = path(&format!("/{common}/b"));
-            let selected = Selection::new(volume, &selected_path, config).unwrap();
+            let selected = ChangeSelection::new(volume, &selected_path, config).unwrap();
             let key = crate::publication_changes::entry::key(&outside_path, config);
             let headers = acyclic_stream::RecordHeaders::new(
                 vec![bytes::Bytes::copy_from_slice(key.slice()).into()],

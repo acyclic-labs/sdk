@@ -11,7 +11,7 @@ pub(super) struct Projection<'a> {
     pub config: VolumeConfig,
     pub trie: &'a PathTrie,
     pub authorization: &'a acyclic_stream::session::ResourceAuthorization,
-    pub selected: Option<&'a super::subtree::Selection>,
+    pub selected: Option<&'a super::subtree::ChangeSelection>,
     pub requested: &'a acyclic_stream::FollowFilter,
 }
 
@@ -397,14 +397,15 @@ mod tests {
             .unwrap(),
             FollowUpdate::Progress { next: 4, .. }
         ));
-        let selected = super::super::subtree::Selection::new(volume, &full, config).unwrap();
+        let selected = super::super::subtree::ChangeSelection::new(volume, &full, config).unwrap();
         let outside = NamespacePath::from_text_in_profile(
             &format!("/{}/outside", text.rsplit_once('/').unwrap().0),
             config.profile,
             config.limits,
         )
         .unwrap();
-        let outside = super::super::subtree::Selection::new(volume, &outside, config).unwrap();
+        let outside =
+            super::super::subtree::ChangeSelection::new(volume, &outside, config).unwrap();
         assert!(outside.filter().matches(&record.headers));
         // Inherited records retain the ancestor appender while authorization
         // still applies to the executing volume's resources.

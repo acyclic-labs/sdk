@@ -65,6 +65,7 @@ pub(super) struct Controls<P: AuthorityProvider + ?Sized + 'static, O: 'static> 
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
     volumes: Arc<Host<P, O>>,
+    turns: Arc<Turner<P, O>>,
     store: Store<P>,
     composer: std::sync::OnceLock<std::sync::Weak<dyn acyclic_actors::guest::Composer>>,
     maximum_bytes: Option<u64>,
@@ -78,10 +79,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         issuer: RuntimeAuthority,
         admission: TurnAdmission,
         volumes: Arc<Host<P, O>>,
+        turns: Arc<Turner<P, O>>,
         maximum_bytes: Option<u64>,
         limits: ActorLimits,
     ) -> Result<Self, Error> {
-        let external: Vec<String> = [
+        let mut external: Vec<String> = [
             PAUSE,
             STOP,
             STEER,
@@ -95,9 +97,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         .into_iter()
         .map(str::to_owned)
         .collect();
+        #[cfg(not(target_arch = "wasm32"))]
+        external.extend(super::programs::EXTERNAL.into_iter().map(str::to_owned));
+        let mut subscriptions = external.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        subscriptions.push(super::programs::REGISTRATION.into());
         let mut code = blake3::Hasher::new();
         code.update(include_bytes!("controls.rs"));
         code.update(include_bytes!("quiet.rs"));
+        #[cfg(not(target_arch = "wasm32"))]
+        code.update(include_bytes!("programs.rs"));
         code.update(include_bytes!("../../supervision/tool_jobs.rs"));
         Ok(Self {
             ordered: vec![PAUSE.into(), STOP.into(), STEER.into()],
@@ -106,6 +115,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             issuer,
             admission,
             volumes,
+            turns,
             maximum_bytes,
             manifest: Manifest {
                 code: acyclic_actors::domain::CodeSha256::try_from(
@@ -113,7 +123,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 )
                 .map_err(|_| Error::Record("control package digest"))?,
                 codec: codec(),
-                subscriptions: external.clone(),
+                subscriptions,
                 interrupts: vec![],
                 bindings: vec![],
                 limits,
@@ -141,20 +151,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
     }
 
     fn source(&self, volume: &VolumeRef) -> crate::Result<StreamPath> {
-        let (name, _) = self.volumes.volume_creation(volume)?;
-        let volume = self
-            .volumes
-            .filesystem
-            .workspace_id(name)
-            .map_err(|error| crate::Error::Invalid(error.to_string()))?
-            .volume_id();
-        acyclic_fs::session::changes_path(&self.volumes.filesystem, volume).map_err(Into::into)
+        self.volumes.volume_changes(volume)
     }
 
     async fn transition(
         &self,
         delivery: Delivery,
         checkpoint: Option<&Checkpoint>,
+        stop: acyclic_actors::guest::CancellationToken,
     ) -> Result<Transition, Error> {
         // The volume composer also owns these companions. Borrow its custody
         // only for this transition so the host does not retain an Arc cycle.
@@ -164,6 +168,18 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             .and_then(std::sync::Weak::upgrade)
             .ok_or(Error::Record("control composer is unavailable"))?;
         let store = self.store.clone().with_composer(composer);
+        #[cfg(not(target_arch = "wasm32"))]
+        if super::programs::handles(&delivery.actor) {
+            return super::programs::on_record(
+                &store,
+                &self.turns,
+                &self.volumes,
+                delivery,
+                checkpoint,
+                stop,
+            )
+            .await;
+        }
         if delivery.actor.id().starts_with(super::quiet::PREFIX) {
             return super::quiet::transition(&store, delivery, checkpoint).await;
         }
@@ -525,7 +541,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
     fn manifest(&self) -> &Manifest {
         &self.manifest
     }
-    fn admission_class(&self, _: &ActorReference) -> acyclic_actors::guest::AdmissionClass {
+    fn admission_class(&self, actor: &ActorReference) -> acyclic_actors::guest::AdmissionClass {
+        #[cfg(not(target_arch = "wasm32"))]
+        if actor.id().starts_with(super::programs::HOOK_PREFIX) {
+            return acyclic_actors::guest::AdmissionClass::Work;
+        }
         acyclic_actors::guest::AdmissionClass::Control
     }
     fn failure_owner(
@@ -564,6 +584,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
         id: &str,
         checkpoint: Option<&Checkpoint>,
     ) -> Result<Option<acyclic_stream::FollowFilter>, GuestError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if id == super::programs::SOURCE {
+            return super::programs::filter(id, checkpoint).map_err(guest);
+        }
         let key = if [
             super::quiet::ACTIVITY,
             super::quiet::COMPLETED,
@@ -592,9 +616,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
         &'a self,
         delivery: Delivery,
         checkpoint: Option<&'a Checkpoint>,
-        _: acyclic_actors::guest::CancellationToken,
+        stop: acyclic_actors::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
-        Box::pin(async move { self.transition(delivery, checkpoint).await.map_err(guest) })
+        Box::pin(async move {
+            self.transition(delivery, checkpoint, stop)
+                .await
+                .map_err(guest)
+        })
     }
 }
 
@@ -602,6 +630,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
     crate::agent::Companions for Controls<P, O>
 {
     fn handles(&self, actor: &ActorReference) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if super::programs::handles(actor) {
+            return true;
+        }
         actor.id().starts_with(PREFIX) || actor.id().starts_with(super::quiet::PREFIX)
     }
     fn create(
@@ -657,7 +689,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                 ),
             ])
             .collect();
-        Ok(vec![
+        let mut effects = vec![
             self.store
                 .create(
                     None,
@@ -677,6 +709,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
             self.store
                 .activation(&actor)
                 .map_err(|error| Error::Actor(Box::new(error)))?,
-        ])
+        ];
+        #[cfg(not(target_arch = "wasm32"))]
+        effects.extend(super::programs::create(
+            &self.store,
+            within,
+            agent,
+            volumes,
+        )?);
+        Ok(effects)
     }
 }

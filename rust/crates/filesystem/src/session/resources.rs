@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 mod metadata;
 mod policy;
 mod subtree;
+pub use subtree::ChangeSelection;
 
 /// Owning filesystem and its exact backing Streams provider. No policy query
 /// callback or caller-supplied principal can manufacture an allowing decision.
@@ -172,7 +173,7 @@ where
                 let scope = fs.authority_actor_scope();
                 let path = super::changes_path(&fs, volume_id)?;
                 let selected = selected
-                    .map(|path| subtree::Selection::new(volume_id, &path, volume.config))
+                    .map(|path| ChangeSelection::new(volume_id, &path, volume.config))
                     .transpose()?;
                 let filter = request
                     .authorization

@@ -62,7 +62,7 @@ async fn source_file_sessions_project_only_the_admitted_directory() -> TestResul
         )
         .await?;
     let end = bound.agents().provider().tail(source).await?;
-    let (client, resource) = bound
+    let (client, selection) = bound
         .turns()
         .file_source_session(&state, private, "watched")
         .await?;
@@ -78,7 +78,11 @@ async fn source_file_sessions_project_only_the_admitted_directory() -> TestResul
         config.limits,
     )?;
     let mut records = client
-        .follow_data(follow(resource), from, FollowFilter::default())
+        .follow_data(
+            follow(selection.resource().to_owned()),
+            from,
+            selection.filter().clone(),
+        )
         .await?;
     let mut seen = false;
     while let Some(data) = records.try_next().await? {

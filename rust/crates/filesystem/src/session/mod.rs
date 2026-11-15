@@ -20,4 +20,4 @@ pub fn changes_path<A: crate::AsyncAuthorityStore, O: 'static>(
     )
 }
 mod resources;
-pub use resources::ChangeProvider;
+pub use resources::{ChangeProvider, ChangeSelection};

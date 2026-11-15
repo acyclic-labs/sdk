@@ -94,14 +94,18 @@ where
     /// Observe file publications through the filesystem's existing resource
     /// projection and policy fence. The directory grant is checked before
     /// enrollment; finite event reads retain the original source sequence.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) async fn file_source_session(
         &self,
         agent: &AgentState,
         volume: &VolumeRef,
         prefix: &str,
-    ) -> Result<(acyclic_stream::session::Client, String)> {
+    ) -> Result<(
+        acyclic_stream::session::Client,
+        acyclic_fs::session::ChangeSelection,
+    )> {
         let (_, authority) = self.source_authority(agent).await?;
-        let observation = self
+        let (observation, selection) = self
             .host
             .directory_observation(
                 &authority,
@@ -122,7 +126,7 @@ where
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
         );
         client.register_credential(1, observation.credential.into())?;
-        Ok((client.select_credential(1), observation.resource))
+        Ok((client.select_credential(1), selection))
     }
 
     async fn source_authority<'a>(
