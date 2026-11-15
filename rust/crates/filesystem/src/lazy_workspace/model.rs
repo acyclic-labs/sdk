@@ -340,9 +340,11 @@ impl LazyWorkspaceState {
         }
         if prior.is_none() {
             let Some(parent) = parent else { return false };
+            // A cut projects the parent's current source epoch before any
+            // mutation persists it, so it may follow the durable source.
             if parent.schema_version != self.schema_version
                 || parent.workspace_id != origin.snapshot.workspace_id
-                || parent.source != origin.snapshot.source
+                || !origin.snapshot.source.follows(&parent.source)
                 || parent.overlay != origin.snapshot.overlay
                 || parent.shadows != origin.snapshot.shadows
                 || parent
