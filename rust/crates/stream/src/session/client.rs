@@ -5,7 +5,7 @@ use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 #[cfg(not(target_arch = "wasm32"))]
 use crate::grpc::ChannelConnector as Connect;
 #[cfg(all(any(test, loom), not(target_arch = "wasm32")))]

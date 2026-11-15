@@ -1,6 +1,6 @@
 //! Bounded crash-recoverable local Stream provider.
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 use crate::NativeStreamProvider as _;
 
 #[cfg(any(test, loom))]
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError};
 
 use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 use crate::{ForkRequest, OwnedBytes as Bytes};
 #[cfg(not(loom))]
 use acyclic_native_runtime::spawn_persistence as spawn_blocking;
@@ -34,7 +34,7 @@ pub(crate) mod parking_model;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod snapshot_ready;
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 use tracing::Instrument as _;
 use tracing::field::Empty;
 

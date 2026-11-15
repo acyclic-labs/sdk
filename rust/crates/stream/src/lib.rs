@@ -246,7 +246,7 @@ mod test_latency;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod test_meter;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod test_trace;
 
 #[cfg(test)]
