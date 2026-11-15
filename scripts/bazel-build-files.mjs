@@ -581,6 +581,8 @@ const files = new Map([
   ["BUILD.bazel", `${HEADER}\nexports_files(${list(["Cargo.lock", "Cargo.toml"])})\n${platformRules}${sourcesRule}${exportsRule("")}`],
 ]);
 for (const [owner, body] of bodies) files.set(`${owner}/BUILD.bazel`, body + exportsRule(owner));
+// Every file ends in exactly one newline, cut once here; check then fails on any other ending.
+for (const [file, text] of files) files.set(file, text.replace(/\n*$/, "\n"));
 // A generated file whose package left the workspace is stale.
 for (const file of execFileSync("git", ["ls-files", "*BUILD.bazel"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean)) {
   if (!files.has(file) && fs.readFileSync(path.join(root, file), "utf8").startsWith(HEADER)) files.set(file, null);
