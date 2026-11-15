@@ -213,7 +213,10 @@ impl NativeDemandReadMeter {
         let mut work = self.lock();
         work.scope(
             |work| &mut work.native_invocation,
-            native.invocation.as_ref().map(Arc::downgrade),
+            native
+                .invocation
+                .as_ref()
+                .map(|view| Arc::downgrade(view).into()),
             |work| work.check(),
         )?;
         if work.owns_native_checkout_token(token) || !token.accepts_native_original(self) {

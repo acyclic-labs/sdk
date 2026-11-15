@@ -26,8 +26,10 @@ enum LedgerState {
         std::sync::Arc<SharedAllocationState>,
         // Observes the same original producer after reply withdrawal. The
         // producer owns a Shared ledger, so this cannot form an Arc cycle.
+        // The producer is a separate subsystem's owner: a link names its auto
+        // traits so a ledger's are not re-derived through the producer graph.
         #[cfg(not(target_arch = "wasm32"))]
-        Option<std::sync::Arc<crate::demand::NativeDemandReadMeter>>,
+        Option<crate::materializer::Link<crate::demand::NativeDemandReadMeter>>,
     ),
 }
 

@@ -62,7 +62,7 @@ impl NativeAccounting {
         let super::super::LedgerState::Suspended(_, observer) = &mut allocations.state else {
             unreachable!("the original branch was suspended by handoff")
         };
-        *observer = Some(Arc::clone(&meter));
+        *observer = Some(Arc::clone(&meter).into());
         Ok(Self {
             work: crate::NativeMaterializationWork::from_meter(meter),
             baseline: Some(baseline),

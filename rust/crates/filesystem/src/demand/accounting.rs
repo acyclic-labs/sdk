@@ -13,8 +13,9 @@ pub struct DemandWork {
     pub(crate) original_work: Option<WorkCounters>,
     pub(super) allocations: AllocationLedger,
     pub(super) cancellation: CancellationToken,
-    pub(crate) native_resource: Option<Weak<NativeResourceAllowance>>,
-    pub(crate) native_invocation: Option<Weak<crate::materializer::NativeInvocationView>>,
+    pub(crate) native_resource: Option<crate::materializer::WeakLink<NativeResourceAllowance>>,
+    pub(crate) native_invocation:
+        Option<crate::materializer::WeakLink<crate::materializer::NativeInvocationView>>,
     pub(crate) capture_custody: Option<Weak<CaptureTransientCustody>>,
     pub(crate) recheck_items: bool,
     pub(super) roots: Admissions,
@@ -66,7 +67,11 @@ impl DemandWork {
         &self.cancellation
     }
     pub(crate) fn cancellation_tokens(&self) -> [CancellationToken; 2] {
-        match self.native_invocation.as_ref().and_then(Weak::upgrade) {
+        match self
+            .native_invocation
+            .as_ref()
+            .and_then(crate::materializer::WeakLink::upgrade)
+        {
             Some(view) => view
                 .cancellation_tokens(&self.cancellation)
                 .map(Clone::clone),
@@ -80,7 +85,11 @@ impl DemandWork {
         if self.roots.poisoned {
             return Err(DemandError::OriginalWorkPoisoned);
         }
-        if let Some(view) = self.native_invocation.as_ref().and_then(Weak::upgrade) {
+        if let Some(view) = self
+            .native_invocation
+            .as_ref()
+            .and_then(crate::materializer::WeakLink::upgrade)
+        {
             view.check_cancellation(&self.cancellation)?;
         } else {
             self.cancellation
@@ -97,7 +106,9 @@ impl DemandWork {
         Ok(())
     }
     pub(super) fn resource(&self) -> Option<Arc<NativeResourceAllowance>> {
-        self.native_resource.as_ref().and_then(Weak::upgrade)
+        self.native_resource
+            .as_ref()
+            .and_then(crate::materializer::WeakLink::upgrade)
     }
     fn admission(
         &mut self,
