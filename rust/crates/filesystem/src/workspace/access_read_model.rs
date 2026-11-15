@@ -57,6 +57,7 @@ fn view_with_expiry(head: Head, allowed: bool, expires_at: Option<u64>) -> PathT
             config: VolumeConfig::portable(crate::Lifecycle::Ephemeral),
             lineage: &[],
             volume: "model",
+            reference: None,
             generation: head.sequence.get(),
             head: head.sequence.get(),
             path: "",

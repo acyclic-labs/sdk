@@ -90,6 +90,7 @@ fn literal_view() -> Result<(Arc<CompiledPolicy>, PathTrie), InvalidPolicy> {
         config,
         lineage: &[],
         volume: "project",
+        reference: None,
         generation: 1,
         head: 1,
         path: &path,

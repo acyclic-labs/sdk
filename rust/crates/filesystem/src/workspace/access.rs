@@ -129,6 +129,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 crate::access::AccessBinding {
                     principal,
                     capability,
+                    reference: None,
                     facts: crate::access::AuthenticatedFacts::Coarse,
                     generation: None,
                     context: Context {
