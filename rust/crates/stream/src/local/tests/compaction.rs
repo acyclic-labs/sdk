@@ -249,6 +249,19 @@ fn unrelated_mutations_complete_before_snapshot_device_release() -> Result {
     else {
         return Err("seed was not committed".into());
     };
+    // Prepared appends reserve existing streams. Empty forks provide those
+    // original namespace entries without adding records to the measured cut.
+    for index in [2, 5] {
+        let destination = StreamPath::new(format!("agents/worker-{index}/execution"))?;
+        provider.fork(ForkRequest {
+            source: path.clone(),
+            destination: destination.clone(),
+            at_tail: Some(0),
+            exclude: Vec::new(),
+            idempotency_key: IdempotencyKey::unique(),
+        }).await?;
+        assert_eq!(provider.tail(destination).await?, 0);
+    }
     let (entered, held) = tokio::sync::oneshot::channel();
     let (release, device) = std::sync::mpsc::channel();
     *JOURNAL_COMPACT_BLOCKER
