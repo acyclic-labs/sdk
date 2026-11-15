@@ -816,7 +816,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     );
     // A digest-only projection of this actual reference must fail before IO.
     let mut digest_only = committed.clone();
-    let generation = crate::filesystem::bounded_io::generation_version(committed.version(), None)?;
+    let generation = storage.host.file_generation_id(&committed, None)?;
     digest_only.pin_version(hex::encode(generation.digest().as_bytes()), &mut None)?;
     let writes = committed_io.receipt().backend_write_operations;
     assert!(matches!(

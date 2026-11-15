@@ -108,6 +108,112 @@ async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_over
     Ok(())
 }
 
+// A file read at a private cut names that cut, so feeding its reference back
+// reads the same bytes even after an authored write replaces the path.
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn a_private_cut_read_names_its_cut_and_rereads_the_same_bytes() -> TestResult {
+    use crate::conversation::{ContentAccess, ContentGrant, VolumeOperation};
+    let (bound, root) = binding().await?;
+    let state = bound.agents().state(&root).await?;
+    let private = state
+        .volumes
+        .iter()
+        .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
+        .ok_or("missing private binding")?
+        .volume()?;
+    let (scope, verifier) = bound.volume_scope(&root).await?;
+    let host = bound
+        .volumes()
+        .for_agent_views(
+            bound.agents().provider().clone(),
+            &root,
+            private,
+            &verifier,
+            &scope,
+        )
+        .await?;
+    let grant = ContentGrant::verify_directory_read(&verifier, &scope, private, "", &mut None)?;
+    let cut = host
+        .select_private_generation(private, &grant, "ui/title", None, ContentAccess::default())
+        .await?;
+    let read = |at: Option<crate::resources::GenerationRef>| {
+        let (host, grant) = (&host, &grant);
+        async move {
+            host.read_private_path_indexed(
+                private,
+                grant,
+                "ui/title",
+                at.as_ref(),
+                None,
+                ContentAccess::default(),
+            )
+            .await?
+            .ok_or_else(|| crate::Error::NotFound("private title".into()))
+        }
+    };
+    let (file, bytes, _) = read(Some(cut.clone())).await?;
+    assert_eq!(&bytes[..], root.id_text().as_bytes());
+    assert_eq!(host.file_generation(&file, None)?, cut);
+    assert!(file.version().starts_with("lazy-v1:"));
+    assert!(host.file_generation_id(&file, None).is_err());
+
+    let reference = workspace_ref(
+        private.provider().clone(),
+        &private.storage_name(&mut None)?,
+    )?;
+    host.apply(
+        &reference,
+        None,
+        &[
+            WorkspaceMutation::CreateDirectory { path: "/ui".into() },
+            WorkspaceMutation::PutFile {
+                path: "/ui/title".into(),
+                bytes: b"authored title".to_vec().into(),
+            },
+        ],
+        &crate::IdempotencyKey::new("private-cut-identity")?,
+    )
+    .await?;
+    let (reread, again, _) = read(Some(host.file_generation(&file, None)?)).await?;
+    assert_eq!(reread, file);
+    assert_eq!(again, bytes);
+    let by_reference = host.read_content(&file, &grant, None, None).await?;
+    assert_eq!(by_reference, bytes);
+
+    // Conditional writes commit to the authored workspace, so a private cut
+    // is refused as their precondition before any input is consumed.
+    let write = ContentGrant::verify(
+        &verifier,
+        &scope,
+        private,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    let refused = host
+        .put_content(
+            private,
+            &write,
+            "ui/title",
+            b"conditioned on a private cut",
+            "text/plain",
+            "title",
+            Some(64),
+            &crate::IdempotencyKey::new("private-cut-precondition")?,
+            Some(&cut),
+            ContentAccess::default(),
+        )
+        .await
+        .expect_err("a private cut conditioned an authored write");
+    assert_eq!(refused.code(), crate::wire::ErrorCode::Invalid);
+    assert!(
+        refused
+            .to_string()
+            .contains(crate::filesystem::PRIVATE_CUT_PRECONDITION)
+    );
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn production_private_views_route_evaluations_beside_ui() -> TestResult {

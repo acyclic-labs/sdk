@@ -113,12 +113,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let workspace = self.open(reference, Some(io)).await?;
         let bytes = match generation {
-            Some(reference) => io.sdk(
-                self.generation(&workspace, reference, Some(io))
-                    .await?
-                    .read(path, maximum_bytes, io, io.cancellation())
-                    .await,
-            )?,
+            Some(reference) => {
+                let cut = self.select_cut_at(&workspace, reference, io).await?;
+                if cut.is_private() {
+                    return Box::pin(self.read_cut(&cut, path, Some(maximum_bytes), io)).await;
+                }
+                io.sdk(
+                    cut.into_generation()
+                        .read(path, maximum_bytes, io, io.cancellation())
+                        .await,
+                )?
+            }
             None => io.sdk(
                 self.current_generation(&workspace, io)
                     .await?

@@ -184,10 +184,35 @@ pub(crate) fn generation_ref(
     })
 }
 
-pub(in crate::filesystem) fn generation_version(
+/// The resource format of a private namespace cut's `GenerationRef`.
+pub(in crate::filesystem) const PRIVATE_CUT_FORMAT: &str = "lazy-v1";
+
+/// FileRef version format v1 names the exact cut a file's bytes were read at,
+/// as a lossless spelling of that cut's `GenerationRef` within the file's
+/// provider. An authored generation is its canonical id in lowercase hex; a
+/// private namespace cut is `lazy-v1:` followed by its key in lowercase hex.
+/// Every cut has exactly one spelling, so equal references name equal bytes.
+pub(in crate::filesystem) fn file_version(
+    cut: &crate::resources::GenerationRef,
+    io: Option<&PreparationIo>,
+) -> Result<String> {
+    let key = super::hex_key(cut.as_resource().key(), io)?;
+    match cut.as_resource().version() {
+        None => Ok(key),
+        Some(format) => crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("{format}:{key}"), work)
+        }),
+    }
+}
+
+/// Parses a FileRef version (format v1, see [`file_version`]) into the exact
+/// `GenerationRef` it names. Unknown formats and non-canonical spellings are
+/// refused.
+pub(in crate::filesystem) fn version_generation(
+    provider: &ProviderRef,
     version: &str,
     io: Option<&PreparationIo>,
-) -> Result<GenerationId> {
+) -> Result<crate::resources::GenerationRef> {
     if let Some(io) = io {
         io.charge(WorkCounters {
             source_bytes_read: version.len() as u64,
@@ -202,10 +227,44 @@ pub(in crate::filesystem) fn generation_version(
             "file version is not a canonical Filesystem generation",
         )
     };
-    let mut bytes = [0; acyclic_fs::ObjectId::ENCODED_LEN];
-    let decoded = bytes.get_mut(..version.len() / 2).ok_or_else(invalid)?;
-    hex::decode_to_slice(version, decoded).map_err(|_| invalid())?;
-    GenerationId::from_bytes(decoded).ok_or_else(invalid)
+    let (format, key) = match version.split_once(':') {
+        None => (None, version),
+        Some((PRIVATE_CUT_FORMAT, key)) => (Some(PRIVATE_CUT_FORMAT), key),
+        Some(_) => return Err(invalid()),
+    };
+    if key.is_empty()
+        || key.len() % 2 != 0
+        || !key
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(invalid());
+    }
+    let Some(format) = format else {
+        let mut bytes = [0; acyclic_fs::ObjectId::ENCODED_LEN];
+        let decoded = bytes.get_mut(..key.len() / 2).ok_or_else(invalid)?;
+        hex::decode_to_slice(key, decoded).map_err(|_| invalid())?;
+        let generation = GenerationId::from_bytes(decoded).ok_or_else(invalid)?;
+        return generation_ref(provider, generation, io);
+    };
+    crate::executor::with_history_io(io, |work| {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let provider = crate::core::copy_provider(provider, &mut quota)?;
+        let mut decoded = crate::core::reserve_copy_vector(key.len() / 2, &mut quota)?;
+        decoded.resize(key.len() / 2, 0);
+        hex::decode_to_slice(key, &mut decoded).map_err(|_| invalid())?;
+        let version = crate::core::copy_text(format, &mut quota)?;
+        let resource = ResourceRef::new(
+            crate::resources::ResourceKind::Generation,
+            provider,
+            decoded,
+            Some(version),
+            quota.work(),
+        )?;
+        let reference = crate::resources::GenerationRef::from_resource(resource, quota.work())?;
+        quota.transfer();
+        Ok(reference)
+    })
 }
 
 pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObjectStore>(

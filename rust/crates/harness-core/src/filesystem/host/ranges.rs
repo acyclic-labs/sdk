@@ -16,7 +16,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace = self.open(&reference, Some(io)).await?;
         let generation = self.file_generation(file, Some(io))?;
         let _generation_hold = io.guard_owned(generation.logical_owned_bytes()?)?;
-        let selected = self.generation(&workspace, &generation, Some(io)).await?;
+        let cut = self.select_cut_at(&workspace, &generation, io).await?;
+        // A file read at a private cut has no authored publication; its
+        // progress is the exact cut it was read at.
+        if cut.is_private() {
+            return self.cut_ref(&cut, Some(&generation), io).map(Some);
+        }
+        let selected = cut.into_generation();
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{}", file.path()), work)
         })?;
@@ -121,8 +127,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             bounded_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
         let opened = self.open(&workspace, Some(io)).await?;
         let generation = self.file_generation(reference, Some(io))?;
-        let selected = self.generation(&opened, &generation, Some(io)).await?;
-        Self::read_selected_range(&opened, &selected, reference, range, io).await
+        let cut = self.select_cut_at(&opened, &generation, io).await?;
+        self.read_cut_range(&cut, reference, range, io).await
     }
 
     pub(in crate::filesystem) async fn read_selected_range(

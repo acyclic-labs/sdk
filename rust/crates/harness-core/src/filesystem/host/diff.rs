@@ -104,7 +104,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .ok_or_else(|| io.invalid("comparison has no authorized roots"))?;
         let mut work = acyclic_fs::WorkCounters::default();
         let mut changed = io.cursor_receipt(
-            before.generation.changed_paths_to(&after.generation, io, io.cancellation()).await,
+            before
+                .cut
+                .generation
+                .changed_paths_to(&after.cut.generation, io, io.cancellation())
+                .await,
             &mut work,
         )?;
         loop {
