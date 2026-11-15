@@ -17,7 +17,12 @@ pub struct LazyDirectoryEntry {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LazyDirectoryNode {
     /// Exact authored identity and kind at the selected immutable generation.
-    Authored { file_id: FileId, kind: FileKind },
+    Authored {
+        /// Stable identity of the authored entry.
+        file_id: FileId,
+        /// Kind recorded in the selected generation.
+        kind: FileKind,
+    },
     /// Source metadata captured by this bounded page.
     Source(SourceNode),
 }

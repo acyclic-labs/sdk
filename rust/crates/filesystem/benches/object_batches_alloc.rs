@@ -1,3 +1,5 @@
+//! Allocation profiles for object batch operations.
+
 #[path = "support/object_batches.rs"]
 mod object_batches;
 

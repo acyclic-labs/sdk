@@ -1,3 +1,5 @@
+//! Allocation profiles for filesystem lease paths.
+
 #[path = "support/lease_paths.rs"]
 mod lease_paths;
 
