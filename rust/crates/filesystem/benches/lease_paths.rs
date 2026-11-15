@@ -1,3 +1,5 @@
+//! Filesystem lease path benchmarks.
+
 #[path = "support/lease_paths.rs"]
 mod lease_paths;
 
