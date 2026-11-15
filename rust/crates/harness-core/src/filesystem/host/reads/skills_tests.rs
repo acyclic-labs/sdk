@@ -248,7 +248,7 @@ async fn captured_skill_replays_from_separate_journal_and_rejects_another_source
             maximum: u64,
             ceiling: Option<&'a Capabilities>,
             io: Option<&'a crate::conversation::ContentIo>,
-        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>>
         {
             crate::conversation::BoundedContentFuture::new(io, || async move {
                 let bytes = self.inner.read(reference, maximum, ceiling, io)?.await?;

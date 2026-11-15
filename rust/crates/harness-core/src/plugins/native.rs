@@ -229,7 +229,7 @@ async fn read_hook(
     io: Option<&crate::filesystem::PreparationIo>,
 ) -> std::result::Result<Option<String>, LoadFailure> {
     let bytes = tree.read(&hook).await.map_err(LoadFailure::Operational)?;
-    observe(identity, &hook, bytes.as_deref());
+    observe(identity, &hook, bytes.as_deref().map(|bytes| &**bytes));
     bytes
         .map(|bytes| {
             let script = std::str::from_utf8(&bytes).map_err(|_| {

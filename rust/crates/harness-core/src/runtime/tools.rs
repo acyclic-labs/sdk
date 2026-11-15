@@ -1381,7 +1381,7 @@ impl ToolContext {
                 offset: 0,
                 length: 32,
             };
-            let (selected, bytes, retained) =
+            let (selected, bytes, hold) =
                 match self.read_tool_path_range(&concrete, None, probe, io).await {
                     Ok(read) => read,
                     Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
@@ -1390,37 +1390,17 @@ impl ToolContext {
                     }
                     Err(error) => return Err(error),
                 };
-            #[cfg(not(target_arch = "wasm32"))]
-            let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-            #[cfg(target_arch = "wasm32")]
-            let custody = {
-                let _ = retained;
-                None::<()>
-            };
             let continuation = |range: acyclic_fs::ByteRange| {
                 let concrete = &concrete;
                 let selected = &selected;
                 async move {
-                    let (_, bytes, retained) = self
+                    let (_, bytes, _hold) = self
                         .read_tool_path_range(concrete, Some(&selected.generation), range, io)
                         .await?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-                    #[cfg(target_arch = "wasm32")]
-                    let custody = {
-                        let _ = retained;
-                        None::<()>
-                    };
-                    Ok(crate::layers::MarkerChunk {
-                        bytes,
-                        _hold: custody,
-                    })
+                    Ok(crate::layers::MarkerChunk { bytes })
                 }
             };
             if off_from_prefix(&bytes, selected.byte_length, io, &continuation).await? {
-                drop(bytes);
-                drop(selected);
-                drop(custody);
                 return Err(missing());
             }
             // Redundant authored seed skills do not shadow issuer configuration.
@@ -1433,20 +1413,30 @@ impl ToolContext {
                 None => false,
             };
             if inherits_seed {
-                drop(bytes);
-                drop(selected);
-                drop(custody);
                 crate::executor::stock_retire_text(concrete, io)?;
                 continue;
             }
             #[cfg(not(target_arch = "wasm32"))]
-            let custody = {
-                if let Some(custody) = custody {
-                    custody.into_retained()?;
+            let custody = if io.is_some_and(|io| io.original_native_work().is_some()) {
+                match hold {
+                    Some(mut hold) => match hold.take_custody()? {
+                        crate::filesystem::PreparationCustody::Native(custody) => Some(custody),
+                        crate::filesystem::PreparationCustody::Standalone(_) => {
+                            return Err(Error::Invalid(
+                                "native selection carried standalone custody".into(),
+                            ));
+                        }
+                    },
+                    None => None,
                 }
-                io.filter(|io| io.original_native_work().is_some())
-                    .map(|io| io.take_native_custody(retained))
-                    .transpose()?
+            } else {
+                drop(hold);
+                None
+            };
+            #[cfg(target_arch = "wasm32")]
+            let custody = {
+                drop(hold);
+                None
             };
             return Ok((concrete.into(), Some((selected, custody))));
         }
@@ -1526,7 +1516,7 @@ impl ToolContext {
         path: &str,
         expected_generation: Option<&crate::resources::GenerationRef>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
+    ) -> Result<(FileRef, crate::conversation::Custody, u64)> {
         self.read_tool_path_bounded(
             path,
             expected_generation,
@@ -1543,7 +1533,7 @@ impl ToolContext {
         expected_generation: Option<&crate::resources::GenerationRef>,
         maximum_bytes: Option<u64>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
+    ) -> Result<(FileRef, crate::conversation::Custody, u64)> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
         let expected_generation = self.layer_generation(volume, expected_generation)?;
         let content = self
@@ -1594,20 +1584,14 @@ impl ToolContext {
                     )
                     .await
                 {
-                    Ok((selected, _, retained)) => {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-                        #[cfg(target_arch = "wasm32")]
-                        let _ = retained;
-                        Some(selected.generation)
-                    }
+                    Ok((selected, _, _hold)) => Some(selected.generation),
                     Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
                     Err(error) => return Err(error),
                 };
                 let resolved: Result<()> = async {
                     let (selected, authored) = self.effective_tool_path(path, None, io).await?;
                     if authored.is_none() {
-                        let (_, _, retained) = self
+                        let (_, _, _hold) = self
                             .read_tool_path_range(
                                 &selected,
                                 None,
@@ -1618,10 +1602,6 @@ impl ToolContext {
                                 io,
                             )
                             .await?;
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-                        #[cfg(target_arch = "wasm32")]
-                        let _ = retained;
                     }
                     Ok(())
                 }
@@ -1648,7 +1628,7 @@ impl ToolContext {
         if let Some(generation) = self.layer_generation(volume, None)? {
             // An immutable cut cannot gain a missing file. Readiness uses the
             // same original cut and authority as the subsequent content read.
-            let (_, _, retained) = self
+            let (_, _, _hold) = self
                 .read_tool_path_range(
                     path,
                     Some(generation),
@@ -1659,10 +1639,6 @@ impl ToolContext {
                     io,
                 )
                 .await?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-            #[cfg(target_arch = "wasm32")]
-            let _ = retained;
             return Ok(());
         }
         self.task()
@@ -1684,16 +1660,16 @@ impl ToolContext {
 
     /// Retains the original range producer's immutable selection without a
     /// complete-body read, digest or second head selection.
-    pub(crate) async fn read_tool_path_range(
+    pub(crate) async fn read_tool_path_range<'io>(
         &self,
         path: &str,
         expected_generation: Option<&crate::resources::GenerationRef>,
         range: acyclic_fs::ByteRange,
-        io: Option<&crate::executor::PreparationIo>,
+        io: Option<&'io crate::executor::PreparationIo>,
     ) -> Result<(
         crate::conversation::FilePathSelection,
-        acyclic_stream::OwnedBytes,
-        u64,
+        crate::conversation::Custody,
+        Option<crate::conversation::ContentHold<'io>>,
     )> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
         let expected_generation = self.layer_generation(volume, expected_generation)?;
@@ -1733,11 +1709,7 @@ impl ToolContext {
             }
             Ok(())
         })?;
-        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        if let Some(hold) = hold {
-            hold.into_retained()?;
-        }
-        Ok((selected, bytes, retained))
+        Ok((selected, bytes, hold))
     }
 
     /// A supplied version of a read-only layer must name this run's pinned
@@ -1808,7 +1780,7 @@ impl ToolContext {
         &self,
         file: &FileRef,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<crate::conversation::Custody> {
         let task = self.task();
         task.read_bound_file(
             task.content_binding(Some(file.volume())),
@@ -1825,7 +1797,7 @@ impl ToolContext {
         file: &FileRef,
         range: acyclic_fs::ByteRange,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<crate::conversation::Custody> {
         self.task()
             .read_bound_range(
                 file,

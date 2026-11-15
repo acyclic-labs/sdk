@@ -1089,7 +1089,7 @@ where
         status: u64,
         offset: u64,
         maximum: u64,
-    ) -> Result<(acyclic_stream::OwnedBytes, u64), Error> {
+    ) -> Result<(crate::conversation::Custody, u64), Error> {
         use crate::agent::AgentRecord as _;
         self.admit_path(agent)?;
         let record = crate::store::operations::one_record(

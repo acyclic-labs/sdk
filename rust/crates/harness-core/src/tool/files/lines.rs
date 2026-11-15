@@ -219,7 +219,6 @@ pub(super) async fn read(
         if window.bytes.is_empty() {
             return Err(executor::rejection(work, "source range made no progress"));
         }
-        window.bytes = acyclic_stream::OwnedBytes::new();
         let bytes = window
             .next(
                 context,

@@ -919,7 +919,7 @@ impl ContentResidencyVerifier for Reader<'_> {
             'a,
             Option<(
                 acyclic_harness::conversation::FileRef,
-                acyclic_stream::OwnedBytes,
+                acyclic_harness::conversation::Custody,
                 Option<acyclic_harness::conversation::ContentHold<'io>>,
             )>,
         >,

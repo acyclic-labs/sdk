@@ -119,7 +119,7 @@ impl crate::conversation::ContentResidencyVerifier for PrefixReader {
         _: u64,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let capability = file.read_capability(&mut None)?;
             if !self.grants.contains(&capability) {
@@ -128,6 +128,7 @@ impl crate::conversation::ContentResidencyVerifier for PrefixReader {
             self.bytes
                 .get(&capability)
                 .cloned()
+                .map(crate::conversation::Custody::Unmetered)
                 .ok_or_else(|| Error::NotFound("prefix version is missing".into()))
         })
     }

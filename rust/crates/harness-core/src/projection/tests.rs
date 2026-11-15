@@ -22,10 +22,12 @@ impl ContentResidencyVerifier for Resolver {
         _: u64,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(self.bytes.clone().into())
+            Ok(crate::conversation::Custody::Unmetered(
+                self.bytes.clone().into(),
+            ))
         })
     }
 }
@@ -59,11 +61,13 @@ async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Resu
             _: u64,
             _ceiling: Option<&'a crate::Capabilities>,
             io: Option<&'a PreparationIo>,
-        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>>
         {
             assert!(io.and_then(PreparationIo::original_native_work).is_some());
             crate::conversation::BoundedContentFuture::new(io, || async {
-                Ok(acyclic_stream::OwnedBytes::from_static(RECORD))
+                Ok(crate::conversation::Custody::Unmetered(
+                    acyclic_stream::OwnedBytes::from_static(RECORD),
+                ))
             })
         }
     }
@@ -400,7 +404,7 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
             _: u64,
             _ceiling: Option<&'a crate::Capabilities>,
             io: Option<&'a PreparationIo>,
-        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>>
         {
             crate::conversation::BoundedContentFuture::new(io, || async move {
                 let work = io.and_then(|io| io.original_native_work());
@@ -419,9 +423,10 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
                         &mut Some(custody),
                         &work.runtime_meter(),
                     )
+                    .map(crate::conversation::Custody::Unmetered)
                     .map_err(|error| work.runtime_error(error).into());
                 }
-                Ok(self.bytes.clone())
+                Ok(crate::conversation::Custody::Unmetered(self.bytes.clone()))
             })
         }
     }

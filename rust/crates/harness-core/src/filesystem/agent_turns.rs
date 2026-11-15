@@ -1251,7 +1251,7 @@ where
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
         Bindings<A, O>,
-        acyclic_stream::OwnedBytes,
+        crate::conversation::Custody,
     )> {
         if policy.is_some_and(|policy| {
             policy.volume().class() != VolumeClass::AgentPrivate
@@ -1274,7 +1274,7 @@ where
                     .read(policy, policy.descriptor().byte_length(), None, None)?
                     .await?
             }
-            None => Vec::new().into(),
+            None => crate::conversation::Custody::Unmetered(Vec::new().into()),
         };
         Ok((journal, bindings, bytes))
     }

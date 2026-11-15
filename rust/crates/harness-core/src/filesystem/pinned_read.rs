@@ -4,20 +4,20 @@ use super::*;
 // or proof that the original accounting context has already retained it. No
 // mutable head is consulted when the caller requests retention.
 pub(super) struct PinnedRead<A: 'static, O: 'static> {
-    bytes: acyclic_stream::OwnedBytes,
+    bytes: Charged<acyclic_stream::OwnedBytes>,
     pending: Option<Generation<A, O>>,
 }
 
 pub(super) fn bytes_only<A, O>(
-    bytes: acyclic_stream::OwnedBytes,
+    bytes: Charged<acyclic_stream::OwnedBytes>,
     _generation: Option<Generation<A, O>>,
-) -> acyclic_stream::OwnedBytes {
+) -> Charged<acyclic_stream::OwnedBytes> {
     bytes
 }
 
 impl<A, O> PinnedRead<A, O> {
     pub(super) fn from_read(
-        bytes: acyclic_stream::OwnedBytes,
+        bytes: Charged<acyclic_stream::OwnedBytes>,
         generation: Option<Generation<A, O>>,
     ) -> Self {
         match generation {
@@ -25,13 +25,16 @@ impl<A, O> PinnedRead<A, O> {
             None => Self::retained(bytes),
         }
     }
-    pub(super) fn pending(bytes: acyclic_stream::OwnedBytes, generation: Generation<A, O>) -> Self {
+    pub(super) fn pending(
+        bytes: Charged<acyclic_stream::OwnedBytes>,
+        generation: Generation<A, O>,
+    ) -> Self {
         Self {
             bytes,
             pending: Some(generation),
         }
     }
-    pub(super) fn retained(bytes: acyclic_stream::OwnedBytes) -> Self {
+    pub(super) fn retained(bytes: Charged<acyclic_stream::OwnedBytes>) -> Self {
         Self {
             bytes,
             pending: None,
@@ -40,7 +43,7 @@ impl<A, O> PinnedRead<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedRead<A, O> {
-    pub(super) async fn retain(self) -> Result<acyclic_stream::OwnedBytes> {
+    pub(super) async fn retain(self) -> Result<Charged<acyclic_stream::OwnedBytes>> {
         if let Some(generation) = self.pending {
             bounded_io::retain(&generation, None).await?;
         }

@@ -80,8 +80,8 @@ pub use bounded_io::UploadRecord;
 use bounded_io::decode_record;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use bounded_io::native_decoded;
+pub use bounded_io::{Charged, PreparationCustody, PreparationIo};
 pub(crate) use bounded_io::{DecodeReservation, retain_decoded};
-pub use bounded_io::{PreparationCustody, PreparationIo};
 #[cfg(not(target_arch = "wasm32"))]
 pub use tool_output::{AgentObservation, session_authority, session_trust};
 mod memory;
@@ -528,7 +528,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference: &'a FileRef,
         maximum_bytes: u64,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             #[cfg(all(test, not(target_arch = "wasm32")))]
             pinned_read_tests::retained::sample_items(false, io);
@@ -536,7 +536,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if pinned_read_tests::retained::reopen() {
                 let result = self.read_pinned_io(reference, maximum_bytes, io).await;
                 pinned_read_tests::retained::sample_items(true, io);
-                return result;
+                return result.map(Charged::into_custody);
             }
             if let Some(io) = io {
                 io.check_cancellation()?;
@@ -570,13 +570,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
             acyclic_differential::record(("read", maximum_bytes));
-            let bytes = read_generation(generation, &path, Some(maximum_bytes), io).await?;
+            let unmeasured;
+            let read_io = if let Some(io) = io {
+                io
+            } else {
+                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &unmeasured
+            };
+            let bytes = read_generation(generation, &path, Some(maximum_bytes), read_io).await?;
             crate::executor::with_history_io(io, |work| {
                 reference.descriptor().verify(&bytes, work)
             })?;
             #[cfg(all(test, not(target_arch = "wasm32")))]
             pinned_read_tests::retained::sample_items(true, io);
-            Ok(bytes)
+            Ok(bytes.into_custody())
         })
     }
     async fn read_pinned_io(
@@ -584,7 +591,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference: &FileRef,
         maximum_bytes: u64,
         io: Option<&bounded_io::PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<Charged<acyclic_stream::OwnedBytes>> {
         // Keep the Result temporary across await for the original admitted caller frame.
         (if io.is_none() {
             crate::conversation::BoundedContentFuture::new(None, || {
@@ -625,7 +632,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         project: F,
     ) -> impl std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a
     where
-        F: FnOnce(acyclic_stream::OwnedBytes, Option<Generation<A, O>>) -> T
+        F: FnOnce(Charged<acyclic_stream::OwnedBytes>, Option<Generation<A, O>>) -> T
             + acyclic_stream::ProviderTask
             + 'a,
     {
@@ -668,7 +675,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .read(&path, maximum_bytes, &owned, owned.cancellation())
                     .await,
             )?;
-            owned.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
+            // The bytes carry their charge on this read's own ledger.
+            let bytes = owned.retain_read_bytes(bytes)?;
             reference.descriptor().verify(&bytes, &mut None)?;
             Ok(project(bytes, Some(pinned)))
         }
@@ -679,12 +687,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference: &'a FileRef,
         maximum_bytes: u64,
         io: Option<&'a bounded_io::PreparationIo>,
-    ) -> impl std::future::Future<Output = Result<acyclic_stream::OwnedBytes>>
+    ) -> impl std::future::Future<Output = Result<Charged<acyclic_stream::OwnedBytes>>>
     + acyclic_stream::ProviderTask
     + 'a {
         async move {
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = io.and_then(PreparationIo::original_native_work) {
+            if let Some((caller, original)) =
+                io.and_then(|io| io.original_native_work().map(|work| (io, work)))
+            {
                 let scratch = PreparationIo::from_native_work(original)?;
                 let io = &scratch;
                 reference.validate(&mut Some(&mut io.history_io()))?;
@@ -739,7 +749,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 })?;
                 drop(path);
                 drop(path_custody);
-                return Ok(bytes);
+                // Native bytes already carry their original allocation.
+                return caller.retain_read_bytes(bytes);
             }
             if reference.volume().provider() != &self.provider
                 || reference.descriptor().byte_length() > maximum_bytes
@@ -790,20 +801,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
                             .await,
                     )?;
-                    let capacity = bytes.retained_capacity().ok_or_else(|| {
-                        stock_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unsupported,
-                            "content producer does not expose its owned capacity",
-                        )
-                    })?;
-                    io.retain_owned(capacity as u64)?;
+                    // The charge lives exactly as long as the returned bytes.
+                    let bytes = io.retain_read_bytes(bytes)?;
                     bounded_io::retain(&pinned, Some(io)).await?;
                     bytes
                 }
                 None => {
-                    self.read(&workspace, Some(&generation), &path, maximum_bytes, None)
-                        .await?
+                    let unmeasured =
+                        PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                    unmeasured.retain_read_bytes(
+                        self.read(&workspace, Some(&generation), &path, maximum_bytes, None)
+                            .await?,
+                    )?
                 }
             };
             crate::executor::with_history_io(io, |work| {

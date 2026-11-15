@@ -643,7 +643,7 @@ impl LocalHarness {
     async fn publish_mention_copies(
         &self,
         base: &str,
-        copies: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
+        copies: std::collections::BTreeMap<String, crate::conversation::Custody>,
         publisher: &dyn ContentPublisher,
         operation: OperationId,
     ) -> Result<crate::conversation::ContentChanges> {
@@ -678,7 +678,7 @@ impl LocalHarness {
         &self,
         text: &str,
         reader: &dyn ContentResidencyVerifier,
-    ) -> Result<std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>> {
+    ) -> Result<std::collections::BTreeMap<String, crate::conversation::Custody>> {
         let project = crate::context::ContextRoot {
             volume: self.project.clone(),
             directory: String::new(),

@@ -231,15 +231,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         Ok(observation)
     }
-    pub(in crate::filesystem) async fn read_file_with_access(
+    pub(in crate::filesystem) async fn read_file_with_access<'a>(
         &self,
         scope: &Scope,
-        reference: &FileRef,
+        reference: &'a FileRef,
         maximum_bytes: u64,
         inherited_reference: bool,
         ceiling: Option<&crate::Capabilities>,
-        io: &PreparationIo,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+        io: &'a PreparationIo,
+    ) -> Result<crate::filesystem::Charged<acyclic_stream::OwnedBytes>> {
         if reference.descriptor().byte_length() > maximum_bytes {
             return Err(io.invalid("complete content exceeds its byte credit"));
         }

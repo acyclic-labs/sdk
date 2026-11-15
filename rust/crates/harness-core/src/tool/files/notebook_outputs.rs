@@ -260,7 +260,7 @@ fn path(
 pub(super) async fn retain(
     context: &ToolContext,
     input: &ReadFileInput,
-    window: &super::window::Window,
+    window: &super::window::Window<'_>,
     source: (&str, u64),
     spans: &[Payload],
     budget: u64,
@@ -347,14 +347,13 @@ pub(super) async fn retain(
         let file = if let Some(file) = cached {
             file
         } else {
+            let extra;
             let bytes = if let Some(relative) = payload.start.checked_sub(position)
                 && relative + length <= window.bytes.len() as u64
             {
-                window
-                    .bytes
-                    .slice(relative as usize..(relative + length) as usize)
+                &window.bytes[relative as usize..(relative + length) as usize]
             } else {
-                window
+                extra = window
                     .next(
                         context,
                         &input.path,
@@ -365,9 +364,10 @@ pub(super) async fn retain(
                         work,
                         io,
                     )
-                    .await?
+                    .await?;
+                extra.as_ref()
             };
-            let decoded = decode_payload(&bytes, work)?;
+            let decoded = decode_payload(bytes, work)?;
             let expected = match payload.media {
                 Media::Pdf => decoded.bytes.starts_with(b"%PDF-"),
                 media => crate::model::image_media_type(&decoded.bytes) == Some(media.mime()),

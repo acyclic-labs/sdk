@@ -58,7 +58,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
             'a,
             (
                 acyclic_harness::conversation::FilePathSelection,
-                acyclic_stream::OwnedBytes,
+                acyclic_harness::conversation::Custody,
                 Option<acyclic_harness::conversation::ContentHold<'io>>,
             ),
         >,
@@ -80,7 +80,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
             *self
                 .prefix
                 .lock()
-                .map_err(|error| Error::Storage(error.to_string()))? = Some(bytes.clone());
+                .map_err(|error| Error::Storage(error.to_string()))? = Some(bytes.bytes().clone());
             Ok((selected, bytes, hold))
         })
     }
@@ -91,8 +91,12 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         maximum_bytes: u64,
         ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
-    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
-    {
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            acyclic_harness::conversation::Custody,
+        >,
+    > {
         self.inner.read(reference, maximum_bytes, ceiling, io)
     }
 
@@ -109,7 +113,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
             'a,
             Option<(
                 acyclic_harness::conversation::FileRef,
-                acyclic_stream::OwnedBytes,
+                acyclic_harness::conversation::Custody,
                 Option<acyclic_harness::conversation::ContentHold<'io>>,
             )>,
         >,

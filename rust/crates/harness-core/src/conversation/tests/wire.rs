@@ -101,7 +101,7 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
             maximum_bytes: u64,
             _ceiling: Option<&'a crate::Capabilities>,
             io: Option<&'a ContentIo>,
-        ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        ) -> Result<BoundedContentFuture<'a, crate::conversation::Custody>> {
             BoundedContentFuture::new(io, || async move {
                 if reference != &self.file {
                     return Err(Error::NotFound("file".into()));
@@ -111,7 +111,9 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
                         "content exceeds selected byte allowance".into(),
                     ));
                 }
-                Ok(self.bytes.clone().into())
+                Ok(crate::conversation::Custody::Unmetered(
+                    self.bytes.clone().into(),
+                ))
             })
         }
     }

@@ -301,8 +301,8 @@ async fn path_diff(
     let before = read(&change.base, reader, limits.file_bytes, work).await?;
     let after = read(&change.current, reader, limits.file_bytes, work).await?;
     let result = FileDiff::between_work(
-        before.as_deref(),
-        after.as_deref(),
+        before.as_deref().map(|bytes| &**bytes),
+        after.as_deref().map(|bytes| &**bytes),
         maximum_render_bytes,
         work,
     );
@@ -381,7 +381,7 @@ async fn read(
     reader: &dyn ContentResidencyVerifier,
     maximum_bytes: u64,
     work: &mut compute::Work,
-) -> Result<Option<acyclic_stream::OwnedBytes>> {
+) -> Result<Option<crate::conversation::Custody>> {
     match source {
         Some(source) => {
             if work.remaining == 0 {

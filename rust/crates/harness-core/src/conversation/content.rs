@@ -4,9 +4,103 @@ use super::*;
 pub type ContentIo = crate::filesystem::PreparationIo;
 /// Retained content metadata ownership.
 pub type ContentHold<'a> = crate::filesystem::DecodeReservation<'a>;
+/// Content bytes with either their preparation charge or plain, non-ledger
+/// custody. The variants cannot be converted into one another, and a charge
+/// lives exactly as long as the bytes that carry it.
+///
+/// Only a `Charged` enters charged custody:
+///
+/// ```
+/// use acyclic_harness_core::conversation::Custody;
+/// use acyclic_harness_core::filesystem::Charged;
+/// fn hold(bytes: Charged<acyclic_stream::OwnedBytes>) -> Custody {
+///     Charged::into_custody(bytes)
+/// }
+/// ```
+///
+/// Plain bytes, and plain custody, are refused by the same call:
+///
+/// ```compile_fail,E0308
+/// use acyclic_harness_core::filesystem::Charged;
+/// let bytes = acyclic_stream::OwnedBytes::from_static(b"plain");
+/// let _ = Charged::<acyclic_stream::OwnedBytes>::into_custody(bytes);
+/// ```
+///
+/// ```compile_fail,E0308
+/// use acyclic_harness_core::conversation::Custody;
+/// use acyclic_harness_core::filesystem::Charged;
+/// let bytes = Custody::Unmetered(acyclic_stream::OwnedBytes::from_static(b"plain"));
+/// let _ = Charged::<acyclic_stream::OwnedBytes>::into_custody(bytes);
+/// ```
+///
+/// Nothing outside the reader converts plain bytes into `Charged`:
+///
+/// ```compile_fail,E0277
+/// use acyclic_harness_core::filesystem::Charged;
+/// let _: Charged<acyclic_stream::OwnedBytes> =
+///     acyclic_stream::OwnedBytes::from_static(b"plain").into();
+/// ```
+///
+/// Nor separates a charge from its bytes:
+///
+/// ```compile_fail,E0624
+/// use acyclic_harness_core::filesystem::Charged;
+/// fn separate(bytes: Charged<acyclic_stream::OwnedBytes>) -> acyclic_stream::OwnedBytes {
+///     Charged::into_unmeasured(bytes)
+/// }
+/// ```
+pub enum Custody {
+    /// Bytes owned together with a measured preparation reservation.
+    Charged(crate::filesystem::Charged<acyclic_stream::OwnedBytes>),
+    /// Bytes produced outside the preparation-ledger domain.
+    Unmetered(acyclic_stream::OwnedBytes),
+}
+
+impl Custody {
+    /// The held bytes.
+    pub fn bytes(&self) -> &acyclic_stream::OwnedBytes {
+        match self {
+            Self::Charged(bytes) => bytes.value(),
+            Self::Unmetered(bytes) => bytes,
+        }
+    }
+
+    /// Narrows or replaces the held bytes without releasing their custody.
+    pub(crate) fn bytes_mut(&mut self) -> &mut acyclic_stream::OwnedBytes {
+        match self {
+            Self::Charged(bytes) => bytes.value_mut(),
+            Self::Unmetered(bytes) => bytes,
+        }
+    }
+}
+
+impl AsRef<[u8]> for Custody {
+    fn as_ref(&self) -> &[u8] {
+        self.bytes().as_ref()
+    }
+}
+
+impl core::ops::Deref for Custody {
+    type Target = acyclic_stream::OwnedBytes;
+
+    fn deref(&self) -> &Self::Target {
+        self.bytes()
+    }
+}
+
+impl std::fmt::Debug for Custody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self {
+            Self::Charged(_) => "Charged",
+            Self::Unmetered(_) => "Unmetered",
+        };
+        formatter.debug_tuple(kind).field(self.bytes()).finish()
+    }
+}
+
 /// Captured bytes, their actual destination, and destination metadata ownership
 /// in the original ledger, released when the caller drops the result.
-pub type CapturedContent<'a> = (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>);
+pub type CapturedContent<'a> = (FileRef, Custody, Option<ContentHold<'a>>);
 
 /// Caller authority ceiling and accounting for a content operation.
 /// The ceiling can only narrow the adapter's authenticated workload authority.
@@ -249,7 +343,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _maximum_bytes: u64,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<BoundedContentFuture<'a, Custody>> {
         Err(content_error(
             io,
             crate::wire::ErrorCode::Unsupported,
@@ -264,7 +358,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _range: acyclic_fs::ByteRange,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<BoundedContentFuture<'a, Custody>> {
         Err(content_error(
             io,
             crate::wire::ErrorCode::Unsupported,
@@ -432,7 +526,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
             'a,
             (
                 FilePathSelection,
-                acyclic_stream::OwnedBytes,
+                crate::conversation::Custody,
                 Option<ContentHold<'io>>,
             ),
         >,
@@ -463,7 +557,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
             'a,
             Option<(
                 FileRef,
-                acyclic_stream::OwnedBytes,
+                crate::conversation::Custody,
                 Option<ContentHold<'io>>,
             )>,
         >,
@@ -890,7 +984,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         maximum_bytes: u64,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<BoundedContentFuture<'a, Custody>> {
         if let Some(io) = io {
             return self.bound_reader(reference.volume(), Some(io))?.read(
                 reference,
@@ -945,7 +1039,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         range: acyclic_fs::ByteRange,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<BoundedContentFuture<'a, Custody>> {
         if io.is_some() || self.volumes.contains_key(reference.volume()) {
             return self
                 .bound_reader(reference.volume(), io)?
@@ -1070,7 +1164,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             'a,
             (
                 FilePathSelection,
-                acyclic_stream::OwnedBytes,
+                crate::conversation::Custody,
                 Option<ContentHold<'io>>,
             ),
         >,
@@ -1101,7 +1195,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             'a,
             Option<(
                 FileRef,
-                acyclic_stream::OwnedBytes,
+                crate::conversation::Custody,
                 Option<ContentHold<'io>>,
             )>,
         >,

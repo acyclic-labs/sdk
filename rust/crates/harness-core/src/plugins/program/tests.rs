@@ -38,13 +38,14 @@ impl Tree for Files {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+    ) -> futures::future::BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         Box::pin(async move {
             self.reads.lock().unwrap().push(path.to_owned());
-            Ok(self
-                .files
-                .get(path)
-                .map(|text| acyclic_stream::OwnedBytes::from(text.as_bytes().to_vec())))
+            Ok(self.files.get(path).map(|text| {
+                crate::conversation::Custody::Unmetered(acyclic_stream::OwnedBytes::from(
+                    text.as_bytes().to_vec(),
+                ))
+            }))
         })
     }
 }
@@ -61,7 +62,7 @@ impl Tree for Metered<'_> {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+    ) -> futures::future::BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         self.files.read(path)
     }
 }
@@ -79,7 +80,7 @@ impl Tree for EntryHashCut<'_> {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+    ) -> futures::future::BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         if path.ends_with("/main.ps1") {
             self.before.store(
                 self.tree

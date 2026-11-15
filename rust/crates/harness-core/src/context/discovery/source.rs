@@ -91,7 +91,7 @@ pub trait InstructionReader: DiscoverySource {
 
 #[doc(hidden)]
 pub struct SkillPrefix {
-    pub bytes: acyclic_stream::OwnedBytes,
+    pub bytes: crate::conversation::Custody,
     pub pinned: PinnedContextPath,
     /// Computed through the selected EOF, independently of the metadata bound.
     pub off: bool,
@@ -710,7 +710,7 @@ impl SkillReader for VolumeDiscovery<'_> {
                 selected.byte_length,
                 io,
                 |range| async move {
-                    let (_, bytes, hold) = reader
+                    let (_, bytes, _hold) = reader
                         .read_private_range(
                             &root.volume,
                             &root.directory,
@@ -720,7 +720,7 @@ impl SkillReader for VolumeDiscovery<'_> {
                             access,
                         )?
                         .await?;
-                    Ok(crate::layers::MarkerChunk { bytes, _hold: hold })
+                    Ok(crate::layers::MarkerChunk { bytes })
                 },
             )
             .await?;

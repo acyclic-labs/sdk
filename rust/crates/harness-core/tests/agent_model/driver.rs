@@ -12,7 +12,7 @@ use acyclic_harness_core::{
     goal::{GoalContinuationPolicy, GoalStatus, GoalView},
     interaction::{Interaction, InteractionOutcome},
 };
-use acyclic_stream::{BoxProviderFuture as BoxFuture, OwnedBytes};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
@@ -106,7 +106,10 @@ impl ExecutionJournal for Unused {
         _: &'a FileRef,
         _: Option<&'a PreparationIo>,
     ) -> acyclic_harness_core::Result<
-        acyclic_harness_core::conversation::BoundedContentFuture<'a, OwnedBytes>,
+        acyclic_harness_core::conversation::BoundedContentFuture<
+            'a,
+            acyclic_harness_core::conversation::Custody,
+        >,
     > {
         unused()
     }

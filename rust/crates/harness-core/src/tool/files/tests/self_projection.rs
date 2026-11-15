@@ -10,6 +10,12 @@ use std::sync::Mutex;
 struct ObservedReader {
     inner: Arc<dyn ContentResidencyVerifier>,
     ranges: Mutex<Vec<acyclic_fs::ByteRange>>,
+    // Serve every range as plain, non-ledger content.
+    unmetered: bool,
+}
+
+fn plain(bytes: &[u8]) -> crate::conversation::Custody {
+    crate::conversation::Custody::Unmetered(acyclic_stream::OwnedBytes::from(bytes.to_vec()))
 }
 
 impl ContentResidencyVerifier for ObservedReader {
@@ -26,7 +32,7 @@ impl ContentResidencyVerifier for ObservedReader {
             'a,
             Option<(
                 crate::conversation::FileRef,
-                acyclic_stream::OwnedBytes,
+                crate::conversation::Custody,
                 Option<ContentHold<'io>>,
             )>,
         >,
@@ -44,9 +50,13 @@ impl ContentResidencyVerifier for ObservedReader {
         range: acyclic_fs::ByteRange,
         ceiling: Option<&'a Capabilities>,
         io: Option<&'a crate::conversation::ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<BoundedContentFuture<'a, crate::conversation::Custody>> {
         self.ranges.lock().unwrap().push(range);
-        self.inner.read_range(reference, range, ceiling, io)
+        let read = self.inner.read_range(reference, range, ceiling, io)?;
+        if !self.unmetered {
+            return Ok(read);
+        }
+        BoundedContentFuture::new(io, || async move { Ok(plain(&read.await?)) })
     }
 
     fn read_private_range<'a, 'io>(
@@ -62,7 +72,7 @@ impl ContentResidencyVerifier for ObservedReader {
             'a,
             (
                 FilePathSelection,
-                acyclic_stream::OwnedBytes,
+                crate::conversation::Custody,
                 Option<ContentHold<'io>>,
             ),
         >,
@@ -71,9 +81,90 @@ impl ContentResidencyVerifier for ObservedReader {
         'io: 'a,
     {
         self.ranges.lock().unwrap().push(range);
-        self.inner
-            .read_private_range(volume, prefix, path, generation, range, access)
+        let io = access.io;
+        let read = self
+            .inner
+            .read_private_range(volume, prefix, path, generation, range, access)?;
+        if !self.unmetered {
+            return Ok(read);
+        }
+        BoundedContentFuture::new(io, || async move {
+            let (selected, bytes, hold) = read.await?;
+            Ok((selected, plain(&bytes), hold))
+        })
     }
+}
+
+/// A read window accepts plain content as a valid source; only the
+/// charge-taking path requires ledger custody.
+#[tokio::test]
+async fn read_window_serves_unmetered_content() -> Result<()> {
+    let own = MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+    let original = own
+        .stage(
+            OperationId::new(),
+            "ui/index.md",
+            b"SOURCE_BODY",
+            "text/markdown",
+            "view",
+        )
+        .await?;
+    let version = super::super::version::encode_version(&original, None)?.0;
+    let mut own_content = own.content_bindings();
+    let reader = Arc::new(ObservedReader {
+        inner: own_content.reader.clone(),
+        ranges: Mutex::new(Vec::new()),
+        unmetered: true,
+    });
+    own_content.reader = reader.clone();
+    let task = Arc::new(
+        crate::runtime::Bindings {
+            scope: RuntimeScope::new(
+                Capabilities::new([
+                    own_content
+                        .volume
+                        .directory_read_capability("", &mut None)?,
+                    "tool:call:read".into(),
+                    original.read_capability(&mut None)?,
+                ]),
+                Limits {
+                    file_bytes: Some(4096),
+                    render_bytes: Some(4096),
+                    attachments: std::num::NonZeroUsize::new(1),
+                    ..Limits::default()
+                },
+            )?,
+            ..crate::runtime::Bindings::local()
+        }
+        .build()?
+        .agent_context(&Capabilities::default(), own_content.clone())?,
+    );
+    let tool = read()?;
+    for version in [None, Some(version.as_str())] {
+        reader.ranges.lock().unwrap().clear();
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "read-plain".into(),
+            name: "read".into(),
+            arguments: json!({
+                "path": "volume:///private/ui/index.md",
+                "include_body": true,
+                "version": version,
+            }),
+        };
+        let context = ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
+        let result = tool
+            .executor
+            .execute(invocation.clone(), Some(context))
+            .await?;
+        assert_eq!(result.value["text"], "SOURCE_BODY", "version={version:?}");
+        // The window read through the plain-content reader, not around it.
+        assert!(
+            !reader.ranges.lock().unwrap().is_empty(),
+            "version={version:?}"
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -103,6 +194,7 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
         let reader = Arc::new(ObservedReader {
             inner: own_content.reader.clone(),
             ranges: Mutex::new(Vec::new()),
+            unmetered: false,
         });
         own_content.reader = reader.clone();
         let build = |render_bytes| -> Result<_> {

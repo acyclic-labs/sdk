@@ -95,7 +95,7 @@ async fn read(
     store: &ObjectContentStore,
     file: &acyclic_harness::conversation::FileRef,
     maximum: u64,
-) -> acyclic_harness::Result<acyclic_stream::OwnedBytes> {
+) -> acyclic_harness::Result<acyclic_harness::conversation::Custody> {
     store.read(file, maximum, None, None)?.await
 }
 

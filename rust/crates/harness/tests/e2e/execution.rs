@@ -290,7 +290,7 @@ async fn run_turn(
 async fn request_files(
     reader: &dyn acyclic_harness::conversation::ContentResidencyVerifier,
     requests: &[acyclic_harness::model::ModelRequest],
-) -> TestResult<Vec<Vec<acyclic_stream::OwnedBytes>>> {
+) -> TestResult<Vec<Vec<acyclic_harness::conversation::Custody>>> {
     let mut loaded = Vec::with_capacity(requests.len());
     for request in requests {
         let mut contents = Vec::new();

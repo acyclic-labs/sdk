@@ -247,9 +247,14 @@ impl SkillMetadata {
         let text = if io.is_some() {
             crate::executor::stock_string_copy(text, io)?
         } else {
-            let bytes = bytes
-                .try_into_ordinary_vec()
-                .unwrap_or_else(|bytes| bytes.to_vec());
+            // Charged bytes keep their charge until they drop, so the text
+            // owns a copy; only plain bytes can move into the text.
+            let bytes = match bytes {
+                crate::conversation::Custody::Unmetered(bytes) => bytes
+                    .try_into_ordinary_vec()
+                    .unwrap_or_else(|bytes| bytes.to_vec()),
+                crate::conversation::Custody::Charged(bytes) => bytes.to_vec(),
+            };
             String::from_utf8(bytes)
                 .map_err(|_| stock_boundary(io, ErrorCode::Invalid, "skill body is invalid text"))?
         };

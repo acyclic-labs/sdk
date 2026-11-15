@@ -137,7 +137,7 @@ impl ContentResidencyVerifier for AdvanceAfterSelection {
             'a,
             (
                 FilePathSelection,
-                acyclic_stream::OwnedBytes,
+                crate::conversation::Custody,
                 Option<ContentHold<'io>>,
             ),
         >,
@@ -181,7 +181,7 @@ impl ContentResidencyVerifier for AdvanceAfterSelection {
             'a,
             Option<(
                 FileRef,
-                acyclic_stream::OwnedBytes,
+                crate::conversation::Custody,
                 Option<ContentHold<'io>>,
             )>,
         >,
@@ -561,6 +561,95 @@ async fn effective_layers_preserve_fallback_suppression_and_version_authority() 
             heads,
             "version admission must precede any home probe"
         );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropped_window_next_releases_content_charges() -> Result<()> {
+    for native in [false, true] {
+        let storage = MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+        storage
+            .stage(
+                OperationId::new(),
+                "pending",
+                b"published",
+                "text/plain",
+                "ready",
+            )
+            .await?;
+        let content = storage.content_bindings();
+        let task = crate::runtime::Bindings {
+            scope: RuntimeScope::new(
+                Capabilities::new([
+                    content.volume.directory_read_capability("", &mut None)?,
+                    "tool:call:read".into(),
+                ]),
+                Limits {
+                    file_bytes: Some(4096),
+                    render_bytes: Some(4096),
+                    ..Limits::default()
+                },
+            )?,
+            content: Some(content.clone()),
+            ..crate::runtime::Bindings::local()
+        }
+        .build()?
+        .agent_context(&Capabilities::default(), content)?;
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "discard-window".into(),
+            name: "read".into(),
+            arguments: json!({"path":"pending"}),
+        };
+        let context =
+            ToolContext::new(Arc::new(task), invocation.operation_id, &invocation.call_id)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(100_000, 16_000_000),
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let native_work = native.then_some(&work);
+        let io = if native {
+            crate::executor::PreparationIo::from_native_work(&work)?
+        } else {
+            crate::executor::PreparationIo::from_budget(
+                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                &cancellation,
+            )?
+        };
+        let input = decode::<ReadFileInput>(&invocation.arguments, native_work)?;
+        let source =
+            super::super::source::ReadSource::decode(&context, &input.0.path, None, native_work)?;
+        let window = super::super::window::Window::first(
+            &context,
+            &input.0,
+            source,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 1,
+            },
+            native_work,
+            Some(&io),
+        )
+        .await?;
+        let before = io.owned_bytes()?;
+        drop(
+            window
+                .next(
+                    &context,
+                    &input.0.path,
+                    acyclic_fs::ByteRange {
+                        offset: 1,
+                        length: 1,
+                    },
+                    native_work,
+                    Some(&io),
+                )
+                .await?,
+        );
+        assert_eq!(io.owned_bytes()?, before, "native={native}");
     }
     Ok(())
 }

@@ -29,6 +29,7 @@ pub(crate) use scope::PreparationScope;
 #[cfg(test)]
 mod tests;
 pub(in crate::filesystem) use codec::decode_record;
+pub use quota::Charged;
 use quota::finish_decode;
 use quota::finish_encoding;
 #[cfg(not(target_arch = "wasm32"))]

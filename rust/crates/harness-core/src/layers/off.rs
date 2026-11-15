@@ -11,10 +11,8 @@ pub struct OffMarker {
 
 const OFF_MARKER: &[u8] = b"off: true";
 
-pub(crate) struct MarkerChunk<H> {
-    // Field order keeps the physical bytes alive inside their original custody.
-    pub bytes: acyclic_stream::OwnedBytes,
-    pub _hold: H,
+pub(crate) struct MarkerChunk<B> {
+    pub bytes: B,
 }
 
 impl OffMarker {
@@ -112,7 +110,7 @@ fn consume_off(
 
 /// Continues a possible marker through bounded ranges at the caller's original
 /// selection. No body is accumulated or reread.
-pub(crate) async fn off_from_prefix<F, Fut, H>(
+pub(crate) async fn off_from_prefix<F, Fut, B>(
     prefix: &[u8],
     length: u64,
     work: impl MarkerWork,
@@ -120,7 +118,8 @@ pub(crate) async fn off_from_prefix<F, Fut, H>(
 ) -> crate::Result<bool>
 where
     F: FnMut(acyclic_fs::ByteRange) -> Fut,
-    Fut: std::future::Future<Output = crate::Result<MarkerChunk<H>>>,
+    Fut: std::future::Future<Output = crate::Result<MarkerChunk<B>>>,
+    B: AsRef<[u8]>,
 {
     let mut marker = OffMarker::default();
     let reached = continue_from_prefix(prefix, length, read, |bytes| {
@@ -132,7 +131,7 @@ where
 
 /// Whether the selected file is exactly `expected`, compared through the same
 /// bounded continuation ranges, so no request exceeds the probe's own size.
-pub(crate) async fn equals_from_prefix<F, Fut, H>(
+pub(crate) async fn equals_from_prefix<F, Fut, B>(
     expected: &[u8],
     prefix: &[u8],
     length: u64,
@@ -140,7 +139,8 @@ pub(crate) async fn equals_from_prefix<F, Fut, H>(
 ) -> crate::Result<bool>
 where
     F: FnMut(acyclic_fs::ByteRange) -> Fut,
-    Fut: std::future::Future<Output = crate::Result<MarkerChunk<H>>>,
+    Fut: std::future::Future<Output = crate::Result<MarkerChunk<B>>>,
+    B: AsRef<[u8]>,
 {
     if length != expected.len() as u64 {
         return Ok(false);
@@ -157,7 +157,7 @@ where
 
 /// Feeds the prefix, then each following range up to the selected EOF, while
 /// `consume` accepts it. Each chunk's custody is dropped before the next read.
-async fn continue_from_prefix<F, Fut, H>(
+async fn continue_from_prefix<F, Fut, B>(
     prefix: &[u8],
     length: u64,
     mut read: F,
@@ -165,7 +165,8 @@ async fn continue_from_prefix<F, Fut, H>(
 ) -> crate::Result<bool>
 where
     F: FnMut(acyclic_fs::ByteRange) -> Fut,
-    Fut: std::future::Future<Output = crate::Result<MarkerChunk<H>>>,
+    Fut: std::future::Future<Output = crate::Result<MarkerChunk<B>>>,
+    B: AsRef<[u8]>,
 {
     let mut offset = prefix.len() as u64;
     if offset > length {
@@ -183,12 +184,12 @@ where
             length: chunk_size.min(length - offset),
         };
         let chunk = read(range).await?;
-        if chunk.bytes.len() as u64 != range.length {
+        if chunk.bytes.as_ref().len() as u64 != range.length {
             return Err(crate::Error::Storage(
                 "marker range did not reach selected boundary".into(),
             ));
         }
-        if !consume(&chunk.bytes)? {
+        if !consume(chunk.bytes.as_ref())? {
             return Ok(false);
         }
         offset += range.length;
@@ -250,6 +251,15 @@ mod tests {
                 assert!(self.0.replace(false));
             }
         }
+        struct TestBytes<'a> {
+            bytes: OwnedBytes,
+            _hold: Chunk<'a>,
+        }
+        impl AsRef<[u8]> for TestBytes<'_> {
+            fn as_ref(&self) -> &[u8] {
+                self.bytes.as_ref()
+            }
+        }
         let bytes = OwnedBytes::from(format!("{}off: true\n", " ".repeat(130)));
         let live = Cell::new(false);
         let next = Cell::new(32u64);
@@ -265,9 +275,12 @@ mod tests {
             );
             assert!(range.length <= 32);
             next.set(range.offset + range.length);
+            let bytes = bytes.slice(range.offset as usize..next.get() as usize);
             std::future::ready(Ok(MarkerChunk {
-                bytes: bytes.slice(range.offset as usize..next.get() as usize),
-                _hold: Chunk(&live),
+                bytes: TestBytes {
+                    bytes,
+                    _hold: Chunk(&live),
+                },
             }))
         })
         .await?;
@@ -277,7 +290,7 @@ mod tests {
 
         // A dropped producer cannot be mistaken for EOF or retried.
         let failed = off_from_prefix(&bytes[..32], bytes.len() as u64, None, |_| {
-            std::future::ready(Err::<MarkerChunk<()>, _>(crate::Error::NotFound(
+            std::future::ready(Err::<MarkerChunk<OwnedBytes>, _>(crate::Error::NotFound(
                 "selected source is gone".into(),
             )))
         })
@@ -288,7 +301,6 @@ mod tests {
         let empty = off_from_prefix(&bytes[..32], bytes.len() as u64, None, |_| {
             std::future::ready(Ok(MarkerChunk {
                 bytes: OwnedBytes::default(),
-                _hold: (),
             }))
         })
         .await;

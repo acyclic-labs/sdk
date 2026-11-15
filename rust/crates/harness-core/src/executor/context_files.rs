@@ -76,9 +76,8 @@ impl StockExecution<'_> {
                 if let Some(hold) = hold {
                     hold.into_retained()?;
                 }
-                let bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+                // The read bytes carry their single read charge.
                 drop(bytes);
-                drop(bytes_hold);
                 if index == 0 {
                     files.summary = Some(file);
                 } else {
@@ -176,11 +175,8 @@ impl StockExecution<'_> {
             .map(|io| io.guard_bytes(&drops_bytes))
             .transpose()?
             .flatten();
+        // The loaded summary carries its single read charge.
         let summary_bytes = journal.load(&summary.output, io)?.await?;
-        let summary_hold = io
-            .map(|io| io.guard_bytes(&summary_bytes))
-            .transpose()?
-            .flatten();
         let changes = [
             match &files.summary {
                 Some(source) => ContentChange::UpdateExpected {
@@ -274,7 +270,6 @@ impl StockExecution<'_> {
         drop(receipt);
         drop(receipt_hold);
         drop(summary_bytes);
-        drop(summary_hold);
         drop(drops_bytes);
         drop(drops_hold);
         drop(files);

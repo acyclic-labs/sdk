@@ -120,7 +120,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
                     &expected[range.offset as usize..(range.offset + range.length) as usize]
                 });
                 assert_eq!(
-                    read.await?.as_slice(),
+                    read.await?.as_ref(),
                     selected,
                     "the original binding and selected bytes survive collection and reopen"
                 );

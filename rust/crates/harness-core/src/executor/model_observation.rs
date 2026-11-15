@@ -270,8 +270,8 @@ pub(crate) async fn load(
                     "model payload is not private",
                 ));
             }
+            // The loaded bytes carry their single read charge.
             let bytes = journal.load(event, io)?.await?;
-            let _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
             with_history_io(io, |work| event.descriptor().verify(&bytes, work))?;
             Some(decode_payload(event.descriptor().media_type(), &bytes, io)?)
         }

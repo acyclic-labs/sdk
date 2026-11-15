@@ -293,6 +293,7 @@ pub use content::{
     BoundedContentFuture, CapturedContent, CompositeContentVerifier, ContentAccess, ContentCapture,
     ContentChange, ContentChangeResult, ContentChanges, ContentHold, ContentIo,
     ContentMountResolver, ContentPath, ContentPublisher, ContentResidencyVerifier, ContentSource,
+    Custody,
 };
 pub use directory::{
     DirectoryQuery, DirectoryRead, DirectoryTarget, MAX_PRIVATE_DIRECTORY_PAGE,

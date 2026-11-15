@@ -767,14 +767,11 @@ impl SkillReader for ProjectCatalog<'_> {
                     let (chunk, _) = view
                         .read_at_snapshot(cut, path, Some(range), range.length, &mut accounting)
                         .await?;
-                    Ok(crate::layers::MarkerChunk {
-                        bytes: chunk.bytes,
-                        _hold: (),
-                    })
+                    Ok(crate::layers::MarkerChunk { bytes: chunk.bytes })
                 })
                 .await?;
             Ok(SkillPrefix {
-                bytes: prefix.bytes,
+                bytes: crate::conversation::Custody::Unmetered(prefix.bytes),
                 pinned,
                 off,
             })
@@ -927,17 +924,14 @@ impl SkillReader for UserCatalogSource<'_> {
                         )
                         .await
                         .map_err(storage)?;
-                    Ok(crate::layers::MarkerChunk {
-                        bytes: chunk.bytes,
-                        _hold: (),
-                    })
+                    Ok(crate::layers::MarkerChunk { bytes: chunk.bytes })
                 })
                 .await?;
             let pinned = self
                 .sources
                 .retain(self.records, self.source, self.root, &path, node)?;
             Ok(SkillPrefix {
-                bytes: prefix.bytes,
+                bytes: crate::conversation::Custody::Unmetered(prefix.bytes),
                 pinned,
                 off,
             })

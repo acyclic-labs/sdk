@@ -10,12 +10,13 @@ impl Tree for Files {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+    ) -> BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         Box::pin(async move {
-            Ok(self
-                .0
-                .get(path)
-                .map(|text| acyclic_stream::OwnedBytes::from_static(text.as_bytes())))
+            Ok(self.0.get(path).map(|text| {
+                crate::conversation::Custody::Unmetered(acyclic_stream::OwnedBytes::from_static(
+                    text.as_bytes(),
+                ))
+            }))
         })
     }
 }
@@ -300,7 +301,7 @@ impl Tree for Metered<'_> {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+    ) -> BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         self.files.read(path)
     }
 }
@@ -367,8 +368,10 @@ async fn native_hook_script_copy_refuses_on_the_original_allowance() -> Result<(
         fn read<'a>(
             &'a self,
             _: &'a str,
-        ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
-            Box::pin(std::future::ready(Ok(Some(self.0.clone()))))
+        ) -> BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
+            Box::pin(std::future::ready(Ok(Some(
+                crate::conversation::Custody::Unmetered(self.0.clone()),
+            ))))
         }
     }
     let tree = Script(acyclic_stream::OwnedBytes::from(vec![b'x'; 65536]));

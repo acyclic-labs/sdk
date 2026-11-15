@@ -721,6 +721,39 @@ impl ContentGrant {
         Ok(())
     }
 
+    /// Checks a read path without widening an exact-file or whole-volume grant
+    /// into a delegated-directory grant.
+    pub(crate) fn require_read_path(
+        &self,
+        volume: &VolumeRef,
+        path: &str,
+        io: Option<&ContentIo>,
+    ) -> Result<()> {
+        self.recheck(io)?;
+        if let Some(io) = io {
+            io.check_cancellation()?;
+        }
+        if self.volume != *volume
+            || self.operation != VolumeOperation::Read
+            || self
+                .exact_file
+                .as_ref()
+                .is_some_and(|(granted, ..)| granted != path)
+            || (self.exact_file.is_none()
+                && self
+                    .directory_prefix
+                    .as_deref()
+                    .is_some_and(|granted| !path_below(path, granted)))
+        {
+            return Err(content_error(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "content grant does not match the read path",
+            ));
+        }
+        Ok(())
+    }
+
     /// Checks any lazy directory path against the owner-issued read boundary.
     pub fn require_directory_path(
         &self,

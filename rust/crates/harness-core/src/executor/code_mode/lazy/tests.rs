@@ -25,7 +25,7 @@ impl Tree for Programs {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> futures::future::BoxFuture<'a, Result<Option<OwnedBytes>>> {
+    ) -> futures::future::BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         Box::pin(async move {
             if matches!(self.source, Source::Unavailable) {
                 return Err(Error::Storage(
@@ -38,7 +38,9 @@ impl Tree for Programs {
                 "tools/echo/main.sh" | "tools/echo/main.ps1" => b"exit 0".as_slice(),
                 _ => return Ok(None),
             };
-            Ok(Some(OwnedBytes::from_static(bytes)))
+            Ok(Some(crate::conversation::Custody::Unmetered(
+                OwnedBytes::from_static(bytes),
+            )))
         })
     }
 }
@@ -53,7 +55,7 @@ impl Tree for PreparedPrograms<'_> {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> futures::future::BoxFuture<'a, Result<Option<OwnedBytes>>> {
+    ) -> futures::future::BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         self.0.read(path)
     }
 }

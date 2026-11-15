@@ -19,7 +19,7 @@ impl Tree for Observed {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+    ) -> BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         Box::pin(async move {
             let read = self.reads.fetch_add(1, Ordering::Relaxed);
             if let Some((failed, invalid)) = self.failure
@@ -35,7 +35,8 @@ impl Tree for Observed {
                 .files
                 .get(path)
                 .cloned()
-                .map(acyclic_stream::OwnedBytes::from))
+                .map(acyclic_stream::OwnedBytes::from)
+                .map(crate::conversation::Custody::Unmetered))
         })
     }
 }

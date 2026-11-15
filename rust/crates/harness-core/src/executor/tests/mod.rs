@@ -663,7 +663,7 @@ impl ExecutionJournal for Journal {
         &'a self,
         reference: &'a FileRef,
         io: Option<&'a crate::conversation::ContentIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         #[cfg(not(target_arch = "wasm32"))]
         acyclic_test_support::differential::record((
             "journal load",
@@ -684,7 +684,7 @@ impl ExecutionJournal for Journal {
                 .unwrap()
                 .values()
                 .find(|(stored, _)| stored == reference)
-                .map(|(_, bytes)| bytes.clone())
+                .map(|(_, bytes)| crate::conversation::Custody::Unmetered(bytes.clone()))
                 .ok_or_else(|| Error::NotFound("journal content is missing".into()))
         })
     }
@@ -694,7 +694,7 @@ impl ExecutionJournal for Journal {
         reference: &'a FileRef,
         range: acyclic_fs::ByteRange,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         if io.is_some() {
             return Err(Error::Unsupported(
                 "finite test journal range IO is unavailable".into(),
@@ -720,7 +720,9 @@ impl ExecutionJournal for Journal {
             }
             // This adapter owns immutable resident bytes already. Return only
             // their selected view; no whole-payload load or copy is performed.
-            Ok(bytes.slice(start..end))
+            Ok(crate::conversation::Custody::Unmetered(
+                bytes.slice(start..end),
+            ))
         })
     }
 
@@ -777,7 +779,7 @@ impl crate::conversation::ContentResidencyVerifier for Journal {
         _maximum_bytes: u64,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::BoundedContentFuture::new(
             io,
             || async move { self.load(file, io)?.await },

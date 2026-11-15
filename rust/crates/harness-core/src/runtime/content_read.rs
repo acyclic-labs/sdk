@@ -2,7 +2,6 @@ use super::*;
 use crate::conversation::BoundedContentFuture;
 use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
-use acyclic_stream::OwnedBytes;
 
 pub(super) enum ReadExtent {
     Metadata,
@@ -62,7 +61,7 @@ impl ContentResidencyVerifier for TaskContext {
         maximum_bytes: u64,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
+    ) -> Result<BoundedContentFuture<'a, crate::conversation::Custody>> {
         BoundedContentFuture::new(io, || async move {
             if reference.descriptor().byte_length() > maximum_bytes {
                 return Err(content_error(
@@ -189,7 +188,11 @@ impl TaskContext {
     ///     view.grants = grants;
     /// }
     /// ```
-    pub async fn read_file(&self, file: &FileRef, io: Option<&ContentIo>) -> Result<OwnedBytes> {
+    pub async fn read_file(
+        &self,
+        file: &FileRef,
+        io: Option<&ContentIo>,
+    ) -> Result<crate::conversation::Custody> {
         self.read_bound_file(
             self.content_binding(Some(file.volume())),
             file,
@@ -207,7 +210,7 @@ impl TaskContext {
         scope: &RuntimeScope,
         grants: &crate::Capabilities,
         io: Option<&ContentIo>,
-    ) -> Result<OwnedBytes> {
+    ) -> Result<crate::conversation::Custody> {
         let grants = self.authorize_file_read(file, scope, grants, ReadExtent::Range(range), io)?;
         let reader = self
             .content_binding(Some(file.volume()))
@@ -376,7 +379,7 @@ impl TaskContext {
         granted_prefix: &str,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-    ) -> Result<(FileRef, OwnedBytes)> {
+    ) -> Result<(FileRef, crate::conversation::Custody)> {
         self.require_private_directory(volume, granted_prefix, path)?;
         if path.is_empty() {
             return Err(Error::Invalid("private file path is empty".into()));
@@ -403,7 +406,7 @@ impl TaskContext {
         scope: &RuntimeScope,
         maximum_bytes: Option<u64>,
         io: Option<&ContentIo>,
-    ) -> Result<(FileRef, OwnedBytes, u64)> {
+    ) -> Result<(FileRef, crate::conversation::Custody, u64)> {
         let (volume, granted_prefix, path, expected_generation) = selection;
         let (file, bytes, hold) = content
             .reader
@@ -484,7 +487,7 @@ impl TaskContext {
         scope: &RuntimeScope,
         ceiling: Option<&crate::Capabilities>,
         io: Option<&ContentIo>,
-    ) -> Result<OwnedBytes> {
+    ) -> Result<crate::conversation::Custody> {
         let grants = self.authorize_file_read(
             file,
             scope,

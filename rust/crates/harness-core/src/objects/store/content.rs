@@ -143,9 +143,13 @@ impl ContentResidencyVerifier for ObjectContentStore {
         range: acyclic_fs::ByteRange,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::conversation::ContentIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         self.supports_read(file.volume(), io)?;
-        crate::conversation::BoundedContentFuture::new(io, || self.read_interval(file, range))
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.read_interval(file, range)
+                .await
+                .map(crate::conversation::Custody::Unmetered)
+        })
     }
 
     fn read<'a>(
@@ -154,7 +158,7 @@ impl ContentResidencyVerifier for ObjectContentStore {
         maximum_bytes: u64,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::conversation::ContentIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         self.supports_read(reference.volume(), io)?;
         crate::conversation::BoundedContentFuture::new(io, || async move {
             if reference.descriptor().byte_length() > maximum_bytes {
@@ -162,7 +166,9 @@ impl ContentResidencyVerifier for ObjectContentStore {
                     "content exceeds selected byte allowance".into(),
                 ));
             }
-            self.read_exact(reference, maximum_bytes).await
+            self.read_exact(reference, maximum_bytes)
+                .await
+                .map(crate::conversation::Custody::Unmetered)
         })
     }
 }

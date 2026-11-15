@@ -66,11 +66,8 @@ where
         else {
             return Ok(None);
         };
-        if let Some(bytes) = bytes {
-            let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-            drop(bytes);
-            drop(hold);
-        }
+        // The payload's read charge is released with the payload itself.
+        drop(bytes);
         Ok(Some(file))
     }
 
@@ -260,7 +257,7 @@ where
         &self,
         reference: &FileRef,
         io: Option<&PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<crate::conversation::Custody> {
         if reference.volume() != &self.volume {
             return Err(canonical_boundary(
                 io,
@@ -290,7 +287,7 @@ where
         tracing::trace!(target: "acyclic_harness::journal_work",
             payload_loads = 1_u64, payload_load_bytes = bytes.len() as u64,
             "execution payload loaded");
-        Ok(bytes)
+        Ok(bytes.into_custody())
     }
 
     pub(super) fn authorize_inline_event(
@@ -417,13 +414,9 @@ where
                 _ => None,
             };
             for reference in refs.into_iter().flatten() {
-                let _bytes_hold;
                 crate::model::charge_items(io, 1)?;
+                // The loaded bytes carry their single read charge.
                 let owned_bytes = self.load_content(reference, io).await?;
-                _bytes_hold = io
-                    .map(|io| io.guard_bytes(&owned_bytes))
-                    .transpose()?
-                    .flatten();
                 let bytes = owned_bytes.as_ref();
                 if let ExecutionEvent::ConversationItem { publication, .. } = event {
                     self.verify_conversation_envelope(bytes, reference, *publication, io)?;
@@ -601,13 +594,14 @@ where
                 })?;
             }
             let before = io.owned_bytes()?;
-            let _bytes_hold;
+            let _read_hold;
             let bytes = self
                 .host
                 .read_pinned_io(reference, super::MAXIMUM_PAYLOAD_BYTES, Some(io))
                 .await?;
-            _bytes_hold = io.guard_owned(io.owned_since(before)?)?;
+            // The bytes release their own charge; hold only the read's residue.
             drop(bytes);
+            _read_hold = io.guard_owned(io.owned_since(before)?)?;
         } else {
             let grant = if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
@@ -701,15 +695,14 @@ where
         }
         for (file, _) in &references {
             if summary_files.contains(file) {
-                let _bytes_hold;
                 let bytes = self.load_content(file, io).await?;
-                // Only the accounting test instantiates the omitted-release control.
-                _bytes_hold = if RELEASE {
-                    io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten()
+                // Dropping the bytes releases their single read charge. Only the
+                // accounting test instantiates the omitted-release control.
+                if RELEASE {
+                    drop(bytes);
                 } else {
-                    None
-                };
-                drop(bytes);
+                    std::mem::forget(bytes);
+                }
             } else {
                 self.verify_input_file_with_io(file, io).await?;
             }

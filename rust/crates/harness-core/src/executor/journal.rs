@@ -468,7 +468,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self,
         reference: &'a FileRef,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>>;
 
     /// Reads only the selected bytes of an immutable private payload, retaining
     /// the original journal grant and post-read policy fence. Unsupported
@@ -478,7 +478,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         _reference: &'a FileRef,
         _range: acyclic_fs::ByteRange,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Unsupported,

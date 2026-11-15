@@ -109,7 +109,7 @@ impl<A: acyclic_fs::AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> futures::future::BoxFuture<'a, crate::Result<Option<acyclic_stream::OwnedBytes>>> {
+    ) -> futures::future::BoxFuture<'a, crate::Result<Option<crate::conversation::Custody>>> {
         Box::pin(async move {
             use crate::store::history::HistoryIo as _;
             // The evaluator uses relative module names; the filesystem uses
@@ -155,7 +155,11 @@ impl<A: acyclic_fs::AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
                 if super::is_off(&bytes) {
                     return Ok(None);
                 }
-                return self.io.retain_read_bytes(bytes).map(Some);
+                return self
+                    .io
+                    .retain_read_bytes(bytes)
+                    .map(crate::conversation::Custody::Charged)
+                    .map(Some);
             }
             Ok(None)
         })

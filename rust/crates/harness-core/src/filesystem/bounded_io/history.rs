@@ -197,7 +197,7 @@ impl HistoryIo for &PreparationIo {
         &'a mut self,
         verifier: &'a dyn ContentResidencyVerifier,
         file: &'a FileRef,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         verifier.read(file, file.descriptor().byte_length(), None, Some(*self))
     }
 }

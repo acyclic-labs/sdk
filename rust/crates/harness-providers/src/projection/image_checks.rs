@@ -11,7 +11,7 @@ use acyclic_harness_core::{
         PreparedModelRequest, ToolCall, ToolResultContent, image_media_type,
     },
 };
-use acyclic_stream::{BoxProviderFuture, OwnedBytes};
+use acyclic_stream::BoxProviderFuture;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{
@@ -45,7 +45,7 @@ impl ContentResidencyVerifier for Reader {
         _: u64,
         ceiling: Option<&'a acyclic_harness_core::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
+    ) -> Result<BoundedContentFuture<'a, acyclic_harness_core::conversation::Custody>> {
         if ceiling.is_some() {
             return Err(acyclic_harness_core::Error::Unsupported(
                 "fixture image reader cannot enforce a caller ceiling".into(),
@@ -53,13 +53,15 @@ impl ContentResidencyVerifier for Reader {
         }
         BoundedContentFuture::new(io, || async move {
             self.reads.fetch_add(1, Ordering::SeqCst);
-            Ok(self
-                .bytes
-                .iter()
-                .find(|bytes| bytes.len() as u64 == file.descriptor().byte_length())
-                .expect("generated image length")
-                .clone()
-                .into())
+            // A resident fixture copy is outside the preparation ledger.
+            Ok(acyclic_harness_core::conversation::Custody::Unmetered(
+                self.bytes
+                    .iter()
+                    .find(|bytes| bytes.len() as u64 == file.descriptor().byte_length())
+                    .expect("generated image length")
+                    .clone()
+                    .into(),
+            ))
         })
     }
 }

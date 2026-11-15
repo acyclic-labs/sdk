@@ -61,7 +61,7 @@ impl ExecutionJournal for Checks {
         &'a self,
         _: &'a FileRef,
         _: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         Err(Error::Unsupported(
             "unexpected preflight journal load".into(),
         ))

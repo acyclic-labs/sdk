@@ -80,10 +80,14 @@ pub async fn seed() -> Result<Arc<Enabled>> {
                 fn read<'a>(
                     &'a self,
                     path: &'a str,
-                ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>>
+                ) -> futures::future::BoxFuture<'a, Result<Option<crate::conversation::Custody>>>
                 {
                     Box::pin(async move {
-                        Ok(crate::seed::file(path).map(acyclic_stream::OwnedBytes::from_static))
+                        Ok(crate::seed::file(path).map(|bytes| {
+                            crate::conversation::Custody::Unmetered(
+                                acyclic_stream::OwnedBytes::from_static(bytes),
+                            )
+                        }))
                     })
                 }
             }

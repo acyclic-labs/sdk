@@ -51,7 +51,7 @@ mod steps;
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::local) use steps::Steps;
 
-type SourceFiles = [Option<(crate::conversation::FileRef, acyclic_stream::OwnedBytes)>; 5];
+type SourceFiles = [Option<(crate::conversation::FileRef, crate::conversation::Custody)>; 5];
 
 fn model_base(
     model: &str,
@@ -90,7 +90,7 @@ impl Tree<'_> {
         &self,
         layer: &crate::layers::PinnedLayer,
         path: &str,
-    ) -> Result<Option<(crate::conversation::FileRef, acyclic_stream::OwnedBytes)>> {
+    ) -> Result<Option<(crate::conversation::FileRef, crate::conversation::Custody)>> {
         let read = crate::executor::with_history_io(self.io, |work| {
             ContentGrant::verify_directory_read(
                 self.volumes.verifier,
@@ -170,7 +170,7 @@ impl Tree<'_> {
     async fn home(
         &self,
         path: &str,
-    ) -> Result<Option<(crate::conversation::FileRef, acyclic_stream::OwnedBytes)>> {
+    ) -> Result<Option<(crate::conversation::FileRef, crate::conversation::Custody)>> {
         Ok(self
             .volumes
             .files
@@ -197,9 +197,15 @@ impl config::Tree for Tree<'_> {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+    ) -> futures::future::BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         Box::pin(async move {
-            let seed = || crate::seed::file(path).map(acyclic_stream::OwnedBytes::from_static);
+            let seed = || {
+                crate::seed::file(path).map(|bytes| {
+                    crate::conversation::Custody::Unmetered(
+                        acyclic_stream::OwnedBytes::from_static(bytes),
+                    )
+                })
+            };
             if !crate::layers::layered(path) {
                 return Ok(seed());
             }

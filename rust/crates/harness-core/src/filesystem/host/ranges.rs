@@ -102,7 +102,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference: &FileRef,
         range: acyclic_fs::ByteRange,
         io: Option<&PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<bounded_io::Charged<acyclic_stream::OwnedBytes>> {
         let owned;
         let io = if let Some(io) = io {
             io
@@ -137,7 +137,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference: &FileRef,
         range: acyclic_fs::ByteRange,
         io: &PreparationIo,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<bounded_io::Charged<acyclic_stream::OwnedBytes>> {
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
         })?;
@@ -149,10 +149,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await,
         )?;
         bounded_io::retain(selected, Some(io)).await?;
-        if io.original_native_work().is_none() {
-            io.retain_owned(chunk.bytes.retained_capacity().unwrap_or(0) as u64)?;
-        }
-        Ok(chunk.bytes)
+        io.retain_read_bytes(chunk.bytes)
     }
 
     /// Resolve one reference against its stored publication before either a

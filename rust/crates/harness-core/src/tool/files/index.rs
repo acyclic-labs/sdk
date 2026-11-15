@@ -258,7 +258,7 @@ impl<'a> OrdinalIndex<'a> {
         operation: OperationId,
         maximum: u64,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
+    ) -> Result<Option<crate::conversation::Custody>> {
         let _file_hold;
         let (file, retained) = match self
             .task
@@ -320,7 +320,7 @@ impl<'a> OrdinalIndex<'a> {
         &self,
         maximum: u64,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
+    ) -> Result<Option<crate::conversation::Custody>> {
         self.observe(self.metadata_operation()?, maximum, io).await
     }
 

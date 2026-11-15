@@ -190,7 +190,7 @@ where
         field: crate::executor::ExecutionPayloadField,
         offset: u64,
         maximum: u64,
-    ) -> Result<(acyclic_stream::OwnedBytes, u64), Error> {
+    ) -> Result<(crate::conversation::Custody, u64), Error> {
         let after = sequence
             .checked_sub(1)
             .ok_or(Error::Record("journal observations are one-based"))?;
@@ -232,7 +232,10 @@ where
                 .ok_or(Error::Record("payload offset is past the request's end"))?;
             let take =
                 usize::try_from(maximum).map_or(page.len(), |maximum| maximum.min(page.len()));
-            return Ok((page.get(..take).unwrap_or(page).into(), bytes.len() as u64));
+            return Ok((
+                crate::conversation::Custody::Unmetered(page.get(..take).unwrap_or(page).into()),
+                bytes.len() as u64,
+            ));
         }
         let length = reference.descriptor().byte_length();
         let remaining = length.checked_sub(offset).ok_or(Error::Record(
