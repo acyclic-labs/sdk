@@ -1,4 +1,7 @@
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::time::Duration;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn independent_mount_start_cases() -> Result<(), Box<dyn std::error::Error>> {
     for (parallel, a_bytes, b_bytes) in [
