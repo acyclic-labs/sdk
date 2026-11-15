@@ -606,28 +606,31 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         }),
         Err(CommandError::Invalid)
     ));
-    for (agent, path) in [
-        (root.clone(), "tools/missing"),
-        (root.clone(), "notes/private"),
-        (AgentPath::root(&AgentId::from_bytes([9; 16])), path),
-    ] {
+    let read = |agent: AgentPath, path: &str| AgentCommand::Read {
+        agent,
+        target: ReadTarget::ToolOutput {
+            path: path.into(),
+            at: None,
+        },
+        offset: 0,
+    };
+    // The agent itself refuses paths it never published as tool output.
+    for path in ["tools/missing", "notes/private"] {
         assert!(
-            call(
-                &client,
-                "agents",
-                &AgentCommand::Read {
-                    agent,
-                    target: ReadTarget::ToolOutput {
-                        path: path.into(),
-                        at: None
-                    },
-                    offset: 0,
-                }
-            )
-            .await?
-            .is_err()
+            call(&client, "agents", &read(root.clone(), path))
+                .await?
+                .is_err()
         );
     }
+    // An agent outside the served admission is refused by the command admission.
+    let refused = call(
+        &client,
+        "agents",
+        &read(AgentPath::root(&AgentId::from_bytes([9; 16])), path),
+    )
+    .await
+    .expect_err("an agent outside the admission answered a read");
+    assert!(access_denied(&*refused), "{refused:?}");
     let foreign = VolumeRef::new(
         provider()?,
         "another-private".into(),
