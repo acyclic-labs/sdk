@@ -99,6 +99,29 @@ impl TurnInput {
             _ => None,
         }
     }
+
+    /// Whether this turn does work `parent` delegated, or work that follows
+    /// from it: the brief its spawn carried, a message `parent` sent, or an
+    /// event the child's own work produced (a waking notice such as a
+    /// grandchild's settlement, a child's completion, an approval). Only
+    /// such a turn's settlement wakes `parent`. A user, host or peer talking
+    /// to the child directly, a host hook and a context request are the
+    /// child's own conversation: the parent observes them lazily by
+    /// following the child, and spends no model call on them.
+    #[must_use]
+    pub fn delegated_by(&self, parent: &AgentPath) -> bool {
+        match self {
+            Self::Brief { .. }
+            | Self::Notice { .. }
+            | Self::ChildDone { .. }
+            | Self::ApprovalRequested { .. }
+            | Self::Approval { .. } => true,
+            Self::Message { from, .. } => {
+                matches!(from, Sender::Agent { path } if path == parent)
+            }
+            Self::Hook { .. } | Self::Context { .. } => false,
+        }
+    }
 }
 
 /// One input held for the turn, at the inbox sequence of the record that

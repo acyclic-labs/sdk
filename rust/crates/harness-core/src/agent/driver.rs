@@ -1061,6 +1061,10 @@ fn settled(agent: &AgentState, entry: &ConversationEntry) -> Result<Vec<Out>, Er
     Ok(outs)
 }
 
+/// The waking `child.settled` notice a settled turn sends its parent: only
+/// for work the parent delegated or work that follows from it
+/// ([`TurnInput::delegated_by`]), never for a cancelled turn. One per
+/// settlement, so the parent makes one model call per delegated answer.
 async fn settlement_notice(
     agent: &AgentState,
     outputs: &dyn TurnOutputs,
@@ -1069,7 +1073,7 @@ async fn settlement_notice(
     let Some(parent) = &agent.parent else {
         return Ok(None);
     };
-    if entry.input.context().is_some() || matches!(entry.outcome, TurnOutcome::Cancelled) {
+    if !entry.input.delegated_by(parent) || matches!(entry.outcome, TurnOutcome::Cancelled) {
         return Ok(None);
     }
     let turn = turn_id(agent, &entry.input)?;

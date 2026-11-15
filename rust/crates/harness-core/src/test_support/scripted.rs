@@ -117,6 +117,8 @@ struct State {
     wakes: Option<VecDeque<ScriptedTurn>>,
     /// The agent each wake request woke, in request order.
     woken: Vec<crate::agent::AgentPath>,
+    /// Indices into `requests` of the requests no settlement woke.
+    inputs: Vec<usize>,
     requests: Vec<PreparedModelRequest>,
     dispatches: Vec<ModelDispatch>,
     recoveries: VecDeque<ScriptedReconciliation>,
@@ -357,8 +359,25 @@ impl ScriptedModelProvider {
     /// Requests that were not woken by a child's settlement, counted in one
     /// snapshot so a concurrent wake cannot skew the count.
     pub fn input_requests(&self) -> usize {
+        self.lock().inputs.len()
+    }
+
+    /// Snapshots the `index`-th request no settlement woke, so a wake that
+    /// interleaves with an agent's own steps never shifts its position.
+    pub fn input_request(&self, index: usize) -> Option<ModelRequest> {
         let state = self.lock();
-        state.requests.len() - state.woken.len()
+        let request = *state.inputs.get(index)?;
+        Some(state.requests[request].request().clone())
+    }
+
+    /// Dispatch identities of the requests no settlement woke, in order.
+    pub fn input_dispatches(&self) -> Vec<ModelDispatch> {
+        let state = self.lock();
+        state
+            .inputs
+            .iter()
+            .map(|&request| state.dispatches[request])
+            .collect()
     }
 
     /// Number of responses not yet requested.
@@ -408,6 +427,10 @@ impl ScriptedModelProvider {
         }
         let waking = waking_child(request.request())?;
         let mut state = self.lock();
+        if waking.is_none() {
+            let index = state.requests.len();
+            state.inputs.push(index);
+        }
         state.requests.push(request);
         state.dispatches.push(dispatch);
         let State {

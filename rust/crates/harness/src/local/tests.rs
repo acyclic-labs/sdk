@@ -96,6 +96,24 @@ impl ObservedConversation {
     }
 }
 
+/// The `count`-th turn the conversation's agent ran for a waking notice, a
+/// child's settlement, once its observation reports that turn settled. The
+/// conversation replays from its start, so a wake settled earlier counts.
+async fn woken(conversation: Arc<Conversation>, count: usize) -> Result<ConversationEntry> {
+    let mut observed = ObservedConversation::observe(conversation, Some(0)).await?;
+    let mut seen = 0;
+    loop {
+        if let Event::Turn { entry, .. } = observed.observer.next().await?
+            && matches!(entry.input, crate::agent::TurnInput::Notice { .. })
+        {
+            seen += 1;
+            if seen == count {
+                return Ok(entry);
+            }
+        }
+    }
+}
+
 /// Read-only host inspection of one agent's journal through authenticated handles.
 pub(super) fn journal_content(
     harness: &LocalHarness,

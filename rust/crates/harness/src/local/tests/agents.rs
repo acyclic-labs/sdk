@@ -1375,9 +1375,10 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
 }
 
 /// Until #3773 an idle parent made no model call while its child ran and
-/// settled. #3773 delivers each child settlement to the parent as a waking
-/// `child.settled` notice, so the parent now makes exactly one call per child
-/// settlement, billed to its own usage, and none while it is idle.
+/// settled. #3773 delivers each settlement of work the parent delegated, here
+/// the child's brief, as a waking `child.settled` notice, so the parent makes
+/// exactly one call per such settlement, billed to its own usage, and none
+/// while it is idle.
 #[tokio::test]
 async fn idle_usage_follows_child_lifecycle_with_one_parent_wake_per_settlement() -> Result<()> {
     use acyclic_harness_client::{AgentCommand, AgentReply};
