@@ -2060,7 +2060,7 @@ where
             };
             let failure = match actors.runtime().unavailable(&actor) {
                 Ok(failure) => failure,
-                Err(error) => return StreamError::Unavailable.with_source(error),
+                Err(error) => return StreamError::Unavailable.with_source(error.into_cause()),
             };
             drop(server);
             StreamError::Unavailable.with_source(failure.await)

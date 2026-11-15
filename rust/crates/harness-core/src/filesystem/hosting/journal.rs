@@ -312,7 +312,9 @@ where
                 .runtime()
                 .unavailable(&self.agents.actor(agent)?)
                 .map_err(|error| {
-                    Error::Stream(acyclic_stream::StreamError::Unavailable.with_source(error))
+                    Error::Stream(
+                        acyclic_stream::StreamError::Unavailable.with_source(error.into_cause()),
+                    )
                 })?;
             // Both continuations start at their original observations, so an
             // append between the page and this wait remains visible. No task,
@@ -448,7 +450,10 @@ where
                     .runtime()
                     .unavailable(&self.agents.actor(agent)?)
                     .map_err(|error| {
-                        Error::Stream(acyclic_stream::StreamError::Unavailable.with_source(error))
+                        Error::Stream(
+                            acyclic_stream::StreamError::Unavailable
+                                .with_source(error.into_cause()),
+                        )
                     })?;
                 tokio::select! {
                     record = self.journal_record(request.clone()) => break Some(record?),

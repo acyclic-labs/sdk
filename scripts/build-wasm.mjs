@@ -7,42 +7,12 @@ import { fileURLToPath } from "node:url";
 import { checkByteSnapshotBoundary } from "./wasm-source-policy.mjs";
 import { packageClosure } from "./package-closure.mjs";
 import { copyWasmArtifacts } from "./archive-utils.mjs";
+import { wasmPackages as packages, wasmSelection } from "./wasm-selections.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 checkByteSnapshotBoundary(join(root, "rust/crates/harness/src/wasm"));
 
 const usage = "usage: build-wasm.mjs [PACKAGE [OUTPUT_DIR [CARGO [WASM_BINDGEN]]]]";
-
-const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen_(?:[0-9a-f]+)?_+convert__closures_+invoke_[^:\s]*:.*\r?\n/gm;
-const stripHarnessClosureShims = output => {
-  for (const name of ["acyclic_harness_wasm.d.ts", "acyclic_harness_wasm_bg.wasm.d.ts"]) {
-    const declaration = resolve(output, name);
-    const source = readFileSync(declaration, "utf8");
-    const normalized = source.replace(closureInvokeShim, "");
-    if (normalized !== source) writeFileSync(declaration, normalized);
-  }
-};
-
-const packages = {
-  auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm" },
-  actors: { family: true },
-  filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
-  stream: { family: true },
-  objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
-  manifest: { cargo: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers" },
-  machines: {
-    cargo: ["-p", "acyclic-machines-wasm"],
-    artifact: "acyclic_machines_wasm",
-  },
-  inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm" },
-  harness: {
-    cargo: ["-p", "acyclic-harness-providers", "--features", "wasm-journal"],
-    artifact: "acyclic_harness_providers",
-    outName: "acyclic_harness_wasm",
-    postprocess: stripHarnessClosureShims,
-    targetDirectory: "harness-wasm",
-  },
-};
 
 const [packageArgument, outputArgument, cargoArgument, wasmBindgenArgument, ...unexpected] = process.argv.slice(2);
 if (unexpected.length > 0 || (packageArgument && !Object.hasOwn(packages, packageArgument)
@@ -84,7 +54,7 @@ const targetRoot = JSON.parse(metadata).target_directory;
 const profile = process.env.ACYCLIC_WASM_PROFILE || "wasm-release";
 const profileDirectory = profile === "dev" ? "debug" : profile;
 
-const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("./archive-utils.mjs", import.meta.url)), readFileSync(new URL("./wasm-source-policy.mjs", import.meta.url))]);
+const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("./archive-utils.mjs", import.meta.url)), readFileSync(new URL("./wasm-selections.mjs", import.meta.url)), readFileSync(new URL("./wasm-source-policy.mjs", import.meta.url))]);
 
 const grouped = process.env.ACYCLIC_WASM_GROUPS_PREPARED === "1";
 const targets = grouped ? [packageArgument] : packageArgument
@@ -94,14 +64,10 @@ const targets = grouped ? [packageArgument] : packageArgument
 if (!grouped) run(process.execPath, [join(root, "scripts/generate.mjs"), ...(packageArgument ? [packageArgument === "manifest" ? "workers" : packageArgument] : [])]);
 
 for (const name of targets) {
-  let { cargo: selection, artifact, outName = artifact, postprocess, targetDirectory } = packages[name];
-  let family, producer, source, revision;
-  if (packages[name].family) {
-    const { nativeFamily } = await import("./native-family.mjs");
+  const { selection, artifact, outName, postprocess, targetDirectory, family } = wasmSelection(name);
+  let producer, source, revision;
+  if (family) {
     const { createNativeProducer } = await import("./build-native-family.mjs");
-    family = nativeFamily(name);
-    ({ artifact, outName, targetDirectory } = family.wasm);
-    selection = ["-p", family.wasmPackageName, ...(family.wasm.noDefaultFeatures ? ["--no-default-features"] : []), ...(family.wasm.features.length ? ["--features", family.wasm.features.join(",")] : [])];
     producer = createNativeProducer(family);
     producer.assertCurrentNativeFamily();
     revision = capture("git", ["rev-parse", "HEAD"]);
