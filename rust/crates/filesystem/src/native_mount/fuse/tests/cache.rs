@@ -388,6 +388,86 @@ fn rename_completion_preserves_only_current_bindings() -> Result<(), Box<dyn std
     Ok(())
 }
 
+/// A reply carries the attributes it hands. Invalidating them as well races
+/// the reply, and the kernel drops a reply that an invalidation overtakes.
+#[test]
+fn a_reply_never_invalidates_the_attributes_it_hands() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::fuse::packet::PacketOutput;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Reply {
+        Attributes,
+        Lookup,
+        DirectoryPlus,
+    }
+    for reply in [Reply::Attributes, Reply::Lookup, Reply::DirectoryPlus] {
+        let (source, around) = shared_sources(posix_config())?;
+        let source = Arc::new(source);
+        let core = projection_core(
+            source.clone(),
+            FINITE_HANDLER_POLICY,
+            &crate::CancellationToken::new(),
+        )?;
+        let observer: Arc<dyn ViewObserver> = core.clone();
+        source.observe_view(Arc::downgrade(&observer))?;
+        let projection = crate::native_mount::fuse::FuseProjection { core: core.clone() };
+        let path = name("held");
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+            around.create_file(&path, FileMetadata::default(), None, work)
+        })?;
+        let inode = core
+            .request(|work| {
+                Ok(projection
+                    .lookup_entry(ROOT_INODE, std::ffi::OsStr::new("held"), work)?
+                    .attr
+                    .ino
+                    .0)
+            })
+            .map_err(|(cause, _)| cause)?;
+        let held = |core: &super::super::ProjectionCore| -> Result<Option<u64>, NativeMountError> {
+            Ok(core
+                .state()?
+                .by_inode
+                .get(&inode)
+                .and_then(|entry| entry.kernel_content)
+                .map(|version| version.logical_bytes))
+        };
+        around.write_range(&path, 0, Bytes::from_static(b"changed"))?;
+        shared_invalidation_pass(&core, &Notifications::default());
+        // The kernel still holds the empty version this reply supersedes.
+        assert_eq!(held(&core)?, Some(0), "{reply:?}");
+        core.request(|work| {
+            match reply {
+                Reply::Attributes => {
+                    assert_eq!(projection.node_attributes(inode, None, work)?.0.size, 7);
+                }
+                Reply::Lookup => {
+                    let entry =
+                        projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("held"), work)?;
+                    assert_eq!(entry.attr.size, 7);
+                }
+                Reply::DirectoryPlus => {
+                    let mut bytes = [0; 512];
+                    let mut output = PacketOutput::new(&mut bytes, 0)?;
+                    output.plus = true;
+                    projection.list_directory(ROOT_INODE, 2, &mut Some(&mut output), work)?;
+                    assert!(output.complete);
+                }
+            }
+            Ok(())
+        })
+        .map_err(|(cause, _)| cause)?;
+        assert_eq!(held(&core)?, Some(7), "{reply:?}");
+        let notifications = Notifications::default();
+        shared_invalidation_pass(&core, &notifications);
+        assert!(
+            !notifications.inodes.borrow().contains(&inode),
+            "{reply:?} invalidated the attributes it handed"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn readdirplus_acceptance_supersedes_cached_name_misses() -> Result<(), Box<dyn std::error::Error>>
 {

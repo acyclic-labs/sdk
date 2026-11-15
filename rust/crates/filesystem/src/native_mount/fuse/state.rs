@@ -376,10 +376,10 @@ impl ProjectionState {
         if let Some(entry) = self.by_inode.get(&inode)
             && entry.lookup.node.kind == MountNodeKind::Regular
         {
+            // This reply carries the attributes it hands. Invalidating them
+            // too would race the reply, and the kernel drops a reply that an
+            // invalidation overtakes.
             let handed = ContentVersion::of(&entry.lookup);
-            if entry.kernel_content.is_some_and(|held| held != handed) {
-                self.invalidate_attributes(inode, work)?;
-            }
             if let Some(entry) = self.by_inode.get_mut(&inode) {
                 entry.kernel_content = Some(handed);
             }

@@ -347,7 +347,6 @@ impl ProjectionState {
                     .by_inode
                     .get(&child_inode)
                     .map(|entry| entry.kernel_content);
-                let superseding = self.superseded_attributes.len();
                 let (ttl, child, completion) = if counts_lookups {
                     let (ttl, child, completion) =
                         self.prepare_entry(source, child_inode, child, current, work)?;
@@ -371,7 +370,6 @@ impl ProjectionState {
                     {
                         entry.kernel_content = handed;
                     }
-                    self.superseded_attributes.truncate(superseding);
                     if let Some(inode) = unlisted_reference.take() {
                         self.release_lookup_reference(inode, 1);
                     }
