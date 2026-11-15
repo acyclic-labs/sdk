@@ -32,6 +32,7 @@ const LOADS = {
   rust_binary: "@rules_rust//rust:defs.bzl",
   rust_library: "@rules_rust//rust:defs.bzl",
   rust_proc_macro: "@rules_rust//rust:defs.bzl",
+  rust_shared_library: "@rules_rust//rust:defs.bzl",
   rust_test: "@rules_rust//rust:defs.bzl",
 };
 const q = JSON.stringify;
@@ -282,7 +283,21 @@ function buildFile(p) {
       ...deps(["build"]),
     ]]);
   }
+  // A library that is only a cdylib, such as a Node addon, builds as a shared library.
+  const shared = p.targets.find(t => t.kind.length === 1 && t.kind[0] === "cdylib");
+  if (shared) {
+    covered.add(`build cdylib ${shared.name}`);
+    rules.push(["rust_shared_library", [
+      ["name", q(crateName(shared))],
+      ["crate_root", q(local(shared.src_path))],
+      ...libInputs(shared),
+      ...common(shared),
+      ...deps([null], ownDeps),
+      ["visibility", q(["//visibility:public"])],
+    ]]);
+  }
   if (lib) {
+    covered.add(`build ${lib.kind[0]} ${lib.name}`);
     const proc = lib.kind.includes("proc-macro");
     rules.push([proc ? "rust_proc_macro" : "rust_library", [
       ["name", q(crateName(lib))],
@@ -438,7 +453,7 @@ const bodies = new Map([...members].map(id => [dir(packages.get(id)), buildFile(
 for (const id of members) {
   const p = packages.get(id), expected = new Set();
   for (const t of p.targets) {
-    if (t.kind.some(k => k === "bin" || k === "example")) expected.add(`build ${t.kind[0]} ${t.name}`);
+    if (!t.kind.some(k => k === "test" || k === "bench" || k === "custom-build")) expected.add(`build ${t.kind[0]} ${t.name}`);
     if (t.test && (t.kind.some(k => ["bin", "test", "example", "bench"].includes(k)) || t === libOf(p))) expected.add(`test ${t.kind[0]} ${t.name}`);
   }
   const have = rendered.get(id);

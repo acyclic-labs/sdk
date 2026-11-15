@@ -6,18 +6,21 @@
 //! package directory, each case's working directory as under Cargo) and
 //! `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case limit). Bazel's `--test_filter` arrives as
 //! `TESTBRIDGE_TEST_ONLY` and selects cases as `cargo test <filter>` does.
+//!
+//! Ignored cases are reported as skipped and not run, as under Cargo. Each case runs in an
+//! owned process tree, so a case past its limit is stopped with every process it started.
 
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, ExitCode};
 use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use wait_timeout::ChildExt;
+use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree};
 
 /// How one case ended.
 enum Outcome {
@@ -67,11 +70,11 @@ fn run() -> Result<usize, String> {
     run_suite(&suite, filter.as_deref(), &mut io::stdout().lock())
 }
 
-/// Runs each case `filter` selects in its own process and reports every outcome to `out`.
-/// Returns how many cases did not pass.
-fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result<usize, String> {
+/// The cases `filter` selects, with `--ignored` only the ignored ones.
+fn list(suite: &Suite, filter: Option<&str>, ignored: bool) -> Result<Vec<String>, String> {
     let listing = Command::new(&suite.binary)
         .args(["--list", "--format", "terse"])
+        .args(ignored.then_some("--ignored"))
         .args(filter)
         .current_dir(&suite.package)
         .output()
@@ -83,10 +86,23 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
             String::from_utf8_lossy(&listing.stderr)
         ));
     }
-    let listing = String::from_utf8_lossy(&listing.stdout);
-    let cases: Vec<&str> = listing
+    Ok(String::from_utf8_lossy(&listing.stdout)
         .lines()
         .filter_map(|line| line.strip_suffix(": test"))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Runs each case `filter` selects in its own process and reports every outcome to `out`.
+/// Ignored cases are reported as skipped. Returns how many cases did not pass.
+fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result<usize, String> {
+    let ignored = list(suite, filter, true)?;
+    for name in &ignored {
+        writeln!(out, "SKIP [ ignored] {name}").map_err(|error| format!("report: {error}"))?;
+    }
+    let cases: Vec<String> = list(suite, filter, false)?
+        .into_iter()
+        .filter(|name| !ignored.contains(name))
         .collect();
     let queue = Mutex::new(cases.iter().enumerate());
     let workers = thread::available_parallelism()
@@ -103,7 +119,7 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
                     let started = Instant::now();
                     let outcome = case(suite, name, &log);
                     if sender
-                        .send((*name, outcome, started.elapsed(), log))
+                        .send((name.as_str(), outcome, started.elapsed(), log))
                         .is_err()
                     {
                         break;
@@ -137,24 +153,26 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
     })
 }
 
-/// Runs one case in its own process; a case past the limit is killed and fails.
+/// Runs one case in its own process tree. A case past the limit fails, and the tree is
+/// stopped with every process the case started; dropping the tree stops any it left behind.
 fn case(suite: &Suite, name: &str, log: &Path) -> io::Result<Outcome> {
     let output = File::create(log)?;
-    let mut child = Command::new(&suite.binary)
+    let mut command = ProcessCommand::new(&suite.binary);
+    command
         .args([name, "--exact", "--nocapture", "--test-threads", "1"])
         .current_dir(&suite.package)
-        .stdin(Stdio::null())
+        .stdin(ProcessStdio::null())
         .stderr(output.try_clone()?)
-        .stdout(output)
-        .spawn()?;
-    Ok(match child.wait_timeout(suite.limit)? {
-        Some(status) if status.success() => Outcome::Passed,
-        Some(status) => Outcome::Failed(status.code()),
-        None => {
-            child.kill()?;
-            child.wait()?;
+        .stdout(output);
+    let mut tree = ProcessTree::spawn(&mut command)?;
+    Ok(match tree.wait(suite.limit) {
+        Ok(status) if status.success() => Outcome::Passed,
+        Ok(status) => Outcome::Failed(status.code()),
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+            tree.terminate(None)?;
             Outcome::TimedOut
         }
+        Err(error) => return Err(error),
     })
 }
 
@@ -178,6 +196,12 @@ mod tests {
     #[test]
     fn fixture_fail() {
         assert!(!acting(), "fixture failure");
+    }
+
+    #[test]
+    #[ignore = "the runner reports ignored cases as skipped without running them"]
+    fn fixture_ignored() {
+        assert!(!acting(), "ignored fixture ran");
     }
 
     #[test]
@@ -221,6 +245,11 @@ mod tests {
         );
         assert!(
             out.contains("TIMEOUT after 2s") && out.contains("tests::fixture_hang"),
+            "{out}"
+        );
+        assert!(
+            out.contains("SKIP [ ignored] tests::fixture_ignored")
+                && !out.contains("ignored fixture ran"),
             "{out}"
         );
     }

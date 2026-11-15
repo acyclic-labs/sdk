@@ -16,10 +16,12 @@ pub fn forbidden() {
     let _ = std::env::home_dir();
 }
 
-/// Compile-time environment reads rejected outside explicit Cargo metadata.
+/// Compile-time environment reads rejected outside the admitted metadata seam.
+/// The `env!` control names a variable every compiler run defines, so the
+/// fixture compiles without the host environment and the lint alone rejects it.
 #[cfg(feature = "negative")]
 pub fn forbidden_compile_time() {
-    let _ = env!("HOME");
+    let _ = env!("CARGO_PKG_NAME");
     let _ = option_env!("HOME");
     use std::option_env as renamed;
     let _ = renamed!(r"USERPROFILE",);
