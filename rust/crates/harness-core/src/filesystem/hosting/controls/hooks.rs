@@ -299,11 +299,19 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         let path = match &registered.keys {
             None => followed.as_str().to_owned(),
             Some((keys, root)) => {
-                let selected = record.headers.keys().iter().find_map(|key| {
-                    let key = std::str::from_utf8(key.as_ref()).ok()?;
-                    below(key, keys).or((key == keys).then_some(""))?;
-                    Some(below(key, root).unwrap_or(key).to_owned())
-                });
+                // A publication also lists the directories it creates, so a
+                // key strictly below the prefix names the changed file; the
+                // prefix key itself is selected only when nothing below it is.
+                let changed = record
+                    .headers
+                    .keys()
+                    .iter()
+                    .filter_map(|key| std::str::from_utf8(key.as_ref()).ok());
+                let selected = changed
+                    .clone()
+                    .find(|key| below(key, keys).is_some())
+                    .or_else(|| changed.clone().find(|key| *key == keys.as_str()))
+                    .map(|key| below(key, root).unwrap_or(key).to_owned());
                 match selected {
                     Some(path) => path,
                     None => return state.transition(Vec::new(), false),
