@@ -2772,6 +2772,7 @@ async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Re
         filesystem::HOME_VOLUME,
         supervision::{Event, Lifecycle},
     };
+    use acyclic_objects::Fault;
     use futures::TryStreamExt as _;
     let stream = Arc::new(MemoryStream::default());
     let issuer = AuthorityRoot::new(
@@ -2782,7 +2783,8 @@ async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Re
             id: "local".into(),
         },
     );
-    let bound = Bound::local_root(issuer, placement(&stream)?, turns()?)?;
+    let (placement, Bucket(objects)) = placed(&stream)?;
+    let bound = Bound::local_root(issuer, placement, turns()?)?;
     let home = WorkspaceEntry::initial_volume(
         WorkspaceRole::Home,
         HOME_VOLUME.into(),
@@ -2986,6 +2988,63 @@ async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Re
             rejected(&mut events, name).await?;
             rejected(&mut events, &sentinel).await?;
             assert_eq!(bound_source(format!("hook/{name}").as_str()).await?, None);
+        }
+        // A transient read of a program retries its registration, which binds
+        // once the read succeeds. Damage at rest is permanent: its program is
+        // refused after exactly one read, never retried. Each publication's
+        // sentinel refusal is the fence that its outcome has committed.
+        let marked = |marker: &'static str| {
+            move |bytes: &[u8]| {
+                bytes
+                    .windows(marker.len())
+                    .any(|window| window == marker.as_bytes())
+            }
+        };
+        for (number, name, marker, fault, calls) in [
+            (
+                8,
+                "flaky",
+                "transient-probe",
+                Fault::Transient,
+                Some(std::num::NonZeroUsize::MIN),
+            ),
+            (9, "rotten", "corrupt-probe", Fault::Corrupt, None),
+        ] {
+            let text = program(
+                name,
+                "{kind: 'file', volume: 'volume:///home', prefix: 'notes', from: 'now'}",
+            )
+            .replace("description: 'Hook'", &format!("description: '{marker}'"));
+            let sentinel = format!("zz{name}");
+            let fence = outside(&sentinel);
+            let files = [
+                (format!("hooks/{name}/program.ts"), text.as_str()),
+                (format!("hooks/{name}/main.sh"), "true"),
+                (format!("hooks/{name}/main.ps1"), "$null"),
+                (format!("hooks/{sentinel}/program.ts"), fence.as_str()),
+            ];
+            let changes: Vec<_> = files
+                .iter()
+                .map(|(path, text)| (path.as_str(), Some(*text)))
+                .collect();
+            let injected = objects.medium().inject(fault, calls, marked(marker));
+            publish(&changes, number).await?;
+            let registered = if fault == Fault::Transient {
+                Some(source.clone())
+            } else {
+                rejected(&mut events, name).await?;
+                None
+            };
+            rejected(&mut events, &sentinel).await?;
+            assert_eq!(
+                bound_source(format!("hook/{name}").as_str()).await?,
+                registered
+            );
+            assert_eq!(
+                injected.hits(),
+                1,
+                "{name} reads its program once per attempt"
+            );
         }
         Ok::<_, Box<dyn std::error::Error>>(())
     };
