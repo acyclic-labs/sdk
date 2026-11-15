@@ -299,7 +299,7 @@ async fn run(
     event_output: Option<&mut headless::Output>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut ready = acyclic_native_runtime::take_service_ready_signal()?;
-    let result = run_inner(args, seams, shutdown, event_output, &mut ready).await;
+    let result = phase(|| run_inner(args, seams, shutdown, event_output, &mut ready)).await;
     if let Some(ready) = ready
         && let Err(error) = &result
     {
