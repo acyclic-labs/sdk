@@ -50,7 +50,8 @@ pub(super) async fn retain_and_pin<O: crate::AsyncObjectStore>(
             collection
                 .hold_generation_with_accounting(
                     objects,
-                    &authentication.proof,
+                    authentication.proof.generation_id.object_id(),
+                    &authentication.proof.objects,
                     config,
                     proven_at,
                     accounting,

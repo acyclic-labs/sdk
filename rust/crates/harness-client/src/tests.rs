@@ -29,15 +29,14 @@ fn skip(next: u64) -> acyclic_stream::wire::SessionFrame {
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 fn only_a_filtered_fold_advances_past_skipped_records() {
-    let policy = StreamViewPolicy::default();
-    let mut filtered = StreamView::new(policy, 2, 0, true, None, Default::default());
+    let mut filtered = StreamView::new(2, 0, true, None, Default::default());
     assert!(filtered.apply(&skip(7).into(), 1).is_ok());
     assert_eq!(filtered.next_sequence(), 7);
     assert!(
         filtered.apply(&skip(5).into(), 2).is_err(),
         "a cut never rewinds"
     );
-    let mut full = StreamView::new(policy, 2, 0, false, None, Default::default());
+    let mut full = StreamView::new(2, 0, false, None, Default::default());
     assert!(full.apply(&skip(7).into(), 1).is_err());
     assert!(full.apply(&skip(2).into(), 1).is_ok());
 }

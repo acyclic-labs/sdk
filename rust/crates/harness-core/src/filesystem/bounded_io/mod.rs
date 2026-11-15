@@ -416,10 +416,9 @@ impl PreparationIo {
                 result
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { work, .. } => operation(&mut KernelAccounting::NativeOriginal {
-                work,
-                cancellation: work.cancellation(),
-            }),
+            Self::Native { work, .. } => {
+                operation(&mut KernelAccounting::native(work, work.cancellation()))
+            }
         }
     }
     pub(crate) fn preflight(

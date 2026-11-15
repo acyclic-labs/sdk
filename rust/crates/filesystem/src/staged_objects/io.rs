@@ -94,11 +94,16 @@ pub(super) async fn read_spilled_native(
     object_id: ObjectId,
     offset: u64,
     length: u64,
+    plaintext_length: u64,
     native: &NativeMaterializationWork,
-) -> Result<HashedObject, ObjectStoreError> {
+) -> Result<OwnedBytes, ObjectStoreError> {
     native.admit(WorkCounters {
         object_bytes_read: length,
-        bytes_hashed: length,
+        bytes_hashed: length.saturating_add(if object_id.storage.is_some() {
+            plaintext_length
+        } else {
+            0
+        }),
         ..WorkCounters::UNCHARGED
     })?;
     let requested = usize::try_from(length).map_err(|_| ObjectStoreError::Corrupt)?;
@@ -111,17 +116,13 @@ pub(super) async fn read_spilled_native(
     if observed != length {
         return Err(ObjectStoreError::Corrupt);
     }
-    native.charge(WorkCounters {
-        bytes_hashed: length,
-        ..WorkCounters::UNCHARGED
-    })?;
-    HashedObject::verify(object_id, bytes).ok_or(ObjectStoreError::Corrupt)
+    Ok(bytes)
 }
 
 pub(super) async fn read_spilled(
     spill: &NativeFile,
     spilled: &[(ObjectId, u64, u64)],
-) -> Result<Vec<HashedObject>, ObjectStoreError> {
+) -> Result<Vec<OwnedBytes>, ObjectStoreError> {
     let reads = spilled
         .iter()
         .map(|&(_, offset, length)| {
@@ -137,8 +138,11 @@ pub(super) async fn read_spilled(
     spilled
         .iter()
         .zip(bytes)
-        .map(|(&(object_id, _, _), bytes)| {
-            HashedObject::verify(object_id, bytes.into()).ok_or(ObjectStoreError::Corrupt)
+        .map(|(&(_, _, length), bytes)| {
+            if bytes.len() as u64 != length {
+                return Err(ObjectStoreError::Corrupt);
+            }
+            Ok(bytes.into())
         })
         .collect()
 }

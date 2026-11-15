@@ -48,11 +48,10 @@ fn client() -> (WireSession, Arc<Scheduler>) {
         scheduler.clone(),
     );
     (
-        WireSession::with_view_policy(
+        WireSession::new(
             pool,
             // This fixture proves finite reservation refusal and residency.
             DemandPolicy::new(Some(16), Some(8)).unwrap(),
-            StreamViewPolicy::new(4, 8192).unwrap(),
         ),
         scheduler,
     )
@@ -164,7 +163,7 @@ async fn fill(view: &mut StreamView, followed: Option<&StreamPath>) {
         };
         view.apply(&frame.into(), sequence + 1).unwrap();
     }
-    assert_eq!(view.records().len(), 4);
+    assert_eq!(view.records().len(), 16);
 }
 
 fn refused_without_allocations(

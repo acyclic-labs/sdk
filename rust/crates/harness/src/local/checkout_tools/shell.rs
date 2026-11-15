@@ -38,6 +38,7 @@ impl CheckoutTools {
         let preparation_workspace = Arc::clone(&workspace);
         let preparation_spill = spill_root.clone();
         let preparation_control = control.clone();
+        let preparation_mounts = Arc::clone(claims.mounts());
         let environment = self.environment.clone();
         let clock = Arc::clone(&self.clock);
         let ((invocation, cancellation), (state, files, claims)) =
@@ -60,10 +61,9 @@ impl CheckoutTools {
                 };
                 let invocation = native_process::shell::prepare(
                     input,
-                    &preparation_workspace.mounts,
+                    &preparation_mounts,
                     invocation,
                     clock.now_unix_millis() / 1000,
-                    std::time::Instant::now(),
                 )?;
                 Ok((invocation, cancellation))
             })

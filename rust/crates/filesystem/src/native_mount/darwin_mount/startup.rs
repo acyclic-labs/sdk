@@ -9,6 +9,7 @@ pub(super) struct DriverSessionResources {
     pub(super) credit: NativeWorkReservation,
     pub(super) native: Mutex<DarwinOwned<usize>>,
     pub(super) sdk_credit: NativeWorkReservation,
+    _registration: Option<super::shared_instance::RootRegistration>,
     _allocation: NativeAllocation,
 }
 
@@ -17,11 +18,7 @@ pub(super) struct LoopState {
         clippy::type_complexity,
         reason = "The SDK loop retains these existing resources together until it exits."
     )]
-    pub(super) resources: Option<(
-        Arc<DarwinMountContext>,
-        Arc<DarwinOwned<CString>>,
-        [usize; 7],
-    )>,
+    pub(super) resources: Option<(CallbackTarget, Arc<DarwinOwned<CString>>, [usize; 7])>,
     pub(super) mounted: bool,
     pub(super) loop_finished: bool,
     pub(super) control: DarwinRecoveryControl,
@@ -38,15 +35,31 @@ impl DriverSessionResources {
         self.native.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "At most three options fill three pairs in the seven-element argument array."
-    )]
     pub(super) fn new(
         context: Arc<DarwinMountContext>,
         destination: &Path,
         work: &Work,
         owned: bool,
+    ) -> Result<Arc<Self>, NativeMountError> {
+        Self::new_target(
+            CallbackTarget::View(context),
+            destination,
+            work,
+            owned,
+            None,
+        )
+    }
+
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "At most three options fill three pairs in the seven-element argument array."
+    )]
+    pub(super) fn new_target(
+        context: CallbackTarget,
+        destination: &Path,
+        work: &Work,
+        owned: bool,
+        registration: Option<super::shared_instance::RootRegistration>,
     ) -> Result<Arc<Self>, NativeMountError> {
         let probe = MountProbe::new(destination, work)?;
         // Both the stopping caller and the provider's retirement owner can
@@ -59,11 +72,8 @@ impl DriverSessionResources {
         let destination = Arc::clone(&probe.0);
         let options = [
             Some(c"nobrowse"),
-            (!context.writable).then_some(c"ro"),
-            context
-                .source
-                .supports_posix_named_attributes()
-                .then_some(c"namedattr"),
+            (!context.writable()).then_some(c"ro"),
+            context.named_attributes().then_some(c"namedattr"),
         ];
         let mut pointers = [0; 7];
         pointers[0] = if owned { c"acyclic-fs" } else { c"darwinfuse" }.as_ptr() as usize;
@@ -101,6 +111,7 @@ impl DriverSessionResources {
             credit,
             native: Mutex::new(DarwinOwned::empty(0)),
             sdk_credit: cleanup,
+            _registration: registration,
             _allocation: allocation,
         });
         if let Some(task) = &mut owner.state().control.direct {
@@ -113,10 +124,10 @@ impl DriverSessionResources {
         self.state()
             .resources
             .as_ref()
-            .map(|resources| Arc::clone(&resources.0))
+            .map(|resources| resources.0.view())
             .ok_or(NativeMountError::Lifecycle(
                 "Darwin mount session has stopped",
-            ))
+            ))?
     }
     pub(super) fn birth(&self, work: &Work) -> Result<(), NativeMountError> {
         let mut state = self.state();
@@ -213,6 +224,11 @@ impl DarwinMountSession {
         if out.is_some() {
             return Err(NativeMountError::ControlPending);
         }
+        if request.shared {
+            return super::shared_instance::SharedDarwinView::start_into(
+                request, source, original, out, retirement,
+            );
+        }
         let mut context =
             DarwinMountContext::new(source, request.writable, &request.destination, original)?;
         context
@@ -230,13 +246,32 @@ impl DarwinMountSession {
             original,
             retirement.is_some(),
         )?;
+        let failure = Arc::clone(&resources.context()?.handler_failure);
+        Self::start_resources(resources, failure, original, out, retirement, prepare)
+    }
+
+    pub(super) fn start_resources<F>(
+        resources: Arc<DriverSessionResources>,
+        handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
+        original: &Work,
+        out: &mut Option<Self>,
+        retirement: &mut Option<crate::native_mount::NativeMountRetirement>,
+        prepare: F,
+    ) -> Result<(), NativeMountError>
+    where
+        F: FnOnce(&mut crate::native_mount::NativeMountRetirement) -> Result<(), NativeMountError>,
+    {
+        if out.is_some() {
+            return Err(NativeMountError::ControlPending);
+        }
         *out = Some(Self {
-            handler_failure: Arc::clone(&resources.context()?.handler_failure),
+            handler_failure,
             unmount: resources,
             thread: None,
             loop_finished_before_teardown: None,
             loop_result: None,
             native_root_identity: None,
+            shared: None,
         });
         let session = out.as_mut().ok_or(NativeMountError::ControlPending)?;
         let owned = (Arc::clone(&session.unmount), original.clone());
@@ -367,7 +402,7 @@ fn run_loop(
                 argc,
                 pointers.as_ptr().cast(),
                 destination.as_ptr(),
-                Arc::as_ptr(&context) as usize,
+                &context as *const CallbackTarget as usize,
                 report_mounted,
                 Arc::as_ptr(&driver).cast_mut().cast(),
                 &mut interrupted,
@@ -382,6 +417,7 @@ fn run_loop(
         driver.state().control.start_aborted = true;
         -context.record_failure(error, original.receipt())
     });
+    context.close();
     {
         let _state = driver.state();
         driver.provider_exited.store(true, Ordering::Release);
@@ -399,6 +435,9 @@ pub(super) struct DriverExit<'a>(pub(super) &'a DriverSessionResources);
 impl Drop for DriverExit<'_> {
     fn drop(&mut self) {
         let mut state = self.0.state();
+        if let Some((target, _, _)) = &state.resources {
+            target.close();
+        }
         state.loop_finished = true;
         self.0.provider_exited.store(true, Ordering::Release);
         self.0.changed.notify_all();

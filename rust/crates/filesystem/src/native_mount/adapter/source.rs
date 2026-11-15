@@ -546,15 +546,27 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        self.publish_async(permit, Some(&self.cancellation)).await
+    }
+
+    async fn publish_async(
+        &self,
+        permit: crate::PublicationPermit,
+        lifetime: Option<&CancellationToken>,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
         let work = self.operation_work()?;
         self.checkout
             .publish(
                 permit,
                 crate::kernel::KernelAccounting::native(&work, work.cancellation()),
-                Some(&self.cancellation),
+                lifetime,
                 &mut source_publication_guard(
                     self.native_callback_guard.clone(),
-                    Some(self.cancellation.clone()),
+                    lifetime.cloned(),
                 ),
                 None,
                 &mut None,

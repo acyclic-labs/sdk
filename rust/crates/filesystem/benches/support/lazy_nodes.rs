@@ -82,7 +82,7 @@ fn accounting<'a>(
     cancellation: &'a CancellationToken,
 ) -> KernelAccounting<'a> {
     match work {
-        Some(work) => KernelAccounting::NativeOriginal { work, cancellation },
+        Some(work) => KernelAccounting::native(work, cancellation),
         None => BUDGET.accounting(cancellation),
     }
 }

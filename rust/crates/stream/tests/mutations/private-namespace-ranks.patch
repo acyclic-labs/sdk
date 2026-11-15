@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/memory/provider.rs b/rust/crates/stream/src/memory/provider.rs
+index f952a4da095..4630ebf00a2 100644
+--- a/rust/crates/stream/src/memory/provider.rs
++++ b/rust/crates/stream/src/memory/provider.rs
+@@ -249,7 +249,7 @@ impl MemoryStream {
+             crate::wire_codec::requests::heads_len_with_durability(view, deferred),
+         );
+         view.children = if let Some(children) = &request.children {
+-            let published = paths.canonical();
++            let published = paths.clone();
+             let limit = children
+                 .limit
+                 .min(request.limit - request.selection_count()?);

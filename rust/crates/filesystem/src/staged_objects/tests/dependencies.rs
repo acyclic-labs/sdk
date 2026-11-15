@@ -141,7 +141,7 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
         assert_eq!(denied.spent().backend_read_operations, 0);
         assert_eq!(denied.spent().backend_write_operations, 0);
         for target in resident_targets {
-            assert!(matches!(store.lookup(target), Lookup::Resident(_)));
+            assert!(matches!(store.lookup(target), Lookup::Resident { .. }));
         }
     }
     // Real spill pressure leaves the old children on disk and their new parent resident.

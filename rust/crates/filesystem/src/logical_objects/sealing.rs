@@ -88,6 +88,18 @@ impl<P: ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         authenticated: Option<&acyclic_stream::SealedBytes>,
         work: &mut KernelAccounting<'_>,
     ) -> Result<ObjectRead, crate::FsError> {
+        self.open_prehashed_proof(id, bytes, maximum, authenticated, work)
+            .map(|(bytes, _)| bytes)
+    }
+
+    fn open_prehashed_proof(
+        &self,
+        id: ObjectId,
+        bytes: ObjectRead,
+        maximum: u64,
+        authenticated: Option<&acyclic_stream::SealedBytes>,
+        work: &mut KernelAccounting<'_>,
+    ) -> Result<(ObjectRead, acyclic_stream::SealedBytes), crate::FsError> {
         if let Some(sealed) = authenticated {
             if acyclic_objects::Digest::from_bytes(*sealed.digest()) != blob(id) {
                 return Err(ObjectStoreError::Corrupt.into());
@@ -121,13 +133,45 @@ impl<P: ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             }
             .into());
         }
-        if !authenticated.is_some_and(|sealed| {
+        let proof = if let Some(sealed) = authenticated.filter(|sealed| {
             std::ptr::eq(sealed.bytes().as_ref(), bytes.as_ref())
                 && crate::Digest::from_bytes(*sealed.digest()) == id.digest
         }) {
-            read::hash(id, &bytes.bytes, bytes.len() as u64, work)?;
+            sealed.clone()
+        } else {
+            read::seal(id, &bytes.bytes, bytes.len() as u64, work)?
+        };
+        Ok((bytes, proof))
+    }
+
+    pub(super) fn restore_prepared(
+        &self,
+        id: ObjectId,
+        stored: OwnedBytes,
+        maximum: u64,
+        work: &mut KernelAccounting<'_>,
+    ) -> Result<crate::HashedObject, crate::FsError> {
+        let limit = self.sealer.stored_limit(id, maximum)?;
+        if stored.len() as u64 > limit {
+            return Err(ObjectStoreError::TooLarge {
+                observed: stored.len() as u64,
+                maximum: limit,
+            }
+            .into());
         }
-        Ok(bytes)
+        let stored = write::seal(stored, work)?;
+        let (_, plaintext) = self.open_prehashed_proof(
+            id,
+            ObjectRead {
+                bytes: stored.bytes().clone(),
+                retention: ObjectReadRetention::Shared,
+            },
+            maximum,
+            Some(&stored),
+            work,
+        )?;
+        crate::HashedObject::from_proofs(id, plaintext, id.storage.map(|_| stored))
+            .ok_or_else(|| ObjectStoreError::Corrupt.into())
     }
 
     fn open_standalone(

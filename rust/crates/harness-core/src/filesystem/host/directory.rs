@@ -377,10 +377,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, NativeAccounting};
             let owner = io.account(NativeAccounting::take)?;
             let native_io = PreparationIo::from_native_work(&owner.work)?;
-            let mut ctx = KernelAccounting::NativeOriginal {
-                work: &owner.work,
-                cancellation: io.cancellation(),
-            };
+            let mut ctx = KernelAccounting::native(&owner.work, io.cancellation());
             let produced = async {
                 match &selection.snapshot {
                     Some(cut) => {

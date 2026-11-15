@@ -3,6 +3,64 @@ use crate::workspace::ForkOptions;
 use crate::{Generation, IdempotencyKey, TransactionCommit, WorkspaceDelete};
 use std::error::Error;
 
+#[tokio::test]
+async fn settled_ephemeral_forks_retire_their_proof_cache_without_retiring_the_source()
+-> Result<(), Box<dyn Error>> {
+    for settled in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let cancel = CancellationToken::new();
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        let source = fs.create_workspace("proof-owner", B, &cancel).await?.value;
+        source.write_text("/base", "base").await?;
+        let head = source.head(B, &cancel).await?.value;
+        let (fork, custody) = source
+            .fork_ephemeral(
+                "proof-fork",
+                ForkOptions::from_generation(head, IdempotencyKey::new()),
+                B,
+                &cancel,
+            )
+            .await?
+            .value;
+        fork.write_text("/private", "private").await?;
+        if settled {
+            custody.settle().await?;
+        } else {
+            // Negative control: a live fork really does retain its proof slot.
+            assert!(
+                fs.inner
+                    .publication_proof
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .retire(fork.id().volume_id())
+            );
+            custody.settle().await?;
+        }
+        assert!(
+            !fs.inner
+                .publication_proof
+                .inner
+                .lock()
+                .unwrap()
+                .retire(fork.id().volume_id())
+        );
+        assert!(
+            fs.inner
+                .publication_proof
+                .inner
+                .lock()
+                .unwrap()
+                .retire(source.id().volume_id())
+        );
+        assert_eq!(
+            source.read("/base", 64, B, &cancel).await?.value.as_ref(),
+            b"base"
+        );
+    }
+    Ok(())
+}
+
 async fn retained_source_fork_work(
     fs: &crate::LocalFs,
     source: &Generation<crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
@@ -194,5 +252,243 @@ async fn registered_source_proofs_survive_collection_without_rewalking_the_closu
         original.receipt().verify(WorkBudget::UNBOUNDED)?;
         assert_eq!(original.live_allocation_bytes(), baseline);
     }
+    Ok(())
+}
+
+const CRASH_CHILD: &str = "facade::tests::fork_proof::local::fork_then_crash_child";
+const FORK_ONLY: &str = "written only into the fork";
+
+// The child forks the source, writes into the fork, and dies without settling
+// it: no destructor, flush or release runs.
+#[test]
+fn fork_then_crash_child() -> Result<(), Box<dyn Error>> {
+    let Some(root) = std::env::var_os("ACYCLIC_EPHEMERAL_FORK_ROOT") else {
+        return Ok(());
+    };
+    let durable = std::env::var_os("ACYCLIC_EPHEMERAL_FORK_DURABLE").is_some();
+    let root = std::path::PathBuf::from(root);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let cancel = CancellationToken::new();
+            let fs = Fs::local(crate::LocalOptions::new(&root)).await?;
+            let source = fs.create_workspace("source", B, &cancel).await?.value;
+            source.write_text("/base", "base").await?;
+            let log = std::fs::metadata(root.join("objects/log"))?.len();
+            std::fs::write(root.join("baseline"), log.to_string())?;
+            let head = source.head(B, &cancel).await?.value;
+            let options = ForkOptions::from_generation(head, IdempotencyKey::new());
+            let (fork, custody) = if durable {
+                let fork = source
+                    .fork::<_, _, WorkspaceError>(
+                        "fork",
+                        options,
+                        crate::PublicationPermit::Unrestricted,
+                        B,
+                        &cancel,
+                        &mut allow::<FsError>,
+                    )
+                    .await?
+                    .value;
+                (fork, None)
+            } else {
+                let (fork, custody) = source
+                    .fork_ephemeral("fork", options, B, &cancel)
+                    .await?
+                    .value;
+                (fork, Some(custody))
+            };
+            fork.write_text("/fork", FORK_ONLY).await?;
+            // Distinct chunks cross the resident staging window and exercise
+            // the OS-owned private spill, rather than only process memory.
+            let spill = (0..12 * 1_024 * 1_024_u64)
+                .map(|offset| (offset.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32) as u8)
+                .collect::<Vec<_>>();
+            fork.write("/spill", spill.into()).await?;
+            assert_eq!(
+                fork.read("/fork", 64, B, &cancel).await?.value.as_ref(),
+                FORK_ONLY.as_bytes()
+            );
+            // The owner dies here, with the fork and its custody still live.
+            let _live = (fs, source, fork, custody);
+            std::process::exit(86)
+        })
+}
+
+// An ephemeral fork dies with its owner: after a crash its authority is gone
+// and none of its objects reached storage, while the source is intact. The
+// negative control makes a durable fork the same way: it survives the crash,
+// and its objects were stored.
+#[test]
+fn an_ephemeral_fork_leaves_nothing_after_its_owner_crashes() -> Result<(), Box<dyn Error>> {
+    for durable in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let mut child = std::process::Command::new(std::env::current_exe()?);
+        child
+            .args(["--exact", CRASH_CHILD, "--nocapture"])
+            .env("ACYCLIC_EPHEMERAL_FORK_ROOT", directory.path());
+        if durable {
+            child.env("ACYCLIC_EPHEMERAL_FORK_DURABLE", "1");
+        }
+        let output = child.output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(86),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let baseline: u64 = std::fs::read_to_string(directory.path().join("baseline"))?.parse()?;
+        assert!(
+            std::fs::read_dir(directory.path())?.all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".acyclic-staging-")
+            }),
+            "a crashed owner left a named staging file"
+        );
+        let stored = std::fs::metadata(directory.path().join("objects/log"))?.len();
+        if durable {
+            assert!(stored > baseline, "the durable fork stored no objects");
+        } else {
+            assert_eq!(
+                stored, baseline,
+                "the ephemeral fork's objects reached storage"
+            );
+        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let cancel = CancellationToken::new();
+                let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+                let source = fs.open_workspace("source", B, &cancel).await?.value;
+                let head = source.head(B, &cancel).await?.value;
+                assert_eq!(
+                    head.read("/base", 8, B, &cancel).await?.value.as_ref(),
+                    b"base"
+                );
+                let fork = fs.open_workspace("fork", B, &cancel).await;
+                if durable {
+                    let head = fork?.value.head(B, &cancel).await?.value;
+                    assert_eq!(
+                        head.read("/fork", 64, B, &cancel).await?.value.as_ref(),
+                        FORK_ONLY.as_bytes()
+                    );
+                } else {
+                    assert!(
+                        matches!(
+                            fork.map(|_| ()).map_err(|failure| failure.error),
+                            Err(WorkspaceError::Filesystem(FsError::Authority(
+                                AuthorityStoreError::Missing
+                            )))
+                        ),
+                        "the ephemeral fork survived its owner"
+                    );
+                }
+                Ok::<_, Box<dyn Error>>(())
+            })?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn idle_ephemeral_authority_retains_private_history_without_open_generations()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let cancel = CancellationToken::new();
+    let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+    let source = fs.create_workspace("idle-source", B, &cancel).await?.value;
+    source
+        .write_text("/private", &"foreign-old".repeat(2_000))
+        .await?;
+    let foreign_previous = source.head(B, &cancel).await?.value.id();
+    let mut foreign = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
+    foreign.generation(foreign_previous).await?;
+    let foreign_objects = foreign.marked().clone();
+    drop(foreign);
+    source
+        .write_text("/private", &"source".repeat(2_000))
+        .await?;
+    let source_head = source.head(B, &cancel).await?.value;
+    let (fork, custody) = source
+        .fork_ephemeral(
+            "idle-private",
+            ForkOptions::from_generation(source_head, IdempotencyKey::new()),
+            B,
+            &cancel,
+        )
+        .await?
+        .value;
+    fork.write_text("/private", &"older".repeat(2_000)).await?;
+    let previous = fork.head(B, &cancel).await?.value.id();
+    let mut expected = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
+    expected.generation(previous).await?;
+    let previous_objects = expected.marked().clone();
+    drop(expected);
+    fork.write_text("/private", &"newer".repeat(2_000)).await?;
+    // Only the workspace and stream lease remain. Neither pins a checkout or generation.
+    let held = fs.local_collection().held();
+    let (base, volume, config) = held
+        .into_iter()
+        .find_map(|held| match held {
+            crate::collection::Held::Ephemeral {
+                base,
+                volume,
+                config,
+            } if volume == fork.id().volume_id() => Some((base, volume, config)),
+            _ => None,
+        })
+        .ok_or("idle authority is not registered")?;
+    let authority = Volume {
+        fs: fs.clone(),
+        id: volume,
+        config,
+    };
+    let mut accounting = KernelAccounting::standalone(B, &cancel);
+    let (head, _) = authority
+        .resolve_head_generation(&mut accounting, &cancel)
+        .await?;
+    let mut marker = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
+    marker.generation(GenerationId::from_root(base)).await?;
+    marker
+        .history(volume, GenerationId::from_root(head))
+        .await?;
+    marker.lineage_roots().await?;
+    assert!(previous_objects.is_subset(marker.marked()));
+    assert!(
+        !foreign_objects.is_subset(marker.marked()),
+        "private history retained foreign source contents"
+    );
+
+    // Negative control uses the real objects and old metadata-only ancestry walk.
+    let mut incomplete = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
+    incomplete.generation(GenerationId::from_root(base)).await?;
+    incomplete.generation(GenerationId::from_root(head)).await?;
+    incomplete.lineage_roots().await?;
+    assert!(
+        !previous_objects.is_subset(incomplete.marked()),
+        "history oracle cannot detect lost private content"
+    );
+    drop((marker, incomplete, accounting, authority));
+    fs.collect_local_garbage(None, &cancel).await?;
+    assert_eq!(
+        fork.read("/private", 10_000, B, &cancel)
+            .await?
+            .value
+            .as_ref(),
+        "newer".repeat(2_000).as_bytes()
+    );
+    custody.settle().await?;
+    assert!(
+        !fs.local_collection()
+            .held()
+            .iter()
+            .any(|held| matches!(held,
+        crate::collection::Held::Ephemeral { volume: held_volume, .. } if *held_volume == volume))
+    );
     Ok(())
 }

@@ -37,10 +37,7 @@ impl DiscoverySource for LazyDiscovery<'_> {
     {
         Box::pin(async move {
             let cut = revision.unwrap_or(&self.cut);
-            let mut accounting = KernelAccounting::NativeOriginal {
-                work: self.work,
-                cancellation: self.work.cancellation(),
-            };
+            let mut accounting = KernelAccounting::native(self.work, self.work.cancellation());
             let selected = self
                 .view
                 .list_directory_at_snapshot(

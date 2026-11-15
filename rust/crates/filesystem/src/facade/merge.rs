@@ -78,7 +78,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 request,
                 &mut accounting,
                 cancellation,
-                |request, intent, limits, _budget| async move {
+                |request, mut intent, limits, _budget| async move {
+                    // An owner's seal can depend on target policy beyond the
+                    // join's content delta. Preserve its exact authority cut;
+                    // rebasing or grouping that delta could otherwise compose
+                    // a policy change after the seal. A stale target is
+                    // replanned by the caller and must pass the seal again.
+                    intent.preconditions = None;
                     let output = publish_generation_async_guarded_with_native_work(
                         self.clone(),
                         request,

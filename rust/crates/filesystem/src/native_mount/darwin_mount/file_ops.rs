@@ -7,13 +7,26 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
     handle: u64,
     result: *mut NativeStat,
 ) -> c_int {
-    ffi(address, false, |context, work| {
-        let attributes = context.attributes(&*mount_path(path, work)?, handle, work)?;
-        work.charge(copy_work(std::mem::size_of::<NativeStat>() as u64))?;
-        // SAFETY: the bridge supplies a writable NativeStat.
-        unsafe { result.write(attributes) };
-        Ok(0)
-    })
+    ffi_path_with_root(
+        address,
+        path,
+        handle,
+        false,
+        |context, path, work| {
+            let attributes = context.attributes(&*mount_path(path, work)?, handle, work)?;
+            work.charge(copy_work(std::mem::size_of::<NativeStat>() as u64))?;
+            // SAFETY: the bridge supplies a writable NativeStat.
+            unsafe { result.write(attributes) };
+            Ok(0)
+        },
+        |views, work| {
+            let attributes = views.attributes();
+            work.charge(copy_work(std::mem::size_of::<NativeStat>() as u64))?;
+            // SAFETY: the bridge retains this writable result through the callback.
+            unsafe { result.write(attributes) };
+            Ok(0)
+        },
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -23,10 +36,12 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_open(
     flags: c_int,
     handle: *mut u64,
 ) -> c_int {
-    ffi(
+    ffi_path(
         address,
+        path,
+        0,
         flags & libc::O_ACCMODE != libc::O_RDONLY,
-        |context, work| {
+        |context, path, work| {
             let access = match flags & libc::O_ACCMODE {
                 libc::O_RDONLY => super::super::MountOpenAccess::Read,
                 libc::O_WRONLY => super::super::MountOpenAccess::Write,
@@ -51,7 +66,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
     _flags: c_int,
     handle: *mut u64,
 ) -> c_int {
-    ffi(address, true, |context, work| {
+    ffi_path(address, path, 0, true, |context, path, work| {
         let path = mount_path(path, work)?;
         let created = context.mutate(
             || {
@@ -83,16 +98,25 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_release(
     _path: *const c_char,
     handle: u64,
 ) -> c_int {
-    ffi(address, false, |context, _work| {
-        if handle != 0 {
-            let mut files = context.files.write().map_err(|_| driver_errno(libc::EIO))?;
+    ffi_path(
+        address,
+        ptr::null(),
+        handle,
+        false,
+        |context, _path, _work| {
+            if handle != 0 {
+                let mut files = context.files.write().map_err(|_| driver_errno(libc::EIO))?;
 
-            files
-                .remove(&handle)
-                .ok_or_else(|| driver_errno(libc::ESTALE))?;
-        }
-        Ok(0)
-    })
+                files
+                    .remove(&handle)
+                    .ok_or_else(|| driver_errno(libc::ESTALE))?;
+                if let Some(routing) = &context.routing {
+                    routing.closed(handle);
+                }
+            }
+            Ok(0)
+        },
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -104,7 +128,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_read(
     length: usize,
     offset: i64,
 ) -> c_int {
-    ffi(address, false, |context, work| {
+    ffi_path(address, path, handle, false, |context, path, work| {
         let maximum = bounded_length(length).map_err(driver_errno)?;
         let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
         let target = context.file_target(&*mount_path(path, work)?, handle, work)?;
@@ -132,7 +156,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_write(
     length: usize,
     offset: i64,
 ) -> c_int {
-    ffi(address, true, |context, work| {
+    ffi_path(address, path, handle, true, |context, path, work| {
         let length = bounded_length(length).map_err(driver_errno)?;
         let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
         let input = if length == 0 {
@@ -159,7 +183,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
     handle: u64,
     length: i64,
 ) -> c_int {
-    ffi(address, true, |context, work| {
+    ffi_path(address, path, handle, true, |context, path, work| {
         let length = u64::try_from(length).map_err(|_| driver_errno(libc::EINVAL))?;
         context.mutate_file(
             &*mount_path(path, work)?,
@@ -176,15 +200,36 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_flush(
     address: usize,
     handle: u64,
 ) -> c_int {
-    ffi(address, true, |context, work| {
-        context.flush_on_close(handle, work)?;
-        Ok(0)
-    })
+    ffi_path(
+        address,
+        ptr::null(),
+        handle,
+        true,
+        |context, _path, work| {
+            context.flush_on_close(handle, work)?;
+            Ok(0)
+        },
+    )
 }
 
 #[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
-    ffi(address, true, |context, work| {
+pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(
+    address: usize,
+    path: *const c_char,
+    handle: u64,
+) -> c_int {
+    ffi_path(address, path, handle, true, |context, path, work| {
+        if handle == 0 {
+            let path = mount_path(path, work)?;
+            context.lookup(&path, work)?;
+        } else if !context
+            .files
+            .read()
+            .map_err(|_| driver_errno(libc::EIO))?
+            .contains_key(&handle)
+        {
+            return Err(driver_errno(libc::ESTALE));
+        }
         context.sync(work)?;
         Ok(0)
     })
@@ -192,7 +237,12 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) ->
 
 #[unsafe(no_mangle)]
 pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_durable_writes(address: usize) -> c_int {
-    ffi(address, false, |context, _| {
-        Ok(i32::from(!context.source.flush_publishes()))
-    })
+    ffi_path_with_root(
+        address,
+        c"/".as_ptr(),
+        0,
+        false,
+        |context, _path, _| Ok(i32::from(!context.source.flush_publishes())),
+        |_, _| Ok(0),
+    )
 }

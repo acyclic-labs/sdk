@@ -18,7 +18,7 @@ pub(crate) async fn run<T>(
     observer: Option<Arc<NativeProcessObserver>>,
     check: impl Fn() -> std::io::Result<()> + Send + 'static,
 ) -> Result<Option<NativeProcessResult>> {
-    let invocation = prepare(input, mounts, invocation, now, std::time::Instant::now())?;
+    let invocation = prepare(input, mounts, invocation, now)?;
     capture::capture_with_custody(
         invocation,
         move |_: &mut (), chunk| {
@@ -42,7 +42,6 @@ pub fn prepare<T>(
     mounts: &MountTable<T>,
     mut invocation: Invocation,
     now: u64,
-    admitted: std::time::Instant,
 ) -> Result<Invocation> {
     let cwd_error = |cause: std::io::Error| {
         let path = input.cwd.as_deref().unwrap_or(".");
@@ -111,17 +110,14 @@ pub fn prepare<T>(
     // discovery hints. Ambient credentials and startup hooks stay host-owned,
     // even when another native process caller requested inheritance.
     invocation.inherit_environment = false;
-    // The caller admits native execution after checkout preparation. Queueing
-    // for the checkout consumes scope lifetime, not this process lifetime.
+    // timeout_ms bounds the process's own run: its clock starts at launch, so
+    // admission, volume forks and every other pre-spawn wait never count.
     invocation.schedule = input.timeout_ms()?.map_or(
         acyclic_native_runtime::CaptureSchedule::Unbounded,
         |timeout| {
-            admitted
-                .checked_add(std::time::Duration::from_millis(u64::from(timeout)))
-                .map_or(
-                    acyclic_native_runtime::CaptureSchedule::Overflow,
-                    acyclic_native_runtime::CaptureSchedule::until,
-                )
+            acyclic_native_runtime::CaptureSchedule::FromLaunch(std::time::Duration::from_millis(
+                u64::from(timeout),
+            ))
         },
     );
     let shell = &crate::tools::shell::PLATFORM;

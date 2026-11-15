@@ -183,6 +183,24 @@ impl Drop for ReplayProbes {
 }
 
 impl MemoryStream {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn extend_replay_probes(
+        &self,
+        probes: &mut ReplayProbes,
+        items: u64,
+    ) -> Result<(), StreamError> {
+        if let Some(work) = &self.work {
+            let remaining = probes
+                .remaining
+                .checked_add(items)
+                .ok_or(StreamError::Capacity)?;
+            work.record(work.meter.reserve_examination(items))?;
+            probes.remaining = remaining;
+            probes.meter = Some(Arc::clone(&work.meter));
+        }
+        Ok(())
+    }
+
     fn record_replay_probe(&self, probes: &mut ReplayProbes, items: u64) {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {

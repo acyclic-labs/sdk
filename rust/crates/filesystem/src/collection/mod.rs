@@ -45,6 +45,9 @@ struct State {
 
 #[derive(Clone, Debug)]
 pub(crate) enum Held {
+    Construction {
+        group: crate::kernel::allocation::retained::RetainedArc<construction::ConstructionGroup>,
+    },
     Checkout {
         base: ObjectId,
         working: GenerationRoot,
@@ -54,6 +57,11 @@ pub(crate) enum Held {
     },
     Record {
         record: crate::kernel::FileRecord,
+        config: crate::model::VolumeConfig,
+    },
+    Ephemeral {
+        base: ObjectId,
+        volume: crate::VolumeId,
         config: crate::model::VolumeConfig,
     },
     Generation {
@@ -325,24 +333,21 @@ impl Collection {
 }
 
 impl Collecting {
-    pub(crate) async fn sweepable(
+    /// Retains each candidate's identity through the common admission cut.
+    pub(crate) async fn sweepable<T: Copy + Into<crate::Digest>>(
         &self,
-        batch: Vec<crate::Digest>,
-    ) -> (tokio::sync::OwnedRwLockWriteGuard<()>, Vec<crate::Digest>) {
+        mut batch: Vec<T>,
+    ) -> (tokio::sync::OwnedRwLockWriteGuard<()>, Vec<T>) {
         let guard = self.collection.gate().write_owned().await;
         let state = self.collection.state();
-        let sweepable = batch
-            .into_iter()
-            .filter(|object| {
-                !state
-                    .admitted
-                    .as_ref()
-                    .is_some_and(|admitted| admitted.contains(object))
-            })
-            .collect();
-        (guard, sweepable)
+        batch.retain(|candidate| {
+            !state
+                .admitted
+                .as_ref()
+                .is_some_and(|admitted| admitted.contains(&(*candidate).into()))
+        });
+        (guard, batch)
     }
-
     pub(crate) fn sweeping(&self) {
         self.collection.state().sweeps += 1;
     }
@@ -355,6 +360,8 @@ impl Drop for Collecting {
 }
 
 mod buffers;
+mod construction;
+pub use construction::{ConstructionRoots, ConstructionScope};
 mod epoch;
 mod holds;
 mod roots;

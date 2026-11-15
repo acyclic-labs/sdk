@@ -41,7 +41,7 @@ The provider's actual capacity remains a separate backstop. At that boundary a w
 
 ## Layers
 
-Relative file paths always name project files, including `.git`, `.volumes`, `.system` and `.home-seed-v1`. Auxiliary volumes use explicit addresses: `volume:///<name>/<path>` for this agent, or `volume://<agent>/<name>/<path>` for another agent. These addresses do not create directories in the project; shell commands use the native paths in the volume context or the `ACYCLIC_WORKSPACES` JSON object mapping workspace names to native paths.
+Relative file paths always name project files, including `.git`, `.volumes`, `.system` and `.home-seed-v1`. Auxiliary volumes use explicit addresses: `volume:///<name>/<path>` for this agent, or `volume://<agent>/<name>/<path>` for another agent. These addresses do not create directories in the project; shell commands use the native paths in the volume context or the `ACYCLIC_WORKSPACES` JSON object mapping workspace names to native paths. Each command sees its own volume views; its changes land when it completes. Overlapping changes carry git conflict markers and are reported for repair.
 
 Every path an agent reads through `volume:///effective/` resolves over the layers, highest first: `home` (the agent's own `volume:///home/`), then `seed` (the harness defaults in `volume:///seed/`). `sys/` is not layered.
 

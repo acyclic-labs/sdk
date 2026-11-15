@@ -1,5 +1,5 @@
 use crate::reader::backing::BackingPool;
-use crate::{DemandError, DemandPolicy, StreamView, StreamViewPolicy, ViewDemand};
+use crate::{DemandError, DemandPolicy, StreamView, ViewDemand};
 use acyclic_stream::{
     BoxProviderFuture, BoxProviderStream, StreamError, StreamPath,
     runtime::{ReadySources, SourceReader},
@@ -104,7 +104,6 @@ pub struct WireSession {
     resources: BTreeMap<String, u64>,
     ready: ReadySources<Subscription, SourceReader>,
     resource_views: Views<String>,
-    view_policy: StreamViewPolicy,
     revision: u64,
     backings: BackingPool,
 }
@@ -118,16 +117,6 @@ impl WireSession {
     /// Take the platform-created pool; native and WASM use the same owner.
     #[must_use]
     pub fn new(client: Client, policy: DemandPolicy) -> Self {
-        Self::with_view_policy(client, policy, StreamViewPolicy::default())
-    }
-
-    /// Use caller-selected finite display bounds on the same canonical pool.
-    #[must_use]
-    pub fn with_view_policy(
-        client: Client,
-        policy: DemandPolicy,
-        view_policy: StreamViewPolicy,
-    ) -> Self {
         Self {
             client,
             policy,
@@ -137,7 +126,6 @@ impl WireSession {
             resources: BTreeMap::new(),
             ready: ReadySources::with_readers(),
             resource_views: Views::default(),
-            view_policy,
             revision: 0,
             backings: BackingPool::default(),
         }
@@ -486,14 +474,7 @@ impl WireSession {
         (
             RetainedView {
                 request,
-                view: StreamView::new(
-                    self.view_policy,
-                    from,
-                    revision,
-                    filtered,
-                    followed,
-                    self.backings.clone(),
-                ),
+                view: StreamView::new(from, revision, filtered, followed, self.backings.clone()),
             },
             Subscription {
                 id: revision,
@@ -580,7 +561,7 @@ impl WireSession {
         Ok(())
     }
 
-    /// Poll one selected filesystem follow; frames fold into its bounded view.
+    /// Poll one selected filesystem follow; frames fold into its subscribed view.
     pub fn poll_resource(
         &mut self,
         resource: &str,
@@ -698,7 +679,7 @@ impl WireSession {
         }
     }
 
-    /// Borrow one selected filesystem follow's bounded fold.
+    /// Borrow one selected filesystem follow's retained fold.
     #[must_use]
     pub fn resource_view(&self, resource: &str) -> Option<&StreamView> {
         self.resource_views
@@ -767,7 +748,7 @@ impl WireSession {
         self.follows.len() + self.resources.len()
     }
 
-    /// Display payload/record charge across the bounded selected folds,
+    /// Display payload/record charge across the selected folds,
     /// including final views retained after a follow ends.
     /// Shared payloads, including cloned rows, are charged once. Reads maintained
     /// totals without visiting any selected fold.

@@ -65,6 +65,8 @@ include!("follow_progress.rs");
 include!("namespace.rs");
 include!("head.rs");
 include!("state.rs");
+include!("ephemeral.rs");
+include!("ephemeral_receipts.rs");
 
 include!("retained.rs");
 

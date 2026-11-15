@@ -253,11 +253,10 @@ impl NativeSkills {
             .map(|(view, filesystem, store)| {
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let work = native_work(&cancellation)?;
-                let view =
-                    view.share(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                        work: &work,
-                        cancellation: &cancellation,
-                    })?;
+                let view = view.share(&mut acyclic_fs::kernel::KernelAccounting::native(
+                    &work,
+                    &cancellation,
+                ))?;
                 Ok::<_, Error>(SkillWorkspace {
                     filesystem,
                     store,
@@ -370,10 +369,8 @@ impl NativeSkills {
             .workspace
             .as_ref()
             .ok_or_else(|| Error::Conflict("skill checkout is absent".into()))?;
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work,
-            cancellation: work.cancellation(),
-        };
+        let mut accounting =
+            acyclic_fs::kernel::KernelAccounting::native(work, work.cancellation());
         let related;
         let view = if record.cut.workspace_id == workspace.view.workspace().id() {
             workspace.view.as_ref()
@@ -434,8 +431,7 @@ impl NativeSkills {
         if source.root_identity().to_bytes().as_slice() != record.root_identity {
             return Err(Error::Conflict("skill source root changed".into()));
         }
-        let mut accounting =
-            acyclic_fs::kernel::KernelAccounting::NativeOriginal { work, cancellation };
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::native(work, cancellation);
         let (path, _allocation) = NamespacePath::parse_in_profile(
             &record.path,
             config.profile,
@@ -474,10 +470,7 @@ impl NativeSkills {
             let before = *bounds;
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = native_work(&cancellation)?;
-            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work: &work,
-                cancellation: &cancellation,
-            };
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
             let cut = view.snapshot(&mut accounting).await?;
             let mut cached = crate::sync::owned::lock_owned(self.cache.clone()).await;
             if let Some((id, root, generation, catalog)) = &*cached
@@ -710,10 +703,10 @@ impl SkillReader for ProjectCatalog<'_> {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, SkillPrefix>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let path = format!("/{relative}");
-            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work: self.directory.work,
-                cancellation: self.directory.work.cancellation(),
-            };
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::native(
+                self.directory.work,
+                self.directory.work.cancellation(),
+            );
             let (lookup, _, allocation) = self
                 .directory
                 .view
@@ -768,10 +761,8 @@ impl SkillReader for ProjectCatalog<'_> {
             let path = &path;
             let off =
                 crate::layers::off_from_prefix(&prefix.bytes, length, work, |range| async move {
-                    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                        work,
-                        cancellation: work.cancellation(),
-                    };
+                    let mut accounting =
+                        acyclic_fs::kernel::KernelAccounting::native(work, work.cancellation());
                     let (chunk, _) = view
                         .read_at_snapshot(cut, path, Some(range), range.length, &mut accounting)
                         .await?;
@@ -811,10 +802,8 @@ impl DiscoverySource for UserCatalogSource<'_> {
             let reference = revision.cloned().unwrap_or_else(|| self.source.reference());
             let cancellation = self.work.cancellation();
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
-            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work: self.work,
-                cancellation,
-            };
+            let mut accounting =
+                acyclic_fs::kernel::KernelAccounting::native(self.work, cancellation);
             let (path, _allocation) = NamespacePath::parse_in_profile(
                 &format!("/{directory}"),
                 config.profile,
@@ -885,10 +874,8 @@ impl SkillReader for UserCatalogSource<'_> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let cancellation = self.work.cancellation();
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
-            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work: self.work,
-                cancellation,
-            };
+            let mut accounting =
+                acyclic_fs::kernel::KernelAccounting::native(self.work, cancellation);
             let path = format!("/{path}");
             let (parsed, _allocation) = NamespacePath::parse_in_profile(
                 &path,
@@ -1037,10 +1024,7 @@ mod binding_tests {
             store,
             acyclic_fs::VolumeInitialization::new(config, Some(acyclic_fs::access::INITIAL_POLICY)),
             acyclic_fs::OperationId::new(),
-            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work: &work,
-                cancellation: &cancellation,
-            },
+            &mut acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation),
         )
         .await
         .map_err(storage)?;

@@ -1,0 +1,8 @@
+diff --git a/rust/crates/stream/src/memory/prepared.rs b/rust/crates/stream/src/memory/prepared.rs
+--- a/rust/crates/stream/src/memory/prepared.rs
++++ b/rust/crates/stream/src/memory/prepared.rs
+@@ -105,3 +105,3 @@
+         // prepared_tail admits exactly one hard effect: nothing is skipped.
+-        durable_only(self.commit_scope(&state, &request, &[]))?;
++        let _ = &request;
+         let capacity_reservation = self.reserve_prepared_capacity(&state, &request, maximum)?;

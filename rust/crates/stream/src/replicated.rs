@@ -74,6 +74,8 @@ pub(crate) struct Execution {
     pub(crate) outcome: WriteOutcome,
     // Retain the original reply claim even when an adapter only takes its outcome.
     pub(crate) _allocation: crate::memory::Allocation,
+    /// Installed in memory only: it has no journal frame and no durability cut.
+    pub(crate) ephemeral: bool,
 }
 
 #[derive(Default)]
@@ -310,6 +312,7 @@ impl<J: CommandJournal> Replicated<J> {
             .map(|(outcome, allocation)| Execution {
                 outcome: WriteOutcome::Commit(outcome),
                 _allocation: allocation,
+                ephemeral: false,
             });
         let attempt = attempt.finish();
         if !self.complete(attempt, &result) {

@@ -8,6 +8,7 @@ impl<P: AsyncObjectStore> AsyncObjectStore for Counted<P> {
         requires_child_first_publication,
         maximum_reference_bytes,
         prepare_hashed,
+        restore_hashed,
         supports_decoded_cache,
         decoded_cache_lookup,
         collection,

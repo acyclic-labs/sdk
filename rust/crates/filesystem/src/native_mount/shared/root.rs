@@ -48,45 +48,26 @@ pub fn shared_view_namespace_contains(
     destination: &Path,
     admission: Option<&crate::HeldRoot>,
 ) -> Result<bool, NativeMountError> {
-    #[cfg(target_os = "macos")]
-    {
-        let namespace = with_native_view_root(admission, |root| Ok(root.path().to_path_buf()))?;
-        let Ok(relative) = destination.strip_prefix(namespace) else {
-            return Ok(false);
-        };
-        let mut components = relative.components();
-        Ok(matches!(
-            (components.next(), components.next()),
-            (Some(std::path::Component::Normal(name)), None)
-                if name.to_str().is_some_and(|name|
-                    name.len() == 32 && name.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        ))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let root = match admission {
-            Some(admitted) => shared_view_root_in(admitted)?,
-            None => shared_view_root()?,
-        };
-        let Some(namespace) = root.parent() else {
-            return Ok(false);
-        };
-        let Ok(relative) = destination.strip_prefix(namespace) else {
-            return Ok(false);
-        };
-        let mut components = relative.components();
-        let (
-            Some(std::path::Component::Normal(root)),
-            Some(std::path::Component::Normal(view)),
-            None,
-        ) = (components.next(), components.next(), components.next())
-        else {
-            return Ok(false);
-        };
-        Ok(root.to_str().is_some_and(|root| {
-            root.len() == 32 && root.bytes().all(|byte| byte.is_ascii_hexdigit())
-        }) && view_serial(view).is_some())
-    }
+    let root = match admission {
+        Some(admitted) => shared_view_root_in(admitted)?,
+        None => shared_view_root()?,
+    };
+    let Some(namespace) = root.parent() else {
+        return Ok(false);
+    };
+    let Ok(relative) = destination.strip_prefix(namespace) else {
+        return Ok(false);
+    };
+    let mut components = relative.components();
+    let (Some(std::path::Component::Normal(root)), Some(std::path::Component::Normal(view)), None) =
+        (components.next(), components.next(), components.next())
+    else {
+        return Ok(false);
+    };
+    Ok(root
+        .to_str()
+        .is_some_and(|root| root.len() == 32 && root.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        && view_serial(view).is_some())
 }
 
 /// This process's root for shared views: a view at `root.join(name)`,
@@ -98,6 +79,54 @@ pub fn shared_view_root() -> Result<PathBuf, NativeMountError> {
     root_in(&default_view_roots()?)
 }
 
+/// Keeps the shared instance of one view root running while held.
+///
+/// A root's last view tears its instance down, so a host that opens
+/// short-lived views back to back (one per command) would mount and unmount
+/// the root for each. Holding the instance makes a view cost only its own
+/// namespace entry. It holds no view, so it pins no workspace.
+pub struct SharedViewInstance {
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    _instance: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+}
+
+impl std::fmt::Debug for SharedViewInstance {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SharedViewInstance")
+    }
+}
+
+/// Starts or joins the instance that views under `admission` (or, without
+/// one, this process's default root) are served by.
+pub async fn hold_shared_view_instance(
+    admission: Option<std::sync::Arc<crate::HeldRoot>>,
+) -> Result<SharedViewInstance, NativeMountError> {
+    super::super::lifecycle::run_native_control(move || {
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        {
+            let root = match admission.as_deref() {
+                Some(admitted) => shared_view_root_in(admitted)?,
+                None => shared_view_root()?,
+            };
+            #[cfg(target_os = "linux")]
+            let instance = super::super::fuse::hold_shared_instance(&root)?;
+            #[cfg(windows)]
+            let instance = super::super::projfs::hold_shared_instance(&root)?;
+            #[cfg(target_os = "macos")]
+            let instance = super::super::darwin_mount::hold_shared_instance(&root)?;
+            Ok(SharedViewInstance {
+                _instance: instance,
+            })
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        {
+            drop(admission);
+            Ok(SharedViewInstance {})
+        }
+    })
+    .await?
+}
+
 fn default_view_roots() -> Result<crate::HeldRoot, NativeMountError> {
     let roots = registry::path()?
         .parent()
@@ -107,23 +136,6 @@ fn default_view_roots() -> Result<crate::HeldRoot, NativeMountError> {
     crate::hold_root(&roots)
         .map_err(crate::NativeTreeMaterializationError::from)
         .map_err(Into::into)
-}
-
-// Darwin currently owns one native session per view. Keep its destinations
-// under the admitted namespace, while its existing destination fence and
-// startup recovery retain mount custody. The host never selects this backend.
-#[cfg(any(target_os = "macos", test))]
-fn with_native_view_root<T>(
-    admission: Option<&crate::HeldRoot>,
-    use_root: impl FnOnce(&crate::HeldRoot) -> Result<T, NativeMountError>,
-) -> Result<T, NativeMountError> {
-    match admission {
-        Some(admitted) => {
-            verify_placement(admitted)?;
-            use_root(admitted)
-        }
-        None => use_root(&default_view_roots()?),
-    }
 }
 
 /// Uses an already admitted writable namespace for the process's shared
@@ -154,7 +166,7 @@ impl IssuedNames {
         Ok((serial, path))
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     fn claim(&mut self, destination: &Path) -> bool {
         let Some(serial) = destination.file_name().and_then(view_serial) else {
             return false;
@@ -177,85 +189,20 @@ static ISSUED: Mutex<IssuedNames> = Mutex::new(IssuedNames {
 });
 
 /// Custody of a never-reused name until the platform claims it or startup ends.
-/// A directory the issuance created is owned from creation: dropping the
-/// issuance removes it, whether startup failed or its session has retired.
+/// Dropping an unclaimed issuance releases only its in-flight pathname claim.
 pub(crate) struct IssuedDestination {
     path: PathBuf,
     claim: Option<u64>,
-    #[cfg(any(target_os = "macos", test))]
-    created: Option<crate::native_host::HostRoot>,
 }
 
 impl IssuedDestination {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
-    /// Transfer directory removal into the original birth-funded fence before mounting.
-    pub(in crate::native_mount) fn prepare_cleanup(
-        &mut self,
-        _guard: &mut super::super::MountDestinationGuard,
-        _work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        #[cfg(any(target_os = "macos", test))]
-        if let Some(parent) = self.created.as_ref() {
-            let held = _guard
-                .parent_directory
-                .as_ref()
-                .ok_or(NativeMountError::ControlPending)?;
-            if crate::native_host::directory_identity(held, &mut &*_work)? != parent.identity() {
-                return Err(NativeMountError::InvalidDestination);
-            }
-            _guard.prepare_destination_cleanup(&self.path, _work)?;
-            // The same held-parent fence now owns the sole directory removal.
-            drop(self.created.take());
-        }
-        Ok(())
-    }
-
-    #[cfg(any(target_os = "macos", test))]
-    pub(in crate::native_mount) fn create(
-        admission: Option<&crate::HeldRoot>,
-    ) -> Result<Self, NativeMountError> {
-        // A Darwin view is its own native mount, which needs an existing
-        // directory. Create the fresh name exclusively in the held root,
-        // never through a link; durability buys nothing for a mount point.
-        let name = PathBuf::from(format!(
-            "{:032x}",
-            u128::from_be_bytes(crate::MountId::new().into_bytes())
-        ));
-        // Hold the parent before creating, so nothing created goes unowned.
-        let (parent, path) = with_native_view_root(admission, |root| {
-            let parent = root
-                .root
-                .try_clone(&mut crate::native_host::ordinary_work())?;
-            crate::native_host::host_path(
-                &name,
-                &mut crate::native_host::ordinary_work(),
-                |name, work| parent.create_dir(name, work),
-            )?;
-            Ok((parent, root.path().join(&name)))
-        })?;
-        Ok(Self {
-            path,
-            claim: None,
-            created: Some(parent),
-        })
-    }
 }
 
 impl Drop for IssuedDestination {
     fn drop(&mut self) {
-        #[cfg(any(target_os = "macos", test))]
-        if let (Some(parent), Some(leaf)) = (self.created.take(), self.path.file_name()) {
-            // Removal through the held parent never follows a replaced path,
-            // and rmdir never removes a live mount point or authored content.
-            match parent.directory().remove_dir(leaf) {
-                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    tracing::warn!(path = %self.path.display(), %error, "view mount point was not removed");
-                }
-                _ => {}
-            }
-        }
         if let Some(serial) = self.claim {
             ISSUED
                 .lock()
@@ -274,34 +221,24 @@ fn issue_destination(root: &Path, claim: bool) -> Result<IssuedDestination, Nati
     Ok(IssuedDestination {
         path,
         claim: claim.then_some(serial),
-        #[cfg(any(target_os = "macos", test))]
-        created: None,
     })
 }
 
-/// One allocator for default and sandbox-admitted task views. Only `ProjFS`
-/// needs an in-flight path claim: its callbacks identify views by pathname.
+/// One allocator for default and sandbox-admitted task views. Path-routed
+/// providers consume an in-flight claim before listing a view.
 pub(crate) fn shared_view_destination(
     admission: Option<&crate::HeldRoot>,
 ) -> Result<IssuedDestination, NativeMountError> {
-    #[cfg(target_os = "macos")]
-    {
-        IssuedDestination::create(admission)
+    if !cfg!(any(target_os = "linux", target_os = "macos", windows)) {
+        return Err(NativeMountError::UnsupportedTarget);
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        if !cfg!(any(target_os = "linux", windows)) {
-            return Err(NativeMountError::UnsupportedTarget);
-        }
-        let root = match admission {
-            Some(admitted) => shared_view_root_in(admitted)?,
-            None => shared_view_root()?,
-        };
-        issue_destination(&root, cfg!(windows))
-    }
+    let root = match admission {
+        Some(admitted) => shared_view_root_in(admitted)?,
+        None => shared_view_root()?,
+    };
+    issue_destination(&root, cfg!(any(target_os = "macos", windows)))
 }
-
-#[cfg(any(windows, test))]
+#[cfg(any(target_os = "macos", windows, test))]
 pub(in crate::native_mount) fn claim_issued_destination(destination: &Path) -> bool {
     ISSUED
         .lock()

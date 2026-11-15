@@ -1,0 +1,14 @@
+diff --git a/rust/crates/stream/src/local/provider.rs b/rust/crates/stream/src/local/provider.rs
+--- a/rust/crates/stream/src/local/provider.rs
++++ b/rust/crates/stream/src/local/provider.rs
+@@ -7,8 +7,9 @@ impl LocalStream {
+     ) -> Result<crate::Heads, StreamError> {
+         let crate::memory::HeadCapture {
+             mut view,
+-            ephemeral,
++            ephemeral: _,
+         } = captured;
++        let ephemeral = self.inner.provider.ephemeral_mask(&request.paths).await;
+         let projection = request.projection;
+         let through = request.durable_through;
+         if projection != crate::HeadProjection::Tail && !request.paths.is_empty() {

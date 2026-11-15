@@ -29,10 +29,7 @@ fn namespace_parse(bencher: Bencher, (depth, context): (usize, u8)) {
             }
         });
         let mut accounting = match &original {
-            Some(work) => KernelAccounting::NativeOriginal {
-                work,
-                cancellation: &cancellation,
-            },
+            Some(work) => KernelAccounting::native(work, &cancellation),
             None => budget.accounting(&cancellation),
         };
         let (parsed, mut allocation) = NamespacePath::parse_in_profile(

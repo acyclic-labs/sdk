@@ -10,6 +10,7 @@ macro_rules! violated {
 mod absence;
 mod atomic;
 mod backend;
+mod ephemeral;
 pub(crate) mod key_seek;
 pub(crate) mod selected;
 mod selectors;

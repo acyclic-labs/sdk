@@ -21,6 +21,7 @@ impl std::fmt::Display for NativeDenial {
 impl std::error::Error for NativeDenial {}
 
 pub(crate) struct Meter {
+    pub(crate) examined_once: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     pub(crate) release_observer: Option<fn(u64)>,
     pub(crate) check_on_record: bool,
     pub(crate) deny_allocation: AtomicBool,
@@ -63,6 +64,7 @@ pub(crate) struct Meter {
 impl Default for Meter {
     fn default() -> Self {
         Self {
+            examined_once: Mutex::new(None),
             release_observer: None,
             check_on_record: false,
             deny_allocation: AtomicBool::new(false),
@@ -449,6 +451,14 @@ impl NativeReadMeter for Meter {
         trace::record("record_examination", items, copied, 0);
         self.examined.fetch_add(items, Ordering::SeqCst);
         self.copied.fetch_add(copied, Ordering::SeqCst);
+        if let Some(observed) = self
+            .examined_once
+            .lock()
+            .map_err(|_| std::io::ErrorKind::Other)?
+            .take()
+        {
+            let _ = observed.send(());
+        }
         if copied != 0 && self.cancel_on_copy.swap(false, Ordering::SeqCst) {
             self.cancelled.store(true, Ordering::SeqCst);
         }

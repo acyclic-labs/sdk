@@ -46,10 +46,7 @@ fn check_profile(
             ))) if found == version
         ));
     }
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work,
-        cancellation: work.cancellation(),
-    };
+    let mut ctx = KernelAccounting::native(work, work.cancellation());
     repeated.retire(&mut ctx)?;
     value.retire(&mut ctx)?;
     Ok(())
@@ -86,10 +83,7 @@ fn seeded_continuations_preserve_scalar_and_composite_cuts() {
             {
                 decoded = true;
                 cursor
-                    .retire(&mut KernelAccounting::NativeOriginal {
-                        work: &work,
-                        cancellation: &cancellation,
-                    })
+                    .retire(&mut KernelAccounting::native(&work, &cancellation))
                     .unwrap();
             }
         }
@@ -107,10 +101,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
     let cancellation = CancellationToken::new();
     let work = work(&cancellation)?;
     let baseline = work.live_allocation_bytes();
-    let mut ctx = KernelAccounting::NativeOriginal {
-        work: &work,
-        cancellation: work.cancellation(),
-    };
+    let mut ctx = KernelAccounting::native(&work, work.cancellation());
     let limits = crate::VolumeLimits::default();
     let source = SourceReference {
         components: acyclic_stream::OwnedBytes::new(),

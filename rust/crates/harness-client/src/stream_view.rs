@@ -1,62 +1,21 @@
 use crate::reader::backing::BackingPool;
 use acyclic_stream::{StreamError, StreamPath, StreamWatermarks, wire};
 use bytes::Bytes;
-use std::{
-    collections::{BTreeMap, VecDeque},
-    mem::size_of,
-};
+use std::{collections::BTreeMap, mem::size_of};
 
 struct LatestEntry {
     value: wire::SessionLatestValue,
     charge: usize,
-    next: u64,
     payload: usize,
 }
 
-struct RecordEntry {
-    record: wire::Record,
-    charge: usize,
-    payload: usize,
-}
-
-/// Finite display-cache bounds for one selected stream. Transport credit and
-/// recovery remain owned by Streams; these bounds apply to retained render data.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StreamViewPolicy {
-    records: usize,
-    bytes: usize,
-}
-
-impl StreamViewPolicy {
-    /// Admit the caller's exact nonzero display budgets without reserving them.
-    pub fn new(records: usize, bytes: usize) -> Result<Self, StreamError> {
-        if records == 0 || bytes == 0 {
-            return Err(StreamError::LimitExceeded);
-        }
-        Ok(Self { records, bytes })
-    }
-}
-
-impl Default for StreamViewPolicy {
-    fn default() -> Self {
-        Self {
-            records: 128,
-            bytes: 1024 * 1024,
-        }
-    }
-}
-
-/// One borrowed, bounded tail of canonical records, shared by native and WASM.
-/// Eviction advances `first_sequence`; it never changes the delivery cursor or
-/// silently discards a transport delivery. Every delivery still reaches callers.
-/// Historical backfill belongs to the provider's page window, not this live tail.
+/// Canonical records selected by one visible or subscribed view, shared by
+/// native and WASM. Records arrive through the provider's lazy pages and follow
+/// credit; retained history has no preset count or byte ceiling. Deselecting
+/// the view releases its rows; latest delivery replaces only the selected key.
 pub struct StreamView {
-    policy: StreamViewPolicy,
-    records: VecDeque<RecordEntry>,
+    records: Vec<wire::Record>,
     latest: BTreeMap<Bytes, LatestEntry>,
-    /// Delivery cursors are strictly increasing, so they also order eviction.
-    /// Keys share their one compact allocation with the corresponding value.
-    latest_order: BTreeMap<u64, Bytes>,
     #[cfg(test)]
     latest_probes: std::sync::atomic::AtomicUsize,
     bytes: usize,
@@ -75,7 +34,6 @@ impl StreamView {
     /// selection: records and watermarks may then move the cursor forward
     /// past skipped sequences, but never backward.
     pub(crate) fn new(
-        policy: StreamViewPolicy,
         next: u64,
         revision: u64,
         filtered: bool,
@@ -83,10 +41,8 @@ impl StreamView {
         backings: BackingPool,
     ) -> Self {
         Self {
-            policy,
-            records: VecDeque::new(),
+            records: Vec::new(),
             latest: BTreeMap::new(),
-            latest_order: BTreeMap::new(),
             #[cfg(test)]
             latest_probes: std::sync::atomic::AtomicUsize::new(0),
             bytes: 0,
@@ -105,10 +61,10 @@ impl StreamView {
 
     /// Borrows only the retained visible records; no joined history allocation.
     pub fn records(&self) -> impl ExactSizeIterator<Item = &wire::Record> {
-        self.records.iter().map(|entry| &entry.record)
+        self.records.iter()
     }
 
-    /// Last delivered opaque value for a key, under this view's ordinary budget.
+    /// Last delivered opaque value for a subscribed key.
     pub fn latest_value(&self, key: &[u8]) -> Option<&wire::SessionLatestValue> {
         #[cfg(test)]
         self.latest_probes
@@ -125,7 +81,7 @@ impl StreamView {
     /// Borrows one displayed record without copying its siblings.
     #[must_use]
     pub fn record(&self, index: usize) -> Option<&wire::Record> {
-        self.records.get(index).map(|entry| &entry.record)
+        self.records.get(index)
     }
 
     /// Exclusive end of this disposable fold, not a new recovery ledger.
@@ -134,12 +90,12 @@ impl StreamView {
         self.next
     }
 
-    /// First retained sequence, advancing when the display tail evicts a record.
+    /// First delivered sequence retained by this view.
     #[must_use]
     pub fn first_sequence(&self) -> u64 {
         self.records
-            .front()
-            .map_or(self.next, |entry| entry.record.sequence)
+            .first()
+            .map_or(self.next, |record| record.sequence)
     }
 
     /// Session-wide revision, including replacement views, so a deselect/reselect
@@ -149,7 +105,7 @@ impl StreamView {
         self.revision
     }
 
-    /// Per-entry display budget charge, including original payload capacity.
+    /// Retained row bytes, including original payload capacity.
     /// Shared allocations count once in the enclosing session's residency total.
     #[must_use]
     pub fn retained_bytes(&self) -> usize {
@@ -199,52 +155,27 @@ impl StreamView {
                         return Err(StreamError::InvalidResponse);
                     }
                     let charge = size_of::<(Bytes, LatestEntry)>()
-                        .checked_add(size_of::<(u64, Bytes)>())
-                        .and_then(|n| n.checked_add(value.key.len()))
+                        .checked_add(value.key.len())
                         .and_then(|n| n.checked_add(value.value.len()))
                         .ok_or(StreamError::LimitExceeded)?;
-                    if charge > self.policy.bytes {
-                        return Err(StreamError::LimitExceeded);
-                    }
                     let payload = frame.original_record().map_or_else(
                         || acyclic_stream::OwnedBytes::from(value.value.clone()),
                         |record| record.value.clone(),
                     );
                     let metadata = charge - value.value.len();
-                    let payload = self
-                        .backings
-                        .retain(payload, None, self.policy.bytes - metadata);
+                    let payload = self.backings.retain(payload, None, value.value.len());
                     let capacity = payload.backing().capacity();
                     let charge = metadata
                         .checked_add(capacity)
                         .ok_or(StreamError::LimitExceeded)?;
-                    if charge > self.policy.bytes {
-                        return Err(StreamError::LimitExceeded);
-                    }
                     #[cfg(test)]
                     self.latest_probes
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if let Some(old) = self.latest.remove(value.key.as_ref()) {
-                        self.latest_order.remove(&old.next);
-                        self.bytes -= old.charge;
-                        self.payload_bytes -= old.payload;
-                    }
-                    while self.latest.len() >= self.policy.records
-                        || self.bytes > self.policy.bytes - charge
-                    {
-                        let (_, key) = self
-                            .latest_order
-                            .pop_first()
-                            .ok_or(StreamError::InvalidResponse)?;
-                        let old = self
-                            .latest
-                            .remove(key.as_ref())
-                            .ok_or(StreamError::InvalidResponse)?;
                         self.bytes -= old.charge;
                         self.payload_bytes -= old.payload;
                     }
                     let key = Bytes::copy_from_slice(&value.key);
-                    self.latest_order.insert(after.next, key.clone());
                     self.latest.insert(
                         key.clone(),
                         LatestEntry {
@@ -254,7 +185,6 @@ impl StreamView {
                                 attention: value.attention,
                             },
                             charge,
-                            next: after.next,
                             payload: capacity,
                         },
                     );
@@ -287,38 +217,16 @@ impl StreamView {
                 // Use the canonical record/header validator, including its size
                 // bounds, before retaining anything from the delivery.
                 let decoded = frame.decode_record(self.followed.as_ref())?;
-                let budget = self
-                    .policy
-                    .bytes
-                    .checked_sub(record.value.len())
-                    .ok_or(StreamError::LimitExceeded)?;
-                let (mut owned, metadata) =
-                    retain_metadata(record, frame.original_record(), budget)?;
+                let (mut owned, metadata) = retain_metadata(record, frame.original_record())?;
                 let payload = decoded.value;
-                let payload = self
-                    .backings
-                    .retain(payload, None, self.policy.bytes - metadata);
+                let length = payload.len();
+                let payload = self.backings.retain(payload, None, length);
                 let capacity = payload.backing().capacity();
                 let charge = metadata
                     .checked_add(capacity)
                     .ok_or(StreamError::LimitExceeded)?;
-                if charge > self.policy.bytes {
-                    return Err(StreamError::LimitExceeded);
-                }
                 owned.value = Bytes::from_owner(payload);
-                while self.records.len() >= self.policy.records
-                    || self.bytes > self.policy.bytes - charge
-                {
-                    if let Some(old) = self.records.pop_front() {
-                        self.bytes -= old.charge;
-                        self.payload_bytes -= old.payload;
-                    }
-                }
-                self.records.push_back(RecordEntry {
-                    record: owned,
-                    charge,
-                    payload: capacity,
-                });
+                self.records.push(owned);
                 self.bytes += charge;
                 self.payload_bytes += capacity;
                 self.next = next;
@@ -347,16 +255,15 @@ impl StreamView {
 fn retain_metadata(
     record: &wire::Record,
     original: Option<&acyclic_stream::Record>,
-    budget: usize,
 ) -> Result<(wire::Record, usize), StreamError> {
-    let mut remaining = budget;
+    let mut retained = 0_usize;
     let mut charge = |bytes: usize| {
-        remaining = remaining
-            .checked_sub(bytes)
+        retained = retained
+            .checked_add(bytes)
             .ok_or(StreamError::LimitExceeded)?;
         Ok::<_, StreamError>(())
     };
-    charge(size_of::<RecordEntry>())?;
+    charge(size_of::<wire::Record>())?;
     let mut keys = Vec::with_capacity(record.keys.len());
     let mut attributes = Vec::with_capacity(record.attributes.len());
     charge(std::mem::size_of_val(keys.spare_capacity_mut()))?;
@@ -408,7 +315,7 @@ fn retain_metadata(
         keys,
         attributes,
     };
-    Ok((owned, budget - remaining))
+    Ok((owned, retained))
 }
 
 fn retain_header(bytes: &Bytes, original: Option<&acyclic_stream::OwnedBytes>) -> Bytes {

@@ -83,7 +83,70 @@ pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     Ok(false)
 }
 
-/// Deallocates an already-zero range using the supplied native meter.
+/// Deallocates a discarded range without changing file length or other bytes.
+#[cfg(target_os = "linux")]
+pub fn punch_hole(
+    file: &impl std::os::fd::AsRawFd,
+    offset: u64,
+    length: u64,
+    meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
+) -> io::Result<()> {
+    let end = offset
+        .checked_add(length)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let offset = i64::try_from(offset).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let length =
+        i64::try_from(end).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))? - offset;
+    if length == 0 {
+        return Ok(());
+    }
+    if let Some(meter) = meter {
+        meter.admit_write(0)?;
+    }
+    // SAFETY: the live descriptor is borrowed for this value-only call and
+    // the checked range contains only discarded bytes.
+    if unsafe {
+        libc::fallocate(
+            file.as_raw_fd(),
+            libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+            offset,
+            length,
+        )
+    } == 0
+    {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Deallocates a discarded range without changing file length or other bytes.
+#[cfg(windows)]
+pub fn punch_hole(
+    file: &File,
+    offset: u64,
+    length: u64,
+    meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
+) -> io::Result<()> {
+    use acyclic_native_runtime::{NativeOperationKind::Write, device_control_in_place};
+    use windows::Win32::System::Ioctl::{FSCTL_SET_SPARSE, FSCTL_SET_ZERO_DATA};
+    let end = offset
+        .checked_add(length)
+        .filter(|end| *end <= i64::MAX as u64)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    if length == 0 {
+        return Ok(());
+    }
+    device_control_in_place(file, FSCTL_SET_SPARSE, &[], &mut [], Write, meter)?.into_complete()?;
+    let mut range = [0; 16];
+    range[..8].copy_from_slice(&offset.to_le_bytes());
+    range[8..].copy_from_slice(&end.to_le_bytes());
+    device_control_in_place(file, FSCTL_SET_ZERO_DATA, &range, &mut [], Write, meter)?
+        .into_complete()?;
+    Ok(())
+}
+
+/// Deallocates whole allocation units within a discarded range.
 #[cfg(target_os = "macos")]
 pub fn punch_hole(
     file: &impl std::os::fd::AsRawFd,

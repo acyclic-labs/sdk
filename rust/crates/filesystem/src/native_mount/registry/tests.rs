@@ -71,42 +71,33 @@ fn explicit_state_directory_is_used_by_a_fresh_registry() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn invalid_state_roots_use_the_fallback_in_a_fresh_process()
+fn invalid_state_roots_use_the_private_test_root_in_a_fresh_process()
 -> Result<(), Box<dyn std::error::Error>> {
     const CHILD: &str = "ACYCLIC_FS_REGISTRY_INVALID_ROOT_CHILD";
     if std::env::var_os(CHILD).is_some() {
-        #[cfg(windows)]
-        let expected = dirs::data_local_dir().filter(|path| path.is_absolute());
-        #[cfg(not(windows))]
-        let expected =
-            if std::env::var_os(CHILD).as_deref() == Some(std::ffi::OsStr::new("absolute-home")) {
-                Some(
-                    PathBuf::from(std::env::var_os("HOME").unwrap())
-                        .join(".local")
-                        .join("state"),
-                )
-            } else {
-                dirs::data_local_dir().filter(|path| path.is_absolute())
-            };
-        // Compare before initialize. A source-negative must never create a
-        // relative registry. The OS fallback is only inspected.
+        // Without a valid explicit root, a test process mounts only below its
+        // own private temporary root: never the profile, never its cwd.
+        let selected = persistent_base().ok_or("no private test root")?;
         assert_eq!(
-            persistent_base(),
-            expected,
+            Some(selected.clone()),
+            process_base(),
             "invalid state root selected a registry according to process cwd"
         );
-        #[cfg(not(windows))]
-        if std::env::var_os(CHILD).as_deref() == Some(std::ffi::OsStr::new("absolute-home")) {
-            let expected = expected.ok_or("fixture HOME is absent")?;
-            initialize()?;
-            assert_eq!(
-                directory()?,
-                expected
-                    .join("acyclic")
-                    .join("native-mount")
-                    .canonicalize()?
+        assert!(selected.starts_with(std::env::temp_dir()), "{selected:?}");
+        if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+            assert!(
+                !selected.starts_with(home),
+                "a test root entered the profile"
             );
         }
+        initialize()?;
+        assert_eq!(
+            directory()?,
+            selected
+                .join("acyclic")
+                .join("native-mount")
+                .canonicalize()?
+        );
         return Ok(());
     }
     let fixture = tempfile::tempdir()?;
@@ -119,7 +110,7 @@ fn invalid_state_roots_use_the_fallback_in_a_fresh_process()
     #[cfg(not(windows))]
     let variable = "XDG_STATE_HOME";
     let name = format!(
-        "{}::invalid_state_roots_use_the_fallback_in_a_fresh_process",
+        "{}::invalid_state_roots_use_the_private_test_root_in_a_fresh_process",
         module_path!().split_once("::").unwrap().1
     );
     #[cfg(windows)]

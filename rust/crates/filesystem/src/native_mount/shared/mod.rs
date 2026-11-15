@@ -29,9 +29,8 @@
 // FUSE sessions drain through their kernel connection instead.
 #[cfg(any(target_os = "macos", windows, test))]
 pub(super) mod callback_gate;
-// Only the shared instances of these OSes are built on the core yet; the
-// macOS NFS adapter plugs into the same modules.
-#[cfg(any(target_os = "linux", windows, loom))]
+// Every native adapter uses the same instance and view ownership core.
+#[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]
 pub(super) mod instances;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) mod metering;
@@ -40,12 +39,15 @@ pub(super) mod outcome;
 #[cfg(any(target_os = "linux", windows, loom))]
 pub(super) mod ready;
 mod root;
-#[cfg(any(target_os = "linux", windows, loom))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]
 pub(super) mod view_table;
-#[cfg(any(target_os = "linux", windows, loom))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]
 pub(super) mod views;
 
-#[cfg(windows)]
+#[cfg(any(target_os = "macos", windows))]
 pub(super) use root::claim_issued_destination;
 pub(crate) use root::{IssuedDestination, shared_view_destination};
-pub use root::{shared_view_namespace_contains, shared_view_root, shared_view_root_in};
+pub use root::{
+    SharedViewInstance, hold_shared_view_instance, shared_view_namespace_contains,
+    shared_view_root, shared_view_root_in,
+};

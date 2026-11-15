@@ -23,6 +23,9 @@ pub enum CaptureSchedule {
     Unbounded,
     /// The caller's original request deadline.
     Deadline(Instant),
+    /// Bounded by this duration from the process's own launch, so no wait
+    /// before the process exists counts against it.
+    FromLaunch(Duration),
     /// An unrepresentable relative deadline, refused before capture.
     Overflow,
 }
@@ -41,6 +44,27 @@ impl CaptureSchedule {
     #[must_use]
     pub const fn until(deadline: Instant) -> Self {
         Self::Deadline(deadline)
+    }
+
+    /// The absolute schedule of a process launched now.
+    #[must_use]
+    pub fn launched(self) -> Self {
+        match self {
+            Self::FromLaunch(timeout) => Self::new(timeout),
+            schedule => schedule,
+        }
+    }
+
+    /// The absolute deadline of a process launched now, if any.
+    pub(super) fn deadline(self) -> io::Result<Option<Instant>> {
+        match self.launched() {
+            Self::Unbounded => Ok(None),
+            Self::Deadline(deadline) => Ok(Some(deadline)),
+            Self::FromLaunch(_) | Self::Overflow => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "process deadline overflow",
+            )),
+        }
     }
 }
 
@@ -261,16 +285,9 @@ impl<'a> Pump<'a> {
                 "queued stdin already belongs to the native session",
             )));
         }
-        let deadline = match schedule {
-            CaptureSchedule::Unbounded => None,
-            CaptureSchedule::Deadline(deadline) => Some(deadline),
-            CaptureSchedule::Overflow => {
-                return Err(ProcessCaptureFailure::before_capture(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "process deadline overflow",
-                )));
-            }
-        };
+        let deadline = schedule
+            .deadline()
+            .map_err(ProcessCaptureFailure::before_capture)?;
         let closed_stdin_on_start = input.is_none()
             && tree
                 .child

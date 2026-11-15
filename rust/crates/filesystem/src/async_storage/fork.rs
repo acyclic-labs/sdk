@@ -35,6 +35,19 @@ pub struct WorkspaceForkCommit {
     pub retained: ProposedCommit,
 }
 
+/// An ephemeral fork's authority state: its creation alone. Its base needs no
+/// retention authority, since the fork's owner holds the base in memory for
+/// exactly as long as the fork exists.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EphemeralForkCommit {
+    /// Source lineage the destination authority starts from.
+    pub lineage: Option<GenerationForkSource>,
+    /// The new workspace's authority.
+    pub destination: AuthorityId,
+    /// Its creation record, the destination's first commit.
+    pub creation: ProposedCommit,
+}
+
 /// How one workspace fork's authority state resolved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceForkOutcome {

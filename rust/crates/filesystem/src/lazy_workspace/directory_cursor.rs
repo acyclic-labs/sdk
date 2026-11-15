@@ -15,10 +15,7 @@ impl LazyDirectoryCursor {
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Vec<u8>, crate::NativeAllocation), LazyWorkspaceError> {
-        let mut ctx = KernelAccounting::NativeOriginal {
-            work,
-            cancellation: work.cancellation(),
-        };
+        let mut ctx = KernelAccounting::native(work, work.cancellation());
         let encoded = self.encode_with_accounting(&mut ctx);
         let (value, allocation) = encoded?;
         let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
@@ -47,10 +44,7 @@ impl LazyDirectoryCursor {
         limits: crate::VolumeLimits,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, LazyWorkspaceError> {
-        let mut ctx = KernelAccounting::NativeOriginal {
-            work,
-            cancellation: work.cancellation(),
-        };
+        let mut ctx = KernelAccounting::native(work, work.cancellation());
         Self::decode_with_accounting(bytes, profile, limits, &mut ctx)
     }
     /// Decodes without introducing another allowance or cursor registry.

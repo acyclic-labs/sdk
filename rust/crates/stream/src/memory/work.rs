@@ -48,6 +48,14 @@ impl Drop for RetainedGrowth {
 }
 
 impl MemoryStream {
+    /// A presence hint for read-side refresh, never authority to skip a guard
+    /// or its original write allowance. Such callers retain `pin_replay`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn has_replay(&self, key: &IdempotencyKey) -> Result<bool, StreamError> {
+        self.replay_in(&*self.state.read().await, key.as_bytes())
+            .map(|entry| entry.is_some())
+    }
+
     fn install_retained(
         &self,
         state: &mut State,
@@ -96,9 +104,22 @@ impl MemoryStream {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn has_replay(&self, key: &IdempotencyKey) -> Result<bool, StreamError> {
-        self.replay(&*self.state.read().await, key.as_bytes())
-            .map(|entry| entry.is_some())
+    pub(crate) async fn pin_replay(
+        &self,
+        key: &IdempotencyKey,
+    ) -> Result<Option<ReplayPin>, StreamError> {
+        let state = self.state.read().await;
+        Ok(state
+            .lookup_fact(key.as_bytes(), |items| {
+                if let Some(work) = &self.work {
+                    work.record(work.meter.examine(items, 0))?;
+                }
+                Ok::<_, StreamError>(())
+            })?
+            .map(|(fact, ephemeral)| ReplayPin {
+                fact: fact.clone(),
+                ephemeral,
+            }))
     }
 
     /// The cut a guarded Commit's guard can observe: whether its key has a
@@ -113,6 +134,8 @@ impl MemoryStream {
     /// branch the fork excludes moves it too, refusing conservatively.
     /// Commits anywhere else in the store never move it. Both native
     /// providers compare this one cut before and after the guard.
+    /// The identities of leases owning observed paths prevent removal and
+    /// recreation from restoring a cut. Unrelated leases never enter the cut.
     #[cfg(not(target_arch = "wasm32"))]
     fn guard_cut_locked(
         &self,
@@ -121,7 +144,7 @@ impl MemoryStream {
         reads: &[StreamPath],
     ) -> Result<GuardCut, StreamError> {
         let replayed = self
-            .replay(state, request.idempotency_key.as_bytes())?
+            .replay_in(state, request.idempotency_key.as_bytes())?
             .is_some();
         let tails = request
             .conditions()
@@ -134,11 +157,23 @@ impl MemoryStream {
             CommitMutation::Fork { source, .. } => Some(source),
             CommitMutation::Append { .. } => None,
         });
+        let leases = request
+            .conditions()
+            .map(CommitCondition::path)
+            .chain(request.mutations().map(CommitMutation::path))
+            .chain(reads)
+            .chain(sources.clone())
+            .filter_map(|path| state.ephemeral.root_of(path.as_str()))
+            .filter_map(|root| state.ephemeral.roots.get(root).map(|held| held.lease));
+        let (mut observed_leases, lease_allocation) = self.vector(leases.clone().count())?;
+        observed_leases.extend(leases);
         let (mut subtrees, allocation) = self.vector(sources.clone().count())?;
         subtrees.extend(sources.map(|source| state.paths.node(source).cloned()));
         Ok(GuardCut {
             replayed,
             tails,
+            observed_leases,
+            _lease_allocation: lease_allocation,
             subtrees,
             _allocation: allocation,
         })
@@ -308,6 +343,8 @@ fn inspect<T>(meter: &Arc<dyn NativeReadMeter>, lookup: impl FnOnce() -> T) -> s
 pub(crate) struct GuardCut {
     replayed: bool,
     tails: u128,
+    observed_leases: Vec<u64>,
+    _lease_allocation: Allocation,
     subtrees: Vec<Option<Arc<NamespaceNode>>>,
     _allocation: Allocation,
 }
@@ -316,6 +353,7 @@ pub(crate) struct GuardCut {
 impl PartialEq for GuardCut {
     fn eq(&self, other: &Self) -> bool {
         self.replayed == other.replayed
+            && self.observed_leases == other.observed_leases
             && self.tails == other.tails
             && self.subtrees.len() == other.subtrees.len()
             && self

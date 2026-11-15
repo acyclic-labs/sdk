@@ -158,6 +158,7 @@ include!("file_callbacks.rs");
 include!("detached.rs");
 include!("attached.rs");
 include!("checkout.rs");
+include!("command.rs");
 include!("publication.rs");
 include!("publishing.rs");
 include!("publication_guard.rs");

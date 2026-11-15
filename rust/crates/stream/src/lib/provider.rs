@@ -94,6 +94,45 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         )
     }
 
+    /// Reserves `root` as an ephemeral subtree held by the returned lease.
+    /// `root` must be absent, outside every other lease, beneath a present
+    /// parent (or top-level). The lease owns `root`'s subtree and every path
+    /// it adopts: a commit publishing into the lease may also publish paths
+    /// it creates, each beneath a present parent or one the commit creates,
+    /// and the topmost created path of each joins the lease with its subtree.
+    /// A write publishing only into owned paths is atomic, conditioned,
+    /// idempotent and observable like any other, but lives only in this
+    /// process's memory: never journalled or flushed, never listed by a
+    /// children page, inherited by a durable fork, or in a snapshot. A write
+    /// retains its account-scoped idempotency identity while its lease lives:
+    /// `inspect_idempotency` and `read_commit` return the original result, and
+    /// a different request cannot spend the same key in another lease or in
+    /// durable storage. Releasing the lease forgets its results and keys;
+    /// durable receipts remain available. Scope follows the effects actually
+    /// selected by the conditional decision; skipped mutations adopt nothing.
+    /// A durable write's selected effects may observe no owned path. A skipped
+    /// effect observing a lease must also remain skipped without that lease,
+    /// so durable replay selects the same effects; otherwise the write is
+    /// refused with `InvalidArgument` before publication. A leased write that
+    /// also selects an existing durable path or another lease's is likewise
+    /// refused; a fresh path without a parent is `NotFound`.
+    /// Dropping or settling the lease removes every subtree it owns, and
+    /// their followers then observe `NotFound`; process death removes them
+    /// too. Providers that cannot hold one in process report `Unsupported`.
+    async fn lease_ephemeral(&self, _root: StreamPath) -> Result<EphemeralLease, StreamError> {
+        acyclic_observability::operation!(
+            "acyclic.stream.lease_ephemeral",
+            StreamError::code,
+            || Err(StreamError::Unsupported)
+        )
+    }
+
+    /// Whether a live lease owns `path`, so a write to it is never durable.
+    /// A provider without leases owns none.
+    async fn is_ephemeral(&self, _path: &StreamPath) -> Result<bool, StreamError> {
+        Ok(false)
+    }
+
     /// Reads the retained terminal result for one caller-owned retry identity.
     async fn inspect_idempotency(
         &self,
@@ -137,4 +176,83 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         &self,
         commit_id: CommitId,
     ) -> std::result::Result<CommittedEnvelope, StreamError>;
+}
+
+/// A lease's pending release, taken exactly once.
+type Release = Option<BoxProviderFuture<'static, Result<(), StreamError>>>;
+
+/// Custody of one ephemeral subtree; see [`StreamProvider::lease_ephemeral`].
+/// Dropping it releases the subtree without blocking.
+#[must_use = "dropping the lease releases its subtree"]
+pub struct EphemeralLease {
+    root: StreamPath,
+    // Only ever reached through `&mut self`, so the lock is never contended:
+    // it makes custody shareable across threads, as every owner needs.
+    release: std::sync::Mutex<Release>,
+}
+
+impl EphemeralLease {
+    /// A lease whose `release` removes the subtree at `root` exactly once.
+    pub fn new(
+        root: StreamPath,
+        release: BoxProviderFuture<'static, Result<(), StreamError>>,
+    ) -> Self {
+        Self {
+            root,
+            release: std::sync::Mutex::new(Some(release)),
+        }
+    }
+
+    /// The leased subtree root.
+    #[must_use]
+    pub fn root(&self) -> &StreamPath {
+        &self.root
+    }
+
+    /// Releases the subtree and waits until it is gone. Once started, cleanup
+    /// remains owned even if this waiter is cancelled.
+    pub async fn settle(mut self) -> Result<(), StreamError> {
+        let Some(release) = take_release(&mut self.release) else {
+            return Ok(());
+        };
+        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        {
+            let (send, receive) = futures::channel::oneshot::channel();
+            crate::runtime::PlatformExecutor.spawn_owned(futures::FutureExt::map(
+                release,
+                move |result| {
+                    let _ = send.send(result);
+                },
+            ));
+            receive.await.map_err(|_| StreamError::Unavailable)?
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "wasm")))]
+        release.await
+    }
+}
+
+fn take_release(release: &mut std::sync::Mutex<Release>) -> Release {
+    release
+        .get_mut()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
+impl std::fmt::Debug for EphemeralLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EphemeralLease")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for EphemeralLease {
+    fn drop(&mut self) {
+        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        if let Some(release) = take_release(&mut self.release) {
+            crate::runtime::PlatformExecutor
+                .spawn_owned(futures::FutureExt::map(release, |_released| ()));
+        }
+    }
 }

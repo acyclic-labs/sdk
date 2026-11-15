@@ -305,6 +305,11 @@ pub(crate) enum ObservedProof {
 }
 
 impl CachedProofs {
+    /// Retires a volume whose authority has ended, without new admission.
+    pub(crate) fn retire(&mut self, volume: crate::VolumeId) -> bool {
+        self.entries.retire_if(volume.into_bytes(), |_| true)
+    }
+
     /// Binds an existing exact proof while its original registration is already live.
     /// A miss keeps that registration without manufacturing a semantic proof.
     pub(crate) fn observed(

@@ -5,7 +5,6 @@ use crate::sync::owned::{OwnedMutexGuard, lock_owned};
 
 pub(in crate::local) struct Native {
     mount: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
-    discard: bool,
     binding: Option<(PathBuf, PathBuf)>,
     // Owned native guards can outlive the logical MountedVolume. Keep the
     // original key occupied until this projection's physical fields retire.
@@ -31,7 +30,7 @@ impl Drop for Native {
     }
 }
 
-type PublicationGuard = (OwnedMutexGuard<Option<Native>>, OwnedMutexGuard<()>);
+type PublicationGuard = OwnedMutexGuard<Option<Native>>;
 
 /// One volume's distinct projections, retained in command lock order across
 /// logical publication. Read-only aliases also observe the committed head.
@@ -78,7 +77,7 @@ impl PublicationGroup {
     }
 
     pub(in crate::local) async fn sync(&self) -> Result<()> {
-        for (slot, _) in &self.slots {
+        for slot in &self.slots {
             if let Some(native) = slot.as_ref() {
                 native.sync().await?;
             }
@@ -87,7 +86,7 @@ impl PublicationGroup {
     }
 
     pub(in crate::local) async fn advance_to_head(&self) -> Result<()> {
-        for (slot, _) in &self.slots {
+        for slot in &self.slots {
             if let Some(native) = slot.as_ref() {
                 native.advance_to_head().await?;
             }
@@ -96,7 +95,7 @@ impl PublicationGroup {
     }
 }
 
-// Lock order: checkout state -> volume execution -> projection -> filesystem/provider.
+// Lock order: checkout state -> projection -> filesystem/provider.
 // No callback reacquires either outer lock. Hold this guard through logical
 // writes, so first projection cannot pin a head preceding an unpublished write.
 pub(super) async fn initialize<T>(
@@ -110,33 +109,12 @@ pub(super) async fn initialize<T>(
     Ok(slot)
 }
 
-/// An owned execution claim, transferred to the physical command worker.
-/// Only worker cleanup or successful return can release it.
+/// The host sessions sharing a volume's projection; retirement waits until
+/// none remain. Native commands never share it: each runs in its own view.
 #[derive(Default)]
 pub(in crate::local) struct Users {
     count: SyncMutex<usize>,
     idle: tokio::sync::Notify,
-    // Claims whose caller will never verify them, from that loss until their
-    // abandonment finishes. No command or preflight joins such a projection.
-    unverified: std::sync::atomic::AtomicUsize,
-    settled: tokio::sync::Notify,
-}
-
-impl Users {
-    pub(super) fn unverified(&self) {
-        self.unverified
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    }
-
-    pub(super) fn settle(&self) {
-        if self
-            .unverified
-            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
-            == 1
-        {
-            self.settled.notify_waiters();
-        }
-    }
 }
 
 impl std::ops::Deref for Users {
@@ -163,9 +141,9 @@ impl Drop for Entered {
     }
 }
 
-// Claims are added only under the projection lock, and the last scope retires
-// under that same lock, so a projection never retires under a running command
-// and a new scope never adopts one that is being retired.
+// Users are added only under the projection lock, and retirement observes no
+// users under that same lock, so a projection never retires under a host
+// session and a new session never adopts one that is being retired.
 pub(in crate::local) async fn enter<T>(
     slot: &StateArc<AsyncMutex<Option<T>>>,
     users: &StateArc<Users>,
@@ -179,48 +157,30 @@ pub(in crate::local) async fn enter<T>(
     Ok(Entered(StateArc::clone(users)))
 }
 
-pub(in crate::local) async fn leave<T>(
-    slot: &StateArc<AsyncMutex<Option<T>>>,
-    users: &Users,
-    entered: Entered,
-    publish: impl AsyncFnOnce(&mut Option<T>, bool) -> Result<()>,
-) -> Result<()> {
-    let mut slot = lock_owned(StateArc::clone(slot)).await;
-    // Keep the completed worker's claim until its publication owns the slot.
-    // Another completing command must not retire this projection first.
-    drop(entered);
-    let retire = *users
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        == 0;
-    publish(&mut slot, retire).await
+/// The one hand-back protocol for a command's own view. Each attempt plans
+/// against the target's current head and publishes only while that head is
+/// still current, or returns `None`. A moved head means another command
+/// landed first; the next attempt plans on top of it. No publication is
+/// overwritten, and no command waits on another command's view.
+pub(in crate::local) async fn compare_and_swap<T, F: Future<Output = Result<Option<T>>>>(
+    mut attempt: impl FnMut() -> F,
+) -> Result<T> {
+    loop {
+        if let Some(published) = attempt().await? {
+            return Ok(published);
+        }
+    }
 }
 
 impl MountedVolume {
-    /// Publication shares the command's gate, then takes its projection slot.
-    /// Drop the slot before releasing execution, including on cancellation.
-    pub(in crate::local) async fn publication(
-        &self,
-    ) -> Result<(OwnedMutexGuard<Option<Native>>, OwnedMutexGuard<()>)> {
-        let execution = lock_owned(StateArc::clone(&self.execution)).await;
-        Ok((self.prepared_native().await?, execution))
+    /// Logical publication holds the projection slot, so no host-session
+    /// sync interleaves with it.
+    pub(in crate::local) async fn publication(&self) -> Result<OwnedMutexGuard<Option<Native>>> {
+        self.prepared_native().await
     }
 
     pub(in crate::local) async fn native(&self) -> OwnedMutexGuard<Option<Native>> {
         lock_owned(StateArc::clone(&self.native)).await
-    }
-
-    pub(super) async fn enter(&self, read_only: bool) -> Result<Entered> {
-        let options = self
-            .options
-            .clone()
-            .ok_or_else(|| Error::Invalid("logical volume has no native projection".into()))?;
-        let options = if read_only {
-            options.restrict_to_read_only()
-        } else {
-            options
-        };
-        self.enter_with_options(options).await
     }
 
     pub(in crate::local) async fn enter_with_options(
@@ -245,7 +205,6 @@ impl MountedVolume {
             let path = mount.path().to_path_buf();
             let mut native = Native {
                 mount,
-                discard: false,
                 binding: None,
                 _binding_owner: self._binding.clone(),
             };
@@ -270,65 +229,19 @@ impl MountedVolume {
         .await
     }
 
-    pub(super) async fn leave(&self, entered: Entered) -> Result<()> {
-        leave(&self.native, &self.users, entered, async |slot, retire| {
-            self.publish_locked(slot, retire).await
-        })
-        .await
-    }
-
-    pub(in crate::local) async fn prepare_command(&self) -> Result<()> {
-        drop(self.prepared_native().await?);
-        Ok(())
-    }
-
-    async fn prepared_native(&self) -> Result<OwnedMutexGuard<Option<Native>>> {
-        let mut slot = loop {
-            let settled = self.users.settled.notified();
-            tokio::pin!(settled);
-            settled.as_mut().enable();
-            let slot = self.native().await;
-            if self
-                .users
-                .unverified
-                .load(std::sync::atomic::Ordering::Acquire)
-                == 0
-            {
-                break slot;
-            }
-            drop(slot);
-            settled.await;
-        };
-        if let Some(native) = slot.as_ref() {
-            if native.discard {
-                native.abandon_command().await?;
-            } else if native.is_retiring() {
-                native.complete_command(true).await?;
-            } else {
-                return Ok(slot);
-            }
+    /// The live projection slot. A retirement that failed earlier finishes
+    /// here, before anyone observes the projection again.
+    pub(in crate::local) async fn prepared_native(
+        &self,
+    ) -> Result<OwnedMutexGuard<Option<Native>>> {
+        let mut slot = self.native().await;
+        if let Some(native) = slot.as_ref()
+            && native.is_retiring()
+        {
+            native.complete_command(true).await?;
             *slot = None;
         }
         Ok(slot)
-    }
-
-    pub(super) async fn abandon(&self, entered: Entered) -> Result<()> {
-        leave(&self.native, &self.users, entered, async |slot, retire| {
-            if !retire {
-                return Err(Error::Conflict(
-                    "unverified native scope shares a projection".into(),
-                ));
-            }
-            if let Some(native) = slot.as_mut() {
-                // Retain this decision if physical retirement fails. A later
-                // entry must retry abandonment before exposing this projection.
-                native.discard = true;
-                native.abandon_command().await?;
-            }
-            *slot = None;
-            Ok(())
-        })
-        .await
     }
 
     pub(super) async fn retire(&self) -> Result<()> {
@@ -354,11 +267,7 @@ impl MountedVolume {
     // projection created. A failed detach keeps the owner for a later retry.
     async fn publish_locked(&self, slot: &mut Option<Native>, retire: bool) -> Result<()> {
         if let Some(native) = slot.as_ref() {
-            if native.discard {
-                native.abandon_command().await?;
-            } else {
-                native.complete_command(retire).await?;
-            }
+            native.complete_command(retire).await?;
         }
         if retire {
             *slot = None;

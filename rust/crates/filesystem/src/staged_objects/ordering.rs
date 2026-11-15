@@ -74,44 +74,50 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 }
                 let bytes = match self.lookup(id) {
                     Lookup::Absent => continue,
-                    Lookup::Resident(bytes) => bytes,
-                    Lookup::Spilled { offset, length } => {
-                        if let Some(native) = work.original {
-                            native.admit(WorkCounters {
-                                object_bytes_read: length,
-                                ..WorkCounters::UNCHARGED
-                            })?;
-                            let bytes = staged_native_read(
+                    Lookup::Resident { bytes, .. } => bytes,
+                    Lookup::Spilled {
+                        offset,
+                        length,
+                        stored_length,
+                    } => {
+                        let stored = if let Some(native) = work.original {
+                            read_spilled_native(
                                 spill.as_ref().ok_or(ObjectStoreError::Corrupt)?,
+                                id,
                                 offset,
-                                usize::try_from(length).map_err(|_| ObjectStoreError::Corrupt)?,
+                                stored_length,
+                                length,
                                 native,
                             )
-                            .await?;
-                            native.record_admitted(WorkCounters {
-                                object_bytes_read: bytes.len() as u64,
-                                ..WorkCounters::UNCHARGED
-                            })?;
-                            if bytes.len() as u64 != length {
-                                return Err(ObjectStoreError::Corrupt);
-                            }
-                            bytes
+                            .await?
                         } else {
                             work.accounting()
-                                .charge(WorkCounters {
-                                    backend_read_operations: 1,
-                                    object_bytes_read: length,
-                                    bytes_hashed: length,
+                                .admit(WorkCounters {
+                                    bytes_hashed: stored_length.saturating_add(
+                                        if id.storage.is_some() { length } else { 0 },
+                                    ),
                                     ..WorkCounters::UNCHARGED
                                 })
                                 .map_err(crate::async_storage::object_error)?;
-                            let mut read = read_spilled(
+                            work.accounting()
+                                .charge(WorkCounters {
+                                    backend_read_operations: 1,
+                                    object_bytes_read: stored_length,
+                                    ..WorkCounters::UNCHARGED
+                                })
+                                .map_err(crate::async_storage::object_error)?;
+                            read_spilled(
                                 spill.as_ref().ok_or(ObjectStoreError::Corrupt)?,
-                                &[(id, offset, length)],
+                                &[(id, offset, stored_length)],
                             )
-                            .await?;
-                            read.pop().ok_or(ObjectStoreError::Corrupt)?.into_parts().1
-                        }
+                            .await?
+                            .pop()
+                            .ok_or(ObjectStoreError::Corrupt)?
+                        };
+                        self.inner
+                            .restore_hashed(id, stored, length, work)?
+                            .bytes()
+                            .clone()
                     }
                 };
                 visited

@@ -88,10 +88,8 @@ impl CheckoutTools {
                     &cancellation,
                 )
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                    work: &work,
-                    cancellation: &cancellation,
-                };
+                let mut accounting =
+                    acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
                 let publication = match view.original_publication(operation, &mut accounting).await
                 {
                     Ok(publication) => publication,

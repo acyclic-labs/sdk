@@ -19,6 +19,16 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
             })
             .await?;
     }
+    let private = path("completion/target/private")?;
+    let lease = provider.lease_ephemeral(private.clone()).await?;
+    provider
+        .append(AppendRequest {
+            path: private.clone(),
+            records: vec![OwnedBytes::from_static(b"private").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
     let request = CommitRequest {
         deadline_unix_millis: None,
         effects: vec![crate::CommitEffect::hard(
@@ -107,6 +117,55 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
     assert_eq!(
         provider.state.read().await.last_committed_at_micros,
         125_000
+    );
+    let private_commit = provider
+        .native_commit_with_guard(
+            CommitRequest {
+                deadline_unix_millis: None,
+                effects: vec![CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: private.clone(),
+                        records: vec![OwnedBytes::from_static(b"private-late").into()],
+                    }],
+                )],
+                idempotency_key: IdempotencyKey::unique(),
+            },
+            None,
+            meter.original(),
+            move || {
+                clock.store(250, Ordering::SeqCst);
+                std::future::ready(Ok::<(), Box<dyn std::error::Error + Send + Sync>>(()))
+            },
+        )
+        .await??;
+    let CommitOutcome::Committed(private_time) = private_commit.value() else {
+        panic!("private commit")
+    };
+    assert_eq!(private_time.committed_at_micros, 250_000);
+    assert_eq!(
+        provider.state.read().await.last_committed_at_micros,
+        125_000
+    );
+    lease.settle().await?;
+    assert_eq!(provider.tail(private).await, Err(StreamError::NotFound));
+    let mut canonical = provider
+        .read(ReadRequest {
+            key: None,
+            path: path("completion/target")?,
+            from: 1,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?;
+    assert_eq!(
+        canonical
+            .next()
+            .await
+            .ok_or(StreamError::Unavailable)??
+            .committed_at_micros,
+        125_000,
+        "canonical read keeps the accepted record timestamp"
     );
     Ok(())
 }

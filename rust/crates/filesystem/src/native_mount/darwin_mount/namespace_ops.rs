@@ -8,7 +8,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
     uid: u32,
     gid: u32,
 ) -> c_int {
-    ffi(address, true, |context, work| {
+    ffi_path(address, path, 0, true, |context, path, work| {
         let path = mount_path(path, work)?;
         context.mutate(
             || {
@@ -30,7 +30,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
     path: *const c_char,
     directory: c_int,
 ) -> c_int {
-    ffi(address, true, |context, work| {
+    ffi_path(address, path, 0, true, |context, path, work| {
         let path = mount_path(path, work)?;
         let lookup = context.lookup(&path, work)?;
         if (directory != 0) != (lookup.node.kind == MountNodeKind::Directory) {
@@ -60,21 +60,28 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
     source: *const c_char,
     destination: *const c_char,
 ) -> c_int {
-    ffi(address, true, |context, work| {
-        let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
-        let rename = || {
-            context
-                .source
-                .rename(&source, &destination, true, work, None)
-                .map(drop)
-        };
-        match context.lookup(&destination, work) {
-            Ok(replaced) => context.unlink(&destination, replaced, rename, work)?,
-            Err(cause) if callback_errno(&cause) == libc::ENOENT => context.mutate(rename, work)?,
-            Err(cause) => return Err(cause),
-        }
-        Ok(0)
-    })
+    ffi_pair(
+        address,
+        source,
+        destination,
+        |context, source, destination, work| {
+            let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
+            let rename = || {
+                context
+                    .source
+                    .rename(&source, &destination, true, work, None)
+                    .map(drop)
+            };
+            match context.lookup(&destination, work) {
+                Ok(replaced) => context.unlink(&destination, replaced, rename, work)?,
+                Err(cause) if callback_errno(&cause) == libc::ENOENT => {
+                    context.mutate(rename, work)?
+                }
+                Err(cause) => return Err(cause),
+            }
+            Ok(0)
+        },
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -83,18 +90,23 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_link(
     source: *const c_char,
     destination: *const c_char,
 ) -> c_int {
-    ffi(address, true, |context, work| {
-        let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
-        context.mutate(
-            || {
-                context
-                    .source
-                    .hard_link(&source, &destination, None, false, work)
-            },
-            work,
-        )?;
-        Ok(0)
-    })
+    ffi_pair(
+        address,
+        source,
+        destination,
+        |context, source, destination, work| {
+            let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
+            context.mutate(
+                || {
+                    context
+                        .source
+                        .hard_link(&source, &destination, None, false, work)
+                },
+                work,
+            )?;
+            Ok(0)
+        },
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -105,22 +117,28 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
     uid: u32,
     gid: u32,
 ) -> c_int {
-    ffi(address, true, |context, work| {
-        let target = copy_bytes(work, c_bytes(target, work)?)?;
-        let destination = mount_path(destination, work)?;
-        context.mutate(
-            || {
-                context.source.create_symbolic_link(
-                    &destination,
-                    target,
-                    create_metadata(&context.clock, 0o777, u32::from(libc::S_IFLNK), uid, gid),
-                    work,
-                )
-            },
-            work,
-        )?;
-        Ok(0)
-    })
+    ffi_path(
+        address,
+        destination,
+        0,
+        true,
+        |context, destination, work| {
+            let target = copy_bytes(work, c_bytes(target, work)?)?;
+            let destination = mount_path(destination, work)?;
+            context.mutate(
+                || {
+                    context.source.create_symbolic_link(
+                        &destination,
+                        target,
+                        create_metadata(&context.clock, 0o777, u32::from(libc::S_IFLNK), uid, gid),
+                        work,
+                    )
+                },
+                work,
+            )?;
+            Ok(0)
+        },
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -130,7 +148,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
     buffer: *mut c_char,
     length: usize,
 ) -> c_int {
-    ffi(address, false, |context, work| {
+    ffi_path(address, path, 0, false, |context, path, work| {
         if length == 0 {
             return Err(driver_errno(libc::ERANGE));
         }
@@ -159,7 +177,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
     uid: u32,
     gid: u32,
 ) -> c_int {
-    ffi(address, true, |context, work| {
+    ffi_path(address, path, 0, true, |context, path, work| {
         let mode_kind = libc::mode_t::try_from(mode & u32::from(libc::S_IFMT))
             .map_err(|_| driver_errno(libc::EINVAL))?;
         let (kind, device) = MountNodeKind::special(mode_kind, device).map_err(driver_errno)?;
@@ -193,7 +211,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_chmod(
     mode: u32,
     handle: u64,
 ) -> c_int {
-    ffi(address, true, |context, work| {
+    ffi_path(address, path, handle, true, |context, path, work| {
         context.mutate_metadata(
             &*mount_path(path, work)?,
             handle,
@@ -216,7 +234,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_chown(
     gid: u32,
     handle: u64,
 ) -> c_int {
-    ffi(address, true, |context, work| {
+    ffi_path(address, path, handle, true, |context, path, work| {
         context.mutate_metadata(
             &*mount_path(path, work)?,
             handle,
@@ -242,7 +260,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_utimens(
     times: *const NativeTimes,
     handle: u64,
 ) -> c_int {
-    ffi(address, true, |context, work| {
+    ffi_path(address, path, handle, true, |context, path, work| {
         // SAFETY: the bridge retains a nonnull NativeTimes through this callback.
         let times = unsafe { times.as_ref() }.ok_or_else(|| driver_errno(libc::EINVAL))?;
         context.mutate_metadata(

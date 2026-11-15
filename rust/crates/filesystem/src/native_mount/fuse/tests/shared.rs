@@ -355,6 +355,10 @@ pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_a
         if mode == "server-loss" {
             return original_connection_retires_after_server_loss();
         }
+        if mode == "reap" {
+            // The next process to open the registry on this host.
+            return Ok(crate::native_mount::registry::initialize()?);
+        }
         return shared_view_owner_until_killed();
     }
     let temporary = tempfile::tempdir()?;
@@ -365,8 +369,12 @@ pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_a
     .env(CHILD, "server-loss")
     .status()?;
     assert!(status.success(), "isolated server-loss control: {status}");
-    for killed_action in [false, true] {
-        owner_exit_namespace(killed_action)?;
+    for death in [
+        OwnerDeath::Owner,
+        OwnerDeath::ProcessGroup,
+        OwnerDeath::WithExitAction,
+    ] {
+        owner_exit_namespace(death)?;
     }
     Ok(())
 }
@@ -417,10 +425,26 @@ fn original_connection_retires_after_server_loss() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-fn owner_exit_namespace(killed_action: bool) -> Result<(), Box<dyn std::error::Error>> {
+/// How the owner of a live view dies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OwnerDeath {
+    /// SIGKILL to the owner alone.
+    Owner,
+    /// SIGKILL to the owner's whole process group.
+    ProcessGroup,
+    /// SIGKILL to the owner-exit action, then to the owner.
+    WithExitAction,
+}
+
+fn owner_exit_namespace(death: OwnerDeath) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{BufRead as _, BufReader};
+    use std::os::unix::process::CommandExt as _;
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("views");
+    // The owner and the next open share a registry no other process opens,
+    // so only the open this test makes can reap the dead owner's fence.
+    let state = temporary.path().join("state");
+    std::fs::create_dir(&state)?;
     let mut owner = child(
         "native_mount::fuse::tests::shared::linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace",
         temporary.path(),
@@ -428,15 +452,18 @@ fn owner_exit_namespace(killed_action: bool) -> Result<(), Box<dyn std::error::E
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::inherit())
+    .env("XDG_STATE_HOME", &state)
+    .process_group(0)
     .spawn()?;
     let mut lines = BufReader::new(owner.stdout.take().ok_or("child stdout")?).lines();
-    let cleanup_pid = loop {
+    let (cleanup_pid, fence) = loop {
         let line = lines
             .next()
             .ok_or("the owner exited before its view was live")??;
         // The test host can prefix the first output line with its test name.
-        if let Some((_, pid)) = line.rsplit_once("shared view owner: ready ") {
-            break pid.parse::<u32>()?;
+        if let Some((_, ready)) = line.rsplit_once("shared view owner: ready ") {
+            let (pid, fence) = ready.split_once(' ').ok_or("owner fence")?;
+            break (pid.parse::<u32>()?, std::path::PathBuf::from(fence));
         }
     };
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
@@ -450,8 +477,8 @@ fn owner_exit_namespace(killed_action: bool) -> Result<(), Box<dyn std::error::E
     // SAFETY: pidfd_open returned this fresh owned descriptor.
     let cleanup = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd)?) };
     // Remove the actual cleanup producer through its retained kernel identity.
-    // This negative control cannot accidentally signal a reused numeric PID.
-    if killed_action {
+    // This cannot accidentally signal a reused numeric PID.
+    if death == OwnerDeath::WithExitAction {
         // SAFETY: the retained pidfd names the original action; SIGKILL carries
         // no siginfo pointer and flags zero selects the ordinary delivery.
         if unsafe {
@@ -467,7 +494,15 @@ fn owner_exit_namespace(killed_action: bool) -> Result<(), Box<dyn std::error::E
             return Err(std::io::Error::last_os_error().into());
         }
     }
-    owner.kill()?;
+    if death == OwnerDeath::ProcessGroup {
+        let group = libc::pid_t::try_from(owner.id())?;
+        // SAFETY: the unreaped owner leads this group, so its ID is not reused.
+        if unsafe { libc::kill(-group, libc::SIGKILL) } < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    } else {
+        owner.kill()?;
+    }
     owner.wait()?;
     let mut terminal = libc::pollfd {
         fd: cleanup.as_raw_fd(),
@@ -485,29 +520,31 @@ fn owner_exit_namespace(killed_action: bool) -> Result<(), Box<dyn std::error::E
         }
     }
     let remaining = mounts_at(&root)?;
-    let [fence, ..] = crate::native_mount_control_paths(&root)?;
     assert!(fence.exists(), "the original fence remains recoverable");
-    println!(
-        "owner-exit action control: killed_action={killed_action}, remaining_mounts={remaining}"
-    );
-    if remaining != 0 {
-        // The planted producer-loss control must not itself abandon a mount.
-        let (source, _) = shared_sources(posix_config())?;
-        let mut recovered = view(source, &root.join("negative-cleanup"))?;
-        assert!(recovered.stop()?);
-    }
-    assert_eq!(
-        remaining == 0,
-        !killed_action,
-        "the killed owner's namespace outlived its cleanup action"
-    );
+    println!("owner death {death:?}: remaining_mounts={remaining}");
+    // The exit action detaches at once; with it gone too, the dead mount
+    // stays until the next process that opens the registry.
+    let expected = usize::from(death == OwnerDeath::WithExitAction);
+    assert_eq!(remaining, expected, "the dead owner's namespace");
+    // That next open reaps every dead fence, detaching any mount it names.
+    let status = child(
+        "native_mount::fuse::tests::shared::linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace",
+        temporary.path(),
+    )
+    .env(CHILD, "reap")
+    .env("XDG_STATE_HOME", &state)
+    .status()?;
+    assert!(status.success(), "the next registry open: {status}");
+    let reaped = mounts_at(&root)?;
+    println!("owner death {death:?}: after the next open, remaining_mounts={reaped}");
+    assert_eq!(reaped, 0, "the next registry open left the dead mount");
+    assert!(!fence.exists(), "the reaped fence remains");
     let (source, _) = shared_sources(posix_config())?;
     let mut session = view(source, &root.join("after"))?;
     assert_eq!(mounts_at(&root)?, 1, "the successor owns its new mount");
     assert_eq!(listing(&root)?, ["after"]);
     assert!(session.stop()?);
     assert_eq!(mounts_at(&root)?, 0);
-    assert!(!fence.exists());
     Ok(())
 }
 
@@ -530,7 +567,8 @@ fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .and_then(|view| view.exit_action_id())
         .ok_or("original owner-exit action")?;
-    println!("shared view owner: ready {cleanup}");
+    let [fence, ..] = crate::native_mount_control_paths(&root)?;
+    println!("shared view owner: ready {cleanup} {}", fence.display());
     loop {
         std::thread::park();
     }

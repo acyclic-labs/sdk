@@ -5,7 +5,10 @@ pub(crate) fn hash_lazy_value<T: MemoryLazyNode>(
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<[u8; 32], LazyWorkspaceError> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let KernelAccounting::NativeOriginal { work, cancellation } = accounting {
+    if let KernelAccounting::NativeOriginal {
+        work, cancellation, ..
+    } = accounting
+    {
         // These two SDK node types derive Serialize from scalar/string/byte
         // fields. No I/O, owner destruction or demand callback enters the leaf.
         return work.state(|state| hash_with_charge(value, Charge::Native(state, cancellation)));

@@ -33,10 +33,7 @@ async fn held_source_keeps_former_recovery_names_and_refuses_root_replacement() 
         &cancellation,
     )
     .await?;
-    let mut ctx = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-        work: &work,
-        cancellation: &cancellation,
-    };
+    let mut ctx = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
     let reference = source.reference(&mut ctx).await.map_err(storage)?;
     assert!(
         source

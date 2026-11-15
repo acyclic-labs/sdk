@@ -5,9 +5,9 @@ use super::*;
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LocalGarbageCollection {
-    /// Immutable filesystem object versions examined.
+    /// Durable and privately staged immutable filesystem versions examined.
     pub examined: u64,
-    /// Unreachable immutable filesystem object versions removed.
+    /// Unreachable durable or privately staged filesystem versions removed.
     pub removed: u64,
 }
 
@@ -49,8 +49,9 @@ pub(super) fn mark_error(error: crate::kernel::MarkError) -> FsError {
 
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
-    /// Reclaims every stored object nothing live reaches, while the root
-    /// stays open for publications.
+    /// Reclaims durable and privately staged objects nothing live reaches,
+    /// while the root stays open for publications. Private construction and
+    /// live ephemeral authorities participate in the same mark and admission cut.
     ///
     /// A first pass sweeps what no epoch retains. Only when that finds
     /// unreachable objects an epoch still retains does a second pass open the
@@ -152,6 +153,22 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             }
             for held in collection.held() {
                 match held {
+                    crate::collection::Held::Construction { group } => {
+                        let mut accounting =
+                            crate::kernel::allocation::KernelAccounting::standalone(
+                                WorkBudget::UNBOUNDED,
+                                cancellation,
+                            );
+                        let mut after = None;
+                        loop {
+                            let page = group.page(after, 256, &mut accounting)?;
+                            let Some(last) = page.value.last() else {
+                                break;
+                            };
+                            after = Some(last.index_key());
+                            marker.keep(page.value.iter().copied());
+                        }
+                    }
                     crate::collection::Held::Checkout {
                         base,
                         working,
@@ -168,6 +185,42 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     crate::collection::Held::Record { record, config } => {
                         marker.set_limits(DecodeLimits::for_volume(config));
                         marker.record(&record).await.map_err(mark_error)?;
+                    }
+                    crate::collection::Held::Ephemeral {
+                        base,
+                        volume,
+                        config,
+                    } => {
+                        marker.set_limits(DecodeLimits::for_volume(config));
+                        marker
+                            .generation(GenerationId::from_root(base))
+                            .await
+                            .map_err(mark_error)?;
+                        let workspace_volume = Volume {
+                            fs: self.clone(),
+                            id: volume,
+                            config,
+                        };
+                        let mut accounting =
+                            KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+                        match workspace_volume
+                            .resolve_head_generation(&mut accounting, cancellation)
+                            .await
+                        {
+                            Ok((head, _)) => marker
+                                .history(volume, GenerationId::from_root(head))
+                                .await
+                                .map_err(mark_error)?,
+                            Err(
+                                FsError::EmptyAuthority
+                                | FsError::WorkspaceDeleted
+                                | FsError::Authority(
+                                    crate::AuthorityStoreError::Missing
+                                    | crate::AuthorityStoreError::Retired,
+                                ),
+                            ) => {}
+                            Err(error) => return Err(error),
+                        }
                     }
                     crate::collection::Held::Generation { root, config } => {
                         marker.set_limits(DecodeLimits::for_volume(config));
@@ -191,6 +244,8 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .into_iter()
                 .partition::<Vec<_>, _>(|digest| marked.contains(digest));
             drop(marker);
+            #[cfg(test)]
+            acyclic_native_runtime::testing::boundary("filesystem:collection-marked").await;
             if advance {
                 self.retain_marked(logical.provider(), next, live, cancellation)
                     .await?;
@@ -211,8 +266,17 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 epoch.hooks.released.notify_one();
                 crash(&epoch, Step::Released)?;
             }
-            self.sweep_local_objects(&collecting, unmarked, cancellation)
-                .await
+            let (mut result, retained) = self
+                .sweep_local_objects(&collecting, unmarked, cancellation)
+                .await?;
+            let private = self
+                .inner
+                .objects
+                .sweep_private(&collecting, &marked, cancellation)
+                .await?;
+            result.examined = result.examined.saturating_add(private.examined);
+            result.removed = result.removed.saturating_add(private.removed);
+            Ok((result, retained))
         })
         .await
     }

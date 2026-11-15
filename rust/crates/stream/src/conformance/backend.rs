@@ -177,6 +177,11 @@ pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
     );
     record(
         &mut failures,
+        "ephemeral",
+        super::ephemeral::verify(provider).await,
+    );
+    record(
+        &mut failures,
         "budget",
         workload(backend, 3, "budget").await,
     );

@@ -510,7 +510,12 @@ static void mounted_io_ready(void *arg)
     int len = snprintf(path, sizeof(path), "%s/ready", test->root);
     test->result = len < 0 || (size_t)len >= sizeof(path) ? ENAMETOOLONG :
         mkdir(path, 0755) == 0 ? 0 : errno;
+    if (test->result != 0)
+        DFUSE_ERR("Mounted readiness mkdir failed: %s (callback reached=%d)",
+                  strerror(test->result), atomic_load(&test->created));
     int retired = test->retire(test->root);
+    if (retired != 0)
+        DFUSE_ERR("Mounted readiness retirement failed: %s", strerror(retired));
     if (test->result == 0)
         test->result = retired;
     fuse_exit(test->fuse);

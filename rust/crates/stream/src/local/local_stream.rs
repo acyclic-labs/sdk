@@ -239,6 +239,7 @@ impl LocalStream {
                 .execute(command, deadline, REPLAY_PIPELINE_COMMANDS)
                 .await;
             if replica.cursor == cursor
+                && result.as_ref().is_ok_and(|execution| !execution.ephemeral)
                 && matches!(
                     result.as_ref().map(|execution| &execution.outcome),
                     Ok(crate::WriteOutcome::Append(AppendOutcome::Committed(_))

@@ -66,6 +66,15 @@ impl<K: Clone + Eq + Hash, C> NamedViews<K, C> {
 
     /// Admits a callback to the live view with `serial`.
     pub(crate) fn enter(&self, serial: u64) -> Option<ViewLease<C>> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self
+            .names
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closed
+        {
+            return None;
+        }
         self.table.enter(serial)
     }
 
@@ -75,18 +84,26 @@ impl<K: Clone + Eq + Hash, C> NamedViews<K, C> {
         K: Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        let serial = *self
-            .names
-            .read()
+        let names = self.names.read().unwrap_or_else(PoisonError::into_inner);
+        if names.closed {
+            return None;
+        }
+        let serial = *names.by_name.get(name)?;
+        Some((serial, self.table.enter(serial)?))
+    }
+
+    /// A physical provider that has exited admits neither a new view nor a callback.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn close_admission(&self) {
+        self.names
+            .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .by_name
-            .get(name)?;
-        Some((serial, self.enter(serial)?))
+            .closed = true;
     }
 
     /// Up to `limit` listed views from serial `first` on, in issue order,
-    /// for a backend whose root listing is synthetic (FUSE's).
-    #[cfg(target_os = "linux")]
+    /// for a backend whose root listing is synthetic (FUSE or NFS).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn listed_from(&self, first: u64, limit: usize) -> Vec<(u64, K)> {
         self.names
             .read()
@@ -102,9 +119,9 @@ impl<K: Clone + Eq + Hash, C> NamedViews<K, C> {
     /// a backend whose kernel can end the session under live views (FUSE's).
     #[cfg(target_os = "linux")]
     pub(crate) fn close(&self, stop: impl Fn(&C)) {
+        self.close_admission();
         let serials: Vec<u64> = {
-            let mut names = self.names.write().unwrap_or_else(PoisonError::into_inner);
-            names.closed = true;
+            let names = self.names.read().unwrap_or_else(PoisonError::into_inner);
             names.by_serial.keys().copied().collect()
         };
         for serial in serials {

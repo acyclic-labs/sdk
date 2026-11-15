@@ -135,6 +135,7 @@ mod notifications;
 mod service;
 mod shared;
 use notifications::*;
+pub(super) use shared::hold as hold_shared_instance;
 
 #[cfg(test)]
 mod tests;

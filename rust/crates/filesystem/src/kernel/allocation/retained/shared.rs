@@ -147,6 +147,12 @@ impl<T: ?Sized> Clone for RetainedArc<T> {
     }
 }
 
+impl<T: ?Sized + std::fmt::Debug> std::fmt::Debug for RetainedArc<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.value, formatter)
+    }
+}
+
 impl<T: ?Sized> std::ops::Deref for RetainedArc<T> {
     type Target = T;
 

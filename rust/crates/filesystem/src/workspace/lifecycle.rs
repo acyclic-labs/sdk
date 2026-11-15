@@ -45,6 +45,53 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         work.finish(result, &accounting)
     }
 
+    /// Forks an exact generation as an ephemeral workspace, held by the
+    /// returned [`crate::EphemeralFork`]: never journalled or listed, it
+    /// needs no retention authority and no object flush, and it ends when its
+    /// custody does. A join from it into a durable workspace publishes its
+    /// content durably like any other.
+    pub async fn fork_ephemeral<W: crate::facade::FsWork>(
+        &self,
+        destination: impl AsRef<str>,
+        options: ForkOptions<A, O>,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(Self, crate::EphemeralFork), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = self
+            .fork_ephemeral_accounted(destination.as_ref(), options, &mut accounting)
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    async fn fork_ephemeral_accounted(
+        &self,
+        destination: &str,
+        options: ForkOptions<A, O>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(Self, crate::EphemeralFork), WorkspaceError> {
+        if options.generation.workspace.id != self.id {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let bytes = options
+            .paths
+            .as_ref()
+            .map_or(Ok(0), workspace_owned_strings_bytes)?;
+        let (allocation, admitted) = accounting.record_actual_owned(bytes)?;
+        admitted?;
+        let name = WorkspaceName::with_accounting(destination, accounting)?;
+        self.volume
+            .fs
+            .fork_ephemeral_workspace(
+                name,
+                &options.generation,
+                options.idempotency_key,
+                crate::kernel::Owned::new(options.paths, allocation, bytes),
+                accounting,
+            )
+            .await
+    }
+
     pub(crate) async fn fork_accounted<G, E>(
         &self,
         destination: &str,

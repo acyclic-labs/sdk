@@ -47,6 +47,36 @@ impl PublicationScope<'_> {
     }
 }
 
+pub(crate) fn restore_plain(
+    object_id: crate::ObjectId,
+    stored: acyclic_stream::OwnedBytes,
+    maximum: u64,
+    context: &mut crate::async_storage::AuthorityWork<'_>,
+) -> Result<crate::HashedObject, crate::ObjectStoreError> {
+    if object_id.storage.is_some() {
+        return Err(crate::ObjectStoreError::DigestMismatch);
+    }
+    let length = stored.len() as u64;
+    if length > maximum {
+        return Err(crate::ObjectStoreError::TooLarge {
+            observed: length,
+            maximum,
+        });
+    }
+    let delta = crate::WorkCounters {
+        bytes_hashed: length,
+        ..crate::WorkCounters::UNCHARGED
+    };
+    let mut accounting = context.accounting();
+    accounting.admit(delta).map_err(object_error)?;
+    let object = crate::HashedObject::new(object_id.kind, stored);
+    accounting.record_completed(delta).map_err(object_error)?;
+    if object.object_id() != object_id {
+        return Err(crate::ObjectStoreError::DigestMismatch);
+    }
+    Ok(object)
+}
+
 contract! {
 forward_object_store;
 /// Nonblocking immutable-object contract suitable for `IndexedDB` and remote I/O.
@@ -65,6 +95,18 @@ pub trait AsyncObjectStore: ProviderPlatform {
         _context: &mut crate::async_storage::AuthorityWork<'_>,
     ) -> impl std::future::Future<Output = std::result::Result<crate::HashedObject, crate::ObjectStoreError>> + acyclic_stream::ProviderTask {
         async move { Ok(object) }
+    }
+    /// Authenticates an exact stored representation without publishing it.
+    /// The logical plaintext must fit `maximum`; sealing adapters preserve the
+    /// original physical association and invocation custody in the result.
+    fn restore_hashed(
+        &self,
+        object_id: crate::ObjectId,
+        stored: acyclic_stream::OwnedBytes,
+        maximum: u64,
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> std::result::Result<crate::HashedObject, crate::ObjectStoreError> {
+        restore_plain(object_id, stored, maximum, context)
     }
     /// Whether decoded-cache hooks may retain or reject a decoded page.
     ///

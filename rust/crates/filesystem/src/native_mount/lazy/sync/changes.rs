@@ -100,7 +100,9 @@ where
         proof: Option<SelectedImportProof>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<NativeSnapshotContext, MountSourceError> {
-        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
+        let crate::kernel::KernelAccounting::NativeOriginal {
+            work, cancellation, ..
+        } = &*accounting
         else {
             return Err(MountSourceError::OriginalSnapshotUnavailable);
         };
@@ -209,7 +211,9 @@ where
         generation: crate::GenerationId,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), MountSourceError> {
-        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
+        let crate::kernel::KernelAccounting::NativeOriginal {
+            work, cancellation, ..
+        } = &*accounting
         else {
             return Err(MountSourceError::OriginalSnapshotUnavailable);
         };

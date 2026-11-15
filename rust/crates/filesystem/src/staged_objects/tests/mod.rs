@@ -107,6 +107,16 @@ async fn spill_bytes_fixture(
     token: &CancellationToken,
     bytes: OwnedBytes,
 ) -> Result<(ObjectId, OwnedBytes), Box<dyn std::error::Error>> {
+    spill_bytes_with_reuse_fixture(store, token, bytes, true).await
+}
+
+/// The negative control preserves the former append-only placement policy.
+async fn spill_bytes_with_reuse_fixture(
+    store: &LocalStaged,
+    token: &CancellationToken,
+    bytes: OwnedBytes,
+    reuse: bool,
+) -> Result<(ObjectId, OwnedBytes), Box<dyn std::error::Error>> {
     let (id, bytes) = blob(bytes);
     store
         .put(
@@ -116,7 +126,11 @@ async fn spill_bytes_fixture(
         )
         .await?;
     let mut spill_file = store.spill_io.write().await;
-    let offset = store.index().spill_end;
+    let offset = if reuse {
+        store.index().spill_offset(byte_length(&bytes))?
+    } else {
+        store.index().spill_end
+    };
     let spill_bytes = bytes.clone();
     store
         .spill_file(&mut spill_file, None)
@@ -134,10 +148,11 @@ async fn spill_bytes_fixture(
         let order = *order;
         index.order.remove(&order);
     }
-    index.mark_spilled(&[(id, bytes.clone())], offset);
+    index.mark_spilled(&[(id, bytes.clone())], offset, byte_length(&bytes));
     Ok((id, bytes))
 }
 
+mod collection;
 mod native_batch;
 mod native_read;
 mod native_write;
@@ -160,7 +175,8 @@ async fn advance_spill_past_bound<S>(store: &StagedObjects<S>) -> std::io::Resul
             .expect("unmetered fixture control construction cannot fail")
             .await?;
     }
-    store.index_mut().spill_end += MAXIMUM_SPILL_BYTES;
+    // Cross the deleted 1 GiB eager-drain threshold without allocating its gap.
+    store.index_mut().spill_end += 1_024 * 1_024 * 1_024;
     Ok(())
 }
 

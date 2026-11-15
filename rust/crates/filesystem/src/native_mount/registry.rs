@@ -28,7 +28,96 @@ pub(super) fn initialize() -> Result<(), NativeMountError> {
             });
         directory.map_err(Arc::new)
     });
-    directory().map(|_| ())
+    let directory = directory()?;
+    // Recovery below initializes again; only the first caller reaps.
+    if !REAPED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        reap(directory);
+    }
+    Ok(())
+}
+
+static REAPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+const FENCE_RECORD_V1: &[u8] = b"acyclic-fs/native-mount-fence/v1\0";
+
+/// The persisted destination of one mount fence, written by its owner.
+pub(super) fn fence_record(
+    #[cfg(unix)] canonical: &Path,
+    #[cfg(windows)] canonical: &[u16],
+) -> Vec<u8> {
+    let mut record = FENCE_RECORD_V1.to_vec();
+    #[cfg(unix)]
+    record.extend_from_slice(std::os::unix::ffi::OsStrExt::as_bytes(
+        canonical.as_os_str(),
+    ));
+    #[cfg(windows)]
+    record.extend(canonical.iter().flat_map(|unit| unit.to_le_bytes()));
+    record
+}
+
+pub(super) fn write_fence_record(file: &std::fs::File, record: &[u8]) -> std::io::Result<()> {
+    use std::io::{Seek as _, Write as _};
+    let mut file = file;
+    file.set_len(0)?;
+    file.seek(std::io::SeekFrom::Start(0))?;
+    file.write_all(record)
+}
+
+fn fence_destination(record: &[u8]) -> Option<PathBuf> {
+    let path = record.strip_prefix(FENCE_RECORD_V1)?;
+    #[cfg(unix)]
+    return Some(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(path).into());
+    #[cfg(windows)]
+    {
+        let (units, []) = path.as_chunks::<2>() else {
+            return None;
+        };
+        let units: Vec<u16> = units.iter().map(|unit| u16::from_le_bytes(*unit)).collect();
+        Some(<std::ffi::OsString as std::os::windows::ffi::OsStringExt>::from_wide(&units).into())
+    }
+}
+
+/// A mount whose owner and exit action both die is detached at the next
+/// registry open on the host. Process-group kills and terminal hangups do not
+/// reach the exit action, which leads its own group; a session or cgroup kill
+/// does, and this reap is then the guarantee. Liveness is the
+/// fence's kernel lock, held by the owner and by its exit action, and released
+/// only once both have exited: recovery of a live fence is refused as busy and
+/// the fence is left alone. Identity is that lock, never a name or path.
+fn reap(directory: &Path) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.as_encoded_bytes();
+        if !name.starts_with(NATIVE_FENCE_PREFIX.as_bytes())
+            || !name.ends_with(NATIVE_FENCE_SUFFIX.as_bytes())
+        {
+            continue;
+        }
+        let result = (|| {
+            let Some((destination, guard)) = locked_destination(&entry.path())? else {
+                return Ok(());
+            };
+            let original = crate::NativeMaterializationWork::new(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .map_err(|(error, _)| NativeMountError::from(error))?;
+            let mut owner =
+                NativeMountRecoveryOwner::from_locked_existing(&destination, guard, &original)?;
+            #[cfg(target_os = "macos")]
+            acyclic_native_runtime::initialize_native_io_services()?;
+            owner.detach(&original).map(|_| ())
+        })();
+        match result {
+            Ok(()) | Err(NativeMountError::DestinationBusy) => {}
+            Err(error) => {
+                tracing::warn!(%error, fence = %entry.path().display(), "dead native mount was not reaped")
+            }
+        }
+    }
 }
 
 fn directory() -> Result<&'static Path, NativeMountError> {
@@ -254,7 +343,10 @@ where
 
 // Match the service's persistent state-root selection before consulting OS
 // defaults. Known Folder lookup ignores an explicitly supplied LOCALAPPDATA.
-// A persistent root must be absolute before any directory is created.
+// A persistent root must be absolute before any directory is created. The
+// root is configuration: without an explicit one, a test build mounts below
+// its own executable's temporary root and never in the user's profile, so no
+// test can leave a mount in state that builds or the user's session share.
 fn persistent_base() -> Option<PathBuf> {
     #[cfg(windows)]
     if let Some(directory) =
@@ -263,12 +355,62 @@ fn persistent_base() -> Option<PathBuf> {
         return Some(directory.into());
     }
     #[cfg(not(windows))]
+    if let Some(directory) =
+        std::env::var_os("XDG_STATE_HOME").filter(|directory| Path::new(directory).is_absolute())
     {
-        if let Some(directory) = std::env::var_os("XDG_STATE_HOME")
-            .filter(|directory| Path::new(directory).is_absolute())
-        {
-            return Some(directory.into());
+        return Some(directory.into());
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    return process_base();
+    #[cfg(not(any(test, feature = "test-support")))]
+    profile_base()
+}
+
+/// One private state root per test executable. Every process the test binary
+/// spawns from itself derives the same root, so a parent and its children see
+/// one registry and one set of fences, exactly as cooperating product
+/// processes share a configured root. It is never the user's profile.
+#[cfg(any(test, feature = "test-support"))]
+fn process_base() -> Option<PathBuf> {
+    static BASE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        let executable = std::env::current_exe().ok()?;
+        let mut identity = blake3::Hasher::new();
+        identity.update(b"acyclic-fs/test-state-root/v1\0");
+        identity.update(executable.as_os_str().as_encoded_bytes());
+        // Linux shares one temporary directory between users; macOS and
+        // Windows temporary directories are already per user.
+        #[cfg(target_os = "linux")]
+        let owner = nix::unistd::geteuid().as_raw();
+        #[cfg(target_os = "linux")]
+        identity.update(&owner.to_le_bytes());
+        let identity = identity.finalize().to_hex();
+        let base =
+            std::env::temp_dir().join(format!("acyclic-native-mount-{}", identity.get(..32)?));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        match builder.create(&base) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return None,
         }
+        // A shared temporary directory must not hand this user's root to a
+        // name another user planted first.
+        let metadata = std::fs::symlink_metadata(&base).ok()?;
+        #[cfg(target_os = "linux")]
+        if std::os::unix::fs::MetadataExt::uid(&metadata) != owner {
+            return None;
+        }
+        (metadata.is_dir() && !metadata.file_type().is_symlink()).then_some(base)
+    })
+    .clone()
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+fn profile_base() -> Option<PathBuf> {
+    #[cfg(not(windows))]
+    {
         if let Some(directory) =
             std::env::var_os("HOME").filter(|directory| Path::new(directory).is_absolute())
         {
@@ -280,3 +422,76 @@ fn persistent_base() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests;
+
+// The lock precedes the read and is transferred, never reacquired by name.
+// An interrupted write cannot authorize another destination's fence.
+fn locked_destination(
+    path: &Path,
+) -> Result<Option<(PathBuf, MountDestinationGuard)>, NativeMountError> {
+    use std::io::Read as _;
+    let file = super::fence::acquire_existing_mount_lock(path)?;
+    let mut record = Vec::new();
+    (&*file).read_to_end(&mut record)?;
+    let Some(destination) = fence_destination(&record) else {
+        return Ok(None);
+    };
+    if !destination.is_absolute() || destination.parent().is_none() {
+        return Ok(None);
+    }
+    let (expected, _) = MountDestinationGuard::paths_for_canonical(&destination)?;
+    if expected != path {
+        return Ok(None);
+    }
+    Ok(Some((
+        destination,
+        MountDestinationGuard::from_locked_existing(file, expected),
+    )))
+}
+
+#[cfg(test)]
+mod recovery_record_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_requires_original_locked_fence_and_complete_destination()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let destination = root.path().join("complete-destination");
+        std::fs::create_dir(&destination)?;
+        let canonical = destination.canonicalize()?;
+        let mut held = MountDestinationGuard::acquire_canonical(&canonical)?;
+        let path = held.lock_path.clone();
+        #[cfg(unix)]
+        let record = fence_record(&canonical);
+        #[cfg(windows)]
+        let record = {
+            use std::os::windows::ffi::OsStrExt as _;
+            fence_record(&canonical.as_os_str().encode_wide().collect::<Vec<_>>())
+        };
+        write_fence_record(held.file.as_ref().unwrap(), &record)?;
+        assert!(matches!(
+            locked_destination(&path),
+            Err(NativeMountError::DestinationBusy)
+        ));
+        drop(held.file.take());
+        // A syntactically valid prefix still cannot name this original fence.
+        std::fs::write(
+            &path,
+            &record[..record.len() - if cfg!(windows) { 2 } else { 1 }],
+        )?;
+        assert!(locked_destination(&path)?.is_none());
+        std::fs::write(&path, &record)?;
+        let (selected, guard) = locked_destination(&path)?.expect("complete record is recoverable");
+        assert_eq!(selected, canonical);
+        assert!(matches!(
+            locked_destination(&path),
+            Err(NativeMountError::DestinationBusy)
+        ));
+        drop(guard);
+        drop(held);
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+}

@@ -6,6 +6,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         requires_child_first_publication,
         maximum_reference_bytes,
         prepare_hashed,
+        restore_hashed,
         supports_decoded_cache,
         put_stored,
         read_many_stored,

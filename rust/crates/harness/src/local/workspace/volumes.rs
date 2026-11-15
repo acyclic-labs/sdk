@@ -141,7 +141,7 @@ pub(super) async fn attach(
             task_view_admission: Arc::clone(admission),
             native: StateArc::new(AsyncMutex::new(None)),
             users: StateArc::new(projection::Users::default()),
-            execution: StateArc::new(AsyncMutex::new(())),
+            shared_views: tokio::sync::OnceCell::new(),
             _binding: binding.cloned().map(|binding| binding.erase()),
         }));
     }
@@ -151,12 +151,8 @@ pub(super) async fn attach(
 pub(in crate::local) async fn sync(mounts: &Mounts) -> Result<()> {
     for (_, mount) in ordered_mounts(mounts.mounts()) {
         if let Some(source) = &mount.view.source {
-            // This call precedes the command scope. Share its execution guard
-            // so preflight cannot publish another worker's unverified effects.
-            let _execution =
-                crate::sync::owned::lock_owned(StateArc::clone(&source.execution)).await;
-            source.prepare_command().await?;
-            let native = source.native().await;
+            // Host-session writes land before a command forks the head.
+            let native = source.prepared_native().await?;
             if let Some(native) = native.as_ref() {
                 native.sync().await?;
                 native.advance_to_head().await?;
@@ -175,86 +171,207 @@ pub(in crate::local) fn ordered_mounts<'a>(
     for (relative, mount) in mounts {
         if let Some(source) = &mount.view.source {
             // The binding is validated even when another name already selects
-            // this projection. Lock order belongs to the volume and physical
-            // projection, never to aliases in a particular task's mount table.
-            let key = (
-                source.workspace.workspace().id(),
-                source.destination.clone(),
-            );
-            ordered.entry(key).or_insert((relative, mount));
+            // this volume. One command takes one view of each volume, never
+            // one per alias in a particular task's mount table.
+            ordered
+                .entry(source.command_identity())
+                .or_insert((relative, mount));
         }
     }
     ordered.into_values().collect()
 }
 
-/// The single native execution scope shared by the shell and hooks. Entry projects
-/// every bound volume, so a command sees persisted volume data. A successful
-/// exit publishes and detaches each projection and removes its SDK-owned
-/// residue, so the checkout holds no mount between executions. The body owns
-/// every check that must precede publication.
-struct Claim {
+type VolumeWorkspace = acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>;
+
+/// One command's private projection. Entry and reads share the authorized
+/// volume head; the shared filesystem adapter creates its ephemeral data fork
+/// at the first mutation. Only verified completion hands that fork back.
+struct CommandView {
+    address: String,
     source: Arc<MountedVolume>,
-    entered: projection::Entered,
+    mount: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
 }
 
-pub(in crate::local) struct Claims {
-    entries: Vec<Claim>,
-    tasks: acyclic_native_runtime::TaskSpawner,
-    unverified: Unverified,
+impl MountedVolume {
+    fn command_identity(&self) -> (acyclic_fs::WorkspaceId, &Path) {
+        (self.workspace.workspace().id(), &self.destination)
+    }
+
+    async fn command_view(self: &Arc<Self>, address: &str, read_only: bool) -> Result<CommandView> {
+        let options = self
+            .options
+            .clone()
+            .ok_or_else(|| Error::Invalid("logical volume has no native projection".into()))?;
+        self.shared_views
+            .get_or_try_init(|| {
+                acyclic_fs::hold_shared_view_instance(self.task_view_admission.get().cloned())
+            })
+            .await
+            .map_err(|error| Error::from(acyclic_fs::MountLifecycleError::from(error)))?;
+        let options = if read_only {
+            options.restrict_to_read_only()
+        } else {
+            options
+        };
+        let mount = self
+            .workspace
+            .workspace()
+            .mount_view(super::task_views::view_options(
+                &self.task_view_admission,
+                options.private_command(),
+            ))
+            .await
+            .map_err(Error::from)?;
+        Ok(CommandView {
+            address: address.to_owned(),
+            source: Arc::clone(self),
+            mount,
+        })
+    }
 }
 
-/// Marks every claimed volume unverified once, at the first of: the caller
-/// losing the scope, or the claims dropping unreturned. Entrants wait on that
-/// mark until abandonment retires the projection, so no later command joins
-/// or publishes a cancelled worker's effects.
-/// The first mark counts every volume while holding the lock, so a racing
-/// mark returns, and its claims' abandonment settles, only after the counts.
-#[derive(Clone, Default)]
-struct Unverified(Arc<std::sync::Mutex<bool>>);
+impl CommandView {
+    async fn discard(self) {
+        if let Err(error) = self.mount.abandon_command().await {
+            tracing::error!(?error, "command volume view retirement failed");
+        }
+    }
 
-impl Unverified {
-    fn mark<'a>(&self, volumes: impl IntoIterator<Item = &'a Arc<MountedVolume>>) {
-        let mut marked = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !std::mem::replace(&mut *marked, true) {
-            for volume in volumes {
-                volume.users.unverified();
+    async fn hand_back(self) -> Result<Vec<String>> {
+        let Some((fork, custody)) = self.mount.complete_private_command().await? else {
+            return Ok(Vec::new());
+        };
+        let target = self.source.workspace.workspace();
+        let merged = projection::compare_and_swap(|| hand_back(&self.mount, &fork, target)).await;
+        settle(custody).await;
+        merged
+    }
+}
+
+/// Ends a command's ephemeral fork.
+async fn settle(custody: acyclic_fs::EphemeralFork) {
+    if let Err(error) = custody.settle().await {
+        tracing::error!(?error, "command volume fork release failed");
+    }
+}
+
+/// One attempt of the compare-and-swap join of `fork` into `target`: `None`
+/// when the target moved after planning.
+async fn hand_back(
+    mount: &acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
+    fork: &VolumeWorkspace,
+    target: &VolumeWorkspace,
+) -> Result<Option<Vec<String>>> {
+    use acyclic_fs::JoinOutcome;
+    // Git semantics: content decides a conflict, never incidental metadata
+    // such as two commands' write times.
+    let plan = fork
+        .join_into(target)
+        .git_metadata()
+        .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map_err(|failure| Error::from(failure.error))?
+        .value;
+    let options = acyclic_fs::ApplyOptions {
+        if_target: plan.target_head(),
+        idempotency_key: acyclic_fs::IdempotencyKey::new(),
+    };
+    let (outcome, _first_allocation) = mount
+        .apply_private_command_join(&plan, options, None)
+        .await?;
+    let (outcome, conflicts, _resolved_allocation) = match outcome {
+        JoinOutcome::Conflicted {
+            conflicts,
+            truncated,
+        } => {
+            let described = plan.describe_conflicts(conflicts, truncated).await?;
+            let mut paths = Vec::new();
+            let mut resolutions = std::collections::BTreeMap::new();
+            for view in &described.conflicts {
+                let (resolution, marked) = conflict_resolution(view);
+                if marked {
+                    paths.push(
+                        view.path
+                            .clone()
+                            .unwrap_or_else(|| format!("{:?}", view.key)),
+                    );
+                }
+                resolutions.insert(view.key.clone(), resolution);
             }
+            let candidate = acyclic_fs::UnpublishedMergeCandidate {
+                plan: described,
+                resolutions,
+            };
+            let options = acyclic_fs::ApplyOptions {
+                idempotency_key: acyclic_fs::IdempotencyKey::new(),
+                ..options
+            };
+            let (outcome, allocation) = mount
+                .apply_private_command_join(&plan, options, Some(&candidate))
+                .await?;
+            (outcome, paths, Some(allocation))
+        }
+        outcome => (outcome, Vec::new(), None),
+    };
+    match outcome {
+        JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) | JoinOutcome::NoChanges(_) => {
+            Ok(Some(conflicts))
+        }
+        JoinOutcome::StaleTarget(_) => Ok(None),
+        JoinOutcome::Conflicted { .. } | JoinOutcome::Fenced | JoinOutcome::IdempotencyConflict => {
+            Err(Error::Conflict(
+                "command volume changes could not be handed back".into(),
+            ))
         }
     }
 }
 
-struct CallerScope {
-    volumes: Vec<Arc<MountedVolume>>,
-    unverified: Unverified,
+/// Text conflicts that do not merge cleanly carry git markers into the
+/// volume. Any other conflicting value keeps the volume's side. Both are
+/// reported (`true`); a clean text merge is not.
+fn conflict_resolution(view: &acyclic_fs::ConflictView) -> (acyclic_fs::MergeResolution, bool) {
+    if view.kind == acyclic_fs::ConflictKind::Text
+        && let Ok(resolved) = acyclic_fs::DefaultTextMergeDriver.resolve_marked(view)
+    {
+        return resolved;
+    }
+    (
+        acyclic_fs::MergeResolution::Select(acyclic_fs::ConflictSide::Ours),
+        true,
+    )
 }
 
-impl Drop for CallerScope {
-    fn drop(&mut self) {
-        self.unverified.mark(&self.volumes);
+/// The native execution scope shared by the shell and hooks. Entry gives the
+/// command its own view of every bound native volume, and its mount table
+/// names those views in the command's `ACYCLIC_WORKSPACES` discovery map.
+/// The body returns the claims only after physical cleanup and verification;
+/// that exit hands each view back. Claims dropped unreturned, including by a
+/// cancelled caller, discard their views whole and never delay another
+/// command.
+pub(in crate::local) struct Claims {
+    views: Vec<CommandView>,
+    mounts: Arc<Mounts>,
+    tasks: acyclic_native_runtime::TaskSpawner,
+}
+
+impl Claims {
+    /// This command's mount table, rooted at its own volume views.
+    pub(in crate::local) fn mounts(&self) -> &Arc<Mounts> {
+        &self.mounts
     }
 }
 
 impl Drop for Claims {
     fn drop(&mut self) {
-        let entries = std::mem::take(&mut self.entries);
-        if entries.is_empty() {
+        let views = std::mem::take(&mut self.views);
+        if views.is_empty() {
             return;
         }
-        self.unverified
-            .mark(entries.iter().map(|claim| &claim.source));
-        // The worker drops custody only after process-tree cleanup. Its owned
-        // task now retains the execution guards through unpublished retirement;
-        // dropping the awaiting caller cannot cancel this cleanup task.
+        // The worker drops custody only after process-tree cleanup. Dropping
+        // the awaiting caller cannot cancel this owned discard.
         self.tasks.spawn(async move {
-            for claim in entries.into_iter().rev() {
-                let source = Arc::clone(&claim.source);
-                if let Err(error) = source.abandon(claim.entered).await {
-                    tracing::error!(?error, "cancelled native scope retirement failed");
-                }
-                source.users.settle();
+            for view in views {
+                view.discard().await;
             }
         });
     }
@@ -264,80 +381,102 @@ pub(in crate::local) async fn native_scope<T>(
     mounts: &Mounts,
     body: impl AsyncFnOnce(Claims) -> Result<(T, Claims)>,
 ) -> Result<T> {
-    let mut claims = Claims {
-        entries: Vec::new(),
-        tasks: acyclic_native_runtime::TaskSpawner::current(),
-        unverified: Unverified::default(),
-    };
-    let mut projected = Ok(());
-    for (_, mount) in ordered_mounts(mounts.mounts()) {
-        if let Some(source) = &mount.view.source
-            && source.options.is_some()
-        {
-            // The projection's counted claims retain the mount across every
-            // overlapping command. Its native owner serializes publication;
-            // a command lifetime must not exclude other admitted commands.
-            // A Linux task view aliases the original binding; mount at that
-            // binding's root, never below another owner-only FUSE mount.
-            let entry = async {
-                source.prepare_command().await?;
-                Box::pin(source.enter(mount.mode.read_only())).await
-            }
-            .await;
-            match entry {
-                Ok(entry) => claims.entries.push(Claim {
-                    source: Arc::clone(source),
-                    entered: entry,
-                }),
-                Err(error) => {
-                    projected = Err(error);
-                    break;
+    // Volumes are independent: every view is entered at once, so a command
+    // waits for its slowest volume, not for the sum of them.
+    let mut views = Vec::new();
+    let mut entered = Ok(());
+    let entries = ordered_mounts(mounts.mounts())
+        .into_iter()
+        .filter_map(|(address, mount)| {
+            let source = mount
+                .view
+                .source
+                .as_ref()
+                .filter(|source| source.options.is_some())?;
+            let read_only = mount.mode.read_only();
+            Some(Box::pin(source.command_view(address, read_only)))
+        });
+    for view in futures::future::join_all(entries).await {
+        match view {
+            Ok(view) => views.push(view),
+            Err(error) => {
+                if entered.is_ok() {
+                    entered = Err(error);
                 }
             }
         }
     }
-    if let Err(error) = projected {
-        // No command ran, so the volumes already entered leave through the
-        // same exit. A failed leave keeps its projection, and the next exit
-        // or retirement retries it and reports that cause again.
-        let _ = leave_all(std::mem::take(&mut claims.entries)).await;
-        return Err(error);
-    }
-    // Boxed, as are projection entry and exit: these deep futures stay out of
-    // every caller's layout. The body returns claims only after physical
-    // cleanup and verification. Cancellation leaves them in the worker,
-    // rather than this caller future.
-    let mut caller = CallerScope {
-        volumes: claims
-            .entries
-            .iter()
-            .map(|claim| Arc::clone(&claim.source))
-            .collect(),
-        unverified: claims.unverified.clone(),
+    let table = match entered {
+        Ok(()) => command_mounts(mounts, &views),
+        Err(error) => {
+            // No command ran: the views entered so far are discarded.
+            for view in views {
+                view.discard().await;
+            }
+            return Err(error);
+        }
     };
+    let claims = Claims {
+        views,
+        mounts: Arc::new(table),
+        tasks: acyclic_native_runtime::TaskSpawner::current(),
+    };
+    // Boxed, as is each view's entry: these deep futures stay out of every
+    // caller's layout.
     let (value, mut claims) = Box::pin(body(claims)).await?;
-    // Returned claims are verified; their exit publishes them.
-    caller.volumes.clear();
-    let entered = std::mem::take(&mut claims.entries);
-    leave_all(entered).await?;
+    let views = std::mem::take(&mut claims.views);
+    // Publication is an accepted operation. Losing its caller after
+    // verification must not abandon a verified view's hand-back.
+    let conflicts = spawn(async move {
+        let mut handed = Ok(Vec::new());
+        let results = futures::future::join_all(views.into_iter().map(|view| async move {
+            let address = view.address.clone();
+            (address, Box::pin(view.hand_back()).await)
+        }))
+        .await;
+        for (address, result) in results {
+            if let Ok(conflicts) = &mut handed {
+                match result {
+                    Ok(paths) => conflicts.extend(paths.into_iter().map(|path| {
+                        let path = path.trim_start_matches('/');
+                        match address.as_str() {
+                            "" => path.to_owned(),
+                            address => format!("{}/{path}", address.trim_end_matches('/')),
+                        }
+                    })),
+                    Err(error) => handed = Err(error),
+                }
+            }
+        }
+        handed
+    })
+    .await
+    .map_err(|error| Error::Storage(format!("native scope hand-back interrupted: {error}")))??;
+    if !conflicts.is_empty() {
+        return Err(Error::Conflict(format!(
+            "volume merge conflict; repair the git conflict markers in: {}",
+            conflicts.join(", ")
+        )));
+    }
     Ok(value)
 }
 
-async fn leave_all(entered: Vec<Claim>) -> Result<()> {
-    // Publication is an accepted operation. Losing its caller after verification
-    // must not release the execution guard before physical retirement finishes.
-    spawn(async move {
-        let mut retired = Ok(());
-        for claim in entered.into_iter().rev() {
-            keep_first(
-                &mut retired,
-                Box::pin(claim.source.leave(claim.entered)).await,
-            );
+/// The command's mount table: each volume with a view is rooted at that view.
+/// The clone shares every compiled policy; only native roots differ.
+fn command_mounts(mounts: &Mounts, views: &[CommandView]) -> Mounts {
+    let mut table = mounts.clone();
+    for (_, mount) in table.mounts_mut() {
+        if let Some(view) =
+            views.iter().find(|view| {
+                mount.view.source.as_ref().is_some_and(|source| {
+                    source.command_identity() == view.source.command_identity()
+                })
+            })
+        {
+            mount.native_root = crate::workspace::NativeRoot::Path(view.mount.path().to_path_buf());
         }
-        retired
-    })
-    .await
-    .map_err(|error| Error::Storage(format!("native scope retirement interrupted: {error}")))?
+    }
+    table
 }
 
 // Every multi-volume exit attempts each volume and reports the first cause; one
@@ -348,7 +487,7 @@ fn keep_first(first: &mut Result<()>, next: Result<()>) {
     }
 }
 
-/// Retires every projection when the host disconnects. Active claims wake
+/// Retires every projection when the host disconnects. Active users wake
 /// retirement after physical cleanup; the projection stays mounted until then.
 /// Each volume progresses independently, so an active worker cannot delay an
 /// idle volume's retirement. Report the first error in binding order after all

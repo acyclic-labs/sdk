@@ -62,10 +62,7 @@ pub(super) async fn attach(
             access_policy: None,
         },
         OperationId::new(),
-        &mut KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancel,
-        },
+        &mut KernelAccounting::native(&work, &cancel),
     )
     .await?
     .0)

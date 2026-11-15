@@ -50,7 +50,7 @@ proptest! {
         let mut standalone = KernelAccounting::Standalone {
             allocations: AllocationLedger::default(), work: expected,
             budget, cancellation: &cancellation,
-        };
+        construction: Default::default(), };
         for (step, delta) in deltas.into_iter().map(counters).enumerate() {
             if cancel_at == Some(step) { cancellation.cancel(); }
             let next = cancellation.check().map_err(crate::FsError::from)

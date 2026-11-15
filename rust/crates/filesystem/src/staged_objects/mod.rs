@@ -26,17 +26,15 @@ use tokio::sync::RwLock;
 
 const MAXIMUM_DRAIN_BYTES: u64 = 4 * 1_024 * 1_024;
 const MAXIMUM_RESIDENT_BYTES: u64 = 4 * 1_024 * 1_024;
-const MAXIMUM_SPILL_BYTES: u64 = 1_024 * 1_024 * 1_024;
 const MAXIMUM_DRAINED_IDENTITIES: usize = 4_096;
 
 mod index;
 use index::{Index, Lookup, Staged};
 mod io;
-use io::{
-    read_spilled, read_spilled_native, staged_native_read, staged_owned_bytes, staged_vector,
-};
-use read::resident_read;
+use io::{read_spilled, read_spilled_native, staged_owned_bytes, staged_vector};
+
 mod admission;
+mod collection;
 mod ordering;
 mod publication;
 mod read;

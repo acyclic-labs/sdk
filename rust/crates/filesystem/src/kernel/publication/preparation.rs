@@ -268,10 +268,20 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
             objects: &authentication.proof.objects,
             proven_at,
         };
+        // A record an ephemeral authority publishes is never durable, so its
+        // closure need not be either: only a join out of it makes it durable.
+        let ephemeral = authority
+            .is_ephemeral(self.0.request.authority_id)
+            .await
+            .map_err(|error| E::from(crate::FsError::from(error)))?;
         let mut work = crate::async_storage::AuthorityFrame::borrow(accounting).map_err(E::from)?;
         #[cfg(not(target_arch = "wasm32"))]
         let native = work.is_native();
-        let publication_hold = objects.flush_before_publish(scope, &mut work).await;
+        let publication_hold = if ephemeral {
+            Ok(crate::PublicationHold::none())
+        } else {
+            objects.flush_before_publish(scope, &mut work).await
+        };
         drop(work);
         let publication_hold = publication_hold
             .map_err(|error| {

@@ -16,15 +16,22 @@ impl<S> Drop for SpillSelection<'_, S> {
             return;
         }
         let mut index = self.store.index_mut();
-        if index.spilled_objects == 0 {
-            *self.spill = None;
-        }
+        let retired = if index.spilled.is_empty() {
+            index.reset_spill();
+            self.spill.take()
+        } else {
+            None
+        };
         for (id, _) in self.victims {
             if let Some(Staged::Resident { order, .. }) = index.objects.get(id) {
                 let order = *order;
                 index.order.insert(order, *id);
             }
         }
+        // The original native owner can close its descriptor on retirement.
+        // Finish the in-memory rollback before any host work can run.
+        drop(index);
+        drop(retired);
     }
 }
 
@@ -37,7 +44,7 @@ impl<S> StagedObjects<S> {
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
-        let (victims, offset) = {
+        let victims = {
             let mut index = self.index_mut();
             if index.resident_bytes <= MAXIMUM_RESIDENT_BYTES {
                 return Ok(());
@@ -45,17 +52,20 @@ impl<S> StagedObjects<S> {
             let mut victims = Retained::allocate(index.order.len(), &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
             index.spill_victims(&mut victims.value);
-            (victims, index.spill_end)
+            victims
         };
-        let spilled = victims.value.iter().fold(0_u64, |sum, (_, bytes)| {
-            sum.saturating_add(byte_length(bytes))
-        });
         let mut selection = SpillSelection {
             store: self,
             spill,
             victims: &victims.value,
             committed: false,
         };
+        // Establish withdrawal restoration before either checked size or offset.
+        let spilled = victims.value.iter().try_fold(0_u64, |sum, (_, bytes)| {
+            sum.checked_add(byte_length(bytes))
+                .ok_or(crate::WorkError::Overflow)
+        })?;
+        let offset = self.index().spill_offset(spilled)?;
         let result = async {
             if work.original.is_none() {
                 work.accounting()
@@ -149,7 +159,8 @@ impl<S> StagedObjects<S> {
         }
         .await;
         result?;
-        self.index_mut().mark_spilled(&victims.value, offset);
+        self.index_mut()
+            .mark_spilled(&victims.value, offset, spilled);
         selection.committed = true;
         Ok(())
     }
@@ -160,54 +171,11 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         &self,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        let unswept = self
-            .collection
-            .unswept(&mut work.accounting())
-            .await
-            .map_err(crate::async_storage::object_error)?;
         let mut spill = work
             .accounting()
             .wait_for(self.spill_io.write())
             .await
             .map_err(crate::async_storage::object_error)?;
-        self.spill_locked(&mut spill, work).await?;
-        let targets = {
-            let index = self.index();
-            if index.spill_end <= MAXIMUM_SPILL_BYTES {
-                return Ok(());
-            }
-            let mut bytes = 0_u64;
-            let mut count = 0;
-            for staged in index.objects.values() {
-                work.accounting()
-                    .charge_items(1)
-                    .map_err(crate::async_storage::object_error)?;
-                if let Staged::Spilled { length, .. } = staged {
-                    if count != 0 && bytes.saturating_add(*length) > MAXIMUM_DRAIN_BYTES {
-                        break;
-                    }
-                    bytes = bytes.saturating_add(*length);
-                    count += 1;
-                }
-            }
-            let mut targets = Retained::allocate(count, &mut work.accounting())
-                .map_err(crate::async_storage::object_error)?;
-            for (&id, staged) in &index.objects {
-                if targets.value.len() == count {
-                    break;
-                }
-                work.accounting()
-                    .charge_items(1)
-                    .map_err(crate::async_storage::object_error)?;
-                if matches!(staged, Staged::Spilled { .. }) {
-                    targets.value.push(id);
-                }
-            }
-            targets
-        };
-
-        self.drain_locked(&mut spill, &unswept, &targets.value, work)
-            .await?;
-        Ok(())
+        self.spill_locked(&mut spill, work).await
     }
 }

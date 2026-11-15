@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/memory/namespace.rs b/rust/crates/stream/src/memory/namespace.rs
+index 44386c880be..136f37600aa 100644
+--- a/rust/crates/stream/src/memory/namespace.rs
++++ b/rust/crates/stream/src/memory/namespace.rs
+@@ -309,7 +309,7 @@ struct NamespaceCut {
+ impl NamespaceCut {
+     fn capture(state: &State) -> Self {
+         Self {
+-            paths: state.paths.canonical(),
++            paths: state.paths.clone(),
+             hierarchy_version: state.hierarchy_version,
+         }
+     }

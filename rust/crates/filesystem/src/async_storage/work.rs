@@ -109,6 +109,7 @@ mod custody_tests {
 
 /// Work shared by authority operations in one budget or native ledger.
 pub struct AuthorityWork<'a> {
+    pub(crate) construction: crate::collection::ConstructionRoots,
     /// Completed ordinary provider work.
     pub work: WorkCounters,
     /// The operation budget.
@@ -153,6 +154,7 @@ impl<'a> AuthorityWork<'a> {
     /// Starts authority work against a bounded budget.
     pub fn new(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
         Self {
+            construction: Default::default(),
             work: WorkCounters::UNCHARGED,
             budget,
             cancellation,
@@ -300,7 +302,8 @@ impl<'a> AuthorityWork<'a> {
             return crate::kernel::allocation::KernelAccounting::native(
                 original,
                 self.cancellation,
-            );
+            )
+            .with_construction(&mut self.construction);
         }
         crate::kernel::allocation::KernelAccounting::borrowed_standalone(
             &mut self.allocations,
@@ -308,6 +311,7 @@ impl<'a> AuthorityWork<'a> {
             self.budget,
             self.cancellation,
         )
+        .with_construction(&mut self.construction)
     }
 
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {

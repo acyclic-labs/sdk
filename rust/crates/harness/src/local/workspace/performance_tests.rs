@@ -23,10 +23,7 @@ async fn update_work(
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let mut accounting = KernelAccounting::NativeOriginal {
-        work: &work,
-        cancellation: &cancellation,
-    };
+    let mut accounting = KernelAccounting::native(&work, &cancellation);
     let mut state = store
         .load_lazy_workspace(id, &mut accounting)
         .await
@@ -75,10 +72,7 @@ fn standalone_workspace_updates_do_not_checkpoint_each_transaction() {
             let work =
                 NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
                     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let mut accounting = KernelAccounting::NativeOriginal {
-                work: &work,
-                cancellation: &cancellation,
-            };
+            let mut accounting = KernelAccounting::native(&work, &cancellation);
             state.revision = 1;
             assert!(
                 old.compare_and_swap_lazy_workspace(id, 0, state, &mut accounting)
@@ -148,10 +142,7 @@ async fn standalone_reopen_joins_the_owner_retained_by_a_saved_view() -> Result<
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let mut accounting = KernelAccounting::NativeOriginal {
-        work: &work,
-        cancellation: &cancellation,
-    };
+    let mut accounting = KernelAccounting::native(&work, &cancellation);
     let view = workspace
         .view()
         .open_related(workspace.view().workspace().clone(), &mut accounting)

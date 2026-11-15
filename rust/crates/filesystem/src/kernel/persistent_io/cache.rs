@@ -98,7 +98,10 @@ pub(crate) fn admit_decoded_with_accounting<F: Format>(
     }
     if !store.supports_decoded_cache() {
         #[cfg(not(target_arch = "wasm32"))]
-        if let KernelAccounting::NativeOriginal { work, cancellation } = accounting {
+        if let KernelAccounting::NativeOriginal {
+            work, cancellation, ..
+        } = accounting
+        {
             work.remaining()
                 .map_err(crate::ObjectStoreError::from)
                 .map_err(read_store_error)?;

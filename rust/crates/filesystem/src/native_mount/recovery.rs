@@ -142,7 +142,6 @@ pub struct NativeMountRecoveryOwner {
 }
 
 enum RecoveryDestination {
-    #[cfg(target_os = "macos")]
     Locked(MountDestinationGuard),
     Parent(Option<cap_std::fs::Dir>),
     #[cfg(any(target_os = "macos", test))]
@@ -282,7 +281,6 @@ impl NativeMountRecoveryOwner {
     }
 
     // Startup transfers the authenticated locked inode without releasing it.
-    #[cfg(target_os = "macos")]
     pub(super) fn from_locked_existing(
         destination: &Path,
         guard: MountDestinationGuard,
@@ -518,7 +516,6 @@ impl NativeRecoveryState {
         source: RecoveryDestination,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        #[cfg(target_os = "macos")]
         let source = match source {
             RecoveryDestination::Locked(guard) => {
                 self.guard = Some(guard);

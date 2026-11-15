@@ -185,7 +185,7 @@ pub use metadata::NativeMetadataError;
 pub(crate) use ranges::*;
 pub use reader::HostStatReader;
 pub use root::{CachedRoot, HostRoot};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use sparse::punch_hole;
 pub use stat::{HostDataRange, HostListedEntry, HostStat};
 #[cfg(windows)]
