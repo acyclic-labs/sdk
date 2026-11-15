@@ -56,6 +56,14 @@ fn main() -> ExitCode {
     }
 }
 
+/// The runner's own settings, from its rule. Cases never see them: a case may read a variable of
+/// the same name as its own input.
+const SETTINGS: [&str; 3] = [
+    "ACYCLIC_TEST_BINARY",
+    "ACYCLIC_TEST_LIMIT_SECONDS",
+    "ACYCLIC_TEST_PACKAGE",
+];
+
 fn setting(name: &str) -> Result<String, String> {
     env::var(name).map_err(|error| format!("{name}: {error}"))
 }
@@ -91,6 +99,9 @@ fn list(suite: &Suite, filter: Option<&str>, ignored: bool) -> Result<Vec<String
         .args(ignored.then_some("--ignored"))
         .args(filter)
         .env("ACYCLIC_TEST_SOURCE_ROOT", &suite.source)
+        .env_remove(SETTINGS[0])
+        .env_remove(SETTINGS[1])
+        .env_remove(SETTINGS[2])
         .envs(suite.executables.iter().map(|(name, path)| (name, path)))
         .current_dir(&suite.package)
         .output()
@@ -181,6 +192,9 @@ fn case(suite: &Suite, custody: &ProcessCustody, name: &str, log: &Path) -> io::
     command
         .args([name, "--exact", "--nocapture", "--test-threads", "1"])
         .env("ACYCLIC_TEST_SOURCE_ROOT", &suite.source);
+    for setting in SETTINGS {
+        command.env_remove(setting);
+    }
     for (variable, path) in &suite.executables {
         command.env(variable, path);
     }
