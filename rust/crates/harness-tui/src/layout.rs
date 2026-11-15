@@ -280,7 +280,8 @@ mod tests {
     }
 
     #[test]
-    fn folded_layout_visits_only_the_next_paste_and_preserves_source_hits() {
+    fn folded_layout_visits_only_the_next_paste_and_preserves_source_hits()
+    -> Result<(), Box<dyn std::error::Error>> {
         for count in [1, 8, 64] {
             let mut editor = Editor::default();
             let mut settings = *editor.settings();
@@ -291,7 +292,10 @@ mod tests {
                 editor.paste("one\n👩‍💻", index);
                 editor.insert(" tail\n", index);
             }
-            assert_eq!(editor.collapsed_pastes().len(), count as usize);
+            assert_eq!(
+                editor.collapsed_pastes().len(),
+                usize::try_from(count)?
+            );
             // Undo/redo restores the original ordered fold metadata as well as
             // text; layout must use the restored source, not a private index.
             let source = editor.text().to_owned();
@@ -327,11 +331,15 @@ mod tests {
                         assert_eq!(layout.position(cell.source.end - 1), (row, column));
                     }
                 }
-                assert_eq!(folded, count as usize);
+                assert_eq!(folded, usize::try_from(count)?);
                 // Each gap has nine graphemes and each paste is one atom.
                 // Restarting a search over all folds exceeds this linear bound.
-                assert!(checks <= 10 * count as usize, "{checks} fold checks");
+                assert!(
+                    checks <= 10 * usize::try_from(count)?,
+                    "{checks} fold checks"
+                );
             }
         }
+        Ok(())
     }
 }

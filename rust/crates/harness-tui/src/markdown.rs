@@ -156,7 +156,7 @@ mod tests {
         } = render("streaming **test answer**", 80, &ThemeStyles::default());
         assert_eq!(shown, "streaming test answer");
         let (range, style) = &styles[0];
-        assert_eq!(&shown[range.clone()], "test answer");
+        assert_eq!(shown.get(range.clone()), Some("test answer"));
         assert!(style.add_modifier.contains(Modifier::BOLD));
     }
 
@@ -186,10 +186,12 @@ mod tests {
         );
         assert_eq!(shown, "see  https://example.com/a  next");
         assert!(styles.iter().any(|(range, style)| {
-            &shown[range.clone()] == "example" && style.add_modifier.contains(Modifier::BOLD)
+            shown.get(range.clone()) == Some("example")
+                && style.add_modifier.contains(Modifier::BOLD)
         }));
         assert!(links.iter().any(|(range, target)| {
-            &shown[range.clone()] == "next" && target.as_ref() == "https://example.com/b"
+            shown.get(range.clone()) == Some("next")
+                && target.as_ref() == "https://example.com/b"
         }));
     }
 }
