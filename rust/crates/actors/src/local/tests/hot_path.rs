@@ -1200,6 +1200,23 @@ async fn alarm_replacement() -> TestResult {
     Ok(())
 }
 
+/// The actors filed in `actor`'s shard window for `deadline`.
+async fn filed<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    actor: &ActorReference,
+    deadline: u64,
+) -> Result<Vec<ActorReference>, Error> {
+    let window = crate::local::scheduling::window(deadline);
+    // A window no actor was ever filed in does not exist.
+    match store
+        .window_actors(store.scheduling_shard(actor), window, 0)
+        .await
+    {
+        Err(Error::Stream(error)) if error.category() == StreamError::NotFound => Ok(Vec::new()),
+        filed => Ok(filed?.0),
+    }
+}
+
 async fn source_alarm_publication() -> TestResult {
     for refuse_source in [false, true] {
         let provider = Arc::new(Counted::new(MemoryStream::default()));
@@ -1209,7 +1226,10 @@ async fn source_alarm_publication() -> TestResult {
         let before = store.load(&address).await?;
         let replay_cut = store.load(&address).await?;
         let original_anchor = before.anchor;
-        let wakes = provider.tail(store.root().clone()).await?;
+        // Arming files the actor in its shard's deadline window, never on
+        // the state root.
+        let armed = || filed(&store, &address, 10);
+        assert!(armed().await?.is_empty());
         let source = StreamPath::new("source/output")?;
         let prepare = |snapshot| -> Result<PreparedPublish, Error> {
             let mut binding = store.bind_state(snapshot, 1)?;
@@ -1250,9 +1270,8 @@ async fn source_alarm_publication() -> TestResult {
         if refuse_source {
             assert!(matches!(result, Err(Error::Conflict)));
             assert_eq!(snapshot.anchor, original_anchor);
-            assert_eq!(
-                provider.tail(store.root().clone()).await?,
-                wakes,
+            assert!(
+                armed().await?.is_empty(),
                 "a refused activity record must not rearm or wake its actor"
             );
         } else {
@@ -1276,7 +1295,7 @@ async fn source_alarm_publication() -> TestResult {
                 accepted.anchor,
                 "activity and the new deadline must share the source commit"
             );
-            assert_eq!(provider.tail(store.root().clone()).await?, wakes + 1);
+            assert_eq!(armed().await?, [address.clone()]);
             let replay = store
                 .submit_retained(prepare(replay_cut)?)
                 .await?
@@ -1288,8 +1307,8 @@ async fn source_alarm_publication() -> TestResult {
                 "replay duplicated activity"
             );
             assert_eq!(
-                provider.tail(store.root().clone()).await?,
-                wakes + 1,
+                armed().await?,
+                [address.clone()],
                 "replay duplicated the deadline activation"
             );
         }
@@ -1313,7 +1332,11 @@ async fn source_control_publication() -> TestResult {
             let before = store.load(&address).await?;
             let replay_cut = store.load(&address).await?;
             let original_anchor = before.anchor;
-            let wakes = provider.tail(store.root().clone()).await?;
+            // Only a resume appends the actor's activation, on its shard's
+            // wake log, never on the state root.
+            let wakes_path = store.activation_record(&address)?.0;
+            let wakes = provider.tail(wakes_path.clone()).await?;
+            let woken = wakes + u64::from(!paused);
             let source = StreamPath::new("source/control")?;
             let prepare = |snapshot: &Snapshot| -> Result<PreparedPublish, Error> {
                 let mut publication =
@@ -1351,7 +1374,7 @@ async fn source_control_publication() -> TestResult {
                 assert!(matches!(result, Err(Error::Conflict)));
                 assert_eq!(observed.anchor, original_anchor);
                 assert_eq!(observed.state().ok_or("no actor")?.paused(), !paused);
-                assert_eq!(provider.tail(store.root().clone()).await?, wakes);
+                assert_eq!(provider.tail(wakes_path.clone()).await?, wakes);
             } else {
                 let accepted = result?.ok_or("missing control receipt")?;
                 assert_eq!(observed.state().ok_or("no actor")?.paused(), paused);
@@ -1369,14 +1392,14 @@ async fn source_control_publication() -> TestResult {
                     .await?
                     .ok_or("missing original control")?;
                 assert_eq!(Some(original.commit_id), accepted.anchor);
-                assert_eq!(provider.tail(store.root().clone()).await?, wakes + 1);
+                assert_eq!(provider.tail(wakes_path.clone()).await?, woken);
                 let replay = store
                     .submit_retained(prepare(&replay_cut)?)
                     .await?
                     .ok_or("missing replay")?;
                 assert_eq!(replay.anchor, accepted.anchor);
                 assert_eq!(provider.tail(source).await?, 1);
-                assert_eq!(provider.tail(store.root().clone()).await?, wakes + 1);
+                assert_eq!(provider.tail(wakes_path.clone()).await?, woken);
             }
         }
     }
