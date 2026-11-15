@@ -438,7 +438,7 @@ impl Client {
             credentials: BTreeMap::new(),
             credential_bytes: 0,
             connections: connections.clone(),
-            executor: Arc::clone(executor),
+            executor: Arc::clone(&executor),
             identity: crate::new_identity_bytes(),
             connect,
             home: String::new(),
