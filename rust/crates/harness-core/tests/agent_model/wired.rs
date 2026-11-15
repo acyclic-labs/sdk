@@ -117,6 +117,17 @@ async fn deliver(
     Ok(host.state(path).await?)
 }
 
+/// Commits root `adoption` the way production creates it, so a turn host
+/// stepped directly reads the agent's real inbox. Returns its adopted state.
+async fn created_root(stream: &MemoryStream, adoption: ForkAdopted) -> Result<AgentState> {
+    let created = create_root(&intent("create"), adoption.clone())?;
+    assert!(matches!(
+        submit(stream, created.request).await?,
+        Submitted::Committed(_)
+    ));
+    Ok(AgentState::adopted(created.child, &adoption)?)
+}
+
 async fn private_on(
     path: &AgentPath,
     filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
@@ -306,8 +317,13 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
             )
             .await?;
         let model = Arc::new(ScriptedModelProvider::new([]));
+        let stream = Arc::new(MemoryStream::default());
+        let mut adoption = adopted(id(219));
+        adoption.volumes = vec![binding];
+        adoption.policy = Some(file);
+        let state = created_root(&stream, adoption).await?;
         let host = FilesystemTurnHost::new(
-            Arc::new(MemoryStream::default()),
+            stream,
             within(),
             filesystem,
             issuer,
@@ -316,10 +332,6 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
             LIMITS,
             ApprovalPolicy::accept_all("preset"),
         );
-        let mut adoption = adopted(id(219));
-        adoption.volumes = vec![binding];
-        adoption.policy = Some(file);
-        let state = AgentState::adopted(path, &adoption)?;
         let open = host
             .open(
                 &state,
@@ -1934,7 +1946,7 @@ async fn admitted_root_after_its_child(
 ) -> std::result::Result<(Vec<ModelRequest>, FileRef, Phase), String> {
     let run = async {
         let root = AgentPath::root(&id(base));
-        let child = root.child(&id(base + 1))?;
+        let child = root.child(&AgentId::derive(&root.id(), "child"))?;
         let stream = Arc::new(MemoryStream::default());
         let model = Arc::new(ScriptedModelProvider::new([
             ScriptedTurn::Text("child answer".into()),
@@ -1993,15 +2005,27 @@ async fn admitted_root_after_its_child(
                 Default::default(),
             ))
         };
-        // The child settles its turn; its result is that turn's output.
-        let mut adoption = adopted(id(base + 1));
+        // Both agents exist as production creates them: the hosted root, and
+        // the child its spawn commits.
+        let mut adoption = adopted(id(base));
+        adoption.volumes = vec![binding];
+        let agents = committing(&stream, &host, driver(root_scope))?;
+        agents.create(&intent("root"), adoption).await?;
+        let mut adoption = adopted(child.id());
         adoption.parent = Some(root.clone());
         adoption.volumes = vec![WorkspaceEntry::initial_volume(
             acyclic_harness_core::agent::WorkspaceRole::Private,
             PRIVATE_VOLUME.into(),
             own,
         )];
-        let settled = step(
+        let spawned = spawn(&root, &intent("child"), 0, adoption.clone())?;
+        assert_eq!(spawned.child, child);
+        assert!(matches!(
+            submit(stream.as_ref(), spawned.request).await?,
+            Submitted::Committed(_)
+        ));
+        // The child settles its turn; its result is that turn's output.
+        let settled = super::step_to_rest(
             &driver(child_scope),
             &child,
             Some(AgentState::adopted(child.clone(), &adoption).expect("adopts")),
@@ -2034,16 +2058,11 @@ async fn admitted_root_after_its_child(
             Arrival::ChildResultFirst => [done, requested("p1", &root)],
             Arrival::FollowUpFirst => [requested("p1", &root), done],
         };
-        let driver = driver(root_scope);
-        let mut adoption = adopted(id(base));
-        adoption.volumes = vec![binding];
-        let host = committing(&stream, &host, driver)?;
-        host.create(&intent("root"), adoption).await?;
-        let stepped = deliver(&host, &root, first).await?;
+        let stepped = deliver(&agents, &root, first).await?;
         if matches!(stepped.phase, Phase::Done { .. }) {
             return Ok((model.requests(), *result, stepped.phase));
         }
-        let settled = deliver(&host, &root, second).await?;
+        let settled = deliver(&agents, &root, second).await?;
         Ok::<_, Box<dyn std::error::Error>>((model.requests(), *result, settled.phase))
     };
     run.await.map_err(|error| error.to_string())
@@ -2083,7 +2102,8 @@ async fn an_admitted_root_reads_its_childs_result_whichever_input_arrives_first(
                 .any(|message| message.content.file_refs().any(|file| *file == result)),
             "{arrival:?}: the root's context lacks its child's result"
         );
-        let child = AgentPath::root(&id(base)).child(&id(base + 1))?;
+        let root = AgentPath::root(&id(base));
+        let child = root.child(&AgentId::derive(&root.id(), "child"))?;
         let notices: Vec<_> = requests[2]
             .messages
             .iter()

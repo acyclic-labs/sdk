@@ -26,6 +26,9 @@ async fn interrupted_streams_keep_live_reply_on_the_journal() -> Result {
             error: "provider stopped".into(),
         });
         let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(events)]));
+        let mut adoption = adopted(path.id());
+        adoption.volumes = vec![private.clone()];
+        let state = created_root(&stream, adoption).await?;
         let host = FilesystemTurnHost::new(
             stream,
             within(),
@@ -43,9 +46,6 @@ async fn interrupted_streams_keep_live_reply_on_the_journal() -> Result {
             LIMITS,
             Default::default(),
         );
-        let mut adoption = adopted(path.id());
-        adoption.volumes = vec![private.clone()];
-        let state = AgentState::adopted(path, &adoption)?;
         let operation = OperationId::from_bytes([215; 16]);
         let input = ModelContent::Text("continue".into());
         let open = host
@@ -111,6 +111,9 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
         },
     );
     let model = Arc::new(ScriptedModelProvider::new([]));
+    let mut adoption = adopted(path.id());
+    adoption.volumes = vec![private.clone()];
+    let state = created_root(&stream, adoption).await?;
     let host = FilesystemTurnHost::new(
         stream,
         within(),
@@ -121,9 +124,6 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
         LIMITS,
         Default::default(),
     );
-    let mut adoption = adopted(path.id());
-    adoption.volumes = vec![private.clone()];
-    let state = AgentState::adopted(path.clone(), &adoption)?;
     let operation = OperationId::from_bytes([212; 16]);
     let input = ModelContent::Text("continue".into());
     let open = host
@@ -203,18 +203,19 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
         &[],
     )
     .await?;
-    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-        assert!(
-            ContentGrant::verify(
-                &authority.verifier,
-                &authority.scope,
-                &journal,
-                operation,
-                &mut None
-            )
-            .is_err()
-        );
-    }
+    // Every admitted turn reads its own journal (#3852); the journal policy
+    // decides each path, and only the host writes it.
+    let grants = |operation| {
+        ContentGrant::verify(
+            &authority.verifier,
+            &authority.scope,
+            &journal,
+            operation,
+            &mut None,
+        )
+    };
+    assert!(grants(VolumeOperation::Read).is_ok());
+    assert!(grants(VolumeOperation::Write).is_err());
     let write = ContentGrant::verify(
         &authority.verifier,
         &authority.scope,
