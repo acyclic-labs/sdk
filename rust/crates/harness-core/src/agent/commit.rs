@@ -23,7 +23,7 @@ use super::{
 };
 use acyclic_stream::{
     CommitCondition, CommitConflict, CommitEffect, CommitMutation, CommitOutcome, CommitReceipt,
-    CommitRequest, IdempotencyKey, StreamCategory, StreamError, StreamPath, StreamProvider,
+    CommitRequest, IdempotencyKey, StreamCategory, StreamPath, StreamProvider,
     StreamProviderExt as _,
 };
 

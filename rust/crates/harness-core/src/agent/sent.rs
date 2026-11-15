@@ -2,7 +2,7 @@
 //! The marker and inbox effect share one publication; recovery reads that exact
 //! immutable envelope, never a current inbox tail or a conversation scan.
 use super::{AgentPath, AgentRecord, Delivered, Error, InboxRecord, IntentId, Sender};
-use acyclic_stream::{CommittedMutation, StreamCategory, StreamError, StreamProviderExt as _};
+use acyclic_stream::{CommittedMutation, StreamCategory, StreamProviderExt as _};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]

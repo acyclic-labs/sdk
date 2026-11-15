@@ -1122,7 +1122,7 @@ impl Error {
         if let Self::Caused(failure) = self {
             return failure.classification().retains_guest_input();
         }
-        use acyclic_stream::{StreamCategory, StreamError};
+        use acyclic_stream::StreamCategory;
         if self.uncertain() {
             return true;
         }
@@ -1794,7 +1794,7 @@ impl Error {
 /// filesystem authority: the request's own shape, access and retry identity are
 /// definitive; every other cause is storage.
 fn stream_refusal_code(source: &acyclic_stream::StreamError) -> ErrorCode {
-    use acyclic_stream::StreamError;
+    use acyclic_stream::StreamCategory;
     match source.category() {
         StreamCategory::IdempotencyMismatch => ErrorCode::Conflict,
         StreamCategory::AccessDenied => ErrorCode::Unauthorized,

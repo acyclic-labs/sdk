@@ -24,8 +24,7 @@ use crate::tool::{ToolExecutor, ToolInvocation, ToolResult};
 use acyclic_machines::MachineState;
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, ChildrenPageRequest, CommitCondition, CommitEffect,
-    CommitMutation, CommitRequest, ReadRequest, StreamCategory, StreamError,
-    StreamProviderExt as _,
+    CommitMutation, CommitRequest, ReadRequest, StreamCategory, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
