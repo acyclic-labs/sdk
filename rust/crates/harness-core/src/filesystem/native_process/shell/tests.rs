@@ -24,6 +24,20 @@ fn table_with_roots(
     data: &str,
     home: bool,
 ) -> Result<MountTable<Arc<tempfile::TempDir>>> {
+    agent_table(root, primary, data, home, FIXTURE_AGENT)
+}
+
+const FIXTURE_AGENT: [u8; 16] = [1; 16];
+
+// Every agent binds its own writable private volume; the host labels every
+// local principal "owner", so that label identifies no agent.
+fn agent_table(
+    root: PathBuf,
+    primary: &str,
+    data: &str,
+    home: bool,
+    agent: [u8; 16],
+) -> Result<MountTable<Arc<tempfile::TempDir>>> {
     let native = Arc::new(tempfile::tempdir().map_err(Error::process_io)?);
     let resource = ResourcePattern {
         lineage_root: None,
@@ -75,8 +89,16 @@ fn table_with_roots(
                     &mut None,
                 )?,
                 name.into(),
-                VolumeClass::Project,
-                VolumeOwner::Project("project".into()),
+                if name == "private" {
+                    VolumeClass::AgentPrivate
+                } else {
+                    VolumeClass::Project
+                },
+                if name == "private" {
+                    VolumeOwner::Agent(crate::AgentId::from_bytes(agent))
+                } else {
+                    VolumeOwner::Project("project".into())
+                },
                 &mut None,
             )?,
             root: match name {
@@ -93,7 +115,7 @@ fn table_with_roots(
             source: Arc::clone(&native),
         })
     };
-    let mut volumes = vec![volume("data")?, volume("shared")?];
+    let mut volumes = vec![volume("data")?, volume("private")?, volume("shared")?];
     if home {
         volumes.push(volume("home")?);
     }
@@ -117,7 +139,7 @@ fn table_with_roots(
     }
     mounts.scratch_root = Some(scratch);
     for (relative, mount) in mounts.mounts_mut() {
-        if relative == "volume:///shared" {
+        if relative == "volume:///shared" || relative == "volume:///private" {
             mount.native_root = crate::workspace::NativeRoot::Logical;
         } else if relative.is_empty() && !primary.is_empty() {
             // The host provided an already projected directory: its source
@@ -342,12 +364,47 @@ async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> 
 /// The private scratch an unprojected home resolves to for `mounts`.
 #[cfg(target_os = "linux")]
 fn scratch_home(mounts: &MountTable<Arc<tempfile::TempDir>>) -> PathBuf {
+    let agent = crate::AgentId::from_bytes(FIXTURE_AGENT).to_string();
     mounts
         .scratch_root
         .clone()
         .expect("fixture scratch")
         .join("homes")
-        .join(blake3::hash(b"owner").to_hex().as_str())
+        .join(blake3::hash(agent.as_bytes()).to_hex().as_str())
+}
+
+// Agents sharing one host scratch root get distinct homes, though the host
+// gives every local principal the same label; a table holding no writable
+// volume of its own agent has no home and is refused.
+#[test]
+fn agents_sharing_scratch_get_distinct_homes() -> Result<()> {
+    let project = tempfile::tempdir().map_err(Error::process_io)?;
+    let root = project.path().canonicalize().map_err(Error::process_io)?;
+    let first = agent_table(root.clone(), "", "", false, [1; 16])?;
+    let mut second = agent_table(root, "", "", false, [2; 16])?;
+    second.scratch_root.clone_from(&first.scratch_root);
+    let scratch = first.scratch_root.clone().expect("fixture scratch");
+    let home = |mounts: &MountTable<Arc<tempfile::TempDir>>| -> Result<PathBuf> {
+        let mut environment = BTreeMap::new();
+        workspace_environment(mounts, &mut environment)?;
+        let home = PathBuf::from(&environment["HOME"]);
+        assert_eq!(PathBuf::from(&environment["TMPDIR"]), home.join("tmp"));
+        Ok(home)
+    };
+    let (first_home, second_home) = (home(&first)?, home(&second)?);
+    assert_ne!(first_home, second_home);
+    for home in [&first_home, &second_home] {
+        assert!(home.starts_with(scratch.join("homes")), "{home:?}");
+        assert!(home.join("tmp").is_dir(), "{home:?}");
+    }
+    // An agent's private volume bound read-only names no writer.
+    for (name, mount) in second.mounts_mut() {
+        if name == "volume:///private" {
+            mount.mode = MountMode::default();
+        }
+    }
+    assert!(workspace_environment(&second, &mut BTreeMap::new()).is_err());
+    Ok(())
 }
 
 // Without a projected private home (a physical view), `HOME` and `TMPDIR`

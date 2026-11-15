@@ -183,11 +183,19 @@ pub fn workspace_environment<T>(
                     "shell requires a private home or host scratch outside the project".into(),
                 )
             })?;
+            // Only the owning agent may write an agent-owned volume, so the
+            // owner of any writable one is this table's agent. Principal
+            // labels are not identities: one host may label every agent alike.
             let agent = mounts
                 .mounts()
-                .find(|(relative, _)| relative.is_empty())
-                .map(|(_, mount)| mount.view.agent.as_str())
-                .unwrap_or_default();
+                .filter(|(_, mount)| !mount.mode.read_only())
+                .find_map(|(_, mount)| match mount.view.volume.owner() {
+                    crate::conversation::VolumeOwner::Agent(agent) => Some(agent.to_string()),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    Error::Invalid("shell requires the agent's own writable volume".into())
+                })?;
             let relative =
                 Path::new("homes").join(blake3::hash(agent.as_bytes()).to_hex().as_str());
             (
