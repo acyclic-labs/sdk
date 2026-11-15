@@ -24,7 +24,12 @@ function run(command, args, options = {}) {
 export function localCargoPackages() {
   const result = run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]);
   if (result.status !== 0) fail(result.stderr || "cargo metadata failed");
-  const packages = JSON.parse(result.stdout).packages;
+  const workspace = JSON.parse(result.stdout);
+  const packages = workspace.packages;
+  // Clippy lints every root workspace member a selection builds, not only the
+  // selected one; packages found below are other workspaces' members.
+  const members = new Set(workspace.workspace_members);
+  for (const item of packages) item.workspace_member = members.has(item.id);
   const known = new Set(packages.map(item => item.name));
   for (const item of packages) {
     for (const dependency of item.dependencies) {

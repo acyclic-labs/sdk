@@ -248,7 +248,7 @@ test("four clippy workers retain every feature invocation and fail when any work
       return new Promise(resolve => queueMicrotask(() => { --active; resolve(status); }));
     };
     await runInNewContext(`(async () => { ${source}; await main(); })()`, {
-      runCommand, process, root: resolve("."), clippySelections, cargoFeatureArguments,
+      runCommand, process, root: resolve("."), clippySelections, cargoFeatureArguments, cargoTreeUnits: () => () => [],
       localCargoPackages: () => packages,
     });
     return { calls, maximum, exitCode: process.exitCode };
