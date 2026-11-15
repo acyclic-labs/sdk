@@ -2381,6 +2381,159 @@ async fn workload_scopes_never_widen_their_admission() -> Result<()> {
     Ok(())
 }
 
+/// Every whole-volume ceiling built from the explicit labels' action sets,
+/// and ownership last, each with the actions it allows.
+fn label_ceilings() -> Vec<(Vec<acyclic_fs::access::Action>, bool)> {
+    use acyclic_fs::access::{Action, ActionSet};
+    let sets = [
+        ActionSet::SourceRead,
+        ActionSet::DestinationWrite,
+        ActionSet::DestinationDelete,
+    ];
+    let mut ceilings: Vec<(Vec<Action>, bool)> = (1..1_usize << sets.len())
+        .map(|mask| {
+            let actions = sets
+                .iter()
+                .enumerate()
+                .filter(|(bit, _)| mask & (1 << bit) != 0)
+                .flat_map(|(_, set)| set.actions().iter().copied())
+                .collect();
+            (actions, false)
+        })
+        .collect();
+    ceilings.push((Action::ALL.to_vec(), true));
+    ceilings
+}
+
+/// One agent with its own private volume, and the workload each ceiling
+/// derives for it.
+struct CeilingFixture {
+    root: AuthorityRoot,
+    journal: VolumeRef,
+    private: VolumeRef,
+    volumes: [WorkspaceEntry; 1],
+}
+
+impl CeilingFixture {
+    fn new(seed: u8) -> Result<Self> {
+        let path = AgentPath::root(&crate::agent::AgentId::from_bytes([seed; 16]));
+        let provider =
+            ProviderRef::new("ceiling".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let private = private_volume(provider.clone(), &path.id())?;
+        let audience = Authority {
+            kind: AggregateKind::Conversation,
+            id: "ceiling".into(),
+        };
+        Ok(Self {
+            root: AuthorityRoot::new("ceiling", [seed; 32], audience),
+            journal: crate::conversation::journal_volume(provider, &path.id())?,
+            volumes: [WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::Private,
+                PRIVATE_VOLUME.into(),
+                private.clone(),
+            )],
+            private,
+        })
+    }
+
+    async fn derive(&self, actions: &[acyclic_fs::access::Action]) -> Result<Result<Scope>> {
+        let ceiling = acyclic_fs::access::Capability::whole_volume(None, actions)
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let parent =
+            self.root
+                .bootstrap_scope("custody", &Capabilities::new([ceiling]), None, &mut None)?;
+        let native: RuntimeAuthority = self.root.clone().into();
+        Ok(native
+            .delegate(
+                &parent,
+                "agent",
+                crate::core::ScopeDerivation::Workload {
+                    journal: &self.journal,
+                    volumes: &self.volumes,
+                    external: &[],
+                },
+            )
+            .await)
+    }
+}
+
+#[tokio::test]
+async fn a_ceiling_short_of_ownership_never_admits_the_raw_workspace() -> Result<()> {
+    use acyclic_fs::access::ActionSet;
+    let fixture = CeilingFixture::new(237)?;
+    let host =
+        FilesystemHost::<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>::new(
+            acyclic_fs::Fs::memory(),
+            fixture.private.provider(),
+            None,
+        )?;
+    host.create_volume(&fixture.private).await?;
+    let workspace = host
+        .open(
+            &workspace_ref(
+                fixture.private.provider().clone(),
+                &fixture.private.storage_name(&mut None)?,
+            )?,
+            None,
+        )
+        .await?;
+    let verifier = fixture.root.verifier(&mut None)?;
+    for (actions, owns) in label_ceilings() {
+        let allows = |set: ActionSet| set.actions().iter().all(|action| actions.contains(action));
+        let derived = fixture.derive(&actions).await?;
+        // Read and write labels together admit the raw workspace, which
+        // deletes and administers: a ceiling allowing both without owning
+        // the volume has no explicit labels.
+        if allows(ActionSet::SourceRead) && allows(ActionSet::DestinationWrite) && !owns {
+            let refused = derived.expect_err("explicit labels widened a ceiling to ownership");
+            assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+            continue;
+        }
+        let derived = derived?;
+        let raw = match crate::filesystem::WorkspaceAccess::new(
+            &verifier,
+            &derived,
+            derived.capabilities(),
+            Some(&fixture.private),
+        ) {
+            Ok(access) => access.require(&workspace).await.is_ok(),
+            Err(_) => false,
+        };
+        assert_eq!(raw, owns, "raw workspace access under {actions:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn workload_labels_keep_every_operation_their_ceiling_allows() -> Result<()> {
+    use acyclic_fs::access::ActionSet;
+    let fixture = CeilingFixture::new(238)?;
+    let verifier = fixture.root.verifier(&mut None)?;
+    for (actions, owns) in label_ceilings() {
+        let allows = |set: ActionSet| set.actions().iter().all(|action| actions.contains(action));
+        let Ok(derived) = fixture.derive(&actions).await? else {
+            assert!(!owns, "an owning ceiling was refused");
+            continue; // Refused above, when the labels cannot carry it.
+        };
+        // Each operation is held exactly when the ceiling allows its label's
+        // actions, independently of the others: a write-only ceiling writes.
+        for (operation, set) in [
+            (VolumeOperation::Read, ActionSet::SourceRead),
+            (VolumeOperation::Write, ActionSet::DestinationWrite),
+            (VolumeOperation::Delete, ActionSet::DestinationDelete),
+        ] {
+            assert_eq!(
+                ContentGrant::verify(&verifier, &derived, &fixture.private, operation, &mut None)
+                    .is_ok(),
+                allows(set),
+                "{operation:?} under {actions:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_tree_admission_never_extends_to_another_agents_private_volumes() -> Result<()> {
     use crate::conversation::VolumeOperation;

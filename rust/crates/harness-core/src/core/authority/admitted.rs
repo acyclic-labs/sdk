@@ -50,8 +50,9 @@ pub enum ScopeDerivation<'a> {
     /// select another agent's journal or private volume by role. It is
     /// replaced by explicit labels for the agent's own bindings within its
     /// actions, and a reading ceiling adds the agent's [`OwnJournalRead`].
-    /// Nothing else is added, so a workload never widens its parent.
-    /// Admitted agents derive only this way.
+    /// Nothing else is added, so a workload never widens its parent; a
+    /// ceiling the explicit labels cannot carry exactly refuses the derivation
+    /// (`ceiling_grants`). Admitted agents derive only this way.
     ///
     /// [`OwnJournalRead`]: crate::conversation::OwnJournalRead
     Workload {

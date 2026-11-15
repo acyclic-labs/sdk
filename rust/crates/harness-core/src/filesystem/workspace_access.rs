@@ -51,6 +51,17 @@ impl WorkspaceAccess {
     }
 }
 
+/// The explicit whole-volume labels that, held together on a volume, admit
+/// its raw workspace surface without a structured `filesystem:` label.
+pub(crate) const RAW_WORKSPACE_LABELS: [VolumeOperation; 2] =
+    [VolumeOperation::Read, VolumeOperation::Write];
+
+/// What [`RAW_WORKSPACE_LABELS`] grant together. A raw surface exposes the
+/// whole volume to one admission check, so it is ownership. Whatever derives
+/// explicit labels from a narrower grant must withhold one of them.
+pub(crate) const RAW_WORKSPACE_ACTIONS: acyclic_fs::access::ActionSet =
+    acyclic_fs::access::ActionSet::Owner;
+
 /// Check a verified scope and caller ceiling before exposing a raw workspace.
 /// The caller must authenticate the scope before invoking this admission check.
 pub async fn require_unrestricted_volume_access<
@@ -77,19 +88,14 @@ async fn require_raw_workspace_access<A: AsyncAuthorityStore, O: AsyncObjectStor
     let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
     for grants in [ceiling, signed.capabilities()] {
         if crate::core::filesystem_scope_label(grants, &mut None)?.is_none() {
-            require_volume_operations(
-                grants,
-                volume,
-                &[VolumeOperation::Read, VolumeOperation::Write],
-                &io,
-                surface,
-            )?;
+            require_volume_operations(grants, volume, &RAW_WORKSPACE_LABELS, &io, surface)?;
         }
     }
     let label = crate::core::filesystem_scope_label(signed.capabilities(), &mut None)?;
     let payload = match label {
         Some(_) => access::capability_payload(label, VolumeOperation::Read, &io)?,
-        None => access::whole_volume_payload(acyclic_fs::access::ActionSet::Owner)?,
+        // Both grant sets hold every raw workspace label, checked above.
+        None => access::whole_volume_payload(RAW_WORKSPACE_ACTIONS)?,
     };
     let compiled =
         access::access_view(workspace, signed, None, payload, Some(ceiling), &io).await?;

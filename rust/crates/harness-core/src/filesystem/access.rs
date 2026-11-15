@@ -55,17 +55,19 @@ pub(crate) fn capability_payload<'a>(
             .strip_prefix(acyclic_fs::access::SCOPE_PREFIX)
             .map(str::as_bytes)
             .ok_or_else(|| io.invalid("filesystem capability label is invalid")),
-        None => match operation {
-            VolumeOperation::Read => {
-                whole_volume_payload(acyclic_fs::access::ActionSet::SourceRead)
-            }
-            VolumeOperation::Write => {
-                whole_volume_payload(acyclic_fs::access::ActionSet::DestinationWrite)
-            }
-            VolumeOperation::Delete => {
-                whole_volume_payload(acyclic_fs::access::ActionSet::DestinationDelete)
-            }
-        },
+        None => whole_volume_payload(label_actions(operation)),
+    }
+}
+
+/// The fixed action set one explicit whole-volume `operation` label carries
+/// on its own. Labels held together can mean more: see
+/// [`super::workspace_access::RAW_WORKSPACE_LABELS`].
+pub(crate) const fn label_actions(operation: VolumeOperation) -> acyclic_fs::access::ActionSet {
+    use acyclic_fs::access::ActionSet;
+    match operation {
+        VolumeOperation::Read => ActionSet::SourceRead,
+        VolumeOperation::Write => ActionSet::DestinationWrite,
+        VolumeOperation::Delete => ActionSet::DestinationDelete,
     }
 }
 

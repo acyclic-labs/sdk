@@ -572,8 +572,10 @@ fn seed(volumes: &[WorkspaceEntry]) -> Result<Option<VolumeRef>> {
 /// agent's journal reads.
 ///
 /// # Errors
-/// When `ceiling` restricts paths, volumes, lineage or expiry, which
-/// explicit volume labels cannot carry.
+/// When `ceiling` restricts paths, volumes, lineage or expiry, or allows
+/// every [`super::workspace_access::RAW_WORKSPACE_LABELS`] operation without
+/// their [`super::workspace_access::RAW_WORKSPACE_ACTIONS`]: explicit volume
+/// labels cannot carry any of these.
 pub(crate) fn ceiling_grants(
     ceiling: &str,
     volumes: &[WorkspaceEntry],
@@ -604,14 +606,7 @@ pub(crate) fn ceiling_grants(
             "a workload derives only from a whole-volume filesystem ceiling".into(),
         ));
     }
-    // An explicit label carries its operation's whole fixed action set
-    // (`capability_payload`), so the ceiling must allow all of it.
-    let allowed = |operation: VolumeOperation| {
-        let set = match operation {
-            VolumeOperation::Read => ActionSet::SourceRead,
-            VolumeOperation::Write => ActionSet::DestinationWrite,
-            VolumeOperation::Delete => ActionSet::DestinationDelete,
-        };
+    let allows = |set: ActionSet| {
         !capability.layers.is_empty()
             && capability.layers.iter().all(|layer| {
                 set.actions()
@@ -619,6 +614,22 @@ pub(crate) fn ceiling_grants(
                     .all(|action| layer.iter().any(|grant| grant.actions.contains(action)))
             })
     };
+    // An explicit label carries its operation's whole fixed action set, so
+    // the ceiling must allow all of it.
+    let allowed = |operation| allows(super::access::label_actions(operation));
+    // Labels held together carry more: these admit the raw workspace. Issuing
+    // them under a narrower ceiling would widen it, and withholding either
+    // would narrow an operation the ceiling allows.
+    if super::workspace_access::RAW_WORKSPACE_LABELS
+        .into_iter()
+        .all(allowed)
+        && !allows(super::workspace_access::RAW_WORKSPACE_ACTIONS)
+    {
+        return Err(Error::Unauthorized(
+            "a workload's filesystem ceiling allows reads and writes without owning the volume"
+                .into(),
+        ));
+    }
     let mut denied = Vec::new();
     for operation in [
         VolumeOperation::Read,
@@ -644,8 +655,9 @@ pub(crate) fn ceiling_grants(
 }
 
 /// The visible entries' read/write ceilings and retained exact versions on
-/// other volumes, each operation only where `allowed`. With an `owner`, an
-/// agent-private entry is granted only when it is that agent's own, so
+/// other volumes, each operation only where `allowed`, so a write or delete
+/// never depends on the read. With an `owner`, an agent-private entry is
+/// granted only when it is that agent's own, so
 /// another agent's private volume is never named; its retained files are
 /// then granted alone, by exact version. Raw writers cannot widen a rooted
 /// entry; scoped publication belongs to the table's view composition.
@@ -657,9 +669,7 @@ fn volume_grants(
     allowed: &dyn Fn(VolumeOperation) -> bool,
 ) -> Result<Vec<String>> {
     let mut grants = Vec::with_capacity(3 * volumes.len());
-    if !allowed(VolumeOperation::Read) {
-        return Ok(grants);
-    }
+    let reads = allowed(VolumeOperation::Read);
     let granted = |binding: &&WorkspaceEntry| {
         binding.role != crate::agent::WorkspaceRole::Internal
             && binding.as_volume().is_some_and(|volume| {
@@ -673,18 +683,23 @@ fn volume_grants(
         let Some(volume) = binding.as_volume() else {
             continue; // A lazy subtree view has no whole-volume authority.
         };
-        if !binding.root.is_empty() {
-            grants.push(volume.directory_read_capability(&binding.root, &mut None)?);
-        } else {
-            grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
-            if binding.mode == crate::agent::WorkspaceMode::ReadWrite {
-                for operation in [VolumeOperation::Write, VolumeOperation::Delete] {
-                    if allowed(operation) {
-                        grants.push(volume.capability(operation, &mut None)?);
-                    }
+        if reads {
+            grants.push(if binding.root.is_empty() {
+                volume.capability(VolumeOperation::Read, &mut None)?
+            } else {
+                volume.directory_read_capability(&binding.root, &mut None)?
+            });
+        }
+        if binding.root.is_empty() && binding.mode == crate::agent::WorkspaceMode::ReadWrite {
+            for operation in [VolumeOperation::Write, VolumeOperation::Delete] {
+                if allowed(operation) {
+                    grants.push(volume.capability(operation, &mut None)?);
                 }
             }
         }
+    }
+    if !reads {
+        return Ok(grants);
     }
     let seed = seed(volumes)?;
     for file in external {

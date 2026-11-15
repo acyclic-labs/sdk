@@ -121,7 +121,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             ));
         }
         self.verifier.verify(&self.scope, &mut None)?;
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        for operation in super::workspace_access::RAW_WORKSPACE_LABELS {
             ContentGrant::verify(&self.verifier, &self.scope, volume, operation, &mut None)?;
             if !context
                 .effective_scope()
