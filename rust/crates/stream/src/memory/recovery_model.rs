@@ -24,7 +24,6 @@ pub(crate) enum Fault {
     HoldPublicationDuringMaintenance,
     HoldStateDuringDurability,
     ReleasePendingPublication,
-    BudgetAfterAcquire,
 }
 
 loom::thread_local! {

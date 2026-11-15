@@ -351,7 +351,6 @@ async fn wait_for_record(provider: MemoryStream, path: StreamPath) -> Result<(),
 // starts a wait and keeps working before awaiting it. The publication must
 // commit and every live waiter must then complete.
 pub(crate) fn budget_parked_waiters(drop_parked: bool, budget_after_acquire: bool) {
-    use crate::verification::{Fault, set_fault};
     loom::model(move || {
         let provider = MemoryStream::default();
         let path = StreamPath::new("waited").unwrap();
@@ -360,7 +359,7 @@ pub(crate) fn budget_parked_waiters(drop_parked: bool, budget_after_acquire: boo
             loom::thread::spawn(move || block_on(wait_for_record(provider, path)))
         };
         if budget_after_acquire {
-            set_fault(Fault::BudgetAfterAcquire);
+            crate::query_sync::budget::check_after_acquire();
         }
         let mut parked = Box::pin(wait_for_record(provider.clone(), path.clone()));
         crate::query_sync::budget::exhaust();

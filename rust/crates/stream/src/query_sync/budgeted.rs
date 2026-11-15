@@ -128,6 +128,7 @@ pub(crate) mod budget {
 
     loom::thread_local! {
         static EXHAUSTED: Cell<bool> = Cell::new(false);
+        static AFTER_ACQUIRE: Cell<bool> = Cell::new(false);
     }
 
     pub(super) type Unconstrained<F> = F;
@@ -150,15 +151,15 @@ pub(crate) mod budget {
         exhausted
     }
 
-    /// Negative control: no budget check before acquiring; the modeled lock
-    /// checks after taking its permits, the order Tokio's semaphore uses.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::query_sync) fn after_acquire() -> bool {
-        crate::verification::fault_is(crate::verification::Fault::BudgetAfterAcquire)
+    /// Negative control: this model thread skips the budget check before
+    /// acquiring; the modeled lock checks after taking its permits, the order
+    /// Tokio's semaphore uses.
+    pub(crate) fn check_after_acquire() {
+        AFTER_ACQUIRE.with(|after| after.set(true));
     }
-    #[cfg(target_arch = "wasm32")]
+
     pub(in crate::query_sync) fn after_acquire() -> bool {
-        false
+        AFTER_ACQUIRE.with(Cell::get)
     }
 
     pub(super) fn proceed(cx: &mut Context<'_>) -> Poll<()> {
