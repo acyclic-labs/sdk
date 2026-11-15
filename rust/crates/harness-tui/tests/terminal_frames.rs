@@ -232,10 +232,10 @@ fn costs(scenes: &[Scene]) -> Vec<(usize, Vec<u8>)> {
 
 #[test]
 fn only_what_changed_reaches_the_device() {
-    let rows = vec!["hello".to_string(), "world".to_string()];
+    let rows = vec!["hello".to_owned(), "world".to_owned()];
     let base: Scene = (rows.clone(), Some((2, 1)));
     let moved: Scene = (rows.clone(), Some((3, 1)));
-    let hidden: Scene = (rows.clone(), None);
+    let hidden: Scene = (rows, None);
     let edited: Scene = (vec!["hellO".into(), "world".into()], Some((2, 1)));
     for n in [8, 16] {
         // N identical frames: no write and no byte, at N and 2N.

@@ -106,9 +106,10 @@ pub(super) fn native_region_cost(
                     one_native_submission(calls.get(), writes, frames, idle);
                 }
                 use std::fmt::Write as _;
+                let frames = f64::from(u32::try_from(frames).map_err(io::Error::other)?);
                 writeln!(report, "{} {path} frames={frames} idle={idle} bytes={} submissions={} writes={} waits={} allocations={} allocated_bytes={} us_per_frame={:.3}",
                     std::env::consts::OS, bytes.get(), calls.get(), after.writes-before.writes, after.waits-before.waits,
-                    allocations.count_total, allocations.bytes_total, elapsed.as_secs_f64()*1e6/frames as f64)
+                    allocations.count_total, allocations.bytes_total, elapsed.as_secs_f64()*1e6/frames)
                     .map_err(io::Error::other)?;
             }
         }
