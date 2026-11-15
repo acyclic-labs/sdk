@@ -133,7 +133,7 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     let status = files.status.path().to_path_buf();
     let (started, began) = tokio::sync::oneshot::channel();
     let (release, released) = mpsc::sync_channel(1);
-    let mut pending = Box::pin(files.apply(operation, move |files| {
+    let mut pending = Box::pin(files.apply(operation.into_bytes(), move |files| {
         assert_ne!(
             std::thread::current().id(),
             coordinator,
@@ -200,7 +200,7 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
         .known
         .insert(failed, Tracked::Running { withdrawn: false });
     files = files
-        .apply(failed, move |files| {
+        .apply(failed.into_bytes(), move |files| {
             files.served.answer(&files.status, failed, Err(original))
         })
         .await?;
@@ -210,7 +210,7 @@ async fn carrier_io_publishes_without_blocking_its_coordinator() -> Result<()> {
     assert_eq!(cause.code(), original_code);
     assert_eq!(diagnostic(cause), original_diagnostic);
     files = files
-        .apply(failed, move |files| {
+        .apply(failed.into_bytes(), move |files| {
             files.served.withdraw(&files.status, failed)
         })
         .await?;
@@ -233,7 +233,7 @@ async fn carrier_io_observer_loss_keeps_the_accepted_physical_owner() -> Result<
     let (_checkout, files, probe) = carrier_io()?;
     let (started, began) = tokio::sync::oneshot::channel();
     let (release, released) = mpsc::sync_channel(1);
-    let mut pending = Box::pin(files.apply(OperationId::new(), move |_| {
+    let mut pending = Box::pin(files.apply(OperationId::new().into_bytes(), move |_| {
         let _ = started.send(());
         released.recv().map_err(storage)
     }));
@@ -262,7 +262,7 @@ async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> 
     let (producer, receiver) = mpsc::channel::<()>();
     drop(producer);
     let result = files
-        .apply(OperationId::new(), move |_| {
+        .apply(OperationId::new().into_bytes(), move |_| {
             receiver.recv().map_err(storage)
         })
         .await;
@@ -284,7 +284,7 @@ async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> 
         .known
         .insert(operation, Tracked::Running { withdrawn: false });
     files = files
-        .apply(operation, move |files| {
+        .apply(operation.into_bytes(), move |files| {
             files
                 .served
                 .answer(&files.status, operation, Err(original))?;
@@ -296,7 +296,7 @@ async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> 
     let cleanup = remove_projection(&reply_path(files.status.path(), operation))
         .expect_err("a directory cannot be retired as a reply file");
     let result = files
-        .apply(operation, move |files| {
+        .apply(operation.into_bytes(), move |files| {
             files.served.withdraw(&files.status, operation)
         })
         .await;
