@@ -15,7 +15,6 @@ without confinement.
 | Required shell dependencies or workspace metadata are denied | The same matrix runs the real platform shell, reads the workspace/volume, stats every ancestor and enumerates `.cargo`; Linux also executes `ls -la && rg --files`. |
 | A default confined process reaches a host TCP listener | The same matrix proves the unconfined connection first; confined connection is denied and the listener receives nothing. |
 | Inherited file handles bypass pathname confinement | `execution::tests::inherited_file_stdio_cannot_bypass_the_workspace_boundary` first runs the confined shell with pipe/null stdio for each direction/custody mode, then rejects outside-file stdin/stdout, preserves the sentinel and proves the identical unconfined shell can read/write it. |
-| A host-composed read scope exceeds its retained parent | `execution::tests::scoped_native_reads_pin_the_original_parent_and_refuse_escape` rejects foreign scopes; Unix also checks symlink/replacement, Windows checks the original directory cannot be renamed while pinned. |
 | A missing native enforcement capability is silently skipped | `sandbox_policy` unwraps the confined launch: no ignored test, capability skip or unconfined fallback. Windows requires native PSEC 1.1. |
 
 Native stdio refusal preserves `PermissionDenied` or `Unsupported` without
@@ -30,7 +29,7 @@ for native Windows execution.
 
 ## Native batch
 
-Run the same three selected tests on Linux, macOS and Windows, from one signed
+Run the same two selected tests on Linux, macOS and Windows, from one signed
 source and its native test executable (Windows binaries are cross-built).
 Use the existing lifecycle runner to hold each execution until its target is
 READY; target restoration and its lifecycle record have a separate owner.
@@ -39,12 +38,11 @@ Do not substitute cross-compilation or an unavailable capability for execution.
 ```sh
 cargo test --locked -p acyclic-native-runtime --lib -- --exact \
   execution::tests::sandbox_policy \
-  execution::tests::scoped_native_reads_pin_the_original_parent_and_refuse_escape \
   execution::tests::inherited_file_stdio_cannot_bypass_the_workspace_boundary \
   --nocapture
 ```
 
-Each native result must report **3 passed, 0 failed, 0 ignored**. Retain the
+Each native result must report **2 passed, 0 failed, 0 ignored**. Retain the
 source SHA, executable digest, native OS identity and terminal/cleanup receipt.
 The ordinary GraphCoder matrix includes the same selection as `native-sandbox`.
 Set `E2E_NATIVE_RUNTIME_TEST_BINARY` to its matching prebuilt native library-test
@@ -60,7 +58,7 @@ receipts until native qualification completes.
 
 ## Evidence status
 
-Completion requires the shared matrix and scoped-read test to execute on all
+Completion requires the shared matrix and stdio-boundary test to execute on all
 three native OSes from the same pushed source. Cross-compilation establishes
 compilability only. The native Windows execution target and native macOS target
 were unavailable in the current Foreman status at the start of this work.

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { qualification, qualified } from "./qualification.mjs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 test("external acceptance requires executed tests, not a successful empty or ignored selection", () => {
   const result = stdout => ({ code: 0, stdout, stderr: "" });
@@ -52,4 +55,71 @@ test("installed hosts are refused before launch without an admitted host executa
   const fixture = { workspace: "/fixture/workspace", env: { E2E_PI: "relative/pi" } };
   await assert.rejects(qualification(processes, { format: "installed-host", host: "pi" }, fixture, () => {}), /step=admit E2E_PI/);
   await assert.rejects(qualification(processes, { format: "installed-host", host: "shell" }, fixture, () => {}), /step=admit native host/);
+});
+
+// The crate whose library tests each exact-selection binary runs.
+const LIBTEST_CRATES = { E2E_NATIVE_RUNTIME_TEST_BINARY: "native-runtime" };
+
+function moduleBody(text, name) {
+  const start = text.search(new RegExp(String.raw`\bmod ${name}\s*\{`));
+  if (start < 0) return undefined;
+  let depth = 0;
+  for (let index = text.indexOf("{", start); index < text.length; index++) {
+    if (text[index] === "{") depth++;
+    else if (text[index] === "}" && --depth === 0) return text.slice(start, index + 1);
+  }
+  return undefined;
+}
+
+// True when `path` (module::...::name, from the crate root) is a #[test] function
+// in its own module: a file module or an inline `mod` block, never a helper.
+async function declaresTest(source, path) {
+  const segments = path.split("::"), name = segments.pop();
+  const attribute = new RegExp(String.raw`#\[(?:[a-z_]+::)?test(?:\([^)]*\))?\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([a-z]+\))?\s+)?(?:async\s+)?fn ${name}\s*\(`);
+  for (let split = segments.length; split >= 0; split--) {
+    const outer = segments.slice(0, split), inline = segments.slice(split);
+    const files = outer.length === 0 ? [join(source, "lib.rs")]
+      : [join(source, ...outer) + ".rs", join(source, ...outer, "mod.rs")];
+    for (const file of files) {
+      let text = await readFile(file, "utf8").catch(() => undefined);
+      for (const module of inline) text = text === undefined ? undefined : moduleBody(text, module);
+      if (text !== undefined && attribute.test(text)) return true;
+    }
+  }
+  return false;
+}
+
+test("an exact test name resolves only to a test in its own module", async () => {
+  const source = await mkdtemp(join(tmpdir(), "exact-tests-"));
+  await mkdir(join(source, "execution"));
+  await writeFile(join(source, "lib.rs"), "mod execution;\nmod inline;\n");
+  await writeFile(join(source, "execution", "tests.rs"),
+    "#[cfg(unix)]\n#[test]\nfn real() {}\nfn helper() {}\n");
+  await writeFile(join(source, "inline.rs"), "fn outside() {}\nmod tests {\n    #[tokio::test]\n    async fn inner() {}\n}\n");
+  assert.equal(await declaresTest(source, "execution::tests::real"), true);
+  assert.equal(await declaresTest(source, "inline::tests::inner"), true);
+  for (const path of ["execution::tests::helper", "wrong::tests::real", "execution::real",
+    "inline::tests::outside", "execution::tests::absent"])
+    assert.equal(await declaresTest(source, path), false, path);
+});
+
+test("every exact libtest qualification names tests that exist and requires all of them", async () => {
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const cases = join(root, "scripts/graphcoder-e2e/cases");
+  let checked = 0;
+  for (const file of await readdir(cases)) {
+    if (!file.endsWith(".json")) continue;
+    for (const input of JSON.parse(await readFile(join(cases, file), "utf8")).inputs ?? []) {
+      if (input.format !== "libtest" || !input.args?.includes("--exact")) continue;
+      const crate = LIBTEST_CRATES[input.binary_env];
+      assert.ok(crate, `${file}: name the crate ${input.binary_env} runs in LIBTEST_CRATES`);
+      const names = input.args.filter(argument => !argument.startsWith("--"));
+      assert.equal(input.minimum_tests, names.length, `${file}: an exact selection requires every named test`);
+      for (const name of names)
+        assert.ok(await declaresTest(join(root, "rust/crates", crate, "src"), name),
+          `${file}: ${name} is not a test in the tree`);
+      checked++;
+    }
+  }
+  assert.ok(checked > 0, "no exact libtest qualification was checked");
 });
