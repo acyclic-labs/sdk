@@ -16,7 +16,7 @@ rust_binary(
     crate_features = FEATURES,
     rustc_env = PACKAGE_ENV,
     deps = [
-        "@crates//wait-timeout-0.2.1",
+        "//rust/crates/native-runtime:acyclic_native_runtime",
     ],
     visibility = ["//visibility:public"],
 )
@@ -31,7 +31,7 @@ rust_test(
     crate_features = FEATURES,
     rustc_env = PACKAGE_ENV,
     deps = [
-        "@crates//wait-timeout-0.2.1",
+        "//rust/crates/native-runtime:acyclic_native_runtime",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],

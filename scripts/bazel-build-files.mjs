@@ -32,6 +32,7 @@ const LOADS = {
   rust_binary: "@rules_rust//rust:defs.bzl",
   rust_library: "@rules_rust//rust:defs.bzl",
   rust_proc_macro: "@rules_rust//rust:defs.bzl",
+  rust_shared_library: "@rules_rust//rust:defs.bzl",
   rust_test: "@rules_rust//rust:defs.bzl",
 };
 const q = JSON.stringify;
@@ -51,10 +52,9 @@ function tables(file) {
 }
 const value = (table, key) => (table?.[key] === undefined ? undefined : JSON.parse(table[key]));
 
-const metadata = (triple, flags) => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, ...flags], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 }));
-const runs = TRIPLES.map(triple => metadata(triple, ["--all-features"]));
-// crate_universe resolves third-party features from the default workspace features.
-const defaults = TRIPLES.map(triple => metadata(triple, []));
+// Every target builds with every feature on, as `cargo test --all-features` does. crate_universe
+// resolves third-party features its own way, so specs() pins each crate's all-features set.
+const runs = TRIPLES.map(triple => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, "--all-features"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 })));
 const [base] = runs;
 const packages = new Map(base.packages.map(p => [p.id, p]));
 const members = new Set(base.workspace_members);
@@ -282,7 +282,21 @@ function buildFile(p) {
       ...deps(["build"]),
     ]]);
   }
+  // A cdylib output, such as a Node addon, builds as a shared library; beside an rlib it takes a suffix.
+  const shared = p.targets.find(t => t.kind.includes("cdylib"));
+  if (shared) {
+    covered.add(`build cdylib ${shared.name}`);
+    rules.push(["rust_shared_library", [
+      ["name", q(shared === lib ? `${crateName(shared)}_cdylib` : crateName(shared))],
+      ["crate_root", q(local(shared.src_path))],
+      ...libInputs(shared),
+      ...common(shared),
+      ...deps([null], ownDeps),
+      ["visibility", q(["//visibility:public"])],
+    ]]);
+  }
   if (lib) {
+    for (const kind of lib.kind) if (kind !== "cdylib") covered.add(`build ${kind} ${lib.name}`);
     const proc = lib.kind.includes("proc-macro");
     rules.push([proc ? "rust_proc_macro" : "rust_library", [
       ["name", q(crateName(lib))],
@@ -358,14 +372,13 @@ function buildFile(p) {
 
 function specs() {
   const wanted = new Map();
-  TRIPLES.forEach((triple, i) => {
-    const before = new Map(defaults[i].resolve.nodes.map(node => [node.id, new Set(node.features)]));
-    for (const node of runs[i].resolve.nodes) {
-      if (members.has(node.id) || (before.has(node.id) && node.features.every(f => before.get(node.id).has(f)))) continue;
+  for (const run of runs) {
+    for (const node of run.resolve.nodes) {
+      if (members.has(node.id) || node.features.length === 0) continue;
       if (!wanted.has(node.id)) wanted.set(node.id, new Set());
       for (const feature of node.features) wanted.get(node.id).add(feature);
     }
-  });
+  }
   const named = Map.groupBy([...wanted.keys()], id => packages.get(id).name);
   return [...wanted].sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => {
     const { name, version } = packages.get(id);
@@ -438,7 +451,8 @@ const bodies = new Map([...members].map(id => [dir(packages.get(id)), buildFile(
 for (const id of members) {
   const p = packages.get(id), expected = new Set();
   for (const t of p.targets) {
-    if (t.kind.some(k => k === "bin" || k === "example")) expected.add(`build ${t.kind[0]} ${t.name}`);
+    // Each output kind of a target is its own rendered rule; one that is not rendered fails the check.
+    if (!t.kind.some(k => k === "test" || k === "bench" || k === "custom-build")) for (const kind of t.kind) expected.add(`build ${kind} ${t.name}`);
     if (t.test && (t.kind.some(k => ["bin", "test", "example", "bench"].includes(k)) || t === libOf(p))) expected.add(`test ${t.kind[0]} ${t.name}`);
   }
   const have = rendered.get(id);

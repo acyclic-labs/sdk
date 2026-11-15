@@ -9,7 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-wait-timeout = "0.2.1"
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 
 [lints]
 workspace = true

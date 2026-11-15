@@ -6,9 +6,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 FEATURES = [
         "browser",
         "conformance",
-        "metrics-export",
         "model-checking",
-        "provenance-export",
         "research",
         "test-support",
         "wasm",

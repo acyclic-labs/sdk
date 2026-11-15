@@ -31,7 +31,9 @@ rust_test(
     rustc_env = PACKAGE_ENV,
     deps = [
         "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/collections:acyclic_collections",
         "@crates//futures-0.3.34",
+        "@crates//http-1.5.0",
         "@crates//loom-0.7.3",
         "@crates//proptest-1.12.0",
         "@crates//thiserror-2.0.21",

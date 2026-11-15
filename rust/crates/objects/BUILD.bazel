@@ -84,6 +84,7 @@ rust_test(
     crate_features = FEATURES,
     deps = [
         "//compatibility:acyclic_proto_build",
+        "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/test-support:acyclic_test_support",
         "@crates//axum-0.8.9",
         "@crates//divan-0.1.21",

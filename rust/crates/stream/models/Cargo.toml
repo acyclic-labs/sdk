@@ -11,9 +11,12 @@ futures = "0.3.31"
 loom = { version = "0.7.3", features = ["futures"] }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
+# Compiles only under the loom rustc wrapper, which names it with `--test session_model`;
+# plain `cargo test` would hit its compile-time guard.
 [[test]]
 name = "session_model"
 path = "session_model.rs"
+test = false
 required-features = ["model-checking"]
 
 [lints.rust]

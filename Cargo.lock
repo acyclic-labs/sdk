@@ -1624,7 +1624,7 @@ dependencies = [
 name = "acyclic-test-runner"
 version = "0.2.0"
 dependencies = [
- "wait-timeout",
+ "acyclic-native-runtime",
 ]
 
 [[package]]
