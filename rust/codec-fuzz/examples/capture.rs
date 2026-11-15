@@ -340,7 +340,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
     }
     if std::env::args().any(|arg| arg == "--only-objects") {
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
-        for (name, bytes) in acyclic_objects::codec_fuzz::seeds() {
+        for (name, bytes) in acyclic_objects::codec_fuzz::seeds()? {
             save(
                 "object_persistence",
                 name,
@@ -461,7 +461,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
-    for (name, bytes) in acyclic_objects::codec_fuzz::seeds() {
+    for (name, bytes) in acyclic_objects::codec_fuzz::seeds()? {
         save(
             "object_persistence",
             name,

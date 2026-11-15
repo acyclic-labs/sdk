@@ -685,6 +685,12 @@ impl LocalMedium {
         self.shared._root_lock.try_clone()
     }
 
+    /// Values read from the log, rather than answered by the index.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(crate) fn reads(&self) -> usize {
+        self.shared.counts.read.load(Ordering::Relaxed)
+    }
+
     /// The files created and flushes issued since open.
     #[cfg(test)]
     pub(crate) fn counts(&self) -> (usize, usize) {

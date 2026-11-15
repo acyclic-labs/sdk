@@ -286,7 +286,7 @@ codec: CodecIdentity,
  * Encoded logical state. No runtime heap format is implied.
  */
 bytes: Uint8Array, };
-export type GuestError = { "type": "preconditionChanged" } | { "type": "unsupportedAbi", "detail": number } | { "type": "unsupportedFormat" } | { "type": "nestedMutation" } | { "type": "missingIdentity" } | { "type": "incompatibleCodec" } | { "type": "decode", "detail": string } | { "type": "encode", "detail": string } | { "type": "handler", "detail": string } | { "type": "pending", "detail": string } | { "type": "revoked" } | { "type": "dependencyUnavailable", "detail": { 
+export type GuestError = { "type": "preconditionChanged" } | { "type": "unsupportedAbi", "detail": number } | { "type": "unsupportedFormat" } | { "type": "nestedMutation" } | { "type": "missingIdentity" } | { "type": "incompatibleCodec" } | { "type": "decode", "detail": string } | { "type": "encode", "detail": string } | { "type": "handler", "detail": string } | { "type": "pending", "detail": string } | { "type": "revoked" } | { "type": "dependencyUnavailable", "detail": {
 /**
  * Manifest binding or host endpoint name, in the environment name grammar.
  */
