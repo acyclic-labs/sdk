@@ -4,8 +4,9 @@
 //! they do for the library at run time. Bazel always sets both, from the files
 //! of the vendored package for the configured platform. Under Cargo they are
 //! usually unset, and the vendored package for the target names its own files.
-//! The bundle is copied into `OUT_DIR`, so the library embeds bytes, never a
-//! path that is valid only while this script runs.
+//! The crate's own shared protocols travel the same way. The bundle is copied
+//! into `OUT_DIR`, so the library embeds bytes, never a path that is valid only
+//! while this script runs or only inside this package.
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
@@ -13,6 +14,7 @@ use std::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=proto");
     println!("cargo:rerun-if-env-changed=PROTOC");
     println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
     let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR is not set")?);
@@ -45,31 +47,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     source.push_str("const INCLUDES: &[(&str, &[u8])] = &[\n");
     let root = env::var_os("PROTOC_INCLUDE")
         .map_or_else(protoc_bin_vendored_win32::include_path, PathBuf::from);
-    includes(&root, &root, &out.join("include"), &mut source)?;
-    source.push_str("] ;\n");
+    embed(&root, &root, &out, "include", &mut source)?;
+    source.push_str("];\nconst SHARED: &[(&str, &[u8])] = &[\n");
+    let shared =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?)
+            .join("proto");
+    embed(&shared, &shared, &out, "shared", &mut source)?;
+    source.push_str("];\n");
     fs::write(out.join("compiler.rs"), source)?;
     Ok(())
 }
 
-fn includes(root: &Path, directory: &Path, copy: &Path, source: &mut String) -> io::Result<()> {
+/// Copies every file under `directory` into `OUT_DIR/<name>` and lists it, by its
+/// path relative to `root`, as embedded bytes.
+fn embed(
+    root: &Path,
+    directory: &Path,
+    out: &Path,
+    name: &str,
+    source: &mut String,
+) -> io::Result<()> {
     let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let path = entry.path();
         if fs::metadata(&path)?.is_dir() {
-            includes(root, &path, copy, source)?;
+            embed(root, &path, out, name, source)?;
         } else {
             let relative = path.strip_prefix(root).map_err(io::Error::other)?;
             let relative = relative.to_string_lossy().replace('\\', "/");
-            let target = copy.join(&relative);
+            let target = out.join(name).join(&relative);
             fs::create_dir_all(
                 target
                     .parent()
-                    .ok_or_else(|| io::Error::other("include parent"))?,
+                    .ok_or_else(|| io::Error::other("embedded file parent"))?,
             )?;
             fs::copy(&path, &target)?;
             source.push_str(&format!(
-                "({relative:?}, include_bytes!(concat!(env!(\"OUT_DIR\"), \"/include/\", {relative:?}))),\n"
+                "({relative:?}, include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{name}/\", {relative:?}))),\n"
             ));
         }
     }

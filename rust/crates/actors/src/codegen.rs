@@ -27,7 +27,7 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
     let protoc_proto = protoc_path(&proto);
     let compiler = acyclic_proto_build::Compiler::new()?;
     let include_path = protoc_path(compiler.includes());
-    let shared_root = protoc_path(&acyclic_proto_build::shared_protocols());
+    let shared_root = protoc_path(compiler.shared());
     let mut prost = compiler.config();
     prost
         .out_dir(&protoc_rust_root)

@@ -157,6 +157,17 @@ const repositorySources = [...members].some(id => readsRepository(packages.get(i
 const sourcesRule = repositorySources.length
   ? `\n${rule("filegroup", [["name", q("rust_sources")], ["srcs", glob(["**/*.rs"], [])], ["visibility", q(["//visibility:public"])]])}\n`
   : "";
+// Files a build script reads beyond its package, from [package.metadata.bazel]
+// build-script-data = ["relative/path", ...]: each path names one tracked file or every tracked
+// file under a directory, relative to the package. A path that names nothing fails generation.
+function scriptData(p) {
+  return (p.metadata?.bazel?.["build-script-data"] ?? []).flatMap(relative => {
+    const named = path.posix.normalize(path.posix.join(dir(p), relative));
+    const files = tracked.filter(file => file === named || file.startsWith(`${named}/`)).sort();
+    if (!files.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} build-script-data names ${relative}, which holds no tracked file`);
+    return files.map(file => (ownerOf(file) === dir(p) ? within(dir(p), file) : fileLabel(file)));
+  });
+}
 const exportsRule = owner => (exported.has(owner) ? `\nexports_files(${list([...exported.get(owner)].sort())}, visibility = ["//visibility:public"])\n` : "");
 
 const cargo = tables("Cargo.toml");
@@ -250,7 +261,7 @@ function buildFile(p) {
       ["crate_root", q(local(script.src_path))],
       ["srcs", list(extra.srcs)],
       ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list(extra.data))],
-      ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list(readsRepository(p) ? repositorySources : []), scriptEnv.get(p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
+      ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list([...(readsRepository(p) ? repositorySources : []), ...scriptData(p)]), scriptEnv.get(p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       ...common(script),

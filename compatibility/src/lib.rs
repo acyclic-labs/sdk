@@ -89,12 +89,6 @@ pub fn actor_services() -> Builder {
         .server_mod_attribute(".", "#[cfg(not(target_arch = \"wasm32\"))]")
 }
 
-/// Import root for canonical identities shared by independently published services.
-#[must_use]
-pub fn shared_protocols() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
-}
-
 impl Compiler {
     /// Compile messages and selected services; only protocol changes rerun codegen.
     ///
@@ -118,19 +112,17 @@ impl Compiler {
         services.compile_with_config(
             config,
             &paths,
-            &[manifest.join("proto"), shared_protocols(), include],
+            &[manifest.join("proto"), self.shared().to_owned(), include],
         )?;
         std::fs::write(&output, canonicalize(&std::fs::read(&output)?, protos)?)?;
         println!("cargo:rerun-if-changed=proto");
-        println!("cargo:rerun-if-changed={}", shared_protocols().display());
         println!("cargo:rerun-if-env-changed=PROTOC");
         println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
         Ok(())
     }
 
     /// Regenerate a complete descriptor closure without building any SDK crate.
-    /// `shared` is the import root containing the shared validation protocol.
-    /// Both source roots are explicit so generators can run after relocation.
+    /// The manifest root is explicit so generators can run after relocation.
     ///
     /// # Errors
     /// Returns compiler, descriptor and filesystem errors.
@@ -139,7 +131,6 @@ impl Compiler {
         manifest: &std::path::Path,
         protos: &[&str],
         output: &std::path::Path,
-        shared: &std::path::Path,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut config = self.config();
         config.file_descriptor_set_path(output);
@@ -148,7 +139,7 @@ impl Compiler {
             &paths,
             &[
                 manifest.join("proto"),
-                shared.to_path_buf(),
+                self.shared().to_owned(),
                 self.includes().to_owned(),
             ],
         )?;
