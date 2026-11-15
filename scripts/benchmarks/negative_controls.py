@@ -92,6 +92,10 @@ CONTROLS = [
     ("arm admits adapter-owned flags", "contracts.py",
      "or not set(flags) <= ARM_FLAGS):", "):",
      "test_feature_eval.FeatureEval.test_arms_admit_only_feature_flags_and_canonical_home_files"),
+    ("control runner stops at the first problem", "negative_controls.py",
+     "            problems.append((label, problem))\n",
+     "            problems.append((label, problem))\n            break\n",
+     "test_contracts.BenchmarkContracts.test_negative_control_runner_reports_every_stale_anchor"),
     ("failed outer setup retains authority", "graphcoder_harbor.py",
      "async def setup(self, environment):\n        self._installed_environment = None",
      "async def setup(self, environment):",
@@ -99,32 +103,57 @@ CONTROLS = [
 ]
 
 
-def main():
-    source = Path(__file__).resolve().parent
-    for label, filename, old, new, test in CONTROLS:
+def _apply(label: str, filename: str, old: str, new: str, test: str, source: Path,
+           temporary: str) -> str | None:
+    """One control in a private copy; None when it rejects, else what went wrong."""
+    original = source / filename
+    text = original.read_text() if original.is_file() else ""
+    if text.count(old) != 1:
+        return f"no longer targets one production boundary ({text.count(old)} matches)"
+    package = Path(temporary) / "scripts" / "benchmarks"
+    package.mkdir(parents=True)
+    for file in [*source.glob("*.py"), *source.glob("*.json")]:
+        shutil.copyfile(file, package / file.name)
+    counters = Path("rust/crates/harness-providers/src/token_counters.json")
+    destination = Path(temporary) / counters
+    destination.parent.mkdir(parents=True)
+    shutil.copyfile(source.parents[1] / counters, destination)
+    target = package / filename
+    target.write_text(text.replace(old, new))
+    # A syntax/import failure is not a valid negative control. Compile
+    # source in memory before running the actual named regression.
+    try:
+        compile(target.read_text(), str(target), "exec")
+    except SyntaxError as error:
+        return "mutation does not compile: " + str(error)
+    result = subprocess.run([sys.executable, "-m", "unittest", "scripts.benchmarks." + test],
+        cwd=temporary, env={**os.environ, "PYTHONPATH": temporary, "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True, text=True)
+    if result.returncode == 0 or "FAIL:" not in result.stderr:
+        return "failed to reject\n" + result.stderr
+    return None
+
+
+def evaluate(controls, source: Path) -> list[tuple[str, str]]:
+    """Every control runs; the result lists each one that is stale or did not reject."""
+    problems = []
+    for label, filename, old, new, test in controls:
         with tempfile.TemporaryDirectory(prefix="predictor-negative-") as temporary:
-            package = Path(temporary) / "scripts" / "benchmarks"
-            package.mkdir(parents=True)
-            for file in [*source.glob("*.py"), *source.glob("*.json")]:
-                shutil.copyfile(file, package / file.name)
-            counters = Path("rust/crates/harness-providers/src/token_counters.json")
-            destination = Path(temporary) / counters
-            destination.parent.mkdir(parents=True)
-            shutil.copyfile(source.parents[1] / counters, destination)
-            target = package / filename
-            text = target.read_text()
-            if text.count(old) != 1:
-                raise RuntimeError("control no longer targets one production boundary: " + label)
-            target.write_text(text.replace(old, new))
-            # A syntax/import failure is not a valid negative control. Compile
-            # source in memory before running the actual named regression.
-            compile(target.read_text(), str(target), "exec")
-            result = subprocess.run([sys.executable, "-m", "unittest", "scripts.benchmarks." + test],
-                cwd=temporary, env={**os.environ, "PYTHONPATH": temporary, "PYTHONDONTWRITEBYTECODE": "1"},
-                capture_output=True, text=True)
-            if result.returncode == 0 or "FAIL:" not in result.stderr:
-                raise RuntimeError("negative control failed to reject: " + label + "\n" + result.stderr)
+            problem = _apply(label, filename, old, new, test, source, temporary)
+        if problem is None:
             print("negative control REJECTED:", label)
+        else:
+            print("negative control PROBLEM:", label, "-", problem.splitlines()[0])
+            problems.append((label, problem))
+    return problems
+
+
+def main():
+    problems = evaluate(CONTROLS, Path(__file__).resolve().parent)
+    print(f"negative controls: {len(CONTROLS) - len(problems)} of {len(CONTROLS)} rejected")
+    if problems:
+        raise SystemExit("negative controls with problems:\n" + "\n".join(
+            f"- {label}: {problem}" for label, problem in problems))
 
 
 if __name__ == "__main__":
