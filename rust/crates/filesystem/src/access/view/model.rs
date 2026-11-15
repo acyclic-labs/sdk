@@ -37,6 +37,7 @@ fn compiled(version: u64, allow: bool, volume: &str, head: u64) -> PathTrie {
             config: crate::VolumeConfig::portable(crate::Lifecycle::Durable),
             lineage: &[],
             volume,
+            reference: None,
             generation: 1,
             head,
             path: "",

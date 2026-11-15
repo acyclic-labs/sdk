@@ -104,6 +104,7 @@ pub async fn checkout_view<
             config: checkout.volume_config(),
             lineage: &[],
             volume: &volume,
+            reference: None,
             generation: 1,
             head: 1,
             path: "",

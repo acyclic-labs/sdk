@@ -55,6 +55,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 config: self.volume.config,
                 lineage: &[],
                 volume: &volume,
+                reference: binding.reference,
                 generation,
                 head,
                 path: "",

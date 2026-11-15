@@ -277,6 +277,7 @@ mod tests {
             config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
             lineage: &[],
             volume: "home",
+            reference: None,
             generation: 1,
             head: 1,
             path: "",
