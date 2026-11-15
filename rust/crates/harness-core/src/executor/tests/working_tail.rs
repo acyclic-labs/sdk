@@ -51,7 +51,9 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
     let mut prior = vec![
         ModelMessage {
             role: ModelRole::User,
-            content: ModelContent::Text("old user".repeat(4_000)),
+            // The full history exceeds the response window, while the older
+            // prefix fits one summary call; only the new tail must survive.
+            content: ModelContent::Text("old user".repeat(2_000)),
         },
         ModelMessage {
             role: ModelRole::Assistant,
