@@ -180,12 +180,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     }
 }
 
-/// Adds `condition` to `conditions`, the one merge of every condition a
-/// commit composes. Each comparison is admitted and charged as examined work.
-/// A condition on a path already held must agree with it: an equal one, or a
-/// `Tail` matching a `Head`'s tail, collapses into the stronger of the two in
-/// either order, releasing the discarded path; any other pairing refuses the
-/// commit and leaves the held conditions unchanged.
+/// Adds `condition` to `conditions`, merged with any condition already held
+/// on its path by [`CommitCondition::meet`], the Stream primitive's one
+/// merge. Each comparison is admitted and charged as examined work. A merge
+/// releases the discarded path; an unsatisfiable pairing refuses the commit
+/// and leaves the held conditions unchanged.
 pub(super) fn merge_condition(
     conditions: &mut Vec<CommitCondition>,
     condition: CommitCondition,
@@ -201,30 +200,13 @@ pub(super) fn merge_condition(
         if CommitCondition::path(existing) != CommitCondition::path(&condition) {
             continue;
         }
-        let (compatible, stronger) = match (&*existing, &condition) {
-            (
-                CommitCondition::Head {
-                    expected: actual, ..
-                },
-                CommitCondition::Tail { expected, .. },
-            ) => (actual == expected, false),
-            (
-                CommitCondition::Tail { expected, .. },
-                CommitCondition::Head {
-                    expected: actual, ..
-                },
-            ) => (actual == expected, true),
-            _ => (*existing == condition, false),
-        };
-        if !compatible {
-            return Err(AuthorityStoreError::RejectedStatic(
+        let merged = existing
+            .meet(&condition)
+            .ok_or(AuthorityStoreError::RejectedStatic(
                 "a commit condition conflicts with one the commit already holds",
-            ));
-        }
+            ))?;
         work.release(CommitCondition::path(&condition).as_str().len() as u64)?;
-        if stronger {
-            *existing = condition;
-        }
+        *existing = merged;
         return Ok(());
     }
     conditions.push(condition);

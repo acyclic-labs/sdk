@@ -763,6 +763,45 @@ impl CommitCondition {
             | Self::Present { path } => path,
         }
     }
+
+    /// The one condition that holds exactly when both `self` and `other`
+    /// hold, or `None` when they observe different paths or no single
+    /// condition expresses both. A nonempty tail or head implies presence, and
+    /// an absent stream has tail zero.
+    #[must_use]
+    pub fn meet(&self, other: &Self) -> Option<Self> {
+        if self.path() != other.path() {
+            return None;
+        }
+        match (self, other) {
+            (left, right) if left == right => Some(left.clone()),
+            (
+                Self::Present { .. },
+                nonempty @ (Self::Head { .. } | Self::Tail { expected: 1.., .. }),
+            )
+            | (
+                nonempty @ (Self::Head { .. } | Self::Tail { expected: 1.., .. }),
+                Self::Present { .. },
+            ) => Some(nonempty.clone()),
+            (absent @ Self::Absent { .. }, Self::Tail { expected: 0, .. })
+            | (Self::Tail { expected: 0, .. }, absent @ Self::Absent { .. }) => {
+                Some(absent.clone())
+            }
+            (
+                head @ Self::Head { expected: left, .. },
+                Self::Tail {
+                    expected: right, ..
+                },
+            )
+            | (
+                Self::Tail {
+                    expected: right, ..
+                },
+                head @ Self::Head { expected: left, .. },
+            ) if left == right => Some(head.clone()),
+            _ => None,
+        }
+    }
 }
 
 impl CommitMutation {
@@ -804,6 +843,29 @@ impl CommitEffect {
     #[must_use]
     pub fn admissible(&self) -> bool {
         !self.soft || !self.mutations.is_empty()
+    }
+
+    /// Adds `condition`, merged with the condition this effect already holds
+    /// on its path, so an effect never carries two conditions on one path.
+    /// Every composer of a shared effect adds its conditions this way.
+    ///
+    /// # Errors
+    /// `InvalidArgument` when no single condition expresses both, which the
+    /// commit's validation would refuse anyway.
+    pub fn require(&mut self, condition: CommitCondition) -> Result<(), StreamError> {
+        match self
+            .conditions
+            .iter_mut()
+            .find(|existing| existing.path() == condition.path())
+        {
+            None => self.conditions.push(condition),
+            Some(existing) => {
+                *existing = existing
+                    .meet(&condition)
+                    .ok_or(StreamError::InvalidArgument)?;
+            }
+        }
+        Ok(())
     }
 
     /// An effect whose failed conditions refuse the whole commit.

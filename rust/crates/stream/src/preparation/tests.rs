@@ -443,3 +443,76 @@ fn effect_selection_and_condition_membership_walk_the_original_slices_once()
     );
     Ok(())
 }
+
+#[test]
+fn a_met_condition_holds_exactly_where_both_of_its_parts_hold() -> Result<(), StreamError> {
+    let path = StreamPath::new("facts")?;
+    let other = StreamPath::new("other")?;
+    let heads = [CommitId::from_bytes([1; 32]), CommitId::from_bytes([2; 32])];
+    let mut conditions = vec![
+        CommitCondition::Absent { path: path.clone() },
+        CommitCondition::Present { path: path.clone() },
+    ];
+    for expected in 0..=2 {
+        conditions.push(CommitCondition::Tail {
+            path: path.clone(),
+            expected,
+        });
+        for commit_id in heads {
+            conditions.push(CommitCondition::Head {
+                path: path.clone(),
+                expected: expected + 1,
+                commit_id,
+            });
+        }
+    }
+    let holds = |condition: &CommitCondition, actual, head| {
+        condition_conflict(condition, actual, || Ok(head)).map(|conflict| conflict.is_none())
+    };
+    let mut merged = 0;
+    for left in &conditions {
+        let elsewhere = CommitCondition::Absent {
+            path: other.clone(),
+        };
+        assert_eq!(left.meet(&elsewhere), None);
+        for right in &conditions {
+            let met = left.meet(right);
+            assert_eq!(met, right.meet(left));
+            let Some(met) = met else { continue };
+            merged += 1;
+            for actual in [None, Some(0), Some(1), Some(2), Some(3)] {
+                for head in heads {
+                    assert_eq!(
+                        holds(&met, actual, head)?,
+                        holds(left, actual, head)? && holds(right, actual, head)?,
+                        "{left:?} met {right:?} as {met:?} at {actual:?}/{head:?}"
+                    );
+                }
+            }
+        }
+    }
+    // A spawn in a parent turn requires its parent history both present and at
+    // the turn's tail; the effect holds the one stronger condition.
+    let mut effect = crate::CommitEffect::hard(Vec::new(), Vec::new());
+    effect.require(CommitCondition::Tail {
+        path: path.clone(),
+        expected: 2,
+    })?;
+    effect.require(CommitCondition::Present { path: path.clone() })?;
+    assert_eq!(
+        effect.conditions,
+        [CommitCondition::Tail {
+            path: path.clone(),
+            expected: 2,
+        }]
+    );
+    assert_eq!(
+        effect.require(CommitCondition::Absent { path }),
+        Err(StreamError::InvalidArgument)
+    );
+    assert!(
+        merged > conditions.len(),
+        "only identical conditions merged"
+    );
+    Ok(())
+}
