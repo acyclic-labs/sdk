@@ -104,6 +104,15 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
 
 /// Reserves deferred durable watermarks without claiming them during capture.
 pub(crate) fn heads_len_with_durability(view: &crate::Heads, deferred: bool) -> usize {
+    heads_frame_len(view, deferred, true)
+}
+
+/// The frame without its children page, which a page budget charges row by row.
+pub(crate) fn heads_len_without_children(view: &crate::Heads, deferred: bool) -> usize {
+    heads_frame_len(view, deferred, false)
+}
+
+fn heads_frame_len(view: &crate::Heads, deferred: bool, children: bool) -> usize {
     let snapshot = revision_len(&view.snapshot);
     let named = view
         .heads
@@ -130,16 +139,20 @@ pub(crate) fn heads_len_with_durability(view: &crate::Heads, deferred: bool) -> 
             }))
         })
         .fold(0usize, usize::saturating_add);
-    let children = view.children.as_ref().map_or(0, |page| {
-        block_len(children_page_len(
-            page.children
-                .iter()
-                .map(|child| block_len(child_len(child)))
-                .fold(0usize, usize::saturating_add),
-            page.next_after.as_ref(),
-            page.scanned,
-        ))
-    });
+    let children = view
+        .children
+        .as_ref()
+        .filter(|_| children)
+        .map_or(0, |page| {
+            block_len(children_page_len(
+                page.children
+                    .iter()
+                    .map(|child| block_len(child_len(child)))
+                    .fold(0usize, usize::saturating_add),
+                page.next_after.as_ref(),
+                page.scanned,
+            ))
+        });
     block_len(snapshot)
         .saturating_add(block_len(revision_len(&view.applied)))
         .saturating_add(
