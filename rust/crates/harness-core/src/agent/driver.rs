@@ -1600,10 +1600,16 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     };
                     let bytes = crate::contract::canonical_json_bytes(&output)
                         .map_err(|error| host_error(error.into()))?;
-                    let output = crate::obs::waiting(
-                        "output-commit",
-                        turn,
+                    let output = acyclic_stream::trace::observe(
+                        acyclic_stream::trace::Request {
+                            name: "output-commit",
+                            mechanism: acyclic_stream::trace::Mechanism::Wait,
+                            parent: None,
+                            guarantee: Some("staged_turn_output"),
+                            key: Some(acyclic_stream::trace::Key::Identity(turn.as_bytes())),
+                        },
                         open.outputs.stage(turn, &bytes),
+                        |_| None,
                     )
                     .await
                     .map_err(host_error)?;

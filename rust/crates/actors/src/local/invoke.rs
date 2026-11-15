@@ -191,6 +191,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
                 parent: None,
                 guarantee: Some("journaled_actor_result"),
+                key: None,
             },
             async {
                 let ticket = self.enqueue_invoke(invocation).await?;
@@ -219,6 +220,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 mechanism: acyclic_stream::trace::Mechanism::Commit,
                 parent: None,
                 guarantee: Some("stable_actor_input_identity"),
+                key: None,
             },
             async {
                 let snapshot = self.load(invocation.actor()).await?;
@@ -326,6 +328,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 mechanism: acyclic_stream::trace::Mechanism::Wait,
                 parent: None,
                 guarantee: Some("original_actor_terminal_receipt"),
+                key: None,
             },
             async {
                 if self.path(ticket.invocation.actor())? != ticket.state {

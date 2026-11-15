@@ -179,20 +179,18 @@ impl HttpStream {
                 .await?;
             decode(value).map(|result| (result, bytes))
         };
-        #[cfg(feature = "serde")]
         let result = crate::trace::observe(
             crate::trace::Request {
                 name: "stream.http.request",
                 mechanism: crate::trace::Mechanism::RoundTrip,
                 parent: None,
                 guarantee: Some("authenticated_bounded_json_reply_validated_for_original_call"),
+                key: None,
             },
             work,
             |(_, bytes)| u64::try_from(*bytes).ok(),
         )
         .await;
-        #[cfg(not(feature = "serde"))]
-        let result = work.await;
         result.map(|(value, _)| value)
     }
     async fn request_inner(

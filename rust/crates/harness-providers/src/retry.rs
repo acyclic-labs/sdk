@@ -99,7 +99,6 @@ pub(crate) fn events<'a>(
 + 'a {
     async_stream::try_stream! {
         use acyclic_harness_core::model::{ModelEvent, ModelWait};
-        #[cfg(not(target_arch = "wasm32"))]
         let primitive = match &error {
         Error::ModelUnavailable {
             failure: acyclic_harness_core::ModelTransportFailure::Status(429),
@@ -114,17 +113,18 @@ pub(crate) fn events<'a>(
         yield ModelEvent::Wait(ModelWait::Started { cause, delay: duration, retry_after });
         let started = transport.now();
         let timer = crate::deadline::timer(transport, duration, work)?;
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-    let waiting = acyclic_native_runtime::obs::waiting(
-        primitive,
-        format_args!("for {duration:?}"),
-        timer,
-    );
-    waiting.await?;
-    }
-    #[cfg(target_arch = "wasm32")]
-    { timer.await?; }
+        acyclic_stream::trace::observe(
+            acyclic_stream::trace::Request {
+                name: primitive,
+                mechanism: acyclic_stream::trace::Mechanism::Wait,
+                parent: None,
+                guarantee: Some("elapsed_retry_delay"),
+                key: None,
+            },
+            timer,
+            |_| None,
+        )
+        .await?;
         yield ModelEvent::Wait(ModelWait::Finished {
             elapsed: transport.now().saturating_sub(started),
         });

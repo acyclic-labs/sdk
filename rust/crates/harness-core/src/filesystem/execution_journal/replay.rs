@@ -92,6 +92,7 @@ where
                 mechanism: acyclic_stream::trace::Mechanism::Io,
                 parent: None,
                 guarantee: Some("authenticated_execution_prefix"),
+                key: None,
             },
             self.replay_page_inner(operation_id, after, maximum, retain_models, io),
             |_| None,

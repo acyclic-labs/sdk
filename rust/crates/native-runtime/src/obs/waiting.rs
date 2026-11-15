@@ -72,6 +72,14 @@ pub fn waiting<F: Future>(primitive: &'static str, key: impl Display, future: F)
     Waiting::new(primitive, key, future)
 }
 
+/// Whether any installed subscriber would record a [`waiting`] span, by the
+/// same callsite interest the span itself uses. A producer that would allocate
+/// to wrap a wait asks this first, so an unreported wait costs only the check.
+#[must_use]
+pub fn waits_reported() -> bool {
+    tracing::enabled!(target: "acyclic.wait", tracing::Level::INFO)
+}
+
 /// Names an existing synchronous wait while its closure runs.
 ///
 /// Like [`waiting`], this only observes the original producer's wait. It adds

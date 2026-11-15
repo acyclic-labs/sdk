@@ -705,7 +705,23 @@ impl StockExecution<'_> {
                 let next = match &mut stream {
                     Either::Left(continuation) => continuation.next().map(Ok),
                     Either::Right(stream) => {
-                        crate::obs::waiting("provider-event", operation_id, stream.next()).await
+                        acyclic_stream::trace::observe_value(
+                            acyclic_stream::trace::Request {
+                                name: "provider-event",
+                                mechanism: acyclic_stream::trace::Mechanism::Wait,
+                                parent: None,
+                                guarantee: Some("ordered_provider_event"),
+                                key: Some(acyclic_stream::trace::Key::Identity(
+                                    operation_id.as_bytes(),
+                                )),
+                            },
+                            stream.next(),
+                            |next| {
+                                (!matches!(next, Some(Err(_))))
+                                    .then_some((None, acyclic_stream::trace::Outcome::Succeeded))
+                            },
+                        )
+                        .await
                     }
                 };
                 let Some(event) = next else {
@@ -780,9 +796,16 @@ impl StockExecution<'_> {
                     _ => None,
                 };
                 let writer = self.journal_writes.lock().await;
-                let receipt = crate::obs::waiting(
-                    "journal-commit",
-                    operation_id,
+                let receipt = acyclic_stream::trace::observe(
+                    acyclic_stream::trace::Request {
+                        name: "journal-commit",
+                        mechanism: acyclic_stream::trace::Mechanism::Wait,
+                        parent: None,
+                        guarantee: Some("journaled_model_event"),
+                        key: Some(acyclic_stream::trace::Key::Identity(
+                            operation_id.as_bytes(),
+                        )),
+                    },
                     super::model_observation::append(
                         journal,
                         operation_id,
@@ -792,6 +815,7 @@ impl StockExecution<'_> {
                         usage.as_ref(),
                         io,
                     ),
+                    |_| None,
                 )
                 .await?;
                 drop(writer);

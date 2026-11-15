@@ -18,7 +18,7 @@ pub use acyclic_observability::{
 };
 pub(crate) use tracing::field::Empty;
 pub use wait_report::{WaitReport, WaitSnapshot};
-pub use waiting::{Waiting, waiting, waiting_sync};
+pub use waiting::{Waiting, waiting, waiting_sync, waits_reported};
 
 /// A diagnostic callback cannot interrupt an accepted native producer or take
 /// its terminal wake. Keep this boundary outside admission/completion locks;

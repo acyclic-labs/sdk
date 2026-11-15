@@ -1551,6 +1551,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
                 parent: None,
                 guarantee: Some("settled_actor_input_or_retained_delivery_wake"),
+                key: None,
             },
             async move {
                 // Duplicate events for one actor wait outside global admission. Only
@@ -1561,6 +1562,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         mechanism: acyclic_stream::trace::Mechanism::Lock,
                         parent: None,
                         guarantee: Some("exclusive_actor_delivery_and_settlement"),
+                        key: None,
                     },
                     slot.inner.lock(),
                 )
@@ -1591,6 +1593,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             mechanism: acyclic_stream::trace::Mechanism::Wait,
                             parent: None,
                             guarantee: Some("configured_active_delivery_credit"),
+                            key: None,
                         },
                         admission.acquire(),
                         |_| Some(0),
