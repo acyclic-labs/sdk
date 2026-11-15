@@ -46,7 +46,10 @@ print("\n".join(names))') || return 2
     while IFS= read -r name; do workspace_args+=(-p "$name"); done <<< "$names"
   fi
   local command=("$1"); shift
-  if [ "${command[0]}" = cargo ]; then command+=("$1"); shift; fi
+  if [ "${command[0]}" = cargo ]; then
+    command+=("$1"); shift
+    if [ "${command[1]}" = nextest ]; then command+=("$1"); shift; fi
+  fi
   "${command[@]}" "${workspace_args[@]}" "$@"
 }
 
@@ -179,14 +182,15 @@ client_bindings() {
 # Selecting them from the all-feature workspace build reuses its test binaries
 # instead of rebuilding acyclic-fs under a narrower feature resolution.
 native_mount_tests() {
-  sdk_workspace cargo test --all-features --locked --lib -- \
-    --ignored --test-threads=1 native_mount::
+  sdk_workspace cargo nextest run --all-features --locked --lib --test-threads 1 \
+    native_mount:: -- --ignored
 }
 
 # Native-host fork/capture/merge conformance uses the shared harness tests.
 fork_join_conformance() {
- cargo test -p acyclic-harness --all-features --locked --lib \
-    local::host_workspace::tests:: -- --test-threads=4
+  ensure_nextest
+ cargo nextest run -p acyclic-harness --all-features --locked --lib \
+    --test-threads 4 local::host_workspace::tests::
 }
 
 # Exercise the shipping binary through its shared real-provider CLI suite.
@@ -201,7 +205,8 @@ native_host_contracts() {
   npm ci --prefix plugin/tests/hosts --no-audit --no-fund
   bun run --cwd plugin/tests/hosts test:shim
   cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4
- cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4
+  ensure_nextest
+ cargo nextest run --locked -p acyclic-harness --all-features --lib --test-threads 4 local::host_owner::
 }
 
 # Every shipped browser feature set, with its unit and integration tests,
@@ -401,7 +406,8 @@ case "$lane" in
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
     # Run capture admission and publication in the shipped libc ABI. Path
     # statx and held-descriptor fstat can expose different optional metadata.
- cargo test -p acyclic-fs --locked \
+    ensure_nextest
+ cargo nextest run -p acyclic-fs --locked \
       --target "$target" --lib native_capture::
     ;;
   policy)
