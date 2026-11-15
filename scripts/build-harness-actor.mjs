@@ -49,7 +49,8 @@ export async function bundleHarnessActor(configFile, outputDirectory) {
     verifyArtifact(manifest, deployment.environment, deployment.entry, entry, declared,
       declared.map(path => readFileSync(join(staged, path))));
     const guest = await loadHostedArtifact(join(staged, HARNESS_MODULE.file), [...assets.values()], files);
-    if (typeof guest.manifest !== "function" || typeof guest.onRecord !== "function" || "actor" in guest) {
+    if (typeof guest.manifest !== "function" || typeof guest.onRecord !== "function"
+      || typeof guest.acceptsInterrupt !== "function" || "actor" in guest) {
       throw new Error("STEP conformance failed: strict-wire guest exports required; recovery: bun scripts/build-harness-actor.mjs");
     }
     // The loader installs admitted bindings once at readiness, never an actor identity.
