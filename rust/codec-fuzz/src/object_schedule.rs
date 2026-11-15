@@ -66,7 +66,7 @@ impl<'a> Case<'a> {
                 .len()
                 .checked_add(1)?
                 .checked_mul(2)?
-                .checked_add(acyclic_objects::codec_fuzz::compaction_chunk_bytes())?;
+                .checked_add(acyclic_objects::codec_fuzz::compaction_chunk_bytes().ok()?)?;
             if bytes > isize::MAX as usize {
                 return None;
             }
@@ -524,7 +524,7 @@ mod tests {
             .expect("original sealed remove and flush producer");
         let prefix = 20 + usize::from(bytes[3]);
         bytes.resize(
-            prefix + acyclic_objects::codec_fuzz::compaction_chunk_bytes() + 1,
+            prefix + acyclic_objects::codec_fuzz::compaction_chunk_bytes()? + 1,
             0,
         );
         assert!(super::check_each_site(&bytes, |_| {
@@ -545,7 +545,7 @@ mod tests {
         // falsely rejects this baseline before reaching any physical fault.
         let prefix = 20 + usize::from(bytes[3]);
         bytes.resize(
-            prefix + acyclic_objects::codec_fuzz::compaction_chunk_bytes() + 1,
+            prefix + acyclic_objects::codec_fuzz::compaction_chunk_bytes()? + 1,
             0,
         );
         let mut reached_rename = false;

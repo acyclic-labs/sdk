@@ -1,5 +1,6 @@
 //! The original append-log writer and private payload decoder, without disk I/O.
 use super::{LOG_FRAME, PUT, REMOVE, decode, encode, replay};
+use crate::{Error, wire::ErrorCode};
 
 fn body(frame: &[u8]) -> Option<Vec<u8>> {
     LOG_FRAME.read(frame, frame.len() as u64).ok().flatten()
@@ -52,10 +53,18 @@ fn replay_matches(log: &[u8], expected: &[(&str, &[u8], usize, usize)]) -> bool 
 }
 
 fn replay_sequence(key: &str, value: &[u8]) -> bool {
-    let retained = encode(PUT, "retained", b"other").expect("retained writer input");
-    let initial = encode(PUT, key, b"prior").expect("initial writer input");
-    let replaced = encode(PUT, key, value).expect("replacement writer input");
-    let removed = encode(REMOVE, key, &[]).expect("removal writer input");
+    let Ok(retained) = encode(PUT, "retained", b"other") else {
+        return false;
+    };
+    let Ok(initial) = encode(PUT, key, b"prior") else {
+        return false;
+    };
+    let Ok(replaced) = encode(PUT, key, value) else {
+        return false;
+    };
+    let Ok(removed) = encode(REMOVE, key, &[]) else {
+        return false;
+    };
     let start = retained.len() + initial.len();
     let mut log = retained.clone();
     log.extend_from_slice(&initial);
@@ -87,13 +96,17 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
     if !canonical(bytes) || body(bytes).is_some_and(|body| !canonical(&body)) {
         return false;
     }
-    let key = format!(
-        "k{}",
-        String::from_utf8_lossy(&bytes[..bytes.len().min(32)])
-    );
+    let Some(prefix) = bytes.get(..bytes.len().min(32)) else {
+        return false;
+    };
+    let key = format!("k{}", String::from_utf8_lossy(prefix));
     for (operation, value) in [(PUT, bytes), (REMOVE, &[][..])] {
-        let frame = encode(operation, &key, value).expect("local writer input");
-        let original = body(&frame).expect("original local writer frame");
+        let Ok(frame) = encode(operation, &key, value) else {
+            return false;
+        };
+        let Some(original) = body(&frame) else {
+            return false;
+        };
         // Independent operands make rejecting every payload a failing oracle.
         if !canonical(&original)
             || !decode(&original).is_some_and(|(decoded, name, range)| {
@@ -103,21 +116,27 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
             return false;
         }
         for end in [0, 1, 4] {
-            if decode(&original[..end]).is_some() {
+            if original
+                .get(..end)
+                .is_some_and(|prefix| decode(prefix).is_some())
+            {
                 return false;
             }
         }
         let mut damaged = original.clone();
         for operation in [0, u8::MAX] {
-            damaged[0] = operation;
+            let Some(first) = damaged.first_mut() else {
+                return false;
+            };
+            *first = operation;
             if decode(&damaged).is_some() {
                 return false;
             }
             // Preserve the real checksum so the payload reaches replay's error.
             let mut frame = Vec::new();
-            LOG_FRAME
-                .encode(&[&damaged], &mut frame)
-                .expect("mutated payload frame");
+            if LOG_FRAME.encode(&[&damaged], &mut frame).is_err() {
+                return false;
+            }
             if replay(frame.as_slice(), frame.len() as u64)
                 .err()
                 .map(|error| error.kind())
@@ -126,15 +145,27 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
                 return false;
             }
         }
-        damaged[0] = operation;
+        let Some(first) = damaged.first_mut() else {
+            return false;
+        };
+        *first = operation;
         // A non-UTF8 key must reach this parser, rather than fail its checksum.
-        damaged[5] = u8::MAX;
+        let Some(key_byte) = damaged.get_mut(5) else {
+            return false;
+        };
+        *key_byte = u8::MAX;
         if decode(&damaged).is_some() {
             return false;
         }
         damaged = original.clone();
-        if let Ok(too_long) = u32::try_from(original.len() - 4) {
-            damaged[1..5].copy_from_slice(&too_long.to_le_bytes());
+        let Some(body_length) = original.len().checked_sub(4) else {
+            return false;
+        };
+        if let Ok(too_long) = u32::try_from(body_length) {
+            let Some(length) = damaged.get_mut(1..5) else {
+                return false;
+            };
+            length.copy_from_slice(&too_long.to_le_bytes());
             if decode(&damaged).is_some() {
                 return false;
             }
@@ -150,7 +181,7 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
     replay_sequence(&key, bytes)
 }
 
-pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
+pub(crate) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Error> {
     [
         ("local-put-empty", PUT, "", &[][..]),
         (
@@ -163,10 +194,9 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     ]
     .into_iter()
     .map(|(name, operation, key, value)| {
-        (
-            name,
-            encode(operation, key, value).expect("local writer corpus"),
-        )
+        let encoded = encode(operation, key, value)
+            .map_err(|source| Error::from(ErrorCode::Unavailable).with_source(source))?;
+        Ok((name, encoded))
     })
     .collect()
 }
