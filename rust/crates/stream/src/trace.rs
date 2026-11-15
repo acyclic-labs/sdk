@@ -7,7 +7,11 @@
 use crate::RetainedRecord;
 
 #[cfg(feature = "serde")]
+mod body;
+#[cfg(feature = "serde")]
 mod context;
+#[cfg(feature = "serde")]
+pub use body::RecordedStream;
 #[cfg(feature = "serde")]
 pub use context::{
     accompany, accompany_sync, observe, observe_outcome, observe_sync, observe_value,
