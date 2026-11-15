@@ -112,15 +112,19 @@ struct State {
 
 type ReconciliationObserver = dyn Fn(ModelDispatch) -> Result<()> + Send + Sync;
 type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync;
+type Responder = dyn Fn(&ModelRequest) -> Result<ScriptedTurn> + Send + Sync;
 type ContentReader = (
     Arc<dyn crate::conversation::ContentResidencyVerifier>,
     Option<u64>,
 );
 
 /// Replays responses once and retains the exact requests delivered by the executor.
-/// Exhaustion fails instead of silently repeating the final response.
+/// Exhaustion fails instead of silently repeating the final response. A
+/// [responding](Self::responding) provider instead answers each request from
+/// its content, for concurrent agents whose request order a seed decides.
 pub struct ScriptedModelProvider {
     state: Arc<Mutex<State>>,
+    responder: Option<Arc<Responder>>,
     capacity: Option<ModelContextCapacity>,
     token_counter: Option<Arc<TokenCounter>>,
     dispatch_observer: Option<Arc<dyn DispatchObserver>>,
@@ -138,6 +142,7 @@ impl ScriptedModelProvider {
                 turns: turns.into_iter().collect(),
                 ..State::default()
             })),
+            responder: None,
             capacity: Some(ModelContextCapacity {
                 context_tokens: 131_072,
                 output_tokens: Some(4_096),
@@ -149,6 +154,19 @@ impl ScriptedModelProvider {
             reads_content: false,
             content: None,
         }
+    }
+
+    /// Answers every request with `respond(request)` instead of the queued
+    /// turns. Requests and dispatches are still recorded; an error fails
+    /// only that request. Runs without the state lock, so concurrent agents'
+    /// requests are answered in the order the executor dispatches them.
+    #[must_use]
+    pub fn responding(
+        respond: impl Fn(&ModelRequest) -> Result<ScriptedTurn> + Send + Sync + 'static,
+    ) -> Self {
+        let mut provider = Self::new([]);
+        provider.responder = Some(Arc::new(respond));
+        provider
     }
 
     /// Reads every file part's bytes through the reader the harness binds for
@@ -286,13 +304,19 @@ impl ScriptedModelProvider {
                 "scripted model request digest mismatch".into(),
             ));
         }
+        let answer = self
+            .responder
+            .as_ref()
+            .map(|respond| respond(request.request()));
         let mut state = self.lock();
         state.requests.push(request);
         state.dispatches.push(dispatch);
-        state
-            .turns
-            .pop_front()
-            .ok_or_else(|| Error::Invalid("scripted model exhausted".into()))
+        answer.unwrap_or_else(|| {
+            state
+                .turns
+                .pop_front()
+                .ok_or_else(|| Error::Invalid("scripted model exhausted".into()))
+        })
     }
 }
 
@@ -377,6 +401,7 @@ impl ModelProvider for ScriptedModelProvider {
         self.reads_content.then(|| {
             Arc::new(Self {
                 state: Arc::clone(&self.state),
+                responder: self.responder.clone(),
                 capacity: self.capacity,
                 token_counter: self.token_counter.clone(),
                 dispatch_observer: self.dispatch_observer.clone(),
