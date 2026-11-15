@@ -33,36 +33,45 @@ const ALLOWED: [(&str, usize); 3] = [
     ("rust/crates/stream/tests/credential_javascript.rs", 1),
 ];
 
+/// `text` with Rust's insignificant spacing removed: whitespace survives only as one space
+/// between two word characters, so each token sequence has one spelling.
+fn squeeze(text: &str) -> String {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut squeezed = String::with_capacity(text.len());
+    let mut spaced = false;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            spaced = true;
+            continue;
+        }
+        if spaced && squeezed.ends_with(word) && word(c) {
+            squeezed.push(' ');
+        }
+        spaced = false;
+        squeezed.push(c);
+    }
+    squeezed
+}
+
 /// Run-time uses of the manifest directory in `text`.
 fn manifest_uses(text: &str) -> usize {
-    let needle = manifest();
-    text.match_indices(&needle)
-        .filter(|(at, _)| {
-            let before: String = text[..*at]
-                .chars()
-                .rev()
-                .filter(|c| !c.is_whitespace())
-                .take(32)
-                .collect();
-            let before: String = before.chars().rev().collect();
-            !READERS.iter().any(|reader| before.ends_with(reader))
-        })
+    let text = squeeze(text);
+    text.match_indices(&manifest())
+        .filter(|(at, _)| !READERS.iter().any(|reader| text[..*at].ends_with(reader)))
         .count()
 }
 
 /// `tempdir_in` calls whose argument names the running executable.
 fn executable_tempdirs(text: &str) -> usize {
-    let call = "current_exe()";
+    let text = squeeze(text);
+    let word = |c: char| c.is_alphanumeric() || c == '_';
     // Names bound to the running executable's path, as in `let name = ...current_exe()`.
     let mut names = vec!["current_exe".to_owned()];
-    for (at, _) in text.match_indices(call) {
-        let line = text[..at].rsplit('\n').next().unwrap_or_default();
-        if let Some(binding) = line.trim_start().strip_prefix("let ") {
-            let name: String = binding
-                .trim_start_matches("mut ")
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
+    for (at, _) in text.match_indices("current_exe()") {
+        let statement = &text[text[..at].rfind([';', '{', '}']).map_or(0, |end| end + 1)..at];
+        if let Some(binding) = statement.strip_prefix("let ") {
+            let binding = binding.strip_prefix("mut ").unwrap_or(binding);
+            let name: String = binding.chars().take_while(|c| word(*c)).collect();
             if !name.is_empty() {
                 names.push(name);
             }
@@ -84,7 +93,6 @@ fn executable_tempdirs(text: &str) -> usize {
                 .collect();
             names.iter().any(|name| {
                 argument.match_indices(name.as_str()).any(|(start, _)| {
-                    let word = |c: char| c.is_alphanumeric() || c == '_';
                     !argument[..start].ends_with(word)
                         && !argument[start + name.len()..].starts_with(word)
                 })
@@ -168,6 +176,11 @@ fn planted_build_location_paths_fail_the_scan() {
         format!("let root = Path::new({manifest});"),
         format!("let file = concat!({manifest}, \"/tests/x.txt\");"),
         format!("let x = option_{manifest};"),
+        // Spacing that Rust ignores is no way around the rule.
+        format!(
+            "let root = Path::new({});",
+            manifest.replace("!(", " ! (\n    ").replace("\")", "\" )")
+        ),
     ] {
         assert_eq!(
             scan(target, &plant),
@@ -185,6 +198,7 @@ fn planted_build_location_paths_fail_the_scan() {
         "tempfile::tempdir_in(std::env::current_exe().unwrap().parent().unwrap())",
         "let executable = std::env::current_exe()?;\nlet d = Builder::new().tempdir_in(executable.parent().expect(\"parent\"));",
         "let mut exe = env::current_exe()?; tempfile::tempdir_in(exe.parent().unwrap())",
+        "let executable =\n    std::env::current_exe()?;\ntempfile::tempdir_in (\n    executable.parent().unwrap())",
     ] {
         assert_eq!(
             scan(target, plant),
