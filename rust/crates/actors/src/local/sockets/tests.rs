@@ -91,7 +91,7 @@ impl LocalSockets {
         let host = Host { task, client };
         host.client.register_credential(
             0,
-            testing::credential_with_grants(vec![ResourceGrant {
+            testing::credential_with_grants(&[ResourceGrant {
                 resource: ResourcePattern {
                     name: "actors:/sockets".into(),
                     prefix: false,
@@ -578,7 +578,7 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     );
     client.register_credential(
         0,
-        testing::credential_with_grants(vec![ResourceGrant {
+        testing::credential_with_grants(&[ResourceGrant {
             resource: ResourcePattern {
                 name: "actors:/sockets".into(),
                 prefix: false,

@@ -446,7 +446,7 @@ async fn committed_handover(refused_close: bool) -> Result {
     );
     client.register_credential(
         0,
-        testing::credential_with_grants(vec![ResourceGrant {
+        testing::credential_with_grants(&[ResourceGrant {
             resource: ResourcePattern {
                 name: Arc::new(sockets.clone())
                     .prepare(attachment.open())?
