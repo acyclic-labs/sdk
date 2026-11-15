@@ -59,7 +59,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> BoundSource<'_, A, O> {
                 SourceOperation::Reconcile,
             )
             .await?;
-            return reconcile_outcome_from_fact(session, fact);
+            return reconcile_outcome_from_fact(&session.workspace, fact);
         }
         let capture = session.capture.clone();
         let policy = session.capture_policy.clone();
