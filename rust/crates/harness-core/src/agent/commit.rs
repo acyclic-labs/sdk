@@ -134,8 +134,16 @@ fn intent_of(record: &InboxRecord) -> String {
     }
 }
 
-/// One conditional commit closing the inbox of `target`.
-pub fn archive(target: &AgentPath, by: &Sender, id: &IntentId) -> Result<CommitRequest, Error> {
+/// One conditional commit closing the inbox of `target`, carrying `activation`,
+/// the target actor's wake entry. The Archive record is input the actor must
+/// consume to close; without its wake in the same commit an unpaused actor
+/// never delivers it, so the commit cannot be built without one.
+pub fn archive(
+    target: &AgentPath,
+    by: &Sender,
+    id: &IntentId,
+    activation: CommitEffect,
+) -> Result<CommitRequest, Error> {
     let control = Control {
         by: by.clone(),
         id: id.clone(),
@@ -183,6 +191,7 @@ pub fn archive(target: &AgentPath, by: &Sender, id: &IntentId) -> Result<CommitR
             soft: true,
         });
     }
+    request.effects.push(activation);
     Ok(request)
 }
 

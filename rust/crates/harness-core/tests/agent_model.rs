@@ -107,6 +107,20 @@ fn intent(text: &str) -> IntentId {
     IntentId::try_from(text).expect("valid intent")
 }
 
+/// `agent::archive` joined to the target's wake in the shared actor layout.
+fn archive_waking(target: &AgentPath, by: &Sender, id: &IntentId) -> Result<CommitRequest> {
+    let actor = acyclic_actors::addressing::ActorReference::new(
+        b"account",
+        b"agents",
+        target.id().as_str().as_bytes(),
+    )?;
+    let actors = acyclic_actors::local::Store::new(
+        std::sync::Arc::new(MemoryStream::default()),
+        StreamPath::new(ACTORS)?,
+    );
+    Ok(archive(target, by, id, actors.activation(&actor)?)?)
+}
+
 fn user() -> Sender {
     Sender::User {
         principal: "user-1".into(),
@@ -227,7 +241,7 @@ async fn send_is_one_conditional_commit_refused_after_archive() -> Result {
     assert_eq!(first.commit_id, replay.commit_id);
     assert_eq!(inbox_tail(&provider, &agent).await?, 2);
 
-    let closing = archive(&agent, &user(), &intent("a1"))?;
+    let closing = archive_waking(&agent, &user(), &intent("a1"))?;
     assert!(matches!(
         submit(&provider, closing).await?,
         Submitted::Committed(_)

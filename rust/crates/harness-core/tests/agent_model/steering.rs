@@ -125,7 +125,11 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
         }
         step.state.status_tail += 1;
         let late = lower(&step, 1, intent_key("late", &[])?)?;
-        submit(&stream, archive(&recipient, &user(), &intent("close"))?).await?;
+        submit(
+            &stream,
+            archive_waking(&recipient, &user(), &intent("close"))?,
+        )
+        .await?;
         let closed_tail = inbox_tail(&stream, &recipient).await?;
         assert!(matches!(
             stream.commit(late).await?,
