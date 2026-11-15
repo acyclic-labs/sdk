@@ -598,7 +598,7 @@ async fn interrupted_and_cancelled_calls_settle_and_the_turn_continues() -> Resu
     for (execute, executions, expected, stops) in [
         (cancelled, 1, (1, 0), false),
         (lost, 2, (1, 1), false),
-        // The turn is stopped while the call runs.
+        // The turn is stopped while the first of two calls runs.
         (cancelled, 1, (1, 0), true),
     ] {
         let journal = Journal::default();
@@ -619,7 +619,18 @@ async fn interrupted_and_cancelled_calls_settle_and_the_turn_continues() -> Resu
             json!({"type":"object"}),
             crate::tool::json_projection_schema(json!({"type":"object"})),
         )?;
-        let model = Arc::new(scripted_model());
+        // A stopped turn starts no later call from the same response.
+        let model = Arc::new(if stops {
+            ScriptedModelProvider::new([
+                tool_turn([
+                    echo_call("call-1", json!({"value":"hello"})),
+                    echo_call("call-2", json!({"value":"hello"})),
+                ]),
+                done_turn(),
+            ])
+        } else {
+            scripted_model()
+        });
         let operation = OperationId::new();
         let executor = StockExecutor::new(
             Model::new("fixture".into(), "exact".into(), "1".into())?,
