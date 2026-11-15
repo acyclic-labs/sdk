@@ -103,12 +103,14 @@ impl HistoryCursor {
         }
         // A follow renews finite chunks; the chunk never limits its history.
         if self.records.remaining == 0 {
-            self.records.remaining = self
-                .records
-                .history
-                .tail
-                .saturating_sub(self.records.next)
-                .min(u64::from(u32::MAX)) as u32;
+            self.records.remaining = u32::try_from(
+                self.records
+                    .history
+                    .tail
+                    .saturating_sub(self.records.next)
+                    .min(u64::from(u32::MAX)),
+            )
+            .map_err(|_| StreamError::Capacity)?;
         }
         #[cfg(not(target_arch = "wasm32"))]
         let work = self.work.clone();

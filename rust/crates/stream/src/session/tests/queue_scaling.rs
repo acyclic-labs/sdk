@@ -1,17 +1,15 @@
 //! Paired growth check: one credited head behind stalled follows.
 use super::*;
 
-fn record(sequence: u64) -> Event {
-    Event::Record(crate::Record {
-        headers: crate::AppendRecord::latest("running", "status", false)
-            .unwrap()
-            .headers,
+fn record(sequence: u64) -> Result<Event, StreamError> {
+    Ok(Event::Record(crate::Record {
+        headers: crate::AppendRecord::latest("running", "status", false)?.headers,
         sequence,
         value: OwnedBytes::from_static(b"running"),
         commit_id: crate::CommitId::from_bytes([1; 32]),
         committed_at_micros: 0,
-        origin: crate::StreamPath::new("origin").unwrap(),
-    })
+        origin: crate::StreamPath::new("origin")?,
+    }))
 }
 
 // The reviewed selector, retained only as the paired baseline. Local credit
@@ -20,7 +18,7 @@ fn scanned_ready(
     queue: &mut VecDeque<wire::SessionFrame>,
     target: u64,
     credit: wire::SessionWindow,
-) -> (wire::SessionFrame, usize) {
+) -> Result<(wire::SessionFrame, usize), StreamError> {
     let runnable = BTreeSet::from([target]);
     let mut visits = 0;
     for index in 0..queue.len() {
@@ -43,15 +41,18 @@ fn scanned_ready(
         {
             continue;
         }
-        return (queue.remove(index).unwrap(), visits);
+        return Ok((
+            queue.remove(index).ok_or(StreamError::InvalidArgument)?,
+            visits,
+        ));
     }
-    panic!("credited baseline head was not selected");
+    Err(StreamError::Unavailable)
 }
 
 #[test]
 fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
     for count in [1024, 4096, 8192] {
-        let mut session = properties::empty_session(true);
+        let mut session = properties::empty_session(true).unwrap();
         // The caller's explicit budget admits the fixture's many small frames.
         session.limits = Limits {
             channels: count + 1,
@@ -82,7 +83,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                         channel_id: id,
                         generation: 1,
                     },
-                    Ok(record(0)),
+                    Ok(record(0).unwrap()),
                 )
                 .unwrap();
         }
@@ -110,7 +111,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                 .frame
                 .wire()
                 .clone();
-            let (old, visits) = scanned_ready(&mut before, target, session.credit);
+            let (old, visits) = scanned_ready(&mut before, target, session.credit).unwrap();
             assert_eq!(visits, count + 1);
             let head_visits = session.head_visits;
             session.refresh_source(target);
@@ -126,7 +127,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                             channel_id: target,
                             generation: 1,
                         },
-                        Ok(record(sequence + 1)),
+                        Ok(record(sequence + 1).unwrap()),
                     )
                     .unwrap();
             }
@@ -136,7 +137,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
 
 #[test]
 fn global_byte_credit_selects_fitting_heads_without_overtaking_a_channel() {
-    let mut session = properties::empty_session(false);
+    let mut session = properties::empty_session(false).unwrap();
     let binding = session
         .authority
         .bind(
@@ -156,7 +157,7 @@ fn global_byte_credit_selects_fitting_heads_without_overtaking_a_channel() {
     session.channels.insert(3, other);
     for (id, size) in [(1, 1000), (1, 1), (3, 1)] {
         let sequence = session.channels.get(&id).unwrap().pending.len() as u64;
-        let Event::Record(mut entry) = record(sequence) else {
+        let Event::Record(mut entry) = record(sequence).unwrap() else {
             unreachable!()
         };
         entry.value = vec![0; size].into();

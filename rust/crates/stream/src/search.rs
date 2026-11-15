@@ -341,7 +341,11 @@ impl Cursor {
                 .ok_or(StreamError::InvalidResponse)
                 .map_err(failure)?;
             if frame.sequence < tail {
-                let count = (budget.get() - work).min(crate::MAX_ITEMS as u32);
+                let count = (budget.get() - work).min(
+                    u32::try_from(crate::MAX_ITEMS)
+                        .map_err(|_| StreamError::Capacity)
+                        .map_err(failure)?,
+                );
                 let at = cursor
                     .at
                     .clone()
@@ -350,9 +354,8 @@ impl Cursor {
                 work += scan(
                     access,
                     frame,
-                    at,
+                    ScanWindow { at, count },
                     &cursor.pattern,
-                    count,
                     matcher,
                     &mut matches,
                     owner,
@@ -432,12 +435,16 @@ impl Cursor {
     }
 }
 
+struct ScanWindow {
+    at: Revision,
+    count: u32,
+}
+
 async fn scan<P: StreamProvider + ?Sized, M: Matcher>(
     access: &Access<'_, P>,
     frame: &mut Frame,
-    at: Revision,
+    window: ScanWindow,
     pattern: &[u8],
-    count: u32,
     matcher: &M,
     matches: &mut Vec<Match<M::Source>>,
     owner: &mut Owner,
@@ -452,13 +459,15 @@ async fn scan<P: StreamProvider + ?Sized, M: Matcher>(
             key: None,
             path: frame.path.clone(),
             from: frame.sequence,
-            limit: u64::from(count).min(tail - frame.sequence) as u32,
-            at_least: RevisionCut::of(at),
+            limit: u32::try_from(u64::from(window.count).min(tail - frame.sequence))
+                .map_err(|_| StreamError::Capacity)
+                .map_err(failure)?,
+            at_least: RevisionCut::of(window.at),
         })
         .await
         .map_err(failure)?;
     let mut work = 0;
-    while work < count && frame.sequence < tail {
+    while work < window.count && frame.sequence < tail {
         let record = access
             .next(&mut records)
             .await
@@ -506,7 +515,7 @@ async fn scan<P: StreamProvider + ?Sized, M: Matcher>(
                 frame.sequence += 1;
                 break;
             }
-            if work == count {
+            if work == window.count {
                 return Ok(work);
             }
         }

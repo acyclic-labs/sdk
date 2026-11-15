@@ -43,8 +43,8 @@ fn read(old: bool, baseline: &mut BaselineCursor, candidate: &mut HistoryCursor)
         baseline.next_record()
     } else {
         futures::FutureExt::now_or_never(candidate.next_record())
-            .expect("memory pages are immediately ready")
-            .unwrap()
+            .and_then(Result::ok)
+            .flatten()
     }
 }
 

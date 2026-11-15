@@ -242,8 +242,13 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
             })).collect();
             let mut value = json!({ "retained": retained, "durableThrough": request.durable_through.map(|through| through.to_string()), "paths": request.paths.iter().map(ToString::to_string).collect::<Vec<_>>(), "children": children, "limit": request.limit, "projection": match request.projection { crate::HeadProjection::History => "history", crate::HeadProjection::Watermarks => "watermarks", crate::HeadProjection::Tail => "tail" } });
             if let Some(at) = &request.at {
-                value["at"] =
-                    crate::http_response::revision_json(Some(&wire_codec::revision_to_wire(at)));
+                let Some(object) = value.as_object_mut() else {
+                    return Err("invalid_response");
+                };
+                object.insert(
+                    "at".into(),
+                    crate::http_response::revision_json(Some(&wire_codec::revision_to_wire(at))),
+                );
             }
             Ok(with_at_least(value, &wire.at_least))
         }
@@ -283,9 +288,15 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                     },
                 });
                 if let Some(end) = key.end {
-                    selector["end"] = json!(STANDARD.encode(end));
+                    let Some(object) = selector.as_object_mut() else {
+                        return Err("invalid_response");
+                    };
+                    object.insert("end".into(), json!(STANDARD.encode(end)));
                 }
-                value["key"] = selector;
+                let Some(object) = value.as_object_mut() else {
+                    return Err("invalid_response");
+                };
+                object.insert("key".into(), selector);
             }
             Ok(with_at_least(value, &at_least))
         }
@@ -335,6 +346,25 @@ pub(crate) fn encode(route: &str, input: &[u8]) -> Result<String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn encode_append(request: &crate::AppendRequest) -> Result<String> {
     serde_json::to_string(&append_json(request)?).map_err(|_| "could not encode request")
+}
+
+/// Adds the minimum cut, one entry per authority; the host serves at or above it.
+fn with_at_least(value: Value, at_least: &[wire::Revision]) -> Value {
+    match value {
+        Value::Object(mut object) => {
+            if !at_least.is_empty() {
+                object.insert(
+                    "atLeast".into(),
+                    at_least
+                        .iter()
+                        .map(|revision| crate::http_response::revision_json(Some(revision)))
+                        .collect(),
+                );
+            }
+            Value::Object(object)
+        }
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -417,15 +447,4 @@ mod tests {
         assert!(projected.pointer("/options/deadlineUnixMillis").is_none());
         Ok(())
     }
-}
-
-/// Adds the minimum cut, one entry per authority; the host serves at or above it.
-fn with_at_least(mut value: Value, at_least: &[wire::Revision]) -> Value {
-    if !at_least.is_empty() {
-        value["atLeast"] = at_least
-            .iter()
-            .map(|revision| crate::http_response::revision_json(Some(revision)))
-            .collect();
-    }
-    value
 }

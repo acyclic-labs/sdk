@@ -691,7 +691,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         Ok(())
     }
     /// Acts on what [`Authority::changed`] waited for.
-    pub(super) fn trust_event(&mut self, event: AuthorityEvent) -> Result<(), StreamError> {
+    pub(super) fn trust_event(&mut self, event: &AuthorityEvent) -> Result<(), StreamError> {
         match event {
             AuthorityEvent::Trust(Err(SourceClosed)) => self.fence(),
             AuthorityEvent::Trust(Ok(())) | AuthorityEvent::Expired => self.revalidate(None),
@@ -711,7 +711,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         match changed.now_or_never() {
             Some(event) => {
                 self.trust_changed = None;
-                self.trust_event(AuthorityEvent::Trust(event))
+                self.trust_event(&AuthorityEvent::Trust(event))
             }
             None => self.expire(),
         }

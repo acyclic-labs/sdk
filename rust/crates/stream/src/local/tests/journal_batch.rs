@@ -63,7 +63,7 @@ fn owned_frame_batches_reopen_in_order_and_release_original_work()
                 assert_eq!(stream.inner.required()?, 1);
                 stream.await_publication(1).await?;
                 assert_eq!(
-                    stream.inner.journal.lock().unwrap().flushed_sequence,
+                    stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).flushed_sequence,
                     Some(1)
                 );
                 release.send(())?;
@@ -73,7 +73,7 @@ fn owned_frame_batches_reopen_in_order_and_release_original_work()
             assert_eq!(*revision.borrow_and_update(), count);
             assert!(!revision.has_changed()?);
             assert_eq!(
-                stream.inner.journal.lock().unwrap().append_admissions,
+                stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).append_admissions,
                 1,
                 "one proposal must not repeat offset admission for each frame"
             );
@@ -253,7 +253,7 @@ mod deadlines {
             true
         }
         fn crashed(&self, _: Result<(), CutSimulationError>) {
-            panic!("deadline admission is not a simulated power loss");
+            unreachable!("deadline admission is not a simulated power loss");
         }
     }
 
@@ -272,7 +272,7 @@ mod deadlines {
                 at: 1,
             }))
             .await?;
-        let mut request = super::super::replay_work::request(b"deadline".to_vec());
+        let mut request = super::super::replay_work::request(b"deadline".to_vec())?;
         request.deadline_unix_millis = Some(20);
         assert!(matches!(
             stream.commit(request.clone()).await,

@@ -15,60 +15,103 @@ pub(super) struct Slots {
 
 impl Slots {
     pub(super) fn new() -> Self {
-        let mut slots = Self {
-            free: [0; WORDS],
-            groups: [0; GROUPS],
-            head: 0,
-            owned: [0; WORDS],
-        };
-        for slot in 0..super::super::DEFAULT_CHANNELS {
-            slots.available(slot as u32, true);
+        let mut free = [u64::MAX; WORDS];
+        let remainder = super::super::DEFAULT_CHANNELS % 64;
+        if remainder != 0
+            && let Some(last) = free.last_mut()
+        {
+            *last = (1_u64 << remainder) - 1;
         }
-        slots
+        let mut groups = [u64::MAX; GROUPS];
+        let remainder = WORDS % 64;
+        if remainder != 0
+            && let Some(last) = groups.last_mut()
+        {
+            *last = (1_u64 << remainder) - 1;
+        }
+        let head = if GROUPS == 64 {
+            u64::MAX
+        } else {
+            (1_u64 << GROUPS) - 1
+        };
+        Self {
+            free,
+            groups,
+            head,
+            owned: [0; WORDS],
+        }
     }
 
-    pub(super) fn available(&mut self, slot: u32, free: bool) {
-        let word = slot as usize / 64;
+    pub(super) fn available(&mut self, slot: u32, free: bool) -> Result<(), StreamError> {
+        let word = usize::try_from(slot).map_err(|_| StreamError::InvalidArgument)? / 64;
         let bit = 1_u64 << (slot % 64);
+        let word_free = self
+            .free
+            .get_mut(word)
+            .ok_or(StreamError::InvalidArgument)?;
         if free {
-            self.free[word] |= bit;
+            *word_free |= bit;
         } else {
-            self.free[word] &= !bit;
+            *word_free &= !bit;
         }
         let group = word / 64;
+        let group_bits = self
+            .groups
+            .get_mut(group)
+            .ok_or(StreamError::InvalidArgument)?;
         let bit = 1_u64 << (word % 64);
-        if self.free[word] != 0 {
-            self.groups[group] |= bit;
+        if *word_free != 0 {
+            *group_bits |= bit;
         } else {
-            self.groups[group] &= !bit;
+            *group_bits &= !bit;
         }
         let bit = 1_u64 << group;
-        if self.groups[group] != 0 {
+        if *group_bits != 0 {
             self.head |= bit;
         } else {
             self.head &= !bit;
         }
+        Ok(())
     }
 
-    pub(super) fn owned(&self, slot: u32) -> bool {
-        self.owned[slot as usize / 64] & (1_u64 << (slot % 64)) != 0
+    pub(super) fn owned(&self, slot: u32) -> Result<bool, StreamError> {
+        let word = usize::try_from(slot).map_err(|_| StreamError::InvalidArgument)? / 64;
+        self.owned
+            .get(word)
+            .map(|word| word & (1_u64 << (slot % 64)) != 0)
+            .ok_or(StreamError::InvalidArgument)
     }
 
     pub(super) fn allocate(&mut self) -> Result<u32, StreamError> {
         if self.head == 0 {
             return Err(StreamError::Capacity);
         }
-        let group = self.head.trailing_zeros() as usize;
-        let word = group * 64 + self.groups[group].trailing_zeros() as usize;
-        let slot = (word * 64 + self.free[word].trailing_zeros() as usize) as u32;
-        self.available(slot, false);
-        self.owned[word] |= 1_u64 << (slot % 64);
+        let group = self.head.trailing_zeros();
+        let group_bits = self
+            .groups
+            .get(usize::try_from(group).map_err(|_| StreamError::Capacity)?)
+            .ok_or(StreamError::Capacity)?;
+        let word = usize::try_from(group).map_err(|_| StreamError::Capacity)? * 64
+            + usize::try_from(group_bits.trailing_zeros()).map_err(|_| StreamError::Capacity)?;
+        let free = self.free.get(word).ok_or(StreamError::Capacity)?;
+        let slot = word * 64
+            + usize::try_from(free.trailing_zeros()).map_err(|_| StreamError::Capacity)?;
+        let slot = u32::try_from(slot).map_err(|_| StreamError::Capacity)?;
+        self.available(slot, false)?;
+        let word = usize::try_from(slot).map_err(|_| StreamError::Capacity)? / 64;
+        let owned = self.owned.get_mut(word).ok_or(StreamError::Capacity)?;
+        *owned |= 1_u64 << (slot % 64);
         Ok(slot)
     }
 
-    pub(super) fn release(&mut self, slot: u32) {
-        self.owned[slot as usize / 64] &= !(1_u64 << (slot % 64));
-        self.available(slot, true);
+    pub(super) fn release(&mut self, slot: u32) -> Result<(), StreamError> {
+        let word = usize::try_from(slot).map_err(|_| StreamError::InvalidArgument)? / 64;
+        let owned = self
+            .owned
+            .get_mut(word)
+            .ok_or(StreamError::InvalidArgument)?;
+        *owned &= !(1_u64 << (slot % 64));
+        self.available(slot, true)
     }
 }
 
@@ -124,7 +167,7 @@ impl Client {
                 credential,
                 sent,
             })
-            .map_err(queue_error)?;
+            .map_err(|error| queue_error(&error))?;
         Ok(result)
     }
 
@@ -149,7 +192,7 @@ impl Client {
                 .commands
                 .clone()
                 .try_reserve_owned()
-                .map_err(queue_error)?;
+                .map_err(|error| queue_error(&error))?;
             let (ready, admitted) = oneshot::channel();
             self.pool
                 .commands
@@ -158,7 +201,7 @@ impl Client {
                     withdrawal,
                     ready,
                 })
-                .map_err(queue_error)?;
+                .map_err(|error| queue_error(&error))?;
             let (slot, owner) = admitted.await.map_err(|_| StreamError::Unavailable)??;
             let mut client = self.clone();
             client.credential_owner = Some(owner);
@@ -167,7 +210,7 @@ impl Client {
     }
 }
 
-pub(super) fn queue_error<T>(error: mpsc::error::TrySendError<T>) -> StreamError {
+pub(super) fn queue_error<T>(error: &mpsc::error::TrySendError<T>) -> StreamError {
     match error {
         mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
         mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
@@ -178,12 +221,12 @@ impl Pool {
     pub(super) fn renew_credential(
         &mut self,
         slot: u32,
-        owner: Option<Arc<Owner>>,
+        owner: Option<&Arc<Owner>>,
         credential: Bytes,
         sent: oneshot::Sender<Result<(), StreamError>>,
     ) -> Result<(), StreamError> {
-        let owned = self.credential_slots.owned(slot);
-        let admitted = match &owner {
+        let owned = self.credential_slots.owned(slot)?;
+        let admitted = match owner {
             Some(owner) => owned && owner.slot == slot,
             None => !owned,
         };
@@ -194,7 +237,7 @@ impl Pool {
             Err(StreamError::AccessDenied)
         };
         if result.is_ok() && owner.is_none() {
-            self.credential_slots.available(slot, empty);
+            self.credential_slots.available(slot, empty)?;
         }
         // A command-local refusal must not fail unrelated channels. A failed
         // physical send still fences the pool, as enrollment does.
@@ -281,7 +324,7 @@ impl Pool {
                     }),
                 )),
                 Err(error) => {
-                    self.credential_slots.release(slot);
+                    self.credential_slots.release(slot)?;
                     Err(error)
                 }
             }

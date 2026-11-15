@@ -330,7 +330,10 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
         assert_eq!(provider.commit(request.clone()).await?, outcome);
         for body in [record("b", "alice")?, record("a", "bob")?] {
             let mut changed = request.clone();
-            match changed.effects[0]
+            match changed
+                .effects
+                .first_mut()
+                .ok_or("missing effect")?
                 .mutations
                 .first_mut()
                 .ok_or("missing commit mutation")?

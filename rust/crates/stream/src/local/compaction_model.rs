@@ -94,7 +94,7 @@ pub(crate) fn verify(fault: u8) {
                     // Physical device ownership is external to the async model;
                     // keep the real journal lock and mutation cut while gated.
                     {
-                        let mut journal = provider.inner.journal.lock().unwrap();
+                        let mut journal = provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
                         if fault == 2 {
                             drop(visibility.take());
                         }
@@ -190,7 +190,7 @@ pub(crate) fn verify(fault: u8) {
                 durable: 1
             }))
         );
-        let journal = provider.inner.journal.lock().unwrap();
+        let journal = provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
         assert_eq!((journal.appended, journal.synced), (3, 2));
         assert_eq!(*provider.inner.revision.borrow(), 3);
     });

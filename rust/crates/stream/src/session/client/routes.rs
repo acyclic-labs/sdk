@@ -40,7 +40,9 @@ impl Routes {
         if let Some(old) = &old {
             Self::detach(&mut self.nodes, id, &old.node);
         }
-        let route = &self.values[&id];
+        let Some(route) = self.values.get(&id) else {
+            return old;
+        };
         if let Some(ids) = self.nodes.get_mut(&route.node) {
             ids.insert(id);
         } else {
@@ -67,10 +69,10 @@ impl Routes {
         self.nodes.clear();
     }
     pub(super) fn on_node(&self, node: &str) -> impl Iterator<Item = (&u64, &Route)> {
-        self.nodes.get(node).into_iter().flatten().map(|id| {
+        self.nodes.get(node).into_iter().flatten().filter_map(|id| {
             #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
             self.visits.set(self.visits.get() + 1);
-            (id, &self.values[id])
+            self.values.get(id).map(|route| (id, route))
         })
     }
     pub(super) fn rehome(&mut self, id: &u64, node: &str) -> Option<&mut Route> {

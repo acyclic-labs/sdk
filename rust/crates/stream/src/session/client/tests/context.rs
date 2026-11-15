@@ -133,20 +133,20 @@ fn origin(dispatch: &tracing::Dispatch, first: bool) -> crate::obs::OperationSpa
     })
 }
 
-fn assert_overlap(capture: &Capture) {
+fn assert_overlap(capture: &Capture) -> TestResult {
     assert_eq!(
         capture.closed("first.request"),
         1,
         "A must close while B remains active"
     );
     assert_eq!(capture.closed("second.request"), 0);
-    let history = capture.0.lock().unwrap().spans.clone();
+    let history = capture.0.lock().unwrap_or_else(|poison| poison.into_inner()).spans.clone();
     let sessions = history
         .iter()
         .filter(|span| span.name == "stream.session")
         .collect::<Vec<_>>();
     let [session] = sessions.as_slice() else {
-        panic!("expected one physical session, found {}", sessions.len());
+        return Err(format!("expected one physical session, found {}", sessions.len()).into());
     };
     assert_eq!(session.parent_id, None, "a physical session must be a root");
     assert!(!session.closed, "B must retain the physical session");
@@ -164,6 +164,7 @@ fn assert_overlap(capture: &Capture) {
             "each joined interest must have a causal link"
         );
     }
+    Ok(())
 }
 
 fn overlapping(fault: u8) -> TestResult {
@@ -203,18 +204,18 @@ fn overlapping(fault: u8) -> TestResult {
         append(&memory, "events", 1).await?;
         assert_eq!(next(&mut b).await?.sequence, 1);
         if fault >= 2 {
-            let mut history = capture.0.lock().unwrap();
+            let mut history = capture.0.lock().unwrap_or_else(|poison| poison.into_inner());
             let caller = history
                 .spans
                 .iter()
                 .find(|span| span.name == "first.request")
-                .unwrap()
+                .ok_or("missing first request span")?
                 .id;
             let session = history
                 .spans
                 .iter_mut()
                 .find(|span| span.name == "stream.session")
-                .unwrap();
+                .ok_or("missing session span")?;
             if fault == 2 {
                 session.parent_id = Some(caller);
             }
@@ -222,7 +223,7 @@ fn overlapping(fault: u8) -> TestResult {
                 session.follows_from.clear();
             }
         }
-        assert_overlap(&capture);
+        assert_overlap(&capture)?;
         assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
         assert_eq!(fixture.counts.closed_sessions.load(Ordering::Relaxed), 0);
         drop(retained);
@@ -232,14 +233,20 @@ fn overlapping(fault: u8) -> TestResult {
     })
 }
 
-fn rejected(work: impl FnOnce() -> TestResult + std::panic::UnwindSafe, assertion: &str) {
-    let error = std::panic::catch_unwind(work).expect_err("the broken variant passed");
+fn rejected(
+    work: impl FnOnce() -> TestResult + std::panic::UnwindSafe,
+    assertion: &str,
+) -> TestResult {
+    let Err(error) = std::panic::catch_unwind(work) else {
+        return Err("the broken variant passed".into());
+    };
     let message = error
         .downcast_ref::<String>()
         .map(String::as_str)
         .or_else(|| error.downcast_ref::<&str>().copied())
         .unwrap_or("");
     assert!(message.contains(assertion), "unexpected failure: {message}");
+    Ok(())
 }
 
 #[test]
@@ -268,7 +275,7 @@ fn negative_controls_reject_retention_parenting_and_missing_causal_links() -> Te
         (2, "a physical session must be a root"),
         (3, "each joined interest must have a causal link"),
     ] {
-        rejected(|| overlapping(fault), assertion);
+        rejected(|| overlapping(fault), assertion)?;
     }
     Ok(())
 }
@@ -302,11 +309,11 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
         let a_origin = origin(&a_dispatch, true);
         let b_origin = origin(&b_dispatch, false);
         let (sender, receiver) = mpsc::channel(2);
-        let a_progress = Arc::clone(&pool.routes.get(&1).unwrap().progress);
-        let a = pool.routes.rehome(&1, "good").unwrap();
+        let a_progress = Arc::clone(&pool.routes.get(&1).ok_or("missing route")?.progress);
+        let a = pool.routes.rehome(&1, "good").ok_or("missing route")?;
         a.records = sender;
         a.observation = a_origin.in_scope(|| Observation::channel(1).operation.clone());
-        pool.routes.get_mut(&3).unwrap().observation =
+        pool.routes.get_mut(&3).ok_or("missing route")?.observation =
             b_origin.in_scope(|| Observation::channel(3).operation.clone());
         // The real Cursor drop sets cancellation before its queued removal runs.
         let client = Client {
@@ -325,14 +332,19 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
             credential: 0,
         };
         let a = client.cursor(1, a_progress, receiver)?;
-        let b_progress = Arc::clone(&pool.routes.get(&3).unwrap().progress);
+        let b_progress = Arc::clone(&pool.routes.get(&3).ok_or("missing route")?.progress);
         let _b = client.cursor(3, b_progress, healthy)?;
         drop(a);
         // Deliberately assign the stale origin to the successor to test the
         // subscriber oracle independently of span-retirement assertions.
         if broken {
-            let stale = pool.routes.get(&1).unwrap().observation.clone();
-            pool.routes.get_mut(&3).unwrap().observation = stale;
+            let stale = pool
+                .routes
+                .get(&1)
+                .ok_or("missing route")?
+                .observation
+                .clone();
+            pool.routes.get_mut(&3).ok_or("missing route")?.observation = stale;
         }
         pool.reconnect("good")?;
         assert_eq!(pool.routes.len(), 2, "A's removal must still be queued");
@@ -370,7 +382,7 @@ fn negative_control_attributes_reconnect_to_the_cancelled_origin() -> TestResult
     rejected(
         || reconnect_before_removal(true),
         "reconnect must exclude cancelled A",
-    );
+    )?;
     Ok(())
 }
 
@@ -399,7 +411,13 @@ async fn moved_owner_withdraws() -> TestResult {
     let target = destination._channel.clone();
     let connect: Connect = std::sync::Arc::new(move |node| {
         assert_eq!(node.node_id, "away");
-        let gate = blocked.lock().unwrap().take().unwrap();
+        let Some(gate) = blocked
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+        else {
+            return Box::pin(async { Err(StreamError::Unavailable.into()) });
+        };
         let target = target.clone();
         let guard = DialDrop(end.clone());
         begin.notify_one();
@@ -517,7 +535,7 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
         let started = std::sync::Arc::new(tokio::sync::Notify::new());
         let ready = started.clone();
         let credential = grpc::CredentialProvider::new(move || {
-            let held = held.lock().unwrap().take();
+            let held = held.lock().unwrap_or_else(|poison| poison.into_inner()).take();
             ready.notify_one();
             async move {
                 held.ok_or(grpc::CredentialError::Invalid)?
@@ -617,8 +635,8 @@ fn overlapping_subscribers_cannot_alias_equal_channel_span_ids() -> TestResult {
                     .map_ok(crate::records_only),
             )
             .await?;
-        let a_history = first.0.lock().unwrap().spans.clone();
-        let b_history = second.0.lock().unwrap().spans.clone();
+        let a_history = first.0.lock().unwrap_or_else(|poison| poison.into_inner()).spans.clone();
+        let b_history = second.0.lock().unwrap_or_else(|poison| poison.into_inner()).spans.clone();
         let a_channel = a_history
             .iter()
             .find(|span| span.name == "stream.session.channel")

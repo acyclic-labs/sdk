@@ -238,15 +238,16 @@ impl InputProducer {
     pub fn new(
         identity: wire::SessionChannel,
         released: sync::Arc<signal::Signal<InputReleased>>,
-    ) -> (Self, CallInput) {
+    ) -> Result<(Self, CallInput), StreamError> {
         let (sender, data) = tokio::sync::mpsc::channel(RECEIVE_FRAMES);
         let (terminal, receiver) = oneshot::channel();
-        (
+        Ok((
             Self {
                 sender: Some(sender),
                 terminal: Some(terminal),
                 credit: wire::SessionWindow {
-                    frames: RECEIVE_FRAMES as u32,
+                    frames: u32::try_from(RECEIVE_FRAMES)
+                        .map_err(|_| StreamError::Capacity)?,
                     bytes: RECEIVE_FRAMES as u64 * DATA_FRAME_BYTES as u64,
                 },
                 next: 0,
@@ -259,7 +260,7 @@ impl InputProducer {
                 identity,
                 released,
             },
-        )
+        ))
     }
 
     pub fn receive(

@@ -101,11 +101,11 @@ impl OwnedRecording {
     /// incomplete. Ready admission supplies the original parent for the
     /// remaining polls.
     pub(super) fn child<F: std::future::Future>(
-        request: super::Request,
+        request: &super::Request,
         work: F,
     ) -> Accompany<'static, F, StreamError> {
         Accompany {
-            admission: Admission::Child(request),
+            admission: Admission::Child(super::Request { ..*request }),
             recording: None,
             work,
         }
@@ -225,7 +225,7 @@ impl<F: std::future::Future, E> std::future::Future for Accompany<'_, F, E> {
             && let Admission::Child(request) = std::mem::replace(this.admission, Admission::Settled)
         {
             *this.admission =
-                super::context::child(request).map_or(Admission::Settled, Admission::StartingChild);
+                super::context::child(&request).map_or(Admission::Settled, Admission::StartingChild);
         }
         let started = match this.admission {
             Admission::StartingChild(start) => start.as_mut().poll(cx).map(Result::ok),

@@ -202,10 +202,11 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 1).await?;
     let fixture = Fixture::open(provider, "node").await?;
+    let bearer = "Bearer fixture".parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()?;
     let client = || {
         Client::open(
             fixture._channel.clone(),
-            Some("Bearer fixture".parse().unwrap()),
+            Some(bearer.clone()),
             None,
             None,
             None,
@@ -224,8 +225,9 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     let after_anchor = after_client
         .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 1))
         .await?;
+    let events = StreamPath::new("events")?;
     let path_copy = acyclic_test_support::measure(|| {
-        drop(black_box(StreamPath::new("events").unwrap()));
+        drop(black_box(events.clone()));
     });
     assert!(path_copy.count_total > 0);
     let mut before = Allocations::default();

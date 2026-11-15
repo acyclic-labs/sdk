@@ -61,7 +61,7 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
             }
             changed.await;
         }
-        bad.controls.send(Ok(malformed_child(id)))?;
+        bad.controls.send(Ok(malformed_child(id)?))?;
         assert_eq!(
             children
                 .next()
@@ -88,8 +88,8 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
     Ok(())
 }
 
-fn malformed_child(id: u64) -> wire::SessionFrame {
-    frame(
+fn malformed_child(id: u64) -> Result<wire::SessionFrame, StreamError> {
+    Ok(frame(
         id,
         2,
         Body::Data(wire::SessionData {
@@ -106,10 +106,10 @@ fn malformed_child(id: u64) -> wire::SessionFrame {
                     headers: Default::default(),
                     commit_id: crate::CommitId::from_bytes([1; 32]),
                     committed_at_micros: 0,
-                    origin: crate::StreamPath::new("origin").unwrap(),
+                    origin: crate::StreamPath::new("origin")?,
                 },
                 None,
             ))),
         }),
-    )
+    ))
 }

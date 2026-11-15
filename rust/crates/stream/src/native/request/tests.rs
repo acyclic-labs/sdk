@@ -49,13 +49,13 @@ fn retained_request_accounts_each_control_allocation_and_shares_payloads()
     assert_eq!(retained.value(), &request);
     assert_eq!(
         physical.count_current,
-        meter.allocations.load(Ordering::SeqCst) as i64
+        meter.allocations.load(Ordering::SeqCst).cast_signed()
     );
     assert_eq!(
         physical.bytes_current,
-        meter.held.load(Ordering::SeqCst) as i64
+        meter.held.load(Ordering::SeqCst).cast_signed()
     );
-    assert!(physical.bytes_current < body.len() as i64);
+    assert!(physical.bytes_current < i64::try_from(body.len())?);
     let CommitMutation::Append { records, .. } = &retained.value().effects[0].mutations[0] else {
         unreachable!()
     };
@@ -88,7 +88,7 @@ fn retained_request_accounts_each_control_allocation_and_shares_payloads()
     });
     assert_ne!(
         physical.count_current,
-        former.allocations.load(Ordering::SeqCst) as i64
+        former.allocations.load(Ordering::SeqCst).cast_signed()
     );
     drop(copied);
     drop(claim);

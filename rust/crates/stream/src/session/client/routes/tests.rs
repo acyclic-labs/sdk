@@ -62,7 +62,7 @@ async fn indexed_node_routes_follow_home_replacement_and_cancel()
         assert!(pool.node_interested(""));
         pool.routes.remove(&id).ok_or("missing replacement")?;
         assert!(!pool.node_interested(""));
-        assert_eq!(pool.routes.len(), unrelated as usize);
+        assert_eq!(pool.routes.len(), usize::try_from(unrelated)?);
         assert_eq!(pool.routes.nodes.len(), 1);
         // A burst of cursor drops queues one removal per route. The first
         // removal must not inspect every cancelled sibling before the rest of
@@ -80,7 +80,10 @@ async fn indexed_node_routes_follow_home_replacement_and_cancel()
         // none is live, so its work grows with every remaining sibling.
         let before = pool.routes.visits.get();
         assert!(!pool.routes.on_node("other").any(|(_, route)| route.live()));
-        assert_eq!(pool.routes.visits.get() - before, unrelated as usize - 1);
+        assert_eq!(
+            pool.routes.visits.get() - before,
+            usize::try_from(unrelated)? - 1
+        );
         pool.routes.clear();
         assert!(pool.routes.nodes.is_empty());
         eprintln!(

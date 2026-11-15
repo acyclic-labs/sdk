@@ -65,10 +65,16 @@ fn normalize_exclusions(paths: &mut Vec<crate::RelativePath>) -> Result<(), Stre
     paths.dedup();
     let mut kept = 0;
     for index in 0..paths.len() {
-        let mut parent = paths[index].parent();
+        let path = paths.get(index).ok_or(StreamError::InvalidArgument)?;
+        let mut parent = path.parent();
         let mut covered = false;
         while let Some(ancestor) = parent {
-            if paths[..kept].binary_search(&ancestor).is_ok() {
+            if paths
+                .get(..kept)
+                .ok_or(StreamError::InvalidArgument)?
+                .binary_search(&ancestor)
+                .is_ok()
+            {
                 covered = true;
                 break;
             }
@@ -581,7 +587,7 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), Stream
     normalize_commit_with(request, ordinary_index)
 }
 
-fn ordinary_index(length: usize) -> Result<(Vec<MutationIndex>, ()), StreamError> {
+fn ordinary_index<'a>(length: usize) -> Result<(Vec<MutationIndex<'a>>, ()), StreamError> {
     let mut index = Vec::new();
     index
         .try_reserve_exact(length)
@@ -590,9 +596,9 @@ fn ordinary_index(length: usize) -> Result<(Vec<MutationIndex>, ()), StreamError
 }
 
 /// The caller owns admission for the only cross-effect scratch allocation.
-pub(crate) fn normalize_commit_with<A>(
-    request: &mut CommitRequest,
-    allocate: impl FnOnce(usize) -> Result<(Vec<MutationIndex>, A), StreamError>,
+pub(crate) fn normalize_commit_with<'a, A>(
+    request: &'a mut CommitRequest,
+    allocate: impl FnOnce(usize) -> Result<(Vec<MutationIndex<'a>>, A), StreamError>,
 ) -> Result<(), StreamError> {
     if !crate::preparation::shaped(request)
         || request.conditions().count() > MAX_ITEMS
@@ -641,23 +647,38 @@ pub(crate) fn normalize_commit_with<A>(
 }
 
 /// Addresses borrow original mutations: no paths, records or payloads are copied.
-pub(crate) struct MutationIndex {
-    effect: usize,
-    mutation: usize,
+pub(crate) struct MutationIndex<'a> {
+    path: &'a str,
 }
 
 struct MutationView<'a, A> {
     request: &'a CommitRequest,
     single: Option<&'a [CommitMutation]>,
-    index: Vec<MutationIndex>,
+    index: Vec<MutationIndex<'a>>,
     // Drop the physical backing before retiring its original credit.
     _allocation: Option<A>,
+}
+
+enum MutationPaths<'a, 'b> {
+    Single(std::slice::Iter<'b, CommitMutation>),
+    Indexed(std::slice::Iter<'b, MutationIndex<'a>>),
+}
+
+impl<'a, 'b> Iterator for MutationPaths<'a, 'b> {
+    type Item = &'b str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Single(paths) => paths.next().map(|mutation| CommitMutation::path(mutation).as_str()),
+            Self::Indexed(paths) => paths.next().map(|index| index.path),
+        }
+    }
 }
 
 impl<'a, A> MutationView<'a, A> {
     fn new(
         request: &'a CommitRequest,
-        allocate: impl FnOnce(usize) -> Result<(Vec<MutationIndex>, A), StreamError>,
+        allocate: impl FnOnce(usize) -> Result<(Vec<MutationIndex<'a>>, A), StreamError>,
     ) -> Result<Self, StreamError> {
         let mut nonempty = request
             .effects
@@ -672,31 +693,30 @@ impl<'a, A> MutationView<'a, A> {
                 _allocation: None,
             });
         }
-        let (index, allocation) = allocate(request.mutations().count())?;
-        let mut view = Self {
+        let (mut index, allocation) = allocate(request.mutations().count())?;
+        for effect in &request.effects {
+            index.extend(
+                effect
+                    .mutations
+                    .iter()
+                    .map(|mutation| MutationIndex {
+                        path: CommitMutation::path(mutation).as_str(),
+                    }),
+            );
+        }
+        index.sort_unstable_by_key(|entry| entry.path);
+        if index
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left.path == right.path))
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(Self {
             request,
             single: None,
             index,
             _allocation: Some(allocation),
-        };
-        for (effect, group) in request.effects.iter().enumerate() {
-            view.index.extend(
-                (0..group.mutations.len()).map(|mutation| MutationIndex { effect, mutation }),
-            );
-        }
-        let path = |position: &MutationIndex| {
-            CommitMutation::path(&request.effects[position.effect].mutations[position.mutation])
-        };
-        view.index
-            .sort_unstable_by(|left, right| path(left).cmp(path(right)));
-        if view
-            .index
-            .windows(2)
-            .any(|pair| path(&pair[0]) == path(&pair[1]))
-        {
-            return Err(StreamError::InvalidArgument);
-        }
-        Ok(view)
+        })
     }
 
     fn len(&self) -> usize {
@@ -704,27 +724,48 @@ impl<'a, A> MutationView<'a, A> {
             .map_or(self.index.len(), <[CommitMutation]>::len)
     }
 
-    fn at(&self, position: usize) -> &CommitMutation {
+    fn path(&self, position: usize) -> Result<&'a str, StreamError> {
         match self.single {
-            Some(mutations) => &mutations[position],
-            None => {
-                let index = &self.index[position];
-                &self.request.effects[index.effect].mutations[index.mutation]
-            }
+            Some(mutations) => mutations
+                .get(position)
+                .map(|mutation| CommitMutation::path(mutation).as_str())
+                .ok_or(StreamError::InvalidArgument),
+            None => self
+                .index
+                .get(position)
+                .map(|index| index.path)
+                .ok_or(StreamError::InvalidArgument),
+        }
+    }
+
+    fn paths_from<'b>(&'b self, low: usize) -> Result<MutationPaths<'a, 'b>, StreamError> {
+        match self.single {
+            Some(mutations) => Ok(MutationPaths::Single(
+                mutations
+                    .get(low..)
+                    .ok_or(StreamError::InvalidArgument)?
+                    .iter(),
+            )),
+            None => Ok(MutationPaths::Indexed(
+                self.index
+                    .get(low..)
+                    .ok_or(StreamError::InvalidArgument)?
+                    .iter(),
+            )),
         }
     }
 
     fn descendants<'b>(
         &'b self,
         destination: &'b StreamPath,
-    ) -> impl Iterator<Item = &'b str> + 'b {
+    ) -> Result<impl Iterator<Item = &'b str> + 'b, StreamError> {
         // Seek the segment prefix itself. Text such as "a." sorts between "a"
         // and "a/", so seeking after the parent would miss its descendants.
         let mut low = 0;
         let mut high = self.len();
         while low < high {
             let middle = low + (high - low) / 2;
-            let path = CommitMutation::path(self.at(middle)).as_str();
+            let path = self.path(middle)?;
             let ordering = path
                 .bytes()
                 .cmp(destination.as_str().bytes().chain(std::iter::once(b'/')));
@@ -734,16 +775,11 @@ impl<'a, A> MutationView<'a, A> {
                 high = middle;
             }
         }
-        // Own only the offset into the borrowed destination, not its lifetime.
-        let prefix_len = destination.as_str().len();
         let prefix = destination.as_str();
-        (low..self.len())
-            .map(move |position| CommitMutation::path(self.at(position)).as_str())
-            .take_while(move |path| {
-                path.strip_prefix(prefix)
-                    .is_some_and(|suffix| suffix.starts_with('/'))
-            })
-            .map(move |path| &path[prefix_len + 1..])
+        Ok(self
+            .paths_from(low)?
+            .filter_map(move |path| path.strip_prefix(prefix))
+            .filter_map(|suffix| suffix.strip_prefix('/')))
     }
 }
 
@@ -785,7 +821,7 @@ fn validate_shape<A>(
             let condition = condition_for(destination);
             if source == destination
                 || !matches!(condition, Some(CommitCondition::Absent { .. }))
-                || view.descendants(destination).any(|relative| {
+                || view.descendants(destination)?.any(|relative| {
                     // Only the exact excluded child can be installed separately.
                     exclude
                         .binary_search_by(|excluded| excluded.as_str().cmp(relative))
@@ -960,7 +996,7 @@ mod tests {
             vec![append("a")?, append("b")?],
         )])?;
         let split = request(vec![
-            CommitEffect::hard(vec![present.clone()], vec![append("a")?]),
+            CommitEffect::hard(vec![present], vec![append("a")?]),
             CommitEffect::hard(Vec::new(), vec![append("b")?]),
         ])?;
         let mut soft = together.clone();

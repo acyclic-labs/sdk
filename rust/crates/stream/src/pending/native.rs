@@ -21,16 +21,16 @@ impl<H: Send + Sync + 'static> NativePending<H> {
         provider: Arc<P>,
         request: CommitRequest,
         storage: H,
-        meter: Arc<dyn NativeReadMeter>,
+        meter: &Arc<dyn NativeReadMeter>,
     ) -> std::io::Result<(Self, NativeProviderFuture<'static, ()>)> {
-        let copied = request.try_clone_native(&meter)?;
+        let copied = request.try_clone_native(meter)?;
         let completion = ReadAllocation::new(
-            &meter,
+            meter,
             Completion::<NativeStreamResult<CommitOutcome>, (H, ReadAllocation), CommitRequest>::allocation_bytes(),
         )?;
         let (pending, producer) = Self::prepare(request, (storage, completion));
-        let future = NativeProviderFuture::try_build(&meter, || {
-            let meter = Arc::clone(&meter);
+        let future = NativeProviderFuture::try_build(meter, || {
+            let meter = Arc::clone(meter);
             async move {
                 let (command, allocation) = copied.into_parts();
                 let result = provider

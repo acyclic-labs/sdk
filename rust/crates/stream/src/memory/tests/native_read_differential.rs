@@ -218,7 +218,8 @@ proptest! {
 }
 
 #[test]
-fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog() {
+fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut lazy = Vec::new();
     let mut eager = Vec::new();
     for batches in [8, 128, 1024] {
@@ -226,9 +227,9 @@ fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog() {
         for old in [true, false] {
             let meter = Arc::new(Meter::default());
             let request = ReadRequest {
-                path: StreamPath::new("native/differential").unwrap(),
+                path: StreamPath::new("native/differential")?,
                 from: 0,
-                limit: batches as u32,
+                limit: u32::try_from(batches).map_err(|_| StreamError::InvalidArgument)?,
                 key: None,
                 at_least: Default::default(),
             };
@@ -238,18 +239,14 @@ fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog() {
                 } else {
                     provider.native_read(request, meter.original()).await
                 }
-            })
-            .unwrap()
-            .unwrap();
+            })??;
             let opened = (
                 meter.held.load(Ordering::SeqCst),
                 meter.examined.load(Ordering::SeqCst),
                 meter.allocations.load(Ordering::SeqCst),
             );
             let first = futures::executor::block_on(output.value_mut().next())
-                .unwrap()
-                .unwrap()
-                .unwrap();
+                .ok_or("missing first record")???;
             assert_eq!(first.value().sequence, 0);
             assert_eq!(first.value().value.as_ref(), &[0, 0, 255]);
             let first_work = meter.examined.load(Ordering::SeqCst);
@@ -279,6 +276,7 @@ fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog() {
         eager[2].1 > lazy[2].1,
         "eager control hid its first-output work"
     );
+    Ok(())
 }
 
 #[test]

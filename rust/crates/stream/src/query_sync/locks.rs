@@ -90,7 +90,7 @@ impl Gate {
             id: None,
         };
         poll_fn(|cx| {
-            let mut access = self.0.lock().unwrap();
+            let mut access = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
             if let Some(id) = registration.id {
                 if let Some(position) = access.granted.iter().position(|entry| entry.0 == id) {
                     access.granted.remove(position);
@@ -146,7 +146,7 @@ impl Drop for Registration<'_> {
             return;
         };
         let wakes = {
-            let mut access = self.gate.0.lock().unwrap();
+            let mut access = self.gate.0.lock().unwrap_or_else(|poison| poison.into_inner());
             if let Some(position) = access.waiters.iter().position(|waiter| waiter.id == id) {
                 access.waiters.remove(position);
             } else {

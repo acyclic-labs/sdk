@@ -50,12 +50,12 @@ async fn session_error(
     error: tonic::Status,
     lease: Option<&acyclic_auth::credential::ResolvedCredential>,
 ) -> transport::Failure {
-    if error.code() == tonic::Code::Unauthenticated && std::error::Error::source(&error).is_none() {
-        if let Some(lease) = lease {
-            if let Err(error) = crate::transport_credential::reject(lease).await {
-                return StreamError::AccessDenied.with_source(error).into();
-            }
-        }
+    if error.code() == tonic::Code::Unauthenticated
+        && std::error::Error::source(&error).is_none()
+        && let Some(lease) = lease
+        && let Err(error) = crate::transport_credential::reject(lease).await
+    {
+        return StreamError::AccessDenied.with_source(error).into();
     }
     transport::Failure {
         error: grpc::status(&error),
@@ -294,11 +294,8 @@ impl Client {
                 ))
             })
         });
-        Self::tracking(
-            home,
-            connect,
-            std::sync::Arc::new(crate::runtime::PlatformExecutor),
-            revisions,
-        )
+        let executor: std::sync::Arc<dyn crate::runtime::Executor> =
+            std::sync::Arc::new(crate::runtime::PlatformExecutor);
+        Self::tracking(home, connect, executor, revisions)
     }
 }

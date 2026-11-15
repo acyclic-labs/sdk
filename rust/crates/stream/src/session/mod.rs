@@ -41,6 +41,14 @@ pub use sockets::{
     PreparedSocketOpen, SocketAuthorization, SocketChannel, SocketInbound, SocketProvider,
 };
 mod client;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod fixture {
+    use crate as acyclic_stream;
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/session.rs"
+    ));
+}
 mod read_provider;
 pub use read_provider::ReadProvider;
 mod connection;
@@ -194,7 +202,7 @@ struct Session<P: ?Sized> {
 }
 
 enum ServingSession<P: ?Sized> {
-    Active(Session<P>, Option<crate::BoxProviderFuture<'static, ()>>),
+    Active(Box<Session<P>>, Option<crate::BoxProviderFuture<'static, ()>>),
     Closing(
         std::collections::btree_map::IntoIter<u64, Channel>,
         std::collections::vec_deque::IntoIter<Frame>,
@@ -269,6 +277,14 @@ pub fn serve_with_resources<P: StreamProvider + ?Sized>(
     )
 }
 
+/// The node name and limits of one served session.
+pub struct SessionSpec {
+    /// The node this session serves.
+    pub node: String,
+    /// The session's admitted limits.
+    pub limits: Limits,
+}
+
 /// Opens follows and canonical Actors calls on one authenticated session.
 /// Completing `shutdown` drops producers and closes admitted channels without
 /// data credit. Its owner must complete it when the serving runtime stops.
@@ -277,8 +293,7 @@ pub fn serve_with_products<P: StreamProvider + ?Sized>(
     authority: Arc<Authority>,
     resources: Option<Arc<dyn ResourceProvider>>,
     calls: Arc<dyn CallProvider>,
-    node: String,
-    limits: Limits,
+    spec: SessionSpec,
     incoming: transport::WireResponses,
     shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
 ) -> Result<transport::Responses, StreamError> {
@@ -290,8 +305,8 @@ pub fn serve_with_products<P: StreamProvider + ?Sized>(
             calls: Some(calls),
             sockets: None,
         },
-        node,
-        limits,
+        spec.node,
+        spec.limits,
         incoming,
         shutdown,
     )
@@ -352,7 +367,7 @@ fn serve_on_with_products<
         credit: wire::SessionWindow::default(),
         input_credit: wire::SessionWindow {
             bytes: crate::MAX_COMMAND_BYTES as u64,
-            frames: crate::MAX_ITEMS as u32,
+            frames: u32::try_from(crate::MAX_ITEMS).map_err(|_| StreamError::Capacity)?,
         },
         input_released: sync::Arc::new(signal::Signal::new()),
         controls: VecDeque::new(),
@@ -365,7 +380,7 @@ fn serve_on_with_products<
     };
     Ok(Box::pin(
         stream::try_unfold(
-            ServingSession::Active(session, shutdown),
+            ServingSession::Active(Box::new(session), shutdown),
             |state| async move {
                 let (mut session, mut shutdown) = match state {
                     ServingSession::Active(session, shutdown) => (session, shutdown),
@@ -381,9 +396,9 @@ fn serve_on_with_products<
                             None
                         }
                     };
-                    match next {
-                        Some(frame) => frame,
-                        None => {
+                    if let Some(frame) = next {
+                        frame
+                    } else {
                             // Drop input, calls and follows before publishing closure.
                             // Socket owners must see shutdown even if the peer stops
                             // reading before the queued terminal responses drain.
@@ -402,7 +417,6 @@ fn serve_on_with_products<
                                 session.channels.into_iter(),
                                 session.controls.into_iter(),
                             ));
-                        }
                     }
                 } else {
                     session.next_frame().await?
@@ -433,16 +447,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     let input = core::pin::pin!(input);
                     match future::select(input, Box::pin(changed)).await {
                         future::Either::Left((input, _)) => Ok(input),
-                        future::Either::Right((event, pending)) => {
-                            drop(pending);
-                            Err(event)
-                        }
+                        future::Either::Right((event, _pending)) => Err(event),
                     }
                 };
                 match input {
                     Ok(Some(input)) => self.receive_input(input)?,
                     Ok(None) => return Ok(None),
-                    Err(event) => self.trust_event(event)?,
+                    Err(event) => self.trust_event(&event)?,
                 }
                 continue;
             }
@@ -489,7 +500,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             let event = match event {
                 Ok(event) => event,
                 Err(changed) => {
-                    self.trust_event(changed)?;
+                    self.trust_event(&changed)?;
                     continue;
                 }
             };

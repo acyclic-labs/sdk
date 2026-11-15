@@ -46,7 +46,7 @@ impl Work {
 
     pub(crate) fn start<'a, T, E, F>(
         meter: Arc<dyn NativeReadMeter>,
-        span: acyclic_native_runtime::obs::OperationSpan,
+        span: &acyclic_native_runtime::obs::OperationSpan,
         operation: impl FnOnce(Arc<Self>, acyclic_observability::Completion) -> F,
     ) -> crate::NativeProviderFuture<'a, T, E>
     where
@@ -55,7 +55,7 @@ impl Work {
         let work = match Self::new(meter) {
             Ok(work) => work,
             Err(error) => {
-                acyclic_observability::record_outcome(&span, Some(super::io_kind(&error)));
+                acyclic_observability::record_outcome(span, Some(super::io_kind(&error)));
                 return crate::NativeProviderFuture::ready(Err(error));
             }
         };
@@ -63,12 +63,12 @@ impl Work {
         match crate::NativeProviderFuture::try_build(&meter, || {
             span.scope(operation(
                 work,
-                acyclic_observability::Completion::new(&span),
+                acyclic_observability::Completion::new(span),
             ))
         }) {
             Ok(future) => future,
             Err(error) => {
-                acyclic_observability::record_outcome(&span, Some(super::io_kind(&error)));
+                acyclic_observability::record_outcome(span, Some(super::io_kind(&error)));
                 crate::NativeProviderFuture::ready(Err(error))
             }
         }

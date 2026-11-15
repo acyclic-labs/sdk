@@ -3,20 +3,22 @@ use crate::session::*;
 use crate::{CommitId, MemoryStream, OwnedBytes, Record};
 use proptest::prelude::*;
 
-pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
+pub(super) fn empty_session(
+    latest: bool,
+) -> std::result::Result<Session<MemoryStream>, StreamError> {
     let authority = testing::authority();
-    let slots = testing::slots();
+    let slots = testing::slots()?;
     let binding = authority
         .bind(
             &slots,
             0,
-            &StreamPath::new("model").unwrap(),
+            &StreamPath::new("model")?,
             Default::default(),
             1,
         )
-        .unwrap()
+        .map_err(|_| StreamError::AccessDenied)?
         .0;
-    Session {
+    Ok(Session {
         authority,
         slots,
         trust_changed: None,
@@ -43,7 +45,7 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
         runnable: BTreeSet::new(),
         ready_after: None,
         head_visits: 0,
-    }
+    })
 }
 
 pub(super) fn empty_channel(latest: bool, binding: Binding) -> Channel {
@@ -76,7 +78,7 @@ proptest! {
         history in prop::collection::vec((1_u8..5, any::<u8>(), any::<bool>()), 0..32),
         latest in any::<bool>(),
     ) {
-        let mut session = empty_session(latest);
+        let mut session = empty_session(latest).unwrap();
         for (index, (key, value, attention)) in history.iter().enumerate() {
             let value = crate::AppendRecord::latest(OwnedBytes::from(vec![*value]), OwnedBytes::from(vec![*key]), *attention)?;
             let record = Record { headers: value.headers,
@@ -137,8 +139,8 @@ fn check_admission(session: &Session<MemoryStream>) {
     );
 }
 
-fn exercise_admission(operations: &[u8], broken: bool) {
-    let mut session = empty_session(false);
+fn exercise_admission(operations: &[u8], broken: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = empty_session(false)?;
     session.credit = wire::SessionWindow {
         frames: 1000,
         bytes: crate::MAX_COMMAND_BYTES as u64,
@@ -159,19 +161,19 @@ fn exercise_admission(operations: &[u8], broken: bool) {
                             value: vec![0].into(),
                             commit_id: CommitId::from_bytes([1; 32]),
                             committed_at_micros: 0,
-                            origin: crate::StreamPath::new("origin").unwrap(),
+                            origin: crate::StreamPath::new("origin")?,
                         })),
                     )
-                    .unwrap();
+                    ?;
                 sequence += 1;
             }
-            1 => session.receive(super::window(1)).unwrap(),
+            1 => session.receive(super::window(1))?,
             2 => {
-                session.ready().unwrap();
+                session.ready()?;
             }
             _ => {
-                session.remove(1).unwrap();
-                session = empty_session(false);
+                session.remove(1)?;
+                session = empty_session(false)?;
                 sequence = 0;
             }
         }
@@ -180,16 +182,17 @@ fn exercise_admission(operations: &[u8], broken: bool) {
         }
         check_admission(&session);
     }
+    Ok(())
 }
 proptest! {
     // The cached runnable set equals the credit policy after every
     // append, credit grant, delivery and cancellation; no source is lost.
     #[test]
     fn runnable_channels_match_credit_policy(operations in prop::collection::vec(any::<u8>(), 0..48)) {
-        exercise_admission(&operations, false);
+        exercise_admission(&operations, false).unwrap();
     }
 }
 #[test]
 fn negative_control_drops_the_runnable_index_update() {
-    assert!(std::panic::catch_unwind(|| exercise_admission(&[0, 1], true)).is_err());
+    assert!(std::panic::catch_unwind(|| exercise_admission(&[0, 1], true).unwrap()).is_err());
 }

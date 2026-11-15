@@ -27,6 +27,97 @@ async fn rows(client: &Client, namespace: &str) -> Result<Vec<Row>, tokio_postgr
         .await
 }
 
+async fn verify_width(
+    client: &Client,
+    database: &str,
+    width: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let namespace = uuid::Uuid::new_v4().to_string();
+    // Install through the public provider, then inspect its actual SQL port.
+    let provider = PostgresStream::connect(database, &namespace).await?;
+    drop(provider);
+    // A consumed identity is a real gap, never an assumed sequence + count.
+    client
+        .query_one(
+            "SELECT nextval(pg_get_serial_sequence('acyclic_stream_journal','revision'))",
+            &[],
+        )
+        .await?;
+    let commands: Vec<Vec<u8>> = (0..width).map(|i| i.to_le_bytes().to_vec()).collect();
+    let deadlines = vec![None; commands.len()];
+    let before: i64 = client
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
+            &[],
+        )
+        .await?
+        .get(0);
+    let accepted = publish(client, &namespace, 0, &commands, &deadlines).await?;
+    let after: i64 = client
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
+            &[],
+        )
+        .await?
+        .get(0);
+    let head: i64 = accepted.get(0);
+    assert!(accepted.get::<_, bool>(2));
+    let accepted_millis = accepted.get::<_, i64>(1);
+    assert!((before..=after).contains(&accepted_millis));
+    let retained = rows(client, &namespace).await?;
+    assert_eq!(retained.len(), commands.len());
+    assert_eq!(
+        retained.last().ok_or("retained rows missing")?.get::<_, i64>(0),
+        head
+    );
+    assert!(retained.first().ok_or("retained rows missing")?.get::<_, i64>(0) > 1);
+    for (i, row) in retained.iter().enumerate() {
+        assert_eq!(row.get::<_, i64>(1), accepted_millis);
+        assert_eq!(
+            &row.get::<_, Vec<u8>>(2),
+            commands.get(i).ok_or("command index missing")?
+        );
+    }
+    // Negative control: stale publication adds no frames and returns the
+    // storage cursor, rather than a canonical Stream sequence or batch size.
+    let stale = publish(client, &namespace, 0, &commands, &deadlines).await?;
+    assert!(!stale.get::<_, bool>(2));
+    assert_eq!(stale.get::<_, i64>(0), head);
+    assert_eq!(rows(client, &namespace).await?.len(), commands.len());
+    // The second frame refuses after the first INSERT. Both roll back.
+    let refused = vec![b"first".to_vec(), b"second".to_vec()];
+    for deadlines in [[None, Some(2)], [Some(2), None]] {
+        let Err(error) = publish(client, &namespace, head, &refused, &deadlines).await else {
+            return Err("expected publication refusal".into());
+        };
+        assert_eq!(
+            error
+                .as_db_error()
+                .ok_or("missing database error")?
+                .code()
+                .code(),
+            "PST01"
+        );
+        assert_eq!(rows(client, &namespace).await?.len(), commands.len());
+    }
+    let Err(error) = publish(client, &namespace, head, &refused, &[]).await else {
+        return Err("expected publication refusal".into());
+    };
+    assert_eq!(
+        error
+            .as_db_error()
+            .ok_or("missing database error")?
+            .code()
+            .code(),
+        "PST03"
+    );
+    let corrected = publish(client, &namespace, head, &refused, &[None, None]).await?;
+    assert!(corrected.get::<_, bool>(2));
+    assert!(corrected.get::<_, i64>(0) > head + 2);
+    assert_eq!(rows(client, &namespace).await?.len(), commands.len() + 2);
+    Ok(())
+}
+
 pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (client, connection) = tokio_postgres::connect(database, NoTls).await?;
     let driver = tokio::spawn(connection);
@@ -34,69 +125,7 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
         .batch_execute("SET default_transaction_isolation='read committed'")
         .await?;
     for width in [1_i64, 16, 256] {
-        let namespace = uuid::Uuid::new_v4().to_string();
-        // Install through the public provider, then inspect its actual SQL port.
-        let provider = PostgresStream::connect(database, &namespace).await?;
-        drop(provider);
-        // A consumed identity is a real gap, never an assumed sequence + count.
-        client
-            .query_one(
-                "SELECT nextval(pg_get_serial_sequence('acyclic_stream_journal','revision'))",
-                &[],
-            )
-            .await?;
-        let commands: Vec<Vec<u8>> = (0..width).map(|i| i.to_le_bytes().to_vec()).collect();
-        let deadlines = vec![None; commands.len()];
-        let before: i64 = client
-            .query_one(
-                "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
-                &[],
-            )
-            .await?
-            .get(0);
-        let accepted = publish(&client, &namespace, 0, &commands, &deadlines).await?;
-        let after: i64 = client
-            .query_one(
-                "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
-                &[],
-            )
-            .await?
-            .get(0);
-        let head: i64 = accepted.get(0);
-        assert!(accepted.get::<_, bool>(2));
-        let accepted_millis = accepted.get::<_, i64>(1);
-        assert!((before..=after).contains(&accepted_millis));
-        let retained = rows(&client, &namespace).await?;
-        assert_eq!(retained.len(), commands.len());
-        assert_eq!(retained.last().unwrap().get::<_, i64>(0), head);
-        assert!(retained.first().unwrap().get::<_, i64>(0) > 1);
-        for (i, row) in retained.iter().enumerate() {
-            assert_eq!(row.get::<_, i64>(1), accepted_millis);
-            assert_eq!(row.get::<_, Vec<u8>>(2), commands[i]);
-        }
-        // Negative control: stale publication adds no frames and returns the
-        // storage cursor, rather than a canonical Stream sequence or batch size.
-        let stale = publish(&client, &namespace, 0, &commands, &deadlines).await?;
-        assert!(!stale.get::<_, bool>(2));
-        assert_eq!(stale.get::<_, i64>(0), head);
-        assert_eq!(rows(&client, &namespace).await?.len(), commands.len());
-        // The second frame refuses after the first INSERT. Both roll back.
-        let refused = vec![b"first".to_vec(), b"second".to_vec()];
-        for deadlines in [[None, Some(2)], [Some(2), None]] {
-            let error = publish(&client, &namespace, head, &refused, &deadlines)
-                .await
-                .unwrap_err();
-            assert_eq!(error.as_db_error().unwrap().code().code(), "PST01");
-            assert_eq!(rows(&client, &namespace).await?.len(), commands.len());
-        }
-        let error = publish(&client, &namespace, head, &refused, &[])
-            .await
-            .unwrap_err();
-        assert_eq!(error.as_db_error().unwrap().code().code(), "PST03");
-        let corrected = publish(&client, &namespace, head, &refused, &[None, None]).await?;
-        assert!(corrected.get::<_, bool>(2));
-        assert!(corrected.get::<_, i64>(0) > head + 2);
-        assert_eq!(rows(&client, &namespace).await?.len(), commands.len() + 2);
+        verify_width(&client, database, width).await?;
     }
     // The function can return a row before PostgreSQL attempts its implicit
     // COMMIT. A deferred trigger supplies a real commit-time failure: consuming
@@ -108,7 +137,7 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
          DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
          WHEN (NEW.namespace = 'commit-failure-control') EXECUTE FUNCTION publication_commit_failure();"
     ).await?;
-    let error = publish(
+    let Err(error) = publish(
         &client,
         "commit-failure-control",
         0,
@@ -116,8 +145,17 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
         &[None],
     )
     .await
-    .unwrap_err();
-    assert_eq!(error.as_db_error().unwrap().code().code(), "PST04");
+    else {
+        return Err("expected publication commit failure".into());
+    };
+    assert_eq!(
+        error
+            .as_db_error()
+            .ok_or("missing database error")?
+            .code()
+            .code(),
+        "PST04"
+    );
     assert!(rows(&client, "commit-failure-control").await?.is_empty());
     client.batch_execute("DROP TRIGGER publication_commit_failure ON acyclic_stream_journal; DROP FUNCTION publication_commit_failure()").await?;
     // Progress control: dropping the actual protocol driver terminates a sent

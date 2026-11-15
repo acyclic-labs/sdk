@@ -41,7 +41,7 @@ pub fn authority() -> Arc<Authority> {
 
 /// Signed workload credential for the deterministic qualification account.
 pub fn credential() -> Bytes {
-    credential_with_grants(vec![ResourceGrant {
+    credential_with_grants(&[ResourceGrant {
         resource: ResourcePattern {
             name: "streams:/".into(),
             prefix: true,
@@ -55,7 +55,7 @@ pub fn credential() -> Bytes {
 }
 
 /// Signs only the supplied grants for admission and projection qualification.
-pub fn credential_with_grants(grants: Vec<ResourceGrant>) -> Bytes {
+pub fn credential_with_grants(grants: &[ResourceGrant]) -> Bytes {
     signed::root(|block| {
         let Some(key) = block
             .certificates
@@ -77,7 +77,7 @@ pub fn credential_with_grants(grants: Vec<ResourceGrant>) -> Bytes {
     .into()
 }
 #[cfg(all(test, not(loom)))]
-pub(in crate::session) fn slots() -> Slots {
+pub(in crate::session) fn slots() -> Result<Slots, StreamError> {
     let auth = authority();
     let mut slots = Slots::default();
     auth.register(
@@ -85,9 +85,8 @@ pub(in crate::session) fn slots() -> Slots {
         0,
         &credential(),
         super::Limits::default().channels,
-    )
-    .unwrap();
-    slots
+    )?;
+    Ok(slots)
 }
 /// Verifies a deterministic test credential through the real session admission
 /// path. Product-provider tests receive the same unforgeable context as hosts.

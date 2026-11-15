@@ -1,10 +1,12 @@
 use super::*;
 
-fn ended_sibling(channel: &TransportChannel) -> (Pool, Cursor, Cursor) {
+fn ended_sibling(
+    channel: &TransportChannel,
+) -> Result<(Pool, Cursor, Cursor), Box<dyn std::error::Error + Send + Sync>> {
     let (mut pool, receiver_b) = pool::fixture::fixture(channel);
     pool.links.remove("bad");
     let (records, receiver_a) = mpsc::channel(2);
-    let route_a = pool.routes.rehome(&1, "good").unwrap();
+    let route_a = pool.routes.rehome(&1, "good").ok_or("missing route")?;
     route_a.records = records;
     let client = Client {
         credential_owner: None,
@@ -24,20 +26,18 @@ fn ended_sibling(channel: &TransportChannel) -> (Pool, Cursor, Cursor) {
     let a = client
         .cursor(
             1,
-            Arc::clone(&pool.routes.get(&1).unwrap().progress),
+            Arc::clone(&pool.routes.get(&1).ok_or("missing route")?.progress),
             receiver_a,
-        )
-        .unwrap();
+        )?;
     let b = client
         .cursor(
             3,
-            Arc::clone(&pool.routes.get(&3).unwrap().progress),
+            Arc::clone(&pool.routes.get(&3).ok_or("missing route")?.progress),
             receiver_b,
-        )
-        .unwrap();
+        )?;
     // Their Open commands have already been dispatched into the fixture routes.
-    pool.admissions.remove(1).unwrap();
-    pool.admissions.remove(3).unwrap();
+    pool.admissions.remove(1)?;
+    pool.admissions.remove(3)?;
     assert!(pool.receive_frame(
         "good",
         frame(
@@ -51,13 +51,13 @@ fn ended_sibling(channel: &TransportChannel) -> (Pool, Cursor, Cursor) {
     ));
     assert!(!pool.routes.contains_key(&3));
     assert_eq!(pool.active.load(Ordering::Acquire), 2);
-    (pool, a, b)
+    Ok((pool, a, b))
 }
 
 #[tokio::test]
 async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestResult {
     let fixture = Fixture::open(Arc::new(MemoryStream::default()), "good").await?;
-    let (mut pool, a, _terminal_b) = ended_sibling(&fixture._channel);
+    let (mut pool, a, _terminal_b) = ended_sibling(&fixture._channel)?;
     let (release, held) = oneshot::channel::<()>();
     let (calling, resolving) = oneshot::channel::<()>();
     // One fixture lock, never nested and released before the credential await.
@@ -66,7 +66,7 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
     let observed = called.clone();
     let credential = grpc::CredentialProvider::new(move || {
         observed.fetch_add(1, Ordering::Relaxed);
-        let held = held.lock().unwrap().take().map(|(held, calling)| {
+        let held = held.lock().unwrap_or_else(|poison| poison.into_inner()).take().map(|(held, calling)| {
             // The test still owns the receiver until this first request.
             let _ = calling.send(());
             held
@@ -116,7 +116,7 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
 #[tokio::test]
 async fn terminal_unpolled_cursor_cannot_authorize_a_completed_home_reconnect() -> TestResult {
     let fixture = Fixture::open(Arc::new(MemoryStream::default()), "good").await?;
-    let (mut pool, a, _terminal_b) = ended_sibling(&fixture._channel);
+    let (mut pool, a, _terminal_b) = ended_sibling(&fixture._channel)?;
     pool.reconnect("good")?;
     let (node, epoch, ready) = future::poll_fn(|cx| pool::poll_dials(&mut pool.dials, cx))
         .await

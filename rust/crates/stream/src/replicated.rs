@@ -105,13 +105,12 @@ impl<'a> Attempt<'a> {
         std::mem::take(&mut self.result)
     }
 
-    fn persist(
+    async fn persist(
         &mut self,
         journal: &mut impl CommandJournal,
         expected: u64,
         frame: JournalFrame<'_>,
-    ) -> impl Future<Output = Result<Option<u64>, StreamError>> {
-        async move {
+    ) -> Result<Option<u64>, StreamError> {
             self.result.started = true;
             let result = journal.append_if(expected, &[frame]).await?;
             let outcome = match &result {
@@ -130,7 +129,6 @@ impl<'a> Attempt<'a> {
             };
             self.result.appended = Some(result);
             outcome
-        }
     }
 }
 
@@ -259,9 +257,9 @@ impl<J: CommandJournal> Replicated<J> {
     }
 
     /// A proven stale cut refuses this proposal without invalidating the replica.
-    fn complete<T>(&mut self, attempt: AttemptResult, result: &Result<T, StreamError>) -> bool {
-        match attempt.appended {
-            Some(AppendIf::Stale { head }) if head > self.cursor => {
+    fn complete<T>(&mut self, attempt: &AttemptResult, result: &Result<T, StreamError>) -> bool {
+        match &attempt.appended {
+            Some(AppendIf::Stale { head }) if *head > self.cursor => {
                 self.stale = true;
                 return false;
             }
@@ -269,8 +267,8 @@ impl<J: CommandJournal> Replicated<J> {
                 sequence,
                 at_millis,
             }) if result.is_ok() => {
-                self.cursor = sequence;
-                self.clock.set(at_millis);
+                self.cursor = *sequence;
+                self.clock.set(*at_millis);
             }
             #[cfg(not(target_arch = "wasm32"))]
             Some(AppendIf::Refused(_)) => {}
@@ -319,7 +317,7 @@ impl<J: CommandJournal> Replicated<J> {
                 ephemeral: false,
             });
         let attempt = attempt.finish();
-        if !self.complete(attempt, &result) {
+        if !self.complete(&attempt, &result) {
             return Err(StreamError::PrefixNotRetained);
         }
         result
@@ -409,23 +407,22 @@ impl<J: CommandJournal> Replicated<J> {
     }
 
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
-    pub(crate) fn execute(
+    pub(crate) async fn execute(
         &mut self,
         command: WriteRequest,
         deadline: Option<u64>,
         page: usize,
-    ) -> impl Future<Output = Result<Execution, StreamError>> {
-        self.execute_with(command, deadline, page, NoopObserver)
+    ) -> Result<Execution, StreamError> {
+        self.execute_with(command, deadline, page, NoopObserver).await
     }
 
-    pub(crate) fn execute_with(
+    pub(crate) async fn execute_with(
         &mut self,
         command: WriteRequest,
         deadline: Option<u64>,
         page: usize,
         mut observe: impl ReplayObserver,
-    ) -> impl Future<Output = Result<Execution, StreamError>> {
-        async move {
+    ) -> Result<Execution, StreamError> {
             self.check()?;
             if page == 0 {
                 return Err(StreamError::InvalidArgument);
@@ -506,13 +503,12 @@ impl<J: CommandJournal> Replicated<J> {
                     return Err(StreamError::PrefixNotRetained);
                 }
             }
-            if !self.complete(attempt, &result) {
+            if !self.complete(&attempt, &result) {
                 return Err(StreamError::PrefixNotRetained);
             }
             if self.cursor > expected {
                 observe.observe(&self.provider, command, true).await?;
             }
             result
-        }
     }
 }

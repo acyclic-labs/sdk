@@ -20,7 +20,8 @@ impl ListingCursor {
     }
     /// Rank and protocol-sized credit for the next request, if any.
     pub fn request(&self) -> Option<(u64, u32)> {
-        (self.remaining != 0).then(|| (self.offset, self.remaining.min(crate::MAX_ITEMS as u32)))
+        let limit = u32::try_from(crate::MAX_ITEMS).ok()?;
+        (self.remaining != 0).then(|| (self.offset, self.remaining.min(limit)))
     }
     /// Advances by original provider progress, never projected visible length.
     pub fn advance(&mut self, page: &crate::ChildrenPage) -> Result<(), crate::StreamError> {

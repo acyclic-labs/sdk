@@ -1,3 +1,6 @@
+type AppendResult = (AppendOutcome, Allocation);
+type AppendDecision<F> = Decision<AppendResult, F>;
+
 impl MemoryStream {
     pub(crate) async fn append_inner(
         &self,
@@ -14,15 +17,7 @@ impl MemoryStream {
         state: &mut State,
         request: &'a AppendRequest,
     ) -> Result<
-        Decision<
-            (AppendOutcome, Allocation),
-            impl FnOnce(
-                &mut State,
-                bool,
-                Option<u64>,
-            ) -> Result<(AppendOutcome, Allocation), StreamError>
-            + use<'a>,
-        >,
+        AppendDecision<impl Install<'a, AppendResult>>,
         StreamError,
     > {
         #[cfg(not(target_arch = "wasm32"))]

@@ -171,7 +171,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
             return work.await;
         }
         crate::trace::observe(
-            crate::trace::Request {
+            &crate::trace::Request {
                 name: if keyed {
                     "stream.seek_open"
                 } else {
@@ -260,7 +260,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
             return work.await;
         }
         crate::trace::observe(
-            crate::trace::Request {
+            &crate::trace::Request {
                 name: "stream.follow_open",
                 mechanism: crate::trace::Mechanism::Io,
                 parent: None,

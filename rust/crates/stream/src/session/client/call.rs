@@ -247,7 +247,7 @@ impl Client {
         #[cfg(feature = "serde")]
         {
             crate::trace::observe(
-                crate::trace::Request {
+                &crate::trace::Request {
                     name: "stream.finite_reply",
                     mechanism: crate::trace::Mechanism::RoundTrip,
                     parent: None,
@@ -322,16 +322,14 @@ impl Client {
                         }),
                     );
                 }
-                let bytes = match data.item {
-                    Some(
-                        wire::session_data::Item::ActorCall(bytes)
-                        | wire::session_data::Item::ChildrenPage(bytes)
-                        | wire::session_data::Item::Heads(bytes),
-                    ) => bytes,
-                    _ => {
-                        return Err(StreamError::InvalidResponse
-                            .with_source(ReplyFailure::Payload { received }));
-                    }
+                let Some(
+                    wire::session_data::Item::ActorCall(bytes)
+                    | wire::session_data::Item::ChildrenPage(bytes)
+                    | wire::session_data::Item::Heads(bytes),
+                ) = data.item
+                else {
+                    return Err(StreamError::InvalidResponse
+                        .with_source(ReplyFailure::Payload { received }));
                 };
                 let received = received
                     .checked_add(bytes.len())

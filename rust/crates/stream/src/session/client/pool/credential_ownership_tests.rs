@@ -2,6 +2,56 @@ use super::*;
 use crate::StreamCategory;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+async fn custody_cycle(
+    client: &Client,
+    pool: &mut Pool,
+    commands: &mut mpsc::Receiver<Command>,
+    credential: &Bytes,
+    broken: bool,
+) -> Result {
+
+    let mut pending = Box::pin(client.with_credential(credential.clone()));
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    pool.command(commands.recv().await.ok_or("admission producer lost")?)?;
+    let (owned, slot) = pending.await?;
+    assert_eq!(slot, 1, "slot use must depend on live owners, not history");
+    let clone = owned.clone();
+    drop(owned);
+    assert!(matches!(
+        commands.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    // Fill every unreserved credit. Final-owner Drop must still publish
+    // withdrawal, while another admission gets an immediate typed refusal.
+    for _ in 0..3 {
+        client.register_credential(0, credential.clone())?;
+    }
+    drop(clone);
+    assert!(matches!(
+        client.with_credential(credential.clone()).await,
+        Err(error) if error.category() == StreamCategory::Capacity
+    ));
+    for _ in 0..3 {
+        pool.command(commands.recv().await.ok_or("renewal producer lost")?)?;
+    }
+    let withdrawal = commands.recv().await.ok_or("withdrawal producer lost")?;
+    assert!(pool.credential_slots.owned(slot)?);
+    if broken {
+        // Reintroduce clear-before-physical-withdrawal on the real slot.
+        pool.credential_slots.release(slot)?;
+        drop(withdrawal);
+    } else {
+        pool.command(withdrawal)?;
+    }
+    if pool.credentials.contains_key(&slot) {
+        return Err("withdrawal must precede slot reuse".into());
+    }
+    assert!(!pool.credential_slots.owned(slot)?);
+    assert_eq!(pool.credentials.len(), 1);
+
+    Ok(())
+}
+
 /// Drive the actual client admission, pool dispatch and final-owner Drop.
 /// The negative control releases custody without its physical withdrawal.
 async fn custody(broken: bool) -> Result {
@@ -16,44 +66,7 @@ async fn custody(broken: bool) -> Result {
     client.register_credential(0, credential.clone())?;
     pool.command(commands.recv().await.ok_or("registration producer lost")?)?;
     for _ in 0..100 {
-        let mut pending = Box::pin(client.with_credential(credential.clone()));
-        assert!(futures::poll!(pending.as_mut()).is_pending());
-        pool.command(commands.recv().await.ok_or("admission producer lost")?)?;
-        let (owned, slot) = pending.await?;
-        assert_eq!(slot, 1, "slot use must depend on live owners, not history");
-        let clone = owned.clone();
-        drop(owned);
-        assert!(matches!(
-            commands.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
-        // Fill every unreserved credit. Final-owner Drop must still publish
-        // withdrawal, while another admission gets an immediate typed refusal.
-        for _ in 0..3 {
-            client.register_credential(0, credential.clone())?;
-        }
-        drop(clone);
-        assert!(matches!(
-            client.with_credential(credential.clone()).await,
-            Err(error) if error.category() == StreamCategory::Capacity
-        ));
-        for _ in 0..3 {
-            pool.command(commands.recv().await.ok_or("renewal producer lost")?)?;
-        }
-        let withdrawal = commands.recv().await.ok_or("withdrawal producer lost")?;
-        assert!(pool.credential_slots.owned(slot));
-        if broken {
-            // Reintroduce clear-before-physical-withdrawal on the real slot.
-            pool.credential_slots.release(slot);
-            drop(withdrawal);
-        } else {
-            pool.command(withdrawal)?;
-        }
-        if pool.credentials.contains_key(&slot) {
-            return Err("withdrawal must precede slot reuse".into());
-        }
-        assert!(!pool.credential_slots.owned(slot));
-        assert_eq!(pool.credentials.len(), 1);
+        custody_cycle(&client, &mut pool, &mut commands, &credential, broken).await?;
     }
     // Losing the named reply producer ends admission, without a readiness timer.
     let mut pending = Box::pin(client.with_credential(credential.clone()));

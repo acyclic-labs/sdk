@@ -1,20 +1,19 @@
+type ForkDecision<F> = Decision<ForkReceipt, F>;
+
 impl MemoryStream {
     fn plan_fork_locked<'a>(
         &'a self,
         state: &mut State,
         request: &'a ForkRequest,
     ) -> Result<
-        Decision<
-            ForkReceipt,
-            impl FnOnce(&mut State, bool, Option<u64>) -> Result<ForkReceipt, StreamError> + use<'a>,
-        >,
+        ForkDecision<impl Install<'a, ForkReceipt>>,
         StreamError,
     > {
         let digest = fork_digest(request)?;
         let scope = state.ephemeral.fork_scope(&state.paths, request)?;
         if let Some(result) = self.replay_fork(state, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned {
-                result: result,
+                result,
                 ephemeral: matches!(scope, Scope::Ephemeral(_)),
             });
         }

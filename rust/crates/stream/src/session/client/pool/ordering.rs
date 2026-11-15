@@ -211,7 +211,7 @@ impl Model {
                 for id in interest
                     .upsert
                     .into_iter()
-                    .map(|s| s.channel.unwrap().channel_id)
+                    .filter_map(|s| s.channel.map(|channel| channel.channel_id))
                 {
                     prop_assert_eq!(
                         self.expected.pop_front(),
@@ -441,7 +441,8 @@ fn deliver(pool: &mut Pool, model: &mut Model, id: u64) -> TestCaseResult {
                             value: vec![sequence.to_le_bytes()[0]].into(),
                             commit_id: crate::CommitId::from_bytes([1; 32]),
                             committed_at_micros: 0,
-                            origin: crate::StreamPath::new("origin").unwrap(),
+                            origin: crate::StreamPath::new("origin")
+                                .map_err(|error| TestCaseError::fail(error.to_string()))?,
                         },
                         None,
                     ))),

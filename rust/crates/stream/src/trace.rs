@@ -36,6 +36,7 @@ pub use owned::OwnedRecording;
 pub use recorder::{Observed, Recorder, Recording, Settlement};
 
 /// Static request contract, without payloads, credentials or resource labels.
+#[derive(Clone, Copy)]
 pub struct Request {
     /// Stable operation name. A [`Mechanism::Wait`] reports under this name.
     pub name: &'static str,
@@ -111,7 +112,7 @@ fn live<F: std::future::Future>(
 /// clock, subscription lookup or diagnostic IO. Publication errors never replace
 /// the original result; unretained failures remain explicitly unfinished.
 pub fn observe<T, E>(
-    request: Request,
+    request: &Request,
     work: impl std::future::Future<Output = Result<T, E>>,
     bytes: impl FnOnce(&T) -> Option<u64>,
 ) -> impl std::future::Future<Output = Result<T, E>> {
@@ -127,7 +128,7 @@ pub fn observe<T, E>(
 /// still requires the original retained cause through Outcome's type. No
 /// classifier or terminal publication is evaluated on an unobserved request.
 pub fn observe_outcome<T, E>(
-    request: Request,
+    request: &Request,
     work: impl std::future::Future<Output = Result<T, E>>,
     outcome: impl FnOnce(&Result<T, E>) -> Option<(Option<u64>, Outcome)>,
 ) -> impl std::future::Future<Output = Result<T, E>> {
@@ -141,11 +142,11 @@ pub fn observe_outcome<T, E>(
 /// and one type level, however deeply observations nest. Without `serde` no
 /// trace is recorded; a [`Mechanism::Wait`] is still a live reported wait.
 pub fn observe_value<T>(
-    request: Request,
+    request: &Request,
     work: impl std::future::Future<Output = T>,
     outcome: impl FnOnce(&T) -> Option<(Option<u64>, Outcome)>,
 ) -> impl std::future::Future<Output = T> {
-    let work = live(&request, work);
+    let work = live(request, work);
     #[cfg(feature = "serde")]
     {
         context::record_value(request, work, outcome)
@@ -408,12 +409,10 @@ mod tests {
     #[test]
     fn observation_adds_a_constant_size_however_deeply_it_nests() {
         const LAYER_BYTES: usize = 512;
-        fn work() -> impl std::future::Future<Output = Result<u8, ()>> {
-            async {
-                let held = std::hint::black_box([7u8; 4096]);
-                std::future::ready(()).await;
-                Ok(held[4095])
-            }
+        async fn work() -> Result<u8, ()> {
+            let held = std::hint::black_box([7u8; 4096]);
+            std::future::ready(()).await;
+            Ok(held[4095])
         }
         let request = |name| Request {
             name,
@@ -423,10 +422,10 @@ mod tests {
             key: None,
         };
         let inner = std::mem::size_of_val(&work());
-        let once = std::mem::size_of_val(&observe(request("once"), work(), |_| None));
+        let once = std::mem::size_of_val(&observe(&request("once"), work(), |_| None));
         let twice = std::mem::size_of_val(&observe(
-            request("outer"),
-            observe(request("inner"), work(), |_| None),
+            &request("outer"),
+            observe(&request("inner"), work(), |_| None),
             |_| None,
         ));
         let guard = std::mem::size_of_val(&observe_guard(request("guard"), work()));
@@ -611,8 +610,9 @@ mod wait_tests {
         };
         let expected = vec![("test.wait".to_owned(), "7".to_owned())];
 
+        let wait = request(Mechanism::Wait);
         let mut pending = Box::pin(observe_value(
-            request(Mechanism::Wait),
+            &wait,
             std::future::pending::<()>(),
             |()| None,
         ));
@@ -625,8 +625,9 @@ mod wait_tests {
         assert_eq!(within, expected);
         assert!(reported().is_empty(), "a returned wait retires its report");
 
+        let io_request = request(Mechanism::Io);
         let mut io = Box::pin(observe_value(
-            request(Mechanism::Io),
+            &io_request,
             std::future::pending::<()>(),
             |()| None,
         ));

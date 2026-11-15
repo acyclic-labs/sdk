@@ -248,7 +248,7 @@ enum Command {
     },
     Input {
         id: u64,
-        frame: wire::SessionFrame,
+        frame: Box<wire::SessionFrame>,
         credit: Option<input::Credit>,
         sent: oneshot::Sender<Result<(), StreamError>>,
     },
@@ -289,10 +289,11 @@ struct Route {
     credit: wire::SessionWindow,
     progress: Arc<Progress>,
     records: mpsc::Sender<Result<Delivery, StreamError>>,
-    ready: Option<oneshot::Sender<Result<(u64, Option<wire::SessionOpened>), StreamError>>>,
+    ready: Option<OpenReply>,
     observation: super::runtime::OperationSpan,
     input: Option<input::Owner>,
 }
+type OpenReply = oneshot::Sender<Result<(u64, Option<wire::SessionOpened>), StreamError>>;
 struct Link {
     /// Recovery spacing survives Welcome/EOF cycles until useful frames arrive.
     backoff: Option<acyclic_auth::operation::Backoff>,
@@ -437,7 +438,7 @@ impl Client {
             credentials: BTreeMap::new(),
             credential_bytes: 0,
             connections: connections.clone(),
-            executor: executor.clone(),
+            executor,
             identity: crate::new_identity_bytes(),
             connect,
             home: String::new(),
@@ -458,7 +459,7 @@ impl Client {
             released: Arc::clone(&release_sender),
             release_sender,
         };
-        executor.spawn(Box::pin(async move {
+        Arc::clone(&pool.executor).spawn(Box::pin(async move {
             let result = {
                 let running = pool.run();
                 let running = core::pin::pin!(running);
@@ -622,7 +623,7 @@ impl Client {
         let (from, progress, path) = (request.from, request.progress, request.path.clone());
         let mut source = self
             .open_subscription(
-                follow_kind(request),
+                follow_kind(&request),
                 cursor(from),
                 acknowledge,
                 progress,
@@ -844,7 +845,7 @@ impl Client {
                 input: input.map(input::Owner),
             })));
             let sent = crate::trace::observe(
-                crate::trace::Request {
+                &crate::trace::Request {
                     name: "stream.session_open_queue",
                     mechanism: crate::trace::Mechanism::Wait,
                     parent: None,
@@ -874,7 +875,7 @@ impl Client {
                 Ok(())
             };
             crate::trace::observe(
-                crate::trace::Request {
+                &crate::trace::Request {
                     name: "stream.session_registration",
                     mechanism: crate::trace::Mechanism::Wait,
                     parent: None,
@@ -938,14 +939,14 @@ impl Cursor {
     /// Every blocked delivery of every session call and follow is a reported
     /// wait. A queued delivery is no wait and registers none.
     async fn next(&mut self) -> Option<Result<Delivery, StreamError>> {
-        match self.receiver.try_recv() {
-            Ok(received) => Some(received),
-            Err(_) => {
+        if let Ok(received) = self.receiver.try_recv() {
+            Some(received)
+        } else {
                 let work = self.receiver.recv();
                 {
                     let progress = &self.progress;
                     crate::trace::observe_value(
-                        crate::trace::Request {
+                        &crate::trace::Request {
                             name: "stream.session_delivery_wait",
                             mechanism: crate::trace::Mechanism::Wait,
                             parent: None,
@@ -963,7 +964,6 @@ impl Cursor {
                     )
                     .await
                 }
-            }
         }
     }
     async fn receive(&mut self) -> Result<Option<Delivery>, StreamError> {
@@ -1108,7 +1108,7 @@ impl Projected for crate::Record {
     }
 }
 
-fn follow_kind(request: crate::FollowRequest) -> Kind {
+fn follow_kind(request: &crate::FollowRequest) -> Kind {
     Kind::Follow(wire::SessionFollow {
         opening_cut: request.progress && request.until.is_none(),
         key: None,

@@ -136,7 +136,7 @@ fn assert_channel_traces(capture: &acyclic_grpc_observability::tests::Capture) -
     let channels = capture.spans("stream.session.channel");
     assert_physical_sessions(&capture.spans("stream.session"));
     let [first, second, third, ..] = channels.as_slice() else {
-        panic!("expected three channel spans, found {}", channels.len());
+        return Err(format!("expected three channel spans, found {}", channels.len()).into());
     };
     assert_eq!(
         first.fields.get("error.kind").map(String::as_str),

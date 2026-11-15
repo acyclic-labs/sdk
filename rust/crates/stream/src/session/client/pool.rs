@@ -104,14 +104,13 @@ impl Pool {
                 let installed = if reused {
                     // The duplicate admission may already have effects. Only
                     // a resumable read may be submitted on the retained link.
-                    if let Some(opening) = &opening {
-                        if self
+                    if let Some(opening) = &opening
+                        && self
                             .routes
                             .get(&opening.channel_id)
                             .is_some_and(|route| !route.resumable())
-                        {
-                            self.reject(opening.channel_id, StreamError::Unavailable);
-                        }
+                    {
+                        self.reject(opening.channel_id, StreamError::Unavailable);
                     }
                     ready.0.clone()
                 } else {
@@ -271,22 +270,22 @@ impl Pool {
                 owner,
                 credential,
                 sent,
-            } => self.renew_credential(slot, owner, credential, sent),
+            } => self.renew_credential(slot, owner.as_ref(), credential, sent),
             Command::ReleaseCredential { slot } => {
-                if !self.credential_slots.owned(slot) {
+                if !self.credential_slots.owned(slot)? {
                     return Err(StreamError::InvalidArgument);
                 }
                 self.install_credential(slot, Bytes::new())?;
-                self.credential_slots.release(slot);
+                self.credential_slots.release(slot)?;
                 Ok(())
             }
             Command::Credential { slot, credential } => {
-                if self.credential_slots.owned(slot) {
+                if self.credential_slots.owned(slot)? {
                     return Err(StreamError::InvalidArgument);
                 }
                 let empty = credential.is_empty();
                 self.install_credential(slot, credential)?;
-                self.credential_slots.available(slot, empty);
+                self.credential_slots.available(slot, empty)?;
                 Ok(())
             }
             Command::Socket {
@@ -351,9 +350,9 @@ impl Pool {
                         .finishing(sent)?;
                     // The original queue verdict is insufficient for half-close:
                     // retain its waiter until the peer accepts ordered EOF.
-                    return self.queue(&node, frame).map(|_| ());
+                    return self.queue(&node, *frame).map(|_| ());
                 }
-                let queued = self.queue(&node, frame)?;
+                let queued = self.queue(&node, *frame)?;
                 if queued.is_ok()
                     && let Some(credit) = credit
                 {
@@ -704,16 +703,17 @@ impl Pool {
         Ok(applied)
     }
     fn opened(route: &mut Route, id: u64, opened: wire::SessionOpened) -> Result<(), StreamError> {
-        if let Kind::Follow(follow) = &route.kind {
-            if follow.bootstrap_head && route.received == 0 {
-                let (_, selected, bootstrap) = wire_codec::selection_from_opened(&opened)?;
-                route.received = route.progress.select_bootstrap(
-                    route.generation,
-                    &selected,
-                    bootstrap,
-                    follow.delivery == wire::SessionDelivery::All as i32,
-                )?;
-            }
+        if let Kind::Follow(follow) = &route.kind
+            && follow.bootstrap_head
+            && route.received == 0
+        {
+            let (_, selected, bootstrap) = wire_codec::selection_from_opened(&opened)?;
+            route.received = route.progress.select_bootstrap(
+                route.generation,
+                &selected,
+                bootstrap,
+                follow.delivery == wire::SessionDelivery::All as i32,
+            )?;
         }
         if let Some(ready) = route.ready.take() {
             let _ = ready.send(Ok((id, Some(opened))));

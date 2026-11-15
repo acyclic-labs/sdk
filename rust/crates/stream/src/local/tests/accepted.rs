@@ -50,7 +50,7 @@ fn a_flush_never_certifies_a_write_accepted_after_its_device_operation()
         deferring_durability(provider.commit(keyed_commit("before-device", 0)?)).await?;
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
-        *JOURNAL_FLUSHED_BLOCKER.lock().unwrap() = Some((
+        *JOURNAL_FLUSHED_BLOCKER.lock().unwrap_or_else(|poison| poison.into_inner()) = Some((
             Arc::as_ptr(&provider.inner.journal) as usize,
             started_tx,
             release_rx,
@@ -61,12 +61,12 @@ fn a_flush_never_certifies_a_write_accepted_after_its_device_operation()
         });
         journal_started(started_rx, &mut flushing).await?;
         deferring_durability(provider.commit(keyed_commit("after-device", 0)?)).await?;
-        let late_cut = provider.inner.journal.lock().unwrap().appended;
+        let late_cut = provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).appended;
         assert_eq!(late_cut, 2);
         release_tx.send(())?;
         flushing.await??;
         assert_eq!(
-            provider.inner.journal.lock().unwrap().flushed_sequence,
+            provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).flushed_sequence,
             Some(1),
             "a post-I/O cut certified an unflushed write"
         );
@@ -114,7 +114,7 @@ fn a_queued_flush_covers_the_worker_cut_instead_of_the_submitter_cut()
         deferring_durability(provider.commit(keyed_commit("first-cut", 0)?)).await?;
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
-        *JOURNAL_PERSIST_BLOCKER.lock().unwrap() = Some((
+        *JOURNAL_PERSIST_BLOCKER.lock().unwrap_or_else(|poison| poison.into_inner()) = Some((
             Arc::as_ptr(&provider.inner.journal) as usize,
             started_tx,
             release_rx,
@@ -125,12 +125,12 @@ fn a_queued_flush_covers_the_worker_cut_instead_of_the_submitter_cut()
         });
         journal_started(started_rx, &mut flushing).await?;
         deferring_durability(provider.commit(keyed_commit("queued-cut", 0)?)).await?;
-        assert_eq!(provider.inner.journal.lock().unwrap().appended, 2);
+        assert_eq!(provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).appended, 2);
         assert!(!flushing.is_finished());
         release_tx.send(())?;
         flushing.await??;
         assert_eq!(
-            provider.inner.journal.lock().unwrap().flushed_sequence,
+            provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).flushed_sequence,
             Some(2),
             "a write queued before physical I/O required a second full flush"
         );
@@ -142,13 +142,13 @@ fn a_queued_flush_covers_the_worker_cut_instead_of_the_submitter_cut()
         let old = LocalStream::open(old_directory.path(), LocalStreamLimits::default()).await?;
         deferring_durability(old.commit(keyed_commit("old-first", 0)?)).await?;
         let (old_target, file) = {
-            let journal = old.inner.journal.lock().unwrap();
+            let journal = old.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
             (journal.appended, journal.file.lease()?)
         };
         deferring_durability(old.commit(keyed_commit("old-queued", 0)?)).await?;
         let old_completion = file.flush(|file| sync_file_data(file, LocalDurability::FullFlush))?;
         {
-            let mut journal = old.inner.journal.lock().unwrap();
+            let mut journal = old.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
             old.inner
                 .publish_synced(&mut journal, old_target, old_completion);
         }

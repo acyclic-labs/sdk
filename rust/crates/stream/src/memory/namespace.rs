@@ -202,13 +202,19 @@ fn retire_namespace(initial: [Option<NamespaceRetirement>; 3], allocation: &mut 
     });
     let mut cursor = 0;
     while cursor < work.len() {
+        let Some(slot) = work.get_mut(cursor) else {
+            break;
+        };
         let item = std::mem::replace(
-            &mut work[cursor],
+            slot,
             NamespaceRetirement::Funding { _allocation: None },
         );
-        work[cursor] = NamespaceRetirement::Funding {
+        let replacement = NamespaceRetirement::Funding {
             _allocation: retire(item, &mut work),
         };
+        if let Some(slot) = work.get_mut(cursor) {
+            *slot = replacement;
+        }
         cursor += 1;
     }
 }
@@ -563,12 +569,12 @@ impl Namespace {
             self.canonical = Some(self.roots.clone());
         }
         self.replace(path, Some(node), changed_at, build)?;
-        if let Some(node) = canonical {
-            if !shared {
-                let mut published = self.canonical();
-                published.replace(path, Some(node), changed_at, build)?;
-                self.canonical = Some(published.roots);
-            }
+        if let Some(node) = canonical
+            && !shared
+        {
+            let mut published = self.canonical();
+            published.replace(path, Some(node), changed_at, build)?;
+            self.canonical = Some(published.roots);
         }
         Ok(())
     }

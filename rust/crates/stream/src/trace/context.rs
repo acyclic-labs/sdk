@@ -27,7 +27,7 @@ pub(super) fn current() -> Option<SpanId> {
 }
 
 pub(super) fn child(
-    mut request: Request,
+    request: &Request,
 ) -> Option<BoxProviderFuture<'static, Result<OwnedRecording, StreamError>>> {
     let active = CURRENT.with_borrow(|active| {
         active
@@ -35,8 +35,10 @@ pub(super) fn child(
             .filter(|active| active.producer.enabled())
             .cloned()
     })?;
-    request.parent = request.parent.or(Some(active.id));
-    Some(active.producer.start(request))
+    Some(active.producer.start(Request {
+        parent: request.parent.or(Some(active.id)),
+        ..*request
+    }))
 }
 
 struct Restore(Option<Active>);
@@ -117,12 +119,12 @@ pub async fn accompany<T>(
     request: Request,
     work: impl Future<Output = T>,
 ) -> (T, Option<OwnedRecording>) {
-    OwnedRecording::accompany(child(request), work).await
+    OwnedRecording::accompany(child(&request), work).await
 }
 /// Record [`super::observe_value`]'s already live work under the active
 /// owner's child span. The classifier runs only for an admitted span.
 pub(super) fn record_value<T>(
-    request: Request,
+    request: &Request,
     work: impl Future<Output = T>,
     _outcome: impl FnOnce(&T) -> Option<(Option<u64>, super::Outcome)>,
 ) -> impl Future<Output = T> {
@@ -214,7 +216,7 @@ pub fn accompany_sync<T>(
     work: impl FnOnce() -> T,
 ) -> (T, Option<OwnedRecording>) {
     use futures::FutureExt as _;
-    let recording = child(request)
+    let recording = child(&request)
         .and_then(|admission| admission.now_or_never())
         .and_then(Result::ok);
     let result = if let Some(recording) = &recording {

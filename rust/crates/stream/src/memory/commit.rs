@@ -21,8 +21,11 @@ struct CommitPublication {
 
 enum PublicationRetention<'a> {
     Durable(RetainedFactRef),
-    Ephemeral(&'a MemoryStream, EphemeralRetention),
+    Ephemeral(&'a MemoryStream, Box<EphemeralRetention>),
 }
+
+type CommitResult = (crate::WriteOutcome, Allocation);
+type CommitDecision<F> = Decision<CommitResult, F>;
 
 impl CommitPlan {
     fn bind(
@@ -120,7 +123,7 @@ impl CommitPublication {
                 state.ephemeral.retain(
                     stream,
                     scope,
-                    retention,
+                    *retention,
                     RetainedFact {
                         namespace: Default::default(),
                         previous: None,
@@ -557,15 +560,7 @@ impl MemoryStream {
         deadline: Option<u64>,
         accepted: bool,
     ) -> Result<
-        Decision<
-            (crate::WriteOutcome, Allocation),
-            impl FnOnce(
-                &mut State,
-                bool,
-                Option<u64>,
-            ) -> Result<(crate::WriteOutcome, Allocation), StreamError>
-            + use<'a>,
-        >,
+        CommitDecision<impl Install<'a, CommitResult>>,
         StreamError,
     > {
         if let Some((replayed, result, index, ephemeral)) =
@@ -722,8 +717,11 @@ impl MemoryStream {
                     }
                     None => PublicationRetention::Ephemeral(
                         self,
-                        ephemeral
-                            .unwrap_or_else(|| unreachable!("leased write reserves its indexes")),
+                        Box::new(
+                            ephemeral.unwrap_or_else(|| {
+                                unreachable!("leased write reserves its indexes")
+                            }),
+                        ),
                     ),
                 };
                 let (outcome, allocation) = publication.publish(

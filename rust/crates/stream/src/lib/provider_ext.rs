@@ -115,7 +115,7 @@ pub trait StreamProviderExt: StreamProvider {
             #[cfg(feature = "serde")]
             if !diagnostic {
                 return crate::trace::observe_outcome(
-                    crate::trace::Request {
+                    &crate::trace::Request {
                         name: "stream.native_latest_before",
                         mechanism: crate::trace::Mechanism::ProviderCall,
                         parent: None,
@@ -216,7 +216,7 @@ pub trait StreamProviderExt: StreamProvider {
             #[cfg(feature = "serde")]
             if !diagnostic {
                 return crate::trace::observe(
-                    crate::trace::Request {
+                    &crate::trace::Request {
                         name: "stream.commit_accepted",
                         mechanism: crate::trace::Mechanism::Commit,
                         parent: None,
@@ -292,7 +292,7 @@ pub trait StreamProviderExt: StreamProvider {
                 return work.await;
             }
             crate::trace::observe(
-                crate::trace::Request {
+                &crate::trace::Request {
                     name: "stream.latest_before",
                     mechanism: crate::trace::Mechanism::ProviderCall,
                     parent: None,
@@ -360,7 +360,7 @@ pub trait StreamProviderExt: StreamProvider {
                 work.await?
             } else {
                 crate::trace::observe(
-                    crate::trace::Request {
+                    &crate::trace::Request {
                         name: "stream.latest_fence",
                         mechanism: crate::trace::Mechanism::ProviderCall,
                         parent: None,
@@ -435,7 +435,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         let work = async move {
             if !crate::trace::is_source(&path) {
                 return crate::trace::observe_outcome(
-                    crate::trace::Request {
+                    &crate::trace::Request {
                         name: "stream.native_append",
                         mechanism: crate::trace::Mechanism::Commit,
                         parent: None,
@@ -496,7 +496,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         #[cfg(feature = "serde")]
         if !diagnostic {
             return crate::trace::observe(
-                crate::trace::Request {
+                &crate::trace::Request {
                     name: "stream.append",
                     mechanism: crate::trace::Mechanism::Commit,
                     parent: None,
@@ -525,7 +525,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         #[cfg(feature = "serde")]
         if !diagnostic {
             return crate::trace::observe(
-                crate::trace::Request {
+                &crate::trace::Request {
                     name: "stream.fork",
                     mechanism: crate::trace::Mechanism::Commit,
                     parent: None,
@@ -552,7 +552,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         #[cfg(feature = "serde")]
         if !diagnostic {
             return crate::trace::observe(
-                crate::trace::Request {
+                &crate::trace::Request {
                     name: "stream.commit",
                     mechanism: crate::trace::Mechanism::Commit,
                     parent: None,
@@ -595,7 +595,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         #[cfg(feature = "serde")]
         if !diagnostic {
             return crate::trace::observe_outcome(
-                crate::trace::Request {
+                &crate::trace::Request {
                     name: "stream.durable_receipt",
                     mechanism: crate::trace::Mechanism::ProviderCall,
                     parent: None,
@@ -657,7 +657,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         #[cfg(feature = "serde")]
         if !diagnostic {
             return crate::trace::observe(
-                crate::trace::Request {
+                &crate::trace::Request {
                     name: "stream.children_page",
                     mechanism: crate::trace::Mechanism::ProviderCall,
                     parent: None,
@@ -706,7 +706,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         };
         #[cfg(feature = "serde")]
         return crate::trace::observe(
-            crate::trace::Request {
+            &crate::trace::Request {
                 name: "stream.wait_applied",
                 mechanism: crate::trace::Mechanism::Wait,
                 parent: None,
@@ -755,7 +755,7 @@ async fn named_head<P: StreamProvider + ?Sized>(
             ),
         };
         return crate::trace::observe(
-            crate::trace::Request {
+            &crate::trace::Request {
                 name,
                 mechanism: crate::trace::Mechanism::ProviderCall,
                 parent: None,

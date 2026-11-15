@@ -253,14 +253,14 @@ async fn input_revisions_follow_only_own_history_membership_and_grafts_across_re
     Ok(())
 }
 
-fn path() -> StreamPath {
-    StreamPath::new("revisions").unwrap()
+fn path() -> std::result::Result<StreamPath, StreamError> {
+    StreamPath::new("revisions")
 }
 
 async fn append(provider: &LocalStream, key: crate::IdempotencyKey) -> Result<crate::Revision> {
     match provider
         .append(AppendRequest {
-            path: path(),
+            path: path()?,
             records: vec![Bytes::from_static(b"value").into()],
             if_tail: None,
             idempotency_key: key,
@@ -276,7 +276,7 @@ async fn read(provider: &LocalStream, at_least: crate::RevisionCut) -> Result<us
     let records = provider
         .read(ReadRequest {
             key: None,
-            path: path(),
+            path: path()?,
             from: 0,
             limit: 16,
             at_least,
@@ -362,7 +362,7 @@ async fn a_foreign_token_is_refused_and_an_own_token_survives_reopen() -> Result
     assert!(served.same_authority(&issued) && served.index >= issued.index);
     assert_eq!(append(&provider, key).await?, issued);
     assert_eq!(
-        provider.tail(path()).await?,
+        provider.tail(path()?).await?,
         u64::try_from(REPLAY_PIPELINE_COMMANDS)? + 1,
         "recovery must retain every command and deduplicate the original append"
     );
@@ -419,7 +419,7 @@ async fn an_old_snapshot_version_refuses_without_repairing_disk() -> Result {
     let memory = MemoryStream::new(limits.memory);
     memory
         .append(AppendRequest {
-            path: path(),
+            path: path()?,
             records: vec![Bytes::from_static(b"value").into()],
             if_tail: None,
             idempotency_key: crate::IdempotencyKey::unique(),

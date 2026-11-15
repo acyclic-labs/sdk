@@ -31,11 +31,13 @@ pub(super) struct Job<S: Snapshot> {
     observation: Option<inspection::Observation>,
 }
 
+type JobResult<S> = Result<<S as Snapshot>::Output, crate::StreamError>;
+
 pub(super) fn new<S: Snapshot>(
     state: S,
 ) -> (
     Job<S>,
-    impl Future<Output = (S, Result<S::Output, crate::StreamError>)> + crate::ProviderTask,
+    impl Future<Output = (S, JobResult<S>)> + crate::ProviderTask,
 ) {
     let completed = Arc::new(SyncMutex::new(Completion {
         value: None,

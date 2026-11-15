@@ -33,7 +33,10 @@ impl State {
         while low < high {
             examine()?;
             let middle = low + (high - low) / 2;
-            if self.retained[middle].index <= index {
+            let Some(fact) = self.retained.get(middle) else {
+                break;
+            };
+            if fact.index <= index {
                 low = middle + 1;
             } else {
                 high = middle;

@@ -176,7 +176,7 @@ pub(super) fn check(input: &[u8], fault: Fault) -> Result<(), &'static str> {
                 }),
             };
             let accepted = response.tail;
-            let actual = watermarks_from_wire(response);
+            let actual = watermarks_from_wire(&response);
             let actual = if fault == Fault::InferDurability {
                 Ok(StreamWatermarks {
                     accepted,

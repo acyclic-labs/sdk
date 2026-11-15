@@ -10,7 +10,7 @@ impl LocalStream {
         let stream = self.clone();
         crate::native::Work::start(
             meter,
-            crate::native::span!("acyclic.stream.prepare_commit"),
+            &crate::native::span!("acyclic.stream.prepare_commit"),
             |work, completion| {
                 completion.observe_output(
                     async move {

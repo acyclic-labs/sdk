@@ -35,6 +35,11 @@ fn follow_selection(
     })
 }
 
+pub(crate) struct FollowWindow {
+    pub(crate) bootstrap_head: bool,
+    pub(crate) until: Option<u64>,
+}
+
 impl MemoryStream {
     pub(crate) async fn prepare_follow(
         &self,
@@ -43,8 +48,7 @@ impl MemoryStream {
         anchor: Option<CommitId>,
         when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
-        bootstrap_head: bool,
-        until: Option<u64>,
+        window: FollowWindow,
     ) -> Result<
         (
             crate::Revision,
@@ -57,7 +61,13 @@ impl MemoryStream {
         let state = self.state.write().await;
         let snapshot = self.observe_follow(|| state.paths.get(path).cloned())?;
         let revision = self.revisions.at(state.decision);
-        let selection = follow_selection(snapshot.as_ref(), from, anchor, bootstrap_head, until)?;
+        let selection = follow_selection(
+            snapshot.as_ref(),
+            from,
+            anchor,
+            window.bootstrap_head,
+            window.until,
+        )?;
         let (from, anchor) = (selection.from, selection.preceding);
         let tail = snapshot.as_ref().map_or(0, |path| path.tail);
         let registration = state.signals.subscribe_with(path.clone(), Signals::new)?;
@@ -129,8 +139,7 @@ impl MemoryStream {
         anchor: Option<CommitId>,
         when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
-        bootstrap_head: bool,
-        until: Option<u64>,
+        window: FollowWindow,
     ) -> Result<crate::FollowStream, StreamError> {
         let (snapshot, selection, interest, cursor) = self
             .prepare_follow(
@@ -139,8 +148,7 @@ impl MemoryStream {
                 anchor,
                 when_absent,
                 filter.clone(),
-                bootstrap_head,
-                until,
+                window,
             )
             .await?;
         let anchor = selection.preceding;

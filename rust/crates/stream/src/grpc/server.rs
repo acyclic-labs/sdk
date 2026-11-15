@@ -239,7 +239,7 @@ async fn unary<T>(
     response: impl Future<Output = Result<T, Status>>,
 ) -> Result<Response<T>, Status> {
     let result = crate::trace::observe(
-        crate::trace::Request {
+        &crate::trace::Request {
             name,
             mechanism: crate::trace::Mechanism::ProviderCall,
             parent: None,

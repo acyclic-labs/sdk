@@ -244,7 +244,7 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
                 bootstrap_head: false,
                 until: None,
                 when_absent: Default::default(),
-                path: path,
+                path,
                 from: 1,
                 preceding: Some(first.commit_id),
                 filter: crate::FollowFilter::default(),

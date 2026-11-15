@@ -5,13 +5,7 @@ use crate::{
     testing::Counted,
 };
 
-mod fixture {
-    use crate as acyclic_stream;
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/support/session.rs"
-    ));
-}
+use crate::session::fixture;
 
 async fn append<P: StreamProvider + ?Sized>(
     provider: &P,
@@ -264,7 +258,10 @@ async fn history_search_is_bounded_replayable_and_excludes_concurrent_appends()
     let oversized = continuation
         .page(
             &counted,
-            NonZeroU32::new((crate::MAX_ITEMS * 2) as u32).ok_or(StreamError::InvalidArgument)?,
+            NonZeroU32::new(
+                u32::try_from(crate::MAX_ITEMS * 2).map_err(|_| StreamError::InvalidArgument)?,
+            )
+            .ok_or(StreamError::InvalidArgument)?,
         )
         .await?;
     assert_eq!(oversized.matches.len(), crate::MAX_ITEMS * 2);
@@ -377,7 +374,7 @@ async fn search_uses_current_session_grants_even_for_a_retained_cursor()
     let client =
         crate::grpc::Client::from_channel(fixture._channel.clone(), "Bearer fixture".parse()?);
     let credential = |path: &str| {
-        crate::session::testing::credential_with_grants(vec![ResourceGrant {
+        crate::session::testing::credential_with_grants(&[ResourceGrant {
             resource: ResourcePattern {
                 name: format!("streams:/{path}"),
                 prefix: true,

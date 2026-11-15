@@ -145,7 +145,7 @@ impl SocketInbound for ForwardInput {
         if self.progress.cancelled() || self.progress.ended() {
             return Err(StreamError::Unavailable);
         }
-        let result = self.results.try_reserve().map_err(queue_error)?;
+        let result = self.results.try_reserve().map_err(|error| queue_error(&error))?;
         let completion = self.client.renew_credential(self.credential, credential)?;
         result.send(completion);
         Ok(())
@@ -158,7 +158,7 @@ impl SocketInbound for ForwardInput {
         if self.progress.cancelled() || self.progress.ended() {
             return Err(StreamError::Unavailable);
         }
-        let result = self.results.try_reserve().map_err(queue_error)?;
+        let result = self.results.try_reserve().map_err(|error| queue_error(&error))?;
         let (sent, completion) = oneshot::channel();
         self.client
             .pool
@@ -168,13 +168,13 @@ impl SocketInbound for ForwardInput {
                 frame,
                 sent,
             })
-            .map_err(queue_error)?;
+            .map_err(|error| queue_error(&error))?;
         result.send(completion);
         Ok(())
     }
 }
 
-fn queue_error<T>(error: mpsc::error::TrySendError<T>) -> StreamError {
+fn queue_error<T>(error: &mpsc::error::TrySendError<T>) -> StreamError {
     match error {
         mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
         mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,

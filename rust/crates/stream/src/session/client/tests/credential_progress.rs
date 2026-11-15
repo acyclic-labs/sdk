@@ -38,11 +38,11 @@ struct OwnerRequest {
 }
 impl OwnerRequest {
     fn wait(&self, reject: bool) -> Option<CredentialPending<()>> {
-        let mut pause = self.pause.lock().unwrap();
+        let mut pause = self.pause.lock().unwrap_or_else(|poison| poison.into_inner());
         if pause.as_ref()?.reject != reject {
             return None;
         }
-        let pause = pause.take().unwrap();
+        let pause = pause.take()?;
         Some(Box::pin(async move {
             let _ = pause.entered.send(());
             pause
@@ -163,7 +163,8 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                     client_id: bytes::Bytes::from_static(b"deferred-owner"),
                     destination_node: "node".into(),
                     receive_bytes: crate::MAX_COMMAND_BYTES as u64,
-                    receive_frames: crate::MAX_ITEMS as u32,
+                    receive_frames: u32::try_from(crate::MAX_ITEMS)
+                        .map_err(|_| StreamError::Capacity)?,
                     credentials: vec![],
                 }),
             ))
@@ -173,7 +174,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
             });
             let operation = async {
                 if stage == "headers" {
-                    *pause.lock().unwrap() = Some(owner);
+                    *pause.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(owner);
                     return endpoint.session(Box::pin(source)).await.map(|_| None);
                 }
                 let mut response = endpoint.session(Box::pin(source)).await?;
@@ -186,7 +187,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                         .body,
                     Some(Body::Welcome(_))
                 ));
-                *pause.lock().unwrap() = Some(owner);
+                *pause.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(owner);
                 fixture
                     .controls
                     .send(if stage == "reply" {

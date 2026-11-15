@@ -297,7 +297,7 @@ impl MemoryStream {
         let recovery_meter = Arc::clone(&meter);
         let recovery = work.record(NativeProviderFuture::try_observed(
             &meter,
-            crate::native::span!("acyclic.stream.inspect_idempotency"),
+            &crate::native::span!("acyclic.stream.inspect_idempotency"),
             async move {
                 let state = state.read().await;
                 let (stored, observed) = read.attempt(|| {

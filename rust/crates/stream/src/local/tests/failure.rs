@@ -397,7 +397,9 @@ async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::
                     .await
                     .map(|result| result.map(|_| ())),
             };
-            let error = result.expect_err("failure watch replaced the original native I/O error");
+            let Err(error) = result else {
+                return Err("failure watch replaced the original native I/O error".into());
+            };
             let cause = stream.failure().ok_or("missing original write failure")?;
             assert_eq!(cause.io_kind, Some(error.kind()));
             assert_eq!(cause.raw_os_error, error.raw_os_error());

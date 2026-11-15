@@ -51,7 +51,7 @@ fn failed_pull_ownership_is_not_eof_and_close_drops_the_original_source() {
     .boxed_local();
     let cursor = PullCursor::new(source, "original ownership unavailable");
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _owner = cursor.stream.lock().unwrap();
+        let _owner = cursor.stream.lock().unwrap_or_else(|poison| poison.into_inner());
         panic!("original pull owner failed");
     }));
     assert!(failure.is_err());

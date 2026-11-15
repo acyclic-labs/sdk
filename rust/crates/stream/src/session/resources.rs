@@ -340,7 +340,7 @@ impl ResourceAuthorization {
     pub async fn expires_at(&self, unix_seconds: u64) -> Result<(), StreamError> {
         let work = self.authority.state.expires_at(unix_seconds);
         let result = crate::trace::observe(
-            crate::trace::Request {
+            &crate::trace::Request {
                 name: "stream.resource_expiry",
                 mechanism: crate::trace::Mechanism::Wait,
                 parent: None,

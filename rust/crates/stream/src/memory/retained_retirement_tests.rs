@@ -12,13 +12,19 @@ thread_local! {
 fn observe_release(bytes: u64) {
     let released = RELEASED.get() + bytes;
     RELEASED.set(released);
-    let observed = acyclic_test_support::current_allocations().expect("active allocation scope");
-    if observed.bytes_total as i64 - observed.bytes_current < released as i64 {
+    let Some(observed) = acyclic_test_support::current_allocations() else {
+        return;
+    };
+    if observed.bytes_total.cast_signed() - observed.bytes_current
+        < released.cast_signed()
+    {
         EARLY_RELEASE.set(true);
     }
 }
 
-fn release_order<const RAW_DROP: bool>(length: usize) {
+fn release_order<const RAW_DROP: bool>(
+    length: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     let meter = Arc::new(crate::test_meter::Meter {
         release_observer: Some(observe_release),
         ..Default::default()
@@ -27,13 +33,15 @@ fn release_order<const RAW_DROP: bool>(length: usize) {
     let header = std::mem::size_of::<RetainedFact>() + 2 * std::mem::size_of::<usize>();
     RELEASED.set(0);
     EARLY_RELEASE.set(false);
+    let mut outcome: Result<(), Box<dyn std::error::Error>> = Ok(());
     let measured = acyclic_test_support::measure(|| {
+        outcome = (|| -> Result<(), Box<dyn std::error::Error>> {
         let mut root: Option<RetainedFactRef> = None;
         let mut first = None;
         for index in 0..length {
-            let charge = ReadAllocation::new(&original, header).expect("original header charge");
+            let charge = ReadAllocation::new(&original, header)?;
             let mut fact = RetainedFact::reserved(Some(charge));
-            let data = fact.get_mut().expect("exclusive reservation");
+            let data = fact.get_mut().ok_or("exclusive reservation")?;
             data.previous = root.take();
             let charge = if data.previous.is_some() {
                 data._header.take()
@@ -63,12 +71,15 @@ fn release_order<const RAW_DROP: bool>(length: usize) {
         if RAW_DROP {
             // The former ordinary Arc destructor releases the inline charge
             // before its implicit weak reference retires the allocation.
-            drop(root.take().expect("one fact").0.take());
+            drop(root.take().ok_or("one fact")?.0.take());
         }
         drop(root);
         drop(first);
         drop(upgraded);
+        Ok(())
+        })();
     });
+    outcome?;
     assert_eq!(measured.count_total, length as u64);
     assert_eq!(measured.bytes_total, (header * length) as u64);
     assert_eq!(measured.count_current, 0);
@@ -79,17 +90,18 @@ fn release_order<const RAW_DROP: bool>(length: usize) {
         !EARLY_RELEASE.get(),
         "header claim was released before allocation retirement"
     );
+    Ok(())
 }
 
 #[test]
 fn original_header_release_follows_physical_allocation_retirement() {
     for length in [1, 16, 256] {
-        release_order::<false>(length);
+        release_order::<false>(length).unwrap();
     }
 }
 
 #[test]
 #[should_panic(expected = "header claim was released before allocation retirement")]
 fn negative_control_ordinary_arc_drop_refunds_before_retirement() {
-    release_order::<true>(1);
+    release_order::<true>(1).unwrap();
 }

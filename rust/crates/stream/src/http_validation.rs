@@ -387,12 +387,10 @@ pub fn validate(route: &str, value: &Value) -> Result {
                     u64_string(field(item, "changedAt")?)?;
                     if let Some(through) =
                         item.get("retainedThrough").filter(|value| !value.is_null())
+                        && (projection == "tail"
+                            || u64_string(through)? > u64_string(field(item, "tail")?)?)
                     {
-                        if projection == "tail"
-                            || u64_string(through)? > u64_string(field(item, "tail")?)?
-                        {
-                            return Err("invalid retained prefix proof");
-                        }
+                        return Err("invalid retained prefix proof");
                     }
                     if projection == "history" {
                         validate("head", head)?;
@@ -418,10 +416,10 @@ pub fn validate(route: &str, value: &Value) -> Result {
             let item = object(value)?;
             u64_string(field(item, "changedAt")?)?;
             let tail = u64_string(field(item, "tail")?)?;
-            if let Some(through) = item.get("retainedThrough").filter(|value| !value.is_null()) {
-                if u64_string(through)? > tail {
-                    return Err("retained prefix exceeds head");
-                }
+            if let Some(through) = item.get("retainedThrough").filter(|value| !value.is_null())
+                && u64_string(through)? > tail
+            {
+                return Err("retained prefix exceeds head");
             }
             if u64_string(field(item, "durable")?)? > tail {
                 return Err("durable prefix exceeds accepted head");
@@ -438,10 +436,8 @@ pub fn validate(route: &str, value: &Value) -> Result {
                 }
             }
             let origin = field(item, "origin")?;
-            if !origin.is_null() {
-                if validate_origin(origin)? > tail {
-                    return Err("inherited cut exceeds head");
-                }
+            if !origin.is_null() && validate_origin(origin)? > tail {
+                return Err("inherited cut exceeds head");
             }
             Ok(())
         }

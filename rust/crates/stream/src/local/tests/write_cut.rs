@@ -16,7 +16,7 @@ fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
             let provider = LocalStream::open(root.path(), Default::default()).await?;
             let first = keyed_commit("write-cut", 0)?;
             deferring_durability(provider.commit(first)).await?;
-            let before = provider.inner.journal.lock().unwrap().bytes;
+            let before = provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).bytes;
             let meter = Arc::new(Meter::local());
             let work = crate::native::Work::new(meter.original())?;
             let pending = PreparedFrame::encode(
@@ -27,7 +27,7 @@ fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
             let bytes = pending.encoded.len() as u64;
             let (started, entered) = tokio::sync::oneshot::channel();
             let (release, released) = std::sync::mpsc::sync_channel(0);
-            *JOURNAL_WRITE_BLOCKER.lock().unwrap() = Some((
+            *JOURNAL_WRITE_BLOCKER.lock().unwrap_or_else(|poison| poison.into_inner()) = Some((
                 Arc::as_ptr(&provider.inner.journal) as usize,
                 started,
                 released,
@@ -60,7 +60,7 @@ fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
             };
             provider.await_publication(completed).await?;
             assert_eq!(
-                provider.inner.journal.lock().unwrap().flushed_sequence,
+                provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).flushed_sequence,
                 Some(1)
             );
             assert!(!writing.is_finished());
@@ -101,7 +101,7 @@ fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
                     writing.await??;
                 }
                 {
-                    let journal = provider.inner.journal.lock().unwrap();
+                    let journal = provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
                     assert_eq!((journal.appended, journal.bytes), (2, before + bytes));
                     assert_eq!(journal.flushed_sequence, Some(1));
                 }
@@ -135,7 +135,7 @@ async fn negative_control_physical_write_under_metadata_prevents_cut_observation
     // Execute the former physical path on a real journal. Its metadata cannot
     // be observed until the file operation and publication have both ended.
     {
-        let mut journal = provider.inner.journal.lock().unwrap();
+        let mut journal = provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
         let file = journal.file.lease()?;
         let offset = journal.begin_append(true)?;
         file.write(|file| {

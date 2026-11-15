@@ -393,7 +393,8 @@ pub fn children_page_from_response(
             .collect::<Result<_, StreamError>>()?,
         next_after: value.next_after.map(path).transpose()?,
     };
-    if page.scanned > crate::MAX_ITEMS as u32
+    if page.scanned
+        > u32::try_from(crate::MAX_ITEMS).map_err(|_| StreamError::Capacity)?
         || page.children.len() > page.scanned as usize
         || (page.next_after.is_some() && page.scanned == 0)
     {
@@ -412,7 +413,7 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
             .into_iter()
             .map(|child| wire::Child {
                 tail: child.tail,
-                origin: child.origin.map(fork_origin_to_wire),
+                origin: child.origin.as_ref().map(fork_origin_to_wire),
                 tail_record: child.tail_record.map(|record| record_wire(record, None)),
                 path: child.path.to_string(),
             })

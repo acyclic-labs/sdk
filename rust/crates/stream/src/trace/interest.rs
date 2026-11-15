@@ -48,7 +48,7 @@ impl<P: StreamProvider + ?Sized> Registry<P> {
     pub fn subscribe(
         &self,
         owner: StreamPath,
-        source: StreamPath,
+        source: &StreamPath,
     ) -> Result<Lease<P>, StreamError> {
         let entry = self.0.entries.subscribe_with(owner, || {
             Arc::new(
@@ -63,7 +63,7 @@ impl<P: StreamProvider + ?Sized> Registry<P> {
                 .with_demand(),
             )
         })?;
-        if entry.value().stream.path() != &source {
+        if entry.value().stream.path() != source {
             return Err(StreamError::InvalidArgument.with_source(SourceMismatch));
         }
         self.0

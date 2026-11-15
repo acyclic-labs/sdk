@@ -528,7 +528,7 @@ async fn qualify(provider: &impl StreamProvider) {
             bootstrap_head: false,
             until: None,
             when_absent: Default::default(),
-            path: path,
+            path,
             from: 1,
             preceding: Some(first.commit_id),
             filter: filter(),

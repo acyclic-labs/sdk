@@ -19,6 +19,8 @@ enum Trace {
     Field(&'static str, &'static str, String),
     Closed(&'static str),
 }
+type Ready = oneshot::Receiver<Result<(u64, Option<wire::SessionOpened>), StreamError>>;
+
 struct Observer;
 struct Fields(&'static str);
 impl tracing::field::Visit for Fields {
@@ -50,7 +52,7 @@ impl crate::runtime::Executor for Immediate {
 struct State {
     pool: Pool,
     input: Vec<wire::SessionFrame>,
-    ready: Vec<oneshot::Receiver<Result<(u64, Option<wire::SessionOpened>), StreamError>>>,
+    ready: Vec<Ready>,
     records: Vec<mpsc::Receiver<Result<Delivery, StreamError>>>,
     sender: Arc<Outbound<wire::SessionFrame>>,
     _registration: tracing::Dispatch,

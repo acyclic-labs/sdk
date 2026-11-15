@@ -29,7 +29,7 @@ impl State {
         })
     }
     pub(in crate::session) fn publish(&self, trust: signed::Snapshot, now: u64) {
-        *self.trust.write().unwrap() = Arc::new(trust);
+        *self.trust.write().unwrap_or_else(|poison| poison.into_inner()) = Arc::new(trust);
         self.clock.store(now, Ordering::SeqCst);
         let _ = self.published.send_replace(Ok(()));
         let _ = self.clock_events.send_replace(Ok(()));
@@ -147,7 +147,7 @@ async fn alarm_producer_loss_terminates_the_original_authorized_session() {
             }
         }
         assert_eq!((succeeded, unsettled), (1, 1));
-        root.finish_submitted(None, Outcome::Succeeded).unwrap();
+        let _completion = root.finish_submitted(None, Outcome::Succeeded).unwrap();
     }
     for early in [false, true] {
         let state = State::new();
@@ -317,7 +317,7 @@ fn declared_method_credentials_match_session_admission() {
                 actions,
             }]
         };
-        testing::credential_with_grants(grants)
+        testing::credential_with_grants(&grants)
     };
 
     // Dispatch through the actual Session admission each public method sends.
@@ -442,7 +442,7 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
     ] {
         let state = State::new();
         let authority = Arc::new(authority(state.clone()));
-        let credential = testing::credential_with_grants(vec![ResourceGrant {
+        let credential = testing::credential_with_grants(&[ResourceGrant {
             resource: ResourcePattern {
                 name: resource.into(),
                 prefix: false,
@@ -489,7 +489,7 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
         ));
         // A slot replacement cannot substitute another action for the admitted
         // operation, even while the original provider still holds its context.
-        let replacement = testing::credential_with_grants(vec![ResourceGrant {
+        let replacement = testing::credential_with_grants(&[ResourceGrant {
             resource: ResourcePattern {
                 name: resource.into(),
                 prefix: false,
@@ -1195,7 +1195,7 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                 }
             }
             assert_eq!((authorized, unsettled), (1, 1));
-            root.finish_submitted(None, Outcome::Succeeded).unwrap();
+            let _completion = root.finish_submitted(None, Outcome::Succeeded).unwrap();
         }
         for checks in [1, 100, 1000] {
             let authorize = || {
@@ -1250,7 +1250,7 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
             use std::error::Error as _;
             assert!(
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let _held = state.trust.write().unwrap();
+                    let _held = state.trust.write().unwrap_or_else(|poison| poison.into_inner());
                     panic!("original trust owner failed");
                 }))
                 .is_err()

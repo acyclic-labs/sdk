@@ -297,7 +297,7 @@ pub(super) fn client(connect: Function, scope: Option<crate::RevisionScope>) -> 
         Some(scope) => crate::RevisionTracker::scoped(&revisions, scope),
         None => revisions,
     };
-    Client::tracking(home, moved, Arc::new(PlatformExecutor), revisions)
+    Client::tracking(home, moved, &Arc::new(PlatformExecutor), revisions)
 }
 
 #[cfg(test)]
