@@ -145,14 +145,22 @@ impl CheckoutPublisher {
                         BoundedContentFuture::new(access.io, || async {
                             native.sync().await?;
                             if mount.view.source.is_none() {
-                                capture::capture(
-                                    (&self.tools.capture_options, &self.tools.capture_policy),
-                                    (&physical, view),
-                                    watcher,
-                                    (operation, 0),
-                                    PublicationPermit::Unrestricted,
-                                )
-                                .await?;
+                                if physical.mounted.is_some() {
+                                    capture::capture(
+                                        (&self.tools.capture_options, &self.tools.capture_policy),
+                                        (&physical, view),
+                                        watcher,
+                                        (operation, 0),
+                                        PublicationPermit::Unrestricted,
+                                    )
+                                    .await?;
+                                } else {
+                                    let paths =
+                                        changes.iter().map(ContentChange::path).collect::<Vec<_>>();
+                                    self.tools
+                                        .capture_paths((&physical, view), &paths, operation, 0)?
+                                        .await?;
+                                }
                             }
                             Ok(())
                         })?
@@ -227,7 +235,12 @@ impl CheckoutPublisher {
                                     ),
                                 )
                                 .await?;
-                            self.finish_pending_capture(&physical, view, watcher)
+                            let paths = receipt
+                                .members
+                                .iter()
+                                .map(ContentChangeResult::path)
+                                .collect::<Vec<_>>();
+                            self.finish_written(&physical, view, watcher, &paths)
                                 .await?;
                         }
                     }

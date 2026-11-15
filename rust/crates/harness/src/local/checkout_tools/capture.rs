@@ -23,9 +23,10 @@ pub(in crate::local) struct Cursor {
 }
 
 impl Cursor {
+    /// Marks the same lost continuity as a dropped OS batch, without I/O.
     #[cfg(all(test, not(loom)))]
-    pub(in crate::local) fn fence_proves_delivery(&self) -> bool {
-        self.watcher.fence_proves_delivery()
+    pub(in crate::local) fn lose_continuity(&mut self) -> Result<()> {
+        self.watcher.invalidate().map_err(storage)
     }
 
     fn open(workspace: &LocalWorkspace) -> Result<Self> {
@@ -120,6 +121,51 @@ impl CheckoutTools {
         reconciliation::replace_owed_write(physical, None, Some(owed)).await
     }
 
+    /// Finishes the owed write of a writer that knows the paths it wrote.
+    #[inline(never)]
+    pub(in crate::local) fn finish_written<'a>(
+        &'a self,
+        selected: (&'a LocalWorkspace, &'a workspace::View),
+        slot: &'a mut Option<Cursor>,
+        touched: &'a [&'a str],
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            finish_owed_write_with(
+                (&self.capture_options, &self.capture_policy),
+                selected,
+                slot,
+                PublicationPermit::Unrestricted,
+                &|| async { Ok(()) },
+                Some(touched),
+            )
+            .await
+        })
+    }
+
+    /// Captures the current native state of `paths` before a writer decides
+    /// their type and existence, without reading or consuming watch hints.
+    #[inline(never)]
+    pub(in crate::local) fn capture_paths<'a>(
+        &'a self,
+        selected: (&'a LocalWorkspace, &'a workspace::View),
+        paths: &'a [&'a str],
+        operation: OperationId,
+        phase: u8,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            record_paths(
+                (&self.capture_options, &self.capture_policy),
+                selected,
+                paths,
+                (operation, phase),
+                PublicationPermit::Unrestricted,
+                &|| async { Ok(()) },
+                None,
+            )
+            .await
+        })
+    }
+
     /// Captures a file publication's physical write under the write's own
     /// operation while its staged generation is still the head, then clears
     /// the debt. A durable companion receipt also acknowledges a clean capture,
@@ -190,6 +236,25 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: std::future::Future<Output = Result<()>> + Send,
 {
+    finish_owed_write_with(configuration, selected, slot, permit, before_effect, None).await
+}
+
+/// Finishes the owed write. A writer that knows the paths it wrote captures
+/// exactly those, so its cost is bounded by what it touched and it never
+/// waits on the checkout's watch continuity. A debt found by recovery, whose
+/// paths are unknown, settles through the ordinary capture.
+async fn finish_owed_write_with<F, Fut>(
+    configuration: (&CaptureOptions, &CapturePolicy),
+    selected: (&LocalWorkspace, &workspace::View),
+    slot: &mut Option<Cursor>,
+    permit: PublicationPermit,
+    before_effect: &F,
+    touched: Option<&[&str]>,
+) -> Result<()>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = Result<()>> + Send,
+{
     let (physical, view) = selected;
     let Some(owed) = reconciliation::owed_write(physical).await? else {
         return Ok(());
@@ -229,16 +294,34 @@ where
         if KILL_BEFORE_CAPTURE.get() {
             return Err(Error::Storage("killed before the write's capture".into()));
         }
-        record_changes(
-            configuration,
-            selected,
-            slot,
-            (OperationId::from_bytes(operation.into_bytes()), 1),
-            permit,
-            before_effect,
-            Some(staged.generation.digest()),
-        )
-        .await?;
+        let capture = (OperationId::from_bytes(operation.into_bytes()), 1);
+        let settlement = Some(staged.generation.digest());
+        match touched {
+            Some(paths) => {
+                record_paths(
+                    configuration,
+                    selected,
+                    paths,
+                    capture,
+                    permit,
+                    before_effect,
+                    settlement,
+                )
+                .await?;
+            }
+            None => {
+                record_changes(
+                    configuration,
+                    selected,
+                    slot,
+                    capture,
+                    permit,
+                    before_effect,
+                    settlement,
+                )
+                .await?;
+            }
+        }
     }
     before_effect().await?;
     reconciliation::replace_owed_write(physical, Some(owed), None).await
@@ -253,6 +336,8 @@ std::thread_local! {
     pub(in crate::local) static OWED_WRITE_UNAPPLIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Full scans of the checkout this thread's captures performed.
     pub(in crate::local) static BASELINE_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Path-scoped captures this thread's writers performed.
+    pub(in crate::local) static PATH_CAPTURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Publishes the staged generation's transition from its unique parent into
@@ -419,6 +504,128 @@ where
         cursor.baseline_pending = baseline_pending && !first_baseline;
     }
     *slot = Some(cursor);
+    Ok(())
+}
+
+/// Captures exactly `paths` and their ancestors, at their current native
+/// state, into one commit on the head. It reads no watch hints and leaves
+/// them queued, so it never rescans, never waits on watch continuity and
+/// never claims another command's native effects. Its cost is bounded by
+/// the paths, never by the size of the checkout.
+pub(in crate::local) async fn record_paths<F, Fut>(
+    (options, policy): (&CaptureOptions, &CapturePolicy),
+    selected: (&LocalWorkspace, &workspace::View),
+    paths: &[&str],
+    (operation, phase): (OperationId, u8),
+    permit: PublicationPermit,
+    before_effect: &F,
+    settlement: Option<acyclic_fs::Digest>,
+) -> Result<()>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = Result<()>> + Send,
+{
+    before_effect().await?;
+    let (_, view) = selected;
+    let cancellation = CancellationToken::new();
+    let workspace = view.workspace();
+    let config = workspace.volume_config();
+    let mut changes: Vec<acyclic_fs::WatchChange> = Vec::new();
+    for path in paths {
+        // Ancestors first, so a parent replaced natively is observed before
+        // the entry beneath it.
+        let mut end = 0;
+        loop {
+            let next = path[end..].find('/').map(|at| end + at);
+            let prefix = next.map_or(*path, |at| &path[..at]);
+            if !prefix.is_empty() {
+                let portable =
+                    acyclic_fs::path::PortablePath::parse(&format!("/{prefix}"), config.limits)
+                        .map_err(storage)?;
+                let name = acyclic_fs::kernel::NamespacePath::from_portable_in_profile(
+                    &portable,
+                    config.profile,
+                    config.limits,
+                )
+                .map_err(storage)?;
+                let known = changes.iter().any(|change| {
+                    matches!(change, acyclic_fs::WatchChange::Modified(known) if *known == name)
+                });
+                if !known {
+                    changes
+                        .try_reserve(1)
+                        .map_err(|_| Error::Storage("capture path allocation failed".into()))?;
+                    changes.push(acyclic_fs::WatchChange::Modified(name));
+                }
+            }
+            match next {
+                Some(at) => end = at + 1,
+                None => break,
+            }
+        }
+    }
+    let mut checkout = workspace
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode::tracking_transaction(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    #[cfg(all(test, not(loom)))]
+    PATH_CAPTURES.set(PATH_CAPTURES.get() + 1);
+    capture_watch_batch(
+        &mut checkout,
+        WatchBatch::Changes {
+            epoch: 0,
+            first_sequence: 0,
+            next_sequence: 0,
+            changes,
+            original: Default::default(),
+        },
+        options,
+        policy,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await
+    .map_err(storage)?;
+    if !checkout.has_pending_mutations() && settlement.is_none() {
+        return Ok(());
+    }
+    let committed = checkout
+        .commit(
+            capture_operation(operation, phase),
+            settlement,
+            None,
+            None,
+            permit,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| async {
+                before_effect().await.map_err(|error| {
+                    acyclic_fs::OperationFailure::new(error, WorkCounters::UNCHARGED)
+                })?;
+                Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    if !matches!(
+        committed,
+        LivePublicationObservation::Committed { .. }
+            | LivePublicationObservation::AlreadyCommitted { .. }
+    ) {
+        return Err(Error::Conflict(
+            "checkout capture publication raced with another writer".into(),
+        ));
+    }
     Ok(())
 }
 

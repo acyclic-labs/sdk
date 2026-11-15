@@ -16,13 +16,9 @@ async fn concurrent_publications_preserve_each_volume_payload() -> Result<()> {
     Ok(())
 }
 
-/// Every file publication stages outside the checkout and renames into it.
-/// Each such write is one arrival: concurrent writers over a populated
-/// checkout must never fall back to scanning the whole tree, wherever the
-/// checkout's watch proves delivery without writing into the checkout. Where
-/// it cannot (FSEvents, or the notify adapter), the checkout forbids fence
-/// writes, so each capture revalidates by contract and the claim does not
-/// apply.
+/// A writer captures exactly the paths it wrote: concurrent writers over a
+/// populated checkout never scan the whole tree, on every platform and
+/// whatever the watcher can prove about its delivery.
 #[tokio::test]
 async fn concurrent_checkout_writes_never_rescan_the_tree() -> Result<()> {
     let (_directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
@@ -40,19 +36,100 @@ async fn concurrent_checkout_writes_never_rescan_the_tree() -> Result<()> {
         .await?;
     let before = crate::local::checkout_tools::capture::BASELINE_SCANS.get();
     measure_writer_batch(&[&publisher; 8], "rescan").await?;
-    let proven =
-        crate::sync::owned::lock_owned(crate::sync::owned::Arc::clone(&publisher.tools.state))
-            .await
-            .watcher
+    assert_eq!(
+        crate::local::checkout_tools::capture::BASELINE_SCANS.get(),
+        before,
+        "a checkout write rescanned the whole tree"
+    );
+    harness.disconnect().await?;
+    Ok(())
+}
+
+/// A watch that lost continuity (a dropped batch, or a hint whose other half
+/// never came) owes the checkout one revalidation. No writer pays it, and no
+/// writer waits behind it: each captures only the paths it wrote. The next
+/// whole-checkout capture revalidates once and still records the native edit
+/// the lost watch never reported.
+#[tokio::test]
+async fn writes_never_pay_for_a_lost_watch() -> Result<()> {
+    use crate::local::checkout_tools::capture::{BASELINE_SCANS, PATH_CAPTURES};
+    let (directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
+    publisher.tools.publish_baseline().await?;
+    let (_, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "warm.txt",
+            b"warm\n",
+            "text/plain",
+            "warm.txt",
+            Default::default(),
+        )?
+        .await?;
+    std::fs::write(directory.path().join("source-0.txt"), b"native edit\n").map_err(storage)?;
+    crate::sync::owned::lock_owned(crate::sync::owned::Arc::clone(&publisher.tools.state))
+        .await
+        .watcher
+        .as_mut()
+        .ok_or_else(|| Error::Storage("the checkout has no cursor".into()))?
+        .lose_continuity()?;
+    let (scans, paths) = (BASELINE_SCANS.get(), PATH_CAPTURES.get());
+    measure_writer_batch(&[&publisher; 8], "lost-watch").await?;
+    assert_eq!(
+        BASELINE_SCANS.get(),
+        scans,
+        "a write paid for the checkout's lost watch"
+    );
+    assert!(
+        PATH_CAPTURES.get() > paths,
+        "the writes were not captured by path"
+    );
+
+    let operation = OperationId::new();
+    {
+        let mut state =
+            crate::sync::owned::lock_owned(crate::sync::owned::Arc::clone(&publisher.tools.state))
+                .await;
+        let State {
+            active, watcher, ..
+        } = &mut *state;
+        let view = active
             .as_ref()
-            .is_some_and(|cursor| cursor.fence_proves_delivery());
-    if proven {
-        assert_eq!(
-            crate::local::checkout_tools::capture::BASELINE_SCANS.get(),
-            before,
-            "a checkout write rescanned the whole tree"
-        );
+            .unwrap_or_else(|| publisher.tools.workspace.view());
+        publisher
+            .tools
+            .capture(
+                (&publisher.tools.workspace, view),
+                watcher,
+                operation,
+                0,
+                PublicationPermit::Unrestricted,
+            )?
+            .await?;
     }
+    assert_eq!(
+        BASELINE_SCANS.get(),
+        scans + 1,
+        "the lost watch was not revalidated exactly once"
+    );
+    let revalidated = publisher
+        .tools
+        .workspace
+        .view()
+        .workspace()
+        .operation_generation(
+            acyclic_fs::IdempotencyKey::from_bytes(
+                crate::local::checkout_tools::capture::capture_operation(operation, 0).into_bytes(),
+            ),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    assert!(
+        revalidated.is_some(),
+        "the revalidation did not record the unreported native edit"
+    );
     harness.disconnect().await?;
     Ok(())
 }

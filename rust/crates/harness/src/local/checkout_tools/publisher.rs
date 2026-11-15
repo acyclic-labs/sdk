@@ -283,9 +283,11 @@ impl CheckoutPublisher {
                     if let Some(mounted) = &physical.mounted {
                         mounted.sync().await.map_err(storage)?;
                     } else {
-                        // Completed native edits must enter the transaction cut
-                        // before the writer decides destination type/existence.
-                        self.tools.capture((&physical, view), watcher, write_capture(operation, &relative), 0, PublicationPermit::Unrestricted)?.await?;
+                        // Completed native edits to the destination and its
+                        // ancestors enter the transaction cut before the writer
+                        // decides destination type/existence. Other hints stay
+                        // queued for the command that owns them.
+                        self.tools.capture_paths((&physical, view), &[&*relative], write_capture(operation, &relative), 0)?.await?;
                     }
                 }
             }
@@ -353,7 +355,8 @@ impl CheckoutPublisher {
         if tests::KILL_BEFORE_WRITE.get() {
             return Err(Error::Storage("killed before the write".into()));
         }
-        self.finish_pending_capture(physical, view, watcher).await?;
+        self.finish_written(physical, view, watcher, &[file.path()])
+            .await?;
         self.observed(view, operation, file).await
     }
 
@@ -370,6 +373,23 @@ impl CheckoutPublisher {
         }
         self.tools
             .finish_owed_write((physical, view), watcher, PublicationPermit::Unrestricted)?
+            .await
+    }
+
+    // A live writer settles its own debt over exactly the paths it wrote.
+    async fn finish_written(
+        &self,
+        physical: &LocalWorkspace,
+        view: &workspace::View,
+        watcher: &mut Option<capture::Cursor>,
+        touched: &[&str],
+    ) -> Result<()> {
+        #[cfg(all(test, not(loom)))]
+        if tests::REPLAY_SKIPS_CAPTURE.get() {
+            return Ok(());
+        }
+        self.tools
+            .finish_written((physical, view), watcher, touched)?
             .await
     }
 
