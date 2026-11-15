@@ -107,7 +107,7 @@ async fn control_admission_progresses_with_saturated_work_and_default_is_unbound
 struct ExternalPackage {
     package: Package,
     external: Vec<String>,
-    keyed: bool,
+    filter: Option<acyclic_stream::FollowFilter>,
 }
 
 impl Handler for ExternalPackage {
@@ -117,12 +117,12 @@ impl Handler for ExternalPackage {
     fn external_subscriptions(&self) -> &[String] {
         &self.external
     }
-    fn subscription_key(
+    fn subscription_filter(
         &self,
         _: &str,
         _: Option<&Checkpoint>,
-    ) -> Result<Option<Bytes>, crate::guest::GuestError> {
-        Ok(self.keyed.then(|| Bytes::from_static(b"control")))
+    ) -> Result<Option<acyclic_stream::FollowFilter>, crate::guest::GuestError> {
+        Ok(self.filter.clone())
     }
     fn on_record<'a>(
         &'a self,
@@ -139,6 +139,146 @@ struct OrderedPackage {
     manifest: Manifest,
     ordered: Vec<String>,
 }
+
+/// A range is a sequence-ordered subscription, not a key-ordered scan. The
+/// same original cursor survives release and drives the shared external wake.
+#[tokio::test]
+async fn indexed_prefixes_deliver_in_source_order_once_across_restart() -> TestResult {
+    let provider = Arc::new(Counted::new(MemoryStream::default()));
+    let source = StreamPath::new("indexed/prefix-source")?;
+    let append = |keys: &[&str]| -> Result<AppendRecord, StreamError> {
+        Ok(AppendRecord {
+            value: Bytes::from_static(b"emit").into(),
+            headers: acyclic_stream::RecordHeaders::new(
+                keys.iter()
+                    .map(|key| Bytes::copy_from_slice(key.as_bytes()).into())
+                    .collect(),
+                vec![],
+            )?,
+        })
+    };
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![
+                append(&["folderish/a"])?,
+                append(&["folder/z"])?,
+                append(&["folder/a"])?,
+                append(&["folder/a", "folder/z"])?,
+                append(&["outside"])?,
+            ],
+            if_tail: Some(0),
+            idempotency_key: key("prefix/source")?,
+        })
+        .await?;
+    let store = Store::new(provider.clone(), root()?);
+    let address = actor("prefix")?;
+    let mut creation = PreparedPublish::foreign(key("prefix/create")?);
+    creation.join(store.create(
+        None,
+        &address,
+        crate::local::Creation {
+            subscriptions: BTreeMap::from([(
+                "inbox".into(),
+                Subscription {
+                    path: source.clone(),
+                    cursor: 0,
+                    paused: false,
+                },
+            )]),
+            checkpoint: Some(ledger("out/prefix")?),
+            escrow: None,
+        },
+    )?)?;
+    creation.join(store.activation(&address)?)?;
+    store.submit(creation).await?;
+    let handler = Arc::new(ExternalPackage {
+        package: Package::new()?,
+        external: vec!["inbox".into()],
+        filter: Some(acyclic_stream::FollowFilter::new(
+            acyclic_stream::wire::SessionFilter {
+                keys: vec![acyclic_stream::wire::KeyRange {
+                    start: Bytes::from_static(b"folder/"),
+                    end: Bytes::from_static(b"folder0"),
+                }],
+                ..Default::default()
+            },
+        )?),
+    });
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        Store::new(provider.clone(), root()?),
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
+    runtime.track(address.clone())?;
+    runtime.drain_actor(&address).await?;
+    assert_eq!(
+        records(&*provider, "out/prefix").await?,
+        ["r1", "r2", "r3"]
+            .into_iter()
+            .map(Bytes::from)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        store
+            .load(&address)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(4)
+    );
+    assert!(runtime.release(&address));
+    let reopened = Runtime::new(
+        crate::guest::Requests::default(),
+        Store::new(provider.clone(), root()?),
+        handler,
+        Arc::new(SystemClock),
+    );
+    let mut serving = Box::pin(reopened.run(|_, error| panic!("prefix delivery failed: {error}")));
+    observe_while_running(serving.as_mut(), async {
+        reopened.complete().await?;
+        Ok(())
+    })
+    .await?;
+    let activation = provider.tail(root()?).await?;
+    provider
+        .append(AppendRequest {
+            path: source,
+            records: vec![append(&["folderish/new"])?, append(&["folder/new"])?],
+            if_tail: Some(5),
+            idempotency_key: key("prefix/after-restart")?,
+        })
+        .await?;
+    assert_eq!(
+        provider.tail(root()?).await?,
+        activation,
+        "source producer appended an actor wake"
+    );
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &address, |state| state.cursor("inbox") == Some(7)),
+    )
+    .await?;
+    observe_while_running(serving.as_mut(), async {
+        reopened.complete().await?;
+        Ok(())
+    })
+    .await?;
+    assert_eq!(
+        records(&*provider, "out/prefix").await?,
+        ["r1", "r2", "r3", "r6"]
+            .into_iter()
+            .map(Bytes::from)
+            .collect::<Vec<_>>()
+    );
+    let before = provider.requests();
+    assert!(futures::poll!(serving.as_mut()).is_pending());
+    let idle = provider.requests().since(before);
+    assert_eq!(idle.control(), 0);
+    assert_eq!(idle.data(), 0);
+    Ok(())
+}
 impl Handler for OrderedPackage {
     fn manifest(&self) -> &Manifest {
         &self.manifest
@@ -146,12 +286,14 @@ impl Handler for OrderedPackage {
     fn ordered_subscriptions(&self) -> &[String] {
         &self.ordered
     }
-    fn subscription_key(
+    fn subscription_filter(
         &self,
         id: &str,
         _: Option<&Checkpoint>,
-    ) -> Result<Option<Bytes>, crate::guest::GuestError> {
-        Ok(Some(Bytes::copy_from_slice(id.as_bytes())))
+    ) -> Result<Option<acyclic_stream::FollowFilter>, crate::guest::GuestError> {
+        acyclic_stream::FollowFilter::exact_key(Bytes::copy_from_slice(id.as_bytes()))
+            .map(Some)
+            .map_err(|error| crate::guest::GuestError::Decode(error.to_string()))
     }
     fn on_record<'a>(
         &'a self,
@@ -167,6 +309,15 @@ impl Handler for OrderedPackage {
 async fn indexed_inputs_preserve_source_order_without_changing_default_fairness() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let source = StreamPath::new("indexed/order")?;
+    let combined = AppendRecord::changes(
+        b"original publication",
+        &["inbox", "z"].map(|key| acyclic_stream::wire::ChangeEntry {
+            key: Bytes::copy_from_slice(key.as_bytes()),
+            operation: "put".into(),
+            metadata: Bytes::copy_from_slice(key.as_bytes()),
+        }),
+        vec![],
+    )?;
     provider
         .append(AppendRequest {
             path: source.clone(),
@@ -184,6 +335,14 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
                 .collect::<Result<_, StreamError>>()?,
             if_tail: Some(0),
             idempotency_key: key("ordered/source")?,
+        })
+        .await?;
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![combined.clone()],
+            if_tail: Some(3),
+            idempotency_key: key("ordered/combined")?,
         })
         .await?;
     for ordered in [false, true] {
@@ -278,6 +437,25 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
                 bound.paused = true;
             }
             assert!(runtime.next_record(&state, None).await?.is_none());
+        }
+        let mut state = snapshot.state().ok_or("missing ordered state")?.clone();
+        for subscription in state.subscriptions.values_mut() {
+            subscription.cursor = 3;
+        }
+        for after in [None, Some("inbox"), Some("z")] {
+            let (trigger, record, _) = runtime
+                .next_record(&state, after)
+                .await?
+                .ok_or("missing combined publication")?;
+            assert_eq!(
+                trigger.record_position().map(|(_, sequence)| sequence),
+                Some(3)
+            );
+            assert_eq!(
+                record.value, combined.value,
+                "atomic change entries were projected"
+            );
+            assert_eq!(record.headers, combined.headers);
         }
     }
     Ok(())
@@ -472,7 +650,9 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
             } else {
                 Vec::new()
             },
-            keyed,
+            filter: keyed
+                .then(|| acyclic_stream::FollowFilter::exact_key(Bytes::from_static(b"control")))
+                .transpose()?,
         });
         let runtime = Runtime::new(
             crate::guest::Requests::default(),

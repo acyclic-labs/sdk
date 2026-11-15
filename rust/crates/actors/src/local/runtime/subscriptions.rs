@@ -1,4 +1,4 @@
-//! Guest-added interests share one follow per distinct stream. Manifest inputs
+//! Guest-added interests share one follow per distinct stream and selection. Manifest inputs
 //! keep producer-owned activation. The existing ready set coalesces source
 //! events and retires their I/O immediately when the last observer leaves.
 use super::*;
@@ -12,13 +12,19 @@ struct Notification {
     error: Option<StreamError>,
 }
 
-fn open<P: StreamProvider + ?Sized>(provider: &Arc<P>, path: &StreamPath, from: u64) -> Next {
+fn open<P: StreamProvider + ?Sized>(
+    provider: &Arc<P>,
+    path: &StreamPath,
+    filter: Option<acyclic_stream::FollowFilter>,
+    from: u64,
+) -> Next {
     let provider = Arc::clone(provider);
     let path = path.clone();
     Box::pin(async move {
         let mut records = acyclic_stream::records_only(
             provider
                 .follow(acyclic_stream::FollowRequest {
+                    filter: filter.unwrap_or_default(),
                     when_absent: acyclic_stream::WhenAbsent::Wait,
                     ..acyclic_stream::FollowRequest::new(path, from)
                 })
@@ -30,7 +36,8 @@ fn open<P: StreamProvider + ?Sized>(provider: &Arc<P>, path: &StreamPath, from: 
 }
 
 pub(super) struct Watch {
-    _registration: Registration<StreamPath>,
+    _registration: Registration<Source>,
+    filter: Option<acyclic_stream::FollowFilter>,
     pub(super) waker: Waker,
     pub(super) next: Option<Next>,
     next_from: u64,
@@ -38,37 +45,66 @@ pub(super) struct Watch {
     observers: BTreeMap<ActorReference, u64>,
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct Source {
+    pub(super) path: StreamPath,
+    filter: Option<[u8; 32]>,
+}
+
+#[derive(Clone, PartialEq)]
+pub(super) struct Selection {
+    cursor: u64,
+    filter: Option<acyclic_stream::FollowFilter>,
+}
+
+pub(super) type Selections = BTreeMap<Source, Selection>;
+
 #[derive(Default)]
 pub(super) struct Subscriptions {
-    actors: BTreeMap<ActorReference, BTreeMap<StreamPath, u64>>,
-    pub(super) paths: BTreeMap<StreamPath, Watch>,
-    ready: ReadySet<StreamPath>,
+    actors: BTreeMap<ActorReference, Selections>,
+    pub(super) paths: BTreeMap<Source, Watch>,
+    ready: ReadySet<Source>,
 }
 
 impl Subscriptions {
     /// The guest-added interests of `state`, each at its earliest cursor.
-    fn selected(manifest: &crate::guest::Manifest, state: &State) -> BTreeMap<StreamPath, u64> {
-        let mut selected = BTreeMap::<StreamPath, u64>::new();
+    pub(super) fn selected(handler: &dyn Handler, state: &State) -> Result<Selections, Error> {
+        let mut selected = BTreeMap::<Source, Selection>::new();
         for (id, subscription) in state.subscriptions() {
-            if !subscription.paused && !manifest.subscriptions.contains(id) {
-                selected
-                    .entry(subscription.path.clone())
-                    .and_modify(|cursor| *cursor = (*cursor).min(subscription.cursor))
-                    .or_insert(subscription.cursor);
+            if !subscription.paused && !handler.manifest().subscriptions.contains(id) {
+                let filter = indexed_filter(handler, id, state.checkpoint())?;
+                let source = Source {
+                    path: subscription.path.clone(),
+                    filter: filter.as_ref().map(acyclic_stream::FollowFilter::digest),
+                };
+                match selected.entry(source) {
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        if entry.get().filter != filter {
+                            return Err(Error::Invalid("subscription filter identity collision"));
+                        }
+                        let cursor = entry.get().cursor.min(subscription.cursor);
+                        entry.get_mut().cursor = cursor;
+                    }
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(Selection {
+                            cursor: subscription.cursor,
+                            filter,
+                        });
+                    }
+                }
             }
         }
-        selected
+        Ok(selected)
     }
 
     /// The interest streams of `state` that no follow observes yet.
-    pub(super) fn unwatched(
-        &self,
-        manifest: &crate::guest::Manifest,
-        state: &State,
-    ) -> Vec<StreamPath> {
-        Self::selected(manifest, state)
-            .into_keys()
-            .filter(|path| !self.paths.contains_key(path))
+    pub(super) fn unwatched(&self, selected: &Selections) -> Vec<StreamPath> {
+        selected
+            .keys()
+            .filter(|source| !self.paths.contains_key(source))
+            .map(|source| source.path.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect()
     }
 
@@ -79,12 +115,17 @@ impl Subscriptions {
     pub(super) fn bind<P: StreamProvider + ?Sized>(
         &mut self,
         provider: &Arc<P>,
-        manifest: &crate::guest::Manifest,
         actor: &ActorReference,
-        state: &State,
+        selected: Selections,
         tails: &BTreeMap<StreamPath, u64>,
     ) -> Result<(), Error> {
-        let selected = Self::selected(manifest, state);
+        if selected.iter().any(|(source, selection)| {
+            self.paths
+                .get(source)
+                .is_some_and(|watch| watch.filter != selection.filter)
+        }) {
+            return Err(Error::Invalid("subscription filter identity collision"));
+        }
         if self.actors.get(actor) == Some(&selected)
             && selected.keys().all(|path| {
                 self.paths
@@ -98,7 +139,7 @@ impl Subscriptions {
         for path in previous.keys().filter(|path| !selected.contains_key(*path)) {
             self.remove(path, actor);
         }
-        for (path, from) in &selected {
+        for (path, selection) in &selected {
             if !self.paths.contains_key(path) {
                 let registration = self.ready.register(path.clone())?;
                 let waker = registration.waker();
@@ -106,21 +147,29 @@ impl Subscriptions {
                     path.clone(),
                     Watch {
                         _registration: registration,
+                        filter: selection.filter.clone(),
                         waker,
                         next: None,
-                        next_from: tails.get(path).map_or(*from, |&tail| tail.max(*from)),
+                        next_from: tails
+                            .get(&path.path)
+                            .map_or(selection.cursor, |&tail| tail.max(selection.cursor)),
                         notification: None,
                         observers: BTreeMap::new(),
                     },
                 );
             }
             let watch = self.paths.get_mut(path).expect("registered follow");
-            watch.observers.insert(actor.clone(), *from);
+            watch.observers.insert(actor.clone(), selection.cursor);
             // A registration starts idle: every follow this opens is armed
             // through its own wake, the first one included. Arming polls the
             // follow; only a record it returns wakes an observer.
             if watch.next.is_none() {
-                watch.next = Some(open(provider, path, watch.next_from));
+                watch.next = Some(open(
+                    provider,
+                    &path.path,
+                    watch.filter.clone(),
+                    watch.next_from,
+                ));
                 watch.waker.wake_by_ref();
             }
         }
@@ -138,7 +187,7 @@ impl Subscriptions {
         }
     }
 
-    fn remove(&mut self, path: &StreamPath, actor: &ActorReference) {
+    fn remove(&mut self, path: &Source, actor: &ActorReference) {
         if let Some(watch) = self.paths.get_mut(path) {
             watch.observers.remove(actor);
             if watch.observers.is_empty() {

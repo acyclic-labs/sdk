@@ -42,7 +42,7 @@ async fn failed_external_sources_notify_only_their_actor_without_stopping_dispat
                 cursor: 1,
                 paused: false,
             },
-            key: None,
+            filter: None,
         };
         let (_send, receive) = watch::channel(selected.clone());
         runtime

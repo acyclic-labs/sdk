@@ -67,7 +67,7 @@ pub enum Trigger {
         /// Zero-based source record sequence.
         sequence: u64,
     },
-    /// Consume the next record selected by an exact authenticated index key.
+    /// Consume the next record selected by authenticated index keys.
     /// Unrelated source records do not require deliveries or checkpoints.
     KeyedRecord {
         /// Manifest subscription identity.
@@ -388,15 +388,20 @@ pub trait Handler: acyclic_stream::ProviderPlatform {
     fn external_subscriptions(&self) -> &[String] {
         &[]
     }
-    /// Deterministic exact-key selection from the package and committed
+    /// Deterministic indexed selection from the package and committed
     /// checkpoint. None consumes the dense source. Both finite delivery reads
-    /// and external/interrupt follows use this same selection. A changed key
+    /// and external/interrupt follows use this same selection. A changed filter
     /// starts at the committed cursor, never a notification's lookahead cursor.
-    fn subscription_key(
+    /// A selected filter must require at least one index key. Key ranges use
+    /// source sequence order, even when key order differs or a record has
+    /// several matching keys. Attribute clauses retain their stream semantics.
+    /// Selection does not project delivery: handlers receive the original whole
+    /// record, including typed changes selected by other subscriptions.
+    fn subscription_filter(
         &self,
         _id: &str,
         _checkpoint: Option<&Checkpoint>,
-    ) -> Result<Option<Bytes>, GuestError> {
+    ) -> Result<Option<acyclic_stream::FollowFilter>, GuestError> {
         Ok(None)
     }
     /// Subscriptions that retain original sequence order when they select
