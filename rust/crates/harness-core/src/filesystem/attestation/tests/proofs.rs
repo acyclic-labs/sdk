@@ -4,7 +4,7 @@ use super::super::{Attested, TurnAdmission};
 use super::{Counting, Probe};
 use acyclic_stream::{
     CommitRequest, IdempotencyKey, NativeStreamProvider as _, StreamError, StreamPath,
-    StreamProvider as _, StreamProviderExt as _,
+    StreamProviderExt as _,
 };
 
 proptest::proptest! {
