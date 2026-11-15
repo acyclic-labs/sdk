@@ -14,6 +14,7 @@ pub(super) const ITEM: WorkCounters = WorkCounters {
 };
 
 /// Examining `count` items is one ledger charge, not one lock per item.
+#[cfg(any(unix, test))]
 pub(super) fn items(count: u64) -> WorkCounters {
     WorkCounters {
         items_examined: count,
