@@ -102,7 +102,7 @@ impl RetainedBatch {
     pub(super) async fn publish(
         self,
         cache: &RecordCache,
-        work: &acyclic_fs::NativeMaterializationWork,
+        cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<()> {
         if self.records.is_empty() {
             return Ok(());
@@ -110,6 +110,8 @@ impl RetainedBatch {
         // Account for the exact JSON envelope, map punctuation and indexed
         // header keys. Lengths were measured while hashing each source, so
         // chunking is linear in the catalog, without repeatedly encoding it.
+        // Each chunk is one unit of native work, bounded by the record frame,
+        // so a catalog of any size publishes within the boundary budget.
         let empty_bytes = serde_json::to_vec(&RetainedRecords {
             version: 1,
             sources: RetainedSource::Batch(BTreeMap::new()),
@@ -123,20 +125,20 @@ impl RetainedBatch {
             let entry = key.len() * 2 + 3 + length;
             let separator = usize::from(!chunk.is_empty());
             if !chunk.is_empty() && bytes + entry + separator > acyclic_stream::MAX_RECORD_BYTES {
-                Self::publish_chunk(std::mem::take(&mut chunk), cache, work).await?;
+                Self::publish_chunk(std::mem::take(&mut chunk), cache, cancellation).await?;
                 bytes = empty_bytes;
             }
             // A singleton uses the source directly, without a Batch map. This
             // also allows a source that fits only without the map's overhead.
             if empty_bytes + entry > acyclic_stream::MAX_RECORD_BYTES {
-                Self::publish_chunk(BTreeMap::from([(key, record)]), cache, work).await?;
+                Self::publish_chunk(BTreeMap::from([(key, record)]), cache, cancellation).await?;
             } else {
                 bytes += entry + usize::from(!chunk.is_empty());
                 chunk.insert(key, record);
             }
         }
         if !chunk.is_empty() {
-            Self::publish_chunk(chunk, cache, work).await?;
+            Self::publish_chunk(chunk, cache, cancellation).await?;
         }
         Ok(())
     }
@@ -144,8 +146,9 @@ impl RetainedBatch {
     async fn publish_chunk(
         records: BTreeMap<String, RetainedSource>,
         cache: &RecordCache,
-        work: &acyclic_fs::NativeMaterializationWork,
+        cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<()> {
+        let work = &super::native_work(cancellation)?;
         // Sorted keys make both chunk boundaries and each retry identity
         // independent of discovery order. Catalog pins become visible only
         // after all chunks commit; a partial retry reuses committed chunks.

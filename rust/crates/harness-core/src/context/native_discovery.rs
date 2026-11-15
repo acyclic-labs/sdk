@@ -4,7 +4,8 @@ use crate::{
     context::{DiscoveryEntry, DiscoveryKind, DiscoveryPage, DiscoverySource},
 };
 use acyclic_fs::{
-    LazyDirectoryCursor, LazySnapshotRef, NativeMaterializationWork, kernel::KernelAccounting,
+    CancellationToken, LazyDirectoryCursor, LazySnapshotRef, NativeMaterializationWork,
+    kernel::KernelAccounting,
 };
 use acyclic_stream::BoxProviderFuture;
 
@@ -16,12 +17,23 @@ pub type DiscoveryView = acyclic_fs::LazyWorkspace<
     acyclic_fs::LocalCoreStateStore,
 >;
 
-/// The cut and original work are owned by the admission, never ambient host state.
+/// One bounded unit of native work: a directory page, a skill read, a retained
+/// record read or a published record chunk. Each unit has its own ledger, so
+/// every unit stays within the boundary budget however large the catalog it
+/// belongs to; the catalog as a whole is bounded only by its caller's limits.
+#[doc(hidden)]
+pub fn native_work(cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {
+    NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, cancellation)
+        .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })
+}
+
+/// The cut and cancellation are owned by the admission, never ambient host
+/// state. Each page is its own unit of native work.
 #[doc(hidden)]
 pub struct LazyDiscovery<'a> {
     pub view: &'a DiscoveryView,
     pub cut: LazySnapshotRef,
-    pub work: &'a NativeMaterializationWork,
+    pub cancellation: &'a CancellationToken,
 }
 
 impl DiscoverySource for LazyDiscovery<'_> {
@@ -37,7 +49,8 @@ impl DiscoverySource for LazyDiscovery<'_> {
     {
         Box::pin(async move {
             let cut = revision.unwrap_or(&self.cut);
-            let mut accounting = KernelAccounting::native(self.work, self.work.cancellation());
+            let work = native_work(self.cancellation)?;
+            let mut accounting = KernelAccounting::native(&work, self.cancellation);
             let selected = self
                 .view
                 .list_directory_at_snapshot(
@@ -57,7 +70,7 @@ impl DiscoverySource for LazyDiscovery<'_> {
             let scanned = u32::try_from(page.entries.len())
                 .map_err(|_| crate::Error::Invalid("entry count overflow".into()))?;
             for entry in page.entries {
-                let Some(name) = portable_name(&entry.name, self.work)? else {
+                let Some(name) = portable_name(&entry.name, &work)? else {
                     continue;
                 };
                 entries.push(DiscoveryEntry {
