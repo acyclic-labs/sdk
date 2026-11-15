@@ -205,12 +205,11 @@ impl LocalWorkspace {
     /// projection only when it names that same volume.
     pub(super) async fn bound_mounts(
         &self,
-        project: &VolumeRef,
         bindings: &[crate::agent::WorkspaceEntry],
         authority: &crate::filesystem::NativeMountAuthority,
         binding: &acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>,
     ) -> Result<Arc<Mounts>> {
-        let primary = mounts::primary(bindings, project)?;
+        let (primary, project) = mounts::primary(bindings)?;
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
         let directory = blake3::Hash::from_bytes(binding.key).to_hex();

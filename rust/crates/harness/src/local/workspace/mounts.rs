@@ -12,16 +12,14 @@ pub(super) fn mode<T>(mount: &crate::workspace::Mount<T>) -> WorkspaceMode {
     }
 }
 
-/// The selected cwd must retain the primary slot's name and source identity.
-pub(super) fn primary<'a>(
-    bindings: &'a [crate::agent::WorkspaceEntry],
-    volume: &VolumeRef,
-) -> Result<&'a crate::agent::WorkspaceEntry> {
-    crate::agent::WorkspaceTable::primary_in(bindings)
-        .filter(|entry| entry.as_volume() == Some(volume))
-        .ok_or_else(|| {
-            Error::Unauthorized("primary workspace does not match the selected table".into())
-        })
+/// The selected cwd is the table's primary slot: its name, source identity and
+/// volume come from that one entry, so no second project argument can disagree.
+pub(super) fn primary(
+    bindings: &[crate::agent::WorkspaceEntry],
+) -> Result<(&crate::agent::WorkspaceEntry, &VolumeRef)> {
+    let entry = crate::agent::WorkspaceTable::primary_in(bindings)
+        .ok_or_else(|| Error::Unauthorized("selected table has no primary workspace".into()))?;
+    Ok((entry, entry.volume()?))
 }
 
 /// The selected task's visible volumes, excluding its primary and internal volume.

@@ -285,7 +285,7 @@ impl HostWorkspace {
             .for_scope(&signed)?;
         let workspace = self
             .workspace
-            .bound_task_view(view, project, volumes, &*child_owner, &authority)
+            .bound_task_view(view, volumes, &*child_owner, &authority)
             .await?;
         verify_root(&self.mount_root)?;
         let mut result = Self {

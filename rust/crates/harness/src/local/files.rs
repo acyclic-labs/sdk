@@ -68,12 +68,7 @@ impl LocalHarness {
                 verifier.clone(),
                 signed.copy(&mut None)?,
             );
-            let logical = workspace.context_task_view(
-                view,
-                project.volume()?,
-                &parent_state.volumes,
-                &authority,
-            )?;
+            let logical = workspace.context_task_view(view, &parent_state.volumes, &authority)?;
             let (selected, _) = logical.selected_view().await?;
             let destination = selected.as_ref().unwrap_or_else(|| logical.view());
             return hosted

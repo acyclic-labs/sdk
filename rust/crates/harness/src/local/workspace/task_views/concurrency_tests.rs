@@ -63,7 +63,12 @@ async fn blocked_child_binding_keeps_sibling_and_root_independent() -> Result<()
             )
             .await
             .map_err(storage)?;
-        forks.push((project, view));
+        let table = crate::agent::WorkspaceEntry::initial_volume(
+            crate::agent::WorkspaceRole::User,
+            "project".into(),
+            project.clone(),
+        );
+        forks.push((project, view, table));
     }
     let (entered_tx, entered) = oneshot::channel();
     let (release, release_rx) = oneshot::channel();
@@ -75,8 +80,7 @@ async fn blocked_child_binding_keeps_sibling_and_root_independent() -> Result<()
     };
     let first = root.bound_task_view(
         root.spawned_project_view(&forks[0].0).await?,
-        &forks[0].0,
-        &[],
+        std::slice::from_ref(&forks[0].2),
         &blocked,
         &authority,
     );
@@ -90,8 +94,7 @@ async fn blocked_child_binding_keeps_sibling_and_root_independent() -> Result<()
         let sibling = root
             .bound_task_view(
                 root.spawned_project_view(&forks[1].0).await?,
-                &forks[1].0,
-                &[],
+                std::slice::from_ref(&forks[1].2),
                 &ready,
                 &authority,
             )
@@ -106,8 +109,7 @@ async fn blocked_child_binding_keeps_sibling_and_root_independent() -> Result<()
     };
     let same = root.bound_task_view(
         root.spawned_project_view(&forks[0].0).await?,
-        &forks[0].0,
-        &[],
+        std::slice::from_ref(&forks[0].2),
         &ready,
         &authority,
     );
@@ -120,8 +122,7 @@ async fn blocked_child_binding_keeps_sibling_and_root_independent() -> Result<()
     let again = root
         .bound_task_view(
             root.spawned_project_view(&forks[0].0).await?,
-            &forks[0].0,
-            &[],
+            std::slice::from_ref(&forks[0].2),
             &ready,
             &authority,
         )
@@ -146,8 +147,7 @@ async fn blocked_child_binding_keeps_sibling_and_root_independent() -> Result<()
     {
         let initialization = root.bound_task_view(
             root.spawned_project_view(&forks[0].0).await?,
-            &forks[0].0,
-            &[],
+            std::slice::from_ref(&forks[0].2),
             &cancelled_owner,
             &authority,
         );
@@ -160,8 +160,7 @@ async fn blocked_child_binding_keeps_sibling_and_root_independent() -> Result<()
     let recovered = root
         .bound_task_view(
             root.spawned_project_view(&forks[0].0).await?,
-            &forks[0].0,
-            &[],
+            std::slice::from_ref(&forks[0].2),
             &ready,
             &authority,
         )

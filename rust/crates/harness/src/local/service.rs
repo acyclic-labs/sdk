@@ -654,7 +654,6 @@ mod tests {
                 let bound = workspace
                     .bound_task_view(
                         view,
-                        binding.volume()?,
                         &state.volumes,
                         &super::super::workspace::owner::AgentOwner,
                         &authority,

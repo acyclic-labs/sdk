@@ -152,13 +152,7 @@ async fn publications_keep_all_live_volume_projections_at_the_committed_head() -
         .unwrap()
         .for_scope(&harness.signed)?;
     let selected = base
-        .bound_task_view(
-            view,
-            &harness.project,
-            &entries,
-            &super::super::owner::AgentOwner,
-            &authority,
-        )
+        .bound_task_view(view, &entries, &super::super::owner::AgentOwner, &authority)
         .await?;
     let (_, publisher) = selected
         .executor(

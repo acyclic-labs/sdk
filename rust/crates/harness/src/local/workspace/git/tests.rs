@@ -144,11 +144,18 @@ async fn default_child_checkout_recovers_parent_updates_and_terminal_conflicts()
             harness.verifier.clone(),
             signed.copy(&mut None)?,
         );
+        // The child's own table: its fork is the primary, beside the session's
+        // retained home and shared bindings.
+        let mut bindings = harness.session_bindings();
+        bindings[0] = crate::agent::WorkspaceEntry::initial_volume(
+            crate::agent::WorkspaceRole::User,
+            "project".into(),
+            project.clone(),
+        );
         let bound = root
             .bound_task_view(
                 fork,
-                &project,
-                &harness.session_bindings(),
+                &bindings,
                 &super::super::owner::AgentOwner,
                 &authority,
             )

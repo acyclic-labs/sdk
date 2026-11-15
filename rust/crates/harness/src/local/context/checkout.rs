@@ -445,7 +445,6 @@ mod tests {
         let selected = workspace
             .bound_task_view(
                 view,
-                &harness.project,
                 &bindings,
                 &crate::local::workspace::owner::AgentOwner,
                 workspace
