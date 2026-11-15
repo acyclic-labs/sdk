@@ -18,7 +18,7 @@ async fn archive_closes_a_root_without_peer_membership() -> Result {
             .retain(|mutation| mutation.path() != &membership);
     }
     submit(&provider, root.request).await?;
-    let request = archive(&root.child, &user(), &intent("archive"))?;
+    let request = archive_waking(&root.child, &user(), &intent("archive"))?;
     assert!(matches!(
         submit(&provider, request.clone()).await?,
         Submitted::Committed(_)
@@ -196,7 +196,7 @@ async fn peer_opt_out_is_symmetric_user_only_and_archive_fences_rejoin() -> Resu
     .await?;
     assert!(session_peer_allowed(&provider, &grants, &a, &b).await?);
     let rejoin = set_peer_membership(&a, &user(), &intent("stale-on"), true)?;
-    submit(&provider, archive(&a, &user(), &intent("archive"))?).await?;
+    submit(&provider, archive_waking(&a, &user(), &intent("archive"))?).await?;
     assert!(!session_peer_allowed(&provider, &grants, &a, &b).await?);
     assert!(!session_peer_allowed(&provider, &grants, &b, &a).await?);
     assert!(matches!(
