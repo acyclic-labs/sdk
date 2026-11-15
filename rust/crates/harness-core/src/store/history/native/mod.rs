@@ -57,20 +57,7 @@ pub(crate) fn native_sdk_result<T>(
             custody: None,
         }),
         Ok(Ok(output)) => Ok(output),
-        Ok(Err(failure)) => {
-            let source = failure;
-            let code = if source.category() == acyclic_stream::StreamError::IdempotencyMismatch {
-                crate::wire::ErrorCode::Conflict
-            } else {
-                crate::wire::ErrorCode::Storage
-            };
-            Err(Error::StreamFailure {
-                native: true,
-                code,
-                source,
-                custody: None,
-            })
-        }
+        Ok(Err(source)) => Err(Error::native_stream(source)),
     }
 }
 

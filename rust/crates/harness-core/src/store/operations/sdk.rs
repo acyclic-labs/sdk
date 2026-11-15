@@ -9,17 +9,7 @@ pub(crate) fn stream_error_with_work(
 ) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     if work.as_deref().is_some_and(original_native_decode_mode) {
-        let code = if source.category() == StreamError::IdempotencyMismatch {
-            crate::wire::ErrorCode::Conflict
-        } else {
-            Storage
-        };
-        return Error::StreamFailure {
-            native: true,
-            code,
-            source,
-            custody: None,
-        };
+        return Error::native_stream(source);
     }
     let _ = work;
     source.into()
