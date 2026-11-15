@@ -2,7 +2,8 @@
 //! which input a waiting turn takes ahead of the window.
 
 use super::{
-    AgentOutcome, AgentPath, ChildDone, ContextAction, InboxRecord, IntentId, Phase, Sender,
+    AgentOutcome, AgentPath, ChildDone, ContextAction, HookTrigger, InboxRecord, IntentId, Phase,
+    Sender,
 };
 use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
@@ -88,6 +89,12 @@ pub enum TurnInput {
         /// The selection it makes.
         action: ContextAction,
     },
+    /// A registered `hooks/<name>` program runs once for this record, with no
+    /// model request and no conversation entry.
+    SourceHook {
+        /// The selected record and its delivery identity.
+        hook: HookTrigger,
+    },
 }
 
 impl TurnInput {
@@ -103,7 +110,7 @@ impl TurnInput {
 
 /// One input held for the turn, at the inbox sequence of the record that
 /// carried it (a brief: its `ForkAdopted`). The turn it starts settles one
-/// conversation entry at the same sequence.
+/// conversation entry at the same sequence; a source hook settles none.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Queued {
@@ -216,6 +223,7 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
             id: request.id,
             action: request.action,
         }),
+        InboxRecord::SourceHook(hook) => Some(TurnInput::SourceHook { hook }),
         // Awaiting is control between a parent's turn and its child; neither
         // record is turn input (see [`super::machine`]).
         InboxRecord::WorkspaceChanged(_)

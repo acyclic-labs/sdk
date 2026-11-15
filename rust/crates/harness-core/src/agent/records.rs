@@ -491,6 +491,27 @@ pub struct Hook {
     pub event: Box<FileRef>,
 }
 
+/// One record a registered `hooks/<name>` program selected. Its program
+/// runs once per `operation`, without a model request or conversation entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
+pub struct HookTrigger {
+    /// The program directory below `hooks/`.
+    pub name: String,
+    /// `FileChanged` or `StreamRecord`.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub event: crate::config::HookEvent,
+    /// The changed path visible to the agent, or the followed stream path.
+    pub path: String,
+    /// The source record's sequence.
+    pub sequence: u64,
+    /// Delivery identity from `hooks::effects::record_operation`:
+    /// a redelivered record never runs its program again.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub operation: crate::OperationId,
+}
+
 /// How a context request selects the agent's later model context. Each one
 /// settles as a conversation entry, a checkpoint: every later turn's context
 /// is the latest checkpoint's summary, then the turns settled after it.
@@ -593,6 +614,8 @@ pub enum InboxRecord {
     Spawn(SpawnRequest),
     /// Compact, rewind or clear the model context.
     Context(ContextRequest),
+    /// A registered `hooks/<name>` program's selected source record.
+    SourceHook(HookTrigger),
 }
 
 /// Derive the runtime's control discriminants from the canonical record writer.
@@ -1017,6 +1040,18 @@ impl AgentRecord for InboxRecord {
                 Ok(())
             }
             Self::Hook(hook) => check_text(&hook.host),
+            Self::SourceHook(hook) => {
+                if !crate::contract::is_valid_component_label(&hook.name)
+                    || !matches!(
+                        hook.event,
+                        crate::config::HookEvent::FileChanged
+                            | crate::config::HookEvent::StreamRecord
+                    )
+                {
+                    return Err(Error::Record("invalid source hook"));
+                }
+                Ok(())
+            }
             Self::Spawn(spawn) => {
                 check_model(Some(&spawn.profile))?;
                 check_sender(&spawn.by)?;

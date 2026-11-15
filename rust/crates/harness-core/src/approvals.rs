@@ -230,6 +230,7 @@ impl ApprovalPolicy {
         }
         let bytes = serde_json::to_vec(self).map_err(|error| Error::Invalid(error.to_string()))?;
         Ok(ApprovalGate {
+            policy: self.clone(),
             identity: ComponentIdentity {
                 name: "acyclic.approval-policy".into(),
                 version: "1".into(),
@@ -323,6 +324,8 @@ impl ApprovalRule {
 
 /// Admission gate pinned to policy data. Automatic approvers never bypass it.
 pub struct ApprovalGate {
+    /// The exact configuration `identity` digests.
+    policy: ApprovalPolicy,
     identity: ComponentIdentity,
 }
 impl ApprovalGate {
@@ -335,6 +338,33 @@ const PROMPT: &str = "Approve the exact tool action under the admitted approval 
 impl ToolPolicy for ApprovalGate {
     fn identity(&self) -> ComponentIdentity {
         self.identity.clone()
+    }
+    /// Leading rules stages decide in chain order, exactly as the approval
+    /// chain applies them; an `ask` advances. The first model, human or
+    /// parent stage would need an answer, so the result is `None`.
+    fn unattended(
+        &self,
+        invocation: &ToolInvocation,
+        target: Option<&crate::interaction::ApprovalTarget>,
+    ) -> Option<RuleVerdict> {
+        for approver in &self.policy.approvers {
+            let Approver::Rules {
+                rules, fallback, ..
+            } = approver
+            else {
+                return None;
+            };
+            match ApprovalRule::evaluate_target(
+                rules,
+                *fallback,
+                (&invocation.name, &invocation.arguments),
+                target,
+            ) {
+                RuleVerdict::Ask => {}
+                decided => return Some(decided),
+            }
+        }
+        Some(RuleVerdict::Deny)
     }
     fn evaluate<'a>(
         &'a self,

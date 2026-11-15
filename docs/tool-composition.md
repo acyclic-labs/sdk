@@ -91,7 +91,26 @@ approval and reconciliation. Loading or binding grants no source-read authority.
 The selector retains its original native allocation credit separately from the
 executable, including if binding fails. Raw scripts and declarations cannot be
 moved out of a loaded program independently of their owner; `definition()`
-borrows the declaration. This binding API does not register a subscription.
+borrows the declaration. Binding itself registers no subscription.
+
+The agent's control companion registers them. It follows the agent's home
+volume. When a publication changes `hooks/<name>/`, it loads that program at
+the publication's generation and binds the source as its own subscription
+`hook/<name>`. A `File` selector names a bound workspace entry and needs the
+agent's read grant over its prefix. In v1, a `Stream` selector stays within the
+agent's own subtree. Editing a program keeps the subscription's cursor unless
+the followed source changes. Removing the program unbinds it, and refusing it
+appends one `control_rejected` lifecycle event. Each selected record becomes
+one `SourceHook` inbox input, written in the commit that consumes the record.
+The input's operation is `hooks::effects::record_operation` of that record.
+The agent runs the input as a model-free step in its ordinary turn context. The
+turn's pinned policy must allow the hook's canonical shell call without
+approval. The workspace hook runner then executes the program under that
+operation. A redelivered or rebuilt step therefore runs it at most once.
+The program's stdin is exactly the event input that its input schema and the
+policy admitted: `{path, sequence}` for a `File` selector and
+`{stream_path, sequence}` for a `Stream` selector. The process starts in the
+hook's workspace.
 
 `hooks::effects::run_once` requires the task's original execution journal.
 Before observing a durable start or outcome, it acquires child-effect ownership

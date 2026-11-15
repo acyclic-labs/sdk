@@ -2759,3 +2759,298 @@ async fn conversation_creation_wait_retains_member_absence_diagnostics() -> Resu
     )?);
     Ok(())
 }
+
+/// `hooks/<name>` programs in the home bind their own sources on the control
+/// companion. A refused program reports once, removal unbinds, and a selected
+/// change becomes one inbox input carrying its record's delivery identity.
+/// Every wait is on the original lifecycle event or inbox append.
+#[tokio::test]
+async fn home_hook_programs_register_unbind_and_deliver_selected_changes() -> Result {
+    use acyclic_harness_core::{
+        client_files::{ClientFileChange, FileRoot},
+        config::HookEvent,
+        filesystem::HOME_VOLUME,
+        supervision::{Event, Lifecycle},
+    };
+    use acyclic_objects::Fault;
+    use futures::TryStreamExt as _;
+    let stream = Arc::new(MemoryStream::default());
+    let issuer = AuthorityRoot::new(
+        "agents",
+        [7; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "local".into(),
+        },
+    );
+    let (placement, Bucket(objects)) = placed(&stream)?;
+    let bound = Bound::local_root(issuer, placement, turns()?)?;
+    let home = WorkspaceEntry::initial_volume(
+        WorkspaceRole::Home,
+        HOME_VOLUME.into(),
+        VolumeRef::new(
+            provider()?,
+            "agent-home".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+                id(125).to_bytes(),
+            )),
+            &mut None,
+        )?,
+    );
+    let RootSubmission::Created(agent) = bound
+        .create_root(
+            &intent("file-hooks"),
+            root(id(125), vec![volume(PRIVATE_VOLUME, id(125))?, home]),
+        )
+        .await?
+    else {
+        return Err("root uncertain".into());
+    };
+    let store = acyclic_harness_core::agent::actor_store(&stream)?;
+    let actor = bound.agents().actor(&agent)?;
+    let control = ActorReference::new(
+        actor.account().as_bytes(),
+        actor.namespace().as_str().as_bytes(),
+        format!("file-controls-{}", agent.id()).as_bytes(),
+    )?;
+    let mut request = acyclic_stream::FollowRequest::new(
+        acyclic_harness_core::supervision::streams::path(&agent)?,
+        0,
+    );
+    request.when_absent = acyclic_stream::WhenAbsent::Wait;
+    let mut events = acyclic_stream::records_only(stream.follow(request).await?);
+    let mut inbox = acyclic_stream::records_only(
+        stream
+            .follow(acyclic_stream::FollowRequest::new(agent.inbox()?, 1))
+            .await?,
+    );
+    let publish = async |changes: &[(&str, Option<&str>)], number: u8| -> Result {
+        let paths: Vec<String> = changes.iter().map(|(path, _)| (*path).to_owned()).collect();
+        let current = bound.files(&agent, FileRoot::Home {}, &paths, None).await?;
+        let changes: Vec<_> = changes
+            .iter()
+            .map(|(path, text)| ClientFileChange {
+                path: (*path).to_owned(),
+                expected: current
+                    .files
+                    .get(*path)
+                    .and_then(Option::as_ref)
+                    .and_then(|file| file.original().cloned()),
+                text: text.map(str::to_owned),
+            })
+            .collect();
+        bound
+            .publish_files(
+                &agent,
+                FileRoot::Home {},
+                OperationId::from_bytes([number; 16]),
+                &changes,
+            )
+            .await?;
+        Ok(())
+    };
+    // A rejection commits with the registrations of its publication.
+    let rejected = async |events: &mut acyclic_stream::RecordStream, name: &str| -> Result {
+        let record = events
+            .try_next()
+            .await?
+            .ok_or("lifecycle producer closed")?;
+        let event: Event = serde_json::from_slice(&record.value)?;
+        let expected = format!("hooks/{name}/program.ts");
+        assert!(
+            matches!(event.event, Lifecycle::ControlRejected { ref path } if *path == expected)
+        );
+        Ok(())
+    };
+    let bound_source = async |id: &str| -> Result<Option<acyclic_stream::StreamPath>> {
+        Ok(store
+            .load(&control)
+            .await?
+            .state()
+            .ok_or("control missing")?
+            .subscriptions()
+            .get(id)
+            .map(|subscription| subscription.path.clone()))
+    };
+    let program = |name: &str, on: &str| {
+        format!(
+            "export default {{version: 1, name: '{name}', description: 'Hook', inputSchema: {{}}, entry: {{sh: 'main.sh', ps1: 'main.ps1'}}, on: {on}}};"
+        )
+    };
+    let notes = program(
+        "notes",
+        "{kind: 'file', volume: 'volume:///home', prefix: 'notes', from: 'now'}",
+    );
+    let outside = |name: &str| program(name, "{kind: 'stream', path: 'elsewhere', from: 'start'}");
+    let exercise = async {
+        publish(
+            &[
+                ("hooks/notes/program.ts", Some(&notes)),
+                ("hooks/notes/main.sh", Some("true")),
+                ("hooks/notes/main.ps1", Some("$null")),
+                ("hooks/bad1/program.ts", Some(&outside("bad1"))),
+                ("hooks/bad1/main.sh", Some("true")),
+                ("hooks/bad1/main.ps1", Some("$null")),
+            ],
+            1,
+        )
+        .await?;
+        rejected(&mut events, "bad1").await?;
+        let source = bound_source("file-hooks")
+            .await?
+            .ok_or("home source missing")?;
+        assert_eq!(bound_source("hook/notes").await?, Some(source.clone()));
+        assert_eq!(bound_source("hook/bad1").await?, None);
+        publish(
+            &[
+                ("hooks/notes/program.ts", None),
+                ("hooks/bad2/program.ts", Some(&outside("bad2"))),
+                ("hooks/bad2/main.sh", Some("true")),
+                ("hooks/bad2/main.ps1", Some("$null")),
+            ],
+            2,
+        )
+        .await?;
+        rejected(&mut events, "bad2").await?;
+        assert_eq!(bound_source("hook/notes").await?, None);
+        publish(
+            &[
+                ("hooks/notes/program.ts", Some(&notes)),
+                ("hooks/bad3/program.ts", Some(&outside("bad3"))),
+                ("hooks/bad3/main.sh", Some("true")),
+                ("hooks/bad3/main.ps1", Some("$null")),
+            ],
+            3,
+        )
+        .await?;
+        rejected(&mut events, "bad3").await?;
+        assert_eq!(bound_source("hook/notes").await?, Some(source.clone()));
+        // A change outside the prefix is consumed without input, so the
+        // selected change after it is the first source hook in the inbox.
+        publish(&[("elsewhere.md", Some("ignored"))], 4).await?;
+        publish(&[("notes/today.md", Some("selected"))], 5).await?;
+        let hook = loop {
+            let record = inbox.try_next().await?.ok_or("inbox producer closed")?;
+            if let InboxRecord::SourceHook(hook) = InboxRecord::decode(&record.value)? {
+                break hook;
+            }
+        };
+        assert_eq!(hook.name, "notes");
+        assert_eq!(hook.event, HookEvent::FileChanged);
+        assert_eq!(hook.path, "notes/today.md");
+        let selected: Vec<_> = stream
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: source.clone(),
+                from: hook.sequence,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?
+            .try_collect()
+            .await?;
+        assert_eq!(
+            hook.operation,
+            acyclic_harness_core::hooks::effects::record_operation(
+                control.account(),
+                &source,
+                selected.first().ok_or("selected record missing")?,
+                "hooks/notes",
+            )
+        );
+        // Following the inbox or status its own deliveries write is refused.
+        // Each program is complete, so only the selector can refuse it. The
+        // sentinel has no scripts, so it is always refused; sorted after the
+        // program, it ends the publication's rejections, and a missing
+        // refusal fails here instead of waiting.
+        for (number, name, stream) in [(6, "bad4", agent.inbox()?), (7, "bad5", agent.status()?)] {
+            let looped = program(
+                name,
+                &format!(
+                    "{{kind: 'stream', path: '{}', from: 'start'}}",
+                    stream.as_str()
+                ),
+            );
+            let sentinel = format!("zz{name}");
+            let fence = outside(&sentinel);
+            let files = [
+                (format!("hooks/{name}/program.ts"), looped.as_str()),
+                (format!("hooks/{name}/main.sh"), "true"),
+                (format!("hooks/{name}/main.ps1"), "$null"),
+                (format!("hooks/{sentinel}/program.ts"), fence.as_str()),
+            ];
+            let changes: Vec<_> = files
+                .iter()
+                .map(|(path, text)| (path.as_str(), Some(*text)))
+                .collect();
+            publish(&changes, number).await?;
+            rejected(&mut events, name).await?;
+            rejected(&mut events, &sentinel).await?;
+            assert_eq!(bound_source(format!("hook/{name}").as_str()).await?, None);
+        }
+        // A transient read of a program retries its registration, which binds
+        // once the read succeeds. Damage at rest is permanent: its program is
+        // refused after exactly one read, never retried. Each publication's
+        // sentinel refusal is the fence that its outcome has committed.
+        let marked = |marker: &'static str| {
+            move |bytes: &[u8]| {
+                bytes
+                    .windows(marker.len())
+                    .any(|window| window == marker.as_bytes())
+            }
+        };
+        for (number, name, marker, fault, calls) in [
+            (
+                8,
+                "flaky",
+                "transient-probe",
+                Fault::Transient,
+                Some(std::num::NonZeroUsize::MIN),
+            ),
+            (9, "rotten", "corrupt-probe", Fault::Corrupt, None),
+        ] {
+            let text = program(
+                name,
+                "{kind: 'file', volume: 'volume:///home', prefix: 'notes', from: 'now'}",
+            )
+            .replace("description: 'Hook'", &format!("description: '{marker}'"));
+            let sentinel = format!("zz{name}");
+            let fence = outside(&sentinel);
+            let files = [
+                (format!("hooks/{name}/program.ts"), text.as_str()),
+                (format!("hooks/{name}/main.sh"), "true"),
+                (format!("hooks/{name}/main.ps1"), "$null"),
+                (format!("hooks/{sentinel}/program.ts"), fence.as_str()),
+            ];
+            let changes: Vec<_> = files
+                .iter()
+                .map(|(path, text)| (path.as_str(), Some(*text)))
+                .collect();
+            let injected = objects.medium().inject(fault, calls, marked(marker));
+            publish(&changes, number).await?;
+            let registered = if fault == Fault::Transient {
+                Some(source.clone())
+            } else {
+                rejected(&mut events, name).await?;
+                None
+            };
+            rejected(&mut events, &sentinel).await?;
+            assert_eq!(
+                bound_source(format!("hook/{name}").as_str()).await?,
+                registered
+            );
+            assert_eq!(
+                injected.hits(),
+                1,
+                "{name} reads its program once per attempt"
+            );
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let result: Result = tokio::select! {
+        result = bound.agents().run(|actor, error| panic!("file hook delivery {actor:?}: {error}")) => match result { Err(error) => Err(error.into()), Ok(never) => match never {} },
+        result = exercise => result,
+    };
+    result
+}

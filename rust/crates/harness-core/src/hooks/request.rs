@@ -104,7 +104,9 @@ pub(super) fn normalized(
                 None,
             )?,
         },
-        (Some(tool), HookInput::Fields(_)) if tool.executor.capability().is_some() => {
+        (Some(tool), HookInput::Fields(_) | HookInput::Program(_))
+            if tool.executor.capability().is_some() =>
+        {
             return Err(Error::Invalid(
                 "native hook matching requires the original tool invocation".into(),
             ));

@@ -76,6 +76,16 @@ pub trait ToolSource: acyclic_stream::ProviderPlatform {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Arc<Tool>>>> {
         crate::conversation::BoundedContentFuture::new(io, || async { Ok(None) })
     }
+    /// Load one `hooks/<name>` program from the same producer as authored
+    /// tools, or `None` when absent. This observation grants no execution
+    /// authority: the caller admits its canonical call before it runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_hook<'a>(
+        &'a self,
+        _name: &'a str,
+    ) -> BoxFuture<'a, Result<Option<crate::plugins::LoadedProgram>>> {
+        Box::pin(async { Ok(None) })
+    }
     /// Names previously published by this source and subsequently revoked.
     fn was_removed(&self, _name: &str) -> Result<bool> {
         Ok(false)
@@ -232,6 +242,26 @@ impl ToolRegistry {
         if let Some(sources) = &mut self.sources {
             Arc::make_mut(sources).retain(|source| keep(source.as_ref()));
         }
+    }
+
+    /// Resolve one `hooks/<name>` program from the lazy sources.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn load_hook(
+        &self,
+        name: &str,
+    ) -> Result<Option<crate::plugins::LoadedProgram>> {
+        let mut selected = None;
+        for source in self.sources() {
+            if source.has_lazy_tools()
+                && let Some(program) = source.load_hook(name).await?
+            {
+                if selected.is_some() {
+                    return Err(Error::Conflict("hook sources overlap".into()));
+                }
+                selected = Some(program);
+            }
+        }
+        Ok(selected)
     }
 
     pub(crate) async fn refresh(&self) -> Result<()> {

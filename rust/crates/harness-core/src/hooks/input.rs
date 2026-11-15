@@ -9,6 +9,11 @@ use std::path::Path;
 pub enum HookInput<'a> {
     /// Event-specific fields supplied by the caller.
     Fields(&'a Value),
+    /// A `hooks/<name>` program's admitted event input. Its stdin is exactly
+    /// this object, the value its input schema and the approval policy
+    /// judged, as an authored tool's stdin is its admitted arguments. The
+    /// runner adds no fields; the process starts in the hook's workspace.
+    Program(&'a Value),
     /// The effective tool call and, after execution, its canonical result.
     Tool {
         /// Exact implementation admitted for this call. An absent binding uses
@@ -33,7 +38,7 @@ impl<'a> HookInput<'a> {
     pub(super) fn subject(self, event: HookEvent) -> &'a str {
         match self {
             Self::Tool { invocation, .. } => &invocation.name,
-            Self::Fields(fields) => match event {
+            Self::Fields(fields) | Self::Program(fields) => match event {
                 HookEvent::SessionStart => fields.get("source"),
                 HookEvent::PreToolUse | HookEvent::PostToolUse => fields.get("tool_name"),
                 HookEvent::FileChanged => fields.get("path"),
@@ -49,7 +54,7 @@ impl<'a> HookInput<'a> {
     pub(super) fn tool_input(self) -> Option<&'a Value> {
         match self {
             Self::Tool { invocation, .. } => Some(&invocation.arguments),
-            Self::Fields(fields) => fields.get("tool_input"),
+            Self::Fields(fields) | Self::Program(fields) => fields.get("tool_input"),
         }
     }
 
@@ -61,8 +66,12 @@ impl<'a> HookInput<'a> {
         cwd: &Path,
         rewritten: Option<&Value>,
     ) -> Result<Vec<u8>> {
-        let mut bytes = serde_json::to_vec(&Envelope(self, event, cwd, rewritten))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let mut bytes = match self {
+            Self::Program(value) if value.is_object() => serde_json::to_vec(value),
+            Self::Program(_) => return Err(Error::Invalid("hook input must be an object".into())),
+            _ => serde_json::to_vec(&Envelope(self, event, cwd, rewritten)),
+        }
+        .map_err(|error| Error::Invalid(error.to_string()))?;
         bytes.push(b'\n');
         Ok(bytes)
     }
@@ -101,6 +110,10 @@ impl Serialize for Envelope<'_> {
                 if let Some(response) = response {
                     fields.serialize_entry("tool_response", &response.value)?;
                 }
+            }
+            // `encode` writes a program's admitted input as it is.
+            HookInput::Program(_) => {
+                return Err(serde::ser::Error::custom("program input has no envelope"));
             }
         }
         fields.serialize_entry("hook_event_name", self.1.name())?;

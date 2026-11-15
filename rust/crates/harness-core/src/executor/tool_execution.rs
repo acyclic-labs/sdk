@@ -1059,6 +1059,20 @@ impl<'io> StockExecution<'io> {
         }
     }
 
+    /// Admits a call no model made, such as a source hook's command, through
+    /// the same grant, schema and resource checks as a model's call. A
+    /// rejection is returned as its error.
+    pub(super) fn admit_unattended(
+        &self,
+        tool: &crate::tool::Tool,
+        invocation: &ToolInvocation,
+    ) -> Result<()> {
+        match self.admit_tool_invocation(tool, invocation, None)? {
+            Ok(_) => Ok(()),
+            Err(rejection) => Err(rejection.into_failure(self.io).1),
+        }
+    }
+
     fn admit_tool_invocation(
         &self,
         tool: &crate::tool::Tool,

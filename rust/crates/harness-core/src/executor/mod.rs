@@ -127,6 +127,8 @@ pub use tool_failure::{ToolErrorClass, ToolFailureCause};
 #[cfg(not(target_arch = "wasm32"))]
 mod agent_hooks;
 #[cfg(not(target_arch = "wasm32"))]
+mod source_hooks;
+#[cfg(not(target_arch = "wasm32"))]
 mod tool_hooks;
 
 /// The original journal producers, for exporter tests outside this crate.
@@ -741,6 +743,18 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
                     .await
                     .map(ExecutionProgress::Ready),
             )
+        })
+    }
+
+    /// Runs the registered `hooks/<name>` program `hook` selected, once per
+    /// its delivery identity, in this turn's task context and without a model
+    /// request. Loops without workspace hooks refuse.
+    fn source_hook<'a>(&'a self, hook: &'a crate::agent::HookTrigger) -> BoxFuture<'a, Result<()>> {
+        let _ = hook;
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "this executor runs no source hooks".into(),
+            ))
         })
     }
 

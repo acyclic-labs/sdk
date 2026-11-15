@@ -390,6 +390,17 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             ),
             ("awaited", InboxRecord::Awaited.encode()?),
             (
+                "source-hook",
+                InboxRecord::SourceHook(super::HookTrigger {
+                    name: "notes".into(),
+                    event: crate::config::HookEvent::FileChanged,
+                    path: "docs/notes.md".into(),
+                    sequence: 7,
+                    operation: crate::OperationId::from_bytes([43; 16]),
+                })
+                .encode()?,
+            ),
+            (
                 "status",
                 StatusRecord {
                     cancelled_input: None,
