@@ -286,61 +286,59 @@ pub fn check(bytes: &[u8]) -> bool {
     if !truncated_header_is_invalid(bytes, persistence::OBSERVATION_DOMAIN, &observation) {
         return false;
     }
-    if let Ok(value) = observation {
-        if persistence::encode_observation(&value, usize::MAX).as_deref() != Ok(bytes) {
-            return false;
-        }
+    if let Ok(value) = observation
+        && persistence::encode_observation(&value, usize::MAX).as_deref() != Ok(bytes)
+    {
+        return false;
     }
     let envelope = persistence::decode_envelope(bytes, usize::MAX);
     if !truncated_header_is_invalid(bytes, persistence::ENVELOPE_DOMAIN, &envelope) {
         return false;
     }
-    if let Ok(value) = envelope {
-        if persistence::encode_envelope(&value, usize::MAX).as_deref() != Ok(bytes) {
-            return false;
-        }
+    if let Ok(value) = envelope
+        && persistence::encode_envelope(&value, usize::MAX).as_deref() != Ok(bytes)
+    {
+        return false;
     }
-    if let Ok(changes) = crate::changes::decode_changes(bytes) {
-        if !crate::AppendRecord::changes(&changes.context, &changes.entries, Vec::new())
+    if let Ok(changes) = crate::changes::decode_changes(bytes)
+        && !crate::AppendRecord::changes(&changes.context, &changes.entries, Vec::new())
             .is_ok_and(|record| record.value.as_ref() == bytes)
-        {
-            return false;
-        }
+    {
+        return false;
     }
-    if let Ok(value) = crate::wire::AppendRecord::decode(bytes) {
-        if let Ok(record) = crate::wire_codec::append_record(value) {
-            if crate::wire_codec::append_record(crate::wire_codec::append_record_wire(
-                record.clone(),
-            )) != Ok(record.clone())
-                || crate::follow_filter::projection_contract(&crate::Record {
-                    sequence: 0,
-                    value: record.value,
-                    headers: record.headers,
-                    commit_id: crate::CommitId::from_bytes([1; 32]),
-                    committed_at_micros: 0,
-                    origin: crate::StreamPath::new("codec/events").expect("canonical fixture path"),
-                })
-                .is_err()
-            {
-                return false;
-            }
-        }
+    let Ok(origin) = crate::StreamPath::new("codec/events") else {
+        return false;
+    };
+    if let Ok(value) = crate::wire::AppendRecord::decode(bytes)
+        && let Ok(record) = crate::wire_codec::append_record(value)
+        && (crate::wire_codec::append_record(crate::wire_codec::append_record_wire(
+            record.clone(),
+        )) != Ok(record.clone())
+            || crate::follow_filter::projection_contract(&crate::Record {
+                sequence: 0,
+                value: record.value,
+                headers: record.headers,
+                commit_id: crate::CommitId::from_bytes([1; 32]),
+                committed_at_micros: 0,
+                origin,
+            })
+            .is_err())
+    {
+        return false;
     }
-    if let Ok(value) = crate::wire::Record::decode(bytes) {
-        if !record(&value) {
-            return false;
-        }
+    if let Ok(value) = crate::wire::Record::decode(bytes)
+        && !record(&value)
+    {
+        return false;
     }
-    if let Ok(value) = crate::wire::ReadResponse::decode(bytes) {
-        if let Ok(records) = crate::wire_codec::read_response_records(value) {
-            if records.iter().any(|value| !record(value))
-                || crate::wire_codec::read_response_records(crate::wire_codec::read_response_wire(
-                    records.clone(),
-                )) != Ok(records)
-            {
-                return false;
-            }
-        }
+    if let Ok(value) = crate::wire::ReadResponse::decode(bytes)
+        && let Ok(records) = crate::wire_codec::read_response_records(value)
+        && (records.iter().any(|value| !record(value))
+            || crate::wire_codec::read_response_records(crate::wire_codec::read_response_wire(
+                records.clone(),
+            )) != Ok(records))
+    {
+        return false;
     }
     #[cfg(not(target_arch = "wasm32"))]
     if !crate::local::codec_fuzz::check(bytes) {
@@ -359,6 +357,13 @@ fn persisted_fact_admitted<T: PartialEq>(
     let Ok(mut bytes) = encode(value, usize::MAX) else {
         return false;
     };
+    let (Some(payload), Some(version_index), Some(domain_end)) = (
+        bytes.get(magic.len()..),
+        magic.len().checked_sub(2),
+        magic.len().checked_sub(1),
+    ) else {
+        return false;
+    };
     if !bytes.starts_with(magic) {
         return false;
     }
@@ -371,24 +376,30 @@ fn persisted_fact_admitted<T: PartialEq>(
                 || !matches!(decode(&bytes, maximum), Err(StreamError::LimitExceeded))
         })
         || !matches!(
-            decode(&bytes[magic.len()..], usize::MAX),
+            decode(payload, usize::MAX),
             Err(StreamError::InvalidArgument)
         )
         // A valid domain with no version or only its first byte must refuse
         // as malformed before payload interpretation or capacity accounting.
-        || [magic.len() - 2, magic.len() - 1].into_iter().any(|end| {
-            !matches!(decode(&bytes[..end], 0), Err(StreamError::InvalidArgument))
+        || [version_index, domain_end].into_iter().any(|end| {
+            let Some(prefix) = bytes.get(..end) else {
+                return true;
+            };
+            !matches!(decode(prefix, 0), Err(StreamError::InvalidArgument))
         })
     {
         return false;
     }
     // Change only the actual v1 writer's version, then omit its entire payload
     // and grant no byte capacity. Version refusal must precede both checks.
-    bytes[magic.len() - 2] ^= version_change;
-    matches!(
-        decode(&bytes[..magic.len()], 0),
-        Err(StreamError::Unsupported)
-    )
+    let Some(version) = bytes.get_mut(version_index) else {
+        return false;
+    };
+    *version ^= version_change;
+    let Some(header) = bytes.get(..magic.len()) else {
+        return false;
+    };
+    matches!(decode(header, 0), Err(StreamError::Unsupported))
 }
 
 fn wire_records_admitted(envelope: &crate::CommittedEnvelope) -> bool {
