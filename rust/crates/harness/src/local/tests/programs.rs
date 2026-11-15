@@ -727,7 +727,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     let AgentReply::Spawned { agent: child, .. } = connection
         .execute(&AgentCommand::Fork {
             continuation: None,
-            parent: worker,
+            parent: worker.clone(),
             id: crate::agent::IntentId::try_from("settings-reader")
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             at: 1,
