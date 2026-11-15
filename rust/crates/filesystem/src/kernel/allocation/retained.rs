@@ -643,6 +643,7 @@ impl<T: Copy> Retained<Vec<T>> {
         accounting.perform(
             crate::WorkCounters {
                 items_examined: 1,
+                bytes_copied: std::mem::size_of::<T>() as u64,
                 ..crate::WorkCounters::UNCHARGED
             },
             || self.value.pop(),
