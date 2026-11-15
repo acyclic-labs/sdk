@@ -58,7 +58,7 @@ proptest! {
                 .prop_map(|fields| Value::Object(fields.into_iter().collect())),
         ),
     ) {
-        let output = HookOutput { blocked, approval, additional_context: context,
+        let output = HookOutput { blocked, approval: approval.map(|prompt| crate::hooks::HookApproval { prompt, route: crate::interaction::ApprovalRoute::Human }), additional_context: context,
             updated_input, diagnostics: diagnostics.into_iter().map(|message| HookDiagnostic { cause: crate::ProcessError::Io { exit_code: None, message }, blocking: false }).collect() };
         let bytes = serde_json::to_vec(&output)?;
         let decoded: HookOutput = serde_json::from_slice(&bytes)?;
