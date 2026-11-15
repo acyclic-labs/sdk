@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 FEATURES = []
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-harness-tui-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-harness-tui-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 rust_binary(
     name = "completion_events",
@@ -245,3 +245,9 @@ exports_files([
         "corpus/input_events/windows-editor",
         "transcript_anchor.rs",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

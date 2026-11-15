@@ -15,7 +15,7 @@ FEATURES = [
         "storage-backends",
     ]
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-conformance","CARGO_PKG_DESCRIPTION":"Internal black-box conformance suites for Acyclic service providers","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-conformance","CARGO_PKG_DESCRIPTION":"Internal black-box conformance suites for Acyclic service providers","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 rust_library(
     name = "acyclic_conformance",
@@ -897,6 +897,7 @@ rust_test(
 isolated_test(
     name = "graphcoder_backends",
     binary = ":graphcoder_backends_cases",
+    binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
     limit_seconds = 10,
 )
 
@@ -958,6 +959,7 @@ rust_test(
 isolated_test(
     name = "hosted_actors",
     binary = ":hosted_actors_cases",
+    binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
     limit_seconds = 10,
 )
 
@@ -1024,6 +1026,7 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
+    binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
     limit_seconds = 10,
 )
 
@@ -1045,3 +1048,9 @@ exports_files([
         "fixtures/inference/llamacpp/tool.body",
         "tests/support/inference_manifest.rs",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

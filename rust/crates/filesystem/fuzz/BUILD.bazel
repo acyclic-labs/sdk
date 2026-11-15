@@ -7,7 +7,7 @@ FEATURES = [
         "model-checking",
     ]
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-fs-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-fs-fuzz","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 rust_binary(
     name = "access",
@@ -391,6 +391,7 @@ rust_test(
 isolated_test(
     name = "model",
     binary = ":model_cases",
+    binaries = {":access":"access",":decoded_cache":"decoded_cache",":decoder_work":"decoder_work",":encoder_work":"encoder_work",":fuse_reply":"fuse_reply",":git_markers":"git_markers",":git_pending":"git_pending",":merge_directory_resolution":"merge_directory_resolution",":native_ascii_leaf":"native_ascii_leaf",":native_device":"native_device",":paths":"paths",":session_fs":"session_fs",":window_state":"window_state",":workspace_name":"workspace_name"},
     limit_seconds = 10,
 )
 
@@ -444,6 +445,7 @@ rust_test(
 isolated_test(
     name = "window_state_test",
     binary = ":window_state_test_cases",
+    binaries = {":access":"access",":decoded_cache":"decoded_cache",":decoder_work":"decoder_work",":encoder_work":"encoder_work",":fuse_reply":"fuse_reply",":git_markers":"git_markers",":git_pending":"git_pending",":merge_directory_resolution":"merge_directory_resolution",":native_ascii_leaf":"native_ascii_leaf",":native_device":"native_device",":paths":"paths",":session_fs":"session_fs",":window_state":"window_state",":workspace_name":"workspace_name"},
     limit_seconds = 10,
 )
 
@@ -504,3 +506,21 @@ exports_files([
         "corpus/workspace_name/maximum",
         "corpus/workspace_name/truncated",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree/corpus/access",
+    srcs = glob(["corpus/access/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree/corpus/decoder_work",
+    srcs = glob(["corpus/decoder_work/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

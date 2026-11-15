@@ -8,7 +8,7 @@ FEATURES = [
         "serde-compat",
     ]
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"ts-rs-attribute-fuzz","CARGO_PKG_LICENSE":"MIT"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"ts-rs-attribute-fuzz","CARGO_PKG_LICENSE":"MIT"}
 
 rust_library(
     name = "ts_rs_attribute_fuzz",

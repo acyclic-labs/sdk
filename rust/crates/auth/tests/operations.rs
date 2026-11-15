@@ -90,28 +90,19 @@ fn product_descriptors() -> Result<DescriptorPool, Box<dyn std::error::Error>> {
         "stream/v1/session.proto",
     ];
     let mut command = Command::new(compiler.executable());
-    for family in [
-        "actors",
-        "filesystem-wire",
-        "objects",
-        "machines",
-        "inference",
-        "stream",
-        "harness",
+    // Each include directory is spelled whole, so the test's inputs can be read from its source.
+    for directory in [
+        "rust/crates/actors/proto",
+        "rust/crates/filesystem-wire/proto",
+        "rust/crates/objects/proto",
+        "rust/crates/machines/proto",
+        "rust/crates/inference/proto",
+        "rust/crates/stream/proto",
+        "compatibility/proto",
     ] {
-        command.arg(format!(
-            "--proto_path={}",
-            root.join("rust/crates")
-                .join(family)
-                .join("proto")
-                .display()
-        ));
+        command.arg(format!("--proto_path={}", root.join(directory).display()));
     }
     let status = command
-        .arg(format!(
-            "--proto_path={}",
-            root.join("compatibility/proto").display()
-        ))
         .arg(format!("--proto_path={}", compiler.includes().display()))
         .arg(format!("--descriptor_set_out={}", output.display()))
         .arg("--include_imports")

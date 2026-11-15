@@ -5,7 +5,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 FEATURES = []
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-source-policies","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-source-policies","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 cargo_build_script(
     name = "build_script",
@@ -229,7 +229,29 @@ rust_test(
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem:src/git_compat/capture/incremental.rs",
+        "//rust/crates/filesystem:src/git_compat/capture/traversal.rs",
+        "//rust/crates/filesystem:src/materializer/backend.rs",
+        "//rust/crates/filesystem:src/materializer/directory_preparation.rs",
+        "//rust/crates/filesystem:src/materializer/publication.rs",
+        "//rust/crates/filesystem:src/native_mount/darwin_mount/tests/mod.rs",
+        "//rust/crates/filesystem:src/native_mount/fence_io.rs",
+        "//rust/crates/filesystem:src/windows_test_filesystems.rs",
+        "//rust/crates/harness-core:src/filesystem/agent_publication.rs",
+        "//rust/crates/harness-core:src/filesystem/workspace_policy.rs",
+        "//rust/crates/harness-core:src/filesystem/workspace_publication.rs",
+        "//rust/crates/harness-core:src/tools/git/materialize.rs",
+        "//rust/crates/harness:src/local/workspace.rs",
+        "//rust/crates/native-runtime:src/file_lock.rs",
+        "//rust/crates/source-policies:tree/src",
+        "//rust/fuzz/native-callback-path:tree",
+        "//rust/fuzz/task-volume:tree",
+        "//rust/fuzz:tree",
+        "//rust/verification/sdk-fixtures:tree",
+        "src/file_locks.rs",
+        "src/lib.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -245,3 +267,15 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree/src",
+    srcs = glob(["src/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

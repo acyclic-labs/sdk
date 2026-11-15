@@ -31,6 +31,11 @@ enum Outcome {
 
 /// One test executable and the limits each of its cases runs under.
 struct Suite {
+    /// The source tree the cases read checked-in files from, given to them as
+    /// `ACYCLIC_TEST_SOURCE_ROOT`: the test's runfiles root.
+    source: PathBuf,
+    /// Cargo's `CARGO_BIN_EXE_<name>` variables, as absolute paths under the runfiles root.
+    executables: Vec<(String, PathBuf)>,
     binary: PathBuf,
     package: PathBuf,
     logs: PathBuf,
@@ -60,7 +65,16 @@ fn run() -> Result<usize, String> {
     let limit = setting("ACYCLIC_TEST_LIMIT_SECONDS")?
         .parse()
         .map_err(|error| format!("ACYCLIC_TEST_LIMIT_SECONDS: {error}"))?;
+    let executables = env::vars_os()
+        .filter_map(|(name, path)| {
+            let name = name.into_string().ok()?;
+            name.starts_with("CARGO_BIN_EXE_")
+                .then(|| (name, root.join(path)))
+        })
+        .collect();
     let suite = Suite {
+        source: root.clone(),
+        executables,
         binary: root.join(setting("ACYCLIC_TEST_BINARY")?),
         package: root.join(setting("ACYCLIC_TEST_PACKAGE")?),
         logs: PathBuf::from(setting("TEST_TMPDIR")?),
@@ -76,6 +90,8 @@ fn list(suite: &Suite, filter: Option<&str>, ignored: bool) -> Result<Vec<String
         .args(["--list", "--format", "terse"])
         .args(ignored.then_some("--ignored"))
         .args(filter)
+        .env("ACYCLIC_TEST_SOURCE_ROOT", &suite.source)
+        .envs(suite.executables.iter().map(|(name, path)| (name, path)))
         .current_dir(&suite.package)
         .output()
         .map_err(|error| format!("{}: {error}", suite.binary.display()))?;
@@ -164,6 +180,11 @@ fn case(suite: &Suite, custody: &ProcessCustody, name: &str, log: &Path) -> io::
     let mut command = ProcessCommand::new(&suite.binary);
     command
         .args([name, "--exact", "--nocapture", "--test-threads", "1"])
+        .env("ACYCLIC_TEST_SOURCE_ROOT", &suite.source);
+    for (variable, path) in &suite.executables {
+        command.env(variable, path);
+    }
+    command
         .current_dir(&suite.package)
         .stdin(ProcessStdio::null())
         .stderr(output.try_clone()?)
@@ -221,6 +242,8 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(MARKER), "").unwrap();
         Suite {
+            source: dir.clone(),
+            executables: Vec::new(),
             binary: env::current_exe().unwrap(),
             package: dir.clone(),
             logs: dir,

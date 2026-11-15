@@ -6,7 +6,7 @@ FEATURES = [
         "model-checking",
     ]
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"sdk-generation","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"sdk-generation","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 rust_library(
     name = "sdk_generation",
@@ -60,7 +60,35 @@ rust_test(
         "@crates//sha2_0_11_1-0.11.1",
         "@crates//toml-1.1.6+spec-1.1.0",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//:.cargo/config.toml",
+        "//:release/cargo-crates.json",
+        "//compatibility:Cargo.toml",
+        "//compatibility:descriptors/actors-v1.bin",
+        "//compatibility:descriptors/auth-v1.bin",
+        "//compatibility:descriptors/filesystem-v2.bin",
+        "//compatibility:descriptors/inference-v1.bin",
+        "//compatibility:descriptors/machines-v1.bin",
+        "//compatibility:descriptors/objects-v1.bin",
+        "//compatibility:descriptors/stream-v1.bin",
+        "//compatibility:tree",
+        "//compatibility:tree/src",
+        "//plugin:.agents/plugins/marketplace.json",
+        "//plugin:.codex-plugin/plugin.json",
+        "//plugin:.mcp.json",
+        "//plugin:bin/acyclic",
+        "//plugin:bin/install.js",
+        "//plugin:bin/targets.json",
+        "//plugin:hooks/hooks.json",
+        "//plugin:package.json",
+        "//plugin:plugin.json",
+        "//plugin:scripts/package.mjs",
+        "//rust/crates/sdk-generation/fuzz:tree",
+        "//rust/crates/sdk-generation:tree",
+        "//rust/crates/stream:conformance/stream.json",
+        "src/lib.rs",
+        "src/main.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -148,13 +176,44 @@ rust_test(
         "@crates//tempfile-3.27.0",
         "@crates//toml-1.1.6+spec-1.1.0",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//:.cargo/config.toml",
+        "//:release/cargo-crates.json",
+        "//compatibility:Cargo.toml",
+        "//compatibility:descriptors/actors-v1.bin",
+        "//compatibility:descriptors/auth-v1.bin",
+        "//compatibility:descriptors/filesystem-v2.bin",
+        "//compatibility:descriptors/inference-v1.bin",
+        "//compatibility:descriptors/machines-v1.bin",
+        "//compatibility:descriptors/objects-v1.bin",
+        "//compatibility:descriptors/stream-v1.bin",
+        "//compatibility:tree",
+        "//compatibility:tree/src",
+        "//plugin:.agents/plugins/marketplace.json",
+        "//plugin:.codex-plugin/plugin.json",
+        "//plugin:.mcp.json",
+        "//plugin:bin/acyclic",
+        "//plugin:bin/install.js",
+        "//plugin:bin/targets.json",
+        "//plugin:hooks/hooks.json",
+        "//plugin:package.json",
+        "//plugin:plugin.json",
+        "//plugin:scripts/package.mjs",
+        "//plugin:src/main.rs",
+        "//plugin:tree/src",
+        "//rust/crates/sdk-generation/fuzz:tree",
+        "//rust/crates/sdk-generation:tree",
+        "//rust/crates/stream:conformance/stream.json",
+        "src/lib.rs",
+        "src/main.rs",
+    ],
     tags = ["manual"],
 )
 
 isolated_test(
     name = "main",
     binary = ":main_cases",
+    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation"},
     limit_seconds = 10,
 )
 
@@ -171,3 +230,9 @@ exports_files([
         "src/source_selection.rs",
         "tests/cli_regressions/cache.rs",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

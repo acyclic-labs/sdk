@@ -14,7 +14,7 @@ FEATURES = [
         "typescript",
     ]
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-fs","CARGO_PKG_DESCRIPTION":"Rust SDK for versioned workspaces and embedded native mounts","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-fs","CARGO_PKG_DESCRIPTION":"Rust SDK for versioned workspaces and embedded native mounts","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 cargo_build_script(
     name = "build_script",
@@ -219,7 +219,11 @@ rust_test(
         "@crates//tracing-subscriber-0.3.23",
         "@crates//vhost-0.18.0",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "//rust/crates/filesystem:tree/src",
+        "src/lib.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -343,7 +347,12 @@ rust_test(
         "@crates//async-trait-0.1.92",
         "@crates//napi-derive-3.6.13",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/access",
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "//rust/crates/filesystem:tree/src",
+        "src/lib.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -439,7 +448,11 @@ rust_test(
         "@crates//async-trait-0.1.92",
         "@crates//napi-derive-3.6.13",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "//rust/crates/filesystem:tree/src",
+        "src/lib.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -535,7 +548,11 @@ rust_test(
         "@crates//async-trait-0.1.92",
         "@crates//napi-derive-3.6.13",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "//rust/crates/filesystem:tree/src",
+        "src/lib.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -631,7 +648,11 @@ rust_test(
         "@crates//async-trait-0.1.92",
         "@crates//napi-derive-3.6.13",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "//rust/crates/filesystem:tree/src",
+        "src/lib.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -727,7 +748,11 @@ rust_test(
         "@crates//async-trait-0.1.92",
         "@crates//napi-derive-3.6.13",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem/fuzz:tree/corpus/decoder_work",
+        "//rust/crates/filesystem:tree/src",
+        "src/lib.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -1277,20 +1302,41 @@ filegroup(
 
 
 exports_files([
+        "examples/embedded_workspace.rs",
         "fixtures/fuse/linux-kernel-packets.json",
         "src/access/projection.rs",
         "src/access/projection/registry.rs",
         "src/access/projection/registry/tests.rs",
         "src/access/retry.rs",
         "src/arc_layout.rs",
+        "src/git_compat/capture/incremental.rs",
+        "src/git_compat/capture/traversal.rs",
         "src/git_compat/merge_markers.rs",
+        "src/materializer/backend.rs",
+        "src/materializer/directory_preparation.rs",
+        "src/materializer/publication.rs",
         "src/native_mount/adapter/folded_cache.rs",
+        "src/native_mount/darwin_mount/tests/mod.rs",
+        "src/native_mount/fence_io.rs",
         "src/native_mount/fuse/mount/reply_check.rs",
         "src/native_mount/projfs/callback_path.rs",
         "src/operation_window/lease_path/encoding.rs",
+        "src/windows_test_filesystems.rs",
         "tests/access_input.rs",
         "tests/path_input.rs",
         "tests/support/git_markers_oracle.rs",
         "tests/support/native_access.rs",
         "tests/support/unbounded.rs",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree/src",
+    srcs = glob(["src/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
