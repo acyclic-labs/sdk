@@ -57,6 +57,8 @@ mod file_locks;
 #[cfg(test)]
 mod mount_clock;
 #[cfg(test)]
+mod seeded_tests;
+#[cfg(test)]
 mod workspace_names;
 
 #[cfg(test)]

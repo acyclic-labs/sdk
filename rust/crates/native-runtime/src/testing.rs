@@ -4,7 +4,8 @@
 //!
 //! - **Runtime and executor**: [`seeded_runtime`] seeds Tokio's `select!`
 //!   order; [`Schedule::seeded`] polls owned tasks ([`spawn`]) in a seeded
-//!   order and records the poll trace ([`Schedule::polls`]).
+//!   order and records the poll trace ([`Schedule::polls`]). [`seeded_test`]
+//!   runs an ordinary test inside both, releasing every boundary in turn.
 //! - **Entropy**: [`fill_seeded`] serves ids and random choices from the seed.
 //! - **Clock**: simulated wall time and alarms under `tokio::time::pause`
 //!   ([`CapturedClock`], [`unix_millis`]); actors' `SystemClock` and
@@ -106,6 +107,36 @@ pub fn seeded_runtime(seed: u64) -> std::io::Result<tokio::runtime::Runtime> {
             "step=seeded-runtime; recovery: compile with RUSTFLAGS=\"--cfg tokio_unstable\"",
         ))
     }
+}
+
+/// Runs one test in a seeded world: Tokio's `select!` order, owned-task
+/// polling, fresh identities and simulated time all come from `seed`, so every
+/// run of the test draws the same ids and prints the same failure text.
+///
+/// Each boundary the world reaches is released as it arrives, so production
+/// paths run unchanged. This is the one entry point for an ordinary test; a
+/// driver that chooses interleavings or injects faults owns its own loop.
+///
+/// # Errors
+///
+/// Returns [`std::io::ErrorKind::Unsupported`] unless compiled with
+/// `RUSTFLAGS="--cfg tokio_unstable"`, as [`seeded_runtime`] does.
+pub fn seeded_test<F: Future>(seed: u64, world: impl FnOnce() -> F) -> std::io::Result<F::Output> {
+    Ok(seeded_runtime(seed)?.block_on(async {
+        tokio::time::pause();
+        let (schedule, mut events) = Schedule::seeded(seed);
+        // Built inside the scope, so the constructor's own draws are seeded
+        // too, and kept on the heap: a test world's future can exceed the
+        // test thread's stack, so it is never moved by value.
+        let mut world = Box::pin(schedule.scope(async { world().await }));
+        loop {
+            tokio::select! {
+                output = &mut world => break output,
+                // The schedule holds the sender, so the channel stays open.
+                Some(boundary) = events.recv() => boundary.release(),
+            }
+        }
+    }))
 }
 
 #[cfg(test)]
