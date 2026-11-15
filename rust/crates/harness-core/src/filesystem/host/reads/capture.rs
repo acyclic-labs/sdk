@@ -176,14 +176,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         let _hold = io.guard_owned(requested.capacity() as u64)?;
-        read_generation_optional(
-            &selected.generation,
-            &requested,
-            maximum_bytes,
-            io,
-            path_read_refusal,
-        )
-        .await
+        self.read_cut_optional(&selected.cut, &requested, maximum_bytes, io)
+            .await
     }
 }
 

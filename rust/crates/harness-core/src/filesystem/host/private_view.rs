@@ -5,7 +5,7 @@ use acyclic_fs::{
     kernel::KernelAccounting,
 };
 
-pub(super) const FORMAT: &str = "lazy-v1";
+use crate::filesystem::bounded_io::PRIVATE_CUT_FORMAT as FORMAT;
 
 pub(super) trait PrivateView: Send + Sync {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId;
@@ -328,22 +328,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(host)
     }
 
+    /// The bound private view that selects `expected` in `workspace`, decided
+    /// without IO: an authored reference or another workspace never selects it.
+    pub(super) fn selected_private_view(
+        &self,
+        workspace: &Workspace<A, O>,
+        expected: Option<&GenerationRef>,
+    ) -> Option<&Arc<dyn PrivateView>> {
+        self.private_view
+            .as_ref()
+            .filter(|view| view.workspace_id() == workspace.id())
+            .filter(|_| {
+                expected.is_none_or(|expected| expected.as_resource().version() == Some(FORMAT))
+            })
+    }
+
+    /// Whether `expected` names a private cut this host reads in `workspace`,
+    /// decided without IO, so a reader branches before awaiting either leg.
+    pub(in crate::filesystem) fn selects_private_cut(
+        &self,
+        workspace: &Workspace<A, O>,
+        expected: &GenerationRef,
+    ) -> bool {
+        self.selected_private_view(workspace, Some(expected))
+            .is_some()
+    }
+
     pub(super) async fn private_snapshot(
         &self,
         workspace: &Workspace<A, O>,
         expected: Option<&GenerationRef>,
         io: &PreparationIo,
     ) -> Result<Option<acyclic_fs::kernel::Retained<LazySnapshotRef>>> {
-        let Some(view) = self
-            .private_view
-            .as_ref()
-            .filter(|view| view.workspace_id() == workspace.id())
-        else {
+        let Some(view) = self.selected_private_view(workspace, expected) else {
             return Ok(None);
         };
-        if expected.is_some_and(|expected| expected.as_resource().version() != Some(FORMAT)) {
-            return Ok(None);
-        }
         // The view overlays its own workspace. While the project selects
         // another, the current cut is that workspace's, not the view's.
         if expected.is_none()

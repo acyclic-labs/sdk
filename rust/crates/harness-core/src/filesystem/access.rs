@@ -173,7 +173,7 @@ pub use verification::check_access_record;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(in crate::filesystem) async fn read_selection_with_access<'a>(
-        &self,
+        &'a self,
         scope: &Scope,
         reference: &'a FileRef,
         inherited_reference: bool,
@@ -211,12 +211,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
         let workspace_ref = (workspace_ref, workspace_hold);
         let workspace = self.open(&workspace_ref.0, Some(io)).await?;
-        let generation = bounded_io::generation_version(reference.version(), Some(io))?;
-        let selected = self.select_generation(&workspace, generation, io).await?;
+        let cut = self.file_generation(reference, Some(io))?;
+        let _cut_hold = io.guard_owned(cut.logical_owned_bytes()?)?;
+        let selected = self.select_cut_at(&workspace, &cut, io).await?;
         let compiled = crate::filesystem::access::access_view(
             &workspace,
             scope,
-            Some(generation),
+            Some(selected.generation.id()),
             capability_payload(label, VolumeOperation::Read, io)?,
             ceiling,
             io,
@@ -224,7 +225,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await?;
         require(&compiled.0, Action::Read, reference.path(), io)?;
         let mut observation =
-            ReadObservation::new(workspace.clone(), selected, compiled, reference, io);
+            ReadObservation::new(self, workspace.clone(), selected, compiled, reference, io);
         if observation.data_workspace_id() != workspace.id() {
             observation.authorize_data(scope, ceiling).await?;
         }

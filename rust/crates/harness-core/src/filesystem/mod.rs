@@ -215,6 +215,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } = request;
         // Refuse invalid or unauthorized input before consuming any source.
         grant.require(volume, VolumeOperation::Write, io)?;
+        // A conditional write commits to the authored workspace. A private
+        // namespace cut holds unpublished private writes that no authored
+        // commit can be conditioned on, so it is never a write precondition.
+        if expected_generation.is_some_and(|cut| cut.as_resource().version().is_some()) {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                PRIVATE_CUT_PRECONDITION,
+            ));
+        }
         if let Some(grants) = ceiling
             && !crate::executor::with_history_io(io, |work| {
                 crate::core::volume_operation_granted_with_work(
@@ -638,6 +648,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             acyclic_differential::record(("read", maximum_bytes));
             let owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             let opened = self.open(&workspace, Some(&owned)).await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.selects_private_cut(&opened, &generation) {
+                let (bytes, cut) = Box::pin(self.read_pinned_private(
+                    &opened,
+                    &generation,
+                    reference,
+                    maximum_bytes,
+                    false,
+                    &owned,
+                ))
+                .await?;
+                reference.descriptor().verify(&bytes, &mut None)?;
+                return Ok(project(bytes, Some(cut)));
+            }
             let pinned = self.generation(&opened, &generation, Some(&owned)).await?;
             let bytes = owned.sdk(
                 pinned
@@ -684,6 +708,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let path_custody = rendered.1;
                 let path = rendered.0;
                 let opened = (self).open(&workspace, Some(io)).await?;
+                if self.selects_private_cut(&opened, &generation) {
+                    let (bytes, _) = Box::pin(self.read_pinned_private(
+                        &opened,
+                        &generation,
+                        reference,
+                        maximum_bytes,
+                        true,
+                        io,
+                    ))
+                    .await?;
+                    crate::executor::with_history_io(Some(io), |work| {
+                        reference.descriptor().verify(&bytes, work)
+                    })?;
+                    return Ok(bytes);
+                }
                 let pinned = self.generation(&opened, &generation, Some(io)).await?;
                 #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
                 acyclic_differential::record(("read", maximum_bytes));
@@ -727,6 +766,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let bytes = match io {
                 Some(io) => {
                     let opened = (self).open(&workspace, Some(io)).await?;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if self.selects_private_cut(&opened, &generation) {
+                        let (bytes, _) = Box::pin(self.read_pinned_private(
+                            &opened,
+                            &generation,
+                            reference,
+                            maximum_bytes,
+                            true,
+                            io,
+                        ))
+                        .await?;
+                        crate::executor::with_history_io(Some(io), |work| {
+                            reference.descriptor().verify(&bytes, work)
+                        })?;
+                        return Ok(bytes);
+                    }
                     let pinned = self.generation(&opened, &generation, Some(io)).await?;
                     #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
                     acyclic_differential::record(("read", maximum_bytes));
@@ -772,6 +827,10 @@ mod tests;
 mod pinned_read_tests;
 
 use crate::executor::{stock_boundary, stock_string_copy};
+
+/// Refusal of a conditional write whose precondition names a private
+/// namespace cut. Conditional writes commit to the authored workspace.
+pub(crate) const PRIVATE_CUT_PRECONDITION: &str = "a private cut is not a write precondition";
 
 pub(crate) mod workspace_policy;
 

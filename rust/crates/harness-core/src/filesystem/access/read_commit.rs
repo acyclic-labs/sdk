@@ -3,8 +3,9 @@ use super::*;
 /// The selected data, policy and authenticated identity cannot be replaced or
 /// extracted. A read consumes this observation and fences its returned bytes.
 pub(in crate::filesystem) struct ReadObservation<'a, A: 'static, O: 'static> {
+    host: &'a FilesystemHost<A, O>,
     workspace: Workspace<A, O>,
-    generation: acyclic_fs::Generation<A, O>,
+    cut: SelectedCut<A, O>,
     view: CompiledAccess<'a>,
     reference: &'a FileRef,
     io: &'a PreparationIo,
@@ -13,15 +14,17 @@ pub(in crate::filesystem) struct ReadObservation<'a, A: 'static, O: 'static> {
 
 impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> {
     pub(super) fn new(
+        host: &'a FilesystemHost<A, O>,
         workspace: Workspace<A, O>,
-        generation: acyclic_fs::Generation<A, O>,
+        cut: SelectedCut<A, O>,
         view: CompiledAccess<'a>,
         reference: &'a FileRef,
         io: &'a PreparationIo,
     ) -> Self {
         Self {
+            host,
             workspace,
-            generation,
+            cut,
             view,
             reference,
             io,
@@ -30,7 +33,7 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
     }
 
     pub(super) fn data_workspace_id(&self) -> acyclic_fs::WorkspaceId {
-        self.generation.workspace_id()
+        self.cut.generation.workspace_id()
     }
 
     pub(super) async fn authorize_data(
@@ -38,9 +41,14 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
         scope: &Scope,
         ceiling: Option<&crate::Capabilities>,
     ) -> Result<()> {
-        self.data_access =
-            selected_data_access(&self.workspace, &self.generation, scope, ceiling, self.io)
-                .await?;
+        self.data_access = selected_data_access(
+            &self.workspace,
+            &self.cut.generation,
+            scope,
+            ceiling,
+            self.io,
+        )
+        .await?;
         if let Some((_, compiled)) = &self.data_access {
             require(&compiled.0, Action::Read, self.reference.path(), self.io)?;
         }
@@ -56,7 +64,7 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
     }
 
     pub(in crate::filesystem) async fn confirm_publication(self) -> Result<()> {
-        bounded_io::retain(&self.generation, Some(self.io)).await?;
+        bounded_io::retain(&self.cut.generation, Some(self.io)).await?;
         self.confirm().await
     }
 
@@ -71,11 +79,14 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
             crate::executor::preparation_format(format_args!("/{}", self.reference.path()), work)
         })?;
         let _path_hold = io.guard_owned(path.capacity() as u64)?;
-        let bytes = read_generation(&self.generation, &path, Some(maximum_bytes), Some(io)).await?;
+        let bytes = self
+            .host
+            .read_cut(&self.cut, &path, Some(maximum_bytes), io)
+            .await?;
         self.reference
             .descriptor()
             .verify(&bytes, &mut Some(&mut io.history_io()))?;
-        bounded_io::retain(&self.generation, Some(io)).await?;
+        bounded_io::retain(&self.cut.generation, Some(io)).await?;
         // Fence disclosure after both the read and retention have completed.
         // A separate pre-retention observation repeats the same metadata work
         // without protecting any returned bytes.
@@ -87,14 +98,10 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
         self,
         range: acyclic_fs::ByteRange,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        let bytes = FilesystemHost::read_selected_range(
-            &self.generation.workspace(),
-            &self.generation,
-            self.reference,
-            range,
-            self.io,
-        )
-        .await?;
+        let bytes = self
+            .host
+            .read_cut_range(&self.cut, self.reference, range, self.io)
+            .await?;
         self.confirm().await?;
         Ok(bytes)
     }

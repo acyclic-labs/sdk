@@ -167,19 +167,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         guard().await?;
         let workspace = self.open(&reference.0, Some(io)).await?;
         guard().await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let snapshot = self
-            .private_snapshot(&workspace, request.generation, io)
-            .await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let lazy_generation = snapshot.as_ref().map(|cut| cut.authored_generation);
-        #[cfg(target_arch = "wasm32")]
-        let lazy_generation: Option<acyclic_fs::GenerationId> = None;
-        let generation = match (lazy_generation, request.generation) {
-            (Some(generation), _) => self.select_generation(&workspace, generation, io).await?,
-            (None, Some(expected)) => self.generation(&workspace, expected, Some(io)).await?,
-            (None, None) => self.current_generation(&workspace, io).await?,
-        };
+        let cut = self.select_cut(&workspace, request.generation, io).await?;
+        let generation = &cut.generation;
         guard().await?;
         let scope = request.grant.policy_scope();
         let label = crate::core::filesystem_scope_label(
@@ -199,7 +188,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         super::super::access::require(&view.0, Action::List, request.path, io)?;
         let data_access = super::super::access::selected_data_access(
             &workspace,
-            &generation,
+            generation,
             scope,
             request.ceiling,
             io,
@@ -210,11 +199,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         Ok(DirectorySelection {
             workspace,
-            generation,
+            cut,
             view,
             data_access,
-            #[cfg(not(target_arch = "wasm32"))]
-            snapshot,
         })
     }
 
@@ -230,7 +217,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
         let selection = self.select_directory(&request, io, guard).await?;
-        let generation = &selection.generation;
+        let generation = &selection.cut.generation;
         let parent = selection
             .view
             .0
@@ -249,13 +236,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let requested = (requested, requested_hold);
-        #[cfg(not(target_arch = "wasm32"))]
-        let reference = match &selection.snapshot {
-            Some(cut) => self.private_generation_ref(cut, request.generation, io)?,
-            None => bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?,
-        };
-        #[cfg(target_arch = "wasm32")]
-        let reference = bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?;
+        let reference = self.cut_ref(&selection.cut, request.generation, io)?;
         let mut held = io.reserve_decode(std::mem::size_of::<PrivateDirectoryPage>() as u64)?;
         held.adopt(reference.logical_owned_bytes()?)?;
         let mut selected = (
@@ -380,7 +361,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let native_io = PreparationIo::from_native_work(&owner.work)?;
             let mut ctx = KernelAccounting::native(&owner.work, io.cancellation());
             let produced = async {
-                match &selection.snapshot {
+                match &selection.cut.snapshot {
                     Some(cut) => {
                         let view = self
                             .private_view
@@ -390,6 +371,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             .await
                     }
                     None => selection
+                        .cut
                         .generation
                         .list_directory_listing_with_accounting(path, after, maximum, &mut ctx)
                         .await
@@ -423,6 +405,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         #[cfg(target_arch = "wasm32")]
         {
             let (result, recorded) = selection
+                .cut
                 .generation
                 .list_directory_listing(path, after, maximum, io, io.cancellation())
                 .await;
@@ -464,11 +447,9 @@ fn filter_page(
 }
 pub(super) struct DirectorySelection<'io, A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
-    pub(super) generation: acyclic_fs::Generation<A, O>,
+    pub(super) cut: super::reads::SelectedCut<A, O>,
     view: super::super::access::CompiledAccess<'io>,
     data_access: Option<(Workspace<A, O>, super::super::access::CompiledAccess<'io>)>,
-    #[cfg(not(target_arch = "wasm32"))]
-    snapshot: Option<acyclic_fs::kernel::Retained<acyclic_fs::LazySnapshotRef>>,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DirectorySelection<'_, A, O> {

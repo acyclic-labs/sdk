@@ -6,13 +6,38 @@ mod skills_tests;
 #[cfg(all(test, not(loom)))]
 mod tests;
 
+/// The cut one read resolves at: the authored generation that carries policy
+/// and retention and, when the cut is private, the namespace snapshot over it.
+/// Bytes at a private cut are read only through the snapshot. The snapshot is
+/// boxed so an authored cut costs its holder one pointer, not a snapshot.
+pub(in crate::filesystem) struct SelectedCut<A: 'static, O: 'static> {
+    pub(in crate::filesystem) generation: Generation<A, O>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) snapshot: Option<Box<acyclic_fs::kernel::Retained<acyclic_fs::LazySnapshotRef>>>,
+}
+
+impl<A, O> SelectedCut<A, O> {
+    /// Whether this cut is a private namespace snapshot rather than an
+    /// authored generation.
+    pub(in crate::filesystem) fn is_private(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        let private = self.snapshot.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let private = false;
+        private
+    }
+
+    /// The authored generation, ending the cut so nothing else stays live.
+    pub(in crate::filesystem) fn into_generation(self) -> Generation<A, O> {
+        self.generation
+    }
+}
+
 struct PrivateReadSelection<'a, A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
-    generation: Generation<A, O>,
+    cut: SelectedCut<A, O>,
     view: super::super::access::CompiledAccess<'a>,
     data_access: Option<(Workspace<A, O>, super::super::access::CompiledAccess<'a>)>,
-    #[cfg(not(target_arch = "wasm32"))]
-    snapshot: Option<acyclic_fs::kernel::Retained<acyclic_fs::LazySnapshotRef>>,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PrivateReadSelection<'_, A, O> {
@@ -43,25 +68,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace_ref = (workspace_ref, workspace_hold);
         let workspace = self.open(&workspace_ref.0, Some(io)).await?;
         drop(workspace_ref);
-        #[cfg(not(target_arch = "wasm32"))]
-        let snapshot = self
-            .private_snapshot(&workspace, expected_generation, io)
-            .await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let lazy_generation = snapshot.as_ref().map(|cut| cut.authored_generation);
-        #[cfg(target_arch = "wasm32")]
-        let lazy_generation: Option<GenerationId> = None;
-        let generation = match (lazy_generation, expected_generation) {
-            (Some(generation), _) => self.select_generation(&workspace, generation, io).await?,
-            (None, Some(expected)) => self.generation(&workspace, expected, Some(io)).await?,
-            (None, None) => self.current_generation(&workspace, io).await?,
-        };
+        let cut = self.select_cut(&workspace, expected_generation, io).await?;
+        let generation = &cut.generation;
         let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
         let data_access = super::super::access::selected_data_access(
             &workspace,
-            &generation,
+            generation,
             grant.policy_scope(),
             ceiling,
             io,
@@ -71,15 +85,224 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
             super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
         }
-        bounded_io::retain(&generation, Some(io)).await?;
+        bounded_io::retain(generation, Some(io)).await?;
         Ok(PrivateReadSelection {
             workspace,
-            generation,
+            cut,
             view,
             data_access,
-            #[cfg(not(target_arch = "wasm32"))]
-            snapshot,
         })
+    }
+
+    /// Resolves the cut `expected` names, or the current cut. A private cut
+    /// resolves only on a host bound to that private view; elsewhere the
+    /// authored reader refuses it, so private bytes are never read as authored.
+    pub(in crate::filesystem) async fn select_cut(
+        &self,
+        workspace: &Workspace<A, O>,
+        expected: Option<&GenerationRef>,
+        io: &PreparationIo,
+    ) -> Result<SelectedCut<A, O>> {
+        match expected {
+            Some(expected) => self.select_cut_at(workspace, expected, io).await,
+            None => self.select_current_cut(workspace, io).await,
+        }
+    }
+
+    /// Resolves the cut `expected` names. Its private leg is boxed, so an
+    /// authored selection, and every caller awaiting it, keeps exactly the
+    /// authored generation lookup's state.
+    pub(in crate::filesystem) async fn select_cut_at(
+        &self,
+        workspace: &Workspace<A, O>,
+        expected: &GenerationRef,
+        io: &PreparationIo,
+    ) -> Result<SelectedCut<A, O>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.selects_private_cut(workspace, expected) {
+            return Box::pin(self.select_private_cut(workspace, Some(expected), io)).await;
+        }
+        Ok(SelectedCut {
+            generation: self.generation(workspace, expected, Some(io)).await?,
+            #[cfg(not(target_arch = "wasm32"))]
+            snapshot: None,
+        })
+    }
+
+    /// Resolves the current cut: the bound private view's snapshot over this
+    /// workspace, otherwise the authored head.
+    async fn select_current_cut(
+        &self,
+        workspace: &Workspace<A, O>,
+        io: &PreparationIo,
+    ) -> Result<SelectedCut<A, O>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.selected_private_view(workspace, None).is_some() {
+            return self.select_private_cut(workspace, None, io).await;
+        }
+        Ok(SelectedCut {
+            generation: self.current_generation(workspace, io).await?,
+            #[cfg(not(target_arch = "wasm32"))]
+            snapshot: None,
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn select_private_cut(
+        &self,
+        workspace: &Workspace<A, O>,
+        expected: Option<&GenerationRef>,
+        io: &PreparationIo,
+    ) -> Result<SelectedCut<A, O>> {
+        let snapshot = self.private_snapshot(workspace, expected, io).await?;
+        let generation = match (&snapshot, expected) {
+            (Some(cut), _) => {
+                self.select_generation(workspace, cut.authored_generation, io)
+                    .await?
+            }
+            (None, Some(expected)) => self.generation(workspace, expected, Some(io)).await?,
+            (None, None) => self.current_generation(workspace, io).await?,
+        };
+        Ok(SelectedCut {
+            generation,
+            snapshot: snapshot.map(Box::new),
+        })
+    }
+
+    /// The exact reference of a selected cut. A private cut keeps the spelling
+    /// of the reference that selected it.
+    pub(in crate::filesystem) fn cut_ref(
+        &self,
+        cut: &SelectedCut<A, O>,
+        expected: Option<&GenerationRef>,
+        io: &PreparationIo,
+    ) -> Result<GenerationRef> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(snapshot) = &cut.snapshot {
+            return self.private_generation_ref(snapshot, expected, io);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = expected;
+        bounded_io::generation_ref(&self.provider, cut.generation.id(), Some(io))
+    }
+
+    /// Reads the whole regular file at absolute `path` at a selected cut,
+    /// bounded by `maximum`. Only absence of the path returns `None`.
+    async fn read_cut_optional(
+        &self,
+        cut: &SelectedCut<A, O>,
+        path: &str,
+        maximum: Option<u64>,
+        io: &PreparationIo,
+    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(snapshot) = &cut.snapshot {
+            return Box::pin(async move {
+                let Some(stat) = self.stat_private_snapshot(snapshot, path, io).await? else {
+                    return Ok(None);
+                };
+                let length = stat
+                    .logical_bytes
+                    .filter(|_| stat.kind == acyclic_fs::kernel::FileKind::Regular)
+                    .ok_or_else(|| path_read_refusal(WorkspaceError::NotRegularFile))?;
+                if maximum.is_some_and(|maximum| length > maximum) {
+                    return Err(path_read_refusal(WorkspaceError::ReadLimitExceeded));
+                }
+                let range = acyclic_fs::ByteRange { offset: 0, length };
+                let (bytes, _) = self
+                    .read_private_snapshot(snapshot, path, range, io)
+                    .await?;
+                Ok(Some(bytes))
+            })
+            .await;
+        }
+        read_generation_optional(&cut.generation, path, maximum, io, path_read_refusal).await
+    }
+
+    /// Reads the whole regular file at absolute `path` at a selected cut,
+    /// bounded by `maximum`.
+    pub(in crate::filesystem) async fn read_cut(
+        &self,
+        cut: &SelectedCut<A, O>,
+        path: &str,
+        maximum: Option<u64>,
+        io: &PreparationIo,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if cut.snapshot.is_some() {
+            return self
+                .read_cut_optional(cut, path, maximum, io)
+                .await?
+                .ok_or_else(|| path_read_refusal(WorkspaceError::NotFound));
+        }
+        read_generation(&cut.generation, path, maximum, Some(io)).await
+    }
+
+    /// Reads the file `reference` names at the private cut `expected` selects
+    /// on `workspace`, and returns the authored generation under that cut.
+    /// Pinned readers enter it only when `selects_private_cut` holds, and
+    /// box it, so their authored read frame holds none of the private leg.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::filesystem) async fn read_pinned_private(
+        &self,
+        workspace: &Workspace<A, O>,
+        expected: &GenerationRef,
+        reference: &FileRef,
+        maximum: u64,
+        retain: bool,
+        io: &PreparationIo,
+    ) -> Result<(acyclic_stream::OwnedBytes, Generation<A, O>)> {
+        let cut = self
+            .select_private_cut(workspace, Some(expected), io)
+            .await?;
+        let path = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
+        })?;
+        let _path_hold = io.guard_owned(path.capacity() as u64)?;
+        let bytes = self.read_cut(&cut, &path, Some(maximum), io).await?;
+        if retain {
+            bounded_io::retain(&cut.generation, Some(io)).await?;
+        }
+        Ok((bytes, cut.into_generation()))
+    }
+
+    /// Reads `range` of the file `reference` names at its selected cut.
+    pub(in crate::filesystem) async fn read_cut_range(
+        &self,
+        cut: &SelectedCut<A, O>,
+        reference: &FileRef,
+        range: acyclic_fs::ByteRange,
+        io: &PreparationIo,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(snapshot) = &cut.snapshot {
+            return Box::pin(async move {
+                let path = crate::executor::with_history_io(Some(io), |work| {
+                    crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
+                })?;
+                let _path_hold = io.guard_owned(path.capacity() as u64)?;
+                let (bytes, length) = self
+                    .read_private_snapshot(snapshot, &path, range, io)
+                    .await?;
+                if length != reference.descriptor().byte_length() {
+                    return Err(stock_boundary(
+                        Some(io),
+                        crate::wire::ErrorCode::Storage,
+                        "private cut does not hold the referenced file",
+                    ));
+                }
+                Ok(bytes)
+            })
+            .await;
+        }
+        Self::read_selected_range(
+            &cut.generation.workspace(),
+            &cut.generation,
+            reference,
+            range,
+            io,
+        )
+        .await
     }
 
     /// Pins the generation used to resolve a private path, including its
@@ -109,12 +332,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await?;
         selected.recheck(grant, io).await?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(cut) = &selected.snapshot {
+        if let Some(cut) = &selected.cut.snapshot {
             self.validate_private_snapshot(cut, io).await?;
             selected.recheck(grant, io).await?;
-            return self.private_generation_ref(cut, expected_generation, io);
         }
-        self.generation_ref_id(selected.generation.id(), access.io)
+        self.cut_ref(&selected.cut, expected_generation, io)
     }
 
     /// Reads no-follow metadata at the selected private generation without
@@ -144,13 +366,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let _requested_hold = io.guard_owned(requested.capacity() as u64)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(cut) = &selected.snapshot {
+        if let Some(cut) = &selected.cut.snapshot {
             let stat = self.stat_private_snapshot(cut, &requested, io).await?;
             selected.recheck(grant, io).await?;
             return Ok(stat);
         }
         let stat = io.sdk_if_present(
             selected
+                .cut
                 .generation
                 .stat(&requested, io, io.cancellation())
                 .await,
@@ -192,7 +415,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if file.volume() != volume || file.path() != path {
             return Err(io.invalid("internal publication identity differs"));
         }
-        let (file, reservation) = pin_reference((file, reservation), generation.id(), io)?;
+        let cut = self.generation_ref_id(generation.id(), Some(io))?;
+        let (file, reservation) = pin_reference((file, reservation), &cut, io)?;
         let remaining = file
             .descriptor()
             .byte_length()
@@ -262,7 +486,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// ```compile_fail
     /// use acyclic_harness::filesystem::access::ReadObservation;
     /// fn replace<A, O>(observed: &mut ReadObservation<'_, A, O>, data: acyclic_fs::Generation<A, O>) {
-    ///     observed.generation = data;
+    ///     observed.cut.generation = data;
     /// }
     /// ```
     pub async fn read_content(
@@ -351,10 +575,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )>,
     > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
-
-        self.require_private_directory(volume, grant, path, io)?;
-        super::super::access::require_directory_ceiling(ceiling, volume, path, io)?;
-        validate_private_read_path(path, io)?;
         let unmeasured;
         let io = if let Some(io) = io {
             io
@@ -362,63 +582,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &unmeasured
         };
-        let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
-        let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
-        let workspace_ref = (workspace_ref, workspace_hold);
-        let workspace = self.open(&workspace_ref.0, Some(io)).await?;
-        let generation = match expected_generation {
-            Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
-            None => self.current_generation(&workspace, io).await?,
-        };
-        let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
-        super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
-        super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
-        let data_access = super::super::access::selected_data_access(
-            &workspace,
-            &generation,
-            grant.policy_scope(),
-            ceiling,
-            io,
-        )
-        .await?;
-        if let Some((_, view)) = &data_access {
-            super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
-            super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
-        }
-        bounded_io::retain(&generation, Some(io)).await?;
+        let read = self
+            .select_private_read(volume, grant, path, expected_generation, ceiling, io)
+            .await?;
         let requested = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let requested = (requested, requested_hold);
-        let bytes = read_generation_optional(
-            &generation,
-            &requested.0,
-            maximum_bytes,
-            io,
-            path_read_refusal,
-        )
-        .await?;
+        let bytes = self
+            .read_cut_optional(&read.cut, &requested.0, maximum_bytes, io)
+            .await?;
         let selected = if let Some(bytes) = bytes {
             let bytes_hold = io.guard_bytes(&bytes)?;
             let bytes = (bytes, bytes_hold);
-            let staged = read_content_metadata(&generation, volume, path, io).await?;
+            let staged = cut_metadata(&read.cut, volume, path, &bytes.0, io).await?;
             let publication = staged
                 .as_ref()
                 .map(|file| file_publication(&file.0, Some(io)))
                 .transpose()?;
-            let reference =
-                selected_reference(volume, path, generation.id(), &bytes.0, staged, io)?;
+            let cut = self.cut_ref(&read.cut, expected_generation, io)?;
+            let reference = selected_reference(volume, path, &cut, &bytes.0, staged, io)?;
             grant.require_file_read(&reference.0, Some(io))?;
             Some((reference, bytes, publication))
         } else {
             None
         };
-        super::super::access::require_current(&workspace, &view.0, io).await?;
-        if let Some((workspace, view)) = &data_access {
-            super::super::access::require_current(workspace, &view.0, io).await?;
-        }
-        grant.recheck(Some(io))?;
+        read.recheck(grant, io).await?;
         selected
             .map(|(reference, bytes, publication)| {
                 reference.1.into_retained()?;
@@ -459,13 +649,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let selected = self
             .select_private_read(volume, grant, path, expected_generation, ceiling, io)
             .await?;
-        let generation = &selected.generation;
+        let generation = &selected.cut.generation;
         let requested = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(cut) = &selected.snapshot {
+        if let Some(cut) = &selected.cut.snapshot {
             let (bytes, length) = self
                 .read_private_snapshot(cut, &requested, range, io)
                 .await?;
@@ -538,6 +728,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let _path_hold = io.guard_owned(requested.capacity() as u64)?;
         let Some(stat) = io.sdk_if_present(
             selected
+                .cut
                 .generation
                 .stat(&requested, io, io.cancellation())
                 .await,
@@ -563,6 +754,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 })?;
             if !io.sdk(
                 selected
+                    .cut
                     .generation
                     .matches_content_prefix(&original, &requested, bytes, io, io.cancellation())
                     .await,
@@ -582,6 +774,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .ok_or_else(|| crate::Error::tool_rejected("append delta exceeds admitted capacity"))?;
         let chunk = io.sdk(
             selected
+                .cut
                 .generation
                 .read_range(&requested, prefix, delta, io, io.cancellation())
                 .await,
@@ -748,24 +941,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant.require_directory_path(volume, path, io)
     }
 
-    /// Resolve the immutable generation selected by a file reference.
+    /// Resolve the exact cut a file reference names: an authored generation
+    /// or a private namespace cut.
     pub fn file_generation(
         &self,
         reference: &FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<GenerationRef> {
-        let generation = self.file_generation_id(reference, io)?;
-        bounded_io::generation_ref(&self.provider, generation, io)
+        bounded_io::version_generation(&self.provider, reference.version(), io)
     }
 
-    /// Decode the complete generation identity, including its storage
-    /// association, that a file reference names.
+    /// Decode the authored generation a file reference names. A reference
+    /// read at a private namespace cut names no authored generation and is
+    /// refused, so its bytes are never attributed to one.
     pub fn file_generation_id(
         &self,
         reference: &FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_fs::GenerationId> {
-        bounded_io::generation_version(reference.version(), io)
+        let cut = self.file_generation(reference, io)?;
+        match cut.as_resource().version() {
+            None => acyclic_fs::GenerationId::from_bytes(cut.as_resource().key()),
+            Some(_) => None,
+        }
+        .ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "file was read at a private cut, not an authored generation",
+            )
+        })
     }
 }
 // Only the selected user path is classified here. Metadata, backing storage,
@@ -849,7 +1054,7 @@ pub(crate) fn file_publication(
 fn selected_reference<'a>(
     volume: &VolumeRef,
     path: &str,
-    generation: acyclic_fs::GenerationId,
+    cut: &GenerationRef,
     bytes: &acyclic_stream::OwnedBytes,
     staged: Option<(FileRef, DecodeReservation<'a>)>,
     io: &'a PreparationIo,
@@ -866,9 +1071,9 @@ fn selected_reference<'a>(
             .0
             .descriptor()
             .verify(bytes, &mut Some(&mut io.history_io()))?;
-        pin_reference(staged, generation, io)?
+        pin_reference(staged, cut, io)?
     } else {
-        let version = bounded_io::hex_key(&generation.to_bytes(), Some(io))?;
+        let version = bounded_io::file_version(cut, Some(io))?;
         let version_hold = io.guard_owned(version.capacity() as u64)?;
         let reference = crate::executor::with_history_io(Some(io), |work| {
             FileRef::new(
@@ -891,10 +1096,10 @@ fn selected_reference<'a>(
 // the authenticated filesystem generation containing that protected index.
 fn pin_reference<'a>(
     mut staged: (FileRef, DecodeReservation<'a>),
-    generation: acyclic_fs::GenerationId,
+    cut: &GenerationRef,
     io: &'a PreparationIo,
 ) -> Result<(FileRef, DecodeReservation<'a>)> {
-    let version = bounded_io::hex_key(&generation.to_bytes(), Some(io))?;
+    let version = bounded_io::file_version(cut, Some(io))?;
     let version_hold = io.guard_owned(version.capacity() as u64)?;
     staged
         .0
@@ -903,6 +1108,31 @@ fn pin_reference<'a>(
     version_hold.into_retained()?;
     staged.1.adopt(version_bytes)?;
     staged.1.substitute(staged.0.logical_owned_bytes()?)?;
+    Ok(staged)
+}
+
+// Publication metadata of the file at a selected cut. Publication records are
+// authored; one describes a private cut's file only when the cut holds exactly
+// the published bytes. A file a private write changed has no publication.
+async fn cut_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    cut: &SelectedCut<A, O>,
+    volume: &VolumeRef,
+    path: &str,
+    bytes: &[u8],
+    io: &'a PreparationIo,
+) -> Result<Option<(FileRef, DecodeReservation<'a>)>> {
+    let staged = read_content_metadata(&cut.generation, volume, path, io).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if cut.snapshot.is_some()
+        && let Some((file, _)) = &staged
+        && !file
+            .descriptor()
+            .matches_bytes(bytes, &mut Some(&mut io.history_io()))?
+    {
+        return Ok(None);
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = bytes;
     Ok(staged)
 }
 

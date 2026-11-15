@@ -22,6 +22,9 @@ mod records;
 mod scope;
 mod sdk;
 mod standalone_custody;
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
+mod version_properties;
 pub(crate) use scope::PreparationScope;
 #[cfg(test)]
 mod tests;
@@ -35,7 +38,9 @@ pub use records::PreparationRecord;
 pub use records::UploadRecord;
 use records::decode_allowance_error;
 pub(crate) use sdk::generation_ref;
-pub(in crate::filesystem) use sdk::{content_workspace, generation_version, operation_key, retain};
+pub(in crate::filesystem) use sdk::{
+    PRIVATE_CUT_FORMAT, content_workspace, file_version, operation_key, retain, version_generation,
+};
 use standalone_custody::{StandaloneCustody, StandaloneLedger};
 
 /// Retained storage transferred from the original preparation ledger.
