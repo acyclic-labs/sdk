@@ -185,7 +185,9 @@ where
     let allocation = root.1;
     let root = root.0;
     let operation = operation.0;
-    let actual = publication_root_identity(&root, &operation, &request, work)?;
+    // The layout proof (one mount, no nesting) buys rename safety, so it runs
+    // once on each path that reaches an effect, before that path's first one.
+    // A publication without effects reads no host topology.
     let store = state.materialization(work.clone());
     let mut journal = if let Some(journal) = store.load(request.operation_id).await? {
         validate_generation_journal(&journal, &request)?;
@@ -194,6 +196,7 @@ where
         if journal.phase == MaterializationPhase::Applied && journal.plan.edits.is_empty() {
             return Ok((None, journal));
         }
+        publication_root_identity(&root, &operation, &request, work)?;
         journal
     } else {
         let (plan, custody) =
@@ -202,6 +205,7 @@ where
             // Equal generations stay empty on every retry, independent of
             // later host edits. Changed generations still need a durable
             // acknowledgement even when their files already match the host.
+            // Planning held the root and matched its identity to the request.
             return Ok((
                 None,
                 MaterializationJournal {
@@ -209,7 +213,7 @@ where
                     version: JOURNAL_VERSION,
                     revision: 1,
                     plan,
-                    root_identity: Some(actual.to_bytes()),
+                    root_identity: Some(request.source_root_identity.to_bytes()),
                     preparation_identity: None,
                     preparation_progress: None,
                     preimages: Vec::new(),
@@ -221,6 +225,7 @@ where
                 },
             ));
         }
+        let actual = publication_root_identity(&root, &operation, &request, work)?;
         let parent = super::directory_preparation::prepare_publication_parent(
             &operation,
             work,
