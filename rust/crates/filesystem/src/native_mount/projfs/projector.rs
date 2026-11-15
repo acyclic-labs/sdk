@@ -47,7 +47,6 @@ impl Projector {
 
     pub(super) fn new() -> Self {
         Self {
-            clock: super::super::clock::Clock::capture(),
             state: Mutex::new(ProjectorState::default()),
             tree: Mutex::new(()),
             progress: tokio::sync::Notify::new(),
