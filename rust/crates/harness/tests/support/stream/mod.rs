@@ -481,7 +481,7 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
         let original = meter.clone();
         match request {
             acyclic_stream::WriteRequest::CommitAccepted(_) => {
-                acyclic_stream::NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+                acyclic_stream::NativeProviderFuture::refused(StreamError::Unsupported)
             }
             acyclic_stream::WriteRequest::Append(request) => {
                 acyclic_stream::NativeProviderFuture::new(&meter, async move {
@@ -530,7 +530,7 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
                 })
             }
             acyclic_stream::WriteRequest::Fork(_) => {
-                acyclic_stream::NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+                acyclic_stream::NativeProviderFuture::refused(StreamError::Unsupported)
             }
         }
     }

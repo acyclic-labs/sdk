@@ -7,10 +7,32 @@ pub type NativeStreamResult<T, E = StreamError> = std::io::Result<Result<NativeS
 pub type NativeRecordStream =
     crate::Opened<Result<NativeStreamOutput<Record>, StreamError>, std::io::Error>;
 
+/// A failure known before any provider frame exists.
+///
+/// It holds no output, so a future awaiting a native operation is never as
+/// large as that operation's output.
+pub enum NativeRefusal<E = StreamError> {
+    /// The original observer or ledger failed.
+    Io(std::io::Error),
+    /// The provider refused the operation.
+    Provider(E),
+}
+
+impl<E> NativeRefusal<E> {
+    fn into_result<T>(self) -> NativeStreamResult<T, E> {
+        match self {
+            Self::Io(error) => Err(error),
+            Self::Provider(error) => Ok(Err(error)),
+        }
+    }
+}
+
 /// Object-safe provider future whose real heap frame is admitted before boxing.
+///
+/// Every output comes from a funded frame; only a refusal completes without one.
 pub enum NativeProviderFuture<'a, T, E = StreamError> {
     /// No physical future frame was allocated.
-    Ready(Option<NativeStreamResult<T, E>>),
+    Refused(Option<NativeRefusal<E>>),
     /// The boxed frame drops before its original-ledger allocation guard.
     Funded {
         /// Canonical producer; no alternate request or work root.
@@ -20,6 +42,12 @@ pub enum NativeProviderFuture<'a, T, E = StreamError> {
     },
 }
 
+// A future awaiting a native operation never grows with that operation's output.
+const _: () = assert!(
+    std::mem::size_of::<NativeProviderFuture<'static, [u8; 4096]>>()
+        == std::mem::size_of::<NativeProviderFuture<'static, ()>>()
+);
+
 impl<'a, T, E> NativeProviderFuture<'a, T, E> {
     /// Admits the exact concrete frame before its sole physical allocation.
     pub fn new<F>(meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>, future: F) -> Self
@@ -28,7 +56,7 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
     {
         match Self::try_new(meter, future) {
             Ok(future) => future,
-            Err(error) => Self::Ready(Some(Err(error))),
+            Err(error) => Self::failed(error),
         }
     }
 
@@ -77,7 +105,7 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
     {
         match Self::try_observed(meter, span, future, error) {
             Ok(future) => future,
-            Err(error) => Self::ready(Err(error)),
+            Err(error) => Self::failed(error),
         }
     }
 
@@ -99,20 +127,24 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
         .inspect_err(|error| span.record_error(Some(error)))
     }
 
-    pub(crate) fn ready_observed(
+    pub(crate) fn refused_observed(
         span: acyclic_native_runtime::obs::OperationSpan,
-        result: NativeStreamResult<T, E>,
+        error: E,
         kind: impl FnOnce(&E) -> &'static str,
     ) -> Self {
-        Self::ready(span.in_scope(|| {
-            acyclic_observability::Completion::new(&span)
-                .complete(result, |result| super::outcome(result, kind))
+        Self::refused(span.in_scope(|| {
+            acyclic_observability::Completion::new(&span).complete(error, |error| Some(kind(error)))
         }))
     }
 
-    /// Returns a result without allocating a provider future.
-    pub fn ready(result: NativeStreamResult<T, E>) -> Self {
-        Self::Ready(Some(result))
+    /// Refuses without allocating a provider future.
+    pub fn refused(error: E) -> Self {
+        Self::Refused(Some(NativeRefusal::Provider(error)))
+    }
+
+    /// Reports an observer or ledger failure without allocating a provider future.
+    pub fn failed(error: std::io::Error) -> Self {
+        Self::Refused(Some(NativeRefusal::Io(error)))
     }
 }
 
@@ -126,11 +158,10 @@ impl<T, E> Future for NativeProviderFuture<'_, T, E> {
         context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         match self.get_mut() {
-            Self::Ready(result) => std::task::Poll::Ready(
-                result
-                    .take()
-                    .unwrap_or_else(|| Err(std::io::ErrorKind::InvalidInput.into())),
-            ),
+            Self::Refused(refusal) => std::task::Poll::Ready(refusal.take().map_or_else(
+                || Err(std::io::ErrorKind::InvalidInput.into()),
+                NativeRefusal::into_result,
+            )),
             Self::Funded { future, .. } => future.as_mut().poll(context),
         }
     }

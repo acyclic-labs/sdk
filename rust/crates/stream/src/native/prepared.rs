@@ -78,7 +78,7 @@ impl PreparedNativeCommit {
         self.record.supply(record);
         std::mem::replace(
             &mut self.future,
-            NativeProviderFuture::ready(Ok(Err(StreamError::Unavailable))),
+            NativeProviderFuture::refused(StreamError::Unavailable),
         )
     }
 }

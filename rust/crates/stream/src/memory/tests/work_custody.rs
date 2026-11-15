@@ -51,7 +51,7 @@ fn native_commit_admits_original_context_before_its_unpolled_frame()
             let future =
                 provider.native_write(crate::WriteRequest::Commit(request), meter.original());
             assert!(
-                matches!(future, crate::NativeProviderFuture::Ready(Some(Err(ref error)))
+                matches!(future, crate::NativeProviderFuture::Refused(Some(crate::NativeRefusal::Io(ref error)))
                 if error.kind() == std::io::ErrorKind::OutOfMemory)
             );
             assert_eq!(meter.allocations.load(Ordering::SeqCst), limit);

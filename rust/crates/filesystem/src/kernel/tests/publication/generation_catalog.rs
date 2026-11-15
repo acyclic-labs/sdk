@@ -200,7 +200,7 @@ mod probe {
             meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         ) -> NativeProviderFuture<'_, acyclic_stream::WriteOutcome> {
             let acyclic_stream::WriteRequest::Commit(_) = &request else {
-                return NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)));
+                return NativeProviderFuture::refused(StreamError::Unsupported);
             };
             self.append_request();
             let funding = Arc::clone(&meter);

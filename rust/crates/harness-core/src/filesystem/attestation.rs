@@ -326,7 +326,7 @@ impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
         // publishes. Attested hosting refuses the path, as a provider without
         // it does; callers take the ordinary commit, which is attested whole.
         if self.attestor.is_some() {
-            return NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)));
+            return NativeProviderFuture::refused(StreamError::Unsupported);
         }
         self.inner.native_prepare_commit(request, capacity, meter)
     }
@@ -491,7 +491,7 @@ mod tests {
                 }
             };
             let result = digest.map(|digest| self.write(digest));
-            super::NativeProviderFuture::ready(Ok(Err(result.unwrap_or_else(|error| error))))
+            super::NativeProviderFuture::refused(result.unwrap_or_else(|error| error))
         }
         fn native_commit_guarded(
             &self,
@@ -502,9 +502,9 @@ mod tests {
         ) -> super::NativeProviderFuture<'_, super::CommitOutcome, acyclic_stream::NativeCommitError>
         {
             let result = super::commit_digest(&request).map(|digest| self.write(digest));
-            super::NativeProviderFuture::ready(Ok(Err(acyclic_stream::NativeCommitError::from(
+            super::NativeProviderFuture::refused(acyclic_stream::NativeCommitError::from(
                 result.unwrap_or_else(|error| error),
-            ))))
+            ))
         }
     }
 

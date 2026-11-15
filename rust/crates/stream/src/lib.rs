@@ -233,8 +233,8 @@ mod native;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{
-    NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
-    PreparedNativeCommit, PreparedRecordCapacity,
+    NativeProviderFuture, NativeRecordStream, NativeRefusal, NativeStreamOutput,
+    NativeStreamResult, PreparedNativeCommit, PreparedRecordCapacity,
 };
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

@@ -56,7 +56,7 @@ impl Work {
             Ok(work) => work,
             Err(error) => {
                 acyclic_observability::record_outcome(&span, Some(super::io_kind(&error)));
-                return crate::NativeProviderFuture::ready(Err(error));
+                return crate::NativeProviderFuture::failed(error);
             }
         };
         let meter = Arc::clone(&work.meter);
@@ -69,7 +69,7 @@ impl Work {
             Ok(future) => future,
             Err(error) => {
                 acyclic_observability::record_outcome(&span, Some(super::io_kind(&error)));
-                crate::NativeProviderFuture::ready(Err(error))
+                crate::NativeProviderFuture::failed(error)
             }
         }
     }

@@ -97,16 +97,17 @@ pub trait Matcher: crate::ProviderPlatform {
     /// The same bounded inspection on the original native allocation owner.
     /// Returned custody covers all newly owned progress and source storage.
     /// Implementations without this capability refuse before inspecting data.
+    /// The step completes synchronously, so no future or frame exists for it.
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_step<'a>(
-        &'a self,
-        record: &'a Record,
-        pattern: &'a [u8],
-        after: Option<&'a [u8]>,
-        meter: &'a std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'a, Step<Self::Source>, Self::Error> {
+    fn native_step(
+        &self,
+        record: &Record,
+        pattern: &[u8],
+        after: Option<&[u8]>,
+        meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeStreamResult<Step<Self::Source>, Self::Error> {
         let _ = (record, pattern, after, meter);
-        crate::NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported.into())))
+        Ok(Err(StreamError::Unsupported.into()))
     }
 }
 
@@ -148,26 +149,24 @@ impl Matcher for Raw {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_step<'a>(
-        &'a self,
-        record: &'a Record,
-        pattern: &'a [u8],
-        _: Option<&'a [u8]>,
-        meter: &'a std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'a, Step<()>> {
-        crate::NativeProviderFuture::ready((|| {
-            meter.admit_examination(record.value.len() as u64, 0)?;
-            let matched = contains(record.value.as_slice(), pattern);
-            meter.record_examination(record.value.len() as u64, 0)?;
-            Ok(Ok(crate::NativeStreamOutput::new(
-                Step {
-                    matched,
-                    source: None,
-                    next: None,
-                },
-                acyclic_native_runtime::ReadAllocation::empty(meter),
-            )))
-        })())
+    fn native_step(
+        &self,
+        record: &Record,
+        pattern: &[u8],
+        _: Option<&[u8]>,
+        meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeStreamResult<Step<()>> {
+        meter.admit_examination(record.value.len() as u64, 0)?;
+        let matched = contains(record.value.as_slice(), pattern);
+        meter.record_examination(record.value.len() as u64, 0)?;
+        Ok(Ok(crate::NativeStreamOutput::new(
+            Step {
+                matched,
+                source: None,
+                next: None,
+            },
+            acyclic_native_runtime::ReadAllocation::empty(meter),
+        )))
     }
 }
 

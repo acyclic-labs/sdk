@@ -235,9 +235,7 @@ impl<'a, P: StreamProvider + ?Sized> Access<'a, P> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(native) = &self.native {
             let output = self
-                .io(matcher
-                    .native_step(record, pattern, after, &native.work.meter)
-                    .await)
+                .io(matcher.native_step(record, pattern, after, &native.work.meter))
                 .map_err(|error| matcher.stream_error(error))??;
             let (value, allocation) = output.into_parts();
             return Ok(Held {

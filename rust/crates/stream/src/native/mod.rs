@@ -7,7 +7,7 @@ mod request;
 mod work;
 pub(crate) use follow::{boxed_stream, follow_records, validate_follow};
 pub use output::NativeStreamOutput;
-pub use output::{NativeProviderFuture, NativeRecordStream, NativeStreamResult};
+pub use output::{NativeProviderFuture, NativeRecordStream, NativeRefusal, NativeStreamResult};
 pub(crate) use prepared::NativeCommitRecordSlot;
 pub use prepared::{PreparedNativeCommit, PreparedRecordCapacity};
 pub(crate) use request::copy_vector;

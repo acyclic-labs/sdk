@@ -298,9 +298,9 @@ impl crate::NativeStreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::NativeRecordStream> {
         if let Err(error) = crate::native::validate_follow(&request) {
-            return crate::NativeProviderFuture::ready_observed(
+            return crate::NativeProviderFuture::refused_observed(
                 crate::native::span!("acyclic.stream.follow"),
-                Ok(Err(error)),
+                error,
                 StreamError::code,
             );
         }
@@ -329,9 +329,9 @@ impl crate::NativeStreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::Heads> {
         if let Err(error) = MemoryStream::validate_native_heads(&request) {
-            return crate::NativeProviderFuture::ready_observed(
+            return crate::NativeProviderFuture::refused_observed(
                 crate::native::span!("acyclic.stream.heads"),
-                Ok(Err(error)),
+                error,
                 StreamError::code,
             );
         }
@@ -499,9 +499,9 @@ impl crate::NativeStreamProvider for LocalStream {
                     Ok,
                 )
             }
-            crate::WriteRequest::Fork(_) => crate::NativeProviderFuture::ready_observed(
+            crate::WriteRequest::Fork(_) => crate::NativeProviderFuture::refused_observed(
                 crate::native::span!("acyclic.stream.fork"),
-                Ok(Err(StreamError::Unsupported)),
+                StreamError::Unsupported,
                 StreamError::code,
             ),
         }
