@@ -90,3 +90,14 @@ export async function onRecord(bytes: Uint8Array, signal?: AbortSignal, interrup
   signal?.throwIfAborted();
   return guest.onRecord(bytes, signal, interrupt);
 }
+
+/** Whether a control that arrived during a delivery interrupts it, by the
+ * harness's own predicate; a host that cancels without asking cancels work
+ * this control was never for. */
+export async function acceptsInterrupt(query: Uint8Array, signal: AbortSignal): Promise<boolean> {
+  signal.throwIfAborted();
+  if (heap === undefined) throw new HarnessActorError("failed_precondition", "environment");
+  const guest = await heap;
+  signal.throwIfAborted();
+  return guest.acceptsInterrupt(query, signal);
+}

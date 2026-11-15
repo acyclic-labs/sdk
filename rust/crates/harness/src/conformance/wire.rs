@@ -12,7 +12,7 @@ pub(crate) fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
     let interrupt_handler = handler.clone();
     Ok(Arc::new(wire::Remote::new(
         manifest,
-        move |bytes: Vec<u8>, cancellation| -> GuestFuture<'static, Vec<u8>> {
+        move |_request, bytes: Vec<u8>, cancellation| -> GuestFuture<'static, Vec<u8>> {
             let handler = handler.clone();
             Box::pin(async move {
                 let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
@@ -22,7 +22,7 @@ pub(crate) fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
                 wire::encode_transition(&transition)
             })
         },
-        move |query| -> acyclic_actors::guest::GuestFuture<'static, bool> {
+        move |_request, query| -> acyclic_actors::guest::GuestFuture<'static, bool> {
             let handler = interrupt_handler.clone();
             Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
         },

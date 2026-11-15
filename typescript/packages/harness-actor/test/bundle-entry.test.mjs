@@ -12,7 +12,7 @@ import { HARNESS_BINDINGS, HARNESS_MODULE, MODEL_FETCH } from "../src/bindings.j
 const directory = mkdtempSync(join(tmpdir(), "harness-entry-"));
 beforeAll(() => bundleHarnessActor(fileURLToPath(new URL("./owner.json", import.meta.url)), directory));
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
-test("built namespace bundle loads through manifest and onRecord with one admitted heap", async () => {
+test("built namespace bundle loads through manifest, onRecord and acceptsInterrupt with one admitted heap", async () => {
   const deployment = JSON.parse(readFileSync(join(directory, "agent-deploy.json"), "utf8"));
   const assets = deployment.environments[0].entries[0].assets;
   const files = new Map(assets.map(asset => [asset.path, readFileSync(join(directory, asset.path))]));
@@ -20,8 +20,11 @@ test("built namespace bundle loads through manifest and onRecord with one admitt
   // The host distinguishes products and obtains readiness through these exports.
   expect(typeof module.onRecord).toBe("function");
   expect(typeof module.manifest).toBe("function");
+  expect(typeof module.acceptsInterrupt).toBe("function");
   expect("actor" in module).toBe(false);
   await expect(module.manifest()).rejects.toMatchObject({ code: "failed_precondition", subject: "environment" });
+  await expect(module.acceptsInterrupt(Uint8Array.of(0), new AbortController().signal))
+    .rejects.toMatchObject({ code: "failed_precondition", subject: "environment" });
   await initializeFixtureAuthority();
   const owner = fixtureAuthority("00112233-4455-6677-8899-aabbccddeeff");
   const unexpected = () => { throw new Error("readiness performed a delivery operation"); };
@@ -41,5 +44,6 @@ test("built namespace bundle loads through manifest and onRecord with one admitt
     expect(await module.manifest({ get env() { throw new Error("heap reopened"); } })).toEqual(readiness);
     // The actual built entry reaches the shared Rust strict-wire decoder.
     await expect(module.onRecord(Uint8Array.of(0), new AbortController().signal)).rejects.toThrow("non-canonical guest delivery");
+    await expect(module.acceptsInterrupt(Uint8Array.of(0), new AbortController().signal)).rejects.toThrow("non-canonical guest interrupt");
   } finally { owner.free(); }
 });

@@ -96,14 +96,16 @@ const encoder = new TextEncoder();
 const fixture = (name: string) => new Uint8Array(readFileSync(new URL(`../../../../rust/codec-fuzz/corpus/actor_codecs/${name}`, import.meta.url)));
 
 function recordingActor(identity: { name: string; version: string }) {
-  const seen: { event: GuestEvent; deliveryId: string | null; now: bigint; key: string }[] = [];
+  const seen: { event: GuestEvent; deliveryId: string | null; now: bigint; key: string;
+    socketHost: GuestContext<unknown>["socketHost"] }[] = [];
   let restores = 0;
   const actor = defineActor<{ bytes: Uint8Array; count: number }, Record<string, never>>({
     abiVersion: GUEST_ABI_VERSION,
     codec: { identity, encode: value => value.bytes, decode: value => ({ bytes: value.bytes, count: 0 }) },
     restore(checkpoint) { restores++; return { bytes: checkpoint?.bytes ?? new Uint8Array(), count: 0 }; },
     event(state, event, context) {
-      seen.push({ event, deliveryId: context.deliveryId, now: context.clock(), key: context.retryKey("send") });
+      seen.push({ event, deliveryId: context.deliveryId, now: context.clock(), key: context.retryKey("send"),
+        socketHost: context.socketHost });
       if (event.type !== "stream") return null;
       let count = 0;
       state.with(value => { count = ++value.count; value.bytes = Uint8Array.of(count); return undefined; });
@@ -209,6 +211,12 @@ test("definitionHandler serves a namespace of one public ActorDefinition through
   expect(await records.onRecord(Uint8Array.from(shared.delivery))).toEqual(Uint8Array.from(shared.transition));
   expect(await records.onRecord(Uint8Array.from(shared.delivery))).toEqual(Uint8Array.from(shared.transition));
   expect(record.restores()).toBe(2);
+  // The third argument is the SDK ABI's interrupt signal; the socket host is its own parameter.
+  const port = async () => new Uint8Array();
+  await records.onRecord(Uint8Array.from(shared.delivery), undefined, new AbortController().signal, port);
+  expect(record.seen.at(-1)!.socketHost).toBe(port);
+  await records.onRecord(Uint8Array.from(shared.delivery), undefined, new AbortController().signal);
+  expect(record.seen.at(-1)!.socketHost).toBeUndefined();
   // The manifest is the deployment's code and subscriptions with the definition's codec.
   const manifest = await records.manifest();
   expect(new TextDecoder("latin1").decode(manifest)).toContain("counter");

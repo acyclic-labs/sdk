@@ -644,7 +644,11 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
 
 /// The host's [`Handler`] for an artifact that runs in a guest: `call` passes
 /// one encoded delivery to the guest's `onRecord` and returns its encoded
-/// transition. Scheduling, timeouts and publication stay with the host's
+/// transition; `interrupt` asks the guest's `acceptsInterrupt` about a control
+/// that arrived while that delivery runs. Both name the delivery's
+/// [`RequestId`](super::RequestId), so a host that serves several deliveries
+/// over one channel routes each query to its in-flight record without
+/// decoding it. Scheduling, timeouts and publication stay with the host's
 /// runtime and [`crate::local::Store`].
 pub struct Remote<F, I> {
     manifest: Manifest,
@@ -654,9 +658,10 @@ pub struct Remote<F, I> {
 
 impl<F, I> Remote<F, I>
 where
-    F: Fn(Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>>
+    F: Fn(super::RequestId, Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>>
         + acyclic_stream::ProviderPlatform,
-    I: Fn(Vec<u8>) -> GuestFuture<'static, bool> + acyclic_stream::ProviderPlatform,
+    I: Fn(super::RequestId, Vec<u8>) -> GuestFuture<'static, bool>
+        + acyclic_stream::ProviderPlatform,
 {
     /// The guest of `manifest`, as [`decode_manifest`] admitted it.
     pub const fn new(manifest: Manifest, call: F, interrupt: I) -> Self {
@@ -670,9 +675,10 @@ where
 
 impl<F, I> Handler for Remote<F, I>
 where
-    F: Fn(Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>>
+    F: Fn(super::RequestId, Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>>
         + acyclic_stream::ProviderPlatform,
-    I: Fn(Vec<u8>) -> GuestFuture<'static, bool> + acyclic_stream::ProviderPlatform,
+    I: Fn(super::RequestId, Vec<u8>) -> GuestFuture<'static, bool>
+        + acyclic_stream::ProviderPlatform,
 {
     fn manifest(&self) -> &Manifest {
         &self.manifest
@@ -685,7 +691,10 @@ where
         subscription: &'a str,
         record: &'a acyclic_stream::Record,
     ) -> GuestFuture<'a, bool> {
-        (self.interrupt)(encode_interrupt(delivery, checkpoint, subscription, record))
+        (self.interrupt)(
+            delivery.request,
+            encode_interrupt(delivery, checkpoint, subscription, record),
+        )
     }
 
     fn on_record<'a>(
@@ -694,7 +703,11 @@ where
         checkpoint: Option<&'a Checkpoint>,
         cancellation: CancellationToken,
     ) -> GuestFuture<'a, Transition> {
-        let call = (self.call)(encode_delivery(&delivery, checkpoint), cancellation);
+        let call = (self.call)(
+            delivery.request,
+            encode_delivery(&delivery, checkpoint),
+            cancellation,
+        );
         Box::pin(async move { decode_transition(&call.await?) })
     }
 }

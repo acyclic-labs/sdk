@@ -990,7 +990,7 @@ async fn file_control_journey(guest: bool, maximum: Option<u64>) -> Result {
             acyclic_actors::guest::Requests::default(),
             Arc::new(wire::Remote::new(
                 manifest,
-                move |bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
+                move |_request, bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
                     let native = native.clone();
                     let calls = calls.clone();
                     Box::pin(async move {
@@ -1007,7 +1007,7 @@ async fn file_control_journey(guest: bool, maximum: Option<u64>) -> Result {
                         )
                     })
                 },
-                move |query| -> GuestFuture<'static, bool> {
+                move |_request, query| -> GuestFuture<'static, bool> {
                     let handler = interrupt_handler.clone();
                     Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
                 },
@@ -1831,7 +1831,7 @@ async fn guest_spawn_creates_host_controls_with_original_child_and_volume_public
         acyclic_actors::guest::Requests::default(),
         Arc::new(wire::Remote::new(
             manifest,
-            move |bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
+            move |_request, bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
                 let guest = guest.clone();
                 Box::pin(async move {
                     let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
@@ -1843,7 +1843,7 @@ async fn guest_spawn_creates_host_controls_with_original_child_and_volume_public
                     )
                 })
             },
-            move |query| -> GuestFuture<'static, bool> {
+            move |_request, query| -> GuestFuture<'static, bool> {
                 let handler = interrupt_handler.clone();
                 Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
             },

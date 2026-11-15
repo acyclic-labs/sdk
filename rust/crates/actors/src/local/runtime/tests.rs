@@ -602,7 +602,7 @@ async fn reservation_package_commits_over_strict_wire_and_cleans_up_on_reopen() 
         let interrupt_package = Arc::clone(&package);
         Ok(Arc::new(wire::Remote::new(
             manifest,
-            move |bytes, cancellation| {
+            move |_request, bytes, cancellation| {
                 let package = Arc::clone(&package);
                 Box::pin(async move {
                     let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
@@ -612,7 +612,7 @@ async fn reservation_package_commits_over_strict_wire_and_cleans_up_on_reopen() 
                     wire::encode_transition(&transition)
                 }) as GuestFuture<'static, Vec<u8>>
             },
-            move |query| -> crate::guest::GuestFuture<'static, bool> {
+            move |_request, query| -> crate::guest::GuestFuture<'static, bool> {
                 let handler = interrupt_package.clone();
                 Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
             },
@@ -1041,7 +1041,7 @@ async fn generic_event_host_runs_the_original_package_over_strict_wire() -> Test
         let interrupt_package = Arc::clone(&package);
         Ok(Arc::new(wire::Remote::new(
             manifest,
-            move |bytes, cancellation| {
+            move |_request, bytes, cancellation| {
                 let package = Arc::clone(&package);
                 Box::pin(async move {
                     let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
@@ -1051,7 +1051,7 @@ async fn generic_event_host_runs_the_original_package_over_strict_wire() -> Test
                     wire::encode_transition(&transition)
                 }) as GuestFuture<'static, Vec<u8>>
             },
-            move |query| -> crate::guest::GuestFuture<'static, bool> {
+            move |_request, query| -> crate::guest::GuestFuture<'static, bool> {
                 let handler = interrupt_package.clone();
                 Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
             },
@@ -1150,6 +1150,169 @@ async fn generic_event_host_runs_the_original_package_over_strict_wire() -> Test
         alarm.subscriptions.get("inbox").map(|cut| cut.cursor),
         Some(2)
     );
+    Ok(())
+}
+
+/// The reference package behind its own interrupt predicate. `emit` holds
+/// until released or cancelled, and records which one ended the hold.
+struct Interruptible {
+    package: Package,
+    rejects: bool,
+    asked: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+impl Handler for Interruptible {
+    fn manifest(&self) -> &Manifest {
+        self.package.manifest()
+    }
+
+    fn accepts_interrupt<'a>(
+        &'a self,
+        delivery: &'a Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        subscription: &'a str,
+        record: &'a acyclic_stream::Record,
+    ) -> GuestFuture<'a, bool> {
+        self.asked.notify_one();
+        if self.rejects {
+            Box::pin(async { Ok(false) })
+        } else {
+            self.package
+                .accepts_interrupt(delivery, checkpoint, subscription, record)
+        }
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        async move {
+            if delivery
+                .record
+                .as_ref()
+                .is_some_and(|record| record.value.as_ref() == b"emit")
+            {
+                tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => self.cancelled.store(true, Ordering::SeqCst),
+                    permit = self.release.acquire() => permit
+                        .map_err(|_| crate::guest::GuestError::Handler("test gate closed".into()))?
+                        .forget(),
+                }
+            }
+            self.package
+                .on_record(delivery, checkpoint, cancellation)
+                .await
+        }
+        .boxed()
+    }
+}
+
+/// Run `emit` then the declared `cancel` control through [`wire::Remote`]:
+/// whether the held delivery was cancelled, and the outbox once both inputs
+/// are consumed. Each call and interrupt query names the in-flight request.
+async fn interrupt_over_wire(
+    name: &str,
+    rejects: bool,
+) -> Result<(bool, Vec<Bytes>), Box<dyn std::error::Error>> {
+    use crate::guest::{RequestId, wire};
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, name, &[b"emit", b"cancel"]).await?;
+    let guest = Arc::new(Interruptible {
+        package: Package::new()?,
+        rejects,
+        asked: tokio::sync::Notify::new(),
+        release: tokio::sync::Semaphore::new(0),
+        cancelled: std::sync::atomic::AtomicBool::new(false),
+    });
+    let running = Arc::new(std::sync::Mutex::new(None::<RequestId>));
+    let (call_guest, call_running) = (Arc::clone(&guest), Arc::clone(&running));
+    let (interrupt_guest, interrupt_running) = (Arc::clone(&guest), Arc::clone(&running));
+    let remote = wire::Remote::new(
+        wire::decode_manifest(&wire::encode_manifest(guest.manifest()))?,
+        move |request, bytes, cancellation| -> GuestFuture<'static, Vec<u8>> {
+            let guest = Arc::clone(&call_guest);
+            let running = Arc::clone(&call_running);
+            Box::pin(async move {
+                let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
+                assert_eq!(request, delivery.request, "a call names its own delivery");
+                *running
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request);
+                let transition = guest
+                    .on_record(delivery, checkpoint.as_ref(), cancellation)
+                    .await?;
+                wire::encode_transition(&transition)
+            })
+        },
+        move |request, query| -> GuestFuture<'static, bool> {
+            assert_eq!(
+                *interrupt_running
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                Some(request),
+                "an interrupt query names the in-flight delivery"
+            );
+            let guest = Arc::clone(&interrupt_guest);
+            Box::pin(async move { wire::accepts_interrupt(guest.as_ref(), &query).await })
+        },
+    );
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(remote),
+        Arc::new(Manual(AtomicU64::new(1))),
+    );
+    runtime.host(address.clone())?;
+    runtime.wake(&address);
+    // The guest's answer releases the held delivery; a host that cancels
+    // without asking ends it first.
+    let drain = core::pin::pin!(runtime.drain());
+    let asked = core::pin::pin!(guest.asked.notified());
+    let failures = match futures::future::select(drain, asked).await {
+        futures::future::Either::Left((failures, _)) => failures,
+        futures::future::Either::Right(((), drain)) => {
+            guest.release.add_permits(1);
+            drain.await
+        }
+    };
+    assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(
+        store
+            .load(&address)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(2)
+    );
+    Ok((
+        guest.cancelled.load(Ordering::SeqCst),
+        records(&*provider, &format!("out/{name}")).await?,
+    ))
+}
+
+/// The guest's own predicate decides an interrupt across the wire: a
+/// rejected control leaves the running delivery to complete, and the
+/// accept-all default (the negative control) cancels it.
+#[tokio::test]
+async fn a_rejected_interrupt_over_wire_leaves_its_delivery_completing() -> TestResult {
+    let (cancelled, output) = interrupt_over_wire("rejected", true).await?;
+    assert!(
+        !cancelled,
+        "a rejected control cancelled the running delivery"
+    );
+    assert_eq!(output, vec![Bytes::from_static(b"r0")]);
+    let (cancelled, output) = interrupt_over_wire("accepted", false).await?;
+    assert!(
+        cancelled,
+        "negative control: the accept-all default cancels the running delivery"
+    );
+    assert_eq!(output, vec![Bytes::from_static(b"r0")]);
     Ok(())
 }
 

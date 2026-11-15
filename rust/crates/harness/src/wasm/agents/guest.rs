@@ -12,7 +12,7 @@ use super::{
 use crate::Error;
 use crate::wasm::cancel::{Cancel, Listening};
 use acyclic_actors::guest::{
-    CancellationToken, GUEST_ABI_VERSION, GuestError, GuestFuture, Handler as _, wire,
+    CancellationToken, GUEST_ABI_VERSION, GuestError, GuestFuture, Handler as _, RequestId, wire,
 };
 use js_sys::{Function, Promise, Uint8Array};
 use wasm_bindgen::{JsCast as _, prelude::*};
@@ -151,8 +151,8 @@ fn rejected(error: JsValue) -> GuestError {
 /// the call (the runtime's handler timeout) aborts the guest's turn.
 pub(super) fn call(
     on_record: Function,
-) -> impl Fn(Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>> {
-    move |delivery, cancellation| {
+) -> impl Fn(RequestId, Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>> {
+    move |_request, delivery, cancellation| {
         let started = Cancel::new()
             .map_err(|error| GuestError::Handler(error.into()))
             .and_then(|cancel| {
@@ -190,8 +190,10 @@ pub(super) fn call(
 }
 
 /// The host forwards the original predicate without running a second delivery.
-pub(super) fn interrupt(callback: Function) -> impl Fn(Vec<u8>) -> GuestFuture<'static, bool> {
-    move |query| {
+pub(super) fn interrupt(
+    callback: Function,
+) -> impl Fn(RequestId, Vec<u8>) -> GuestFuture<'static, bool> {
+    move |_request, query| {
         let callback = callback.clone();
         Box::pin(async move {
             let mut cancel = Cancel::new().map_err(|error| GuestError::Handler(error.into()))?;
@@ -274,7 +276,7 @@ mod tests {
                 })
             });
         let callback_function = callback.as_ref().unchecked_ref::<Function>().clone();
-        let mut pending = interrupt(callback_function)(Vec::new());
+        let mut pending = interrupt(callback_function)(RequestId::new(1), Vec::new());
         assert!(futures::poll!(pending.as_mut()).is_pending());
         starting.await.unwrap();
         drop(pending);
