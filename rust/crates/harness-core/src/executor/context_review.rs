@@ -15,6 +15,40 @@ struct Decision {
 
 impl PreparationRecord for Decision {}
 
+/// A bounded rejection reason that never copies the reply: serde's data
+/// errors quote field names and values, so only the category and position
+/// are kept.
+fn decode_rejection(error: &serde_json::Error) -> String {
+    let kind = match error.classify() {
+        serde_json::error::Category::Syntax => "it is not valid JSON",
+        serde_json::error::Category::Eof => "it ends before one complete JSON object",
+        serde_json::error::Category::Data => {
+            "a field is missing, unknown, duplicated or of the wrong type"
+        }
+        serde_json::error::Category::Io => "it could not be read",
+    };
+    format!(
+        "{kind} (line {}, column {}); escape every control character inside strings",
+        error.line(),
+        error.column()
+    )
+}
+
+/// The reason a re-asked review's previous decision was rejected.
+struct Rejection<'r>(Option<&'r str>);
+
+impl std::fmt::Display for Rejection<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(reason) => write!(
+                formatter,
+                "\nYour previous decision was rejected: {reason}. Return exactly one JSON object and escape every control character inside its strings (a newline as \\n)."
+            ),
+            None => Ok(()),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Observation {
     tokens: ModelTokenUsage,
@@ -40,6 +74,8 @@ struct Receipt<'a> {
 #[derive(Default)]
 struct State<'a> {
     review_at: u64,
+    /// Why the last decision was rejected, owed one re-ask at the next boundary.
+    rejected: Option<String>,
     queued: Option<Job<'a>>,
     active: bool,
     ready: Option<Result<Option<Receipt<'a>>>>,
@@ -421,15 +457,17 @@ impl<'a> StockExecution<'a> {
         session.selected = selected;
         session.configuration = None;
         let capacity = session.model_capacity()?;
+        let rejected = self.review.state.lock().await.rejected.take();
         let instruction = with_history_io(session.io, |work| {
             preparation_format(
                 format_args!(
-                    "{INSTRUCTION}\nSelected model: {}\nCapacity: {}\nComplete reported input tokens: {}\nOriginal billing counters: {:?}\nOriginal call latency_ns: {:?}\nPrices not supplied are unknown; do not invent prices.",
+                    "{INSTRUCTION}\nSelected model: {}\nCapacity: {}\nComplete reported input tokens: {}\nOriginal billing counters: {:?}\nOriginal call latency_ns: {:?}\nPrices not supplied are unknown; do not invent prices.{}",
                     session.selected_model().name,
                     capacity.context_tokens,
                     observation.input_tokens,
                     observation.tokens,
-                    observation.latency_ns
+                    observation.latency_ns,
+                    Rejection(rejected.as_deref()),
                 ),
                 work,
             )
@@ -458,16 +496,34 @@ impl<'a> StockExecution<'a> {
             Err(error) => return Err(error),
         };
         let material = session.manager_material(&source, 0..end, None, Some(&instruction))?;
-        let (summary, text) = session
-            .summarize(
+        let output = session
+            .summarize_output(
                 journal,
                 Some(input),
                 input.operation_id,
                 step,
                 material,
                 phase,
+                ModelPurpose::Summary,
             )
             .await?;
+        let (summary, text) = match output {
+            Ok(output) => output,
+            Err(defect) => {
+                drop(instruction);
+                drop(session);
+                scope.finish(0)?;
+                return self
+                    .reject_decision(
+                        journal,
+                        (input.operation_id, step),
+                        defect.to_owned(),
+                        rejected.is_some(),
+                        capacity,
+                    )
+                    .await;
+            }
+        };
         let retained = summary
             .output
             .logical_owned_bytes()?
@@ -486,24 +542,35 @@ impl<'a> StockExecution<'a> {
             .io
             .map(|io| io.guard_owned(summary.output.logical_owned_bytes()?))
             .transpose()?;
-        let (decision, decision_hold): (Decision, _) = match self.io {
-            Some(io) => io
-                .decode(
+        // Only the reply's JSON syntax and shape are the reviewer's defect.
+        // The budgeted decode below runs on a reply that already parsed, so
+        // its failures (cancellation, an exhausted budget) stay the host's.
+        let shape = crate::contract::json_from_slice::<Decision>(text.as_bytes());
+        let (decision, decision_hold) = match (shape, self.io) {
+            (Err(error), _) => {
+                stock_retire_text(text, self.io)?;
+                drop(summary);
+                drop(hold);
+                return self
+                    .reject_decision(
+                        journal,
+                        (input.operation_id, step),
+                        decode_rejection(&error),
+                        rejected.is_some(),
+                        capacity,
+                    )
+                    .await;
+            }
+            (Ok(decision), None) => (decision, None),
+            (Ok(parsed), Some(io)) => {
+                drop(parsed);
+                io.decode(
                     std::marker::PhantomData::<Decision>,
                     text.as_bytes(),
                     crate::wire::ErrorCode::Invalid,
                 )
-                .map(|(decision, hold)| (decision, Some(hold)))?,
-            None => (
-                crate::contract::json_from_slice(text.as_bytes()).map_err(|_| {
-                    stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Invalid,
-                        "context review returned an invalid decision",
-                    )
-                })?,
-                None,
-            ),
+                .map(|(decision, hold)| (decision, Some(hold)))?
+            }
         };
         stock_retire_text(text, self.io)?;
         let valid = decision.version == 1
@@ -519,11 +586,15 @@ impl<'a> StockExecution<'a> {
         if !valid {
             drop(summary);
             drop(hold);
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "context review must supply a nonempty summary or a future input budget",
-            ));
+            return self
+                .reject_decision(
+                    journal,
+                    (input.operation_id, step),
+                    "version must be 1, review_at_input_tokens must be positive and below the capacity, and summary must be nonempty, or null with review_at_input_tokens above the current input".to_owned(),
+                    rejected.is_some(),
+                    capacity,
+                )
+                .await;
         }
         self.review.state.lock().await.review_at = next;
         if !rewrite {
@@ -539,6 +610,44 @@ impl<'a> StockExecution<'a> {
             _files_hold: files_hold,
             _hold: hold,
         }))
+    }
+
+    /// A malformed, empty or invalid decision is the reviewer's defect, never
+    /// the worker's: the context stays unreviewed. The first rejection is
+    /// re-asked with its reason at the next response boundary; a second defers
+    /// review until the input reaches capacity, where the independent capacity
+    /// backstop compacts.
+    async fn reject_decision(
+        &self,
+        journal: &dyn ExecutionJournal,
+        (operation, step): (OperationId, u32),
+        reason: String,
+        reasked: bool,
+        capacity: crate::context::ModelContextCapacity,
+    ) -> Result<Option<Receipt<'a>>> {
+        // The stream records why the settled reply authorised nothing, so a
+        // reader sees the defect without the model call's private output.
+        let key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("summary:{step}:rejected"), work)
+        })?;
+        let event = ExecutionEvent::ModelRejected {
+            step,
+            purpose: ModelPurpose::Summary,
+            reason: reason.clone(),
+        };
+        phase::PreparedPhase::new(journal, self.io)?
+            .run(async {
+                let _writer = self.journal_writes.lock().await;
+                journal.append(operation, &key, &event, self.io)?.await
+            })
+            .await?;
+        let mut state = self.review.state.lock().await;
+        if reasked {
+            state.review_at = u64::from(capacity.context_tokens);
+        } else {
+            state.rejected = Some(reason);
+        }
+        Ok(None)
     }
 
     async fn context_review_service(

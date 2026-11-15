@@ -38,7 +38,16 @@ async fn large_retained_catalogs_chunk_and_replay_without_losing_source_keys() -
             .map_err(storage)?;
     let stream = filesystem.stream_provider();
     let sources = NativeSkills::new(stream.clone(), volume.clone(), None, vec![native])?;
-    let skills = sources.user_catalog(&mut DiscoveryWork::default())?.await?;
+    let mut discovery = DiscoveryWork::default();
+    let selected = sources.user_catalog(&mut discovery)?.await;
+    let skills = selected.inspect_err(|error| {
+        eprintln!(
+            "catalog discovery pages={} directories={} entries={} error={error:?}",
+            sources.user_pages.load(std::sync::atomic::Ordering::SeqCst),
+            discovery.directories,
+            discovery.entries,
+        );
+    })?;
     assert_eq!(skills.len(), 192);
     let journal = StreamPath::new("harness/native-skill-sources/v1").map_err(storage)?;
     let tail = stream.tail(journal.clone()).await.map_err(storage)?;

@@ -289,7 +289,7 @@ pub(crate) fn compact_context(
             compaction_step(&mut quota)?;
             let keep = selected[group.root];
             selected[position] |= keep;
-            if keep && groups[group.root].end == context.messages.len() {
+            if groups[group.root].end == context.messages.len() {
                 return Err(compaction_error(
                     quota.work(),
                     "compaction boundary splits a tool exchange",

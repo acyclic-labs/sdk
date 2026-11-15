@@ -541,8 +541,10 @@ fn compaction_keeps_fragmented_schemas_only_for_retained_exchanges() -> Result<(
     let mixed = context(mixed, Some(current));
     prepare(mixed.messages.clone(), Vec::new())?;
     let mut retained_one_call = false;
-    for maximum in 2..=mixed.messages.len() {
-        let (retained, proof) = compact(&mixed, maximum, mixed.messages.len())?;
+    for requested_cut in 1..mixed.messages.len() {
+        let (through, maximum) =
+            policy.projection_budget(&mixed, None, requested_cut, &mut None)?;
+        let (retained, proof) = compact(&mixed, maximum, through)?;
         validate_compaction(&proof, &mixed, &retained, None)?;
         prepare(retained.messages.clone(), Vec::new())?;
         if has_call(&retained, "native") || has_call(&retained, "dynamic") {

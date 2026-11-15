@@ -395,6 +395,7 @@ where
                 | ExecutionEvent::ModelInline { .. }
                 | ExecutionEvent::ModelWait { .. }
                 | ExecutionEvent::ModelStopped { .. }
+                | ExecutionEvent::ModelRejected { .. }
                 | ExecutionEvent::ModelOutput { .. }
                 | ExecutionEvent::ToolFailed { .. } => [None, None, None],
             };

@@ -41,16 +41,24 @@ fn valid_record_is_admitted_and_projects_with_exact_metadata() {
 
 #[test]
 fn complete_depth_and_numeric_bounds_apply_before_recording() {
-    let mut deep = json!(0);
-    for _ in 0..140 {
-        deep = json!([deep]);
+    let mut boundary = json!([]);
+    // The envelope occupies depth zero; metadata begins at depth one.
+    for _ in 1..crate::executor::json::RECORD_MAXIMUM_DEPTH {
+        boundary = json!([boundary]);
     }
-    // Arguments use the literal-value decoder's record bound. Metadata uses
-    // Value directly, so it also exercises the wider bounded input domain.
-    input::assert_envelope(&record(json!({}), deep.clone()));
+    let admitted = record(json!({}), boundary.clone());
+    assert!(
+        admitted
+            .invocation
+            .validate_recorded(&admitted.metadata, Limits::default(), None)
+            .is_ok()
+    );
+    input::assert_envelope(&admitted);
+    // One more metadata container crosses the complete envelope's bound.
+    // The invocation object adds that same extra depth to arguments.
     for record in [
-        record(json!({}), deep.clone()),
-        record(deep, Value::Null),
+        record(json!({}), json!([boundary.clone()])),
+        record(boundary, Value::Null),
         record(json!({}), json!(u64::MAX)),
         record(json!({"value":u64::MAX}), Value::Null),
     ] {
