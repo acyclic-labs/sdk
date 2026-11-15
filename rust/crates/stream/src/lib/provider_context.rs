@@ -8,6 +8,7 @@ pub struct ProviderContext<'a> {
     claims: &'a OperationClaims,
     process_exclusion: bool,
     deferred_durability: bool,
+    durable_acknowledgement: bool,
 }
 
 impl<'a> ProviderContext<'a> {
@@ -17,6 +18,7 @@ impl<'a> ProviderContext<'a> {
             claims,
             process_exclusion: false,
             deferred_durability: false,
+            durable_acknowledgement: false,
         }
     }
 
@@ -34,6 +36,15 @@ impl<'a> ProviderContext<'a> {
         self
     }
 
+    /// Declares that each write this task makes through the session is
+    /// acknowledged only once the device durably holds it and every write the
+    /// session accepted before it: the acknowledgement is the durable cut.
+    #[must_use]
+    pub const fn with_durable_acknowledgement(mut self) -> Self {
+        self.durable_acknowledgement = true;
+        self
+    }
+
     /// Live ownership shared by clones of this session and its forwarding adapters.
     pub const fn operation_claims(self) -> &'a OperationClaims {
         self.claims
@@ -47,5 +58,11 @@ impl<'a> ProviderContext<'a> {
     /// Whether accepted deferred writes can be sealed by this session's barrier.
     pub const fn deferred_durability(self) -> bool {
         self.deferred_durability
+    }
+
+    /// Whether this task's own acknowledged writes need no durability barrier.
+    /// It certifies nothing about writes observed from other tasks.
+    pub const fn durable_acknowledgement(self) -> bool {
+        self.durable_acknowledgement
     }
 }
