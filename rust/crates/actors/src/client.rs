@@ -555,6 +555,8 @@ macro_rules! operations {
         ("DeleteAll", delete_all, 8, DeleteAllRequest, DeleteAllResponse)
     } };
 }
+// The native HTTP client is the only other expansion site.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use operations;
 
 macro_rules! client_operations {

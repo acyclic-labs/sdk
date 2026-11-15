@@ -300,6 +300,7 @@ impl<S: futures::Stream> futures::Stream for InheritedStream<S> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn inherit_stream<S: futures::Stream>(body: S) -> impl futures::Stream<Item = S::Item> {
     InheritedStream {
         body,

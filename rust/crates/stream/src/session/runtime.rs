@@ -4,16 +4,6 @@ pub(super) use acyclic_native_runtime::obs::OperationSpan;
 #[cfg(target_arch = "wasm32")]
 pub(super) use context::OperationSpan;
 
-/// Browser sessions install no wait report; the future runs unchanged.
-#[cfg(target_arch = "wasm32")]
-pub(super) fn waiting<F: std::future::Future>(
-    primitive: &'static str,
-    key: impl std::fmt::Display,
-    future: F,
-) -> F {
-    let _ = (primitive, key);
-    future
-}
 #[cfg(any(test, target_arch = "wasm32"))]
 #[path = "runtime/context.rs"]
 mod context;

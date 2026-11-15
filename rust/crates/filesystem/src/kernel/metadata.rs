@@ -78,6 +78,7 @@ impl FileMetadata {
     }
 
     /// Drops the stamps the host derives from other events rather than records as facts: reads advance the access time and every inode change, including to facts capture does not represent, advances the status-change time.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) const fn without_derived_stamps(self) -> Self {
         Self {
             accessed_ns: MetadataField::Unavailable,
@@ -90,6 +91,7 @@ impl FileMetadata {
     ///
     /// Reads and unrepresented inode changes only ever advance the access and status-change
     /// times; an explicit set can move a stamp backwards, and that is a recorded fact.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn only_advanced_derived_stamps(&self, prior: &Self) -> bool {
         const fn advanced(now: MetadataField<i64>, before: MetadataField<i64>) -> bool {
             match (now, before) {

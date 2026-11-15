@@ -80,6 +80,7 @@ impl<F: ?Sized, A: Unpin> OwnedFuture<F, A> {
 impl<F: Future, A> OwnedFuture<F, A> {
     /// Erases the body at a provider boundary without moving or reallocating
     /// its storage, so admission still covers the concrete future's bytes.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn erase_send<'a>(self) -> OwnedFuture<dyn Future<Output = F::Output> + Send + 'a, A>
     where
         F: Send + 'a,

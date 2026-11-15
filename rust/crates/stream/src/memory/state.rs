@@ -54,6 +54,8 @@ impl State {
     fn replay_count(&self) -> usize {
         self.replay_count
     }
+    /// Snapshot encoding is the only reader; it is native or test-only.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn commit(&self, id: &CommitId) -> Option<&CommittedEnvelope> {
         match self.find_commit(id, |_| Ok::<_, std::convert::Infallible>(())) {
             Ok(value) => value,

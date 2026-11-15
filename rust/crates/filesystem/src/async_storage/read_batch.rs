@@ -13,8 +13,12 @@ pub fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
 // Select the provider future before forming the batch state machine. The
 // decoded path must not also contain the stored representation's read path.
 pub(crate) trait ReadRepresentation {
+    // Staged native admission selects the stored path and whole batches; the
+    // browser build reads decoded values one request at a time.
+    #[cfg(not(target_arch = "wasm32"))]
     const STORED: bool = false;
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn read_many<S: AsyncObjectStore + ?Sized>(
         store: &S,
         requests: &[ObjectReadRequest],
@@ -30,8 +34,10 @@ pub(crate) trait ReadRepresentation {
     ) -> impl Future<Output = Result<ObjectRead, crate::ObjectStoreError>> + ProviderTask;
 }
 pub(crate) struct Decoded;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct Stored;
 impl ReadRepresentation for Decoded {
+    #[cfg(not(target_arch = "wasm32"))]
     fn read_many<S: AsyncObjectStore + ?Sized>(
         store: &S,
         requests: &[ObjectReadRequest],
@@ -50,6 +56,7 @@ impl ReadRepresentation for Decoded {
         store.read(request.object_id, request.maximum_bytes, context)
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl ReadRepresentation for Stored {
     const STORED: bool = true;
     fn read_many<S: AsyncObjectStore + ?Sized>(

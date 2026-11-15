@@ -54,6 +54,7 @@ pub(crate) use references::visit_object_references;
 pub(crate) use references::visit_record_references;
 mod mutation;
 mod namespace_path;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod ordered_links;
 mod path_access;
 mod persistent_batch;
@@ -306,13 +307,15 @@ pub use types::{
     NameEncoding, TreeEntry, TreePage, TreePageError,
 };
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) use volume::CONFIG_ENCODED_BYTES;
+pub(crate) use volume::decode_config;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use volume::encode_config;
 #[cfg(all(not(loom), not(feature = "test-support")))]
 pub(crate) use volume::encode_volume_created;
 #[cfg(any(loom, feature = "test-support"))]
 #[doc(hidden)]
 pub use volume::encode_volume_created;
-pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};
 pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volume_authority_id};
 
 #[cfg(any(test, feature = "fuzzing", feature = "test-support"))]

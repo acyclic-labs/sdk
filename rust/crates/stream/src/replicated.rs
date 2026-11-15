@@ -75,6 +75,7 @@ pub(crate) struct Execution {
     // Retain the original reply claim even when an adapter only takes its outcome.
     pub(crate) _allocation: crate::memory::Allocation,
     /// Installed in memory only: it has no journal frame and no durability cut.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) ephemeral: bool,
 }
 
@@ -227,6 +228,7 @@ impl<J: CommandJournal> Replicated<J> {
 
     /// The port samples and persists its own clock under the append CAS. Its
     /// accepted stamp can bind an original plan without a preceding clock read.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_acceptance_clock(mut self) -> Self {
         self.acceptance_clock = true;
         self
@@ -312,6 +314,7 @@ impl<J: CommandJournal> Replicated<J> {
             .map(|(outcome, allocation)| Execution {
                 outcome: WriteOutcome::Commit(outcome),
                 _allocation: allocation,
+                #[cfg(not(target_arch = "wasm32"))]
                 ephemeral: false,
             });
         let attempt = attempt.finish();

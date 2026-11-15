@@ -18,25 +18,24 @@ use state::{Phase, Plan, State};
 use volume::PendingBatch;
 pub(crate) use volume::Volume;
 
-// Seals are funded by the native original only; browser builds never construct
-// one, so their frame carries no allocation.
+// Seals are funded by the native original only. Browser builds never construct
+// one, so there the seal is uninhabited and every `Option<SharedSeal>` is `None`.
 #[cfg(not(target_arch = "wasm32"))]
-type SealAllocation = crate::NativeAllocation;
-#[cfg(target_arch = "wasm32")]
-type SealAllocation = ();
 type SealFuture = futures::future::Either<
     std::future::Ready<Result<(), crate::FsError>>,
     crate::heap_future::OwnedFuture<
         dyn std::future::Future<Output = Result<(), crate::FsError>> + Send,
-        SealAllocation,
+        crate::NativeAllocation,
     >,
 >;
-type SealCallback = Box<dyn FnMut() -> SealFuture + Send>;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) struct SharedSeal {
-    pub(super) callback: SealCallback,
+    pub(super) callback: Box<dyn FnMut() -> SealFuture + Send>,
     pub(super) _allocation: KernelOwnedAllocation,
 }
+#[cfg(target_arch = "wasm32")]
+pub(super) enum SharedSeal {}
 
 struct Prepared {
     authentication: Option<super::authenticate::Authenticated>,

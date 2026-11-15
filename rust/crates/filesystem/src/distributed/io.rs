@@ -51,10 +51,7 @@ pub(super) fn durable_commit(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) type ProviderAllocation = Option<acyclic_native_runtime::ReadAllocation>;
-#[cfg(target_arch = "wasm32")]
-pub(super) type ProviderAllocation = Option<()>;
+pub(super) type ProviderAllocation = super::RecordAllocation;
 
 pub(super) enum AuthorityRead {
     Plain(acyclic_stream::RecordStream),

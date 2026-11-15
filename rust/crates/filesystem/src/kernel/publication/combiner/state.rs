@@ -259,6 +259,7 @@ impl<T, R: Copy> State<T, R> {
             .filter(|member| member.selected)
             .map(|member| &member.value)
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn selected_at(&self, index: usize) -> Option<(&T, bool)> {
         self.members
             .get(index)

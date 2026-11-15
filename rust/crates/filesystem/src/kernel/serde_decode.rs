@@ -2,7 +2,7 @@
 
 mod original;
 pub use original::MetadataDecodeError;
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub(crate) use original::from_slice;
 
 /// Backend adapter for the original work and allocation owner. Failures remain

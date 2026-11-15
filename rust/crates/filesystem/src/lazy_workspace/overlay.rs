@@ -329,6 +329,7 @@ impl<
         result.map_err(|error| error.retain_publication_hold(hold))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn retain_source_before_image(
         &self,
         source: &SourceReference,

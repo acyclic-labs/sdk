@@ -573,6 +573,8 @@ impl Namespace {
         Ok(())
     }
     /// Removes a present `path` with its whole subtree; its ancestors remain.
+    /// Only native lease release removes a subtree.
+    #[cfg(not(target_arch = "wasm32"))]
     fn remove(
         &mut self,
         path: &StreamPath,

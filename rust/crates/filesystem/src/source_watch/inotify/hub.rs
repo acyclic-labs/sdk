@@ -856,11 +856,6 @@ impl Inbox {
         (self.bytes.len(), self.overflowed)
     }
 
-    #[cfg(test)]
-    pub(super) fn failure(&self) -> Option<&DemandError> {
-        self.failure.as_ref()
-    }
-
     /// Observes the next entry into this inbox's original service pass.
     #[cfg(test)]
     pub(super) fn next_service(&mut self) -> std::sync::mpsc::Receiver<()> {

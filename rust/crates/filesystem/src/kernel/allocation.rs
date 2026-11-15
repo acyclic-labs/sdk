@@ -603,7 +603,6 @@ pub use retained::{ErasedRetainedArc, ErasedRetainedWeak};
 pub use retained::{RetainedArc, RetainedWeak};
 
 /// Retains the allocation backing a value returned by a kernel operation.
-#[cfg_attr(target_arch = "wasm32", derive(Clone, Copy))]
 pub enum KernelOwnedAllocation {
     /// Backing tracked by the standalone accounting context.
     Standalone,

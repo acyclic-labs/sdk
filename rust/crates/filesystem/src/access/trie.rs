@@ -66,10 +66,12 @@ pub struct PinnedPath {
 }
 
 impl PinnedPath {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn volume(&self) -> &str {
         self.view.volume()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn policy_view(&self) -> &PathTrie {
         &self.view
     }
@@ -555,6 +557,7 @@ impl PathTrie {
     /// require identical compiled suffix states; policies whose equivalence
     /// cannot be proved without walking data fail closed. No native allocation
     /// or namespace traversal is needed for this proof.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn permits_relocation(
         &self,
         source: &crate::kernel::NamespacePath,

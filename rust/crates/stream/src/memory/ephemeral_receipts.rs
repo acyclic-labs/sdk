@@ -76,6 +76,8 @@ impl MemoryStream {
 
 struct EphemeralReplay {
     live: Arc<std::sync::atomic::AtomicBool>,
+    /// The lease's retirement list; only native lease release walks it.
+    #[cfg(not(target_arch = "wasm32"))]
     next: Option<CommitId>,
     fact: RetainedFactRef,
 }
@@ -145,6 +147,7 @@ impl State {
             .map(|(fact, ephemeral)| (&fact.digest, &fact.result, fact.index, ephemeral)))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn ephemeral_key_is_spent<E>(
         &self,
         key: &[u8],
@@ -216,17 +219,26 @@ impl acyclic_collections::IndexWork for ReceiptInsertWork<'_> {
         Ok(())
     }
     fn claim(&mut self, bytes: u64) -> Result<Allocation, Self::Error> {
+        let Some(allocation) = self.allocation.as_mut() else {
+            let _ = bytes;
+            return Ok(None);
+        };
+        // The wasm reservation is a unit: a node's share of it is the unit.
+        #[cfg(target_arch = "wasm32")]
+        let claimed = {
+            let () = *allocation;
+            let _ = bytes;
+        };
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(allocation) = self.allocation.as_mut() {
+        let claimed = {
             let bytes = usize::try_from(bytes).unwrap_or_else(|_| {
                 unreachable!("a physical index node has a representable layout")
             });
-            return Ok(Some(allocation.split(bytes).unwrap_or_else(|_| {
+            allocation.split(bytes).unwrap_or_else(|_| {
                 unreachable!("two fixed-index insertions fit their admitted backing bound")
-            })));
-        }
-        let _ = bytes;
-        Ok(None)
+            })
+        };
+        Ok(Some(claimed))
     }
 }
 
@@ -262,6 +274,7 @@ impl Ephemeral {
             .commit_id;
         let fact = EphemeralReplay {
             live: Arc::clone(&lease.live),
+            #[cfg(not(target_arch = "wasm32"))]
             next: lease.first_commit,
             fact: owner,
         };
@@ -279,7 +292,10 @@ impl Ephemeral {
             .commits
             .get_or_try_insert_with(*id.as_bytes(), &mut work, |_| Ok(fact))
             .unwrap_or_else(|never| match never {});
-        lease.first_commit = Some(id);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            lease.first_commit = Some(id);
+        }
     }
 }
 
@@ -300,6 +316,7 @@ impl EphemeralReceipts {
             .filter(|fact| fact.is_live()))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn release_one(
         &mut self,
         id: CommitId,

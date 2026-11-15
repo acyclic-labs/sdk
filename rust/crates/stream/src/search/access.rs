@@ -1,6 +1,8 @@
 //! Provider and allocation ownership for the single search traversal.
 use super::*;
-use futures::{StreamExt as _, TryStreamExt as _};
+#[cfg(not(target_arch = "wasm32"))]
+use futures::StreamExt as _;
+use futures::TryStreamExt as _;
 
 #[derive(Default)]
 pub(super) struct Owner {
@@ -99,6 +101,8 @@ impl<'a, P: StreamProvider + ?Sized> Access<'a, P> {
             })?;
             return Ok(value);
         }
+        // Portable vectors carry no native allocation for the owner to absorb.
+        let _ = owner;
         let mut value = Vec::new();
         self.io(value
             .try_reserve_exact(length)

@@ -51,6 +51,7 @@ impl<S> FoldCheckpoint<S> {
         hash.update(&self.generation);
         *hash.finalize().as_bytes()
     }
+    #[cfg(not(target_arch = "wasm32"))]
     fn accounted_key(&self, ctx: &mut KernelAccounting<'_>) -> Result<[u8; 32], crate::FsError> {
         ctx.charge(WorkCounters {
             bytes_hashed: (b"acyclic:fold-checkpoint:v1".len() + 32 + 8 + 32) as u64,

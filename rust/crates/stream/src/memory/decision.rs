@@ -110,23 +110,29 @@ impl MemoryStream {
             match &canonical.command {
                 WriteRequest::Append(request) => {
                     let plan = self.plan_append_locked(&mut state, request)?;
+                    // Only the native local provider leases ephemeral subtrees.
+                    #[cfg(not(target_arch = "wasm32"))]
                     let ephemeral = plan.ephemeral();
                     plan.durable(self, state, persist.as_mut())
                         .await
                         .map(|(result, allocation)| Execution {
                             outcome: WriteOutcome::Append(result),
                             _allocation: allocation,
+                            #[cfg(not(target_arch = "wasm32"))]
                             ephemeral,
                         })
                 }
                 WriteRequest::Fork(request) => {
                     let plan = self.plan_fork_locked(&mut state, request)?;
+                    // Only the native local provider leases ephemeral subtrees.
+                    #[cfg(not(target_arch = "wasm32"))]
                     let ephemeral = plan.ephemeral();
                     plan.durable(self, state, persist.as_mut())
                         .await
                         .map(|result| Execution {
                             outcome: WriteOutcome::Fork(result),
                             _allocation: None,
+                            #[cfg(not(target_arch = "wasm32"))]
                             ephemeral,
                         })
                 }
@@ -139,12 +145,15 @@ impl MemoryStream {
                         deadline,
                         matches!(&canonical.command, WriteRequest::CommitAccepted(_)),
                     )?;
+                    // Only the native local provider leases ephemeral subtrees.
+                    #[cfg(not(target_arch = "wasm32"))]
                     let ephemeral = plan.ephemeral();
                     plan.durable(self, state, persist.as_mut())
                         .await
                         .map(|(result, allocation)| Execution {
                             outcome: result,
                             _allocation: allocation,
+                            #[cfg(not(target_arch = "wasm32"))]
                             ephemeral,
                         })
                 }

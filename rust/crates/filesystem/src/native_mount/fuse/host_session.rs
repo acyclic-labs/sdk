@@ -2,8 +2,6 @@
 
 use super::host_io::{Connection, HostIo, Received};
 use super::notification::CacheNotifier;
-#[cfg(test)]
-use super::notification::PacketSink;
 use super::packet::PacketRequest;
 use super::packet_buffers::{PacketBufferPool, PacketBuffers, maximum_write};
 use super::packet_response::PacketResponse;

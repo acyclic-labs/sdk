@@ -570,6 +570,7 @@ impl<M, P: Deref<Target = M>> Account<M, P> {
     }
 
     /// Borrows the original medium for a call tied to this account.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn borrowed_medium(&self) -> &M {
         &self.medium
     }

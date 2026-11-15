@@ -384,6 +384,7 @@ impl<A, O> Checkout<A, O> {
         self.volume.fs.objects()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn volume_handle(&self) -> Volume<A, O> {
         self.volume.clone()
     }
