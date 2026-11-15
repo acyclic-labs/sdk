@@ -33,6 +33,14 @@ obligations. The command emits `MODEL_CHECK_PHASE` build/search timings and one
 terminal `MODEL_CHECK_RESULT` with `status: "PASS"` or `"FAIL"`; absence of that
 terminal is incomplete execution. A zero-test or incomplete suite cannot pass.
 
+Loom models compile only under `ACYCLIC_LOOM=1` together with the crate's
+`model-checking` feature: each crate's build script then emits `cfg(loom)`. The
+feature alone never implies loom, so `--all-features` and Bazel builds keep real
+synchronization. Registry crates, including Tokio's own `cfg(loom)`, stay
+untouched. The cfg travels in rustc's arguments, so compiler caches key on it.
+`node scripts/check-test-support.mjs` rejects a crate with loom code but no
+build-script opt-in.
+
 An operator can set `SDK_CHECKER_RUNNER` to an installed shared Node runner for
 libtest obligations. It receives `-- <binary> <original arguments>` after Cargo
 builds the selected target, and must return the original complete test summary.

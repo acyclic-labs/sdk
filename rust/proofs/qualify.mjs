@@ -1856,10 +1856,7 @@ if (claim === "--help" && extra.length === 0) {
             RUSTFLAGS: `${environment.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? environment.RUSTFLAGS
               : `${environment.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`} --cfg tokio_unstable`,
           } : {}),
-          ...(options.loom ? {
-            RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
-              `../../scripts/loom-rustc.${process.platform === "win32" ? "cmd" : "sh"}`, import.meta.url)),
-          } : {}),
+          ...(options.loom ? { ACYCLIC_LOOM: "1" } : {}),
         },
       });
     } finally {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
-import {checkDeserializedTestSupport, checkTestSupport, checkTestSupportExports} from './check-test-support.mjs';
+import {checkDeserializedTestSupport, checkLoomOptIn, checkNoLoomCfgFlag, checkTestSupport, checkTestSupportExports} from './check-test-support.mjs';
 
 /** @param {{optional?: boolean, kind?: string | null, target?: string | null, alias?: string}} options */
 function fixture({optional = false, kind = null, target = null, alias = 'backend-alias'} = {}) {
@@ -24,6 +24,72 @@ test('missing forwarding fails for normal, optional, build and foreign-target de
     metadata.consumer.features['test-support'].push(`backend-alias${options.optional ? '?' : ''}/test-support`);
     assert.equal(checkTestSupport(metadata), 1);
   }
+});
+
+/** @param {{dependency?: 'optional' | 'required' | 'dev' | null, feature?: string[] | null, script?: string | null, name?: string}} options */
+function loomPackage({dependency = 'optional', feature = ['dep:loom'], script = 'fn main() {}', name = 'models'} = {}) {
+  const dependencies = {optional: [{name: 'loom', kind: null, optional: true}], required: [{name: 'loom', kind: null, optional: false}],
+    dev: [{name: 'loom', kind: 'dev', optional: false}]}[dependency ?? ''] ?? [];
+  const pkg = {id: `${name}@1`, name, manifest_path: `/w/crates/${name}/Cargo.toml`,
+    features: feature ? {'model-checking': feature} : {}, dependencies,
+    targets: [{kind: ['lib'], src_path: `/w/crates/${name}/src/lib.rs`},
+      ...(script === null ? [] : [{kind: ['custom-build'], src_path: `/w/crates/${name}/build.rs`}])]};
+  const inner = {id: 'inner@1', name: 'inner', manifest_path: '/w/crates/models/inner/Cargo.toml',
+    features: {}, dependencies: [], targets: []};
+  return /** @type {const} */ ([{workspace_root: '/w', workspace_members: [pkg.id, inner.id], packages: [pkg, inner]}, () => script]);
+}
+const stanza = readFileSync('rust/crates/mcp/build.rs', 'utf8');
+/** @param {Parameters<typeof loomPackage>[0]} options @param {[string, string][]} sources */
+function optIn(options, sources) {
+  const [metadata, read] = loomPackage(options);
+  return checkLoomOptIn(metadata, sources, read);
+}
+
+test('a package with loom code and a loom dependency opts in only through the feature and its build script', () => {
+  const sources = [['crates/models/src/sync.rs', '#[cfg(all(test, not(loom)))]\nmod plain;\n']];
+  assert.throws(() => optIn({}, sources), /models: its build script must emit cfg\(loom\)/);
+  assert.throws(() => optIn({script: null}, sources), /models: its build script/);
+  assert.throws(() => optIn({script: stanza, feature: null}, sources), /models: its model-checking feature must enable dep:loom/);
+  assert.throws(() => optIn({script: stanza, feature: []}, sources), /models: its model-checking feature must enable dep:loom/);
+  for (const dependency of /** @type {const} */ (['required', 'dev']))
+    assert.throws(() => optIn({script: stanza, dependency}, sources), /models: loom must be an optional normal dependency/, dependency);
+  assert.equal(optIn({script: stanza}, sources), 1);
+  assert.equal(optIn({script: stanza.replaceAll('cargo:', 'cargo::')}, sources), 1);
+  // Without a loom dependency the branches compile only where another package includes the file.
+  assert.equal(optIn({dependency: null}, sources), 0);
+  // A nested package owns its own files, and loom inside a string is not a cfg.
+  assert.equal(optIn({}, [['crates/models/inner/src/lib.rs', '#[cfg(loom)]\nmod m;\n'],
+    ['crates/models/src/lib.rs', 'const S: &str = "#[cfg(loom)]";\n#[cfg(feature = "loom")]\nmod m;\n']]), 0);
+});
+
+test('removing the stanza from a real model package is rejected', () => {
+  const real = readFileSync('rust/crates/stream/build.rs', 'utf8');
+  const sources = [['crates/models/src/lib.rs', '#[cfg(loom)]\nuse loom::sync::Mutex;\n']];
+  assert.equal(optIn({script: real}, sources), 1);
+  const stripped = real.replace('println!("cargo:rustc-cfg=loom");', '');
+  assert.notEqual(stripped, real);
+  assert.throws(() => optIn({script: stripped}, sources), /must emit cfg\(loom\)/);
+});
+
+test('no command passes the loom cfg by hand, and the removed wrapper and target-cfg forms are rejected', () => {
+  // Spelled apart so this command file does not itself pass the flag.
+  const flag = ['-', '-', 'cfg'].join('');
+  for (const line of [`cargo rustc --test t -- ${flag} loom`, `RUSTFLAGS="${flag}=loom" cargo test`,
+    `["--", "${flag}", "loom"]`, `['${flag}', 'loom']`])
+    assert.throws(() => checkNoLoomCfgFlag([['run.sh', `${line}\n`]]), /run.sh:1: set ACYCLIC_LOOM=1/, line);
+  for (const line of ['ACYCLIC_LOOM=1 cargo test --features model-checking', `${flag} loomish`, `${flag} 'feature="loom"'`])
+    assert.equal(checkNoLoomCfgFlag([['run.sh', `${line}\n`]]), 1, line);
+  const file = 'scripts/qualify-mcp-loom.mjs';
+  const real = readFileSync(file, 'utf8');
+  assert.equal(checkNoLoomCfgFlag([[file, real]]), 1);
+  const restored = real.replace('"--no-run",', `"--no-run", "--", "${flag}", "loom",`);
+  assert.notEqual(restored, real);
+  assert.throws(() => checkNoLoomCfgFlag([[file, restored]]), /qualify-mcp-loom.mjs:\d+: set ACYCLIC_LOOM=1/);
+  // The deleted workspace wrapper, restored as it was: it appended the cfg to every opted-in rustc call.
+  const wrapper = 'def loom_args(args):\n' +
+    `    if 'feature="model-checking"' in args and "${flag}" in args:\n` +
+    `        return [*args, "${flag}", "loom"]\n    return args\n`;
+  assert.throws(() => checkNoLoomCfgFlag([['scripts/loom-rustc.py', wrapper]]), /^Error: scripts\/loom-rustc.py:3: set ACYCLIC_LOOM=1[^\n]*$/);
 });
 
 test('local feature chains forward, including cycles, but unrelated enabled features do not', () => {

@@ -10,7 +10,7 @@ cargo test -p acyclic-harness --features "$features" --test main saved_tool_meta
 for target in command; do
   cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/crates/harness-fuzz --features runtime "$target" --target x86_64-unknown-linux-gnu --dev -- -runs=64 -max_len=4096 -timeout=2
 done
-RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test -p acyclic-harness --features "$features" --features model-checking --lib --no-run --message-format=json |
+ACYCLIC_LOOM=1 cargo test -p acyclic-harness --features "$features" --features model-checking --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py local::checkout_tools::tests::
 
 cargo test -p acyclic-harness-tui --lib --no-run --message-format=json |
@@ -20,5 +20,5 @@ cargo test --locked -p acyclic-harness-tui --test main -- completion:: terminal:
 cargo test --locked -p acyclic-harness-tui --test terminal_frames
 cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/crates/harness-tui/fuzz completion_events --target x86_64-unknown-linux-gnu --dev -- -runs=128 -max_len=128 -timeout=5 -max_total_time=5
 
-RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test -p acyclic-harness-tui --features model-checking --lib --no-run --message-format=json |
+ACYCLIC_LOOM=1 cargo test -p acyclic-harness-tui --features model-checking --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py term::frame::frame_model:: term::lifecycle::terminal_lifecycle_model:: term::console_owner::tests::input_observes_output_close

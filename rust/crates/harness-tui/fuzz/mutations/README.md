@@ -17,7 +17,7 @@ exact assertion; reverse the patch before the next control.
 | `console-io-holds-owner.patch` | `console I/O retained owner state` |
 
 ```sh
-RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test -p acyclic-harness-tui --features 'tui model-checking' --lib term::console_owner::tests::metadata_and_io_follow_the_original_guard_handoff -- --exact
+ACYCLIC_LOOM=1 cargo test -p acyclic-harness-tui --features 'tui model-checking' --lib term::console_owner::tests::metadata_and_io_follow_the_original_guard_handoff -- --exact
 ```
 
 The device is a supplied writer. These production ownership checks do not
@@ -31,7 +31,7 @@ its output with Alacritty. The adapter passes those bytes unchanged. Run the
 four positive controls from the repository root:
 
 ```sh
-RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test --locked \
+ACYCLIC_LOOM=1 cargo test --locked \
   -p acyclic-harness-tui --features model-checking --lib \
   term::frame::frame_model::
 ```
@@ -59,7 +59,7 @@ OS state; they do not establish native OS completion or input provenance. Run
 the eight positive controls from the repository root:
 
 ```sh
-RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test --locked \
+ACYCLIC_LOOM=1 cargo test --locked \
   -p acyclic-harness-tui --features model-checking --lib \
   term::lifecycle::terminal_lifecycle_model::
 ```

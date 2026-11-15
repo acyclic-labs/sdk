@@ -158,17 +158,13 @@ pub use crate::AppendGroupOutcome;
 mod authority;
 mod bindings;
 mod changes;
-mod head_payload;
-mod policy;
-#[cfg(test)]
-#[cfg(all(loom, not(loom)))]
-compile_error!("head-payload models require RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh");
 mod generation_seek;
-#[cfg(test)]
-#[cfg(all(loom, loom))]
+mod head_payload;
+#[cfg(all(test, loom))]
 mod head_payload_loom_tests;
 mod lineage;
 mod operations;
+mod policy;
 mod replay;
 use append::seal;
 mod composition;

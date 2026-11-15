@@ -10,7 +10,7 @@ acyclic-auth = { version = "=0.2.0", path = "../../auth" }
 acyclic-collections = { version = "=0.2.0", path = "../../collections" }
 http.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
-loom = { version = "0.7.3", features = ["futures"] }
+loom = { version = "0.7.3", features = ["futures"], optional = true }
 futures = "0.3.31"
 thiserror = "2.0"
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
@@ -24,4 +24,4 @@ required-features = ["model-checking"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("serde", "wasm"))'] }
 
 [features]
-model-checking = []
+model-checking = ["dep:loom"]

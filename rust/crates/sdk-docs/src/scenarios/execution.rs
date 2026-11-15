@@ -174,6 +174,7 @@ fn sanitize_compiler_environment(command: &mut Command) {
                 | "CARGO_ENCODED_RUSTDOCFLAGS"
                 | "RUSTC_WRAPPER"
                 | "RUSTC_WORKSPACE_WRAPPER"
+                | "ACYCLIC_LOOM"
                 | "CARGO_BUILD_TARGET"
                 | "RUSTUP_TOOLCHAIN"
         ) || uppercase.starts_with("CARGO_CFG_")

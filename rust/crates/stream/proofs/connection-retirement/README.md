@@ -21,7 +21,7 @@ repeated close, checks cancellation isolation, and verifies exhaustion releases
 its parked waiter. Its paired negative omits the terminal publication:
 
 ```sh
-RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --features model-checking --test main connection_retirement -- --nocapture
+ACYCLIC_LOOM=1 cargo test --locked -p acyclic-stream --features model-checking --test main connection_retirement -- --nocapture
 ```
 
 The retained patch removes the production task destructor's terminal event. Apply

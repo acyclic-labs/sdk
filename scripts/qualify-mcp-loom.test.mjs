@@ -63,7 +63,7 @@ test("filesystem policy qualification requires real cache and authority models i
       if (command === "cargo") {
         assert.deepEqual(args, ["test", "--locked", "--message-format=json", "-p", "acyclic-fs", "--lib", "--no-run",
           "--no-default-features", "--features", "model-checking", "--features", "model-checking",]);
-        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+        assert.equal(options.env.ACYCLIC_LOOM, "1");
         return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_fs" } }) };
       }
       if (lists(args)) return listing(missing === args[0] ? 0 : 2);
@@ -85,7 +85,7 @@ test("gate runs every harness model suite and rejects an absent suite or a stale
     let executed = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
-        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+        assert.equal(options.env.ACYCLIC_LOOM, "1");
         const crate = args[args.indexOf("-p") + 1];
         target = crate.replaceAll("-", "_");
         return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: target } }) };
@@ -153,9 +153,10 @@ test("progress qualification requires the cleanup and runnable-wake models and c
     "e2e_progress_model::an_unobserved_wake_fails_the_same_runnability_oracle"];
   for (const missing of [null, 1, 2, 3, 4]) {
     let models = 0;
-    const run = (command, args) => {
+    const run = (command, args, options) => {
       if (command === "cargo") {
-        assert.deepEqual(args.slice(-3), ["--", "--cfg", "loom"]);
+        assert.equal(options.env.ACYCLIC_LOOM, "1");
+        assert.deepEqual(args.slice(0, 8), ["test", "--locked", "--message-format=json", "-p", "acyclic-harness", "--test", "main", "--no-run"]);
         return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "main"}})};
       }
       if (lists(args)) { assert.equal(args[0], names[models - 1]); return listing(1); }
@@ -180,7 +181,7 @@ test("native progress qualification instruments the real mutex and requires ever
     const run = (command, args, options) => {
       if (command === "cargo") {
         if (ordinary) assert.equal(options.env, undefined);
-        else assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+        else assert.equal(options.env.ACYCLIC_LOOM, "1");
         assert.ok(args.includes("--lib") && args.includes("--no-run"));
         return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
       }
@@ -198,7 +199,7 @@ test("fs Session qualification instruments real provider and Session locks and r
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
-        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+        assert.equal(options.env.ACYCLIC_LOOM, "1");
         assert.ok(args.includes("main"));
         return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "main" } }) };
       }
@@ -222,7 +223,7 @@ test("hook qualification requires every retained projection model", () => {
       let models = 0;
       const run = (command, args, options) => {
         if (command === "cargo") {
-          assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+          assert.equal(options.env.ACYCLIC_LOOM, "1");
           return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: target } }) };
         }
         assert.match(args[0], /local::workspace::projection::tests::/);
@@ -242,16 +243,14 @@ test("qualification opts into the crate cfg only for the model build and execute
   const calls = [];
   qualifyMcpLoom(["--all-features"], (command, args, options) => {
     if (command === "cargo") {
-      const wrapper = options.env?.RUSTC_WORKSPACE_WRAPPER;
-      assert.ok(typeof wrapper === "string");
-      assert.match(wrapper, /loom-rustc\.(?:sh|cmd)$/);
+      assert.equal(options.env?.ACYCLIC_LOOM, "1");
     }
     calls.push([command, args]);
     if (lists(args)) return listing(6);
     return { status: 0, stderr: "", stdout: calls.length === 1 ? JSON.stringify(artifact) : summary(6) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "main", "--all-features", "--features", "model-checking", "--features", "model-checking",]],
+    ["cargo", ["test", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "main", "--no-run", "--all-features", "--features", "model-checking", "--features", "model-checking",]],
     ["model-binary", ["mcp_loom::"]],
     ["model-binary", ["mcp_loom::", "--list", "--format", "terse"]],
   ]);
@@ -266,8 +265,8 @@ test("qualification opts into the crate cfg only for the model build and execute
 
 test("guest qualification selects every guest model in the instrumented main target", () => {
   const plan = qualificationPlan(["--guest"]);
-  assert.deepEqual(plan.args, ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "main", "--features", "model-checking",]);
-  assert.equal(plan.wrapper, loomEnvironment().RUSTC_WORKSPACE_WRAPPER);
+  assert.deepEqual(plan.args, ["test", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "main", "--no-run", "--features", "model-checking",]);
+  assert.equal(plan.loom, loomEnvironment().ACYCLIC_LOOM);
   assert.deepEqual(plan.tests, [{ args: ["guest_loom::"] }]);
 });
 
@@ -293,14 +292,15 @@ test("qualification rejects failed builds and missing or ambiguous artifacts", (
 
 test("filesystem qualification selects every retained binding model in the unified target", () => {
   const calls = [];
-  qualifyFsBindingLoom(["--all-features"], (command, args) => {
+  qualifyFsBindingLoom(["--all-features"], (command, args, options) => {
+    if (command === "cargo") assert.equal(options.env?.ACYCLIC_LOOM, "1");
     calls.push([command, args]);
     const fs = { ...artifact, target: { name: "main" } };
     if (lists(args)) return listing(5);
     return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(fs) : summary(5, 0, 4) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-fs", "--test", "main", "--all-features", "--features", "model-checking", "--", "--cfg", "loom"]],
+    ["cargo", ["test", "--locked", "--message-format=json", "-p", "acyclic-fs", "--test", "main", "--no-run", "--all-features", "--features", "model-checking"]],
     ["model-binary", ["native_binding_model::"]],
     ["model-binary", ["native_binding_model::", "--list", "--format", "terse"]],
   ]);
@@ -312,7 +312,7 @@ test("registry gate instruments real native locks and rejects either omitted pro
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
-        assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+        assert.equal(options.env.ACYCLIC_LOOM, "1");
         assert.ok(args.includes("--lib"));
         return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_fs" } }) };
       }

@@ -28,11 +28,10 @@ export const gateQualifications = [
   { args: ["--provider-refresh"] },
   { args: ["--harness-models", "--all-features"] },
 ];
-// Cargo's workspace wrapper leaves registry dependencies (including Tokio's own
-// independent cfg(loom) mode) untouched. One opt-in compiles each SDK model crate.
+// Each SDK model crate's build script emits cfg(loom) under this opt-in; registry
+// dependencies (including Tokio's own independent cfg(loom) mode) stay untouched.
 export function loomEnvironment(env = process.env) {
-  return { ...env, RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
-    process.platform === "win32" ? "./loom-rustc.cmd" : "./loom-rustc.sh", import.meta.url)) };
+  return { ...env, ACYCLIC_LOOM: "1" };
 }
 const planOnly = Symbol("qualification plan");
 
@@ -46,21 +45,21 @@ function qualifyGate(run) {
 
 export function qualifyMcpLoom(features = [], run = runCommand) {
   return qualifyLoom("acyclic-harness-core", "main", [...features, "--features", "model-checking"], run, {
-    env: loomEnvironment(), targetCfg: [], suites: ["mcp_loom::"],
+    env: loomEnvironment(), suites: ["mcp_loom::"],
   });
 }
 
 export function qualifySkillMaterializerLoom(run = runCommand) {
   return qualifyLoom("acyclic-harness-core", "main",
     ["--features", "test-support"], run, {
-      targetCfg: ["--", "--cfg", "loom"],
+      env: loomEnvironment(),
       filters: ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::cancelled_waiter_does_not_take_the_next_owners_wake"],
     });
 }
 
 export function qualifyProviderRefreshLoom(run = runCommand) {
   return qualifyLoom("acyclic-harness-providers", "main", [], run, {
-    modelFeatures: [],
+    env: loomEnvironment(),
     suites: ["verification_models::refresh::"],
   });
 }
@@ -76,7 +75,7 @@ export function qualifyProviderRefreshMutationsLoom(run = runCommand) {
       ["lock_owned(self.result.clone()).await", "lock_owned(Arc::new(Mutex::new(None))).await", "refresh ownership overlapped"],
     ],
     qualify: (run, expectedFailure) => qualifyLoom("acyclic-harness-providers", "main", [], run, {
-      modelFeatures: [], expectedFailure, recovery,
+      env: loomEnvironment(), expectedFailure, recovery,
       filter: "verification_models::refresh::refresh_attempt_failure_retains_exclusive_ownership",
     }),
     restored: qualifyProviderRefreshLoom,
@@ -92,7 +91,7 @@ export function qualifySkillMaterializerMutationsLoom(run = runCommand) {
     mutations: [["lock_owned(self.0.clone()).await", "lock_owned(Arc::new(Mutex::new(()))).await", "materialization conflict"]],
     qualify: (run, expectedFailure) => qualifyLoom("acyclic-harness-core", "main",
       ["--features", "test-support"], run, {
-        targetCfg: ["--", "--cfg", "loom"], expectedFailure, recovery,
+        env: loomEnvironment(), expectedFailure, recovery,
         filter: "skill_materializer_loom::journal_owner_serializes_first_publications",
       }),
     restored: qualifySkillMaterializerLoom,
@@ -202,7 +201,7 @@ function qualifyNativeSourceMutation({ name, selector, source, model, test, muta
   const recovery = `node scripts/qualify-mcp-loom.mjs ${selector}`;
   const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
     ["--features", "test-support"], run, {
-      kind: "--lib", modelFeatures: [], targetCfg: [], expectedFailure, recovery, filter: test,
+      kind: "--lib", modelFeatures: [], expectedFailure, recovery, filter: test,
     });
   const root = "../rust/crates/harness/src/local/";
   return qualifySourceMutationsLoom({
@@ -216,7 +215,7 @@ function qualifyProjectionSourceMutations(mutations, recovery, run) {
   const oracles = Object.fromEntries(mutations.map(([, , message, test]) => [message, `${prefix}${test}`]));
   const qualify = (run, expectedFailure) => qualifyLoom("acyclic-harness", "acyclic_harness",
     ["--all-features"], run, {
-      kind: "--lib", env: loomEnvironment(), targetCfg: [], expectedFailure, recovery,
+      kind: "--lib", env: loomEnvironment(), expectedFailure, recovery,
       filters: expectedFailure ? [oracles[expectedFailure]] : Object.values(oracles),
     });
   return qualifySourceMutationsLoom({
@@ -275,7 +274,7 @@ export function qualifyHookLifecycleLoom(features = ["--features", "test-support
       "local::workspace::projection::tests::every_completed_command_publishes_before_its_acknowledgement",
       "local::workspace::projection::tests::every_completing_worker_retains_its_projection_until_publication",
     ],
-    env: loomEnvironment(), targetCfg: [],
+    env: loomEnvironment(),
   });
 }
 
@@ -285,7 +284,7 @@ export function qualifyNativeRegistryLoom(run = runCommand) {
       "native_mount::fence::models::registry_contention_retires_with_original_credit_and_missing_wait_control",
       "native_mount::fence::models::retirement_preserves_registry_identity_for_pending_and_new_starters",
     ],
-    env: loomEnvironment(), targetCfg: [],
+    env: loomEnvironment(),
   });
 }
 
@@ -293,13 +292,13 @@ export function qualifyStreamRetryLoom(run = runCommand) {
   return qualifyLoom("acyclic-stream", "main", [
     "--no-default-features",
   ], run, {
-    env: loomEnvironment(), targetCfg: [], suites: ["retry_recovery_loom::"],
+    env: loomEnvironment(), suites: ["retry_recovery_loom::"],
   });
 }
 
 export function qualifyGuestLoom(run = runCommand) {
   return qualifyLoom("acyclic-actors", "main", [], run, {
-    env: loomEnvironment(), targetCfg: [], suites: ["guest_loom::"],
+    env: loomEnvironment(), suites: ["guest_loom::"],
   });
 }
 
@@ -308,7 +307,7 @@ export function qualifyGuestLoom(run = runCommand) {
 function qualifyActorsMutation({ name, source, model, mutations, tests }, run) {
   const recovery = "node scripts/qualify-mcp-loom.mjs --actors-core-mutations";
   const qualify = (run, expectedFailure) => qualifyLoom("acyclic-actors", "acyclic_actors", [], run, {
-    kind: "--lib", modelFeatures: [], targetCfg: [], expectedFailure, recovery,
+    kind: "--lib", modelFeatures: [], expectedFailure, recovery,
     filters: expectedFailure ? [tests[expectedFailure]] : Object.values(tests),
   });
   return qualifySourceMutationsLoom({
@@ -382,7 +381,7 @@ export function qualifyActorsCoreMutations(run = runCommand) {
 
 export function qualifyE2eProgressLoom(features = ["--features", "test-support"], run = runCommand) {
   return qualifyLoom("acyclic-harness", "main", features, run, {
-    targetCfg: ["--", "--cfg", "loom"],
+    env: loomEnvironment(),
     filters: ["e2e_progress_model::registration_reporting_and_cancel_or_panic_cleanup_are_atomic", "e2e_progress_model::forgotten_cleanup_is_detected_on_the_real_registration",
       "e2e_progress_model::polling_wake_and_reporting_never_lose_runnability", "e2e_progress_model::an_unobserved_wake_fails_the_same_runnability_oracle"],
   });
@@ -396,7 +395,7 @@ const nativeCoreModels = [
 
 export function qualifyNativeProgressLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
-    kind: "--lib", targetCfg: [],
+    kind: "--lib",
     env: loomEnvironment(),
     filters: [
       "testing::model::native_progress_reporting_races_physical_completion_and_unwind",
@@ -413,7 +412,7 @@ export function qualifyNativeProgressLoom(run = runCommand) {
 }
 
 export function qualifyNativeSignalLoom(run = runCommand) {
-  return qualifyLoom("acyclic-native-runtime", "process_signal_loom", [], run);
+  return qualifyLoom("acyclic-native-runtime", "process_signal_loom", [], run, { env: loomEnvironment() });
 }
 
 export function qualifyNativeSignalMutationsLoom(run = runCommand) {
@@ -425,7 +424,7 @@ export function qualifyNativeSignalMutationsLoom(run = runCommand) {
     mutations: [["    if ready(&state) {\n        drop(state);", "    if false {\n        drop(state);",
       "original terminal passed observer registration without a wake"]],
     qualify: (run, expectedFailure) => qualifyLoom("acyclic-native-runtime", "process_signal_loom", [], run, {
-      expectedFailure, recovery, filter: "settlement_cannot_pass_waker_registration",
+      env: loomEnvironment(), expectedFailure, recovery, filter: "settlement_cannot_pass_waker_registration",
     }),
     restored: qualifyNativeSignalLoom,
   }, run);
@@ -433,7 +432,7 @@ export function qualifyNativeSignalMutationsLoom(run = runCommand) {
 
 export function qualifyNativeDurability(run = runCommand, physical = false) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
-    kind: "--lib", targetCfg: [],
+    kind: "--lib",
     ...(physical ? {} : { env: loomEnvironment() }),
     filters: [physical
       ? "testing::durability::tests::every_write_cut_preserves_its_exact_prefix_and_cause"
@@ -443,14 +442,14 @@ export function qualifyNativeDurability(run = runCommand, physical = false) {
 
 function qualifyNativeQueueLoom(filters, run) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
-    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    kind: "--lib", env: loomEnvironment(),
     filters: filters.map(symbol => `testing::queue_model::${symbol}`),
   });
 }
 
 function qualifyNativeTrackerLoom(run) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
-    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    kind: "--lib", env: loomEnvironment(),
     filters: [
       "testing::model::native_progress_reporting_races_physical_completion_and_unwind",
       "testing::model::accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake",
@@ -459,30 +458,30 @@ function qualifyNativeTrackerLoom(run) {
 }
 
 export function qualifyNativeWakeLoom(run = runCommand) {
-  return qualifyLoom("acyclic-native-runtime", "wake_loom", [], run);
+  return qualifyLoom("acyclic-native-runtime", "wake_loom", [], run, { env: loomEnvironment() });
 }
 
 export function qualifyNativeOwnerLoom(run = runCommand) {
-  return qualifyLoom("acyclic-native-runtime", "owner_count_loom", [], run);
+  return qualifyLoom("acyclic-native-runtime", "owner_count_loom", [], run, { env: loomEnvironment() });
 }
 
 export function qualifyNativeClaimLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
-    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    kind: "--lib", env: loomEnvironment(),
     suites: ["claim::model::"],
   });
 }
 
 export function qualifyNativeDescriptorLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
-    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    kind: "--lib", env: loomEnvironment(),
     suites: ["descriptor::model::"],
   });
 }
 
 export function qualifyNativeHostEvents(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
-    kind: "--lib", targetCfg: [],
+    kind: "--lib",
     suites: [
       "testing::host::tests::parking_a_worker_does_not_invent_callback_readiness",
       "testing::host::tests::unscoped_physical_workers_leave_the_driver_available_to_reply",
@@ -492,13 +491,13 @@ export function qualifyNativeHostEvents(run = runCommand) {
 
 export function qualifyNativeOwnerEnvelope(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "main", [], run, {
-    targetCfg: [], filters: ["native_owner_record::retained_owner_corpus_satisfies_the_shared_oracle"],
+    filters: ["native_owner_record::retained_owner_corpus_satisfies_the_shared_oracle"],
   });
 }
 
 export function qualifyNativeHostLoom(run = runCommand, controls = false) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
-    kind: "--lib", targetCfg: [], env: loomEnvironment(),
+    kind: "--lib", env: loomEnvironment(),
     ...(controls ? { filters: [
       "testing::host::models::readiness_racing_worker_parking_cannot_be_lost",
       "testing::host::models::queue_capacity_and_physical_terminal_wakes_are_latched",
@@ -509,7 +508,7 @@ export function qualifyNativeHostLoom(run = runCommand, controls = false) {
 
 export function qualifyNativeExecutor(run = runCommand, rounds = false) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
-    kind: "--lib", targetCfg: [],
+    kind: "--lib",
     ...(rounds ? {} : { env: loomEnvironment() }),
     filters: rounds ? ["testing::executor::tests::every_continuously_ready_task_runs_in_each_round"] : [
       "testing::executor::models::ready_publication_cannot_lose_a_task_or_driver_wake",
@@ -520,7 +519,7 @@ export function qualifyNativeExecutor(run = runCommand, rounds = false) {
 
 export function qualifyNativeSources(run = runCommand, core = false) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
-    kind: "--lib", targetCfg: [],
+    kind: "--lib",
     ...(core ? { env: loomEnvironment() } : {}),
     filters: core ? nativeCoreModels : ["testing::clock::tests::automatic_timeout_advancement_cannot_leave_wall_time_behind"],
   });
@@ -528,7 +527,7 @@ export function qualifyNativeSources(run = runCommand, core = false) {
 
 export function qualifyFsBindingLoom(features = [], run = runCommand) {
   return qualifyLoom("acyclic-fs", "main", features, run, {
-    targetCfg: ["--", "--cfg", "loom"], suites: ["native_binding_model::"],
+    env: loomEnvironment(), suites: ["native_binding_model::"],
   });
 }
 
@@ -536,7 +535,7 @@ export function qualifyFsPolicyLoom(run = runCommand) {
   return qualifyLoom("acyclic-fs", "acyclic_fs", [
     "--no-default-features", "--features", "model-checking",
   ], run, {
-    kind: "--lib", targetCfg: [],
+    kind: "--lib",
     env: loomEnvironment(),
     suites: ["facade::policy_cache::loom_tests::", "distributed::head_payload_loom_tests::"],
   });
@@ -547,7 +546,6 @@ export function qualifySessionFsLoom(run = runCommand) {
     "--no-default-features",
   ], run, {
     env: loomEnvironment(),
-    targetCfg: [],
     filters: ["session_fs_model::change_resume_exhausts_append_registration_and_wakeup",
       "session_fs_model::change_resume_exhausts_independent_history_replacement"],
   });
@@ -556,7 +554,7 @@ export function qualifySessionFsLoom(run = runCommand) {
 export function qualifyOwnershipLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
     kind: "--lib", suites: ["ownership::model::"],
-    env: loomEnvironment(), targetCfg: [],
+    env: loomEnvironment(),
   });
 }
 
@@ -580,22 +578,20 @@ function qualifyHarnessSuite(crate, target, features, run, options = {}) {
   return qualifyLoom(crate, target, [...features, "--features", "model-checking"], run, {
     ...options,
     env: loomEnvironment(),
-    targetCfg: [],
   });
 }
 
 function qualifyLoom(crate, target, features, run, options = {}) {
   const args = [
-    options.kind === "--lib" ? "test" : "rustc", "--locked", "--message-format=json", "-p", crate,
-    ...(options.kind === "--lib" ? ["--lib", "--no-run"] : ["--test", target]),
+    "test", "--locked", "--message-format=json", "-p", crate,
+    ...(options.kind === "--lib" ? ["--lib"] : ["--test", target]), "--no-run",
     ...features, ...(options.modelFeatures ?? ["--features", "model-checking"]),
-    ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
   ];
   // Suites are prefix filters, filters name exact tests, and no filter selects the whole binary.
   const tests = options.suites?.map(filter => ({ args: [filter] }))
     ?? (options.filters ?? [options.filter]).map(filter => ({ args: filter ? [filter, "--exact"] : [] }));
   const env = options.env ?? process.env;
-  const plan = { args, target, tests, rustflags: env.RUSTFLAGS ?? "", wrapper: env.RUSTC_WORKSPACE_WRAPPER ?? null };
+  const plan = { args, target, tests, rustflags: env.RUSTFLAGS ?? "", loom: env.ACYCLIC_LOOM ?? null };
   if (options.expectedFailure) plan.expectedFailure = options.expectedFailure;
   if (run === planOnly) return plan;
   const buildStarted = performance.now();

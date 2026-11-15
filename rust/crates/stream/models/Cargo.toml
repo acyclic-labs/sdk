@@ -8,10 +8,10 @@ publish = false
 [dependencies]
 acyclic-stream = { path = "..", default-features = false, features = ["model-checking"] }
 futures = "0.3.31"
-loom = { version = "0.7.3", features = ["futures"] }
+loom = { version = "0.7.3", features = ["futures"], optional = true }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
-# Compiles only under the loom rustc wrapper, which names it with `--test session_model`;
+# Compiles only under the ACYCLIC_LOOM opt-in, which runs it with `--test session_model`;
 # plain `cargo test` would hit its compile-time guard.
 [[test]]
 name = "session_model"
@@ -23,4 +23,4 @@ required-features = ["model-checking"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [features]
-model-checking = []
+model-checking = ["dep:loom"]

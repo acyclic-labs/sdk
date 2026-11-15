@@ -21,8 +21,7 @@ def run(arguments, expected, diagnostic=None, *, model=True, recovery="--activat
     print("STEP actual Actor oracle: " + repr(command), flush=True)
     environment = dict(os.environ)
     if model:
-        environment["RUSTC_WORKSPACE_WRAPPER"] = str(
-            ROOT / "scripts" / ("loom-rustc.cmd" if os.name == "nt" else "loom-rustc.sh"))
+        environment["ACYCLIC_LOOM"] = "1"
     result = subprocess.run(command, cwd=ROOT, env=environment,
                             capture_output=True, text=True)
     output = result.stdout + result.stderr

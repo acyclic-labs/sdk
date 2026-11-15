@@ -109,9 +109,9 @@ The failure property retains the original drain's error branch and completion
 joins. Exploration retains the existing bound of three preemptions; it does not
 prove arbitrary schedules, native Apple I/O or cross-process locking.
 
-Build the dedicated integration target from the repository root with
-`cargo rustc --locked -p acyclic-native-runtime --test device_flush_loom --features model-checking -- --cfg loom`,
-then run the emitted test binary's two `device_flush::model` properties.
+Run the dedicated integration target from the repository root with
+`ACYCLIC_LOOM=1 cargo test --locked -p acyclic-native-runtime --test device_flush_loom --features model-checking`,
+which runs its two `device_flush::model` properties.
 With `exhausted-ticket.patch` applied alone, the successful-request property
 must fail at `acknowledged before a covering drain`, then both properties must
 pass after exact restoration. This is a mutation of the code included by the
