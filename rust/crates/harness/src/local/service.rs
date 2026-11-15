@@ -1513,6 +1513,13 @@ mod tests {
         Conversation::open(descendants[0].clone())
             .wait_current_input()
             .await?;
+        // All descendants are admitted. Keep later shell settlement notices
+        // queued on the unused root without consuming another scripted turn.
+        tree.execute(&crate::client::AgentCommand::Pause {
+            agent: tree.root().clone(),
+            paused: true,
+        })
+        .await?;
         let parent_state = local
             .agents()
             .await?
