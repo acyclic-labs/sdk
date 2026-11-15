@@ -844,12 +844,13 @@ mod tests {
         );
         #[cfg(not(target_arch = "wasm32"))]
         let catalog = retained_operation_bytes(
-            |(sources, root, view, work): (
+            |(sources, root, view, cut, work): (
                 &'static crate::context::native_skills::NativeSkills,
                 &'static std::path::Path,
                 &'static super::super::workspace::View,
+                &'static acyclic_fs::LazySnapshotRef,
                 &'static mut crate::context::DiscoveryWork,
-            )| sources.catalog(root, view, "", work),
+            )| sources.catalog(root, view, cut, "", work),
         );
         #[cfg(not(target_arch = "wasm32"))]
         let users = retained_operation_bytes(

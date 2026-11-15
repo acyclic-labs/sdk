@@ -454,11 +454,14 @@ impl NativeSkills {
         Ok(Some(chunk.bytes))
     }
 
+    /// Project skills under `source_root` at exactly `cut`, the snapshot the
+    /// caller authorized, so the catalog discloses no other generation.
     #[inline(never)]
     pub fn catalog<'a>(
         &'a self,
         root: &'a Path,
         view: &'a View,
+        cut: &'a acyclic_fs::LazySnapshotRef,
         source_root: &'a str,
         bounds: &'a mut DiscoveryWork,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
@@ -470,8 +473,6 @@ impl NativeSkills {
             let before = *bounds;
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = native_work(&cancellation)?;
-            let mut accounting = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
-            let cut = view.snapshot(&mut accounting).await?;
             let mut cached = crate::sync::owned::lock_owned(self.cache.clone()).await;
             if let Some((id, root, generation, catalog)) = &*cached
                 && id == &cut.id
@@ -518,7 +519,7 @@ impl NativeSkills {
                         &directory,
                         "SKILL.md",
                         bounds,
-                        Some(&cut),
+                        Some(cut),
                         true,
                     )
                     .await?,
@@ -1036,10 +1037,16 @@ mod binding_tests {
         };
         let listed = names(sources.user_catalog(&mut DiscoveryWork::default())?.await?);
         assert_eq!(listed, ["first"]);
+        let cut = view
+            .snapshot(&mut acyclic_fs::kernel::KernelAccounting::native(
+                &work,
+                &cancellation,
+            ))
+            .await?;
         assert_eq!(
             names(
                 sources
-                    .catalog(&checkout, &view, "", &mut DiscoveryWork::default())?
+                    .catalog(&checkout, &view, &cut, "", &mut DiscoveryWork::default())?
                     .await?
             ),
             ["first"]
@@ -1085,7 +1092,7 @@ mod binding_tests {
         assert_eq!(listed, ["first", "second"]);
         let mut listed = names(
             sources
-                .catalog(&checkout, &view, "", &mut DiscoveryWork::default())?
+                .catalog(&checkout, &view, &cut, "", &mut DiscoveryWork::default())?
                 .await?,
         );
         listed.sort();
