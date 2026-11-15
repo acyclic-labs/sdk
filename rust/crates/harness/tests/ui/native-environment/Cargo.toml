@@ -13,12 +13,17 @@ bench = false
 doctest = false
 
 [features]
+# Each `negative` control must fail clippy; check-hermetic-clippy.mjs expects
+# exactly those rejections, and the passing clippy matrix never enables it.
 negative = []
 test-support = []
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dirs = { workspace = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../../../../host-platform" }
+
+[package.metadata.acyclic]
+compiler-negative-features = ["negative"]
 
 [lints]
 workspace = true

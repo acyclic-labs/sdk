@@ -71,10 +71,20 @@ export function clippySelections(inventory, units = () => []) {
   const members = [...inventory.values()].filter(item => item.workspace_member).sort((a, b) => a.name.localeCompare(b.name));
   for (const flags of [["--all-features"], [], ["--no-default-features"]]) {
     for (const targets of ["all-targets", undefined]) {
-      for (const item of members) consider({ selection: selectCargoFeatures(inventory, [item.name], flags), targets }, false);
+      for (const item of members) consider({ selection: selectCargoFeatures(inventory, [item.name], passingFlags(item, flags)), targets }, false);
     }
   }
   return chosen;
+}
+
+/** A manifest names the features that exist to fail compilation under
+ * `[package.metadata.acyclic] compiler-negative-features`; their own checker
+ * expects that failure, so the passing matrix never enables them. */
+function passingFlags(item, flags) {
+  const negative = new Set(item.metadata?.acyclic?.["compiler-negative-features"] ?? []);
+  if (flags[0] !== "--all-features" || negative.size === 0) return flags;
+  const passing = Object.keys(item.features ?? {}).filter(name => name !== "default" && !negative.has(name));
+  return passing.length ? ["--features", passing.join(",")] : [];
 }
 
 /** Parses `cargo tree --prefix none --format "{p}|{f}"` into member units. */

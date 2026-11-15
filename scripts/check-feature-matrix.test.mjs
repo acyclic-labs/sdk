@@ -258,6 +258,28 @@ test("clippy lints each member feature set a dependent unifies, and only adds ru
   assert.ok(added.selections.slice(explicit).every(item => item.units.length > 0));
 });
 
+test("the passing clippy matrix never enables a manifest's compiler-negative features", () => {
+  const real = new Map(localCargoPackages().map(item => [item.name, { ...item, workspace_member: false }]));
+  const runs = metadata => {
+    const inventory = new Map(real);
+    inventory.set("neg", { name: "neg", id: "neg", features: { negative: [], ok: [] }, metadata, workspace_member: true, manifest_path: "neg/Cargo.toml" });
+    // Every selection reaches a fresh unit, so each candidate run is kept.
+    const units = (selection, targets) => selection.packages[0].workspace_member
+      ? [`${selection.flags.join(" ")}|${targets}`] : [];
+    return clippySelections(inventory, units)
+      .filter(item => item.selection.packages[0].name === "neg")
+      .map(item => cargoFeatureArguments(item.selection, { targets: item.targets }).join(" "));
+  };
+  const marked = runs({ acyclic: { "compiler-negative-features": ["negative"] } });
+  assert.ok(marked.includes("-p neg --all-targets --features ok"), marked.join(" ; "));
+  assert.ok(marked.every(args => !args.includes("negative") && !args.includes("--all-features")), marked.join(" ; "));
+  // Negative control: an unmarked manifest keeps its all-features run.
+  assert.ok(runs(null).includes("-p neg --all-targets --all-features"));
+  // The shipped negative fixture is marked.
+  const fixture = localCargoPackages().find(item => item.name === "hermetic-environment-ui");
+  assert.deepEqual(fixture?.metadata?.acyclic?.["compiler-negative-features"], ["negative"]);
+});
+
 test("cargo tree output becomes member units keyed by unified features", () => {
   const output = [
     "acyclic-objects v0.2.0 (/w/rust/crates/objects)|default,native,test-support",
