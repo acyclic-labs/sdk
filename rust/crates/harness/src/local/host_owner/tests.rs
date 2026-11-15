@@ -1180,29 +1180,38 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
         action: first.clone(),
         next: false,
     };
+    // A wait is reported once its producer is pending: holding the child's
+    // lock blocks each dispatch on the primitive it really waits for.
+    let child = agents::child(&fixture.parent, "child")?;
+    let held = fixture.owner.locks.hold(vec![child.clone()]).await;
     let operation = OperationId::new();
-    let reply = tracing::dispatcher::with_default(&subscriber, || {
+    let mut reply = tracing::dispatcher::with_default(&subscriber, || {
         fixture.owner.dispatch(operation, action())
     });
+    assert!(futures::poll!(reply.as_mut()).is_pending());
     // The real dispatch has the same identity as its eventual bridge reply;
     // observing it adds no request and does not consume the pending prompt.
     assert!(snapshot()?.contains(&format!(
         "waiting: native-workspace-dispatch {operation} since "
     )));
+    drop(held);
     assert_eq!(reply.await?["reply"]["kind"], "pending");
     assert!(
         snapshot()?.is_empty(),
         "a returned pending reply is complete"
     );
-    let withdrawn = tracing::dispatcher::with_default(&subscriber, || {
+    let held = fixture.owner.locks.hold(vec![child]).await;
+    let mut withdrawn = tracing::dispatcher::with_default(&subscriber, || {
         fixture.owner.dispatch(OperationId::new(), action())
     });
+    assert!(futures::poll!(withdrawn.as_mut()).is_pending());
     assert!(!snapshot()?.is_empty());
     drop(withdrawn);
     assert!(
         snapshot()?.is_empty(),
         "dropping dispatch retires its observation"
     );
+    drop(held);
     let turn = fixture.session("child", SessionAction::Next {}).await?;
     assert_eq!(turn["prompt"], "first");
     let complete = SessionAction::Complete {
