@@ -124,7 +124,7 @@ pub async fn accompany<T>(
 /// clock, subscription lookup or diagnostic IO. Publication errors never replace
 /// the original result; unretained failures remain explicitly unfinished.
 pub fn observe<T, E>(
-    request: Request,
+    request: impl Into<Option<Request>>,
     work: impl Future<Output = Result<T, E>>,
     bytes: impl FnOnce(&T) -> Option<u64>,
 ) -> impl Future<Output = Result<T, E>> {
@@ -140,7 +140,7 @@ pub fn observe<T, E>(
 /// still requires the original retained cause through Outcome's type. No
 /// classifier or terminal publication is evaluated on an unobserved request.
 pub fn observe_outcome<T, E>(
-    request: Request,
+    request: impl Into<Option<Request>>,
     work: impl Future<Output = Result<T, E>>,
     outcome: impl FnOnce(&Result<T, E>) -> Option<(Option<u64>, super::Outcome)>,
 ) -> impl Future<Output = Result<T, E>> {
@@ -152,13 +152,15 @@ pub fn observe_outcome<T, E>(
 /// runs only for an admitted span and no terminal publication delays return.
 /// The observed future holds the work once: observation adds a constant size
 /// and one type level, however deeply observations nest.
+/// An absent request polls the work unobserved through the same future, so a
+/// caller that observes conditionally still has one await site for its work.
 pub fn observe_value<T>(
-    request: Request,
+    request: impl Into<Option<Request>>,
     work: impl Future<Output = T>,
     _outcome: impl FnOnce(&T) -> Option<(Option<u64>, super::Outcome)>,
 ) -> impl Future<Output = T> {
     use futures::FutureExt as _;
-    OwnedRecording::child(request, work).map(move |(result, _recording)| {
+    OwnedRecording::child(request.into(), work).map(move |(result, _recording)| {
         #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
         if let Some(recording) = _recording
             && let Some((bytes, outcome)) = _outcome(&result)

@@ -113,28 +113,25 @@ pub trait StreamProviderExt: StreamProvider {
                 }))
             };
             #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe_outcome(
-                    crate::trace::Request {
-                        name: "stream.native_latest_before",
-                        mechanism: crate::trace::Mechanism::ProviderCall,
-                        parent: None,
-                        guarantee: Some("native_indexed_record_strictly_before_original_cut"),
-                    },
-                    work,
-                    |result| match result {
-                        Ok(Ok(output)) => Some((
-                            output
-                                .value()
-                                .as_ref()
-                                .map_or(Some(0), |record| u64::try_from(record.value.len()).ok()),
-                            crate::trace::Outcome::Succeeded,
-                        )),
-                        Ok(Err(_)) | Err(_) => None,
-                    },
-                )
-                .await;
-            }
+            let work = crate::trace::observe_outcome(
+                (!diagnostic).then_some(crate::trace::Request {
+                    name: "stream.native_latest_before",
+                    mechanism: crate::trace::Mechanism::ProviderCall,
+                    parent: None,
+                    guarantee: Some("native_indexed_record_strictly_before_original_cut"),
+                }),
+                work,
+                |result| match result {
+                    Ok(Ok(output)) => Some((
+                        output
+                            .value()
+                            .as_ref()
+                            .map_or(Some(0), |record| u64::try_from(record.value.len()).ok()),
+                        crate::trace::Outcome::Succeeded,
+                    )),
+                    Ok(Err(_)) | Err(_) => None,
+                },
+            );
             work.await
         }
     }
@@ -213,19 +210,16 @@ pub trait StreamProviderExt: StreamProvider {
                 }
             };
             #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe(
-                    crate::trace::Request {
-                        name: "stream.commit_accepted",
-                        mechanism: crate::trace::Mechanism::Commit,
-                        parent: None,
-                        guarantee: Some("original_accepted_envelope_at_atomic_publication"),
-                    },
-                    work,
-                    |_| None,
-                )
-                .await;
-            }
+            let work = crate::trace::observe(
+                (!diagnostic).then_some(crate::trace::Request {
+                    name: "stream.commit_accepted",
+                    mechanism: crate::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some("original_accepted_envelope_at_atomic_publication"),
+                }),
+                work,
+                |_| None,
+            );
             work.await
         }
     }
@@ -286,17 +280,13 @@ pub trait StreamProviderExt: StreamProvider {
                 Ok(record)
             };
             #[cfg(feature = "serde")]
-            if diagnostic {
-                return work.await;
-            }
-            #[cfg(feature = "serde")]
             return crate::trace::observe(
-                crate::trace::Request {
+                (!diagnostic).then_some(crate::trace::Request {
                     name: "stream.latest_before",
                     mechanism: crate::trace::Mechanism::ProviderCall,
                     parent: None,
                     guarantee: Some("indexed_record_strictly_before_original_cut"),
-                },
+                }),
                 work,
                 |record| {
                     Some(
@@ -368,22 +358,16 @@ pub trait StreamProviderExt: StreamProvider {
                 }
             };
             #[cfg(feature = "serde")]
-            let tail = if crate::trace::is_source(&path) {
-                work.await?
-            } else {
-                crate::trace::observe(
-                    crate::trace::Request {
-                        name: "stream.latest_fence",
-                        mechanism: crate::trace::Mechanism::ProviderCall,
-                        parent: None,
-                        guarantee: Some("original_head_cut_for_optimistic_publication_fence"),
-                    },
-                    work,
-                    |_| None,
-                )
-                .await?
-            };
-            #[cfg(not(feature = "serde"))]
+            let work = crate::trace::observe(
+                (!crate::trace::is_source(&path)).then_some(crate::trace::Request {
+                    name: "stream.latest_fence",
+                    mechanism: crate::trace::Mechanism::ProviderCall,
+                    parent: None,
+                    guarantee: Some("original_head_cut_for_optimistic_publication_fence"),
+                }),
+                work,
+                |_| None,
+            );
             let tail = work.await?;
             let (before, condition) = match tail {
                 Some(tail) => (
@@ -444,22 +428,19 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         };
         async move {
             #[cfg(feature = "serde")]
-            if !crate::trace::is_source(&path) {
-                return crate::trace::observe_outcome(
-                    crate::trace::Request {
-                        name: "stream.native_append",
-                        mechanism: crate::trace::Mechanism::Commit,
-                        parent: None,
-                        guarantee: Some("native_funded_atomic_contiguous_append_decision"),
-                    },
-                    work,
-                    |result| match result {
-                        Ok(Ok(_)) => Some((None, crate::trace::Outcome::Succeeded)),
-                        Ok(Err(_)) | Err(_) => None,
-                    },
-                )
-                .await;
-            }
+            let work = crate::trace::observe_outcome(
+                (!crate::trace::is_source(&path)).then_some(crate::trace::Request {
+                    name: "stream.native_append",
+                    mechanism: crate::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some("native_funded_atomic_contiguous_append_decision"),
+                }),
+                work,
+                |result| match result {
+                    Ok(Ok(_)) => Some((None, crate::trace::Outcome::Succeeded)),
+                    Ok(Err(_)) | Err(_) => None,
+                },
+            );
             work.await
         }
     }
@@ -507,19 +488,16 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                 }
             };
             #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe(
-                    crate::trace::Request {
-                        name: "stream.append",
-                        mechanism: crate::trace::Mechanism::Commit,
-                        parent: None,
-                        guarantee: Some("atomic_contiguous_append_decision"),
-                    },
-                    work,
-                    |_| None,
-                )
-                .await;
-            }
+            let work = crate::trace::observe(
+                (!diagnostic).then_some(crate::trace::Request {
+                    name: "stream.append",
+                    mechanism: crate::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some("atomic_contiguous_append_decision"),
+                }),
+                work,
+                |_| None,
+            );
             work.await
         }
     }
@@ -541,19 +519,16 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                 }
             };
             #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe(
-                    crate::trace::Request {
-                        name: "stream.fork",
-                        mechanism: crate::trace::Mechanism::Commit,
-                        parent: None,
-                        guarantee: Some("immutable_selected_prefix_and_origin"),
-                    },
-                    work,
-                    |_| None,
-                )
-                .await;
-            }
+            let work = crate::trace::observe(
+                (!diagnostic).then_some(crate::trace::Request {
+                    name: "stream.fork",
+                    mechanism: crate::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some("immutable_selected_prefix_and_origin"),
+                }),
+                work,
+                |_| None,
+            );
             work.await
         }
     }
@@ -572,19 +547,16 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                 }
             };
             #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe(
-                    crate::trace::Request {
-                        name: "stream.commit",
-                        mechanism: crate::trace::Mechanism::Commit,
-                        parent: None,
-                        guarantee: Some("atomic_keyed_multi_path_publication_decision"),
-                    },
-                    work,
-                    |_| None,
-                )
-                .await;
-            }
+            let work = crate::trace::observe(
+                (!diagnostic).then_some(crate::trace::Request {
+                    name: "stream.commit",
+                    mechanism: crate::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some("atomic_keyed_multi_path_publication_decision"),
+                }),
+                work,
+                |_| None,
+            );
             work.await
         }
     }
@@ -623,23 +595,20 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                 Ok(through.map(|through| DurableReceipt { path, through }))
             };
             #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe_outcome(
-                    crate::trace::Request {
-                        name: "stream.durable_receipt",
-                        mechanism: crate::trace::Mechanism::ProviderCall,
-                        parent: None,
-                        guarantee: Some("original_irreversible_prefix_confirmation"),
-                    },
-                    work,
-                    |result| match result {
-                        Ok(Some(_)) => Some((None, crate::trace::Outcome::Succeeded)),
-                        Ok(None) => Some((None, crate::trace::Outcome::Unsettled)),
-                        Err(_) => None,
-                    },
-                )
-                .await;
-            }
+            let work = crate::trace::observe_outcome(
+                (!diagnostic).then_some(crate::trace::Request {
+                    name: "stream.durable_receipt",
+                    mechanism: crate::trace::Mechanism::ProviderCall,
+                    parent: None,
+                    guarantee: Some("original_irreversible_prefix_confirmation"),
+                }),
+                work,
+                |result| match result {
+                    Ok(Some(_)) => Some((None, crate::trace::Outcome::Succeeded)),
+                    Ok(None) => Some((None, crate::trace::Outcome::Unsettled)),
+                    Err(_) => None,
+                },
+            );
             work.await
         }
     }
@@ -699,19 +668,16 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                 }
             };
             #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe(
-                    crate::trace::Request {
-                        name: "stream.children_page",
-                        mechanism: crate::trace::Mechanism::ProviderCall,
-                        parent: None,
-                        guarantee: Some("bounded_direct_children_at_namespace_cut"),
-                    },
-                    work,
-                    |_| None,
-                )
-                .await;
-            }
+            let work = crate::trace::observe(
+                (!diagnostic).then_some(crate::trace::Request {
+                    name: "stream.children_page",
+                    mechanism: crate::trace::Mechanism::ProviderCall,
+                    parent: None,
+                    guarantee: Some("bounded_direct_children_at_namespace_cut"),
+                }),
+                work,
+                |_| None,
+            );
             work.await
         }
     }
@@ -730,7 +696,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         at_least: &RevisionCut,
     ) -> impl std::future::Future<Output = Result<Revision, StreamError>> + ProviderTask {
         let work = async move {
-            let view = self
+            match self
                 .heads(HeadsRequest {
                     at: None,
                     retained: Default::default(),
@@ -741,15 +707,24 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                     limit: 1,
                     at_least: at_least.clone(),
                 })
-                .await?;
-            if view.projection != HeadProjection::History
-                || !view.heads.is_empty()
-                || view.children.is_some()
-                || !at_least.proven_by(Some(&view.snapshot))
+                .await
             {
-                return Err(StreamError::InvalidResponse);
+                // Only the snapshot moves out of the awaited view.
+                Ok(Heads {
+                    projection: HeadProjection::History,
+                    ref heads,
+                    ref children,
+                    snapshot,
+                    ..
+                }) if heads.is_empty()
+                    && children.is_none()
+                    && at_least.proven_by(Some(&snapshot)) =>
+                {
+                    Ok(snapshot)
+                }
+                Ok(_) => Err(StreamError::InvalidResponse),
+                Err(error) => Err(error),
             }
-            Ok(view.snapshot)
         };
         async move {
             #[cfg(feature = "serde")]
@@ -807,28 +782,30 @@ async fn named_head<P: StreamProvider + ?Sized>(
             Err(error) => Err(error),
         }
     };
+    // One await site: the work is polled only inside the observation, which
+    // passes it through unobserved for the trace source itself, so its state is
+    // laid out once on the caller's stack.
     #[cfg(feature = "serde")]
-    if !diagnostic {
-        let (name, guarantee) = match projection {
-            HeadProjection::History => ("stream.head", "atomic_history_durability_origin"),
-            HeadProjection::Tail => ("stream.tail", "accepted_tail_without_durability_wait"),
-            HeadProjection::Watermarks => (
-                "stream.watermarks",
-                "accepted_visibility_and_confirmed_durability_at_one_snapshot",
-            ),
-        };
-        return crate::trace::observe(
+    let work = crate::trace::observe(
+        (!diagnostic).then(|| {
+            let (name, guarantee) = match projection {
+                HeadProjection::History => ("stream.head", "atomic_history_durability_origin"),
+                HeadProjection::Tail => ("stream.tail", "accepted_tail_without_durability_wait"),
+                HeadProjection::Watermarks => (
+                    "stream.watermarks",
+                    "accepted_visibility_and_confirmed_durability_at_one_snapshot",
+                ),
+            };
             crate::trace::Request {
                 name,
                 mechanism: crate::trace::Mechanism::ProviderCall,
                 parent: None,
                 guarantee: Some(guarantee),
-            },
-            work,
-            |_| None,
-        )
-        .await;
-    }
+            }
+        }),
+        work,
+        |_| None,
+    );
     work.await
 }
 

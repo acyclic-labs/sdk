@@ -99,13 +99,13 @@ impl OwnedRecording {
     /// Observe `work` as a child of the span that first polls it. Pending
     /// diagnostics cannot delay a ready result; abandoned admission remains
     /// incomplete. Ready admission supplies the original parent for the
-    /// remaining polls.
+    /// remaining polls. No request polls the work unobserved.
     pub(super) fn child<F: std::future::Future>(
-        request: super::Request,
+        request: Option<super::Request>,
         work: F,
     ) -> Accompany<'static, F, StreamError> {
         Accompany {
-            admission: Admission::Child(request),
+            admission: request.map_or(Admission::Settled, Admission::Child),
             recording: None,
             work,
         }

@@ -167,13 +167,10 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         #[cfg(feature = "serde")]
         let diagnostic = crate::trace::is_source(&request.path);
         let work = self.provider.read(request);
-        #[cfg(feature = "serde")]
-        if diagnostic {
-            return work.await;
-        }
+        // One await site: the trace source's own reads pass through unobserved.
         #[cfg(feature = "serde")]
         return crate::trace::observe(
-            crate::trace::Request {
+            (!diagnostic).then_some(crate::trace::Request {
                 name: if keyed {
                     "stream.seek_open"
                 } else {
@@ -186,12 +183,18 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
                 } else {
                     "bounded_ordered_record_cursor"
                 }),
-            },
+            }),
             work,
             |_| None,
         )
         .await
-        .map(crate::trace::records);
+        .map(|records| {
+            if diagnostic {
+                records
+            } else {
+                crate::trace::records(records)
+            }
+        });
         #[cfg(not(feature = "serde"))]
         work.await
     }
@@ -258,23 +261,26 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
                 .await
                 .map(records_only)
         };
-        #[cfg(feature = "serde")]
-        if diagnostic {
-            return work.await;
-        }
+        // One await site: the trace source's own reads pass through unobserved.
         #[cfg(feature = "serde")]
         return crate::trace::observe(
-            crate::trace::Request {
+            (!diagnostic).then_some(crate::trace::Request {
                 name: "stream.follow_open",
                 mechanism: crate::trace::Mechanism::Io,
                 parent: None,
                 guarantee: Some("ordered_history_and_live_cursor"),
-            },
+            }),
             work,
             |_| None,
         )
         .await
-        .map(crate::trace::records);
+        .map(|records| {
+            if diagnostic {
+                records
+            } else {
+                crate::trace::records(records)
+            }
+        });
         #[cfg(not(feature = "serde"))]
         work.await
     }

@@ -56,7 +56,7 @@ pub fn observe_guard<G>(
     work: impl Future<Output = G>,
 ) -> impl Future<Output = ObservedGuard<G>> {
     use futures::FutureExt as _;
-    OwnedRecording::child(request, work).map(|(value, recording)| ObservedGuard {
+    OwnedRecording::child(Some(request), work).map(|(value, recording)| ObservedGuard {
         value,
         _recording: GuardRecording(recording),
     })
