@@ -919,16 +919,12 @@ impl PreparedExecution {
 
     /// Adds enforcement after the process owner's custody hook. The command
     /// has already been admitted once and is consumed by the launch owner.
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "linux")))]
     pub(crate) fn install(
         self,
         _command: &mut std::process::Command,
         _arg0: Option<&std::ffi::OsStr>,
     ) -> io::Result<()> {
-        #[cfg(target_os = "linux")]
-        return Err(unavailable(
-            "granted Linux launches require the native runner",
-        ));
         #[cfg(target_os = "macos")]
         self.platform.install(_command, _arg0)?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]

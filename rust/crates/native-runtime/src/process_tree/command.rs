@@ -364,7 +364,7 @@ impl ProcessCommand {
         )
     }
 
-    #[cfg(any(unix, test))]
+    #[cfg(any(test, all(unix, not(target_os = "linux"))))]
     pub(crate) fn to_std(&self) -> std::io::Result<std::process::Command> {
         if self.boundary.is_some() {
             return Err(crate::execution::refused(
@@ -466,7 +466,7 @@ impl ProcessStdio {
         matches!(self.0, Stdio::Piped)
     }
 
-    #[cfg(any(unix, test))]
+    #[cfg(any(test, all(unix, not(target_os = "linux"))))]
     fn to_std(&self) -> std::io::Result<std::process::Stdio> {
         Ok(match &self.0 {
             Stdio::Inherit => std::process::Stdio::inherit(),

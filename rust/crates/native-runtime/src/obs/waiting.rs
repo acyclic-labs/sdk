@@ -124,7 +124,7 @@ impl<F: Future, K: Display> Future for Waiting<F, K> {
             dispatch,
         } = this.report
         {
-            let context = super::with_dispatch(dispatch, || span(*primitive, &*key));
+            let context = super::with_dispatch(dispatch, || span(primitive, &*key));
             *this.report = Report::Open(Retire(context));
         }
         result
