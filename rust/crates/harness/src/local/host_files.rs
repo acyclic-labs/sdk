@@ -731,7 +731,7 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
 /// Contacts one explicitly admitted carrier. The caller supplies the endpoint
 /// announced by its owner; discovery never probes the authored workspace.
 pub fn request_at(directory: &Path, cwd: &Path, action: HostAction) -> Result<Value> {
-    request_operation_at(&REGISTRY, directory, cwd, OperationId::new(), action)
+    request_operation_at(&REGISTRY, Some(directory), cwd, OperationId::new(), action)
 }
 
 fn request_with(registry: &Arc<Mutex<Registry>>, cwd: &Path, action: HostAction) -> Result<Value> {
@@ -744,19 +744,26 @@ fn request_operation(
     operation: OperationId,
     action: HostAction,
 ) -> Result<Value> {
-    request_operation_at(registry, &selected_directory(cwd)?, cwd, operation, action)
+    request_operation_at(registry, None, cwd, operation, action)
 }
 
+/// The one exchange path. Every refusal after `operation` exists, including
+/// endpoint selection, names it: `None` selects the endpoint announced for
+/// `cwd` inside the same attributed step.
 fn request_operation_at(
     registry: &Arc<Mutex<Registry>>,
-    directory: &Path,
+    directory: Option<&Path>,
     cwd: &Path,
     operation: OperationId,
     action: HostAction,
 ) -> Result<Value> {
     let result = (|| {
+        let directory = match directory {
+            Some(directory) => directory.to_owned(),
+            None => selected_directory(cwd)?,
+        };
         let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
-        let bridge = Registry::bridge(registry, directory, &cwd, Bridge::open)?;
+        let bridge = Registry::bridge(registry, &directory, &cwd, Bridge::open)?;
         let request = Request {
             session: bridge.session,
             operation,

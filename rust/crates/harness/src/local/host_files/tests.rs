@@ -778,7 +778,7 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         scope.spawn(|| {
             let _ = completed.send(request_operation_at(
                 &registry,
-                directory,
+                Some(directory),
                 &bridge.workspace,
                 operation,
                 HostAction::Open {
@@ -2091,5 +2091,29 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
         served.rescans, 1,
         "producer failure must not trigger another scan"
     );
+    Ok(())
+}
+
+/// Endpoint selection is part of the exchange: a withdrawn workspace refuses
+/// the original request under its operation, before anything is published.
+#[test]
+fn withdrawn_workspace_refuses_the_request_under_its_operation() -> Result<()> {
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let withdrawn = checkout.path().join("withdrawn");
+    let registry = Arc::new(Mutex::<Registry>::default());
+    let operation = OperationId::new();
+    let error = request_operation(
+        &registry,
+        &withdrawn,
+        operation,
+        HostAction::Open {
+            host: "codex".into(),
+            session: "withdrawn".into(),
+        },
+    )
+    .err()
+    .ok_or_else(|| Error::Invalid("a withdrawn workspace accepted the request".into()))?;
+    assert_eq!(error.code(), crate::wire::ErrorCode::Storage, "{error}");
+    request_storage_cause(&error, operation);
     Ok(())
 }
