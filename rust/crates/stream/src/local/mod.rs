@@ -91,13 +91,7 @@ static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::ne
 #[cfg(test)]
 static JOURNAL_FLUSHED_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 #[cfg(all(test, not(loom)))]
-static JOURNAL_WRITE_BLOCKER: Mutex<
-    Option<(
-        usize,
-        tokio::sync::oneshot::Sender<()>,
-        std::sync::mpsc::Receiver<()>,
-    )>,
-> = Mutex::new(None);
+static JOURNAL_WRITE_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 #[cfg(all(test, not(loom)))]
 fn pause_journal_write(journal: &Arc<Mutex<Journal>>) -> std::io::Result<()> {
     let identity = Arc::as_ptr(journal) as usize;

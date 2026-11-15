@@ -2,7 +2,7 @@ use super::super::*;
 
 fn frames(
     count: u64,
-    work: Option<Arc<crate::native::Work>>,
+    work: Option<&Arc<crate::native::Work>>,
 ) -> Result<Vec<PreparedFrame>, Box<dyn std::error::Error>> {
     let time = SystemUnixMillisClock.now_unix_millis();
     (0..count)
@@ -10,7 +10,7 @@ fn frames(
             Ok(PreparedFrame::encode(
                 &WriteRequest::Append(super::keyed_append("batch", sequence)?),
                 time,
-                work.clone(),
+                work.cloned(),
             )?)
         })
         .collect()
@@ -31,7 +31,7 @@ fn owned_frame_batches_reopen_in_order_and_release_original_work()
             let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
             let meter = Arc::new(crate::test_meter::Meter::local());
             let work = crate::native::Work::new(meter.original())?;
-            let frames = frames(count, Some(work.clone()))?;
+            let frames = frames(count, Some(&work))?;
             let bytes: u64 = frames.iter().map(|frame| frame.encoded.len() as u64).sum();
             // Exercise the physical boundary under its real publication fence,
             // then recover the canonical decisions from the resulting real file.

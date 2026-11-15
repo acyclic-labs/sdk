@@ -39,7 +39,7 @@ fn encode_limits(limits: LocalStreamLimits) -> Result<[u8; LIMITS_BYTES], LocalS
         Ok(limits.compaction_bytes),
     ]);
     let mut encoded = [0; LIMITS_BYTES];
-    for (slot, value) in encoded.chunks_exact_mut(8).zip(values) {
+    for (slot, value) in encoded.as_chunks_mut::<8>().0.iter_mut().zip(values) {
         slot.copy_from_slice(&value?.to_le_bytes());
     }
     Ok(encoded)

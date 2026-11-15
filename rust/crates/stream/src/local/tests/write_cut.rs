@@ -99,10 +99,11 @@ fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
                     release.send(())?;
                     writing.await??;
                 }
-                let journal = provider.inner.journal.lock().unwrap();
-                assert_eq!((journal.appended, journal.bytes), (2, before + bytes));
-                assert_eq!(journal.flushed_sequence, Some(1));
-                drop(journal);
+                {
+                    let journal = provider.inner.journal.lock().unwrap();
+                    assert_eq!((journal.appended, journal.bytes), (2, before + bytes));
+                    assert_eq!(journal.flushed_sequence, Some(1));
+                }
                 provider.await_publication(2).await?;
                 assert_eq!(
                     meter.write_bytes.load(std::sync::atomic::Ordering::SeqCst),

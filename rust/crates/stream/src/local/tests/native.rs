@@ -9,12 +9,12 @@ mod reads;
 fn cached_lease_result(
     original: &CommitOutcome,
     observed: &CommitOutcome,
-    tail: Result<u64, StreamError>,
+    tail: &Result<u64, StreamError>,
 ) {
     assert_eq!(observed, original, "retired receipt was re-executed");
     assert_eq!(
         tail,
-        Err(StreamError::NotFound),
+        &Err(StreamError::NotFound),
         "retry resurrected a durable path"
     );
 }
@@ -62,7 +62,7 @@ async fn lease_replays_pin_success_across_visibility_and_publication_waits()
         );
         drop(gate);
         let output = replay.await??;
-        cached_lease_result(&original, output.value(), provider.tail(root).await);
+        cached_lease_result(&original, output.value(), &provider.tail(root).await);
         assert_eq!(
             calls.load(Ordering::SeqCst),
             0,
@@ -100,7 +100,7 @@ async fn lease_replay_negative_control_detects_the_unpinned_shortcut() {
     );
     lease.settle().await.unwrap();
     let observed = provider.commit(request).await.unwrap();
-    cached_lease_result(&original, &observed, provider.tail(root).await);
+    cached_lease_result(&original, &observed, &provider.tail(root).await);
 }
 
 #[tokio::test]
@@ -380,7 +380,7 @@ async fn prepared_memory_and_local_commits_fund_settlement_and_recovery_codec_wo
         };
         let request = prepared_fixture(provider.as_ref()).await?;
         let maximum_hash =
-            crate::request::commit_hash_bytes(&request) + 64 + 8 * 64 as u64 + 16 * 16 as u64;
+            crate::request::commit_hash_bytes(&request) + 64 + 8 * 64_u64 + 16 * 16_u64;
         use tracing_subscriber::prelude::*;
         let metrics = acyclic_observability::Metrics::default();
         let prepare = metrics.query("acyclic.stream.prepare_commit");

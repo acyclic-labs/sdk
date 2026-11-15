@@ -209,62 +209,60 @@ impl LocalStream {
         *self.inner.failed.borrow()
     }
 
-    fn execute(
+    async fn execute(
         &self,
         command: WriteRequest,
         deadline: Option<u64>,
-    ) -> impl Future<Output = Result<crate::replicated::Execution, StreamError>> {
-        async move {
-            let cursor = self
-                .inner
-                .journal
-                .lock()
-                .map_err(|_| self.inner.poison())?
-                .bytes;
-            let clock = Arc::clone(&self.inner.replica_clock);
-            let mut provider = self
-                .inner
-                .provider
-                .with_commit_clock(Arc::clone(&clock) as _);
-            if let Some(work) = &self.work {
-                provider = provider.with_context(Arc::clone(work));
-            }
-            let mut replica = crate::replicated::Replicated::new(
-                port::LocalPort::new(self.clone()),
-                provider,
-                clock,
-                cursor,
-            );
-            let result = replica
-                .execute(command, deadline, REPLAY_PIPELINE_COMMANDS)
-                .await;
-            if replica.cursor == cursor
-                && result.as_ref().is_ok_and(|execution| !execution.ephemeral)
-                && matches!(
-                    result.as_ref().map(|execution| &execution.outcome),
-                    Ok(crate::WriteOutcome::Append(AppendOutcome::Committed(_))
-                        | crate::WriteOutcome::Commit(CommitOutcome::Committed(_))
-                        | crate::WriteOutcome::CommitAccepted(
-                            crate::AcceptedCommitOutcome::Committed { .. }
-                        )
-                        | crate::WriteOutcome::Fork(_))
-                )
-            {
-                // A retained success joins the original durability cut even when
-                // the canonical decision correctly elides another journal frame.
-                self.require_accepted::<true>()?;
-            }
-            if replica.is_failed() {
-                self.inner.fail(LocalStreamFailure::new(
-                    "replicate",
-                    result
-                        .as_ref()
-                        .err()
-                        .map_or("invalid_response", StreamError::code),
-                ));
-            }
-            result
+    ) -> Result<crate::replicated::Execution, StreamError> {
+        let cursor = self
+            .inner
+            .journal
+            .lock()
+            .map_err(|_| self.inner.poison())?
+            .bytes;
+        let clock = Arc::clone(&self.inner.replica_clock);
+        let mut provider = self
+            .inner
+            .provider
+            .with_commit_clock(Arc::clone(&clock) as _);
+        if let Some(work) = &self.work {
+            provider = provider.with_context(Arc::clone(work));
         }
+        let mut replica = crate::replicated::Replicated::new(
+            port::LocalPort::new(self.clone()),
+            provider,
+            clock,
+            cursor,
+        );
+        let result = replica
+            .execute(command, deadline, REPLAY_PIPELINE_COMMANDS)
+            .await;
+        if replica.cursor == cursor
+            && result.as_ref().is_ok_and(|execution| !execution.ephemeral)
+            && matches!(
+                result.as_ref().map(|execution| &execution.outcome),
+                Ok(crate::WriteOutcome::Append(AppendOutcome::Committed(_))
+                    | crate::WriteOutcome::Commit(CommitOutcome::Committed(_))
+                    | crate::WriteOutcome::CommitAccepted(
+                        crate::AcceptedCommitOutcome::Committed { .. }
+                    )
+                    | crate::WriteOutcome::Fork(_))
+            )
+        {
+            // A retained success joins the original durability cut even when
+            // the canonical decision correctly elides another journal frame.
+            self.require_accepted::<true>()?;
+        }
+        if replica.is_failed() {
+            self.inner.fail(LocalStreamFailure::new(
+                "replicate",
+                result
+                    .as_ref()
+                    .err()
+                    .map_or("invalid_response", StreamError::code),
+            ));
+        }
+        result
     }
 
     /// Encodes the command and pins its recorded commit timestamp.
@@ -696,50 +694,48 @@ impl LocalStream {
 
     /// Runs one mutation under exclusive visibility on its own task, retaining
     /// publication and completion custody even when its caller stops observing.
-    fn exclusive<T, F, O>(
+    async fn exclusive<T, F, O>(
         &self,
         span: obs::OperationSpan,
         mutation: impl FnOnce(Self) -> F + Send + 'static,
         finish: impl FnOnce(Result<T, StreamError>) -> O + Send + 'static,
-    ) -> impl Future<Output = Result<O, StreamError>>
+    ) -> Result<O, StreamError>
     where
         T: Send + 'static,
         F: Future<Output = Result<T, StreamError>> + Send + 'static,
         O: Send + 'static,
     {
-        async move {
-            if let Err(error) = self.check_available() {
-                return Ok(span.in_scope(|| finish(Err(error))));
-            }
-            let stream = self.worker();
-            let mut failed = self.inner.failed.subscribe();
-            // The mutation owns completion as well as durability, even if its caller is dropped.
-            let operation = span.clone();
-            let pending = spawn(publication_scope(async move {
-                let task = std::pin::pin!(async {
-                    let (result, required) = {
-                        let _visibility = stream.inner.visibility.write().await;
-                        stream.check_available()?;
-                        let publication = stream.inner.publication.write().await;
-                        stream.check_available()?;
-                        let result = mutation(stream.clone()).await;
-                        stream.inner.commit_clock.unpin();
-                        let _retained = stream.release_publication(publication);
-                        if result.is_ok() {
-                            stream.compact_if_due().await?;
-                        }
-                        (result, stream.inner.required()?)
-                    };
-                    stream.await_publication(required).await?;
-                    result
-                });
-                let result = operation.scope(task).await;
-                operation.in_scope(|| finish(result))
-            }));
-            LocalInner::observe(&mut failed, pending, self.work.as_deref())
-                .await?
-                .map_err(|_| StreamError::Unavailable)
+        if let Err(error) = self.check_available() {
+            return Ok(span.in_scope(|| finish(Err(error))));
         }
+        let stream = self.worker();
+        let mut failed = self.inner.failed.subscribe();
+        // The mutation owns completion as well as durability, even if its caller is dropped.
+        let operation = span.clone();
+        let pending = spawn(publication_scope(async move {
+            let task = std::pin::pin!(async {
+                let (result, required) = {
+                    let _visibility = stream.inner.visibility.write().await;
+                    stream.check_available()?;
+                    let publication = stream.inner.publication.write().await;
+                    stream.check_available()?;
+                    let result = mutation(stream.clone()).await;
+                    stream.inner.commit_clock.unpin();
+                    let _retained = stream.release_publication(publication);
+                    if result.is_ok() {
+                        stream.compact_if_due().await?;
+                    }
+                    (result, stream.inner.required()?)
+                };
+                stream.await_publication(required).await?;
+                result
+            });
+            let result = operation.scope(task).await;
+            operation.in_scope(|| finish(result))
+        }));
+        LocalInner::observe(&mut failed, pending, self.work.as_deref())
+            .await?
+            .map_err(|_| StreamError::Unavailable)
     }
 
     /// Observes accepted publications without joining their durability wait.

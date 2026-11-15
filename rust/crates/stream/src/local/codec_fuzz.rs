@@ -1,12 +1,24 @@
 use super::*;
 
+fn corrupt(bytes: &mut [u8], index: usize, value: u8) -> bool {
+    match bytes.get_mut(index) {
+        Some(byte) => {
+            *byte ^= value;
+            true
+        }
+        None => false,
+    }
+}
+
 pub(crate) fn check(bytes: &[u8]) -> bool {
     let limits = LocalStreamLimits::default();
     let incarnation = bytes
         .iter()
         .take(16)
         .fold(0u128, |value, byte| (value << 8) | u128::from(*byte));
-    let epoch = incarnation as u64;
+    // The incarnation's low bits, exactly as a truncating cast would keep them.
+    let [e0, e1, e2, e3, e4, e5, e6, e7, ..] = incarnation.to_le_bytes();
+    let epoch = u64::from_le_bytes([e0, e1, e2, e3, e4, e5, e6, e7]);
     // Challenge admission with the actual writers as well as arbitrary bytes:
     // rejecting every input must not satisfy a decoder's round-trip oracle.
     let Ok(mut header) = encode_header(limits, epoch) else {
@@ -25,7 +37,7 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
     {
         return false;
     }
-    let changed = (incarnation as u8).max(1);
+    let changed = e0.max(1);
     // Persisted capacities belong to the opening configuration. Even a valid
     // container must refuse a different caller's limits.
     let other_limits = LocalStreamLimits {
@@ -74,19 +86,31 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
         }
     }
     // Corrupt the actual writer's checksum without changing its payload.
-    let checksum_byte = snapshot.len() - 1;
-    snapshot[checksum_byte] ^= changed;
+    let Some(checksum) = snapshot.last_mut() else {
+        return false;
+    };
+    *checksum ^= changed;
     if !matches!(
         decode_snapshot(&snapshot, limits),
         Err(LocalStreamError::Corrupt)
     ) {
         return false;
     }
-    snapshot[checksum_byte] ^= changed;
+    let Some(checksum) = snapshot.last_mut() else {
+        return false;
+    };
+    *checksum ^= changed;
     // Version admission precedes payload interpretation, including checksums.
-    header[HEADER_MAGIC.len() - 2] ^= changed;
-    snapshot[SNAPSHOT_MAGIC.len() - 2] ^= changed;
-    encoded_incarnation[INCARNATION_MAGIC.len() - 2] ^= changed;
+    if !corrupt(&mut header, HEADER_MAGIC.len() - 2, changed)
+        || !corrupt(&mut snapshot, SNAPSHOT_MAGIC.len() - 2, changed)
+        || !corrupt(
+            &mut encoded_incarnation,
+            INCARNATION_MAGIC.len() - 2,
+            changed,
+        )
+    {
+        return false;
+    }
     if !matches!(
         decode_header(&header, limits),
         Err(LocalStreamError::UnsupportedVersion { format: "journal" })
@@ -101,21 +125,20 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
     ) {
         return false;
     }
-    if let Ok(epoch) = decode_header(bytes, limits) {
-        if !encode_header(limits, epoch).is_ok_and(|encoded| encoded == bytes) {
-            return false;
-        }
+    if let Ok(epoch) = decode_header(bytes, limits)
+        && !encode_header(limits, epoch).is_ok_and(|encoded| encoded == bytes)
+    {
+        return false;
     }
-    if let Ok(value) = decode_snapshot(bytes, limits) {
-        if !encode_snapshot(limits, value.epoch, &value.state).is_ok_and(|encoded| encoded == bytes)
-        {
-            return false;
-        }
+    if let Ok(value) = decode_snapshot(bytes, limits)
+        && !encode_snapshot(limits, value.epoch, &value.state).is_ok_and(|encoded| encoded == bytes)
+    {
+        return false;
     }
-    if let Ok(value) = decode_incarnation(bytes) {
-        if encode_incarnation(value) != bytes {
-            return false;
-        }
+    if let Ok(value) = decode_incarnation(bytes)
+        && encode_incarnation(value) != bytes
+    {
+        return false;
     }
     let Ok(read) = read_frame(std::io::Cursor::new(bytes), bytes.len() as u64) else {
         return false;
@@ -126,10 +149,10 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
     if let Some(frame) = read {
         // The checksum parser admits the enclosing frame independently of
         // command semantics, as recovery does. Arbitrary bytes reach both.
-        if let Some(command) = frame.command.get(FRAME_TIME_BYTES..) {
-            if !crate::codec_fuzz::command(command) {
-                return false;
-            }
+        if let Some(command) = frame.command.get(FRAME_TIME_BYTES..)
+            && !crate::codec_fuzz::command(command)
+        {
+            return false;
         }
     }
     true
