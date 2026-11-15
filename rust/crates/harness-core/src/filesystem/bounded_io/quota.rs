@@ -1,6 +1,64 @@
 //! Scoped storage for decoded values and codec diagnostics.
 use super::*;
 
+/// A value and its preparation-ledger charge. The charge lives exactly as long
+/// as the value: fields drop in order, so the value retires before its charge.
+pub struct Charged<T> {
+    value: T,
+    _charge: PreparationCustody,
+}
+
+const _: () = assert!(
+    core::mem::size_of::<Charged<acyclic_stream::OwnedBytes>>()
+        <= core::mem::size_of::<acyclic_stream::OwnedBytes>()
+            + core::mem::size_of::<DecodeReservation<'static>>()
+);
+
+impl<T> Charged<T> {
+    pub(crate) fn new(value: T, charge: PreparationCustody) -> Self {
+        Self {
+            value,
+            _charge: charge,
+        }
+    }
+
+    /// The value of a read on a function-local, unbounded ledger that dies at
+    /// return. Only the two unmeasured private read entry points call this.
+    pub(in crate::filesystem) fn into_unmeasured(self) -> T {
+        self.value
+    }
+
+    /// The charged value; its charge stays held while it is borrowed.
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub(crate) fn value_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
+impl Charged<acyclic_stream::OwnedBytes> {
+    /// Moves the bytes, still carrying their charge, into content custody.
+    pub fn into_custody(self) -> crate::conversation::Custody {
+        crate::conversation::Custody::Charged(self)
+    }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Charged<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.value.as_ref()
+    }
+}
+
+impl<T> core::ops::Deref for Charged<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.value()
+    }
+}
+
 /// Retained storage released with its decoded value or content result.
 pub struct DecodeReservation<'a> {
     pub(super) io: &'a PreparationIo,

@@ -163,19 +163,9 @@ pub(crate) async fn read_value<'a>(
             "tool artifact type or rendering limit is invalid",
         ));
     }
-    let _bytes_hold;
     let bytes = resolver
         .read(file, file.descriptor().byte_length(), None, io)?
         .await?;
-    {
-        _bytes_hold = match io {
-            Some(io) if io.original_native_work().is_none() => bytes
-                .retained_capacity()
-                .map(|capacity| io.reserve_decode(capacity as u64))
-                .transpose()?,
-            _ => None,
-        };
-    }
     if maximum.is_some_and(|maximum| bytes.len() as u64 > maximum) {
         return Err(stock_boundary(
             io,

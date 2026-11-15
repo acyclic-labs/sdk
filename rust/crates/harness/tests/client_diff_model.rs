@@ -26,7 +26,7 @@ impl ContentResidencyVerifier for Content {
             'a,
             Option<(
                 acyclic_harness::conversation::FileRef,
-                acyclic_stream::OwnedBytes,
+                acyclic_harness::conversation::Custody,
                 Option<acyclic_harness::conversation::ContentHold<'io>>,
             )>,
         >,
@@ -40,7 +40,12 @@ impl ContentResidencyVerifier for Content {
         assert!(ceiling.is_none());
         assert!(maximum_bytes.is_none_or(|maximum| self.bytes.len() as u64 <= maximum));
         acyclic_harness::conversation::BoundedContentFuture::new(io, || async {
-            Ok(Some((self.file.clone(), self.bytes.clone(), None)))
+            // This model reader has no preparation ledger; its bytes are unmetered.
+            Ok(Some((
+                self.file.clone(),
+                acyclic_harness::conversation::Custody::Unmetered(self.bytes.clone()),
+                None,
+            )))
         })
     }
 }
@@ -84,6 +89,7 @@ fn run_model(wake: bool) {
                 current: Some(current),
             }],
         };
+        let bytes = bytes.bytes().clone();
         (Content { file, bytes }, publication, view)
     });
     let content = Arc::new(content);

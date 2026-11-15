@@ -51,6 +51,9 @@ mod tests;
 #[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 mod metadata_tests;
 
+#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
+mod load_charge_tests;
+
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RequestManifest {
@@ -235,8 +238,8 @@ async fn load_projection_record(
     reference: &FileRef,
     io: Option<&PreparationIo>,
 ) -> Result<ProjectionRecord> {
+    // The loaded bytes carry their single read charge.
     let bytes = super::payload::load_json_bytes(journal, reference, io).await?;
-    let _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
     let unsupported = || {
         stock_boundary(
             io,
@@ -385,8 +388,8 @@ pub(crate) async fn load_manifest(
     {
         return Err(invalid(io));
     }
+    // The loaded bytes carry their single read charge.
     let bytes = journal.load(reference, io)?.await?;
-    let _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
     decode_manifest(reference, &bytes, io)
 }
 

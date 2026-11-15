@@ -36,11 +36,14 @@ impl crate::conversation::ContentResidencyVerifier for WasmPrefixReader {
         _maximum_bytes: u64,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> crate::Result<BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
             ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
-            self.files.bytes(file).map(acyclic_stream::OwnedBytes::from)
+            // Browser-resident files are outside the preparation ledger.
+            self.files
+                .bytes(file)
+                .map(|bytes| crate::conversation::Custody::Unmetered(bytes.into()))
         })
     }
 }
@@ -432,10 +435,12 @@ impl ContentResidencyVerifier for WasmProjectionResolver {
         _maximum_bytes: u64,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> crate::Result<BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
-            self.bytes(file).map(acyclic_stream::OwnedBytes::from)
+            // Browser-resident files are outside the preparation ledger.
+            self.bytes(file)
+                .map(|bytes| crate::conversation::Custody::Unmetered(bytes.into()))
         })
     }
 }

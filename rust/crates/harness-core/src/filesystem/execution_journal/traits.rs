@@ -448,7 +448,7 @@ where
         &'a self,
         reference: &'a FileRef,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::BoundedContentFuture::new(io, || {
             self.observe_request(
                 acyclic_stream::trace::Request {
@@ -469,7 +469,7 @@ where
         reference: &'a FileRef,
         range: acyclic_fs::ByteRange,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::BoundedContentFuture::new(io, || {
             self.observe_request(
                 acyclic_stream::trace::Request {

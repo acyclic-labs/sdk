@@ -180,7 +180,7 @@ impl ContentResidencyVerifier for TestPayloadStore {
         _maximum_bytes: u64,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let files = self.files.lock().unwrap();
@@ -192,7 +192,9 @@ impl ContentResidencyVerifier for TestPayloadStore {
                     "context payload reference changed".into(),
                 ));
             }
-            Ok(bytes.clone().into())
+            Ok(crate::conversation::Custody::Unmetered(
+                bytes.clone().into(),
+            ))
         })
     }
 }

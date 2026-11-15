@@ -252,7 +252,12 @@ impl LocalHarness {
                         Error::Invalid("mentioned files exceed the byte bound".into())
                     })?;
             }
-            copies.insert(path.to_owned(), chunk.bytes);
+            // Native checkout bytes carry their own allocation meter, not a
+            // preparation-ledger charge.
+            copies.insert(
+                path.to_owned(),
+                crate::conversation::Custody::Unmetered(chunk.bytes),
+            );
             #[cfg(test)]
             if let Some(observer) = self.context_read_observer {
                 observer(self, path).await?;

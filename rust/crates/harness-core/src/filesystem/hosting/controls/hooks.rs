@@ -42,7 +42,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> cra
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> futures::future::BoxFuture<'a, crate::Result<Option<acyclic_stream::OwnedBytes>>> {
+    ) -> futures::future::BoxFuture<'a, crate::Result<Option<crate::conversation::Custody>>> {
         Box::pin(async move {
             let found = self
                 .host

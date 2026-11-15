@@ -31,7 +31,7 @@ pub trait Tree: Send + Sync {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>>;
+    ) -> BoxFuture<'a, Result<Option<crate::conversation::Custody>>>;
 }
 
 /// What a module's default export may be.

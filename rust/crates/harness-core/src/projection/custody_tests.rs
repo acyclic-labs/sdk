@@ -14,9 +14,11 @@ impl ContentResidencyVerifier for Resolver {
         _: u64,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
-    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<BoundedContentFuture<'a, crate::conversation::Custody>> {
         BoundedContentFuture::new(io, || async {
-            Ok(acyclic_stream::OwnedBytes::copy_from_slice(&self.0))
+            Ok(crate::conversation::Custody::Unmetered(
+                acyclic_stream::OwnedBytes::copy_from_slice(&self.0),
+            ))
         })
     }
 }

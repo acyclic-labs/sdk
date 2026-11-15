@@ -33,8 +33,12 @@ impl ContentResidencyVerifier for SnapshotReader {
         maximum_bytes: u64,
         _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
-    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
-    {
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            acyclic_harness::conversation::Custody,
+        >,
+    > {
         self.reads.fetch_add(1, Ordering::SeqCst);
         acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             if self.missing.load(Ordering::SeqCst) {

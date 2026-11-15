@@ -13,13 +13,17 @@ impl Tree for Modules<'_> {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+    ) -> BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         Box::pin(async move {
             Ok(self
                 .0
                 .iter()
                 .find(|(module, _)| module == path)
-                .map(|(_, source)| acyclic_stream::OwnedBytes::from(source.as_bytes().to_vec())))
+                .map(|(_, source)| {
+                    crate::conversation::Custody::Unmetered(acyclic_stream::OwnedBytes::from(
+                        source.as_bytes().to_vec(),
+                    ))
+                }))
         })
     }
 }

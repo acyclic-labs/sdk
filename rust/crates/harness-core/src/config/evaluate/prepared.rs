@@ -266,7 +266,7 @@ async fn closure(
         }
         let next = next.clone();
         let bytes = tree.read(&next).await?;
-        observations.observe(&next, bytes.as_deref());
+        observations.observe(&next, bytes.as_deref().map(|bytes| &**bytes));
         let Some(bytes) = bytes else {
             return Ok(Err(format!(
                 "{current} imports {next}, which no layer holds"
@@ -276,6 +276,7 @@ async fn closure(
             Ok(module) => modules.insert(next.clone(), (module, true)),
             Err(error) => return Ok(Err(error)),
         };
+        drop(bytes);
         stack.push((next, 0));
     }
     Ok(Ok(order

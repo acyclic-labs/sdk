@@ -19,7 +19,7 @@ pub(crate) enum FileTool {
 /// Keep source fields ahead of their admission on every return and unwind.
 pub(super) struct Source {
     pub file: FileRef,
-    pub bytes: Option<acyclic_stream::OwnedBytes>,
+    pub bytes: Option<crate::conversation::Custody>,
     _custody: acyclic_fs::NativeCustody,
 }
 

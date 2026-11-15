@@ -194,7 +194,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         path: &str,
         maximum: Option<u64>,
         io: &PreparationIo,
-    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
+    ) -> Result<Option<bounded_io::Charged<acyclic_stream::OwnedBytes>>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(snapshot) = &cut.snapshot {
             return Box::pin(async move {
@@ -212,7 +212,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let (bytes, _) = self
                     .read_private_snapshot(snapshot, path, range, io)
                     .await?;
-                Ok(Some(bytes))
+                io.retain_read_bytes(bytes).map(Some)
             })
             .await;
         }
@@ -227,7 +227,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         path: &str,
         maximum: Option<u64>,
         io: &PreparationIo,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<bounded_io::Charged<acyclic_stream::OwnedBytes>> {
         #[cfg(not(target_arch = "wasm32"))]
         if cut.snapshot.is_some() {
             return self
@@ -235,7 +235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await?
                 .ok_or_else(|| path_read_refusal(WorkspaceError::NotFound));
         }
-        read_generation(&cut.generation, path, maximum, Some(io)).await
+        read_generation(&cut.generation, path, maximum, io).await
     }
 
     /// Reads the file `reference` names at the private cut `expected` selects
@@ -251,7 +251,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum: u64,
         retain: bool,
         io: &PreparationIo,
-    ) -> Result<(acyclic_stream::OwnedBytes, Generation<A, O>)> {
+    ) -> Result<(bounded_io::Charged<acyclic_stream::OwnedBytes>, Generation<A, O>)> {
         let cut = self
             .select_private_cut(workspace, Some(expected), io)
             .await?;
@@ -273,7 +273,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference: &FileRef,
         range: acyclic_fs::ByteRange,
         io: &PreparationIo,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<bounded_io::Charged<acyclic_stream::OwnedBytes>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(snapshot) = &cut.snapshot {
             return Box::pin(async move {
@@ -291,7 +291,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         "private cut does not hold the referenced file",
                     ));
                 }
-                Ok(bytes)
+                io.retain_read_bytes(bytes)
             })
             .await;
         }
@@ -393,7 +393,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         class: InternalContentClass,
         range: acyclic_fs::ByteRange,
         io: Option<&PreparationIo>,
-    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+    ) -> Result<(FileRef, crate::conversation::Custody)> {
         grant.require(volume, VolumeOperation::Read, io)?;
         InternalContentClass::require_path(volume, Some(class), path, io)?;
         let temporary = PreparationIo::temporary(io)?;
@@ -448,7 +448,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         range: acyclic_fs::ByteRange,
         io: Option<&PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<crate::conversation::Custody> {
         grant.require_file_read(reference, io)?;
         let length = reference.descriptor().byte_length();
         if range
@@ -477,7 +477,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .read_range(range)
             .await?;
         grant.recheck(Some(io))?;
-        Ok(bytes)
+        Ok(bytes.into_custody())
     }
 
     /// Reads a pinned version using optional preparation accounting.
@@ -495,7 +495,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         maximum_bytes: impl Into<Option<u64>>,
         io: Option<&PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<crate::conversation::Custody> {
         let maximum_bytes = maximum_bytes
             .into()
             .unwrap_or(reference.descriptor().byte_length());
@@ -520,21 +520,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await?;
         grant.recheck(Some(io))?;
-        Ok(bytes)
+        Ok(bytes.into_custody())
     }
 
     /// Resolves a private file and verifies its bytes with optional original IO.
-    pub async fn read_private_path(
+    pub async fn read_private_path<'io>(
         &self,
         volume: &VolumeRef,
         grant: &ContentGrant,
         path: &str,
         expected_generation: Option<&GenerationRef>,
         maximum_bytes: impl Into<Option<u64>>,
-        access: crate::conversation::ContentAccess<'_, '_>,
-    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
-        let crate::conversation::ContentAccess { ceiling, io } = access;
-
+        access: crate::conversation::ContentAccess<'_, 'io>,
+    ) -> Result<(FileRef, crate::conversation::Custody)> {
         let (file, bytes, _) = self
             .read_private_path_indexed(
                 volume,
@@ -542,12 +540,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 path,
                 expected_generation,
                 maximum_bytes.into(),
-                crate::conversation::ContentAccess { ceiling, io },
+                access,
             )
             .await?
             .ok_or_else(|| {
                 crate::executor::stock_boundary(
-                    io,
+                    access.io,
                     crate::wire::ErrorCode::NotFound,
                     crate::conversation::SELECTED_FILE_MISSING,
                 )
@@ -559,29 +557,73 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Resolve a file with its immutable publication identity under the caller ceiling.
     /// Only absence of the selected path returns `None`; admission and backing
     /// storage failures retain their original errors.
-    pub async fn read_private_path_indexed(
+    pub async fn read_private_path_indexed<'io>(
         &self,
         volume: &VolumeRef,
         grant: &ContentGrant,
         path: &str,
         expected_generation: Option<&GenerationRef>,
         maximum_bytes: Option<u64>,
-        access: crate::conversation::ContentAccess<'_, '_>,
+        access: crate::conversation::ContentAccess<'_, 'io>,
     ) -> Result<
         Option<(
             FileRef,
-            acyclic_stream::OwnedBytes,
+            crate::conversation::Custody,
             Option<crate::OperationId>,
         )>,
     > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
-        let unmeasured;
-        let io = if let Some(io) = io {
-            io
-        } else {
-            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-            &unmeasured
-        };
+        if let Some(io) = io {
+            return Ok(self
+                .read_private_path_indexed_measured(
+                    volume,
+                    grant,
+                    path,
+                    expected_generation,
+                    maximum_bytes,
+                    ceiling,
+                    io,
+                )
+                .await?
+                .map(|(file, bytes, publication)| (file, bytes.into_custody(), publication)));
+        }
+        let unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        Ok(self
+            .read_private_path_indexed_measured(
+                volume,
+                grant,
+                path,
+                expected_generation,
+                maximum_bytes,
+                ceiling,
+                &unmeasured,
+            )
+            .await?
+            .map(|(file, bytes, publication)| {
+                (
+                    file,
+                    crate::conversation::Custody::Unmetered(bytes.into_unmeasured()),
+                    publication,
+                )
+            }))
+    }
+
+    async fn read_private_path_indexed_measured<'io>(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        maximum_bytes: Option<u64>,
+        ceiling: Option<&crate::Capabilities>,
+        io: &'io PreparationIo,
+    ) -> Result<
+        Option<(
+            FileRef,
+            bounded_io::Charged<acyclic_stream::OwnedBytes>,
+            Option<crate::OperationId>,
+        )>,
+    > {
         let read = self
             .select_private_read(volume, grant, path, expected_generation, ceiling, io)
             .await?;
@@ -594,8 +636,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .read_cut_optional(&read.cut, &requested.0, maximum_bytes, io)
             .await?;
         let selected = if let Some(bytes) = bytes {
-            let bytes_hold = io.guard_bytes(&bytes)?;
-            let bytes = (bytes, bytes_hold);
+            let bytes = (bytes, ());
             let staged = cut_metadata(&read.cut, volume, path, &bytes.0, io).await?;
             let publication = staged
                 .as_ref()
@@ -612,9 +653,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         selected
             .map(|(reference, bytes, publication)| {
                 reference.1.into_retained()?;
-                if let Some(hold) = bytes.1 {
-                    hold.into_retained()?;
-                }
                 Ok((reference.0, bytes.0, publication))
             })
             .transpose()
@@ -629,23 +667,63 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// # Errors
     /// When `path` is not a regular file, `offset` is past its end, or the
     /// grant or view does not allow listing and reading it.
-    pub(in crate::filesystem) async fn read_private_range(
+    pub(in crate::filesystem) async fn read_private_range<'io>(
         &self,
         volume: &VolumeRef,
         grant: &ContentGrant,
         path: &str,
         expected_generation: Option<&GenerationRef>,
         range: acyclic_fs::ByteRange,
-        access: crate::conversation::ContentAccess<'_, '_>,
-    ) -> Result<(acyclic_stream::OwnedBytes, GenerationRef, u64)> {
+        access: crate::conversation::ContentAccess<'_, 'io>,
+    ) -> Result<(crate::conversation::Custody, GenerationRef, u64)> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
-        let unmeasured;
-        let io = if let Some(io) = io {
-            io
-        } else {
-            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-            &unmeasured
+        let Some(io) = io else {
+            let unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            let (bytes, generation, length) = self
+                .read_private_range_measured(
+                    volume,
+                    grant,
+                    path,
+                    expected_generation,
+                    ceiling,
+                    range,
+                    &unmeasured,
+                )
+                .await?;
+            return Ok((
+                crate::conversation::Custody::Unmetered(bytes.into_unmeasured()),
+                generation,
+                length,
+            ));
         };
+        let (bytes, generation, length) = self
+            .read_private_range_measured(
+                volume,
+                grant,
+                path,
+                expected_generation,
+                ceiling,
+                range,
+                io,
+            )
+            .await?;
+        Ok((bytes.into_custody(), generation, length))
+    }
+
+    async fn read_private_range_measured<'io>(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        ceiling: Option<&crate::Capabilities>,
+        range: acyclic_fs::ByteRange,
+        io: &'io PreparationIo,
+    ) -> Result<(
+        bounded_io::Charged<acyclic_stream::OwnedBytes>,
+        GenerationRef,
+        u64,
+    )> {
         let selected = self
             .select_private_read(volume, grant, path, expected_generation, ceiling, io)
             .await?;
@@ -661,7 +739,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await?;
             selected.recheck(grant, io).await?;
             return Ok((
-                bytes,
+                io.retain_read_bytes(bytes)?,
                 self.private_generation_ref(cut, expected_generation, io)?,
                 length,
             ));
@@ -711,7 +789,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         original: Option<&GenerationRef>,
         maximum_delta: Option<u64>,
         access: crate::conversation::ContentAccess<'_, '_>,
-    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
+    ) -> Result<Option<crate::conversation::Custody>> {
         let temporary;
         let io = if let Some(io) = access.io {
             io
@@ -780,7 +858,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await,
         )?;
         selected.recheck(grant, io).await?;
-        io.retain_read_bytes(chunk.bytes).map(Some)
+        Ok(Some(io.retain_read_bytes(chunk.bytes)?.into_custody()))
     }
 
     /// Reads a finite private prefix at an explicitly pinned generation.
@@ -938,7 +1016,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "private directory belongs to another provider or class",
             ));
         }
-        grant.require_directory_path(volume, path, io)
+        grant.require_read_path(volume, path, io)
     }
 
     /// Resolve the exact cut a file reference names: an authored generation
@@ -996,31 +1074,28 @@ fn path_read_refusal(error: WorkspaceError) -> Error {
 
 // An absent application policy reads the immutable file's own extent through
 // the Filesystem primitive, on the original I/O and allocation ledger.
-pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) async fn read_generation<
+    'io,
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+>(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
     maximum: Option<u64>,
-    io: Option<&PreparationIo>,
-) -> Result<acyclic_stream::OwnedBytes> {
-    let unmeasured;
-    let io = if let Some(io) = io {
-        io
-    } else {
-        unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-        &unmeasured
-    };
+    io: &'io PreparationIo,
+) -> Result<bounded_io::Charged<acyclic_stream::OwnedBytes>> {
     io.remaining()?;
     let bytes = io.sdk(generation.read(path, maximum, io, io.cancellation()).await)?;
     io.retain_read_bytes(bytes)
 }
 
-async fn read_generation_optional<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn read_generation_optional<'io, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
     maximum: Option<u64>,
-    io: &PreparationIo,
+    io: &'io PreparationIo,
     classify: fn(WorkspaceError) -> Error,
-) -> Result<Option<acyclic_stream::OwnedBytes>> {
+) -> Result<Option<bounded_io::Charged<acyclic_stream::OwnedBytes>>> {
     io.remaining()?;
     let (result, recorded) = generation.read(path, maximum, io, io.cancellation()).await;
     // Check the original accounting outcome before classifying or allocating

@@ -17,8 +17,12 @@ impl ContentResidencyVerifier for ManifestBytes {
         _: u64,
         _: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        BoundedContentFuture::new(io, || async { Ok(self.0.clone().into()) })
+    ) -> Result<BoundedContentFuture<'a, crate::conversation::Custody>> {
+        BoundedContentFuture::new(io, || async {
+            Ok(crate::conversation::Custody::Unmetered(
+                self.0.clone().into(),
+            ))
+        })
     }
 }
 

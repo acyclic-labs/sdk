@@ -19,7 +19,7 @@ impl ContentResidencyVerifier for BrowserContentReader {
         maximum: u64,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
+    ) -> Result<BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::require_owner_reader(ceiling)?;
         if io.is_some() {
             return Err(Error::Unsupported(
@@ -51,7 +51,10 @@ impl ContentResidencyVerifier for BrowserContentReader {
                 Ok(())
             })
             .map_err(|_| Error::Invalid("model file exceeds projection byte limit".into()))?;
-            Ok(OwnedBytes::from(bytes))
+            // The browser reader has no finite ledger, so its bytes are unmetered.
+            Ok(crate::conversation::Custody::Unmetered(OwnedBytes::from(
+                bytes,
+            )))
         })
     }
 }

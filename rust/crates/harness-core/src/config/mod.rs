@@ -88,14 +88,18 @@ pub async fn agent_from_home(
         fn read<'a>(
             &'a self,
             path: &'a str,
-        ) -> futures::future::BoxFuture<'a, crate::Result<Option<acyclic_stream::OwnedBytes>>>
+        ) -> futures::future::BoxFuture<'a, crate::Result<Option<crate::conversation::Custody>>>
         {
             Box::pin(async move {
-                let seed = || crate::seed::file(path).map(acyclic_stream::OwnedBytes::from_static);
+                let seed = || {
+                    crate::seed::file(path)
+                        .map(acyclic_stream::OwnedBytes::from_static)
+                        .map(crate::conversation::Custody::Unmetered)
+                };
                 Ok(if crate::layers::layered(path) {
                     match self.0.get(path) {
                         Some(bytes) if crate::layers::is_off(bytes) => None,
-                        Some(bytes) => Some(bytes.clone()),
+                        Some(bytes) => Some(crate::conversation::Custody::Unmetered(bytes.clone())),
                         None => seed(),
                     }
                 } else {

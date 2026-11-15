@@ -105,7 +105,7 @@ where
         path: &str,
         generation: &GenerationRef,
         range: acyclic_fs::ByteRange,
-    ) -> Result<(acyclic_stream::OwnedBytes, u64), Error> {
+    ) -> Result<(crate::conversation::Custody, u64), Error> {
         let binding = self.directory_binding(agent, target, path).await?;
         let (bytes, _selected, length) = binding
             .host

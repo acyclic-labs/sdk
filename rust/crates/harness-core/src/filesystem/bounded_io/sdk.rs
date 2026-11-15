@@ -90,18 +90,21 @@ impl PreparationIo {
     pub(crate) fn retain_read_bytes(
         &self,
         bytes: acyclic_stream::OwnedBytes,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        if self.original_native_work().is_none() {
-            let capacity = bytes.retained_capacity().ok_or_else(|| {
+    ) -> Result<Charged<acyclic_stream::OwnedBytes>> {
+        let capacity = if self.original_native_work().is_none() {
+            u64::try_from(bytes.retained_capacity().ok_or_else(|| {
                 crate::executor::stock_boundary(
                     Some(self),
                     crate::wire::ErrorCode::Unsupported,
                     "content producer does not expose its owned capacity",
                 )
-            })?;
-            self.retain_owned(capacity as u64)?;
-        }
-        Ok(bytes)
+            })?)
+            .map_err(|_| self.invalid("content capacity exceeds the ledger"))?
+        } else {
+            0
+        };
+        let charge = self.reserve_decode(capacity)?.take_custody()?;
+        Ok(Charged::new(bytes, charge))
     }
 
     /// Interpret only the original missing-path result as optional absence.

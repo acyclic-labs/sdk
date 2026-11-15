@@ -28,15 +28,19 @@ impl ContentResidencyVerifier for Resolver {
         _ceiling: Option<&'a acyclic_harness::contract::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> acyclic_harness::Result<
-        acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>,
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            acyclic_harness::conversation::Custody,
+        >,
     > {
         acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
-            Ok(self
-                .0
-                .get(file.path())
-                .expect("known fixture path")
-                .clone()
-                .into())
+            Ok(acyclic_harness::conversation::Custody::Unmetered(
+                self.0
+                    .get(file.path())
+                    .expect("known fixture path")
+                    .clone()
+                    .into(),
+            ))
         })
     }
 }

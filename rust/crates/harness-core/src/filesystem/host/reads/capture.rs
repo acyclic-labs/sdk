@@ -101,23 +101,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             selected.recheck(grant, io).await?;
             return Ok((file, bytes, hold));
         }
-        let bytes;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(sources) = &native {
-            bytes = sources
-                .read(volume, generation, path, maximum_bytes, access.io)?
-                .await?;
+        let bytes = if access.io.is_none() {
+            Some(
+                self.read_private_path(
+                    volume,
+                    grant,
+                    path,
+                    Some(generation),
+                    maximum_bytes,
+                    access,
+                )
+                .await?
+                .1,
+            )
         } else {
-            bytes = self
-                .read_capture_source(&selected, path, maximum_bytes, io)
-                .await?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            bytes = self
-                .read_capture_source(&selected, path, maximum_bytes, io)
-                .await?;
-        }
+            let bytes;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(sources) = &native {
+                bytes = sources
+                    .read(volume, generation, path, maximum_bytes, access.io)?
+                    .await?
+                    .map(|bytes| io.retain_read_bytes(bytes))
+                    .transpose()?;
+            } else {
+                bytes = self
+                    .read_capture_source(&selected, path, maximum_bytes, io)
+                    .await?;
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                bytes = self
+                    .read_capture_source(&selected, path, maximum_bytes, io)
+                    .await?;
+            }
+            bytes.map(crate::filesystem::Charged::into_custody)
+        };
         let bytes = bytes.ok_or_else(|| {
             stock_boundary(
                 access.io,
@@ -171,7 +189,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         path: &str,
         maximum_bytes: Option<u64>,
         io: &PreparationIo,
-    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
+    ) -> Result<Option<crate::filesystem::Charged<acyclic_stream::OwnedBytes>>> {
         let requested = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;

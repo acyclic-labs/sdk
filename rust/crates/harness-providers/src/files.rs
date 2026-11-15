@@ -120,9 +120,16 @@ pub(crate) async fn resolve(
                 continue;
             }
 
-            let bytes = bytes
-                .try_into_ordinary_vec()
-                .unwrap_or_else(|bytes| bytes.as_slice().to_vec());
+            // Unmetered bytes move into the text when they own an ordinary
+            // vector; charged bytes are copied so their charge still ends with them.
+            let bytes = match bytes {
+                acyclic_harness_core::conversation::Custody::Unmetered(bytes) => bytes
+                    .try_into_ordinary_vec()
+                    .unwrap_or_else(|bytes| bytes.as_slice().to_vec()),
+                acyclic_harness_core::conversation::Custody::Charged(bytes) => {
+                    bytes.as_slice().to_vec()
+                }
+            };
             let value =
                 String::from_utf8(bytes).map_err(|_| invalid("model text file is not UTF-8"))?;
             drop(hold);

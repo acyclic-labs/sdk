@@ -354,7 +354,7 @@ impl HistoryIo for AcceptedCompletionIo {
         &'a mut self,
         _: &'a dyn crate::conversation::ContentResidencyVerifier,
         _: &'a crate::conversation::FileRef,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         Err(Self::unsupported())
     }
 }

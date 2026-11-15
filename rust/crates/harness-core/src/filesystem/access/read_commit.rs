@@ -71,7 +71,7 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
     pub(in crate::filesystem) async fn read_file(
         self,
         maximum_bytes: u64,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<crate::filesystem::Charged<acyclic_stream::OwnedBytes>> {
         let io = self.io;
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(("read", maximum_bytes));
@@ -97,7 +97,7 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
     pub(in crate::filesystem) async fn read_range(
         self,
         range: acyclic_fs::ByteRange,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<crate::filesystem::Charged<acyclic_stream::OwnedBytes>> {
         let bytes = self
             .host
             .read_cut_range(&self.cut, self.reference, range, self.io)

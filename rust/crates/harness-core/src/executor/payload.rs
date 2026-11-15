@@ -27,7 +27,7 @@ pub(super) async fn load_json_bytes(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     io: Option<&PreparationIo>,
-) -> Result<acyclic_stream::OwnedBytes> {
+) -> Result<crate::conversation::Custody> {
     validate_journal(journal, io)?;
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
@@ -53,8 +53,8 @@ pub async fn load_model_request(
     if reference.descriptor().media_type() == super::transcript::REQUEST_MEDIA {
         return super::transcript::load_request(journal, reference, limits, io).await;
     }
+    // The loaded bytes carry their single read charge.
     let bytes = load_json_bytes(journal, reference, io).await?;
-    let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
     crate::model::PreparedModelRequest::decode(&bytes, limits, io)
 }
 
@@ -83,8 +83,8 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
     reference: &FileRef,
     io: Option<&'a PreparationIo>,
 ) -> Result<(T, Option<crate::conversation::ContentHold<'a>>)> {
+    // The loaded bytes carry their single read charge.
     let bytes = load_json_bytes(journal, reference, io).await?;
-    let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
     decode_json(&bytes, io)
 }
 

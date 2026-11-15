@@ -86,7 +86,7 @@ impl<'a> ContentMatcher<'a> {
                 "search range ended before its source cut".into(),
             ));
         }
-        Ok(if find(bytes.as_slice(), pattern).is_some() {
+        Ok(if find(bytes.as_ref(), pattern).is_some() {
             done(Some(reference), true)
         } else if end == length {
             progress(next_file, 0, more)

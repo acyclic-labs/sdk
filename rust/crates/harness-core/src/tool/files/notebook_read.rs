@@ -485,7 +485,6 @@ pub(super) async fn read(
             return Err(executor::rejection(work, "source range made no progress"));
         }
         position += window.bytes.len() as u64;
-        window.bytes = acyclic_stream::OwnedBytes::new();
         window.bytes = window
             .next(
                 context,
@@ -569,11 +568,12 @@ pub(super) async fn read(
     if let Some(relative) = start.checked_sub(position)
         && relative + length <= window.bytes.len() as u64
     {
-        window.bytes = window
+        let bytes = window
             .bytes
+            .bytes()
             .slice(relative as usize..(relative + length) as usize);
+        *window.bytes.bytes_mut() = bytes;
     } else {
-        window.bytes = acyclic_stream::OwnedBytes::new();
         window.bytes = window
             .next(
                 context,

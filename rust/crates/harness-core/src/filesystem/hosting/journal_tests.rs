@@ -1273,12 +1273,13 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
     );
     capture.stop = None;
     finish_output(&recovered, &Ok(Some(capture))).await?;
+    let replay = context
+        .read_output_file_once("completed.json")
+        .await?
+        .ok_or("completion replay missing")?;
     assert_eq!(
-        context
-            .read_output_file_once("completed.json")
-            .await?
-            .ok_or("completion replay missing")?,
-        terminal,
+        (&replay.0, replay.1.bytes()),
+        (&terminal.0, terminal.1.bytes()),
         "completion replay changed its original publication",
     );
     assert!(

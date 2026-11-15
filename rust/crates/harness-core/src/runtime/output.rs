@@ -77,7 +77,7 @@ impl ToolContext {
     pub async fn read_output_file_once(
         &self,
         name: &str,
-    ) -> Result<Option<(FileRef, acyclic_stream::OwnedBytes)>> {
+    ) -> Result<Option<(FileRef, crate::conversation::Custody)>> {
         let (context, operation, path) = self.output_context(name)?;
         let (file, _) = context.observe_staged_file_once(operation, None).await?;
         let Some(file) = file else {

@@ -40,7 +40,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         request: PublicationLookup<'_>,
         io: Option<&PreparationIo>,
-    ) -> Result<Option<(FileRef, Option<acyclic_stream::OwnedBytes>)>> {
+    ) -> Result<Option<(FileRef, Option<crate::conversation::Custody>)>> {
         let owned;
         let io = if let Some(io) = io {
             io
@@ -305,7 +305,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mut recorded: ((FileRef, Option<GenerationRef>), DecodeReservation<'a>),
         request: &PublicationLookup<'_>,
         io: &'a PreparationIo,
-    ) -> Result<(FileRef, Option<acyclic_stream::OwnedBytes>)> {
+    ) -> Result<(FileRef, Option<crate::conversation::Custody>)> {
         let version = bounded_io::hex_key(&original.id().to_bytes(), Some(io))?;
         let version_hold = io.guard_owned(version.capacity() as u64)?;
         recorded
@@ -324,8 +324,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(io),
             )?
             .await?;
-        let hold = io.guard_bytes(&bytes)?;
-        let bytes = (bytes, hold);
         bounded_io::retain(original, Some(io)).await?;
         let version_bytes = version_hold.bytes();
         version_hold.into_retained()?;
@@ -333,14 +331,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(recorded.0.1.take());
         recorded.1.substitute(recorded.0.0.logical_owned_bytes()?)?;
         recorded.1.into_retained()?;
-        let payload = if request.purpose == PublicationPurpose::Content {
-            if let Some(hold) = bytes.1 {
-                hold.into_retained()?;
-            }
-            Some(bytes.0)
-        } else {
-            None
-        };
+        // The payload carries its read charge for as long as it is held.
+        let payload = (request.purpose == PublicationPurpose::Content).then_some(bytes);
         Ok((self.seal_publication(recorded.0.0, Some(io))?, payload))
     }
 }

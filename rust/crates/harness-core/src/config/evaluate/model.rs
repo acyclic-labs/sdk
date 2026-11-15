@@ -44,7 +44,7 @@ impl Tree for Files {
     fn read<'a>(
         &'a self,
         path: &'a str,
-    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+    ) -> BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         Box::pin(async move {
             Ok(match path {
                 "sys/input.json" => self.input.clone(),
@@ -55,7 +55,9 @@ impl Tree for Files {
                     b"import input from './input.json'; export default input;".to_vec()
                 }),
                 _ => None,
-            }.map(acyclic_stream::OwnedBytes::from))
+            }
+            .map(acyclic_stream::OwnedBytes::from)
+            .map(crate::conversation::Custody::Unmetered))
         })
     }
 }

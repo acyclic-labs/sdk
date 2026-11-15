@@ -257,7 +257,7 @@ pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
     maximum_bytes: Option<u64>,
     ceiling: Option<&'a crate::Capabilities>,
     io: Option<&'a ContentIo>,
-) -> Result<(acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)> {
+) -> Result<(crate::conversation::Custody, Option<ContentHold<'a>>)> {
     let source_bytes = reference.descriptor().byte_length();
     if maximum_bytes.is_some_and(|maximum| source_bytes > maximum) {
         return Err(content_error(
@@ -266,21 +266,9 @@ pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
             "content exceeds selected byte allowance",
         ));
     }
-    let hold;
     let bytes = verifier.read(reference, source_bytes, ceiling, io)?.await?;
-    {
-        hold = match io {
-            Some(io) => {
-                if io.original_native_work().is_none() {
-                    io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-                }
-                io.guard_bytes(&bytes)?
-            }
-            None => None,
-        };
-    }
     crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
-    Ok((bytes, hold))
+    Ok((bytes, None))
 }
 
 /// Loads canonical manifest bytes through their owning reader.
@@ -297,21 +285,9 @@ pub async fn load_manifest<'a, V: ContentResidencyVerifier + ?Sized>(
             "manifest reader is unavailable",
         ));
     }
-    let _bytes_hold;
     let bytes = verifier
         .read(reference, reference.descriptor().byte_length(), None, io)?
         .await?;
-    {
-        _bytes_hold = match io {
-            Some(io) => {
-                if io.original_native_work().is_none() {
-                    io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-                }
-                io.guard_bytes(&bytes)?
-            }
-            None => None,
-        };
-    }
     if let Some(io) = io {
         let items = decode_attachment_manifest(reference, &bytes, Some(item_count), Some(io))?;
         let retained = std::mem::size_of::<Vec<Attachment>>() as u64

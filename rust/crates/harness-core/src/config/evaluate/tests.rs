@@ -9,13 +9,19 @@ impl Tree for Metered<'_> {
     fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
         Some(self.0)
     }
-    fn read<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+    fn read<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         Box::pin(async { Ok(None) })
     }
 }
 
 impl Tree for Missing {
-    fn read<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+    fn read<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<Option<crate::conversation::Custody>>> {
         Box::pin(std::future::ready(Ok(None)))
     }
 }

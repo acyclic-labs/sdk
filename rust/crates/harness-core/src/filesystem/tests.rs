@@ -340,12 +340,12 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         );
     }
     assert_eq!(
-        host.read_content(&first, &read, 16, None).await?,
-        acyclic_stream::OwnedBytes::from_static(b"one")
+        host.read_content(&first, &read, 16, None).await?.bytes(),
+        &acyclic_stream::OwnedBytes::from_static(b"one")
     );
     assert_eq!(
-        host.read_content(&second, &read, 16, None).await?,
-        acyclic_stream::OwnedBytes::from_static(b"two")
+        host.read_content(&second, &read, 16, None).await?.bytes(),
+        &acyclic_stream::OwnedBytes::from_static(b"two")
     );
     for (reference, expected) in [(&first, b"n"), (&second, b"w")] {
         let selected = host

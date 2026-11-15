@@ -470,7 +470,7 @@ impl<
     }
 
     /// Reads a pinned owner-private version after verifying its descriptor.
-    pub async fn read(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
+    pub async fn read(&self, file: &FileRef) -> Result<crate::conversation::Custody> {
         self.content_verifier
             .read(file, file.descriptor().byte_length(), None, None)?
             .await
@@ -517,7 +517,7 @@ impl<
         &self,
         scope: &Scope,
         file: &FileRef,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<crate::conversation::Custody> {
         self.delegated_reader(scope)?
             .read(file, file.descriptor().byte_length(), None, None)?
             .await
@@ -567,7 +567,7 @@ impl<
         granted_prefix: &str,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+    ) -> Result<(FileRef, crate::conversation::Custody)> {
         self.delegated_reader(scope)?
             .read_private_path(
                 &self.volume,

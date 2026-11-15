@@ -384,6 +384,268 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
 }
 
 #[test]
+fn dropping_charged_bytes_releases_budget_capacity_but_forget_does_not() -> Result<()> {
+    let io = PreparationIo::from_budget(
+        acyclic_fs::performance::work_budget(100_000, 16_000_000),
+        &CancellationToken::new(),
+    )?;
+    let before = io.owned_bytes()?;
+    let bytes = acyclic_stream::OwnedBytes::from(vec![7_u8; 17]);
+    let capacity = u64::try_from(bytes.retained_capacity().unwrap_or(0))
+        .map_err(|_| Error::Invalid("test capacity overflows".into()))?;
+    drop(io.retain_read_bytes(bytes.clone())?);
+    assert_eq!(io.owned_bytes()?, before);
+    std::mem::forget(io.retain_read_bytes(bytes)?);
+    assert_eq!(io.owned_bytes()?, before + capacity);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn dropping_charged_bytes_releases_native_capacity_but_forget_does_not() -> Result<()> {
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(100_000, 16_000_000),
+        &CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let native_bytes = || -> Result<_> {
+        let bytes = acyclic_stream::OwnedBytes::from(vec![7_u8; 17]);
+        let (mut bytes, custody) = work.copy_bytes(&bytes)?;
+        acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
+            &mut bytes,
+            &mut Some(custody),
+            &work.runtime_meter(),
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))
+    };
+    let before = work.live_allocation_bytes();
+    drop(io.retain_read_bytes(native_bytes()?)?);
+    assert_eq!(work.live_allocation_bytes(), before);
+    let charged = io.retain_read_bytes(native_bytes()?)?;
+    let charged_size = core::mem::size_of_val(&charged);
+    let capacity = u64::try_from(charged.retained_capacity().unwrap_or(0))
+        .map_err(|_| Error::Invalid("test capacity overflows".into()))?;
+    std::mem::forget(charged);
+    assert_eq!(work.live_allocation_bytes(), before + capacity);
+    println!(
+        "size_of Charged<OwnedBytes>={charged_size}, DecodeReservation={}",
+        core::mem::size_of::<DecodeReservation<'static>>()
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn private_reads_distinguish_measured_and_unmeasured_charges() -> Result<()> {
+    let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+    storage
+        .stage(
+            crate::OperationId::new(),
+            "value.txt",
+            b"selected",
+            "text/plain",
+            "value",
+        )
+        .await?;
+    let bindings = storage.content_bindings();
+    for native in [false, true] {
+        let cancellation = CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(100_000, 16_000_000),
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = if native {
+            PreparationIo::from_native_work(&work)?
+        } else {
+            PreparationIo::from_budget(
+                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                &cancellation,
+            )?
+        };
+        for (io, expected) in [(Some(&io), true), (None, false)] {
+            let (_, bytes, _) = bindings
+                .reader
+                .read_private_path(
+                    &bindings.volume,
+                    "",
+                    "value.txt",
+                    None,
+                    None,
+                    crate::conversation::ContentAccess { ceiling: None, io },
+                )?
+                .await?
+                .ok_or_else(|| Error::Invalid("test value is absent".into()))?;
+            assert_eq!(
+                matches!(bytes, crate::conversation::Custody::Charged(_)),
+                expected,
+                "native={native}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The ledger bytes a held read gives back when its holder drops it.
+fn released_on_drop(io: &PreparationIo, bytes: crate::conversation::Custody) -> Result<u64> {
+    let held = io.owned_bytes()?;
+    drop(bytes);
+    held.checked_sub(io.owned_bytes()?)
+        .ok_or_else(|| Error::Invalid("dropping a read grew its ledger".into()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn a_read_charge_lives_exactly_as_long_as_its_bytes() -> Result<()> {
+    use crate::conversation::Custody;
+    fn hold(bytes: Custody) -> Custody {
+        bytes
+    }
+    // A holder that keeps a copy and lets the charged original go early.
+    fn drop_early(bytes: Custody) -> Custody {
+        Custody::Unmetered(acyclic_stream::OwnedBytes::from(bytes.to_vec()))
+    }
+    let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+    storage
+        .stage(
+            crate::OperationId::new(),
+            "value.txt",
+            b"selected",
+            "text/plain",
+            "value",
+        )
+        .await?;
+    let bindings = storage.content_bindings();
+    let io = PreparationIo::from_budget(
+        acyclic_fs::performance::work_budget(100_000, 16_000_000),
+        &CancellationToken::new(),
+    )?;
+    let mut released = Vec::new();
+    for site in [hold as fn(Custody) -> Custody, drop_early] {
+        let (_, bytes, _) = bindings
+            .reader
+            .read_private_path(
+                &bindings.volume,
+                "",
+                "value.txt",
+                None,
+                None,
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&io),
+                },
+            )?
+            .await?
+            .ok_or_else(|| Error::Invalid("test value is absent".into()))?;
+        let bytes = site(bytes);
+        assert_eq!(bytes.as_ref(), b"selected");
+        released.push(released_on_drop(&io, bytes)?);
+    }
+    // Held bytes keep their charge outstanding until dropped, then release it.
+    assert!(released[0] >= b"selected".len() as u64, "{released:?}");
+    // Negative control: a holder that dropped the charge early releases nothing.
+    assert_eq!(released[1], 0);
+    Ok(())
+}
+
+/// The unmeasured constructor occurs exactly once inside each of the two
+/// private read entry points of the host reader, and nowhere else.
+fn unmeasured_sites_confined(
+    sources: &[(String, String)],
+    needle: &str,
+) -> std::result::Result<(), String> {
+    const HOST: &str = "filesystem/host/reads.rs";
+    const ENTRY_POINTS: [(&str, &str); 2] = [
+        (
+            "pub async fn read_private_path<'io>",
+            "pub async fn read_private_path_indexed<'io>",
+        ),
+        (
+            "pub(in crate::filesystem) async fn read_private_range<'io>",
+            "async fn read_private_range_measured<'io>",
+        ),
+    ];
+    let escaped: Vec<_> = sources
+        .iter()
+        .filter(|(path, source)| path != HOST && source.contains(needle))
+        .map(|(path, _)| path.as_str())
+        .collect();
+    if !escaped.is_empty() {
+        return Err(format!("constructor escaped the host reader: {escaped:?}"));
+    }
+    let host = sources
+        .iter()
+        .find(|(path, _)| path == HOST)
+        .map(|(_, source)| source.as_str())
+        .ok_or("host reader is missing")?;
+    let total = host.matches(needle).count();
+    if total != ENTRY_POINTS.len() {
+        return Err(format!("host reader has {total} constructor sites"));
+    }
+    for (begin, end) in ENTRY_POINTS {
+        let function = host
+            .split(begin)
+            .nth(1)
+            .and_then(|rest| rest.split(end).next())
+            .ok_or_else(|| format!("entry point {begin} is missing"))?;
+        if function.matches(needle).count() != 1 {
+            return Err(format!("constructor is not inside {begin}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn unmeasured_constructor_is_confined_to_private_read_entry_points() -> Result<()> {
+    fn visit(
+        root: &std::path::Path,
+        directory: &std::path::Path,
+        sources: &mut Vec<(String, String)>,
+    ) -> Result<()> {
+        let storage = |error: std::io::Error| Error::Storage(error.to_string());
+        for entry in std::fs::read_dir(directory).map_err(storage)? {
+            let path = entry.map_err(storage)?.path();
+            if path.is_dir() {
+                visit(root, &path, sources)?;
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|error| Error::Invalid(error.to_string()))?
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                sources.push((relative, std::fs::read_to_string(&path).map_err(storage)?));
+            }
+        }
+        Ok(())
+    }
+    let needle = [".into_", "unmeasured("].concat();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sources = Vec::new();
+    visit(&root, &root, &mut sources)?;
+    assert_eq!(unmeasured_sites_confined(&sources, &needle), Ok(()));
+
+    // Negative controls: each escape the check exists to catch is refused.
+    let site = format!("fn escaped(bytes: Charged<OwnedBytes>) {{ bytes{needle}); }}\n");
+    let host = sources
+        .iter()
+        .position(|(path, _)| path == "filesystem/host/reads.rs")
+        .ok_or_else(|| Error::Invalid("host reader is missing".into()))?;
+    let mut elsewhere = sources.clone();
+    elsewhere.push(("tool/files/window.rs".into(), site.clone()));
+    assert!(unmeasured_sites_confined(&elsewhere, &needle).is_err());
+    let mut third_in_host = sources.clone();
+    third_in_host[host].1.push_str(&site);
+    assert!(unmeasured_sites_confined(&third_in_host, &needle).is_err());
+    let mut moved = sources.clone();
+    moved[host].1 = moved[host].1.replacen(&needle, ".moved(", 1) + &site;
+    assert!(unmeasured_sites_confined(&moved, &needle).is_err());
+    Ok(())
+}
+
+#[test]
 fn fired_cancellation_stays_cancelled_through_preparation_and_history() -> Result<()> {
     use crate::store::history::HistoryIo as _;
     let cancellation = CancellationToken::new();

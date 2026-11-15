@@ -99,8 +99,12 @@ impl ContentResidencyVerifier for StoredContent {
         maximum_bytes: u64,
         _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
-    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
-    {
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            acyclic_harness::conversation::Custody,
+        >,
+    > {
         acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             if file.descriptor().byte_length() > maximum_bytes {
                 return Err(Error::Invalid("content exceeds selected limit".into()));

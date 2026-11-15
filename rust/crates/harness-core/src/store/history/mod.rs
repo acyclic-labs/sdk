@@ -200,7 +200,7 @@ pub trait HistoryIo: Send {
         &'a mut self,
         verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>>;
     /// Remaining.
     fn remaining(&self) -> Result<acyclic_fs::WorkBudget>;
     /// Cancellation.

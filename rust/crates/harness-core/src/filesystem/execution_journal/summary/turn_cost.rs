@@ -93,10 +93,8 @@ async fn check_replay_payload_cost(native: bool) -> Result<()> {
         }
     }
     let bytes = journal.load(&reference, Some(&io))?.await?;
-    let guard = io.guard_bytes(&bytes)?;
     assert_eq!(bytes.as_ref(), payload);
     drop(bytes);
-    drop(guard);
     Ok(())
 }
 

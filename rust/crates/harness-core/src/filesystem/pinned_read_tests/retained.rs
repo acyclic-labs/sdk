@@ -315,7 +315,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                                     &pinned,
                                                     &format!("/{}", file.path()),
                                                     Some(4096),
-                                                    Some(io),
+                                                    io,
                                                 ))
                                                 .unwrap();
                                             assert_eq!(bytes.as_ref(), b"published bytes");
@@ -582,6 +582,65 @@ fn retained_native_bytes_keep_original_funding_until_the_last_owner_drops() -> R
             !funded(&unfunded),
             "an unfunded copy must fail the same predicate"
         );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_retained_read_is_charged_once_for_exactly_its_bytes() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    // Returns the bytes' capacity, the charge released with them, and the
+    // custody still held by the ledger after they drop.
+    let measure = |payload: &[u8], reopen: bool| -> Result<(u64, u64, u64)> {
+        let (host, file) = runtime.block_on(fixture(payload))?;
+        let workspace = workspace_ref(
+            host.provider.clone(),
+            &file.volume().storage_name(&mut None)?,
+        )?;
+        let opened = runtime.block_on(host.open(&workspace, None))?;
+        let generation = runtime.block_on(host.generation(
+            &opened,
+            &host.file_generation(&file, None)?,
+            None,
+        ))?;
+        let io = PreparationIo::from_budget(
+            acyclic_fs::performance::work_budget(1_000_000, 64 * 1024 * 1024),
+            &acyclic_fs::CancellationToken::new(),
+        )?;
+        let before = io.owned_bytes()?;
+        let bytes = with_reopen(reopen, || {
+            runtime.block_on(async {
+                host.read_retained_file(&generation, &file, 4096, Some(&io))?
+                    .await
+            })
+        })?;
+        assert_eq!(bytes.as_ref(), payload);
+        let capacity = bytes
+            .retained_capacity()
+            .ok_or_else(|| Error::Invalid("read bytes expose no capacity".into()))?
+            as u64;
+        let held = io.owned_since(before)?;
+        drop(bytes);
+        let leftover = io.owned_since(before)?;
+        Ok((capacity, held - leftover, leftover))
+    };
+    let once = |small: (u64, u64, u64), large: (u64, u64, u64)| {
+        small.1 == small.0 && large.1 == large.0 && small.2 == large.2
+    };
+    for reopen in [false, true] {
+        let small = measure(b"short".as_slice(), reopen)?;
+        let large = measure([7_u8; 4000].as_slice(), reopen)?;
+        assert!(large.0 > small.0, "payload sizes must differ in capacity");
+        assert!(once(small, large), "reopen {reopen}: {small:?} {large:?}");
+        // Negative control: a second charge on the ledger's lifetime leaves
+        // the bytes' capacity behind and must fail the same predicate.
+        let doubled = |(capacity, released, leftover): (u64, u64, u64)| {
+            (capacity, released, leftover + capacity)
+        };
+        assert!(!once(doubled(small), doubled(large)));
     }
     Ok(())
 }

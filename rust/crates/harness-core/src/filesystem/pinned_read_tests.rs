@@ -70,11 +70,16 @@ async fn read(
     maximum: u64,
     io: Option<&PreparationIo>,
     old: bool,
-) -> Result<acyclic_stream::OwnedBytes> {
+) -> Result<crate::conversation::Custody> {
     if old {
-        legacy::read_pinned(host, file, maximum, io).await
+        // The legacy oracle predates read custody; its bytes carry no charge.
+        legacy::read_pinned(host, file, maximum, io)
+            .await
+            .map(crate::conversation::Custody::Unmetered)
     } else {
-        host.read_pinned_io(file, maximum, io).await
+        host.read_pinned_io(file, maximum, io)
+            .await
+            .map(Charged::into_custody)
     }
 }
 

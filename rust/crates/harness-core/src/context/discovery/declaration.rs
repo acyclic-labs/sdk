@@ -300,7 +300,7 @@ impl PinnedContextPath {
         &self,
         reader: &dyn ContentResidencyVerifier,
         maximum_bytes: u64,
-    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+    ) -> Result<(FileRef, crate::conversation::Custody)> {
         if maximum_bytes == 0 {
             return Err(Error::Invalid(
                 "context body requires a finite positive byte bound".into(),
@@ -316,7 +316,7 @@ impl PinnedContextPath {
         &self,
         reader: &dyn ContentResidencyVerifier,
         maximum_bytes: impl Into<Option<u64>>,
-    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+    ) -> Result<(FileRef, crate::conversation::Custody)> {
         self.read_if_present(reader, maximum_bytes)
             .await?
             .ok_or_else(|| Error::NotFound("selected context file does not exist".into()))
@@ -326,7 +326,7 @@ impl PinnedContextPath {
         &self,
         reader: &dyn ContentResidencyVerifier,
         maximum_bytes: impl Into<Option<u64>>,
-    ) -> Result<Option<(FileRef, acyclic_stream::OwnedBytes)>> {
+    ) -> Result<Option<(FileRef, crate::conversation::Custody)>> {
         self.validate(&mut None)?;
         let maximum_bytes = maximum_bytes.into();
         if maximum_bytes.is_some_and(|maximum| maximum > crate::conversation::MAX_EXACT_JS_INTEGER)

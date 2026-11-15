@@ -83,10 +83,13 @@ impl ContentResidencyVerifier for Reader {
         _maximum: u64,
         _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<BoundedContentFuture<'a, acyclic_harness_core::conversation::Custody>> {
         BoundedContentFuture::new(io, || async move {
             self.reads.fetch_add(1, Ordering::SeqCst);
-            Ok(self.data.clone().into())
+            // A resident fixture copy is outside the preparation ledger.
+            Ok(acyclic_harness_core::conversation::Custody::Unmetered(
+                self.data.clone().into(),
+            ))
         })
     }
 }
@@ -282,7 +285,7 @@ async fn summary_files_keep_source_then_instruction_resolution_order() -> Result
             maximum: u64,
             ceiling: Option<&'a acyclic_harness::Capabilities>,
             io: Option<&'a ContentIo>,
-        ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        ) -> Result<BoundedContentFuture<'a, acyclic_harness_core::conversation::Custody>> {
             let reader = if file == &self.source {
                 &self.source_reader
             } else {
