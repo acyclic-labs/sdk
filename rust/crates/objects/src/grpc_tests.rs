@@ -588,7 +588,7 @@ fn member_refusals(code: wire::ErrorCode) -> Vec<tonic::Status> {
         for (name, value) in entries {
             status
                 .metadata_mut()
-                .append(*name, tonic::metadata::MetadataValue::from_static(*value));
+                .append(*name, tonic::metadata::MetadataValue::from_static(value));
         }
         status
     };
@@ -634,7 +634,10 @@ fn member_refusals(code: wire::ErrorCode) -> Vec<tonic::Status> {
     ]
 }
 
-fn original(status: &tonic::Status) -> (tonic::Code, String, Vec<u8>, Vec<(String, Vec<u8>)>) {
+/// A status's code, message, details and its own Acyclic metadata.
+type Original = (tonic::Code, String, Vec<u8>, Vec<(String, Vec<u8>)>);
+
+fn original(status: &tonic::Status) -> Original {
     let metadata = status
         .metadata()
         .as_ref()

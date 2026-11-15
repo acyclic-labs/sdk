@@ -169,7 +169,9 @@ where
                 }
                 // At most `window` members are in flight, so the member this
                 // one displaces completed.
-                let old = slots[index % window].replace(slot);
+                let old = slots
+                    .get_mut(index % window)
+                    .and_then(|entry| entry.replace(slot));
                 assert!(
                     old.is_none_or(|old| old.done),
                     "a displaced member completed"

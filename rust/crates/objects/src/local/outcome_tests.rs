@@ -1,6 +1,7 @@
 //! Outcome controls at the real log's original I/O boundaries.
 use super::*;
 use acyclic_native_runtime::testing::{DurableFault, DurableWrite, Schedule};
+use acyclic_stream::width::saturate;
 
 fn bytes(value: &[u8]) -> OwnedBytes {
     OwnedBytes::from(value.to_vec())
@@ -68,7 +69,7 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
     for range in [None, Some(1..4)] {
         let (result, jobs) = counted(medium.read("a-longer-key", range.clone())).await;
         let expected =
-            &b"short"[range.map_or(0..5, |range| range.start as usize..range.end as usize)];
+            &b"short"[range.map_or(0..5, |range| saturate(range.start)..saturate(range.end))];
         assert_eq!(result?.as_deref(), Some(expected));
         assert_eq!(jobs, 0, "held value dispatched a physical read");
     }
@@ -389,20 +390,7 @@ async fn mutation_outcomes_preserve_physical_uncertainty_and_no_effect_refusals(
                 }
             });
             schedule.cut_at(0, fault);
-            let result = schedule
-                .scope(async {
-                    match operation {
-                        "create" => medium.create("key", bytes(b"new")).await,
-                        "replace" => medium
-                            .replace(observed.unwrap(), bytes(b"new"))
-                            .await
-                            .map(|value| value.is_some()),
-                        "remove" => medium.remove("key").await,
-                        "remove-if" => medium.remove_if(observed.unwrap()).await,
-                        _ => unreachable!(),
-                    }
-                })
-                .await;
+            let result = schedule.scope(mutate(&medium, operation, observed)).await;
             schedule.drained().await;
             driver.abort();
             let _ = driver.await;
@@ -422,27 +410,65 @@ async fn mutation_outcomes_preserve_physical_uncertainty_and_no_effect_refusals(
                 Err(MediumError::Ambiguous(_))
             ));
             drop(medium);
-            let reopened = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
-                .await
-                .unwrap();
-            let value = reopened.read("key", None).await.unwrap();
             let expected: Option<&[u8]> = match (operation, fault) {
                 ("create" | "replace", DurableFault::After) => Some(b"new"),
                 ("remove" | "remove-if", DurableFault::After) | ("create", _) => None,
                 _ => Some(b"old"),
             };
-            assert_eq!(value.as_deref(), expected, "{operation} {fault:?}");
-            let before = std::fs::metadata(root.path().join(LOG)).unwrap().len();
-            assert!(matches!(
-                reopened.list("invalid-prefix", None, 1).await,
-                Err(MediumError::Failed(_))
-            ));
-            assert_eq!(
-                std::fs::metadata(root.path().join(LOG)).unwrap().len(),
-                before
-            );
+            reopened_refusal_writes_nothing(
+                root.path(),
+                expected,
+                &format!("{operation} {fault:?}"),
+            )
+            .await;
         }
     }
+}
+
+/// Run the one mutation a cut schedule interrupts.
+async fn mutate<'a>(
+    medium: &'a LocalMedium,
+    operation: &str,
+    observed: Option<Observation<'a>>,
+) -> Result<bool, MediumError> {
+    match (operation, observed) {
+        ("create", _) => medium.create("key", bytes(b"new")).await,
+        ("replace", Some(observed)) => medium
+            .replace(observed, bytes(b"new"))
+            .await
+            .map(|value| value.is_some()),
+        ("remove", _) => medium.remove("key").await,
+        ("remove-if", Some(observed)) => medium.remove_if(observed).await,
+        _ => unreachable!("{operation} lacks its observation"),
+    }
+}
+
+/// The reopened log holds the expected value, and a refused list appends nothing.
+async fn reopened_refusal_writes_nothing(
+    root: &std::path::Path,
+    expected: Option<&[u8]>,
+    case: &str,
+) {
+    let reopened = LocalMedium::open(root, LocalObjectsLimits::default(), None)
+        .await
+        .unwrap();
+    let value = reopened.read("key", None).await.unwrap();
+    assert_eq!(value.as_deref(), expected, "{case}");
+    let before = std::fs::metadata(root.join(LOG)).unwrap().len();
+    assert!(matches!(
+        reopened.list("invalid-prefix", None, 1).await,
+        Err(MediumError::Failed(_))
+    ));
+    assert_eq!(std::fs::metadata(root.join(LOG)).unwrap().len(), before);
+}
+
+/// Both keys read back as the mutation left them.
+async fn holds(medium: &LocalMedium, expected: Option<&[u8]>) {
+    assert_eq!(medium.read("key", None).await.unwrap().as_deref(), expected);
+    assert_eq!(
+        medium.read("kept", None).await.unwrap().unwrap().as_ref(),
+        b"kept"
+    );
 }
 
 async fn compacting_mutation(
@@ -455,7 +481,7 @@ async fn compacting_mutation(
         .unwrap();
     assert!(
         medium
-            .create("key", bytes(&vec![7; COMPACTION_CHUNK as usize]))
+            .create("key", bytes(&vec![7; saturate(COMPACTION_CHUNK)]))
             .await
             .unwrap()
     );
@@ -495,11 +521,7 @@ async fn compacting_mutation(
     } else {
         Some(b"new".as_slice())
     };
-    assert_eq!(medium.read("key", None).await.unwrap().as_deref(), expected);
-    assert_eq!(
-        medium.read("kept", None).await.unwrap().unwrap().as_ref(),
-        b"kept"
-    );
+    holds(&medium, expected).await;
     if let Some((ordinal, fault)) = cut {
         let actual = schedule.storage_fault().unwrap();
         assert_eq!((actual.ordinal, actual.fault), (ordinal, fault));
@@ -517,14 +539,7 @@ async fn compacting_mutation(
     let reopened = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
         .await
         .unwrap();
-    assert_eq!(
-        reopened.read("key", None).await.unwrap().as_deref(),
-        expected
-    );
-    assert_eq!(
-        reopened.read("kept", None).await.unwrap().unwrap().as_ref(),
-        b"kept"
-    );
+    holds(&reopened, expected).await;
     trace
 }
 

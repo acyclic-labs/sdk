@@ -101,9 +101,8 @@ impl Observation<'_> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn version_bytes(&self) -> usize {
         match &self.version {
-            ObservedVersion::Sequence(_) => 0,
+            ObservedVersion::Sequence(_) | ObservedVersion::Value(_) => 0,
             ObservedVersion::Tag(tag) => tag.capacity(),
-            ObservedVersion::Value(_) => 0,
         }
     }
 }

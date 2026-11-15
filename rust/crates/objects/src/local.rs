@@ -327,7 +327,12 @@ impl Shared {
             return Ok(Indexed::Logged);
         };
         // The range was checked against the slot, whose length is the value's.
-        let value = &value[range.start as usize..range.end as usize];
+        let Some(value) = value.get(
+            acyclic_stream::width::saturate(range.start)
+                ..acyclic_stream::width::saturate(range.end),
+        ) else {
+            return Ok(Indexed::Logged);
+        };
         Ok(Indexed::Held(OwnedBytes::copy_from_slice(value), sequence))
     }
 
@@ -585,7 +590,11 @@ fn replay(
                 sequence: 0,
             };
             live += bytes;
-            let entry = Entry::new(key, slot, &body[value]);
+            let entry = Entry::new(
+                key,
+                slot,
+                body.get(value).ok_or(std::io::ErrorKind::InvalidData)?,
+            );
             index.insert(key.to_owned(), entry).map(|old| old.slot)
         } else {
             index.remove(key).map(|old| old.slot)
@@ -682,6 +691,7 @@ impl LocalMedium {
 
     /// Values read from the log, rather than answered by the index.
     #[cfg(test)]
+    #[cfg(feature = "test-support")]
     pub(crate) fn reads(&self) -> usize {
         self.shared.counts.read.load(Ordering::Relaxed)
     }
@@ -809,7 +819,8 @@ fn failed(error: std::io::Error) -> MediumError {
     MediumError::Failed(error)
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
+#[cfg(feature = "test-support")]
 mod outcome_tests;
 
 #[async_trait::async_trait]
@@ -1035,7 +1046,10 @@ mod isolation_tests {
         let stale = observation(&medium, "kept").await;
         assert!(
             medium
-                .create("hot", vec![7; COMPACTION_CHUNK as usize].into())
+                .create(
+                    "hot",
+                    vec![7; acyclic_stream::width::saturate(COMPACTION_CHUNK)].into()
+                )
                 .await
                 .unwrap()
         );
@@ -1238,7 +1252,9 @@ mod isolation_tests {
             async || LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await;
         let medium = open().await.unwrap();
         assert!(medium.create("a/x", bytes(b"first")).await.unwrap());
-        let first = std::fs::metadata(root.path().join(LOG)).unwrap().len() as usize;
+        let first: usize = acyclic_stream::width::saturate(
+            std::fs::metadata(root.path().join(LOG)).unwrap().len(),
+        );
         assert!(medium.create("a/y", bytes(b"second")).await.unwrap());
         assert_eq!(medium.close().await.unwrap(), LocalClose::Released);
         let written = std::fs::read(root.path().join(LOG)).unwrap();

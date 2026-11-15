@@ -52,10 +52,14 @@ fn replay_matches(log: &[u8], expected: &[(&str, &[u8], usize, usize)]) -> bool 
 }
 
 fn replay_sequence(key: &str, value: &[u8]) -> bool {
-    let retained = encode(PUT, "retained", b"other").expect("retained writer input");
-    let initial = encode(PUT, key, b"prior").expect("initial writer input");
-    let replaced = encode(PUT, key, value).expect("replacement writer input");
-    let removed = encode(REMOVE, key, &[]).expect("removal writer input");
+    let (Ok(retained), Ok(initial), Ok(replaced), Ok(removed)) = (
+        encode(PUT, "retained", b"other"),
+        encode(PUT, key, b"prior"),
+        encode(PUT, key, value),
+        encode(REMOVE, key, &[]),
+    ) else {
+        return false;
+    };
     let start = retained.len() + initial.len();
     let mut log = retained.clone();
     log.extend_from_slice(&initial);
@@ -89,11 +93,15 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
     }
     let key = format!(
         "k{}",
-        String::from_utf8_lossy(&bytes[..bytes.len().min(32)])
+        String::from_utf8_lossy(bytes.get(..32).unwrap_or(bytes))
     );
     for (operation, value) in [(PUT, bytes), (REMOVE, &[][..])] {
-        let frame = encode(operation, &key, value).expect("local writer input");
-        let original = body(&frame).expect("original local writer frame");
+        let Some(original) = encode(operation, &key, value)
+            .ok()
+            .and_then(|frame| body(&frame))
+        else {
+            return false;
+        };
         // Independent operands make rejecting every payload a failing oracle.
         if !canonical(&original)
             || !decode(&original).is_some_and(|(decoded, name, range)| {
@@ -102,22 +110,27 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
         {
             return false;
         }
-        for end in [0, 1, 4] {
-            if decode(&original[..end]).is_some() {
-                return false;
-            }
+        if [0, 1, 4].into_iter().any(|end| {
+            original
+                .get(..end)
+                .is_none_or(|prefix| decode(prefix).is_some())
+        }) {
+            return false;
         }
         let mut damaged = original.clone();
         for operation in [0, u8::MAX] {
-            damaged[0] = operation;
+            let Some(first) = damaged.first_mut() else {
+                return false;
+            };
+            *first = operation;
             if decode(&damaged).is_some() {
                 return false;
             }
             // Preserve the real checksum so the payload reaches replay's error.
             let mut frame = Vec::new();
-            LOG_FRAME
-                .encode(&[&damaged], &mut frame)
-                .expect("mutated payload frame");
+            if LOG_FRAME.encode(&[&damaged], &mut frame).is_err() {
+                return false;
+            }
             if replay(frame.as_slice(), frame.len() as u64)
                 .err()
                 .map(|error| error.kind())
@@ -126,15 +139,21 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
                 return false;
             }
         }
-        damaged[0] = operation;
         // A non-UTF8 key must reach this parser, rather than fail its checksum.
-        damaged[5] = u8::MAX;
+        let Some([first, _, _, _, _, key_byte, ..]) = damaged.get_mut(..) else {
+            return false;
+        };
+        *first = operation;
+        *key_byte = u8::MAX;
         if decode(&damaged).is_some() {
             return false;
         }
         damaged = original.clone();
-        if let Ok(too_long) = u32::try_from(original.len() - 4) {
-            damaged[1..5].copy_from_slice(&too_long.to_le_bytes());
+        if let Ok(too_long) = u32::try_from(original.len().saturating_sub(4)) {
+            let Some(length) = damaged.get_mut(1..5) else {
+                return false;
+            };
+            length.copy_from_slice(&too_long.to_le_bytes());
             if decode(&damaged).is_some() {
                 return false;
             }
@@ -150,7 +169,7 @@ pub(crate) fn check(bytes: &[u8]) -> bool {
     replay_sequence(&key, bytes)
 }
 
-pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
+pub(crate) fn seeds() -> std::io::Result<Vec<(&'static str, Vec<u8>)>> {
     [
         ("local-put-empty", PUT, "", &[][..]),
         (
@@ -162,11 +181,6 @@ pub(crate) fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("local-remove", REMOVE, "objects/\u{e9}", &[][..]),
     ]
     .into_iter()
-    .map(|(name, operation, key, value)| {
-        (
-            name,
-            encode(operation, key, value).expect("local writer corpus"),
-        )
-    })
+    .map(|(name, operation, key, value)| Ok((name, encode(operation, key, value)?)))
     .collect()
 }

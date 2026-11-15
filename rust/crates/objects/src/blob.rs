@@ -36,6 +36,13 @@ impl Digest {
         hex::encode(self.0)
     }
 
+    /// The storage-key form under its fan-out directory: the first byte's two
+    /// digits, a slash, then all 64 digits.
+    pub(crate) fn fanned_hex(&self) -> String {
+        let [first, ..] = self.0;
+        format!("{first:02x}/{}", self.to_hex())
+    }
+
     /// Parses exactly 64 lowercase or uppercase hexadecimal digits.
     pub fn from_hex(text: &str) -> Result<Self, Error> {
         let mut bytes = [0; 32];
@@ -157,22 +164,25 @@ impl Manifest {
     }
 
     /// Canonical v1 encoding; its BLAKE3 is the manifest's digest.
-    #[must_use]
-    pub fn encode(&self) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `QuotaExceeded` when a count exceeds the v1 four-byte field.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let mut bytes = Vec::with_capacity(
             MANIFEST_MAGIC.len() + 8 + self.parts.len() * 40 + self.edges.len() * 32,
         );
         bytes.extend_from_slice(MANIFEST_MAGIC);
-        bytes.extend_from_slice(&(self.parts.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&count(self.parts.len())?);
         for part in &self.parts {
             bytes.extend_from_slice(part.digest.as_bytes());
             bytes.extend_from_slice(&part.length.to_le_bytes());
         }
-        bytes.extend_from_slice(&(self.edges.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&count(self.edges.len())?);
         for edge in &self.edges {
             bytes.extend_from_slice(edge.as_bytes());
         }
-        bytes
+        Ok(bytes)
     }
 
     /// Decodes exactly one canonical encoding.
@@ -236,7 +246,7 @@ pub(crate) struct Envelope {
 }
 
 impl Envelope {
-    pub(crate) fn encode(&self) -> Vec<u8> {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, Error> {
         let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + 62 + self.references.len() * 32);
         bytes.extend_from_slice(ENVELOPE_MAGIC);
         bytes.push(match self.kind {
@@ -245,7 +255,7 @@ impl Envelope {
         });
         bytes.extend_from_slice(&self.length.to_le_bytes());
         bytes.extend_from_slice(&self.stored.to_le_bytes());
-        bytes.extend_from_slice(&(self.references.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&count(self.references.len())?);
         for reference in &self.references {
             bytes.extend_from_slice(reference.as_bytes());
         }
@@ -253,7 +263,7 @@ impl Envelope {
         bytes.push(u8::from(self.dying.is_some()));
         bytes.extend_from_slice(&self.dying.unwrap_or_default());
         bytes.extend_from_slice(&self.condemned.to_le_bytes());
-        bytes
+        Ok(bytes)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -393,20 +403,16 @@ impl<'a> Reader<'a> {
 
     // Domain first, then version, before any counts, allocations or body fields.
     fn header(&mut self, expected: &[u8]) -> Result<(), Error> {
-        let domain_length = expected.len() - 2;
-        self.0 = acyclic_stream::persistence::header(
-            self.0,
-            &expected[..domain_length],
-            &expected[domain_length..],
-        )
-        .map_err(|_| Error::from(ErrorCode::Unsupported))?;
+        let unsupported = || Error::from(ErrorCode::Unsupported);
+        let (domain, version) = expected
+            .split_at_checked(expected.len().saturating_sub(2))
+            .ok_or_else(unsupported)?;
+        self.0 = acyclic_stream::persistence::header(self.0, domain, version)
+            .map_err(|_| unsupported())?;
         Ok(())
     }
     fn take(&mut self, count: usize) -> Result<&'a [u8], Error> {
-        if self.0.len() < count {
-            return Err(corrupt());
-        }
-        let (head, tail) = self.0.split_at(count);
+        let (head, tail) = self.0.split_at_checked(count).ok_or_else(corrupt)?;
         self.0 = tail;
         Ok(head)
     }
@@ -430,6 +436,13 @@ impl<'a> Reader<'a> {
             Err(corrupt())
         }
     }
+}
+
+/// A v1 count field, refusing a count its four bytes cannot hold.
+fn count(entries: usize) -> Result<[u8; 4], Error> {
+    u32::try_from(entries)
+        .map(u32::to_le_bytes)
+        .map_err(|_| ErrorCode::QuotaExceeded.into())
 }
 
 pub(crate) fn invalid() -> Error {

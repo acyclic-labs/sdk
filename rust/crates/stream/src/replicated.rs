@@ -237,7 +237,8 @@ impl<J: CommandJournal> Replicated<J> {
         self.failed
     }
 
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_proposal_clock(&self, millis: u64) {
         self.clock.set(millis);
     }

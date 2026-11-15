@@ -690,7 +690,8 @@ mod replay_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod write_tests {
     use super::*;
 
@@ -766,7 +767,8 @@ mod write_tests {
     }
 }
 
-#[cfg(all(test, feature = "serde"))]
+#[cfg(test)]
+#[cfg(feature = "serde")]
 mod indexed_trace_tests {
     use super::*;
     use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};

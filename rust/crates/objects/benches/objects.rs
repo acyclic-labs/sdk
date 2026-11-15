@@ -29,7 +29,9 @@ fn store(runtime: &Runtime) -> (tempfile::TempDir, LocalObjects) {
 /// A distinct 200-byte body per index.
 fn body(index: u64) -> OwnedBytes {
     let mut bytes = vec![0x5a; 200];
-    bytes[..8].copy_from_slice(&index.to_le_bytes());
+    if let Some(prefix) = bytes.first_chunk_mut() {
+        *prefix = index.to_le_bytes();
+    }
     bytes.into()
 }
 
@@ -105,7 +107,9 @@ const SIZES: [usize; 3] = [4 << 10, 1 << 20, 64 << 20];
 /// A distinct body of `length` bytes per index.
 fn sized(index: u64, length: usize) -> OwnedBytes {
     let mut bytes = vec![0x5a; length];
-    bytes[..8].copy_from_slice(&index.to_le_bytes());
+    if let Some(prefix) = bytes.first_chunk_mut() {
+        *prefix = index.to_le_bytes();
+    }
     bytes.into()
 }
 

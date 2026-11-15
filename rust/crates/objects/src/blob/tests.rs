@@ -18,13 +18,19 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
         dying: None,
         condemned: 9,
     };
-    let frames: [(&str, Vec<u8>, &[u8], fn(&[u8]) -> Result<(), Error>); 5] = [
-        ("manifest", manifest.encode(), MANIFEST_MAGIC, |bytes| {
+    type Frame = (
+        &'static str,
+        Vec<u8>,
+        &'static [u8],
+        fn(&[u8]) -> Result<(), Error>,
+    );
+    let frames: [Frame; 5] = [
+        ("manifest", manifest.encode()?, MANIFEST_MAGIC, |bytes| {
             Manifest::decode(bytes).map(|_| ())
         }),
         (
             "corpus/object_persistence/head-v2-live",
-            envelope.encode(),
+            envelope.encode()?,
             ENVELOPE_MAGIC,
             |bytes| Envelope::decode(bytes).map(|_| ()),
         ),
@@ -53,8 +59,9 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
         let golden = acyclic_proto_build::golden::frame(&frame)?;
         assert_eq!(encoded, golden, "{name}: persisted bytes changed");
         decode(&golden)?;
-        for version in [b'0', b'1', b'2', b'9']
-            .into_iter()
+        for version in b"0129"
+            .iter()
+            .copied()
             .filter(|version| *version != magic[magic.len() - 2])
         {
             let mut rejected = golden.clone();

@@ -627,6 +627,7 @@ fn unique(ids: &mut BTreeSet<u64>, channel: wire::SessionChannel) -> Result<(), 
     Ok(())
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "interest_tests.rs"]
 mod tests;

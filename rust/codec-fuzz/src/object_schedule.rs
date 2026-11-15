@@ -472,9 +472,13 @@ fn check_sites(
 
 /// Actual manifest and complete generation-reference writer outputs, preceded
 /// only by the generator's mutation/stage/fault/ordinal configuration.
-pub fn seeds() -> Vec<(String, Vec<u8>)> {
+///
+/// # Errors
+///
+/// Returns the manifest writer's refusal of the corpus payload.
+pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, acyclic_objects::Error> {
     use acyclic_fs::{Digest, FileId, ObjectId, ObjectKind, ObjectStorage};
-    let payload = acyclic_objects::Manifest::default().encode();
+    let payload = acyclic_objects::Manifest::default().encode()?;
     let mut seeds = Vec::new();
     for sealed in [false, true] {
         let generation = GenerationId::from_root(ObjectId {
@@ -511,14 +515,14 @@ pub fn seeds() -> Vec<(String, Vec<u8>)> {
         })
         .collect();
     seeds.extend(compacting);
-    seeds
+    Ok(seeds)
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn already_durable_flush_has_no_fault_site() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, mut bytes) = super::seeds()
+        let (_, mut bytes) = super::seeds()?
             .into_iter()
             .find(|(name, _)| name == "medium-true-2-1-1")
             .expect("original sealed remove and flush producer");
@@ -536,7 +540,7 @@ mod tests {
     #[test]
     fn large_payload_compaction_reaches_original_maintenance()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (_, mut bytes) = super::seeds()
+        let (_, mut bytes) = super::seeds()?
             .into_iter()
             .find(|(name, _)| name == "compact-medium-true-1-0-1")
             .expect("original sealed replace producer");

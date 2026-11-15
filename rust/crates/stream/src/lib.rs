@@ -11,7 +11,8 @@ pub mod completion;
 pub mod demand;
 #[cfg(feature = "serde")]
 pub mod serde_u64;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 acyclic_test_support::counting_allocator!();
 
 use std::sync::Arc;
@@ -23,7 +24,8 @@ use std::future::Future;
 use thiserror::Error;
 
 pub mod conformance;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod filtered_follow_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -243,7 +245,8 @@ mod test_latency;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod test_meter;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod test_trace;
 
 #[cfg(test)]

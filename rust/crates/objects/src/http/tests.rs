@@ -272,7 +272,7 @@ async fn http_put_batch_splits_by_the_reply_budget_and_every_member_commits() ->
     let per_call = (1 + (BUDGET - single) / step).min(1 + (BUDGET - request.0 - member) / member);
     // Negative control: one reply answering every member exceeds the budget.
     assert!(single + (MEMBERS - 1) * step > BUDGET);
-    let bodies: Vec<_> = (0..MEMBERS as u32)
+    let bodies: Vec<_> = (0..acyclic_stream::width::saturate::<u32, _>(MEMBERS))
         .map(|index| index.to_le_bytes().to_vec())
         .collect();
     for maximum in [Some(BUDGET), None] {
@@ -310,7 +310,7 @@ fn the_request_bound_covers_every_encoded_batch() -> TestResult {
             for references in 0..3 {
                 let batch: Vec<_> = (0..members)
                     .map(|member| {
-                        let body = vec![member as u8; length + member];
+                        let body = vec![acyclic_stream::width::saturate(member); length + member];
                         let refs = vec![Digest::of(&body); references];
                         (crate::Sealed::new(OwnedBytes::from(body)), refs)
                     })

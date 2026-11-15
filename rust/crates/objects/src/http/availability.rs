@@ -8,7 +8,6 @@ struct Source {
     response: Response,
     decoder: FrameDecoder<wire::AvailabilityCursor>,
     chunk: bytes::Bytes,
-    consumed: usize,
 }
 
 impl HttpObjects {
@@ -69,20 +68,19 @@ impl HttpObjects {
                 response,
                 decoder: framing::decoder(self.maximum),
                 chunk: bytes::Bytes::new(),
-                consumed: 0,
             };
             let frames = stream::try_unfold(source, |mut source| async move {
                 loop {
-                    let mut input = &source.chunk[source.consumed..];
+                    let mut input = source.chunk.as_ref();
                     let before = input.len();
                     let frame = source.decoder.read(&mut input).map_err(framing::failure)?;
-                    source.consumed += before - input.len();
+                    let read = before - input.len();
+                    bytes::Buf::advance(&mut source.chunk, read);
                     if let Some(frame) = frame {
                         return Ok(Some((frame, source)));
                     }
                     if let Some(chunk) = source.response.chunk().await.map_err(|_| unavailable())? {
                         source.chunk = chunk;
-                        source.consumed = 0;
                     } else {
                         source.decoder.finish().map_err(|_| unavailable())?;
                         return Err(unavailable());

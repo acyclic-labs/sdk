@@ -163,7 +163,8 @@ pub fn cut_proven_by(minimum: &[wire::Revision], applied: Option<&Revision>) -> 
     })
 }
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "revision_tests.rs"]
 mod tests;
 

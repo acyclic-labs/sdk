@@ -141,5 +141,6 @@ fn parse(public_trust: &str) -> Result<Snapshot, JsValue> {
     Ok(snapshot)
 }
 
-#[cfg(all(test, target_arch = "wasm32"))]
+#[cfg(test)]
+#[cfg(target_arch = "wasm32")]
 mod tests;

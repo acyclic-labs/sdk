@@ -153,13 +153,14 @@ async fn generated_get_put_delete_share_floors_and_scoped_views() -> TestResult 
         })
         .await?;
     let deleted = issued(response.metadata())?.ok_or("delete revision")?;
-    let captured = requests.lock().unwrap();
-    assert!(revision::requested(&captured[0])?.is_empty());
-    assert!(revision::requested(&captured[1])?.covers(&committed));
-    assert!(revision::requested(&captured[2])?.covers(&served));
-    assert!(revision::requested(&captured[2])?.covers(&barrier));
-    assert!(revision::requested(&captured[3])?.covers(&replaced));
-    drop(captured);
+    {
+        let captured = requests.lock().unwrap();
+        assert!(revision::requested(&captured[0])?.is_empty());
+        assert!(revision::requested(&captured[1])?.covers(&committed));
+        assert!(revision::requested(&captured[2])?.covers(&served));
+        assert!(revision::requested(&captured[2])?.covers(&barrier));
+        assert!(revision::requested(&captured[3])?.covers(&replaced));
+    }
     owner
         .revisions()
         .observe(&AppliedRevisions::in_process().at(1));
@@ -201,6 +202,25 @@ async fn stored(
     Ok(stored)
 }
 
+/// A write refused by its foreign minimum names it and leaves storage unchanged.
+async fn refused_unchanged(
+    medium: &crate::MemoryMedium,
+    before: &[(String, Vec<u8>)],
+    result: Result<(), tonic::Status>,
+) -> TestResult {
+    assert_eq!(
+        stored(medium).await?,
+        before,
+        "refused write changed physical storage"
+    );
+    let failure = result.expect_err("foreign write minimum must refuse before dispatch");
+    assert_eq!(
+        error_from_status(&failure).code,
+        wire::ErrorCode::RevisionForeign
+    );
+    Ok(())
+}
+
 async fn refused_writes_preserve_storage() -> TestResult {
     for foreign in [false, true] {
         let medium = crate::MemoryMedium::default();
@@ -236,18 +256,8 @@ async fn refused_writes_preserve_storage() -> TestResult {
             ($method:ident, $message:expr) => {{
                 let mut request = Request::new($message);
                 minimum(&mut request, Some(&floor));
-                let result = client.$method(request).await;
-                assert_eq!(
-                    stored(&medium).await?,
-                    before,
-                    "refused write changed physical storage"
-                );
-                let failure =
-                    result.expect_err("foreign write minimum must refuse before dispatch");
-                assert_eq!(
-                    error_from_status(&failure).code,
-                    wire::ErrorCode::RevisionForeign
-                );
+                let result = client.$method(request).await.map(drop);
+                refused_unchanged(&medium, &before, result).await?;
             }};
         }
         refused!(

@@ -227,7 +227,8 @@ impl Refresh {
 #[path = "../publication-models/interest.rs"]
 mod models;
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::error::Error as _;

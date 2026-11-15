@@ -91,7 +91,8 @@ impl Executor for PlatformExecutor {
     }
 }
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[cfg(not(loom))]
 mod tests {
     use super::*;

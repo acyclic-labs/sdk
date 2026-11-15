@@ -6,7 +6,8 @@ use std::{
     task::{Poll, Waker},
 };
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 pub(super) mod inspection;
 
 // Leaf lock: only transfers owned state/results and the waiter registration.
@@ -27,7 +28,8 @@ pub(super) struct Job<S: Snapshot> {
     completed: Arc<SyncMutex<Completion<S>>>,
     #[cfg(loom)]
     discard_on_drop: bool,
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     observation: Option<inspection::Observation>,
 }
 
@@ -45,7 +47,8 @@ pub(super) fn new<S: Snapshot>(
         #[cfg(loom)]
         mutant: super::model::mutant(),
     }));
-    #[cfg(all(test, not(loom)))]
+    #[cfg(test)]
+    #[cfg(not(loom))]
     let observation = {
         let mut observation = inspection::take();
         inspection::notify(&mut observation, &completed, inspection::Cut::Created);
@@ -56,7 +59,8 @@ pub(super) fn new<S: Snapshot>(
         completed: completed.clone(),
         #[cfg(loom)]
         discard_on_drop: super::model::discard_on_drop(),
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         observation,
     };
     (
@@ -158,7 +162,8 @@ impl<S: Snapshot> Drop for Receiver<S> {
 impl<S: Snapshot> Job<S> {
     pub(super) async fn run(mut self) {
         let completed = self.completed.clone();
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         let observation = &mut self.observation;
         // A job owns its state until it finishes, and it runs once.
         let Some(state) = self.state.as_mut() else {
@@ -183,7 +188,8 @@ impl<S: Snapshot> Job<S> {
                 };
                 drop(previous);
                 let result = read.as_mut().poll(cx).map(Some);
-                #[cfg(all(test, not(loom)))]
+                #[cfg(test)]
+                #[cfg(not(loom))]
                 if result.is_pending() {
                     inspection::notify(observation, &completed, inspection::Cut::Pending);
                 }
@@ -238,7 +244,8 @@ impl<S: Snapshot> Drop for Job<S> {
         // The awaited read is dropped before this owner, so cancellation has
         // already released any queued/granted permit and has not moved a cursor.
         self.finish(Err(crate::StreamError::Unavailable));
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(not(loom))]
         inspection::notify(
             &mut self.observation,
             &self.completed,

@@ -179,7 +179,10 @@ pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
             .transpose()?,
         revision: None,
     };
-    if page.digests.windows(2).any(|pair| pair[0] >= pair[1])
+    if page
+        .digests
+        .array_windows::<2>()
+        .any(|[left, right]| left >= right)
         || page
             .next
             .is_some_and(|next| page.digests.last().is_some_and(|last| *last > next))
@@ -269,7 +272,6 @@ pub(crate) fn verified_put(
 }
 
 /// One put batch's request, and the acknowledgement each member must carry.
-
 pub(crate) fn put_blobs(
     requests: Vec<(crate::Sealed, Vec<Digest>)>,
 ) -> (wire::PutBlobsRequest, Vec<(Digest, u64)>) {

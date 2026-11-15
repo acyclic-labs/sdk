@@ -69,6 +69,29 @@ fn code<T: std::fmt::Debug>(result: &Result<T, Error>) -> Option<ErrorCode> {
 /// Runs every case. `run` namespaces this run's content so repeated runs
 /// against one service stay independent.
 pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<(), Failure> {
+    availability(first, second, run).await?;
+    let (body, digest) = put_and_ranges(first, run).await?;
+    let parent = references(first, run, digest).await?;
+    batch(first, run).await?;
+    let (manifest, left, right) = manifest_ranges(first, run, parent).await?;
+    let (root, rooted) = delete_refusals(first, run, left).await?;
+    let live = [manifest, left, right, parent, digest];
+    collection(first, run, &root, rooted, live).await?;
+    let seen = listing(first, live).await?;
+    let usage = first
+        .usage()
+        .await
+        .map_err(|error| fail("usage-counts-unique-bytes", error))?;
+    expect!(
+        "usage-counts-unique-bytes",
+        u64::try_from(seen).is_ok_and(|seen| usage.blobs == seen)
+            && usage.unique_bytes >= 4096 + 64 + 1000 + 1500,
+        usage
+    );
+    isolation(first, second, run, &root, &body, [manifest, parent]).await
+}
+
+async fn availability(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<(), Failure> {
     // Register before inspecting an initially absent exact identity. An account
     // observing the same digest must receive none of this account's activity.
     use futures::FutureExt as _;
@@ -119,8 +142,12 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         .map_err(|error| fail("availability-register-before-verification", error))?;
     drop(available);
     drop(isolated);
+    Ok(())
+}
 
-    // put-created-then-already-exists-verified
+/// put-created-then-already-exists-verified, head-and-exact-ranges and
+/// range-and-allocation-bounds over one plain blob.
+async fn put_and_ranges(first: &dyn Blobs, run: &str) -> Result<(OwnedBytes, Digest), Failure> {
     let body = bytes(&format!("{run}/plain"), 4096);
     let digest = Digest::of(&body);
     let created = first.put(body.clone(), Vec::new()).await;
@@ -152,7 +179,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     let slice = first.get(digest, ByteRange::new(100, 300), 200).await;
     expect!(
         "head-and-exact-ranges",
-        matches!(&slice, Ok(object) if object.body()[..] == body[100..300] && object.start() == 100),
+        matches!(&slice, Ok(object) if body.get(100..300) == Some(object.body().as_ref()) && object.start() == 100),
         slice.map(|object| object.body().len())
     );
     let tail = first
@@ -167,7 +194,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         .await;
     expect!(
         "head-and-exact-ranges",
-        matches!(&tail, Ok(object) if object.body()[..] == body[4000..]),
+        matches!(&tail, Ok(object) if body.get(4000..) == Some(object.body().as_ref())),
         tail.map(|object| object.body().len())
     );
 
@@ -192,8 +219,11 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         code(&absent) == Some(ErrorCode::NotFound),
         code(&absent)
     );
+    Ok((body, digest))
+}
 
-    // references-must-exist-and-match
+/// references-must-exist-and-match, returning a parent of `digest`.
+async fn references(first: &dyn Blobs, run: &str, digest: Digest) -> Result<Digest, Failure> {
     let missing = first
         .put(
             bytes(&format!("{run}/dangling"), 10),
@@ -219,13 +249,18 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         code(&conflict) == Some(ErrorCode::Conflict),
         conflict
     );
+    Ok(parent)
+}
 
-    // put-batch-ordered-members-fail-alone-and-repeat-writes-nothing
+/// put-batch-ordered-members-fail-alone-and-repeat-writes-nothing
+async fn batch(first: &dyn Blobs, run: &str) -> Result<(), Failure> {
     let base = bytes(&format!("{run}/batch-base"), 300);
     let base_digest = Digest::of(&base);
     let child = bytes(&format!("{run}/batch-child"), 200);
     let dangling = bytes(&format!("{run}/batch-dangling"), 20);
-    let members = [&base, &dangling, &child, &base].map(|body| Digest::of(body));
+    let [base_member, dangling_member, child_member] =
+        [&base, &dangling, &child].map(|body| Digest::of(body));
+    let members = [base_member, dangling_member, child_member, base_member];
     let puts = first
         .put_batch(vec![
             (base.clone(), Vec::new()),
@@ -250,8 +285,8 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         outcomes == ["created", "missing", "created", "exists"],
         puts
     );
-    let committed = first.head(members[2]).await;
-    let failed = first.head(members[1]).await;
+    let committed = first.head(child_member).await;
+    let failed = first.head(dangling_member).await;
     expect!(
         "put-batch-ordered-members-fail-alone-and-repeat-writes-nothing",
         committed.is_ok() && code(&failed) == Some(ErrorCode::NotFound),
@@ -264,7 +299,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     let after = first.usage().await;
     let outcomes: Vec<_> = repeated
         .iter()
-        .zip([members[0], members[2]])
+        .zip([base_member, child_member])
         .map(|(put, digest)| outcome(put, digest))
         .collect();
     expect!(
@@ -279,8 +314,16 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         empty.is_empty(),
         empty
     );
+    Ok(())
+}
 
-    // manifest-ranges-select-intersecting-parts
+/// manifest-ranges-select-intersecting-parts, returning the manifest and its
+/// two parts.
+async fn manifest_ranges(
+    first: &dyn Blobs,
+    run: &str,
+    parent: Digest,
+) -> Result<(Digest, Digest, Digest), Failure> {
     let left = bytes(&format!("{run}/left"), 1000);
     let right = bytes(&format!("{run}/right"), 1500);
     let left_digest = put(
@@ -316,17 +359,24 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     };
     expect!(
         "manifest-ranges-select-intersecting-parts",
-        verified.digest == Digest::of(&manifest.encode()) && verified.length == 2500,
+        manifest
+            .encode()
+            .is_ok_and(|encoded| verified.digest == Digest::of(&encoded))
+            && verified.length == 2500,
         verified
     );
     let spanning = first
         .get(verified.digest, ByteRange::new(900, 1100), 200)
         .await;
-    let mut expected = left[900..].to_vec();
-    expected.extend_from_slice(&right[..100]);
+    let expected: Vec<u8> = left
+        .iter()
+        .skip(900)
+        .chain(right.iter().take(100))
+        .copied()
+        .collect();
     expect!(
         "manifest-ranges-select-intersecting-parts",
-        matches!(&spanning, Ok(object) if object.body()[..] == expected[..] && object.head().kind == Kind::Manifest),
+        matches!(&spanning, Ok(object) if object.body().as_ref() == expected.as_slice() && object.head().kind == Kind::Manifest),
         spanning.map(|object| object.body().len())
     );
     let wrong_length = first
@@ -343,8 +393,15 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         code(&wrong_length) == Some(ErrorCode::InvalidArgument),
         wrong_length
     );
+    Ok((verified.digest, left_digest, right_digest))
+}
 
-    // delete-refuses-live-references
+/// delete-refuses-live-references, returning the root and the blob it retains.
+async fn delete_refusals(
+    first: &dyn Blobs,
+    run: &str,
+    left_digest: Digest,
+) -> Result<(RootId, Digest), Failure> {
     let referenced = first.delete(left_digest).await;
     expect!(
         "delete-refuses-live-references",
@@ -379,8 +436,19 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         code(&unretained) == Some(ErrorCode::MissingReference),
         unretained
     );
+    Ok((root, rooted))
+}
 
-    // collection-keeps-retained-closures
+/// collection-keeps-retained-closures. `live` is the manifest, its two parts,
+/// the parent and the plain blob.
+async fn collection(
+    first: &dyn Blobs,
+    run: &str,
+    root: &RootId,
+    rooted: Digest,
+    live: [Digest; 5],
+) -> Result<(), Failure> {
+    let [manifest, left_digest, ..] = live;
     let orphan_body = bytes(&format!("{run}/orphan"), 48);
     let orphan = put(
         first,
@@ -401,21 +469,14 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         orphan_head.is_ok(),
         orphan_head
     );
-    let kept = first.retain(&root, vec![verified.digest]).await;
+    let kept = first.retain(root, vec![manifest]).await;
     expect!("collection-keeps-retained-closures", kept.is_ok(), kept);
     // The pass after the one that found the orphan unreferenced keeps it.
     for _ in 0..2 {
         let pass = first.collect().await;
         expect!("collection-keeps-retained-closures", pass.is_ok(), pass);
     }
-    for live in [
-        rooted,
-        verified.digest,
-        left_digest,
-        right_digest,
-        parent,
-        digest,
-    ] {
+    for live in std::iter::once(rooted).chain(live) {
         let head = first.head(live).await;
         expect!(
             "collection-keeps-retained-closures",
@@ -429,13 +490,13 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         code(&swept) == Some(ErrorCode::NotFound),
         swept
     );
-    let released = first.release(&root).await.map(|released| released.existed);
+    let released = first.release(root).await.map(|released| released.existed);
     expect!(
         "collection-keeps-retained-closures",
         released == Ok(true),
         released
     );
-    let released_again = first.release(&root).await.map(|released| released.existed);
+    let released_again = first.release(root).await.map(|released| released.existed);
     expect!(
         "collection-keeps-retained-closures",
         released_again == Ok(false),
@@ -453,8 +514,11 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         matches!(&absent, Ok(deletion) if deletion.outcome == Delete::Absent && deletion.references.is_empty()),
         absent
     );
+    Ok(())
+}
 
-    // list-after-never-duplicates-or-skips
+/// list-after-never-duplicates-or-skips, returning how many blobs it listed.
+async fn listing(first: &dyn Blobs, live: [Digest; 5]) -> Result<usize, Failure> {
     let mut seen = Vec::new();
     let mut after = None;
     loop {
@@ -465,7 +529,10 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         expect!(
             "list-after-never-duplicates-or-skips",
             page.digests.len() <= 2
-                && page.digests.windows(2).all(|pair| pair[0] < pair[1])
+                && page
+                    .digests
+                    .array_windows::<2>()
+                    .all(|[left, right]| left < right)
                 && page
                     .digests
                     .first()
@@ -482,7 +549,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
             None => break,
         }
     }
-    for live in [verified.digest, left_digest, right_digest, parent, digest] {
+    for live in live {
         expect!(
             "list-after-never-duplicates-or-skips",
             seen.contains(&live),
@@ -495,19 +562,20 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         code(&zero) == Some(ErrorCode::InvalidArgument),
         zero
     );
+    Ok(seen.len())
+}
 
-    // usage-counts-unique-bytes
-    let usage = first
-        .usage()
-        .await
-        .map_err(|error| fail("usage-counts-unique-bytes", error))?;
-    expect!(
-        "usage-counts-unique-bytes",
-        usage.blobs == seen.len() as u64 && usage.unique_bytes >= 4096 + 64 + 1000 + 1500,
-        usage
-    );
-
-    // cross-account-isolation
+/// cross-account-isolation: `second` cannot observe, reference, retain or
+/// delete `first`'s blobs, and puts its own copy of `body` independently.
+async fn isolation(
+    first: &dyn Blobs,
+    second: &dyn Blobs,
+    run: &str,
+    root: &RootId,
+    body: &OwnedBytes,
+    [manifest, parent]: [Digest; 2],
+) -> Result<(), Failure> {
+    let digest = Digest::of(body);
     let foreign = second.head(digest).await;
     expect!(
         "cross-account-isolation",
@@ -528,7 +596,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         code(&foreign_reference) == Some(ErrorCode::MissingReference),
         foreign_reference
     );
-    let foreign_root = second.retain(&root, vec![digest]).await;
+    let foreign_root = second.retain(root, vec![digest]).await;
     expect!(
         "cross-account-isolation",
         code(&foreign_root) == Some(ErrorCode::MissingReference),
@@ -549,7 +617,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     let foreign_list = second.list(None, 1000).await;
     expect!(
         "cross-account-isolation",
-        matches!(&foreign_list, Ok(page) if !page.digests.contains(&verified.digest) && !page.digests.contains(&parent)),
+        matches!(&foreign_list, Ok(page) if !page.digests.contains(&manifest) && !page.digests.contains(&parent)),
         foreign_list
     );
     let still_first = first.head(digest).await;

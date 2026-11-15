@@ -95,7 +95,8 @@ impl<T> Signal<T> {
         }
         Ok(())
     }
-    #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(not(loom), not(target_arch = "wasm32")))]
     pub(crate) fn pending(&self) -> usize {
         self.state.lock().unwrap().0.len()
     }

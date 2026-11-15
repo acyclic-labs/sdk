@@ -1,5 +1,6 @@
 //! The same physical repair interleavings over each real medium.
 use super::*;
+use crate::Account;
 use futures::FutureExt as _;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -10,6 +11,42 @@ async fn payload(medium: &Shared, account: &[u8]) -> Result<String, Box<dyn std:
     let keys = medium.inner.list(&prefix, None, 2).await?;
     assert_eq!(keys.len(), 1);
     Ok(keys[0].0.clone())
+}
+
+/// `account` reads back exactly `body`.
+async fn holds<M: Medium>(account: &Account<M>, body: &OwnedBytes) -> TestResult {
+    assert_eq!(
+        account
+            .get(Digest::of(body), ByteRange::FULL, u64::MAX)
+            .await?
+            .body(),
+        body
+    );
+    Ok(())
+}
+
+/// Every body is verified on `account`.
+async fn put_all<M: Medium>(account: &Account<M>, bodies: &[&OwnedBytes]) -> TestResult {
+    for body in bodies {
+        assert!(
+            account
+                .put((*body).clone(), Vec::new())
+                .await?
+                .verified()
+                .is_some()
+        );
+    }
+    Ok(())
+}
+
+/// Whether `keys` hold an envelope and a payload for `digest`.
+fn stored_kinds<T>(keys: &[(String, T)], digest: Digest) -> (bool, bool) {
+    let hex = digest.to_hex();
+    let kind = |kind| {
+        keys.iter()
+            .any(|(key, _)| key.contains(kind) && key.contains(&hex))
+    };
+    (kind("/e/"), kind("/p/"))
 }
 
 pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
@@ -54,25 +91,41 @@ pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
     assert_eq!(next.incarnation(), initial.incarnation());
     assert!(next.sequence() > initial.sequence());
     assert!(unauthorized.changed().now_or_never().is_none());
-    assert_eq!(
-        account.get(digest, ByteRange::FULL, u64::MAX).await?.body(),
-        &body
-    );
+    holds(&account, &body).await?;
+    restoration(&medium, &account, &mut observation, &key, stored, &body).await?;
+    assert_eq!(account.head(digest).await?.revision, original.revision);
+    cancellation(&medium, &account, observation, unauthorized, key, body).await
+}
 
-    // A remote physical producer shares the same scoped source. No catalog
-    // mutation is required, and the event alone never decides verification.
-    assert!(medium.inner.remove(&key).await?);
-    assert!(medium.inner.create(&key, stored).await?);
+/// A remote physical producer shares the same scoped source. No catalog
+/// mutation is required, and the event alone never decides verification.
+async fn restoration(
+    medium: &Shared,
+    account: &Account<Shared>,
+    observation: &mut crate::Availability,
+    key: &str,
+    stored: OwnedBytes,
+    body: &OwnedBytes,
+) -> TestResult {
+    let digest = Digest::of(body);
+    assert!(medium.inner.remove(key).await?);
+    assert!(medium.inner.create(key, stored).await?);
     account.availability_source().restored(digest)?;
     observation.changed().await?;
-    assert_eq!(
-        account.get(digest, ByteRange::FULL, u64::MAX).await?.body(),
-        &body
-    );
-    assert_eq!(account.head(digest).await?.revision, original.revision);
+    holds(account, body).await
+}
 
-    // Cancellation after sending the physical write leaves its acknowledgment
-    // uncertain. Closing the source ends the original wait instead of hanging.
+/// Cancellation after sending the physical write leaves its acknowledgment
+/// uncertain. Closing the source ends the original wait instead of hanging.
+async fn cancellation(
+    medium: &Shared,
+    account: &Account<Shared>,
+    mut observation: crate::Availability,
+    mut unauthorized: crate::Availability,
+    key: String,
+    body: OwnedBytes,
+) -> TestResult {
+    let digest = Digest::of(&body);
     assert!(medium.inner.remove(&key).await?);
     let (mut reached, _release) = medium.park("create", key);
     {
@@ -112,16 +165,11 @@ async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
     let filler_digest = Digest::of(&filler);
     let refused_digest = Digest::of(&refused);
     let probe = Store::new(MemoryMedium::default());
-    let account = probe.account(b"bounded-repair")?;
-    for body in [&selected, &filler, &refused] {
-        assert!(
-            account
-                .put(body.clone(), Vec::new())
-                .await?
-                .verified()
-                .is_some()
-        );
-    }
+    put_all(
+        &probe.account(b"bounded-repair")?,
+        &[&selected, &filler, &refused],
+    )
+    .await?;
     // Size the budget from actual engine output: every envelope fits, but the
     // final payload is one byte over capacity. No encoded fixture is invented.
     let full: u64 = probe
@@ -134,15 +182,7 @@ async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
     let medium = MemoryMedium::bounded(full - 1);
     let store = Store::new(medium.clone());
     let account = store.account(b"bounded-repair")?;
-    for body in [&selected, &filler] {
-        assert!(
-            account
-                .put(body.clone(), Vec::new())
-                .await?
-                .verified()
-                .is_some()
-        );
-    }
+    put_all(&account, &[&selected, &filler]).await?;
     let mut observation = account.availability(selected_digest).await?;
     let mut retry_observation = account.availability(refused_digest).await?;
     assert!(matches!(
@@ -150,15 +190,7 @@ async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
         Err(error) if error.code == ErrorCode::Unavailable
     ));
     let keys = medium.list("", None, usize::MAX).await?;
-    assert!(
-        keys.iter()
-            .any(|(key, _)| key.contains("/e/") && key.contains(&refused_digest.to_hex()))
-    );
-    assert!(
-        !keys
-            .iter()
-            .any(|(key, _)| key.contains("/p/") && key.contains(&refused_digest.to_hex()))
-    );
+    assert_eq!(stored_kinds(&keys, refused_digest), (true, false));
     if poison_refusal {
         // Removed policy: poisoning on a definite, no-effect payload refusal.
         account.availability_source().fail();
@@ -176,13 +208,7 @@ async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
         Put::AlreadyExists { .. }
     ));
     retry_observation.changed().await?;
-    assert_eq!(
-        reopened
-            .get(refused_digest, ByteRange::FULL, u64::MAX)
-            .await?
-            .body(),
-        &refused
-    );
+    holds(&reopened, &refused).await?;
     let key = keys
         .iter()
         .find(|(key, _)| key.contains("/p/") && key.contains(&selected_digest.to_hex()))
@@ -195,13 +221,7 @@ async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
         Put::AlreadyExists { .. }
     ));
     observation.changed().await?;
-    assert_eq!(
-        reopened
-            .get(selected_digest, ByteRange::FULL, u64::MAX)
-            .await?
-            .body(),
-        &selected
-    );
+    holds(&reopened, &selected).await?;
     assert!(retry_observation.changed().now_or_never().is_none());
     Ok(())
 }

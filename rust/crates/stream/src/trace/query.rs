@@ -4,7 +4,8 @@ use crate::{Record, RetainedRecord, StreamError};
 use futures::{Stream, StreamExt as _};
 use std::collections::{BTreeMap, btree_map::Entry};
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 /// Original start context, retained only until its terminal delta arrives.

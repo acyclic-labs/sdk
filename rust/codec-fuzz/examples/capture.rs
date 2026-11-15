@@ -340,7 +340,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
     }
     if std::env::args().any(|arg| arg == "--only-objects") {
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
-        for (name, bytes) in acyclic_objects::codec_fuzz::seeds() {
+        for (name, bytes) in acyclic_objects::codec_fuzz::seeds()? {
             save(
                 "object_persistence",
                 name,
@@ -461,7 +461,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
-    for (name, bytes) in acyclic_objects::codec_fuzz::seeds() {
+    for (name, bytes) in acyclic_objects::codec_fuzz::seeds()? {
         save(
             "object_persistence",
             name,
@@ -887,7 +887,7 @@ fn capture_protobuf(
 
 #[cfg(feature = "storage-schedules")]
 fn capture_storage(manifest: &mut String) -> Result<(), Box<dyn Error>> {
-    for (name, bytes) in acyclic_codec_fuzz::object_schedule::seeds() {
+    for (name, bytes) in acyclic_codec_fuzz::object_schedule::seeds()? {
         save(
             "object_schedule",
             &name,

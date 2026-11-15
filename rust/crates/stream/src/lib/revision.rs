@@ -635,7 +635,8 @@ impl AppliedRevisions {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 mod tests {
     use super::*;
 

@@ -1,6 +1,7 @@
 //! Bounded crash-recoverable local Stream provider.
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 use crate::NativeStreamProvider as _;
 
 #[cfg(any(test, loom))]
@@ -90,9 +91,11 @@ type JournalPersistBlocker = (
 static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 #[cfg(test)]
 static JOURNAL_FLUSHED_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 static JOURNAL_WRITE_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(not(loom))]
 fn pause_journal_write(journal: &Arc<Mutex<Journal>>) -> std::io::Result<()> {
     let identity = Arc::as_ptr(journal) as usize;
     let blocker = {

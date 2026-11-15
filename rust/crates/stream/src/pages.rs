@@ -237,6 +237,7 @@ fn child_size(child: &crate::Child) -> usize {
     crate::wire_codec::requests::child_len(child)
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "pages_tests.rs"]
 mod tests;

@@ -10,7 +10,7 @@ use bytes::Bytes;
 use futures::FutureExt as _;
 use prost::Message;
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc as Owner;
@@ -34,7 +34,7 @@ struct Original {
 impl Transport for Original {
     async fn invoke(&self, route: &str, mut input: Bytes) -> Result<Reply, Error> {
         let (substitute, truncate) = {
-            let mut observed = self.observed.lock().unwrap();
+            let mut observed = self.observed.lock().unwrap_or_else(PoisonError::into_inner);
             observed.calls += 1;
             (
                 observed.substitute.take(),
@@ -44,7 +44,8 @@ impl Transport for Original {
         // Substitute a real successful reply for another selected object.
         if let Some(digest) = substitute {
             assert_eq!(route, "blobs/get");
-            let mut request = wire::GetBlobRequest::decode(input).unwrap();
+            let mut request = wire::GetBlobRequest::decode(input)
+                .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
             request.digest = Some(digest.into());
             input = request.encode_to_vec().into();
         }
@@ -52,7 +53,7 @@ impl Transport for Original {
         if truncate {
             body.truncate(body.len() / 2);
         }
-        let mut observed = self.observed.lock().unwrap();
+        let mut observed = self.observed.lock().unwrap_or_else(PoisonError::into_inner);
         observed.allocation = body.as_ptr() as usize..body.as_ptr() as usize + body.len();
         observed.revision.clone_from(&revision);
         Ok((body.into(), revision))
@@ -75,7 +76,11 @@ fn client(account: MemoryObjects) -> (BinaryObjects<Original>, Arc<Mutex<Observe
 }
 
 fn revision(observed: &Mutex<Observed>) -> Option<Revision> {
-    observed.lock().unwrap().revision.clone()
+    observed
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .revision
+        .clone()
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
