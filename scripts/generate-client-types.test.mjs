@@ -58,4 +58,3 @@ test("inference generator retains named Rust widths without publishing the unuse
   assert.match(files["typescript/packages/inference/generated/widths.d.ts"], /readonly "contextRevision": 32;/);
   assert.match(files["typescript/packages/inference/generated/widths.d.ts"], /readonly "futureWidth": 7;/);
 });
-

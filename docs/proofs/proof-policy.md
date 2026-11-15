@@ -35,4 +35,3 @@ Policy tests run on Linux, or in the existing PR gate; do not repeat them locall
 ## Integration on merged main
 
 This replacement for PR1526 starts at main b6bb4c435b4311c703a4c5eac3d113831fb71480. It preserves the merged canonical nine-case Streams suite, its agent histories and endpoint runner. The only suite additions are the typed HST availability adapter, its existing refusal cases, and reporting before endpoint setup. Historical old-source controls and all thirty complete obligations retain their original unqualified scope. No current-source test or proof run is implied by this integration.
-

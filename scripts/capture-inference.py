@@ -49,7 +49,7 @@ def main():
         with response:
             body = response.read()
             status = response.status
-            (root / f"{name}.headers.txt").write_bytes(str(response.headers).encode())
+            (root / f"{name}.headers.txt").write_bytes("".join(f"{key}: {value}".rstrip() + "\n" for key, value in response.headers.items()).encode())
         (root / f"{name}.body").write_bytes(body)
         captures[name] = {"status": status, "file": f"{name}.body",
                           "sha256": hashlib.sha256(body).hexdigest()}

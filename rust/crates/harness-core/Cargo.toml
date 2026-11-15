@@ -172,4 +172,3 @@ wasm-bindgen-test = "=0.3.67"
 
 [lints]
 workspace = true
-

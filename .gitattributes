@@ -39,8 +39,14 @@ scripts/graphcoder-e2e/fixtures/npm-command.cmd -text whitespace=cr-at-eol
 
 # Provider captures are original wire bytes, including their original newlines.
 rust/crates/conformance/fixtures/inference/**/*.body binary
-rust/crates/conformance/fixtures/inference/**/*.headers.txt binary
 rust/crates/conformance/fixtures/inference/**/*.request.json -text
-rust/crates/conformance/fixtures/identity/**/*.body binary
-rust/crates/conformance/fixtures/identity/**/*.headers.txt binary
-rust/crates/conformance/fixtures/identity/**/*.request.txt -text
+
+# Each path below is exact; every other tracked file is diff --check clean from the empty tree.
+# streaming_seed_corpus replays these seeds: spaces before a newline are the hard-break grammar they cover.
+rust/crates/markdown/fuzz/corpus/streaming/grammar-visibility -whitespace
+rust/crates/markdown/fuzz/corpus/streaming/inline-adjacency -whitespace
+# browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes decodes this protobuf seed and asserts its outcome.
+rust/crates/stream/fuzz/corpus/session/browser-opened-foreign binary
+# Protobuf-encoded task-volume seeds: their tab, newline and space bytes are field data, not text.
+rust/fuzz/task-volume/corpus/task_volume/head_31 binary
+rust/fuzz/task-volume/corpus/task_volume/head_32 binary
