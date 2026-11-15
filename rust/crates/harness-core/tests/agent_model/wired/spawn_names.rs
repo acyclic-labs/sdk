@@ -1612,6 +1612,80 @@ async fn a_user_message_to_a_child_settles_without_a_parent_model_call() -> Resu
     Ok(())
 }
 
+/// Settlements the parent has not yet observed cost it one turn together:
+/// the first wakes it, and that turn's first request admits every later one
+/// already in its inbox, each notice intact and in inbox order.
+/// Negative control: giving each waking notice its own turn (leaving waking
+/// notices out of the first boundary's steering) spends a turn per child.
+#[tokio::test]
+async fn unobserved_settlements_share_one_parent_model_call() -> Result {
+    const CHILDREN: [&str; 3] = ["first", "second", "third"];
+    let (agents, stream, root, model) = fixture(
+        with_retrospectives(
+            CHILDREN
+                .map(|name| spawn_call(name, &[]))
+                .into_iter()
+                .chain([ScriptedTurn::Text("delegated".into())]),
+        )
+        .collect(),
+        0,
+    )
+    .await?;
+    deliver(&agents, &root, requested("delegate-three", &root)).await?;
+    let before = inbox_tail(&*stream, &root).await?;
+    let mut children = Vec::new();
+    for name in CHILDREN {
+        let child = named(&agents, &root, name).await?;
+        model.extend(with_retrospectives([ScriptedTurn::Text(format!(
+            "{name} done"
+        ))]));
+        agents.drain(&child).await?;
+        children.push(child);
+    }
+    assert_eq!(
+        inbox_tail(&*stream, &root).await? - before,
+        CHILDREN.len() as u64,
+        "each delegated child settles one waking notice"
+    );
+    let parent_calls = model.request_count();
+    model.extend(with_retrospectives([ScriptedTurn::Text(
+        "Observed every child".into(),
+    )]));
+    agents.drain(&root).await?;
+    // One turn: its answer, then its retrospective.
+    assert_eq!(
+        model.request_count(),
+        parent_calls + 2,
+        "unobserved settlements did not share one parent turn"
+    );
+    let request = model
+        .requests()
+        .into_iter()
+        .nth(parent_calls)
+        .ok_or("no parent request")?;
+    let sources = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            ModelContentPart::Notices { notices } => Some(notices),
+            _ => None,
+        })
+        .flatten()
+        .filter(|notice| notice.kind == "child.settled")
+        .map(|notice| notice.source.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sources,
+        children
+            .iter()
+            .map(|child| child.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        "the shared call must carry every settlement, in inbox order"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn progress_send_reaches_waiting_parent_and_survives_settlement() -> Result {
     let (agents, stream, root, model) = fixture(
