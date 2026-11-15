@@ -12,6 +12,7 @@ async fn optional_planning_does_not_enter_worker_context() -> Result<()> {
         shell: "sh".into(),
         tool_path: None,
         tooling: None,
+        scratch: None,
         current_date: "2026-01-01".into(),
         timezone: "UTC".into(),
     });

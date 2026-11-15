@@ -106,6 +106,7 @@ async fn manifest(
             manifest.environment = Some(EnvironmentFacts {
                 cwd: Some(format!("/workspace/{version}")),
                 tooling: Some(value),
+                scratch: None,
                 current_date: format!("2026-11-{version:02}"),
                 ..Default::default()
             })
