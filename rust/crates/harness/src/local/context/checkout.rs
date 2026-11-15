@@ -258,10 +258,9 @@ impl LocalHarness {
                 observer(self, path).await?;
             }
         }
-        let copies = self
-            .publish_mention_copies(base, copies, publisher, operation)
-            .await?;
-        // The copies disclose only what the authority still admits.
+        // The copies disclose only what the authority still admits, and are
+        // saved only then: a replay of `operation` returns saved copies
+        // without authorizing again, so nothing refused may be saved.
         self.authorize_checkout_context(
             workspace,
             view.workspace(),
@@ -270,7 +269,8 @@ impl LocalHarness {
             (&self.verifier, &self.signed),
         )
         .await?;
-        Ok(copies)
+        self.publish_mention_copies(base, copies, publisher, operation)
+            .await
     }
 }
 
