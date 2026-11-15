@@ -13,6 +13,20 @@ impl acyclic_stream::UnixMillisClock for Clock {
     }
 }
 
+/// Runs one model phase to completion on the current loom thread.
+///
+/// Each phase's future is built in this frame, so it occupies the stack only
+/// while that phase runs. Built inline, every phase's future stayed in the
+/// model's one frame for the whole model: the 5,408-byte `begin_with_lease_id`
+/// future sat beneath the entire `create_authority` call chain. No product
+/// caller stacks phase futures in one frame; each awaits one operation at a
+/// time.
+// Never inlined: inlined, the phase futures return to the model's frame.
+#[inline(never)]
+fn phase<F: std::future::Future>(start: impl FnOnce() -> F) -> F::Output {
+    loom::future::block_on(Box::pin(start()))
+}
+
 fn publication_after_revocation(broken: bool, fork: bool) {
     let provider = Arc::new(MemoryStream::new_with_clock(
         Default::default(),
@@ -26,32 +40,31 @@ fn publication_after_revocation(broken: bool, fork: bool) {
     let authority_id = acyclic_fs::kernel::volume_authority_id(workspace.volume_id());
     let cancellation = CancellationToken::new();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    let head = match loom::future::block_on(Box::pin(authority.create_authority::<()>(
-        authority_id,
-        acyclic_fs::Epoch::GENESIS,
-        &mut work,
-        None,
-    )))
+    let head = match phase(|| {
+        authority.create_authority::<()>(authority_id, acyclic_fs::Epoch::GENESIS, &mut work, None)
+    })
     .unwrap()
     {
         acyclic_fs::CreateAuthorityOutcome::Created(head) => head,
         _ => panic!("model authority already existed"),
     };
-    let lease = loom::future::block_on(Box::pin(windows.begin_with_lease_id(
-        workspace,
-        acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([1; 32])),
-        "task:reservation",
-        1,
-        10_000,
-        acyclic_fs::OperationLeaseId::from_bytes([9; 16]),
-    )))
+    let lease = phase(|| {
+        windows.begin_with_lease_id(
+            workspace,
+            acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([1; 32])),
+            "task:reservation",
+            1,
+            10_000,
+            acyclic_fs::OperationLeaseId::from_bytes([9; 16]),
+        )
+    })
     .unwrap();
     let (ready, preparing) = loom::sync::mpsc::channel();
     let (closed, revoked) = loom::sync::mpsc::channel();
     let closing = lease.clone();
     let closer = loom::thread::spawn(move || {
         preparing.recv().unwrap();
-        loom::future::block_on(Box::pin(windows.finish(&closing, 2))).unwrap();
+        phase(|| windows.finish(&closing, 2)).unwrap();
         closed.send(()).unwrap();
     });
     let writer = loom::thread::spawn(move || {
@@ -70,6 +83,7 @@ fn publication_after_revocation(broken: bool, fork: bool) {
                 },
             ))
         };
+        let mut publish = &mut before_publish;
         let request = acyclic_fs::GuardedAppend {
             authority_id,
             epoch: head.epoch,
@@ -106,23 +120,16 @@ fn publication_after_revocation(broken: bool, fork: bool) {
                 retained: proposed,
             };
             matches!(
-                loom::future::block_on(Box::pin(authority.fork_workspace(
-                    fork,
-                    request.permit,
-                    &mut work,
-                    Some(&mut &mut before_publish),
-                )))
+                phase(|| {
+                    authority.fork_workspace(fork, request.permit, &mut work, Some(&mut publish))
+                })
                 .unwrap(),
                 acyclic_fs::WorkspaceForkOutcome::Committed
             )
         } else {
             matches!(
-                loom::future::block_on(Box::pin(authority.compare_and_append(
-                    request,
-                    &mut work,
-                    Some(&mut &mut before_publish),
-                )))
-                .unwrap(),
+                phase(|| authority.compare_and_append(request, &mut work, Some(&mut publish)))
+                    .unwrap(),
                 acyclic_fs::AppendOutcome::Committed(_)
                     | acyclic_fs::AppendOutcome::AlreadyCommitted(_)
             )
