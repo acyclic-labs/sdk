@@ -2,7 +2,7 @@ use super::*;
 use std::{future::Future, pin::Pin, task::Poll};
 use tracing_subscriber::layer::SubscriberExt as _;
 
-type Wait = Pin<Box<crate::obs::Waiting<tokio::sync::oneshot::Receiver<()>>>>;
+type Wait = Pin<Box<crate::obs::Waiting<tokio::sync::oneshot::Receiver<()>, usize>>>;
 
 fn pending(report: &WaitReport, key: usize) -> (tokio::sync::oneshot::Sender<()>, Wait) {
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
@@ -11,6 +11,13 @@ fn pending(report: &WaitReport, key: usize) -> (tokio::sync::oneshot::Sender<()>
         crate::obs::waiting("channel-close", key, receiver)
     });
     (sender, Box::pin(wait))
+}
+
+/// A wait whose producer is pending, so it is reported until dropped.
+fn blocked(report: &WaitReport, key: usize) -> (tokio::sync::oneshot::Sender<()>, Wait) {
+    let (sender, mut wait) = pending(report, key);
+    assert!(poll(&mut wait).is_pending());
+    (sender, wait)
 }
 
 fn poll(wait: &mut Wait) -> Poll<Result<(), tokio::sync::oneshot::error::RecvError>> {
@@ -92,6 +99,17 @@ fn a_retained_descendant_does_not_retain_a_finished_or_cancelled_wait() {
         let (child_sender, child_receiver) = std::sync::mpsc::channel();
         let mut wait = Box::pin(tracing::dispatcher::with_default(&dispatch, || {
             crate::obs::waiting("channel-close", outcome, async move {
+                // The report opens on the first pending poll; the child is
+                // created after it, under the open report.
+                let mut first = true;
+                std::future::poll_fn(|_| {
+                    if std::mem::take(&mut first) {
+                        Poll::Pending
+                    } else {
+                        Poll::Ready(())
+                    }
+                })
+                .await;
                 child_sender
                     .send(tracing::info_span!("retained-child"))
                     .unwrap();
@@ -99,6 +117,8 @@ fn a_retained_descendant_does_not_retain_a_finished_or_cancelled_wait() {
             })
         }));
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+        assert!(child_receiver.try_recv().is_err());
         assert!(wait.as_mut().poll(&mut cx).is_pending());
         let child = child_receiver.try_recv().unwrap();
         assert!(snapshot(&report).contains(outcome));
@@ -128,7 +148,7 @@ fn a_retained_descendant_does_not_retain_a_finished_or_cancelled_wait() {
 #[test]
 fn closing_adjacent_waits_preserves_all_other_live_keys() {
     let report = WaitReport::default();
-    let mut waits: Vec<_> = (0..7).map(|key| Some(pending(&report, key))).collect();
+    let mut waits: Vec<_> = (0..7).map(|key| Some(blocked(&report, key))).collect();
     // Exercise middle, first, last and newly adjacent removals. Only the
     // owner's two neighbors change; reporting must retain every other key.
     for key in [3, 0, 6, 2, 4] {
@@ -147,7 +167,7 @@ fn closing_adjacent_waits_preserves_all_other_live_keys() {
         drop(wait);
     }
     assert!(snapshot(&report).is_empty());
-    let (_sender, wait) = pending(&report, 2048);
+    let (_sender, wait) = blocked(&report, 2048);
     assert!(snapshot(&report).contains("channel-close 2048 since "));
     drop(wait);
     assert!(snapshot(&report).is_empty());
@@ -174,7 +194,7 @@ fn output_can_close_a_wait_and_failure_does_not_hold_the_registry() {
         }
     }
     let report = WaitReport::default();
-    let (_sender, wait) = pending(&report, 23);
+    let (_sender, wait) = blocked(&report, 23);
     let mut output = Output {
         report: report.clone(),
         wait: Some(wait),
@@ -197,4 +217,48 @@ fn output_can_close_a_wait_and_failure_does_not_hold_the_registry() {
             .starts_with("waiting: channel-close 23 since ")
     );
     assert!(snapshot(&report).is_empty());
+}
+
+#[test]
+fn a_wait_ready_on_its_first_poll_opens_no_span() {
+    struct Opened(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Opened {
+        fn on_new_span(
+            &self,
+            _: &tracing::span::Attributes<'_>,
+            _: &tracing::span::Id,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let report = WaitReport::default();
+    let opened = std::sync::Arc::default();
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::registry()
+            .with(report.clone())
+            .with(Opened(std::sync::Arc::clone(&opened))),
+    );
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    tracing::dispatcher::with_default(&dispatch, || {
+        let mut ready = Box::pin(crate::obs::waiting(
+            "channel-close",
+            1,
+            std::future::ready(()),
+        ));
+        assert!(ready.as_mut().poll(&mut cx).is_ready());
+        drop(ready);
+        assert_eq!(opened.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Negative control: the same subscriber records a wait that blocks.
+        let mut blocked = Box::pin(crate::obs::waiting(
+            "channel-close",
+            2,
+            std::future::pending::<()>(),
+        ));
+        assert!(blocked.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(opened.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(snapshot(&report).starts_with("waiting: channel-close 2 since "));
+        drop(blocked);
+        assert!(snapshot(&report).is_empty());
+    });
 }

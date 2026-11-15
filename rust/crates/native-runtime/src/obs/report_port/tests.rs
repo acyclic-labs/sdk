@@ -127,7 +127,7 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
                     "kernel-credit".into()
                 };
                 let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
-                let wait = crate::obs::waiting("channel-close", key, completion);
+                let wait = crate::obs::blocked("channel-close", key, completion);
                 let ack = received.map(|received| port.snapshot(received, &report));
                 if let Some(ack) = &ack {
                     assert_eq!(ack.waits.len(), 1);
@@ -453,7 +453,7 @@ fn report_port_child(mode: &str) {
         }
         let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
         let _wait = if mode == "live" {
-            Some(crate::obs::waiting(
+            Some(crate::obs::blocked(
                 "channel-close",
                 "report-control",
                 completion,
