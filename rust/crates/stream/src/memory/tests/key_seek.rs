@@ -169,7 +169,7 @@ fn disabling_the_index_exposes_the_historical_scan_slope() {
                     0,
                     path.tail,
                     &mut |items| {
-                        probes += items as usize;
+                        probes += usize::try_from(items).map_err(|_| StreamError::Capacity)?;
                         Ok::<_, StreamError>(())
                     },
                 )

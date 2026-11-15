@@ -211,7 +211,7 @@ impl Model {
                 for id in interest
                     .upsert
                     .into_iter()
-                    .map(|s| s.channel.unwrap().channel_id)
+                    .filter_map(|s| s.channel.map(|channel| channel.channel_id))
                 {
                     prop_assert_eq!(
                         self.expected.pop_front(),

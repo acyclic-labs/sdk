@@ -6,7 +6,7 @@ use prost::Message as _;
 fn qualify_marker(
     headers: &RecordHeaders,
     filter: &FollowFilter,
-    expected: Result<bool, StreamError>,
+    expected: &Result<bool, StreamError>,
     probes: usize,
     value: &[u8],
     decoded: &wire::ChangeRecord,
@@ -160,7 +160,7 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
             } else {
                 headers.attributes().len()
             };
-            qualify_marker(&headers, &filter, expected.clone(), probes, body, decoded);
+            qualify_marker(&headers, &filter, &expected, probes, body, decoded);
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let observed = std::sync::Arc::new(crate::test_meter::Meter::default());
@@ -177,7 +177,7 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
                 observed
                     .deny_codec
                     .store(true, std::sync::atomic::Ordering::SeqCst);
-                qualify_marker(&prepared, &filter, expected.clone(), probes, body, decoded);
+                qualify_marker(&prepared, &filter, &expected, probes, body, decoded);
                 drop(prepared);
                 observed.assert_refunded();
             }

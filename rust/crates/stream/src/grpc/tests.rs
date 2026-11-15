@@ -804,7 +804,7 @@ fn member_refusals() -> Vec<Status> {
         for (name, value) in metadata {
             status
                 .metadata_mut()
-                .append(*name, tonic::metadata::MetadataValue::from_static(*value));
+                .append(*name, tonic::metadata::MetadataValue::from_static(value));
         }
         status
     };
@@ -840,7 +840,9 @@ fn member_refusals() -> Vec<Status> {
     ]
 }
 
-pub(crate) fn original(status: &Status) -> (Code, String, Vec<u8>, Vec<(String, Vec<u8>)>) {
+type Original = (Code, String, Vec<u8>, Vec<(String, Vec<u8>)>);
+
+pub(crate) fn original(status: &Status) -> Original {
     let metadata = status
         .metadata()
         .as_ref()
@@ -935,7 +937,7 @@ fn attributed_unavailability_survives_transport_round_trips() {
             self::original(&attributed)
         );
     }
-    let mut duplicated = encoded.clone();
+    let mut duplicated = encoded;
     let value = duplicated
         .metadata()
         .get_bin("acyclic-cause-v1-bin")

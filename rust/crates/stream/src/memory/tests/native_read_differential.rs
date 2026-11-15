@@ -228,7 +228,7 @@ fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog() {
             let request = ReadRequest {
                 path: StreamPath::new("native/differential").unwrap(),
                 from: 0,
-                limit: batches as u32,
+                limit: u32::try_from(batches)?,
                 key: None,
                 at_least: Default::default(),
             };

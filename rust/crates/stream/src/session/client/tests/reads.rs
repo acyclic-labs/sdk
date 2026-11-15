@@ -408,7 +408,6 @@ async fn indexed_reads_share_session_credit_and_count_delivered_records() -> Tes
             order: Default::default(),
             key: Bytes::from_static(b"a"),
             before: 4,
-            ..Default::default()
         }),
         read_limit: 1,
         until: Some(4),

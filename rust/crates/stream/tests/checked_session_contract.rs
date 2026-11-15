@@ -267,7 +267,7 @@ fn watermark_corpus_seeds_reach_their_named_outcomes() {
         let (&selector, bytes) = seed.split_first().unwrap();
         assert_eq!(selector, 2);
         assert_eq!(
-            watermarks_from_wire(wire::TailResponse::decode(bytes).unwrap()),
+            watermarks_from_wire(&wire::TailResponse::decode(bytes).unwrap()),
             expected
         );
         assert_eq!(check(seed, Fault::None), Ok(()));

@@ -348,6 +348,25 @@ pub(crate) fn encode_append(request: &crate::AppendRequest) -> Result<String> {
     serde_json::to_string(&append_json(request)?).map_err(|_| "could not encode request")
 }
 
+/// Adds the minimum cut, one entry per authority; the host serves at or above it.
+fn with_at_least(value: Value, at_least: &[wire::Revision]) -> Value {
+    match value {
+        Value::Object(mut object) => {
+            if !at_least.is_empty() {
+                object.insert(
+                    "atLeast".into(),
+                    at_least
+                        .iter()
+                        .map(|revision| crate::http_response::revision_json(Some(revision)))
+                        .collect(),
+                );
+            }
+            Value::Object(object)
+        }
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,24 +446,5 @@ mod tests {
         let projected: Value = serde_json::from_str(&encode("commit", &wire.encode_to_vec())?)?;
         assert!(projected.pointer("/options/deadlineUnixMillis").is_none());
         Ok(())
-    }
-}
-
-/// Adds the minimum cut, one entry per authority; the host serves at or above it.
-fn with_at_least(value: Value, at_least: &[wire::Revision]) -> Value {
-    match value {
-        Value::Object(mut object) => {
-            if !at_least.is_empty() {
-                object.insert(
-                    "atLeast".into(),
-                    at_least
-                        .iter()
-                        .map(|revision| crate::http_response::revision_json(Some(revision)))
-                        .collect(),
-                );
-            }
-            Value::Object(object)
-        }
-        other => other,
     }
 }

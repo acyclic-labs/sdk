@@ -521,10 +521,10 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
                     idempotency_key: IdempotencyKey::new(OwnedBytes::from(match index {
                         0..=255 => {
                             let mut key = vec![0; 32];
-                            key[index as usize / 8] = 0x80 >> (index % 8);
+                            key[usize::try_from(index)? / 8] = 0x80 >> (index % 8);
                             key
                         }
-                        256..=286 => vec![0; index as usize - 255],
+                        256..=286 => vec![0; usize::try_from(index)? - 255],
                         _ => format!("other/{index}").into_bytes(),
                     }))?,
                 },

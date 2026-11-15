@@ -776,7 +776,7 @@ mod tests {
                     let probes = take_marker_probes();
                     let valid = validate(&record.value, &record.headers).is_ok();
                     if valid {
-                        projection_contract(&record).expect("projection fuzz oracle");
+                        projection_contract(&record)?;
                     }
                     for (index, filter) in filters.iter().enumerate() {
                         let (matched, allocations, marker_probes, parsed_bytes) =
@@ -805,17 +805,9 @@ mod tests {
                         );
                         let (projected, allocations, marker_probes, parsed_bytes) =
                             measure(|| filter.project(record.clone()));
-                        if !valid {
-                            assert_eq!(
-                                preservation.as_ref().map_err(|error| error.category()),
-                                Err(crate::StreamCategory::InvalidArgument)
-                            );
-                            assert_eq!(
-                                projected.as_ref().map_err(|error| error.category()),
-                                Err(crate::StreamCategory::InvalidArgument)
-                            );
-                        } else {
-                            let projected = projected.as_ref().unwrap().as_ref();
+                        if valid {
+                            let projected = projected.as_ref()?;
+                            let projected = projected.as_ref();
                             assert_eq!(matched, projected.is_some());
                             assert_eq!(preservation, Ok(projected == Some(&record)));
                             if let Some(projected) = projected {
@@ -832,6 +824,15 @@ mod tests {
                                     record.headers.attributes()
                                 );
                             }
+                        } else {
+                            assert_eq!(
+                                preservation.as_ref().map_err(|error| error.category()),
+                                Err(crate::StreamCategory::InvalidArgument)
+                            );
+                            assert_eq!(
+                                projected.as_ref().map_err(|error| error.category()),
+                                Err(crate::StreamCategory::InvalidArgument)
+                            );
                         }
                         if !valid
                             || index == 0
@@ -852,7 +853,10 @@ mod tests {
                                 "validate the original body once"
                             );
                         } else {
-                            let output = projected.as_ref().unwrap().as_ref().unwrap();
+                            let output = projected
+                                .as_ref()?
+                                .as_ref()
+                                .ok_or("partial projection was not retained")?;
                             assert_eq!(marker_probes, 2 * probes);
                             assert_eq!(
                                 parsed_bytes,

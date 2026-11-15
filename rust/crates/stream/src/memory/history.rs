@@ -85,7 +85,13 @@ impl<E, F: FnMut(u64) -> Result<(), E>> acyclic_collections::IndexReadWork for H
     fn examine(&mut self, items: u64) -> Result<(), E> {
         (self.0)(items)?;
         #[cfg(test)]
-        HISTORY_METADATA_READS.with(|count| count.set(count.get() + items as usize));
+        HISTORY_METADATA_READS.with(|count| {
+            count.set(
+                count
+                    .get()
+                    .saturating_add(usize::try_from(items).unwrap_or(usize::MAX)),
+            );
+        });
         Ok(())
     }
 }

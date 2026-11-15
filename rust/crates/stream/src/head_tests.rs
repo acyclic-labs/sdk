@@ -275,7 +275,7 @@ async fn check_child_selection<P: StreamProvider>(provider: &P) -> Result<(), St
         .after = page.next_after.clone();
     let next = provider.heads(continued.clone()).await?;
     next.validate_for(&continued)?;
-    let mut stalled = next.clone();
+    let mut stalled = next;
     stalled
         .children
         .as_mut()

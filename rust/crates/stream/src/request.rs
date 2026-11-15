@@ -996,7 +996,7 @@ mod tests {
             vec![append("a")?, append("b")?],
         )])?;
         let split = request(vec![
-            CommitEffect::hard(vec![present.clone()], vec![append("a")?]),
+            CommitEffect::hard(vec![present], vec![append("a")?]),
             CommitEffect::hard(Vec::new(), vec![append("b")?]),
         ])?;
         let mut soft = together.clone();

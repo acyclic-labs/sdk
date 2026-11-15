@@ -264,7 +264,10 @@ async fn history_search_is_bounded_replayable_and_excludes_concurrent_appends()
     let oversized = continuation
         .page(
             &counted,
-            NonZeroU32::new((crate::MAX_ITEMS * 2) as u32).ok_or(StreamError::InvalidArgument)?,
+            NonZeroU32::new(
+                u32::try_from(crate::MAX_ITEMS * 2).map_err(|_| StreamError::InvalidArgument)?,
+            )
+            .ok_or(StreamError::InvalidArgument)?,
         )
         .await?;
     assert_eq!(oversized.matches.len(), crate::MAX_ITEMS * 2);

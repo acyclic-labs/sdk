@@ -163,7 +163,8 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                     client_id: bytes::Bytes::from_static(b"deferred-owner"),
                     destination_node: "node".into(),
                     receive_bytes: crate::MAX_COMMAND_BYTES as u64,
-                    receive_frames: crate::MAX_ITEMS as u32,
+                    receive_frames: u32::try_from(crate::MAX_ITEMS)
+                        .map_err(|_| StreamError::Capacity)?,
                     credentials: vec![],
                 }),
             ))

@@ -138,7 +138,7 @@ async fn accepted_projection(provider: &impl StreamProvider) -> TestResult<Commi
     );
     let mut conflict = request.clone();
     conflict.idempotency_key = IdempotencyKey::unique();
-    assert!(matches!(provider.commit_accepted(conflict).await?, Err(_)));
+    assert!(provider.commit_accepted(conflict).await?.is_err());
     assert_eq!(provider.tail(path).await?, 1);
     Ok(request)
 }

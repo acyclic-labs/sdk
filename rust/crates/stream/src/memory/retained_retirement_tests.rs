@@ -13,7 +13,9 @@ fn observe_release(bytes: u64) {
     let released = RELEASED.get() + bytes;
     RELEASED.set(released);
     let observed = acyclic_test_support::current_allocations().expect("active allocation scope");
-    if observed.bytes_total as i64 - observed.bytes_current < released as i64 {
+    if observed.bytes_total.cast_signed() - observed.bytes_current
+        < released.cast_signed()
+    {
         EARLY_RELEASE.set(true);
     }
 }

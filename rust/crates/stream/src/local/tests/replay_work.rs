@@ -48,8 +48,10 @@ async fn replay<const ELIDE: bool>(
     }
     let after = stream.inner.required()?;
     let mut mismatched = request.clone();
-    if let Some(crate::CommitMutation::Append { records, .. }) =
-        mismatched.effects[0].mutations.first_mut()
+    if let Some(crate::CommitMutation::Append { records, .. }) = mismatched
+        .effects
+        .first_mut()
+        .and_then(|effect| effect.mutations.first_mut())
     {
         records.push((Bytes::from_static(b"different")).into());
     }

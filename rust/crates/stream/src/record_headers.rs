@@ -302,7 +302,7 @@ mod native_tests {
                 assert_eq!(created.count_current, 2);
                 assert_eq!(
                     owner.held.load(Ordering::SeqCst) - baseline,
-                    created.bytes_current as u64
+                    created.bytes_current.cast_unsigned()
                 );
                 let foreign = Arc::new(Meter::default());
                 assert_eq!(

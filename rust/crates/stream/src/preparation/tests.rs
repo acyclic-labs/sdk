@@ -105,7 +105,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
     let destination = StreamPath::new("destination")?;
     let exclusions = vec![RelativePath::new("private")?];
     let bodies = vec![AppendRecord::from(vec![1]), AppendRecord::from(vec![2])];
-    let mutations = vec![
+    let mutations = [
         CommitMutation::Append {
             path: source.clone(),
             records: bodies.clone(),
@@ -324,7 +324,7 @@ fn settling_reports_hard_conflicts_or_skips_soft_effects_and_views_the_rest_in_p
     )?;
     assert_eq!(
         conflicts,
-        [crate::CommitConflict::Missing { path: b.clone() }]
+        [crate::CommitConflict::Missing { path: b }]
     );
     assert!(skipped.is_empty());
     Ok(())

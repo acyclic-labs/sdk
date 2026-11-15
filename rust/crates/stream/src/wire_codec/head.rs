@@ -261,7 +261,7 @@ mod tests {
             };
             let wire = heads_request_to_wire(request.clone());
             let decoded = wire::HeadsRequest::decode(wire.encode_to_vec().as_slice()).unwrap();
-            prop_assert_eq!(heads_from_wire(decoded).unwrap(), request.clone());
+            prop_assert_eq!(heads_from_wire(decoded).unwrap(), request);
             let view = crate::Heads {
                 applied: crate::Revision { scope: crate::RevisionScope::new(Vec::new()), incarnation: 1, index: 0 },
                 retained: request.retained.iter().map(|selected| crate::RetainedRecordObservation {
@@ -300,7 +300,9 @@ mod tests {
                 malformed.retained[0].commit_id = Bytes::new();
                 prop_assert!(heads_from_wire(malformed).is_err());
                 let mut too_small = wire;
-                too_small.limit = too_small.retained.len() as u32 - 1;
+                too_small.limit = u32::try_from(too_small.retained.len())
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?
+                    - 1;
                 prop_assert_eq!(heads_from_wire(too_small).map_err(|error| error.category()), Err(StreamCategory::InvalidArgument));
             }
         }
