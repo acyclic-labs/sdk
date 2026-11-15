@@ -283,6 +283,9 @@ async fn spending_turn_settlement_commits_signal_and_terminal_action_once() -> R
             policy.actions.insert(Kind::NoProgress, action);
             let (filesystem, volumes, issuer, publisher) =
                 admitted_files(&stream, &path, operation, &policy).await?;
+            filesystem
+                .create_volume(&journal_of(volumes[0].volume()?)?)
+                .await?;
             let (body, _) = publisher
                 .stage_once(
                     OperationId::new(),

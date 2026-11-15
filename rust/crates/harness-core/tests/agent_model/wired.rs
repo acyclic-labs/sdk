@@ -139,19 +139,12 @@ async fn created_root(
     files: &Host,
     adoption: ForkAdopted,
 ) -> Result<AgentState> {
-    let provider = adoption
+    let private = adoption
         .volumes
         .iter()
         .find_map(WorkspaceEntry::as_volume)
-        .ok_or("a root binds its private volume")?
-        .provider()
-        .clone();
-    files
-        .create_volume(&acyclic_harness_core::conversation::journal_volume(
-            provider,
-            &adoption.agent,
-        )?)
-        .await?;
+        .ok_or("a root binds its private volume")?;
+    files.create_volume(&journal_of(private)?).await?;
     let created = create_root(&intent("create"), adoption.clone())?;
     assert!(matches!(
         submit(stream, created.request).await?,
@@ -520,6 +513,9 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
     let stream = Arc::new(MemoryStream::default());
     let path = super::create(stream.as_ref(), id(216)).await?;
     let (filesystem, binding) = private(&path).await?;
+    filesystem
+        .create_volume(&journal_of(binding.volume()?)?)
+        .await?;
     let issuer: acyclic_harness_core::core::RuntimeAuthority = AuthorityRoot::new(
         "agents",
         [7; 32],
@@ -1020,6 +1016,9 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
     let stream = Arc::new(MemoryStream::default());
     let path = super::create(stream.as_ref(), id(221)).await?;
     let (filesystem, binding) = private(&path).await?;
+    filesystem
+        .create_volume(&journal_of(binding.volume()?)?)
+        .await?;
     let peer = VolumeRef::new(
         binding.volume()?.provider().clone(),
         "agent-private".into(),
@@ -2678,6 +2677,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
             "done".into(),
         )]));
         let (host, private) = private(&path).await?;
+        host.create_volume(&journal_of(private.volume()?)?).await?;
         let volume = VolumeRef::new(
             private.volume()?.provider().clone(),
             "agent-scratch".into(),
