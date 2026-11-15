@@ -617,21 +617,30 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         reader.head(session.root.status().map_err(storage)?).await,
         Err(StreamError::AccessDenied)
     );
-    // The primitive filters broad discovery to authorized children. A directory
-    // owner can discover both roots; this original tree credential sees only its own.
-    let page = reader
-        .children_page(acyclic_stream::ChildrenPageRequest {
-            offset: 0,
-            parent: Some(StreamPath::new(crate::agent::AGENTS).map_err(storage)?),
-            after: None,
-            hierarchy_version: None,
-            limit: 16,
-            tail_stream: None,
-        })
+    // Listing first requires authority on the parent, before child visibility
+    // filtering. Only the directory owner may list the global agents parent.
+    let roots = acyclic_stream::ChildrenPageRequest {
+        offset: 0,
+        parent: Some(StreamPath::new(crate::agent::AGENTS).map_err(storage)?),
+        after: None,
+        hierarchy_version: None,
+        limit: 16,
+        tail_stream: None,
+    };
+    assert!(matches!(
+        reader.children_page(roots.clone()).await,
+        Err(error) if error.category() == &StreamError::AccessDenied
+    ));
+    let page = directory_connection
+        .session
+        .read_provider()
+        .children_page(roots)
         .await
         .map_err(storage)?;
-    assert_eq!(page.children.len(), 1);
-    assert_eq!(page.children[0].path.as_str(), connection.root.as_str());
+    assert_eq!(page.children.len(), 2);
+    for root in [&connection.root, &session.root] {
+        assert!(page.children.iter().any(|child| child.path.as_str() == root.as_str()));
+    }
     assert!(page.next_after.is_none());
     Ok(())
 }
