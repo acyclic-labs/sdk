@@ -280,6 +280,7 @@ pub fn observe_sync<T>(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pin_project_lite::pin_project! {
     struct InheritedStream<S> {
         #[pin]
@@ -288,6 +289,7 @@ pin_project_lite::pin_project! {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<S: futures::Stream> futures::Stream for InheritedStream<S> {
     type Item = S::Item;
     fn poll_next(

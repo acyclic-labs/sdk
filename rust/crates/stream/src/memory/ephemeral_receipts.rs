@@ -77,6 +77,7 @@ impl MemoryStream {
 struct EphemeralReplay {
     live: Arc<std::sync::atomic::AtomicBool>,
     /// The lease's retirement list; only native lease release walks it.
+    /// The lease's previous fact, retired after this one on release.
     #[cfg(not(target_arch = "wasm32"))]
     next: Option<CommitId>,
     fact: RetainedFactRef,
@@ -162,6 +163,8 @@ impl State {
 
 struct EphemeralRetention {
     key: EphemeralKey,
+    /// Native backing for the two index insertions; browsers meter none.
+    #[cfg(not(target_arch = "wasm32"))]
     allocation: Allocation,
     probes: ReplayProbes,
     fact: RetainedFactRef,
@@ -179,6 +182,7 @@ impl MemoryStream {
         let key = ephemeral_key(key.as_bytes(), &mut HistoryIndexWork(self))?;
         let keys = EphemeralKeys::insertion_bound(1).ok_or(StreamError::Capacity)?;
         let commits = EphemeralCommits::insertion_bound(1).ok_or(StreamError::Capacity)?;
+        #[cfg(not(target_arch = "wasm32"))]
         let bytes = keys
             .allocation_bytes
             .checked_add(commits.allocation_bytes)
@@ -190,6 +194,7 @@ impl MemoryStream {
             .ok_or(StreamError::Capacity)?;
         Ok(Some(EphemeralRetention {
             key,
+            #[cfg(not(target_arch = "wasm32"))]
             allocation: self.allocate(bytes)?,
             probes: self.reserve_replay_probes(items)?,
             fact: RetainedFact::reserved(self.allocate(
@@ -201,6 +206,7 @@ impl MemoryStream {
 
 struct ReceiptInsertWork<'a> {
     stream: &'a MemoryStream,
+    #[cfg(not(target_arch = "wasm32"))]
     allocation: &'a mut Allocation,
     probes: &'a mut ReplayProbes,
 }
@@ -259,6 +265,7 @@ impl Ephemeral {
             .unwrap_or_else(|| unreachable!("the publication lock retains the write's lease"));
         let EphemeralRetention {
             key: indexed_key,
+            #[cfg(not(target_arch = "wasm32"))]
             mut allocation,
             mut probes,
             fact: mut owner,
@@ -280,6 +287,7 @@ impl Ephemeral {
         };
         let mut work = ReceiptInsertWork {
             stream,
+            #[cfg(not(target_arch = "wasm32"))]
             allocation: &mut allocation,
             probes: &mut probes,
         };
