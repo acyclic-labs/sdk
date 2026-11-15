@@ -280,14 +280,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             private_navigation,
         )
         .into_source();
-        let source = Arc::new(Routed::new(
-            Empty,
+        let route = |name: &[u8]| {
             acyclic_fs::kernel::LogicalName::new(
                 acyclic_fs::kernel::NameEncoding::Utf8,
-                b"ui".to_vec(),
+                name.to_vec(),
             )
-            .map_err(|_| io.invalid("invalid private view route"))?,
-            source,
+            .map_err(|_| io.invalid("invalid private view route"))
+        };
+        // One static composition: `ui` and `evals` are sibling demand routes
+        // over the same authored overlay, companion store and session cut.
+        let source = Arc::new(Routed::new(
+            Routed::new(Empty, route(b"ui")?, source, limits),
+            route(b"evals")?,
+            crate::evals::StreamProvider::new(streams.clone(), agent)?.into_source(),
             limits,
         ));
         let mut ctx = KernelAccounting::native(&work, &cancellation);

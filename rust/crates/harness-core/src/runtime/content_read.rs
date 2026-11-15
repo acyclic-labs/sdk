@@ -107,7 +107,10 @@ impl TaskContext {
             crate::conversation::validate_content_path(relative, work)
         })
         .map_err(Error::tool_input)?;
-        if relative != "ui" && !relative.starts_with("ui/") {
+        if relative != "ui"
+            && !relative.starts_with("ui/")
+            && (write || (relative != "evals" && !relative.starts_with("evals/")))
+        {
             return Err(content_error(io, ErrorCode::Unauthorized,
                 "managed private files are read-only; recovery: author volume:///private/ui/ instead")
                 .tool_input());

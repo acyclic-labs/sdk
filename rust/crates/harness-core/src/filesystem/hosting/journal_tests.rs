@@ -108,6 +108,59 @@ async fn private_metadata_uses_the_session_cut_before_and_after_an_authored_over
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn production_private_views_route_evaluations_beside_ui() -> TestResult {
+    use crate::conversation::ContentGrant;
+    let (bound, root) = binding().await?;
+    let state = bound.agents().state(&root).await?;
+    let private = state
+        .volumes
+        .iter()
+        .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
+        .ok_or("missing private binding")?
+        .volume()?;
+    let (scope, verifier) = bound.volume_scope(&root).await?;
+    let host = bound
+        .volumes()
+        .for_agent_views(
+            bound.agents().provider().clone(),
+            &root,
+            private,
+            &verifier,
+            &scope,
+        )
+        .await?;
+    let grant = ContentGrant::verify_directory_read(&verifier, &scope, private, "", &mut None)?;
+    let list = |path: &'static str| {
+        host.list_private_directory(
+            private,
+            &grant,
+            path,
+            crate::filesystem::DirectoryOptions {
+                generation: None,
+                after: None,
+                maximum_entries: 8,
+                ceiling: None,
+            },
+        )
+    };
+    let top = list("").await?.ok_or("private root is absent")?;
+    let names: Vec<_> = top
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert!(names.contains(&"ui"), "{names:?}");
+    assert!(names.contains(&"evals"), "{names:?}");
+    let cases = list("evals")
+        .await?
+        .ok_or("production evaluation route is absent")?;
+    assert!(cases.entries.is_empty(), "an unsettled agent has no cases");
+    assert!(cases.next.is_none());
+    Ok(())
+}
+
 struct NoTurns;
 impl TurnExecutors for NoTurns {
     fn executor<'a>(
