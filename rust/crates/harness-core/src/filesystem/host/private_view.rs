@@ -209,7 +209,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Composes the private projections with the agent's existing authored
     /// volume. Both local and served sessions call this after admission.
     /// Companion state stays on the same authority as the session volumes.
-    pub(in crate::filesystem) async fn for_agent_views<P>(
+    ///
+    /// The composition is erased here, so every turn opening and directory
+    /// binding that awaits it holds one pointer and never its nested state.
+    pub(in crate::filesystem) fn for_agent_views<'a, P>(
+        self: &'a Arc<Self>,
+        streams: Arc<P>,
+        agent: &'a crate::agent::AgentPath,
+        volume: &'a VolumeRef,
+        verifier: &'a crate::core::AuthorityVerifier,
+        scope: &'a crate::core::Scope,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Arc<Self>>>
+    where
+        P: acyclic_stream::NativeStreamProvider + ?Sized + 'static,
+    {
+        acyclic_stream::erase_provider_future(move || {
+            self.compose_agent_views(streams, agent, volume, verifier, scope)
+        })
+    }
+
+    async fn compose_agent_views<P>(
         self: &Arc<Self>,
         streams: Arc<P>,
         agent: &crate::agent::AgentPath,
