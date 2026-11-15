@@ -295,11 +295,11 @@ fn checked<T, M>(
 pub(crate) fn retain<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
-    meter: Meter,
+    meter: &Meter,
 ) -> Result<ObjectsNativeFuture<'a, Retained>, NativeObjectsError> {
-    native_input_meter(&meter, &request)?;
-    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
-    native_future(&meter, async move {
+    native_input_meter(meter, &request)?;
+    let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
+    native_future(meter, async move {
         let account = account.over(&medium);
         // The account borrows the root. Keep it in the original request so
         // its backing retires before the request's funding on every exit.
@@ -314,11 +314,11 @@ pub(crate) fn retain<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
 pub(crate) fn contains<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     request: ObjectsNativeRequest<Digest>,
-    meter: Meter,
+    meter: &Meter,
 ) -> Result<ObjectsNativeFuture<'a, bool>, NativeObjectsError> {
-    native_input_meter(&meter, &request)?;
-    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
-    native_future(&meter, async move {
+    native_input_meter(meter, &request)?;
+    let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
+    native_future(meter, async move {
         let account = account.over(&medium);
         // Consume head metadata while its original medium funding is live.
         let present = match account.head_inner(request.data).await {
@@ -334,11 +334,11 @@ pub(crate) fn contains<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
 pub(crate) fn get<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     request: ObjectsNativeRequest<(Digest, ByteRange, u64)>,
-    meter: Meter,
+    meter: &Meter,
 ) -> Result<ObjectsNativeFuture<'a, Object>, NativeObjectsError> {
-    native_input_meter(&meter, &request)?;
-    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
-    native_future(&meter, async move {
+    native_input_meter(meter, &request)?;
+    let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
+    native_future(meter, async move {
         let account = account.over(&medium);
         let result = account
             .get_inner(request.data.0, request.data.1, request.data.2)
@@ -351,11 +351,11 @@ pub(crate) fn get<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
 pub(crate) fn get_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     requests: ObjectsNativeRequest<Vec<(Digest, ByteRange, u64)>>,
-    meter: Meter,
+    meter: &Meter,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<Object>>, NativeObjectsError> {
-    native_input_meter(&meter, &requests)?;
-    let batch_meter = Arc::clone(&meter);
-    native_future(&meter, async move {
+    native_input_meter(meter, &requests)?;
+    let batch_meter = Arc::clone(meter);
+    native_future(meter, async move {
         // An unpolled frame keeps the whole request. Once started, declare
         // funding first so the iterator also retires before it on withdrawal.
         let _custody;
@@ -384,11 +384,11 @@ pub(crate) fn get_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
 pub(crate) fn put<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     request: ObjectsNativeRequest<(crate::Sealed, Vec<Digest>)>,
-    meter: Meter,
+    meter: &Meter,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsPutReceipt>, NativeObjectsError> {
-    native_input_meter(&meter, &request)?;
-    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
-    native_future(&meter, async move {
+    native_input_meter(meter, &request)?;
+    let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
+    native_future(meter, async move {
         // Declare funding before the data it protects, and detach only after
         // this original request has entered its admitted frame.
         let _custody;
@@ -403,7 +403,7 @@ pub(crate) fn put<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
 pub(crate) fn put_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
-    meter: Meter,
+    meter: &Meter,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
     put_window(account, requests, meter, crate::BATCH_WINDOW)
 }
@@ -412,12 +412,12 @@ pub(crate) fn put_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
 pub(crate) fn put_window<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
-    meter: Meter,
+    meter: &Meter,
     window: usize,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
-    native_input_meter(&meter, &requests)?;
-    let batch_meter = Arc::clone(&meter);
-    native_future(&meter, async move {
+    native_input_meter(meter, &requests)?;
+    let batch_meter = Arc::clone(meter);
+    native_future(meter, async move {
         // An unpolled frame keeps the whole request. Once started, declare
         // funding first so the iterator also retires before it on withdrawal.
         let _custody;

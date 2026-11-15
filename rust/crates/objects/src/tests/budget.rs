@@ -48,7 +48,10 @@ impl Budget {
 
     /// Spends original operation credit, refused past the budget.
     fn spend(counter: &std::sync::Mutex<Option<u64>>, count: u64) -> std::io::Result<()> {
-        match &mut *counter.lock().unwrap() {
+        match &mut *counter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
             Some(left) if *left < count => Err(std::io::ErrorKind::QuotaExceeded.into()),
             Some(left) => {
                 *left -= count;
@@ -60,7 +63,10 @@ impl Budget {
 
     fn hold(&self, bytes: u64) -> std::io::Result<()> {
         acyclic_native_runtime::NativeReadMeter::check(self)?;
-        let mut held = self.held.lock().unwrap();
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if held.0 + bytes > self.limit {
             return Err(std::io::ErrorKind::OutOfMemory.into());
         }
@@ -80,7 +86,10 @@ impl Budget {
 
     /// The peak live allocation since the last call.
     pub(super) fn peak(&self) -> u64 {
-        let mut held = self.held.lock().unwrap();
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let live = held.0;
         std::mem::replace(&mut held.1, live)
     }
@@ -166,7 +175,10 @@ impl acyclic_native_runtime::NativeReadMeter for Budget {
         self.hold(bytes)
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
-        let mut held = self.held.lock().unwrap();
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         held.0 += bytes;
         held.1 = held.1.max(held.0);
         self.adopted(bytes);

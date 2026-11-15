@@ -84,7 +84,10 @@ mod format_recovery_tests {
         expected: &[u8],
         bytes: OwnedBytes,
     ) -> Result<(), MediumError> {
-        let observed = medium.observe(key.to_owned()).await?.unwrap();
+        let observed = medium
+            .observe(key.to_owned())
+            .await?
+            .ok_or_else(|| MediumError::Failed(std::io::Error::other("missing observed key")))?;
         assert_eq!(observed.bytes.as_ref(), expected);
         assert!(medium.replace(observed.observation, bytes).await?.is_some());
         Ok(())
@@ -107,7 +110,7 @@ mod format_recovery_tests {
             dying: None,
             condemned: 0,
         }
-        .encode();
+        .encode()?;
         let envelope_key = account.envelope_key(&digest);
         let batch = encode_batch(&[]);
         let batch_key = format!(
@@ -610,11 +613,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> DecodeAllocation for Ac
 
 impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn payload_key(&self, digest: &Digest, version: &[u8; 16]) -> String {
-        let hex = digest.to_hex();
         format!(
-            "{}p/{}/{hex}.{}",
+            "{}p/{}/{}.{}",
             self.state.prefix,
-            &hex[..2],
+            digest.hex_prefix(),
+            digest.to_hex(),
             hex::encode(version)
         )
     }
@@ -844,8 +847,12 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     pub(crate) fn envelope_key(&self, digest: &Digest) -> String {
-        let hex = digest.to_hex();
-        format!("{}e/{}/{hex}", self.state.prefix, &hex[..2])
+        format!(
+            "{}e/{}/{}",
+            self.state.prefix,
+            digest.hex_prefix(),
+            digest.to_hex()
+        )
     }
 
     fn root_prefix(&self, root: &RootId) -> String {
@@ -1059,16 +1066,15 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
         let mut covered = Vec::new();
         let mut seen = HashSet::new();
-        let mut pending: Vec<Digest> = match only {
-            Some(only) => only.to_vec(),
-            None => {
-                let written = self
-                    .state
-                    .written
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                written.keys().copied().collect()
-            }
+        let mut pending: Vec<Digest> = if let Some(only) = only {
+            only.to_vec()
+        } else {
+            let written = self
+                .state
+                .written
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            written.keys().copied().collect()
         };
         {
             let written = self
@@ -1132,7 +1138,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 return Ok((Delete::Absent, Vec::new()));
             }
             // A deleter's mark is taken over below, whatever the grace.
-            None => {}
             Some(_) if envelope.dying.is_some() => {}
             // This collection starts its grace.
             Some(fence) if envelope.condemned == 0 => {
@@ -1140,7 +1145,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                     condemned: fence,
                     ..envelope
                 };
-                return match self.medium.replace(observed, stamped.encode().into()).await {
+                return match self.medium.replace(observed, stamped.encode()?.into()).await {
                     Ok(_) | Err(MediumError::Ambiguous(_)) => Ok((Delete::Referenced, Vec::new())),
                     Err(error) => Err(medium(error)),
                 };
@@ -1148,7 +1153,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             Some(fence) if envelope.condemned.saturating_add(1) >= fence => {
                 return Ok((Delete::Referenced, Vec::new()));
             }
-            Some(_) => {}
+            None | Some(_) => {}
         }
         if self.any(&self.index_prefix(&digest)).await? {
             // A kept blob outlives a mark its deleter left behind.
@@ -1161,7 +1166,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             dying: Some(version()?),
             ..envelope.clone()
         }
-        .encode();
+        .encode()?;
         let Some(marked) = self
             .medium
             .replace(observed, marked.into())
@@ -1199,7 +1204,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             condemned: 0,
             ..envelope
         };
-        match self.medium.replace(marked, live.encode().into()).await {
+        match self.medium.replace(marked, live.encode()?.into()).await {
             Ok(_) | Err(MediumError::Ambiguous(_)) => Ok(()),
             Err(error) => Err(medium(error)),
         }
@@ -1333,7 +1338,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 ..wanted.clone()
             };
             self.track(&digest, &fresh);
-            match self.medium.create(&key, fresh.encode().into()).await {
+            match self.medium.create(&key, fresh.encode()?.into()).await {
                 Ok(true) => break (fresh, true),
                 Ok(false) => self.untrack(&digest, &fresh.version),
                 Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
@@ -1428,7 +1433,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             condemned: 0,
             ..existing
         };
-        match self.medium.replace(observed, live.encode().into()).await {
+        match self.medium.replace(observed, live.encode()?.into()).await {
             Ok(Some(_)) => return Ok(Adopted::Live(live)),
             Ok(None) => {}
             Err(MediumError::Ambiguous(_)) => return Ok(Adopted::Unknown),
@@ -1589,7 +1594,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 // The index-key vector is charged before any key is written, so a
                 // refused charge leaves nothing to clean up. Every key has one
                 // length: a fixed-width prefix and this tag.
-                let key = self.index_key(&references[0], &tag).len();
+                let first = references.first().ok_or_else(invalid)?;
+                let key = self.index_key(first, &tag).len();
                 let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
                 self.medium.allocate(held).map_err(medium)?;
                 // Every write is withheld before the first key: n keys, then either
@@ -1601,12 +1607,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 let key = format!("{}{name}", self.root_prefix(root));
                 match self.commit_batch(&references, &tag, &key, batch).await {
                     Ok(()) => {}
-                    Err(Commit::Unknown(error)) => return Err(error),
+                    Err(Commit::Unknown(error) | Commit::Unflushed(error)) => return Err(error),
                     Err(Commit::Failed(error)) => {
                         self.unreference(&references, &tag).await?;
                         return Err(error);
                     }
-                    Err(Commit::Unflushed(error)) => return Err(error),
                 }
                 Ok(Retained {
                     references: references.len() as u64,
@@ -1681,7 +1686,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                         return Err(invalid());
                     }
                 }
-                let encoded = manifest.encode();
+                let encoded = manifest.encode()?;
                 let digest = Digest::of(&encoded);
                 let stored = encoded.len() as u64;
                 self.publish(
@@ -2082,21 +2087,20 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
                         continue;
                     }
                     if run > issued.run {
-                        let claimed = match claimed {
-                            Some(claimed) => claimed,
-                            None => {
-                                let record = self
-                                    .medium
-                                    .read(&self.incarnation_key(), None)
-                                    .await
-                                    .map_err(medium)?
-                                    .ok_or(Error::from(ErrorCode::RevisionForeign))?;
-                                let (stored, run) = decode_incarnation(&record)?;
-                                if stored != incarnation {
-                                    return Err(ErrorCode::RevisionForeign.into());
-                                }
-                                *claimed.insert(run)
+                        let claimed = if let Some(claimed) = claimed {
+                            claimed
+                        } else {
+                            let record = self
+                                .medium
+                                .read(&self.incarnation_key(), None)
+                                .await
+                                .map_err(medium)?
+                                .ok_or(Error::from(ErrorCode::RevisionForeign))?;
+                            let (stored, run) = decode_incarnation(&record)?;
+                            if stored != incarnation {
+                                return Err(ErrorCode::RevisionForeign.into());
                             }
+                            *claimed.insert(run)
                         };
                         // A run nobody claimed issued nothing; the wait refuses it.
                         if run > claimed {
@@ -2147,7 +2151,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         request: crate::ObjectsNativeRequest<Digest>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<crate::ObjectsNativeFuture<'_, bool>, crate::NativeObjectsError> {
-        crate::native::contains(self, request, meter)
+        crate::native::contains(self, request, &meter)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2156,7 +2160,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         request: crate::ObjectsNativeRequest<(Digest, ByteRange, u64)>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<crate::ObjectsNativeFuture<'_, Object>, crate::NativeObjectsError> {
-        crate::native::get(self, request, meter)
+        crate::native::get(self, request, &meter)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2168,7 +2172,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         crate::ObjectsNativeFuture<'_, crate::ObjectsBatch<Object>>,
         crate::NativeObjectsError,
     > {
-        crate::native::get_batch(self, requests, meter)
+        crate::native::get_batch(self, requests, &meter)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2178,7 +2182,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<crate::ObjectsNativeFuture<'_, crate::ObjectsPutReceipt>, crate::NativeObjectsError>
     {
-        crate::native::put(self, request, meter)
+        crate::native::put(self, request, &meter)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2190,7 +2194,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         crate::ObjectsNativeFuture<'_, crate::ObjectsBatch<crate::ObjectsPutReceipt>>,
         crate::NativeObjectsError,
     > {
-        crate::native::put_batch(self, requests, meter)
+        crate::native::put_batch(self, requests, &meter)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2199,7 +2203,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         request: crate::ObjectsNativeRequest<(RootId, Vec<Digest>)>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<crate::ObjectsNativeFuture<'_, Retained>, crate::NativeObjectsError> {
-        crate::native::retain(self, request, meter)
+        crate::native::retain(self, request, &meter)
     }
 }
 

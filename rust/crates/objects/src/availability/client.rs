@@ -78,7 +78,7 @@ impl Credential {
             Ok(next)
         };
         match future::select(self.stop.as_mut(), std::pin::pin!(delivery)).await {
-            Either::Left(_) => return Err(denied()),
+            Either::Left(_) => Err(denied()),
             Either::Right((next, _)) => next,
         }
     }

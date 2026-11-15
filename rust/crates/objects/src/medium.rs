@@ -241,7 +241,9 @@ impl MemoryMedium {
         let Some(index) = faults.iter().position(|armed| (armed.matches)(&stored[..])) else {
             return Ok(stored.clone());
         };
-        let armed = &mut faults[index];
+        let Some(armed) = faults.get_mut(index) else {
+            unreachable!("the armed fault was just found")
+        };
         armed.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let fault = armed.fault;
         let spent = armed.remaining.as_mut().is_some_and(|remaining| {

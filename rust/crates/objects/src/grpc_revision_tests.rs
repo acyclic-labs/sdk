@@ -153,13 +153,14 @@ async fn generated_get_put_delete_share_floors_and_scoped_views() -> TestResult 
         })
         .await?;
     let deleted = issued(response.metadata())?.ok_or("delete revision")?;
-    let captured = requests.lock().unwrap();
-    assert!(revision::requested(&captured[0])?.is_empty());
-    assert!(revision::requested(&captured[1])?.covers(&committed));
-    assert!(revision::requested(&captured[2])?.covers(&served));
-    assert!(revision::requested(&captured[2])?.covers(&barrier));
-    assert!(revision::requested(&captured[3])?.covers(&replaced));
-    drop(captured);
+    {
+        let captured = requests.lock().unwrap();
+        assert!(revision::requested(&captured[0])?.is_empty());
+        assert!(revision::requested(&captured[1])?.covers(&committed));
+        assert!(revision::requested(&captured[2])?.covers(&served));
+        assert!(revision::requested(&captured[2])?.covers(&barrier));
+        assert!(revision::requested(&captured[3])?.covers(&replaced));
+    }
     owner
         .revisions()
         .observe(&AppliedRevisions::in_process().at(1));
@@ -203,93 +204,104 @@ async fn stored(
 
 async fn refused_writes_preserve_storage() -> TestResult {
     for foreign in [false, true] {
-        let medium = crate::MemoryMedium::default();
-        let provider = Arc::new(crate::Store::new(medium.clone()).account(b"write-minimum")?);
-        let body = b"original retained bytes";
-        let digest = Digest::of(body);
-        provider.put(body.as_slice().into(), Vec::new()).await?;
-        let root = RootId::new(b"original-root".to_vec())?;
-        provider.retain(&root, vec![digest]).await?;
-        let deletable = provider
-            .put(b"unretained".as_slice().into(), Vec::new())
-            .await?;
-        provider.flush(None).await?;
-        let current = provider
-            .revisions()
-            .await?
-            .expect("original authority")
-            .current();
-        let wanted = if foreign {
-            AppliedRevisions::in_process().at(1)
-        } else {
-            Revision {
-                incarnation: current.incarnation.wrapping_add(1),
-                ..current
-            }
-        };
-        let floor = RevisionCut::of(wanted);
-        let before = stored(&medium).await?;
-        let mut client = wire::blobs_service_client::BlobsServiceClient::new(RevisionChannel::new(
-            channel_over(serving(provider.clone())),
-        ));
-        macro_rules! refused {
-            ($method:ident, $message:expr) => {{
-                let mut request = Request::new($message);
-                minimum(&mut request, Some(&floor));
-                let result = client.$method(request).await;
-                assert_eq!(
-                    stored(&medium).await?,
-                    before,
-                    "refused write changed physical storage"
-                );
-                let failure =
-                    result.expect_err("foreign write minimum must refuse before dispatch");
-                assert_eq!(
-                    error_from_status(&failure).code,
-                    wire::ErrorCode::RevisionForeign
-                );
-            }};
-        }
-        refused!(
-            delete_blob,
-            wire::DeleteBlobRequest {
-                digest: Some(deletable.verified().ok_or("original put")?.digest.into()),
-            }
-        );
-        refused!(put_blob, put(b"refused singleton"));
-        refused!(
-            put_blobs,
-            wire::PutBlobsRequest {
-                puts: vec![put(b"refused batch")]
-            }
-        );
-        refused!(
-            put_manifest,
-            wire::PutManifestRequest {
-                manifest: Some(wire::Manifest {
-                    parts: vec![wire::Part {
-                        digest: Some(digest.into()),
-                        length: body.len() as u64
-                    }],
-                    edges: Vec::new(),
-                }),
-            }
-        );
-        refused!(
-            retain,
-            wire::RetainRequest {
-                root: b"refused-root".as_slice().into(),
-                references: vec![digest.into()],
-            }
-        );
-        refused!(
-            release,
-            wire::ReleaseRequest {
-                root: b"original-root".as_slice().into()
-            }
-        );
-        refused!(collect, wire::CollectRequest {});
+        refused_writes_for(foreign).await?;
     }
+    Ok(())
+}
+
+async fn refused<T: std::fmt::Debug>(
+    medium: &crate::MemoryMedium,
+    before: &[(String, Vec<u8>)],
+    result: impl std::future::Future<Output = Result<T, tonic::Status>>,
+) -> TestResult {
+    let result = result.await;
+    assert_eq!(
+        stored(medium).await?,
+        before,
+        "refused write changed physical storage"
+    );
+    let failure = result.expect_err("foreign write minimum must refuse before dispatch");
+    assert_eq!(
+        error_from_status(&failure).code,
+        wire::ErrorCode::RevisionForeign
+    );
+    Ok(())
+}
+
+async fn refused_writes_for(foreign: bool) -> TestResult {
+    let medium = crate::MemoryMedium::default();
+    let provider = Arc::new(crate::Store::new(medium.clone()).account(b"write-minimum")?);
+    let body = b"original retained bytes";
+    let digest = Digest::of(body);
+    provider.put(body.as_slice().into(), Vec::new()).await?;
+    let root = RootId::new(b"original-root".to_vec())?;
+    provider.retain(&root, vec![digest]).await?;
+    let deletable = provider
+        .put(b"unretained".as_slice().into(), Vec::new())
+        .await?;
+    provider.flush(None).await?;
+    let current = provider
+        .revisions()
+        .await?
+        .expect("original authority")
+        .current();
+    let wanted = if foreign {
+        AppliedRevisions::in_process().at(1)
+    } else {
+        Revision {
+            incarnation: current.incarnation.wrapping_add(1),
+            ..current
+        }
+    };
+    let floor = RevisionCut::of(wanted);
+    let before = stored(&medium).await?;
+    let mut client = wire::blobs_service_client::BlobsServiceClient::new(RevisionChannel::new(
+        channel_over(serving(provider.clone())),
+    ));
+    let mut request = Request::new(wire::DeleteBlobRequest {
+        digest: Some(deletable.verified().ok_or("original put")?.digest.into()),
+    });
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.delete_blob(request)).await?;
+
+    let mut request = Request::new(put(b"refused singleton"));
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.put_blob(request)).await?;
+
+    let mut request = Request::new(wire::PutBlobsRequest {
+        puts: vec![put(b"refused batch")],
+    });
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.put_blobs(request)).await?;
+
+    let mut request = Request::new(wire::PutManifestRequest {
+        manifest: Some(wire::Manifest {
+            parts: vec![wire::Part {
+                digest: Some(digest.into()),
+                length: body.len() as u64,
+            }],
+            edges: Vec::new(),
+        }),
+    });
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.put_manifest(request)).await?;
+
+    let mut request = Request::new(wire::RetainRequest {
+        root: b"refused-root".as_slice().into(),
+        references: vec![digest.into()],
+    });
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.retain(request)).await?;
+
+    let mut request = Request::new(wire::ReleaseRequest {
+        root: b"original-root".as_slice().into(),
+    });
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.release(request)).await?;
+
+    let mut request = Request::new(wire::CollectRequest {});
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.collect(request)).await?;
     Ok(())
 }
 

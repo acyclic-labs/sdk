@@ -36,6 +36,13 @@ impl Digest {
         hex::encode(self.0)
     }
 
+    /// The first two lowercase hexadecimal digits, the storage shard.
+    #[must_use]
+    pub fn hex_prefix(&self) -> String {
+        let [first, second, ..] = self.0;
+        hex::encode([first, second])
+    }
+
     /// Parses exactly 64 lowercase or uppercase hexadecimal digits.
     pub fn from_hex(text: &str) -> Result<Self, Error> {
         let mut bytes = [0; 32];
@@ -157,22 +164,23 @@ impl Manifest {
     }
 
     /// Canonical v1 encoding; its BLAKE3 is the manifest's digest.
-    #[must_use]
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let parts = u32::try_from(self.parts.len()).map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
+        let edges = u32::try_from(self.edges.len()).map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
         let mut bytes = Vec::with_capacity(
             MANIFEST_MAGIC.len() + 8 + self.parts.len() * 40 + self.edges.len() * 32,
         );
         bytes.extend_from_slice(MANIFEST_MAGIC);
-        bytes.extend_from_slice(&(self.parts.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&parts.to_le_bytes());
         for part in &self.parts {
             bytes.extend_from_slice(part.digest.as_bytes());
             bytes.extend_from_slice(&part.length.to_le_bytes());
         }
-        bytes.extend_from_slice(&(self.edges.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&edges.to_le_bytes());
         for edge in &self.edges {
             bytes.extend_from_slice(edge.as_bytes());
         }
-        bytes
+        Ok(bytes)
     }
 
     /// Decodes exactly one canonical encoding.
@@ -236,7 +244,9 @@ pub(crate) struct Envelope {
 }
 
 impl Envelope {
-    pub(crate) fn encode(&self) -> Vec<u8> {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, Error> {
+        let references = u32::try_from(self.references.len())
+            .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
         let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + 62 + self.references.len() * 32);
         bytes.extend_from_slice(ENVELOPE_MAGIC);
         bytes.push(match self.kind {
@@ -245,7 +255,7 @@ impl Envelope {
         });
         bytes.extend_from_slice(&self.length.to_le_bytes());
         bytes.extend_from_slice(&self.stored.to_le_bytes());
-        bytes.extend_from_slice(&(self.references.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&references.to_le_bytes());
         for reference in &self.references {
             bytes.extend_from_slice(reference.as_bytes());
         }
@@ -253,7 +263,7 @@ impl Envelope {
         bytes.push(u8::from(self.dying.is_some()));
         bytes.extend_from_slice(&self.dying.unwrap_or_default());
         bytes.extend_from_slice(&self.condemned.to_le_bytes());
-        bytes
+        Ok(bytes)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -393,13 +403,15 @@ impl<'a> Reader<'a> {
 
     // Domain first, then version, before any counts, allocations or body fields.
     fn header(&mut self, expected: &[u8]) -> Result<(), Error> {
-        let domain_length = expected.len() - 2;
-        self.0 = acyclic_stream::persistence::header(
-            self.0,
-            &expected[..domain_length],
-            &expected[domain_length..],
-        )
-        .map_err(|_| Error::from(ErrorCode::Unsupported))?;
+        let domain_length = expected
+            .len()
+            .checked_sub(2)
+            .ok_or_else(|| Error::from(ErrorCode::Unsupported))?;
+        let (domain, version) = expected
+            .split_at_checked(domain_length)
+            .ok_or_else(|| Error::from(ErrorCode::Unsupported))?;
+        self.0 = acyclic_stream::persistence::header(self.0, domain, version)
+            .map_err(|_| Error::from(ErrorCode::Unsupported))?;
         Ok(())
     }
     fn take(&mut self, count: usize) -> Result<&'a [u8], Error> {

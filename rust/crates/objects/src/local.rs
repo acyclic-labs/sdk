@@ -327,7 +327,11 @@ impl Shared {
             return Ok(Indexed::Logged);
         };
         // The range was checked against the slot, whose length is the value's.
-        let value = &value[range.start as usize..range.end as usize];
+        let start = usize::try_from(range.start).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        let end = usize::try_from(range.end).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        let value = value
+            .get(start..end)
+            .ok_or(std::io::ErrorKind::InvalidData)?;
         Ok(Indexed::Held(OwnedBytes::copy_from_slice(value), sequence))
     }
 
@@ -585,7 +589,8 @@ fn replay(
                 sequence: 0,
             };
             live += bytes;
-            let entry = Entry::new(key, slot, &body[value]);
+            let value = body.get(value).ok_or(std::io::ErrorKind::InvalidData)?;
+            let entry = Entry::new(key, slot, value);
             index.insert(key.to_owned(), entry).map(|old| old.slot)
         } else {
             index.remove(key).map(|old| old.slot)
@@ -678,12 +683,6 @@ impl LocalMedium {
     #[cfg(test)]
     pub(crate) fn lock_description(&self) -> std::io::Result<std::fs::File> {
         self.shared._root_lock.try_clone()
-    }
-
-    /// Values read from the log, rather than answered by the index.
-    #[cfg(test)]
-    pub(crate) fn reads(&self) -> usize {
-        self.shared.counts.read.load(Ordering::Relaxed)
     }
 
     /// The files created and flushes issued since open.
@@ -1031,7 +1030,7 @@ mod isolation_tests {
         let stale = observation(&medium, "kept").await;
         assert!(
             medium
-                .create("hot", vec![7; COMPACTION_CHUNK as usize].into())
+                .create("hot", vec![7; usize::try_from(COMPACTION_CHUNK).unwrap()].into())
                 .await
                 .unwrap()
         );
@@ -1241,7 +1240,7 @@ mod isolation_tests {
             async || LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await;
         let medium = open().await.unwrap();
         assert!(medium.create("a/x", bytes(b"first")).await.unwrap());
-        let first = std::fs::metadata(root.path().join(LOG)).unwrap().len() as usize;
+        let first = usize::try_from(std::fs::metadata(root.path().join(LOG)).unwrap().len()).unwrap();
         assert!(medium.create("a/y", bytes(b"second")).await.unwrap());
         assert_eq!(medium.close().await.unwrap(), LocalClose::Released);
         let written = std::fs::read(root.path().join(LOG)).unwrap();

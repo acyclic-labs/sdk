@@ -12,16 +12,26 @@ async fn payload(medium: &Shared, account: &[u8]) -> Result<String, Box<dyn std:
     Ok(keys[0].0.clone())
 }
 
-pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
-    let medium = Shared::over(medium, false);
-    let store = Store::new(medium.clone());
-    let account = store.account(b"availability-repair")?;
-    let other = store.account(b"availability-other")?;
-    let body = OwnedBytes::from_static(b"same envelope and version after physical restoration");
-    let digest = Digest::of(&body);
+struct Repair {
+    body: OwnedBytes,
+    key: String,
+    stored: OwnedBytes,
+    digest: Digest,
+    observation: crate::Availability,
+    unauthorized: crate::Availability,
+    revision: Option<acyclic_stream::Revision>,
+}
+
+async fn verify_repair(
+    medium: &Shared,
+    account: &crate::Account<Shared>,
+    other: &crate::Account<Shared>,
+    body: OwnedBytes,
+    digest: Digest,
+) -> Result<Repair, Box<dyn std::error::Error>> {
     let original = account.put(body.clone(), Vec::new()).await?;
     let original = original.verified().ok_or("original put was unknown")?;
-    let key = payload(&medium, b"availability-repair").await?;
+    let key = payload(medium, b"availability-repair").await?;
     let stored = medium.inner.read(&key, None).await?.ok_or("real payload")?;
     assert!(medium.inner.remove(&key).await?);
     assert_eq!(
@@ -59,6 +69,31 @@ pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
         &body
     );
 
+    Ok(Repair {
+        body,
+        key,
+        stored,
+        digest,
+        observation,
+        unauthorized,
+        revision: original.revision.clone(),
+    })
+}
+
+async fn verify_restored(
+    medium: &Shared,
+    account: &crate::Account<Shared>,
+    repair: Repair,
+) -> Result<(OwnedBytes, String, crate::Availability, crate::Availability), Box<dyn std::error::Error>> {
+    let Repair {
+        body,
+        key,
+        stored,
+        digest,
+        mut observation,
+        unauthorized,
+        revision,
+    } = repair;
     // A remote physical producer shares the same scoped source. No catalog
     // mutation is required, and the event alone never decides verification.
     assert!(medium.inner.remove(&key).await?);
@@ -69,8 +104,21 @@ pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
         account.get(digest, ByteRange::FULL, u64::MAX).await?.body(),
         &body
     );
-    assert_eq!(account.head(digest).await?.revision, original.revision);
+    assert_eq!(account.head(digest).await?.revision, revision);
 
+    Ok((body, key, observation, unauthorized))
+}
+
+pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
+    let medium = Shared::over(medium, false);
+    let store = Store::new(medium.clone());
+    let account = store.account(b"availability-repair")?;
+    let other = store.account(b"availability-other")?;
+    let body = OwnedBytes::from_static(b"same envelope and version after physical restoration");
+    let digest = Digest::of(&body);
+    let repair = verify_repair(&medium, &account, &other, body, digest).await?;
+    let (body, key, mut observation, mut unauthorized) =
+        verify_restored(&medium, &account, repair).await?;
     // Cancellation after sending the physical write leaves its acknowledgment
     // uncertain. Closing the source ends the original wait instead of hanging.
     assert!(medium.inner.remove(&key).await?);
@@ -104,7 +152,19 @@ async fn local_physical_repair_has_race_free_availability() -> TestResult {
     verify(crate::LocalMedium::open(root.path(), Default::default(), None).await?).await
 }
 
-async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
+struct BoundedRepair {
+    store: Store<MemoryMedium>,
+    medium: MemoryMedium,
+    selected: OwnedBytes,
+    refused: OwnedBytes,
+    selected_digest: Digest,
+    filler_digest: Digest,
+    refused_digest: Digest,
+    observation: crate::Availability,
+    retry_observation: crate::Availability,
+}
+
+async fn bounded_fixture(poison_refusal: bool) -> Result<BoundedRepair, Box<dyn std::error::Error>> {
     let selected = OwnedBytes::from(vec![7; 128]);
     let filler = OwnedBytes::from(vec![9; 1024]);
     let refused = OwnedBytes::from(vec![11; 512]);
@@ -168,6 +228,33 @@ async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
         "definite refusal terminated unrelated observation"
     );
     assert!(retry_observation.changed().now_or_never().is_none());
+    Ok(BoundedRepair {
+        store,
+        medium,
+        selected,
+        refused,
+        selected_digest,
+        filler_digest,
+        refused_digest,
+        observation,
+        retry_observation,
+    })
+}
+
+async fn bounded_refusal_recovers(poison_refusal: bool) -> TestResult {
+    let BoundedRepair {
+        store,
+        medium,
+        selected,
+        refused,
+        selected_digest,
+        filler_digest,
+        refused_digest,
+        mut observation,
+        mut retry_observation,
+    } = bounded_fixture(poison_refusal).await?;
+    let account = store.account(b"bounded-repair")?;
+    let keys = medium.list("", None, usize::MAX).await?;
     assert_eq!(account.delete(filler_digest).await?, Delete::Deleted);
     // The same Store must retain a live source, including a reopened account.
     let reopened = store.account(b"bounded-repair")?;

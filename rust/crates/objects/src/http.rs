@@ -235,13 +235,13 @@ impl HttpObjects {
                 context.check()?;
             }
             let response = request.send().await.map_err(|_| unavailable())?;
-            if response.status().as_u16() == 401 {
-                if let Some(lease) = &lease {
-                    lease
-                        .reject()
-                        .await
-                        .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-                }
+            if response.status().as_u16() == 401
+                && let Some(lease) = &lease
+            {
+                lease
+                    .reject()
+                    .await
+                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
             }
             if response.status().as_u16() != 200 {
                 return Err(self.failure(response).await);
@@ -407,7 +407,7 @@ impl Blobs for HttpObjects {
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let digest = Digest::of(&manifest.encode());
+            let digest = Digest::of(&manifest.encode()?);
             let length = manifest.length()?;
             let reply: wire::PutResponse = self
                 .call(

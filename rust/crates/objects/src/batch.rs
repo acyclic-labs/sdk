@@ -109,7 +109,7 @@ where
     let window = window.clamp(1, requests.len().max(1));
     // Declared first so the slot vector and every pending member retire before
     // their funding, including when this future is withdrawn.
-    let _grant;
+    let mut _grant = None;
     let slots = Mutex::new(Vec::<Option<Slot>>::new());
     let published = tokio::sync::Notify::new();
     // A member starts only once the one `window` places earlier completed,
@@ -151,7 +151,7 @@ where
     };
     let member_bytes =
         returned(&member) + std::mem::size_of::<T>() + NODE + std::mem::size_of::<Option<Slot>>();
-    _grant = admit(window.checked_mul(member_bytes).unwrap_or(usize::MAX))?;
+    _grant = Some(admit(window.saturating_mul(member_bytes))?);
     let mut started = 0;
     let mut outcomes = stream::iter(requests)
         .map(|request| {
@@ -169,7 +169,10 @@ where
                 }
                 // At most `window` members are in flight, so the member this
                 // one displaces completed.
-                let old = slots[index % window].replace(slot);
+                let Some(cell) = slots.get_mut(index % window) else {
+                    unreachable!("the slot window is sized before any member starts")
+                };
+                let old = cell.replace(slot);
                 assert!(
                     old.is_none_or(|old| old.done),
                     "a displaced member completed"

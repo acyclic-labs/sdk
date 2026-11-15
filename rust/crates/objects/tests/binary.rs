@@ -34,7 +34,10 @@ struct Original {
 impl Transport for Original {
     async fn invoke(&self, route: &str, mut input: Bytes) -> Result<Reply, Error> {
         let (substitute, truncate) = {
-            let mut observed = self.observed.lock().unwrap();
+            let mut observed = self
+                .observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             observed.calls += 1;
             (
                 observed.substitute.take(),
@@ -44,7 +47,9 @@ impl Transport for Original {
         // Substitute a real successful reply for another selected object.
         if let Some(digest) = substitute {
             assert_eq!(route, "blobs/get");
-            let mut request = wire::GetBlobRequest::decode(input).unwrap();
+            let Ok(mut request) = wire::GetBlobRequest::decode(input) else {
+                return Err(Error::from(wire::ErrorCode::Corrupt));
+            };
             request.digest = Some(digest.into());
             input = request.encode_to_vec().into();
         }
@@ -52,7 +57,10 @@ impl Transport for Original {
         if truncate {
             body.truncate(body.len() / 2);
         }
-        let mut observed = self.observed.lock().unwrap();
+        let mut observed = self
+            .observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         observed.allocation = body.as_ptr() as usize..body.as_ptr() as usize + body.len();
         observed.revision.clone_from(&revision);
         Ok((body.into(), revision))
@@ -75,7 +83,11 @@ fn client(account: MemoryObjects) -> (BinaryObjects<Original>, Arc<Mutex<Observe
 }
 
 fn revision(observed: &Mutex<Observed>) -> Option<Revision> {
-    observed.lock().unwrap().revision.clone()
+    observed
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .revision
+        .clone()
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]

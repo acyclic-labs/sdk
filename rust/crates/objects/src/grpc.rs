@@ -241,7 +241,7 @@ fn error_from_status(status: &tonic::Status) -> Error {
     error
 }
 
-fn status(error: Error) -> tonic::Status {
+fn status(error: &Error) -> tonic::Status {
     let parts = error.status_parts();
     tonic::Status::with_details_and_metadata(
         tonic::Code::from_i32(parts.code),
@@ -364,7 +364,7 @@ impl Blobs for GrpcObjects {
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let digest = Digest::of(&manifest.encode());
+            let digest = Digest::of(&manifest.encode()?);
             let length = manifest.length()?;
             let reply = call!(
                 self,
@@ -548,7 +548,7 @@ impl BlobsServer {
     }
 
     fn account<T>(&self, request: &Request<T>) -> Result<Arc<dyn Blobs>, tonic::Status> {
-        (self.resolve)(request.metadata()).map_err(status)
+        (self.resolve)(request.metadata()).map_err(|error| status(&error))
     }
 }
 
@@ -642,7 +642,7 @@ where
             Ok(response)
         }
         Err(error) => {
-            let mut status = status(error);
+            let mut status = status(&error);
             let current = blobs
                 .revisions()
                 .await
@@ -677,13 +677,13 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
         let (metadata, _, message) = request.into_parts();
         let observation = crate::route::availability(&*blobs, message)
             .await
-            .map_err(status)?;
+            .map_err(|error| status(&error))?;
         let resolve = Arc::clone(&self.resolve);
         let events = crate::route::availability_frames(observation).map(move |event| {
             // The original verified account resolver also enforces current
             // permission before each disclosure, including terminal frames.
-            resolve(&metadata).map_err(status)?;
-            event.map_err(status)
+            resolve(&metadata).map_err(|error| status(&error))?;
+            event.map_err(|error| status(&error))
         });
         Ok(tonic::Response::new(Box::pin(events)))
     }
