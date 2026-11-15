@@ -8,7 +8,7 @@ use acyclic_stream::{
     Revision, RevisionCut, RevisionScope,
 };
 use futures::StreamExt;
-use std::{io::Write, sync::Arc};
+use std::sync::Arc;
 mod watch;
 
 struct Prepared {

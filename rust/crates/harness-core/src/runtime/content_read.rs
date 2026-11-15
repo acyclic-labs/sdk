@@ -86,11 +86,13 @@ impl ContentResidencyVerifier for TaskContext {
 impl TaskContext {
     /// The authored subtree shares the agent's original private publisher.
     /// Managed outputs retain their read-only route and cannot be overwritten
-    /// through another spelling of the same volume.
+    /// through another spelling of the same volume. Projected `evals/` files
+    /// are readable but never writable.
     pub(super) fn private_content_path<'a>(
         &'a self,
         path: &'a str,
         io: Option<&ContentIo>,
+        write: bool,
     ) -> Result<Option<(&'a ContentBindings, &'a str)>> {
         let Some(relative) = path.strip_prefix(crate::layers::PRIVATE_PATH) else {
             return Ok(None);
