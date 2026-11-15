@@ -605,7 +605,7 @@ async fn verify_list_and_usage(first: &dyn Blobs, primary: &Primary) -> Result<(
         usage
     );
 
-    Ok(root)
+    Ok(())
 }
 
 async fn verify_isolation(

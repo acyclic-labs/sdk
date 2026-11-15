@@ -209,7 +209,7 @@ async fn refused_writes_preserve_storage() -> TestResult {
     Ok(())
 }
 
-async fn refused<T>(
+async fn refused<T: std::fmt::Debug>(
     medium: &crate::MemoryMedium,
     before: &[(String, Vec<u8>)],
     result: impl std::future::Future<Output = Result<T, tonic::Status>>,

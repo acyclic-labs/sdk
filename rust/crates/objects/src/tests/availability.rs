@@ -25,7 +25,7 @@ async fn verify_repair(
         OwnedBytes,
         crate::Availability,
         crate::Availability,
-        Option<Revision>,
+        Option<acyclic_stream::Revision>,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -81,7 +81,7 @@ async fn verify_restored(
     digest: Digest,
     mut observation: crate::Availability,
     mut unauthorized: crate::Availability,
-    revision: Option<Revision>,
+    revision: Option<acyclic_stream::Revision>,
 ) -> Result<(OwnedBytes, String, crate::Availability, crate::Availability), Box<dyn std::error::Error>> {
     // A remote physical producer shares the same scoped source. No catalog
     // mutation is required, and the event alone never decides verification.
