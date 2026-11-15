@@ -414,13 +414,14 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     client.register_credential(0, credential.into())?;
     client.register_credential(1, testing::credential())?;
     let invocation = Bytes::from_static(b"canonical product header");
+    let original = Bytes::from(vec![7; crate::MAX_RECORD_BYTES]);
+    let second_original = Bytes::from(vec![9; 1024]);
+    let input_credit = async {
     let (mut upload, replies) = client.actor_call_input(&invocation, 0, Some(128)).await?;
     let mut replies = core::pin::pin!(replies);
     // Dispatch happens with NO input or EOF. The old whole-request collector
     // cannot produce this original handler event.
     let (mut input, answer) = dispatches.recv().await.ok_or("handler was not admitted")?;
-    let original = Bytes::from(vec![7; crate::MAX_RECORD_BYTES]);
-    let second_original = Bytes::from(vec![9; 1024]);
     upload.send(original.clone()).await?;
     upload.send(second_original.clone()).await?;
     let first = input.next_chunk().await?.ok_or("missing first input")?;
@@ -496,9 +497,13 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     assert_eq!(input.trailers(), Some(trailers.as_slice()));
     assert_eq!(third.as_ref(), third_original.as_ref());
     assert_eq!(fourth.as_ref(), fourth_original.as_ref());
+    Ok(())
+    };
+    input_credit.await?;
 
     // Incomplete reply retirement is cancellation, even when the original
     // upload producer and two escaped data owners remain alive.
+    let cancellation = async {
     let (mut cancelled, cancelled_reply) =
         client.actor_call_input(&invocation, 0, Some(128)).await?;
     let (mut input, _answer) = dispatches.recv().await.ok_or("no cancellable handler")?;
@@ -526,9 +531,13 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     assert_eq!(cancelled_first.as_ref().as_ptr(), original.as_ptr());
     assert_eq!(cancelled_second.as_ref().as_ptr(), second_original.as_ptr());
     drop(cancelled);
+    Ok(())
+    };
+    cancellation.await?;
 
     // Authorization is the original call admission, before body or handler
     // disclosure. No separate socket authority or buffered fallback is used.
+    let authorization = async {
     assert!(matches!(
         client.actor_call_input(&invocation, 1, Some(128)).await,
         Err(error) if error.category() == StreamCategory::AccessDenied
@@ -606,6 +615,9 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
         Err(StreamCategory::InvalidArgument)
     );
     assert!(wire_codec::session::actor_call_sequence(0, &[], &data).is_err());
+    Ok(())
+    };
+    authorization.await?;
     Ok(())
 }
 impl CallProvider for Calls {

@@ -107,10 +107,9 @@ impl transport::Transport for Observed {
                     ..
                 }) = frame.as_ref().map(Frame::wire)
                     && let (Some(after), Some(Item::Record(record))) = (&data.after, &data.item)
+                    && let Ok(bytes) = <[u8; 32]>::try_from(record.commit_id.as_ref())
                 {
-                    if let Ok(bytes) = <[u8; 32]>::try_from(record.commit_id.as_ref()) {
-                        received.observe(*generation, after.next, CommitId::from_bytes(bytes));
-                    }
+                    received.observe(*generation, after.next, CommitId::from_bytes(bytes));
                 }
                 frame
             })) as Response)

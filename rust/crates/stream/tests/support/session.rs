@@ -285,12 +285,16 @@ impl Counts {
         let Some(Body::Data(data)) = &frame.body else {
             return;
         };
-        let mut traffic = self.traffic.lock().expect("fixture traffic poisoned");
+        let mut traffic = self
+            .traffic
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let flow = traffic
             .entry((session, frame.channel_id, frame.generation))
             .or_default();
-        flow.positions
-            .push(data.after.as_ref().expect("data cursor").next);
+        if let Some(after) = data.after.as_ref() {
+            flow.positions.push(after.next);
+        }
         flow.sent_bytes += frame.encoded_len() as u64;
         drop(traffic);
         self.sent.fetch_add(1, Ordering::Relaxed);
@@ -321,7 +325,7 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
         self.counts
             .request_metadata
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poison| poison.into_inner())
             .push(request.metadata().clone());
         assert_eq!(
             request
