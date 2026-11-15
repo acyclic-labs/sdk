@@ -53,36 +53,32 @@ fn extract(
     let model = parse(model)?;
     let shell = parse(shell)?;
     let harness = parse(harness)?;
-    let original = harness.items.iter().any(|item| {
-        let Item::Mod(module) = item else {
-            return false;
-        };
-        module.ident == "production"
-            && module.attrs.iter().any(|attr| {
-                let syn::Meta::NameValue(value) = &attr.meta else {
-                    return false;
-                };
-                let Expr::Lit(literal) = &value.value else {
-                    return false;
-                };
-                let syn::Lit::Str(path) = &literal.lit else {
-                    return false;
-                };
-                value.path.is_ident("path") && path.value() == "../../src/agent/kernel.rs"
-            })
-    });
-    if !original {
+    // The proof's own `#[path]` module declarations: the production kernel and
+    // the mapped model are compiled exactly from the files mapped here.
+    let declares = |ident: &str, file: &str| {
+        harness.items.iter().any(|item| {
+            let Item::Mod(module) = item else {
+                return false;
+            };
+            module.ident == ident
+                && module.attrs.iter().any(|attr| {
+                    let syn::Meta::NameValue(value) = &attr.meta else {
+                        return false;
+                    };
+                    let Expr::Lit(literal) = &value.value else {
+                        return false;
+                    };
+                    let syn::Lit::Str(path) = &literal.lit else {
+                        return false;
+                    };
+                    value.path.is_ident("path") && path.value() == file
+                })
+        })
+    };
+    if !declares("production", "../../src/agent/kernel.rs") {
         return Err("proof does not include the production kernel".into());
     }
-    let original_model = harness.items.iter().any(|item| {
-        let Item::Macro(item) = item else {
-            return false;
-        };
-        item.mac.path.is_ident("include")
-            && syn::parse2::<syn::LitStr>(item.mac.tokens.clone())
-                .is_ok_and(|path| path.value() == "agent_control_model.rs")
-    });
-    if !original_model {
+    if !declares("model", "agent_control_model.rs") {
         return Err("proof does not include the mapped model".into());
     }
     let mut functions = BTreeMap::new();

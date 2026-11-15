@@ -1,7 +1,8 @@
-// Shared agent control model, `include!`d by `agent_control.rs` (production
-// kernel, must verify) and `agent_control_negative.rs` (mutated kernels, must
-// fail). The includer declares `mod production` for `src/agent/kernel.rs`.
+//! Shared agent control model, a module of `agent_control.rs` (production
+//! kernel, must verify) and `agent_control_negative.rs` (mutated kernels, must
+//! fail). Each parent declares `mod production` for `src/agent/kernel.rs`.
 
+use super::production;
 use production::{Admit, Admitted, CONTINUE_NOW, Cascade, Control, MAX_FANOUT, Mode, Pick, Wait};
 
 #[path = "agent_control_contract.rs"]
@@ -12,18 +13,18 @@ const MAX_CHILDREN: usize = 2 * MAX_FANOUT + 1;
 
 /// The kernel entry points the shell in `src/agent/machine.rs` calls.
 #[derive(Clone, Copy)]
-struct Kernel {
-    admit: fn(Control, Admit) -> Admitted,
-    pick: fn(Control, bool, bool, bool) -> Pick,
-    settle: fn(Control, Wait) -> (Control, bool),
-    report: fn(Control) -> (Control, bool),
-    cascade: fn(Control, usize) -> Cascade,
-    alarm: fn(Control, bool, bool, usize) -> Option<u64>,
-    satisfy: fn(Control) -> Control,
-    until: fn(u32, usize, bool, Option<u64>, bool) -> Wait,
+pub(super) struct Kernel {
+    pub(super) admit: fn(Control, Admit) -> Admitted,
+    pub(super) pick: fn(Control, bool, bool, bool) -> Pick,
+    pub(super) settle: fn(Control, Wait) -> (Control, bool),
+    pub(super) report: fn(Control) -> (Control, bool),
+    pub(super) cascade: fn(Control, usize) -> Cascade,
+    pub(super) alarm: fn(Control, bool, bool, usize) -> Option<u64>,
+    pub(super) satisfy: fn(Control) -> Control,
+    pub(super) until: fn(u32, usize, bool, Option<u64>, bool) -> Wait,
 }
 
-const PRODUCTION: Kernel = Kernel {
+pub(super) const PRODUCTION: Kernel = Kernel {
     admit: production::admit,
     pick: production::pick,
     settle: production::settle,
@@ -178,7 +179,7 @@ fn check_alarm(kernel: Kernel, model: &Model) {
     }
 }
 
-fn exactly_once_and_never_loses_a_wake(kernel: Kernel) {
+pub(super) fn exactly_once_and_never_loses_a_wake(kernel: Kernel) {
     let open_children: usize = kani::any();
     kani::assume(open_children <= MAX_CHILDREN);
     let mut model = Model {
@@ -226,7 +227,7 @@ fn exactly_once_and_never_loses_a_wake(kernel: Kernel) {
     }
 }
 
-fn archive_drains_and_reports_exactly_once(kernel: Kernel) {
+pub(super) fn archive_drains_and_reports_exactly_once(kernel: Kernel) {
     let open_children: usize = kani::any();
     kani::assume(open_children <= MAX_CHILDREN);
     let reported: bool = kani::any();
@@ -261,7 +262,7 @@ fn archive_drains_and_reports_exactly_once(kernel: Kernel) {
 /// meet it, so a parked wait on children always has a child that will wake
 /// it; only a sleep naming no child parks on its deadline alone. Otherwise
 /// the turn continues and its call reports why.
-fn parks_only_on_a_reachable_condition(kernel: Kernel) {
+pub(super) fn parks_only_on_a_reachable_condition(kernel: Kernel) {
     let need: u32 = kani::any();
     let open: usize = kani::any();
     let sleep: bool = kani::any();
@@ -278,7 +279,7 @@ fn parks_only_on_a_reachable_condition(kernel: Kernel) {
     }
 }
 
-fn input_wait_has_an_original_wake(kernel: Kernel) {
+pub(super) fn input_wait_has_an_original_wake(kernel: Kernel) {
     let deadline: Option<u64> = kani::any();
     let (waiting, _) = (kernel.settle)(
         Control::ADOPTED,

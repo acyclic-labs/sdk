@@ -20,7 +20,13 @@ mod production;
 #[path = "../../src/agent/release.rs"]
 mod release;
 
-include!("agent_control_model.rs");
+#[path = "agent_control_model.rs"]
+mod model;
+use model::{
+    PRODUCTION, archive_drains_and_reports_exactly_once, exactly_once_and_never_loses_a_wake,
+    input_wait_has_an_original_wake, parks_only_on_a_reachable_condition,
+};
+use production::{Admit, Control, Mode, Pick};
 
 #[kani::proof]
 #[kani::unwind(8)]
