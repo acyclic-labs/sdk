@@ -1,5 +1,5 @@
 //! Integration behaviour tests.
-#![cfg(test)]
+#![cfg(all(test, not(loom)))]
 
 acyclic_test_support::counting_allocator!();
 

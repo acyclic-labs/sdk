@@ -61,6 +61,13 @@ const LOOM_STANZA = ['println!("cargo:rerun-if-env-changed=ACYCLIC_LOOM");',
 const LOOM_CFG = /#!?\[cfg(?:_attr)?\(([^\]]*)\]|\bcfg!\(([^;\n]*)/g;
 // Literals and line comments, which may spell a cfg without being one.
 const NOT_CODE = /\br(#*)"[\s\S]*?"\1|'(?:[^'\\\n]|\\.)'|"(?:[^"\\]|\\[\s\S])*"|\/\/[^\n]*/g;
+// The packages whose model-checking feature links loom; checkLoomOptIn requires every
+// package with loom code to be one of them.
+export function loomModelPackages(metadata) {
+  return metadata.packages.filter(pkg => metadata.workspace_members.includes(pkg.id)
+    && pkg.features['model-checking']?.includes('dep:loom')).map(pkg => pkg.name);
+}
+
 export function checkLoomOptIn(metadata, sources, read = file => readFileSync(file, 'utf8')) {
   const slash = file => file.replaceAll('\\', '/');
   const root = slash(metadata.workspace_root);

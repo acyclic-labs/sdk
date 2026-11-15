@@ -80,7 +80,7 @@ const DATA_FRAME_BYTES: usize = crate::MAX_RECORD_BYTES + 128;
 const RECEIVE_FRAMES: usize = 2;
 #[cfg(loom)]
 pub use client::verify_latest_progress;
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests;
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test, { beforeEach } from "node:test";
 import { spawnSync } from "node:child_process";
-import { loomEnvironment, qualificationMain, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
+import { loomEnvironment, qualificationMain, qualifyFsPolicyLoom, qualifyLoomBuild } from "./qualify-mcp-loom.mjs";
 import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyNativeHostLoom, qualifyNativeExecutor, qualifyNativeSources, qualifyNativeWakeLoom } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualificationPlan, qualifyMcpLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
@@ -145,6 +145,28 @@ function assertGateStep(args) {
   assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --gate/);
   assert.ok(gateQualifications.some(step => JSON.stringify(step.args) === JSON.stringify(args)), `missing gate step: ${args}`);
 }
+
+test("gate builds every target of exactly the model packages under cfg(loom)", () => {
+  assertGateStep(["--loom-build"]);
+  const metadata = { workspace_members: ["a", "b", "c"], packages: [
+    { id: "a", name: "model", features: { "model-checking": ["dep:loom"] } },
+    { id: "b", name: "plain", features: { "model-checking": [] } },
+    { id: "c", name: "bare", features: {} },
+    { id: "d", name: "registry", features: { "model-checking": ["dep:loom"] } }] };
+  for (const status of [0, 101]) {
+    const builds = [];
+    const run = (command, args, options) => {
+      assert.equal(command, "cargo");
+      if (args[0] === "metadata") return { status: 0, stdout: JSON.stringify(metadata) };
+      assert.equal(options.env.ACYCLIC_LOOM, "1");
+      builds.push(args);
+      return { status, stderr: "error[E0425]" };
+    };
+    if (status === 0) assert.deepEqual(qualifyLoomBuild(run), ["model"]);
+    else assert.throws(() => qualifyLoomBuild(run), /Loom build of every model package failed: 101\nerror\[E0425\]/);
+    assert.deepEqual(builds, [["check", "--locked", "--keep-going", "--tests", "--all-features", "-p", "model"]]);
+  }
+});
 
 test("progress qualification requires the cleanup and runnable-wake models and controls", () => {
   const names = ["e2e_progress_model::registration_reporting_and_cancel_or_panic_cleanup_are_atomic",

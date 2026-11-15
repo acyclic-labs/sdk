@@ -1,7 +1,7 @@
 //! Frame output: one device write per frame, showing exactly what the previous
 //! per-command writes showed, optionally wrapped in synchronized output
 //! (DECSET 2026); a frame identical to the screen writes nothing.
-#![cfg(test)]
+#![cfg(all(test, not(loom)))]
 
 acyclic_test_support::counting_allocator!();
 

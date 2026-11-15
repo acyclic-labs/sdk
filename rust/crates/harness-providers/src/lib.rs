@@ -60,7 +60,7 @@ mod retry;
 mod spec;
 mod sse;
 mod stream;
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests;
 mod tool_names;

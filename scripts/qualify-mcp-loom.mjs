@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loomModelPackages } from "./check-test-support.mjs";
 
 /** @typedef {(command: string, args: string[], options: {
  * encoding: 'utf8', maxBuffer?: number, env?: NodeJS.ProcessEnv
@@ -12,6 +13,7 @@ const runCommand = spawnSync;
 
 // Required model qualifications execute through one ordered step list.
 export const gateQualifications = [
+  { args: ["--loom-build"] },
   { args: ["--all-features"] },
   { args: ["--hook-lifecycle", "--all-features"] },
   { args: ["--native-registry"] },
@@ -37,6 +39,29 @@ const planOnly = Symbol("qualification plan");
 
 export function qualificationPlan(args) {
   return dispatch(args, planOnly);
+}
+
+// cfg(loom) reaches every target of a model package, so each test-enabled target
+// must type-check under it, including those no named model selects.
+export function qualifyLoomBuild(run = runCommand) {
+  const args = ["check", "--locked", "--keep-going", "--tests", "--all-features"];
+  if (run === planOnly) return { args, packages: "model-checking", loom: "1" };
+  const metadata = run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"],
+    { encoding: "utf8", maxBuffer: 1 << 30 });
+  if (metadata.error) throw metadata.error;
+  if (metadata.status !== 0) throw new Error(`cargo metadata failed: ${metadata.status}
+${metadata.stderr ?? ""}`);
+  const packages = loomModelPackages(JSON.parse(metadata.stdout));
+  if (packages.length === 0) throw new Error("Loom build requires model packages");
+  const started = performance.now();
+  const build = run("cargo", [...args, ...packages.flatMap(name => ["-p", name])],
+    { encoding: "utf8", maxBuffer: 1 << 30, env: loomEnvironment() });
+  console.log("MODEL_CHECK_PHASE " + JSON.stringify({ phase: "loom-build", packages,
+    seconds: (performance.now() - started) / 1000, status: build.status === 0 ? "PASS" : "FAIL" }));
+  if (build.error) throw build.error;
+  if (build.status !== 0) throw new Error(`Loom build of every model package failed: ${build.status}
+${build.stderr ?? ""}`);
+  return packages;
 }
 
 function qualifyGate(run) {
@@ -676,6 +701,7 @@ const fixedModels = {
   "--native-retirement-mutations": qualifyNativeRetirementMutations,
   "--capture-cursor-mutations": qualifyCaptureCursorMutations,
   "--fs-policy": qualifyFsPolicyLoom,
+  "--loom-build": qualifyLoomBuild,
 };
 const selectableModels = {
   "--e2e-progress": qualifyE2eProgressLoom, "--hook-lifecycle": qualifyHookLifecycleLoom,

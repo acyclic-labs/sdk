@@ -66,7 +66,7 @@ impl LocalStream {
     ) -> Result<Self, LocalStreamError> {
         validate_limits(limits)?;
         let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
-        #[cfg(test)]
+        #[cfg(all(test, not(loom)))]
         let submitted_root = root.clone();
         let span = obs::OperationSpan::new(tracing::debug_span!(
             "acyclic.stream.recover",
@@ -79,7 +79,7 @@ impl LocalStream {
             PersistenceKey::new(root.as_os_str().as_encoded_bytes().as_ptr() as usize, 0),
             move || span.in_scope(|| Journal::open(&root, limits, &recovered, &span)),
         );
-        #[cfg(test)]
+        #[cfg(all(test, not(loom)))]
         {
             if let Ok(mut hook) = JOURNAL_OPEN_SUBMITTED.lock()
                 && hook
@@ -502,7 +502,7 @@ impl LocalStream {
                     .journal
                     .lock()
                     .map_err(|_| LocalStreamError::Corrupt)?;
-                #[cfg(test)]
+                #[cfg(all(test, not(loom)))]
                 {
                     let identity = Arc::as_ptr(&inner.journal) as usize;
                     let gate = {

@@ -77,18 +77,18 @@ pub(crate) mod receipt_model;
 #[cfg(loom)]
 pub(crate) mod replay_model;
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =
     Mutex::new(None);
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 type JournalPersistBlocker = (
     usize,
     tokio::sync::oneshot::Sender<()>,
     std::sync::mpsc::Receiver<()>,
 );
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 static JOURNAL_FLUSHED_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 #[cfg(all(test, not(loom)))]
 static JOURNAL_WRITE_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
@@ -117,10 +117,10 @@ fn pause_journal_write(journal: &Arc<Mutex<Journal>>) -> std::io::Result<()> {
     Ok(())
 }
 // Lock order: journal -> test hook; release the hook before a device-gate wait.
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 static JOURNAL_COMPACT_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests;
 
 include!("storage.rs");
