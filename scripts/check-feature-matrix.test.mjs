@@ -238,10 +238,11 @@ test("clippy lints each member feature set a dependent unifies, and only adds ru
   };
   const core = units => [...units].filter(unit => unit.startsWith("core|")).sort();
   const base = linted(["core", "mid"]);
-  assert.deepEqual(core(base.units), ["core|", "core|a", "core|a,b"]);
+  // Core's own all-targets run also lints its tests.
+  assert.deepEqual(core(base.units), ["core|", "core|a", "core|a,b", "core||tests"]);
   // A dependent that unifies a new feature set onto core adds the run that lints it.
   const added = linted(["core", "mid", "app"]);
-  assert.deepEqual(core(added.units), ["core|", "core|a", "core|a,b", "core|b"]);
+  assert.deepEqual(core(added.units), ["core|", "core|a", "core|a,b", "core|b", "core||tests"]);
   const app = added.selections.find(item => item.units.includes("core|b"));
   assert.deepEqual(cargoFeatureArguments(app.selection, { targets: app.targets }), ["-p", "app", "--all-targets", "--all-features"]);
   // Negative control: a dependent reaching only linted core sets adds none.
