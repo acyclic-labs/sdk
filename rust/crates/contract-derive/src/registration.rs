@@ -122,7 +122,7 @@ impl File {
         let services = &self.services;
         quote! {
         #[doc = "Render this file from its compiler-linked semantic type inventory."]
-        #[doc = "An authorized service imports `validation/v1/options.proto`, whose one source is `acyclic_proto_build::shared_protocols()`."]
+        #[doc = "An authorized service imports `validation/v1/options.proto`, whose one source is `acyclic_proto_build::Compiler::shared`."]
         pub fn render(root: &::std::path::Path) -> ::std::io::Result<()> {
             let mut names = ::std::collections::BTreeSet::new();
             let mut text = format!("syntax = \"proto3\";\n\npackage {};\n\noption go_package = \"{}\";\n\n", Self::PACKAGE, #go_package);

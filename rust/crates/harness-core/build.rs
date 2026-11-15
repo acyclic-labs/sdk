@@ -12,10 +12,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=proto");
     println!("cargo:rerun-if-env-changed=PROTOC");
     println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
-    println!(
-        "cargo:rerun-if-changed={}",
-        acyclic_proto_build::shared_protocols().display()
-    );
     let mut config = prost_build::Config::new();
     for identity in ["ProviderRef", "VolumeClass", "VolumeOwner", "VolumeRef"] {
         config.extern_path(
@@ -33,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[proto],
         &[
             std::path::PathBuf::from(include),
-            acyclic_proto_build::shared_protocols(),
+            compiler.shared().to_owned(),
         ],
     )?;
     let digest = blake3::hash(&std::fs::read(descriptor)?);

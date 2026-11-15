@@ -54,12 +54,7 @@ fn every_compiled_descriptor_is_byte_identical_to_its_wire_baseline()
     let output = tempfile::tempdir()?;
     for (family, baseline, protos) in FAMILIES {
         let destination = output.path().join(baseline);
-        compiler.descriptor(
-            &root.join("rust/crates").join(family),
-            protos,
-            &destination,
-            &root.join("compatibility/proto"),
-        )?;
+        compiler.descriptor(&root.join("rust/crates").join(family), protos, &destination)?;
         let actual = std::fs::read(&destination)?;
         let expected = std::fs::read(root.join("compatibility/descriptors").join(baseline))?;
         assert!(

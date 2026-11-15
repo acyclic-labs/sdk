@@ -11,9 +11,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=proto");
     println!("cargo:rerun-if-env-changed=PROTOC");
     println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
-    println!(
-        "cargo:rerun-if-changed={}",
-        acyclic_proto_build::shared_protocols().display()
-    );
     Ok(())
 }

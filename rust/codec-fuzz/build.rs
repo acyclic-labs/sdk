@@ -56,8 +56,8 @@ fn messages(
 }
 
 fn generate() -> Result<(), Box<dyn std::error::Error>> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let shared = root.join("../../compatibility/proto");
+    let root =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or("missing CARGO_MANIFEST_DIR")?);
     let out = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing OUT_DIR")?);
     let families: &[(&str, &[&str], &str, bool)] = &[
         ("auth", &["acyclic.auth.v1"], "acyclic_auth::contract", true),
@@ -114,7 +114,7 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("unknown protocol family")?;
         let manifest = root.join("../crates").join(family);
         let descriptor = out.join(format!("{family}.bin"));
-        compiler.descriptor(&manifest, protos, &descriptor, &shared)?;
+        compiler.descriptor(&manifest, protos, &descriptor)?;
         writeln!(
             descriptors,
             "include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{family}.bin\")),"
@@ -142,7 +142,6 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
     descriptors.push_str("];\n");
     table.push_str(&descriptors);
     std::fs::write(out.join("decoders.rs"), table)?;
-    println!("cargo:rerun-if-changed=../../compatibility/proto");
     Ok(())
 }
 

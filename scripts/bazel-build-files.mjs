@@ -2,11 +2,12 @@
 // cargo.MODULE.bazel (Rust toolchain, rustc flags and crate universe inputs).
 // Cargo.toml, Cargo.lock, .cargo/config.toml and rust-toolchain.toml remain the only sources;
 // third-party crates resolve through crate_universe from the same Cargo.lock.
-// Features come from one whole-workspace resolution and are fixed per target, so a target's
-// action keys never depend on which targets a build selects (Cargo's -p unification rebuilt
-// unchanged units whenever the selection changed).
-// Members listed in [workspace.metadata.bazel] build with Bazel; the list must be closed under
-// first-party dependencies and grows until it names every member.
+// Features come from one whole-workspace resolution with every feature enabled, as the cargo
+// test legs build with --all-features, and are fixed per target, so a target's action keys never
+// depend on which targets a build selects (Cargo's -p unification rebuilt unchanged units
+// whenever the selection changed).
+// Every workspace member builds with Bazel, and every target `cargo test --all-features` builds
+// is rendered: a target with `test = false` is the only one left out of testing.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -50,8 +51,10 @@ function tables(file) {
 }
 const value = (table, key) => (table?.[key] === undefined ? undefined : JSON.parse(table[key]));
 
-const metadata = triple => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 }));
-const runs = TRIPLES.map(metadata);
+const metadata = (triple, flags) => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, ...flags], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 }));
+const runs = TRIPLES.map(triple => metadata(triple, ["--all-features"]));
+// crate_universe resolves third-party features from the default workspace features.
+const defaults = TRIPLES.map(triple => metadata(triple, []));
 const [base] = runs;
 const packages = new Map(base.packages.map(p => [p.id, p]));
 const members = new Set(base.workspace_members);
@@ -60,7 +63,119 @@ const dir = p => path.relative(root, path.dirname(p.manifest_path)).replaceAll("
 const label = p => `//${dir(p)}`;
 const libOf = p => p.targets.find(t => t.kind.some(k => k === "lib" || k === "rlib" || k === "proc-macro"));
 const crateName = target => target.name.replaceAll("-", "_");
-const selected = new Set(base.metadata?.bazel?.members ?? []);
+
+// Every tracked file belongs to the innermost member directory, or to the root package, as in Bazel.
+const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 }).split("\0").filter(Boolean);
+const memberDirs = [...members].map(id => dir(packages.get(id))).sort((a, b) => b.length - a.length);
+const ownerOf = file => memberDirs.find(d => file.startsWith(`${d}/`)) ?? "";
+const within = (owner, file) => (owner ? file.slice(owner.length + 1) : file);
+// The files one crate's compile reads, from its root: `mod` children, `#[path]` modules and
+// include!, include_str! or include_bytes! literals, followed through every Rust file reached.
+// `mod` children are taken from both module layouts; a candidate that exists but is unused is an
+// extra input only. A `concat!` whose first literal names no file is a path prefix completed by
+// later arguments (a macro's name, say): every tracked file under that prefix is an input.
+// A file this misses fails the sandboxed compile loudly; it is never read stale.
+const EMBED = /include(?:_str|_bytes)?!\(\s*(concat!\(\s*)?(env!\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*)?"([^"]+)"|#\[path\s*=\s*()"([^"]+)"\]/g;
+const MOD = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+(?:r#)?(\w+)[ \t]*;/gm;
+const TEST_DIRS = /^(tests|benches|examples)\//;
+const trackedSet = new Set(tracked);
+const exported = new Map();
+// A file of another package, exported from its owner.
+function fileLabel(file) {
+  const owner = ownerOf(file);
+  if (!exported.has(owner)) exported.set(owner, new Set());
+  exported.get(owner).add(within(owner, file));
+  return `//${owner}:${within(owner, file)}`;
+}
+function closure(crateDir, rootFile) {
+  const seen = new Set([rootFile]), queue = [rootFile];
+  while (queue.length) {
+    const file = queue.pop(), here = path.posix.dirname(file);
+    const text = fs.readFileSync(path.join(root, file), "utf8");
+    const stem = path.posix.join(here, path.posix.basename(file, ".rs"));
+    const found = [];
+    for (const [, concat, manifestRelative, literal, , module] of text.matchAll(EMBED)) {
+      const named = path.posix.normalize(path.posix.join(manifestRelative ? crateDir : here, literal ?? module));
+      found.push(...(concat && !trackedSet.has(named) ? tracked.filter(file => file.startsWith(named)) : [named]));
+    }
+    for (const [, name] of text.matchAll(MOD)) {
+      for (const base of [here, stem]) found.push(`${base}/${name}.rs`, `${base}/${name}/mod.rs`);
+    }
+    for (const next of found) {
+      if (!trackedSet.has(next) || seen.has(next)) continue;
+      seen.add(next);
+      if (next.endsWith(".rs")) queue.push(next);
+    }
+  }
+  return seen;
+}
+// The inputs a target reads beyond its globs, as srcs (Rust) and compile_data (other files):
+// same-package paths relative to the package, other packages' files by exported label.
+function extraInputs(crateDir, rootFile, covered) {
+  const srcs = [], data = [];
+  for (const file of [...closure(crateDir, rootFile)].sort()) {
+    const owner = ownerOf(file);
+    if (owner === crateDir && covered(within(owner, file))) continue;
+    (file.endsWith(".rs") ? srcs : data).push(owner === crateDir ? within(owner, file) : fileLabel(file));
+  }
+  return { srcs, data };
+}
+// Starlark rendering.
+const list = items => (items.length ? `[\n${items.map(i => `        ${q(i)},\n`).join("")}    ]` : "[]");
+const glob = (include, exclude) => `glob(${q(include)}${exclude.length ? `, exclude = ${q(exclude)}` : ""}, allow_empty = True)`;
+const plus = (...parts) => parts.filter(p => p !== undefined && p !== "[]").join(" + ") || "[]";
+const rule = (kind, attrs) => `${kind}(\n${attrs.filter(([, v]) => v !== undefined && v !== "[]").map(([k, v]) => `    ${k} = ${v},\n`).join("")})\n`;
+
+// Files of third-party build dependencies that a build script reads, per platform, from
+// [package.metadata.bazel.build-script-env.<os>-<cpu>]: VARIABLE = "package/path". Each file is
+// exported from the package's crate universe repository and named to the script by its execution
+// path. A platform the table does not name fails to configure, never builds with another's files.
+const staged = new Map();
+function stagedFile(spec) {
+  const [, name, file] = /^([^/]+)\/(.+)$/.exec(spec) ?? [];
+  const found = base.packages.filter(p => p.name === name && !members.has(p.id));
+  if (found.length !== 1) throw new Error(`STEP_FAILED bazel-build-files: build-script-env names ${spec}, but ${found.length} third-party packages are named ${name}`);
+  const repo = `crates__${name}-${found[0].version}`;
+  if (!staged.has(repo)) staged.set(repo, { name, version: found[0].version, files: new Set() });
+  staged.get(repo).files.add(file);
+  return `@${repo}//:${file}`;
+}
+const scriptPlatforms = new Set();
+const scriptEnv = new Map([...members].map(id => {
+  const p = packages.get(id);
+  return [id, Object.entries(p.metadata?.bazel?.["build-script-env"] ?? {}).map(([platform, variables]) => {
+    if (!/^(linux|macos|windows)-(x86_64|aarch64)$/.test(platform)) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} build-script-env names unknown platform ${platform}`);
+    scriptPlatforms.add(platform);
+    return [platform, Object.entries(variables).map(([variable, spec]) => [variable, stagedFile(spec)])];
+  })];
+}));
+// select() over the platforms a package names, with no default.
+const platformSelect = (id, render) => `select(${q(Object.fromEntries(scriptEnv.get(id).map(([platform, vars]) => [`//:${platform}`, render(vars)])))}, no_match_error = ${q(`${packages.get(id).name}: build-script-env names no file for this platform`)})`;
+const platformRules = [...scriptPlatforms].sort().map(platform => {
+  const [os, cpu] = platform.split("-");
+  return `\n${rule("config_setting", [["name", q(platform)], ["constraint_values", list([`@platforms//os:${os}`, `@platforms//cpu:${cpu}`])]])}\n`;
+}).join("");
+// A package with [package.metadata.bazel] repository-rust-sources = true compiles and builds
+// from every Rust source in the repository; each package then exports its own as `rust_sources`.
+const readsRepository = p => p.metadata?.bazel?.["repository-rust-sources"] === true;
+const repositorySources = [...members].some(id => readsRepository(packages.get(id)))
+  ? ["//:rust_sources", ...memberDirs.map(d => `//${d}:rust_sources`).sort()]
+  : [];
+const sourcesRule = repositorySources.length
+  ? `\n${rule("filegroup", [["name", q("rust_sources")], ["srcs", glob(["**/*.rs"], [])], ["visibility", q(["//visibility:public"])]])}\n`
+  : "";
+// Files a build script reads beyond its package, from [package.metadata.bazel]
+// build-script-data = ["relative/path", ...]: each path names one tracked file or every tracked
+// file under a directory, relative to the package. A path that names nothing fails generation.
+function scriptData(p) {
+  return (p.metadata?.bazel?.["build-script-data"] ?? []).flatMap(relative => {
+    const named = path.posix.normalize(path.posix.join(dir(p), relative));
+    const files = tracked.filter(file => file === named || file.startsWith(`${named}/`)).sort();
+    if (!files.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} build-script-data names ${relative}, which holds no tracked file`);
+    return files.map(file => (ownerOf(file) === dir(p) ? within(dir(p), file) : fileLabel(file)));
+  });
+}
+const exportsRule = owner => (exported.has(owner) ? `\nexports_files(${list([...exported.get(owner)].sort())}, visibility = ["//visibility:public"])\n` : "");
 
 const cargo = tables("Cargo.toml");
 const dev = cargo["profile.dev"] ?? {};
@@ -72,22 +187,22 @@ function perTriple(values, render) {
   if (rendered.every(r => r === rendered[0])) return rendered[0];
   return `select({\n${TRIPLES.map((t, i) => `        "@rules_rust//rust/platform:${t}": ${rendered[i]},\n`).join("")}    })`;
 }
-const list = items => (items.length ? `[\n${items.map(i => `        ${q(i)},\n`).join("")}    ]` : "[]");
-const glob = (include, exclude) => `glob(${q(include)}${exclude.length ? `, exclude = ${q(exclude)}` : ""}, allow_empty = True)`;
-const plus = (...parts) => parts.filter(p => p !== "[]").join(" + ") || "[]";
-const rule = (kind, attrs) => `${kind}(\n${attrs.filter(([, v]) => v !== undefined && v !== "[]").map(([k, v]) => `    ${k} = ${v},\n`).join("")})\n`;
 
-// First-party edges of one member for the selected dependency kinds, per triple.
+// Edges of one member for the selected dependency kinds, per triple, from the all-features
+// resolution: first-party dependencies by label, third-party ones by crate universe hub label,
+// and every renamed dependency's alias. crate_universe's all_crate_deps() and aliases() are not
+// used: they follow its default-features resolution, and aliases() drops the conditional aliases
+// of a package with more than one cfg condition.
 function edges(p, kinds) {
   return nodes.map(byId => {
     const deps = [], procMacros = [], aliases = {};
     for (const dep of byId.get(p.id)?.deps ?? []) {
-      if (!members.has(dep.pkg) || !dep.dep_kinds.some(k => kinds.includes(k.kind))) continue;
+      if (!dep.dep_kinds.some(k => kinds.includes(k.kind))) continue;
       const target = packages.get(dep.pkg);
-      if (!selected.has(dir(target))) throw new Error(`STEP_FAILED bazel-build-files: ${dir(p)} depends on ${dir(target)}, which [workspace.metadata.bazel] members omits`);
-      const lib = libOf(target), name = `${label(target)}:${crateName(lib)}`;
-      (lib.kind.includes("proc-macro") ? procMacros : deps).push(name);
+      const lib = libOf(target);
+      const name = members.has(dep.pkg) ? `${label(target)}:${crateName(lib)}` : `@crates//${target.name}-${target.version}`;
       if (dep.name !== crateName(lib)) aliases[name] = dep.name;
+      (lib.kind.includes("proc-macro") ? procMacros : deps).push(name);
     }
     return { deps: deps.sort(), procMacros: procMacros.sort(), aliases };
   });
@@ -96,8 +211,24 @@ function edges(p, kinds) {
 function buildFile(p) {
   const lib = libOf(p), script = p.targets.find(t => t.kind.includes("custom-build"));
   const features = nodes.map(byId => [...(byId.get(p.id)?.features ?? [])].sort());
-  const local = file => path.relative(path.dirname(p.manifest_path), file).replaceAll("\\", "/");
+  // A source path relative to the package, or the label of a file another package owns.
+  const local = file => {
+    const relative = path.relative(root, file).replaceAll("\\", "/");
+    return ownerOf(relative) === dir(p) ? within(dir(p), relative) : fileLabel(relative);
+  };
   const opt = packageOpt(p.name);
+  const repoRelative = target => path.relative(root, target.src_path).replaceAll("\\", "/");
+  // Library and binary globs: the package's files outside its test, bench and example trees.
+  const libCovered = file => !TEST_DIRS.test(file) && file !== "build.rs";
+  const extras = (target, covered) => extraInputs(dir(p), repoRelative(target), covered);
+  // srcs and compile_data of a library-shaped target: the package globs plus its extra inputs.
+  const libInputs = target => {
+    const extra = extras(target, libCovered);
+    return [
+      ["srcs", plus(glob(["**/*.rs"], ["build.rs", ...NOT_LIB]), list(extra.srcs))],
+      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
+    ];
+  };
   const env = Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v));
   const common = target => [
     ["edition", q(target.edition)],
@@ -106,35 +237,49 @@ function buildFile(p) {
     ["rustc_env", "PACKAGE_ENV"],
     ["rustc_flags", opt === undefined ? undefined : list([`-Copt-level=${opt}`])],
   ];
-  // Rendered dependencies of one target: crate_universe resolves third-party ones per package.
-  const deps = (kinds, universe, extra = []) => {
+  // Rendered dependencies of one target.
+  const deps = (kinds, extra = [], extraMacros = []) => {
     const first = edges(p, kinds);
-    const aliasCall = `aliases(${universe.aliases})`;
     return [
-      ["deps", plus(`all_crate_deps(${universe.deps})`, list(extra), perTriple(first, e => list(e.deps)))],
-      ["proc_macro_deps", plus(`all_crate_deps(${universe.procMacros})`, perTriple(first, e => list(e.procMacros)))],
-      ["aliases", perTriple(first, e => (Object.keys(e.aliases).length ? `${aliasCall} | ${q(e.aliases)}` : aliasCall))],
+      ["deps", plus(list(extra), perTriple(first, e => list(e.deps)))],
+      ["proc_macro_deps", plus(list(extraMacros), perTriple(first, e => list(e.procMacros)))],
+      ["aliases", first.some(e => Object.keys(e.aliases).length) ? perTriple(first, e => q(Object.fromEntries(Object.entries(e.aliases).sort()))) : undefined],
     ];
   };
   const rules = [], ownDeps = script ? [":build_script"] : [];
+  // Targets that use the package's own library: a proc-macro library is a macro dependency.
+  const ownLib = lib && !lib.kind.includes("proc-macro") ? [`:${crateName(lib)}`] : [];
+  const ownMacro = lib?.kind.includes("proc-macro") ? [`:${crateName(lib)}`] : [];
+  // Test names that collide with another target of the package take a `_test` suffix.
+  const names = new Set([lib && crateName(lib), ...p.targets.filter(t => t.kind.includes("bin")).map(t => t.name), "build_script"]);
+  // Each target `cargo test --all-features --no-run` builds, as rendered; checked against Cargo.
+  const covered = rendered.get(p.id);
   // The libtest executable builds on its own; the isolated test runs its cases.
-  const test = (name, attrs) => rules.push(
-    ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["tags", q(["manual"])]]],
-    ["isolated_test", [["name", q(name)], ["binary", q(`:${name}_cases`)], ["limit_seconds", String(CASE_LIMIT_SECONDS)]]],
-  );
+  // Cases run in the package directory, as under Cargo, and read its files there.
+  const test = (wanted, attrs) => {
+    let name = wanted;
+    while (names.has(name) || names.has(`${name}_cases`)) name += "_test";
+    names.add(name).add(`${name}_cases`);
+    rules.push(
+      ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", glob(["**"], ["**/*.rs", "BUILD.bazel"])], ["tags", q(["manual"])]]],
+      ["isolated_test", [["name", q(name)], ["binary", q(`:${name}_cases`)], ["limit_seconds", String(CASE_LIMIT_SECONDS)]]],
+    );
+  };
   if (script) {
-    // Build scripts see the package's data files, never its Rust sources beyond `#[path]` modules.
-    const modules = [...fs.readFileSync(script.src_path, "utf8").matchAll(/#\[path\s*=\s*"([^"]+)"\]/g)].map(m => m[1]);
+    // A build script compiles from its own module closure and runs over every package file.
+    // Its non-Rust package files are already in the compile_data glob.
+    const extra = extras(script, file => !file.endsWith(".rs") && !TEST_DIRS.test(file));
     rules.push(["cargo_build_script", [
       ["name", q("build_script")],
       ["crate_root", q(local(script.src_path))],
-      ["srcs", list([local(script.src_path), ...modules])],
-      ["data", glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB])],
+      ["srcs", list(extra.srcs)],
+      ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list(extra.data))],
+      ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list([...(readsRepository(p) ? repositorySources : []), ...scriptData(p)]), scriptEnv.get(p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       ...common(script),
-      ["build_script_env", "PACKAGE_ENV"],
-      ...deps(["build"], { deps: "build = True", procMacros: "build_proc_macro = True", aliases: "build = True, build_proc_macro = True" }),
+      ["build_script_env", scriptEnv.get(p.id).length ? `PACKAGE_ENV | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$(execpath ${file})`])))}` : "PACKAGE_ENV"],
+      ...deps(["build"]),
     ]]);
   }
   if (lib) {
@@ -142,61 +287,96 @@ function buildFile(p) {
     rules.push([proc ? "rust_proc_macro" : "rust_library", [
       ["name", q(crateName(lib))],
       ["crate_root", q(local(lib.src_path))],
-      ["srcs", glob(["**/*.rs"], ["build.rs", ...NOT_LIB])],
-      ["compile_data", glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB])],
+      ...libInputs(lib),
       ...common(lib),
-      ...deps([null], { deps: "normal = True", procMacros: "proc_macro = True", aliases: "" }, ownDeps),
+      ...deps([null], ownDeps),
       ["visibility", q(["//visibility:public"])],
     ]]);
-    if (lib.test) test(`${crateName(lib)}_test`, [
+    // The crate's tests compile its sources again; rust_test does not inherit compile_data.
+    if (lib.test) covered.add(`test ${lib.kind[0]} ${lib.name}`), test(`${crateName(lib)}_test`, [
       ["crate", q(`:${crateName(lib)}`)],
+      ["compile_data", list(extras(lib, libCovered).data)],
       ...common(lib).filter(([k]) => k !== "rustc_env"),
-      ...deps(["dev"], { deps: "normal_dev = True", procMacros: "proc_macro_dev = True", aliases: "normal_dev = True, proc_macro_dev = True" }),
+      ...deps(["dev"]),
     ]);
   }
   for (const bin of p.targets.filter(t => t.kind.includes("bin"))) {
+    covered.add(`build bin ${bin.name}`);
     rules.push(["rust_binary", [
       ["name", q(bin.name)],
       ["crate_root", q(local(bin.src_path))],
-      ["srcs", glob(["**/*.rs"], ["build.rs", ...NOT_LIB])],
-      ["compile_data", glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB])],
+      ...libInputs(bin),
       ...common(bin),
-      ...deps([null], { deps: "normal = True", procMacros: "proc_macro = True", aliases: "" }, [...(lib ? [`:${crateName(lib)}`] : []), ...ownDeps]),
+      ...deps([null], [...ownLib, ...ownDeps], ownMacro),
       ["visibility", q(["//visibility:public"])],
     ]]);
     // A binary's own #[cfg(test)] cases, as `cargo test` runs them.
     const binCrate = bin.name.replaceAll("-", "_");
-    if (bin.test) test(lib && binCrate === crateName(lib) ? `${binCrate}_bin_test` : `${binCrate}_test`, [
+    if (bin.test) covered.add(`test bin ${bin.name}`), test(lib && binCrate === crateName(lib) ? `${binCrate}_bin_test` : `${binCrate}_test`, [
       ["crate_root", q(local(bin.src_path))],
-      ["srcs", glob(["**/*.rs"], ["build.rs", ...NOT_LIB])],
-      ["compile_data", glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB])],
+      ...libInputs(bin),
       ...common(bin),
-      ...deps([null, "dev"], { deps: "normal = True, normal_dev = True", procMacros: "proc_macro = True, proc_macro_dev = True", aliases: "normal = True, normal_dev = True, proc_macro = True, proc_macro_dev = True" },
-        [...(lib ? [`:${crateName(lib)}`] : []), ...ownDeps]),
+      ...deps([null, "dev"],
+        [...ownLib, ...ownDeps], ownMacro),
     ]);
   }
-  const enabled = new Set(features[0]);
-  for (const target of p.targets.filter(t => t.kind.includes("test") && (t["required-features"] ?? []).every(f => enabled.has(f)))) {
-    const root = local(target.src_path), testDir = path.posix.dirname(root);
-    test(lib && target.name === crateName(lib) ? `${target.name}_integration` : target.name, [
-      ["crate_root", q(root)],
-      ["srcs", glob([`${testDir}/**/*.rs`], [])],
-      ["compile_data", glob([`${testDir}/**`], ["**/*.rs"])],
+  // Integration tests, examples and benches compile from their own directory and the package's
+  // library, with dev-dependencies. Cargo builds every example and runs those with `test = true`;
+  // it builds a bench only when its `test = true`.
+  const separate = target => {
+    const crateRoot = local(target.src_path), dir = crateRoot.startsWith("//") ? "." : path.posix.dirname(crateRoot);
+    const extra = extras(target, file => dir === "." || file.startsWith(`${dir}/`));
+    return [
+      ["crate_root", q(crateRoot)],
+      ["srcs", plus(glob([dir === "." ? "**/*.rs" : `${dir}/**/*.rs`], []), list(extra.srcs))],
+      ["compile_data", plus(glob([dir === "." ? "**" : `${dir}/**`], ["**/*.rs", "BUILD.bazel"]), list(extra.data))],
       ...common(target),
-      ...deps([null, "dev"], { deps: "normal = True, normal_dev = True", procMacros: "proc_macro = True, proc_macro_dev = True", aliases: "normal = True, normal_dev = True, proc_macro = True, proc_macro_dev = True" },
-        [...(lib ? [`:${crateName(lib)}`] : []), ...ownDeps]),
-    ]);
+      ...deps([null, "dev"], [...ownLib, ...ownDeps], ownMacro),
+    ];
+  };
+  for (const target of p.targets.filter(t => (t.kind.includes("test") || t.kind.includes("example") || t.kind.includes("bench")) && t.test)) {
+    covered.add(`test ${target.kind[0]} ${target.name}`);
+    test(target.name, separate(target));
+  }
+  for (const example of p.targets.filter(t => t.kind.includes("example") && !t.test)) {
+    let name = `${example.name}_example`;
+    while (names.has(name)) name += "_example";
+    names.add(name);
+    covered.add(`build example ${example.name}`);
+    rules.push(["rust_binary", [["name", q(name)], ...separate(example)]]);
   }
   const loads = Map.groupBy([...new Set(rules.map(([kind]) => kind))].sort(), kind => LOADS[kind]);
   const header = [
     HEADER,
-    `load("@crates//:defs.bzl", "aliases", "all_crate_deps")\n`,
     ...[...loads].sort().map(([file, kinds]) => `load(${q(file)}, ${kinds.map(q).join(", ")})\n`),
     "\n",
     `FEATURES = ${perTriple(features, list)}\n\n`,
     `PACKAGE_ENV = ${q(env)}\n`,
   ];
-  return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("");
+  return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + sourcesRule;
+}
+
+function specs() {
+  const wanted = new Map();
+  TRIPLES.forEach((triple, i) => {
+    const before = new Map(defaults[i].resolve.nodes.map(node => [node.id, new Set(node.features)]));
+    for (const node of runs[i].resolve.nodes) {
+      if (members.has(node.id) || (before.has(node.id) && node.features.every(f => before.get(node.id).has(f)))) continue;
+      if (!wanted.has(node.id)) wanted.set(node.id, new Set());
+      for (const feature of node.features) wanted.get(node.id).add(feature);
+    }
+  });
+  const named = Map.groupBy([...wanted.keys()], id => packages.get(id).name);
+  return [...wanted].sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => {
+    const { name, version } = packages.get(id);
+    return `${rule("crate.spec", [
+      ["package", q(name)],
+      ["version", q(`=${version}`)],
+      ["package_alias", named.get(name).length > 1 ? q(`${name}-${version}`) : undefined],
+      ["default_features", "False"],
+      ["features", list([...features].sort())],
+    ])}\n`;
+  });
 }
 
 function moduleFile() {
@@ -220,23 +400,59 @@ function moduleFile() {
     `use_repo(rust, "rust_toolchains")\n\nregister_toolchains("@rust_toolchains//:all")\n\n`,
     `crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")\n\n`,
     ...thirdParty.map(([name, opt]) => `${rule("crate.annotation", [["crate", q(name)], ["rustc_flags", list([`-Copt-level=${opt}`])]])}\n`),
+    // Crate universe omits a third-party crate's dependencies on workspace members, such as a [patch].
+    ...base.resolve.nodes.filter(node => !members.has(node.id)).flatMap(node => {
+      const own = node.deps.filter(dep => members.has(dep.pkg)).map(dep => packages.get(dep.pkg)).filter(libOf);
+      if (!own.length) return [];
+      const target = p => `@@${label(p)}:${crateName(libOf(p))}`;
+      const { name, version } = packages.get(node.id);
+      return [`${rule("crate.annotation", [
+        ["crate", q(name)],
+        ["version", q(`=${version}`)],
+        ["deps", list(own.filter(p => !libOf(p).kind.includes("proc-macro")).map(target).sort())],
+        ["proc_macro_deps", list(own.filter(p => libOf(p).kind.includes("proc-macro")).map(target).sort())],
+      ])}\n`];
+    }),
+    // Third-party packages and features only the all-features resolution reaches, pinned for
+    // crate_universe's default-features resolution, which unifies them in.
+    ...specs(),
     rule("crate.from_cargo", [
       ["name", q("crates")],
       ["cargo_lockfile", q("//:Cargo.lock")],
       ["manifests", list(["//:Cargo.toml"])],
       ["supported_platform_triples", list(TRIPLES)],
     ]),
-    `use_repo(crate, "crates")\n`,
+    ...[...staged].sort().map(([, { name, version, files }]) => `${rule("crate.annotation", [
+      ["crate", q(name)],
+      ["version", q(`=${version}`)],
+      ["additive_build_file_content", q(`exports_files(${JSON.stringify([...files].sort())})\n`)],
+    ])}\n`),
+    `use_repo(${["crate", "crates", ...[...staged.keys()].sort()].map((r, i) => (i ? q(r) : r)).join(", ")})\n`,
   ].join("");
 }
 
-const files = new Map([["cargo.MODULE.bazel", moduleFile()]]);
-for (const id of members) if (selected.has(dir(packages.get(id)))) files.set(`${dir(packages.get(id))}/BUILD.bazel`, buildFile(packages.get(id)));
-for (const member of selected) if (!files.has(`${member}/BUILD.bazel`)) throw new Error(`STEP_FAILED bazel-build-files: [workspace.metadata.bazel] member ${member} is not a workspace member`);
-// The generated file of a workspace member that left the Bazel list is stale.
+// Bodies first: rendering them records every file another package takes by label.
+const rendered = new Map([...members].map(id => [id, new Set()]));
+const bodies = new Map([...members].map(id => [dir(packages.get(id)), buildFile(packages.get(id))]));
+// Coverage equals the cargo legs: every target `cargo test --all-features --no-run` builds.
 for (const id of members) {
-  const file = `${dir(packages.get(id))}/BUILD.bazel`, target = path.join(root, file);
-  if (!files.has(file) && fs.existsSync(target) && fs.readFileSync(target, "utf8").startsWith(HEADER)) files.set(file, null);
+  const p = packages.get(id), expected = new Set();
+  for (const t of p.targets) {
+    if (t.kind.some(k => k === "bin" || k === "example")) expected.add(`build ${t.kind[0]} ${t.name}`);
+    if (t.test && (t.kind.some(k => ["bin", "test", "example", "bench"].includes(k)) || t === libOf(p))) expected.add(`test ${t.kind[0]} ${t.name}`);
+  }
+  const have = rendered.get(id);
+  const missing = [...expected].filter(t => !have.has(t)), extra = [...have].filter(t => !expected.has(t));
+  if (missing.length || extra.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} renders a different target set than cargo test --all-features (missing: ${missing.join(", ") || "none"}; extra: ${extra.join(", ") || "none"})`);
+}
+const files = new Map([
+  ["cargo.MODULE.bazel", moduleFile()],
+  ["BUILD.bazel", `${HEADER}\nexports_files(${list(["Cargo.lock", "Cargo.toml"])})\n${platformRules}${sourcesRule}${exportsRule("")}`],
+]);
+for (const [owner, body] of bodies) files.set(`${owner}/BUILD.bazel`, body + exportsRule(owner));
+// A generated file whose package left the workspace is stale.
+for (const file of execFileSync("git", ["ls-files", "*BUILD.bazel"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean)) {
+  if (!files.has(file) && fs.readFileSync(path.join(root, file), "utf8").startsWith(HEADER)) files.set(file, null);
 }
 const stale = [];
 for (const [file, text] of files) {

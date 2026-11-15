@@ -8,6 +8,19 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+# The build script compiles each family's protocol from that crate's sources.
+[package.metadata.bazel]
+build-script-data = [
+    "../crates/actors/proto",
+    "../crates/auth/proto",
+    "../crates/filesystem-wire/proto",
+    "../crates/harness-core/proto",
+    "../crates/inference/proto",
+    "../crates/machines/proto",
+    "../crates/objects/proto",
+    "../crates/stream/proto",
+]
+
 [features]
 object-revisions = []
 storage-schedules = ["acyclic-native-runtime/test-support", "dep:tempfile", "dep:tokio"]

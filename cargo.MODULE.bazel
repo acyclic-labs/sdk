@@ -53,6 +53,223 @@ crate.annotation(
     ],
 )
 
+crate.annotation(
+    crate = "ts-rs",
+    version = "=12.0.1",
+    proc_macro_deps = [
+        "@@//rust/vendor/ts-rs-macros-12.0.1:ts_rs_macros",
+    ],
+)
+
+crate.spec(
+    package = "ahash",
+    version = "=0.8.12",
+    default_features = False,
+    features = [
+        "compile-time-rng",
+        "const-random",
+        "default",
+        "getrandom",
+        "runtime-rng",
+        "serde",
+        "std",
+    ],
+)
+
+crate.spec(
+    package = "arrow-array",
+    version = "=60.1.0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "arrow-buffer",
+    version = "=60.1.0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "arrow-cmp",
+    version = "=60.1.0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "arrow-data",
+    version = "=60.1.0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "arrow-ipc",
+    version = "=60.1.0",
+    default_features = False,
+    features = [
+        "default",
+    ],
+)
+
+crate.spec(
+    package = "arrow-schema",
+    version = "=60.1.0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "arrow-select",
+    version = "=60.1.0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "const-random-macro",
+    version = "=0.1.16",
+    default_features = False,
+)
+
+crate.spec(
+    package = "const-random",
+    version = "=0.1.18",
+    default_features = False,
+)
+
+crate.spec(
+    package = "crunchy",
+    version = "=0.2.4",
+    default_features = False,
+    features = [
+        "default",
+        "limit_128",
+    ],
+)
+
+crate.spec(
+    package = "fallible-iterator",
+    version = "=0.3.0",
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+    ],
+)
+
+crate.spec(
+    package = "fallible-streaming-iterator",
+    version = "=0.1.9",
+    default_features = False,
+)
+
+crate.spec(
+    package = "flatbuffers",
+    version = "=25.12.19",
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate.spec(
+    package = "half",
+    version = "=2.7.1",
+    default_features = False,
+    features = [
+        "num-traits",
+    ],
+)
+
+crate.spec(
+    package = "hashlink",
+    version = "=0.12.2",
+    default_features = False,
+)
+
+crate.spec(
+    package = "libsqlite3-sys",
+    version = "=0.39.1",
+    default_features = False,
+    features = [
+        "bundled",
+        "bundled_bindings",
+        "cc",
+        "default",
+        "min_sqlite_version_3_45_3",
+        "pkg-config",
+        "vcpkg",
+    ],
+)
+
+crate.spec(
+    package = "oxilangtag",
+    version = "=0.1.6",
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate.spec(
+    package = "oxiri",
+    version = "=0.2.11",
+    default_features = False,
+)
+
+crate.spec(
+    package = "oxrdf",
+    version = "=0.3.5",
+    default_features = False,
+    features = [
+        "default",
+    ],
+)
+
+crate.spec(
+    package = "oxttl",
+    version = "=0.2.5",
+    default_features = False,
+)
+
+crate.spec(
+    package = "parquet",
+    version = "=60.1.0",
+    default_features = False,
+    features = [
+        "arrow",
+        "arrow-array",
+        "arrow-buffer",
+        "arrow-data",
+        "arrow-ipc",
+        "arrow-schema",
+        "arrow-select",
+        "base64",
+    ],
+)
+
+crate.spec(
+    package = "rusqlite",
+    version = "=0.41.0",
+    default_features = False,
+    features = [
+        "bundled",
+        "cache",
+        "default",
+        "ffi-sqlite-wasm-rs",
+        "hashlink",
+        "modern_sqlite",
+    ],
+)
+
+crate.spec(
+    package = "tiny-keccak",
+    version = "=2.0.2",
+    default_features = False,
+    features = [
+        "default",
+        "shake",
+    ],
+)
+
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//:Cargo.lock",
@@ -63,4 +280,10 @@ crate.from_cargo(
         "x86_64-unknown-linux-gnu",
     ],
 )
-use_repo(crate, "crates")
+crate.annotation(
+    crate = "protoc-bin-vendored-linux-x86_64",
+    version = "=3.3.0",
+    additive_build_file_content = "exports_files([\"bin/protoc\",\"include\"])\n",
+)
+
+use_repo(crate, "crates", "crates__protoc-bin-vendored-linux-x86_64-3.3.0")
