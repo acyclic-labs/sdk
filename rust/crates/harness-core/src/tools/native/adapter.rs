@@ -193,8 +193,8 @@ impl ToolExecutor for Adapter {
         self.original.executor.cancellable_on_drop()
     }
 
-    fn fenced_start(&self) -> crate::tool::FencedStart {
-        self.original.executor.fenced_start()
+    fn reexecutes_fenced(&self) -> bool {
+        self.original.executor.reexecutes_fenced()
     }
 
     fn cancellation(

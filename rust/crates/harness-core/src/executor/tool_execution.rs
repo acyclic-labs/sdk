@@ -356,14 +356,14 @@ impl<'io> StockExecution<'io> {
         // Deciding a fenced start resumes its turn or runs its effect again,
         // both fresh intents that reconciliation refuses.
         let fenced = match (&recorded, &started_calls) {
-            (RecordedCall::Started(_), Some(calls)) => {
-                !self.stock.reconciliation_only && calls.fenced(invocation.operation_id)
-            }
+            (RecordedCall::Started(_), Some(calls)) => (!self.stock.reconciliation_only
+                && calls.fenced(invocation.operation_id))
+            .then_some(records.as_slice()),
             (RecordedCall::Failed { .. } | RecordedCall::Completed { .. }, Some(calls)) => {
                 calls.settle(invocation.operation_id);
-                false
+                None
             }
-            _ => false,
+            _ => None,
         };
         // Keep the original record and its decode custody through replay.
         let original = match recorded.started() {

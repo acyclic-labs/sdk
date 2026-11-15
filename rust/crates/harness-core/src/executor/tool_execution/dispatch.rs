@@ -1,5 +1,44 @@
 use super::*;
 
+/// Proof that a start was published together with a dispatch to another host.
+pub(super) struct DispatchRecord(());
+
+/// How a started call is decided once its producer is fenced and
+/// reconciliation cannot settle it. Only the durable start record decides
+/// whether it may wait: no executor can retain a call that ran in-process.
+pub(super) enum FencedStart {
+    /// Dispatched to another host, whose settlement or fence decides it.
+    Retained(DispatchRecord),
+    /// Ran only inside its fenced owner and ended with it: the model's
+    /// interrupted failure.
+    Interrupted,
+    /// Its effect is published only under the call's operation ID, so running
+    /// it again under that ID is its one effect.
+    Reexecuted,
+}
+
+impl FencedStart {
+    /// The decision for a fenced start, from the records of its call.
+    pub(super) fn of(records: &[ExecutionRecord], reexecutes: bool) -> Self {
+        let dispatched = records.iter().any(|record| {
+            matches!(
+                record.event,
+                ExecutionEvent::ToolStarted {
+                    publication: Some(_),
+                    ..
+                }
+            )
+        });
+        if dispatched {
+            Self::Retained(DispatchRecord(()))
+        } else if reexecutes {
+            Self::Reexecuted
+        } else {
+            Self::Interrupted
+        }
+    }
+}
+
 impl<'io> StockExecution<'io> {
     fn tool_wait_deadline(started: Option<u64>, timeout: u64) -> Result<u64> {
         let started = started.ok_or_else(|| {
@@ -15,20 +54,17 @@ impl<'io> StockExecution<'io> {
         record: crate::tool::RecordedInvocation<&ToolInvocation, &Value>,
         tool: &crate::tool::Tool,
         context: &mut Option<crate::runtime::ToolContext>,
-        (started, fenced): (bool, bool),
+        (started, fenced): (bool, Option<&[ExecutionRecord]>),
         original_started_at: Option<u64>,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ToolInvocationOutcome<'io>> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
         // A fenced start's producer is not this owner, which is never fenced
-        // itself; the executor declares how reconciliation's unknown decides.
-        let decision = if fenced {
-            tool.executor.fenced_start()
-        } else {
-            crate::tool::FencedStart::Retained
-        };
-        let reexecuted = decision == crate::tool::FencedStart::Reexecuted;
+        // itself; its own start record decides reconciliation's unknown.
+        let decision =
+            fenced.map(|records| FencedStart::of(records, tool.executor.reexecutes_fenced()));
+        let reexecuted = matches!(decision, Some(FencedStart::Reexecuted));
         let completion = crate::executor::phase::PreparedPhase::new(journal, self.io)?;
         // A remote target's run is queued in the claim's own commit.
         // A target that went away since resolution refuses it unstarted.
@@ -308,7 +344,7 @@ impl<'io> StockExecution<'io> {
             }
             // The fence proves the call no longer runs, as a cancellation does.
             Ok(None) | Err(Error::Indeterminate(_))
-                if decision == crate::tool::FencedStart::Interrupted =>
+                if matches!(decision, Some(FencedStart::Interrupted)) =>
             {
                 return self
                     .interrupted(
@@ -319,10 +355,11 @@ impl<'io> StockExecution<'io> {
                     )
                     .await;
             }
-            // Unknown completion while its producer may be live retains the
-            // original invocation for later reconciliation; it does not
-            // establish a terminal tool failure. An uncertain re-execution
-            // stays fenced, so the next attempt executes it again.
+            // Unknown completion while its producer may be live, including a
+            // dispatched one, retains the original invocation for later
+            // reconciliation; it does not establish a terminal tool failure.
+            // An uncertain re-execution stays fenced, so the next attempt
+            // executes it again.
             Ok(None) | Err(Error::Indeterminate(_)) => {
                 return Err(Error::Indeterminate(operation_id));
             }

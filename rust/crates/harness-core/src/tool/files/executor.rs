@@ -392,8 +392,8 @@ impl ToolExecutor for FileTool {
 
     // Every change publishes under the invocation's operation ID, and its
     // receipt binds the request; a read has no effect to repeat.
-    fn fenced_start(&self) -> crate::tool::FencedStart {
-        crate::tool::FencedStart::Reexecuted
+    fn reexecutes_fenced(&self) -> bool {
+        true
     }
 
     fn authorize(

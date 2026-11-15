@@ -94,7 +94,6 @@ struct PendingTool {
     calls: AtomicUsize,
     result: Mutex<Option<ToolResult>>,
     accepted: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    fenced: crate::tool::FencedStart,
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::tool::ToolExecutor for PendingTool {
@@ -116,16 +115,11 @@ impl crate::tool::ToolExecutor for PendingTool {
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async { Ok(self.result.lock().unwrap().clone()) })
     }
-    fn fenced_start(&self) -> crate::tool::FencedStart {
-        self.fenced
-    }
 }
 
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
-    // Even a call its predecessor's death would interrupt stays live here.
-    let fenced = crate::tool::FencedStart::Interrupted;
     let (journal, _issuer) = super::publication_observation::journal().await?;
     let provider = Arc::new(scripted_model());
     let (accepted, acceptance) = tokio::sync::oneshot::channel();
@@ -133,7 +127,6 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
         calls: AtomicUsize::new(0),
         result: Mutex::new(None),
         accepted: Mutex::new(Some(accepted)),
-        fenced,
     });
     let tools = echo_tools(
         tool.clone(),
@@ -219,12 +212,12 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
 }
 
 /// A started call whose incarnation died, reopened by its successor, which
-/// took the delivery: the call's producer is fenced.
+/// took the delivery: the call's producer is fenced. A dispatched start is
+/// the record a start published together with its dispatch leaves.
 #[cfg(not(target_arch = "wasm32"))]
 async fn fenced_pending_call(
-    fenced: crate::tool::FencedStart,
+    dispatched: bool,
 ) -> Result<(
-    Result<TurnOutput>,
     Journal,
     Arc<PendingTool>,
     Arc<ScriptedModelProvider>,
@@ -238,7 +231,6 @@ async fn fenced_pending_call(
         calls: AtomicUsize::new(0),
         result: Mutex::new(None),
         accepted: Mutex::new(Some(accepted)),
-        fenced,
     });
     let tools = echo_tools(
         tool.clone(),
@@ -268,20 +260,25 @@ async fn fenced_pending_call(
     // The incarnation dies with its producer; the next one reopens the cut.
     drop(first);
     let reopened = journal.reopen_before_tool_completion("call-1");
-    let settled = executor.execute(input.clone(), &reopened).await;
-    Ok((settled, reopened, tool, provider, executor, input))
+    if dispatched {
+        for record in reopened.0.lock().unwrap().iter_mut() {
+            if let ExecutionEvent::ToolStarted { publication, .. } = &mut record.event {
+                *publication = Some([7; 32]);
+            }
+        }
+    }
+    Ok((reopened, tool, provider, executor, input))
 }
 
-/// The fenced twin of the live retry above, for a producer that ran only in
-/// its dead owner: nothing can still settle the call, so an inconclusive
-/// reconciliation is the model's interrupted failure, the effect never runs
-/// again, and the turn continues instead of staying indeterminate.
+/// The fenced twin of the live retry above: a call that ran only inside its
+/// dead owner can no longer settle, so an inconclusive reconciliation is the
+/// model's interrupted failure, the effect never runs again, and the turn
+/// continues instead of staying indeterminate.
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn a_fenced_started_call_settles_interrupted_and_the_turn_continues() -> Result<()> {
-    let (settled, reopened, tool, provider, executor, input) =
-        fenced_pending_call(crate::tool::FencedStart::Interrupted).await?;
-    let settled = settled?;
+    let (reopened, tool, provider, executor, input) = fenced_pending_call(false).await?;
+    let settled = executor.execute(input.clone(), &reopened).await?;
     assert_eq!(settled.text, "done");
     let text = super::tools_1::tool_error_text(&provider.requests()[1].messages, "call-1")
         .expect("the next model request carries the call's failure");
@@ -303,23 +300,31 @@ async fn a_fenced_started_call_settles_interrupted_and_the_turn_continues() -> R
     Ok(())
 }
 
-/// A producer that may outlive its owner, such as a queued device command,
-/// keeps a fenced call retained: no interruption is recorded and the effect
-/// is not run again.
+/// A call dispatched to another host outlives its fenced owner: it stays
+/// retained, with nothing recorded and nothing run again, until that host's
+/// own settlement decides it.
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-async fn a_fenced_call_whose_producer_may_outlive_its_owner_stays_retained() -> Result<()> {
-    let (settled, reopened, tool, _, _, input) =
-        fenced_pending_call(crate::tool::FencedStart::Retained).await?;
+async fn a_fenced_dispatched_call_waits_for_its_host_to_settle_it() -> Result<()> {
+    let (reopened, tool, _, executor, input) = fenced_pending_call(true).await?;
+    let retained = executor.execute(input.clone(), &reopened).await;
     assert!(
-        matches!(&settled, Err(Error::Indeterminate(id)) if *id == input.operation_id),
-        "{settled:?}"
+        matches!(&retained, Err(Error::Indeterminate(id)) if *id == input.operation_id),
+        "{retained:?}"
     );
     assert!(!reopened.0.lock().unwrap().iter().any(|record| matches!(
         &record.event,
         ExecutionEvent::ToolFailed { .. } | ExecutionEvent::ToolCompleted { .. }
     )));
-    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    *tool.result.lock().unwrap() = Some(ToolResult {
+        value: json!({"value":"hello"}),
+    });
+    assert_eq!(executor.execute(input, &reopened).await?.text, "done");
+    assert!(reopened.0.lock().unwrap().iter().any(|record| matches!(
+        &record.event,
+        ExecutionEvent::ToolCompleted { call_id, .. } if call_id == "call-1"
+    )));
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1, "the host ran it once");
     Ok(())
 }
 
@@ -360,8 +365,8 @@ impl crate::tool::ToolExecutor for KeyedTool {
         self.reconciles.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(None) })
     }
-    fn fenced_start(&self) -> crate::tool::FencedStart {
-        crate::tool::FencedStart::Reexecuted
+    fn reexecutes_fenced(&self) -> bool {
+        true
     }
 }
 
