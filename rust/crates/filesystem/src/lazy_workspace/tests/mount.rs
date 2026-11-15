@@ -67,11 +67,18 @@ async fn discarded_source_promotion_retains_before_images_without_overriding_liv
                 root.read("/alias", 64, &mut ctx).await?.bytes.as_ref(),
                 b"external"
             );
-            assert!(matches!(
-                root.read_at_snapshot(&original, "/alias", None, 64, &mut ctx)
-                    .await,
-                Err(LazyWorkspaceError::StaleSource)
-            ));
+            // No observation binds this alias to the retained before-image.
+            // The original provider rejects the expired cut; keep that cause.
+            let alias = root
+                .read_at_snapshot(&original, "/alias", None, 64, &mut ctx)
+                .await;
+            assert!(
+                matches!(
+                    alias,
+                    Err(LazyWorkspaceError::Demand(DemandError::StaleSource))
+                ),
+                "unobserved alias did not preserve the provider's stale-cut failure: {alias:?}"
+            );
         }
         let (bytes, used_source) = root
             .read_at_snapshot(&original, "/file", None, 64, &mut ctx)
