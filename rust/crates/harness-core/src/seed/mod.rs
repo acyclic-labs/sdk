@@ -167,6 +167,7 @@ pub fn volume(provider: &ProviderRef) -> Result<VolumeRef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn tree_is_sorted_and_kernel_lists_every_layer_rule() {
@@ -175,6 +176,44 @@ mod tests {
         for rule in crate::layers::Rule::ALL {
             assert!(kernel.contains(&format!("| {} |", rule.name())), "{rule:?}");
         }
+    }
+
+    /// Command-line tools an instruction might tell a model to run, spelled
+    /// distinctly enough that a whole word in prose names the tool.
+    const COMMAND_TOOLS: &[&str] = &[
+        "ack", "ag", "awk", "bash", "bun", "cargo", "clang", "curl", "deno", "docker", "egrep",
+        "fd", "fzf", "gcc", "gh", "git", "grep", "jq", "kubectl", "node", "npm", "npx", "perl",
+        "pip", "pnpm", "pwsh", "python", "python3", "rg", "ruby", "rustc", "sed", "tsc", "wget",
+        "yarn", "yq", "zsh",
+    ];
+
+    /// The command-line tools named by model-visible instruction texts.
+    fn named_tools<'a>(texts: impl IntoIterator<Item = &'a str>) -> BTreeSet<&'static str> {
+        texts
+            .into_iter()
+            .flat_map(|text| text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')))
+            .filter_map(|word| COMMAND_TOOLS.iter().copied().find(|tool| *tool == word))
+            .collect()
+    }
+
+    // A seed instruction may name only a tool every task environment
+    // provides, and every provided tool is one some instruction relies on.
+    #[test]
+    fn seed_instructions_name_exactly_the_task_tools() {
+        let instructions = tree()
+            .iter()
+            .filter(|(path, _)| path.ends_with(".md"))
+            .map(|(path, bytes)| std::str::from_utf8(bytes).unwrap_or_else(|_| panic!("{path}")));
+        let provided: BTreeSet<_> = crate::context::TASK_TOOLS.iter().copied().collect();
+        assert_eq!(named_tools(instructions), provided);
+        // Planted controls: a tool the environment lacks is detected, and
+        // ordinary prose names none.
+        let planted = named_tools(["Read relevant code with jq before editing; rg is fine."]);
+        assert_eq!(
+            planted.difference(&provided).copied().collect::<Vec<_>>(),
+            ["jq"]
+        );
+        assert!(named_tools(["Make a tree of the tail and find the path."]).is_empty());
     }
 
     #[cfg(not(target_arch = "wasm32"))]
