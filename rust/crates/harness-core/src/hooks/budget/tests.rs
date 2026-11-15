@@ -244,7 +244,7 @@ proptest! {
     // any next merge. A fresh empty ledger fails the same accounting detector.
     #[test]
     fn unconditional_entrypoint_charges_nonempty_output(reason in ".{0,48}") {
-        let mut output = HookOutput { approval: Some(reason.clone()),
+        let mut output = HookOutput { approval: Some(crate::hooks::HookApproval { prompt: reason.clone(), route: crate::interaction::ApprovalRoute::Parent }),
             updated_input: Some(json!({"reason":reason})), ..Default::default() };
         let before = serde_json::to_vec(&output)?;
         let mut ledger = Budget::existing(4096,&output)?;

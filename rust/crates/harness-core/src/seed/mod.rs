@@ -51,6 +51,7 @@ const FILES: &[(&str, &[u8])] = &[
     ("AGENT.md", AGENT_PROMPT.as_bytes()),
     seed_file!("agent.ts"),
     seed_file!("plugins.ts"),
+    seed_file!("plugins/approvals/hooks/before-tool.ts"),
     seed_file!("plugins/approvals/modes/ask.ts"),
     seed_file!("plugins/approvals/modes/model.ts"),
     seed_file!("plugins/approvals/modes/parent.ts"),

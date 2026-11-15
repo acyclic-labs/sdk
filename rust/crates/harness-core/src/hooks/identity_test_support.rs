@@ -48,7 +48,10 @@ pub async fn assert_canonical_tool_consumers(call: &crate::model::ToolCall) -> c
         }).await?;
         match event {
             HookEvent::PreToolUse => assert_eq!(
-                output.approval.as_deref(),
+                output
+                    .approval
+                    .as_ref()
+                    .map(|approval| approval.prompt.as_str()),
                 Some("canonical guard"),
                 "canonical hook identity"
             ),

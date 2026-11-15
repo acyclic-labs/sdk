@@ -42,28 +42,26 @@ pub async fn next_stage<'a>(
     if policy.bind()?.identity().digest != digest {
         return Err(Error::Conflict("approval policy digest changed".into()));
     }
+    use crate::interaction::{ApprovalRoute, ApprovalSubject};
     static HUMAN_POLICY: std::sync::LazyLock<ApprovalPolicy> =
         std::sync::LazyLock::new(ApprovalPolicy::default);
+    static PARENT_POLICY: std::sync::LazyLock<ApprovalPolicy> =
+        std::sync::LazyLock::new(|| ApprovalPolicy {
+            approvers: vec![Approver::Parent],
+        });
     let interaction: crate::interaction::Interaction =
         crate::contract::json_from_slice(request.bytes())
             .map_err(|error| Error::Invalid(error.to_string()))?;
-    let (policy, binding, rule) = match interaction {
+    let (route, binding, rule) = match interaction {
         crate::interaction::Interaction::Approval {
             operation_id,
             action_digest,
             subject,
             ..
         } => (
-            if matches!(
-                &subject,
-                crate::interaction::ApprovalSubject::Tool {
-                    route: crate::interaction::ApprovalRoute::Human,
-                    ..
-                }
-            ) {
-                &*HUMAN_POLICY
-            } else {
-                policy
+            match &subject {
+                ApprovalSubject::Tool { route, .. } => *route,
+                _ => ApprovalRoute::Policy,
             },
             ApprovalBinding {
                 operation_id,
@@ -75,7 +73,33 @@ pub async fn next_stage<'a>(
     };
     binding.validate()?;
     let hash = fingerprint(request.bytes())?;
+    // The one branch on who decides: a guard's route selects its approvers
+    // from, or in place of, the configured chain.
+    let policy = match route {
+        ApprovalRoute::Policy | ApprovalRoute::Model => policy,
+        ApprovalRoute::Parent => &*PARENT_POLICY,
+        ApprovalRoute::Human => &*HUMAN_POLICY,
+    };
+    let model_only = route == ApprovalRoute::Model;
+    if model_only
+        && !policy
+            .approvers
+            .iter()
+            .any(|approver| matches!(approver, Approver::Llm { .. }))
+    {
+        return Ok(NextStage::Decided(ApprovalReviewFile {
+            principal: "policy:exhausted".into(),
+            request_sha256: hash,
+            policy_digest: digest,
+            stage: policy.approvers.len(),
+            verdict: RuleVerdict::Deny,
+            reason: Some("approval model is unavailable".into()),
+        }));
+    }
     for (stage, approver) in policy.approvers.iter().enumerate().skip(start) {
+        if model_only && !matches!(approver, Approver::Llm { .. }) {
+            continue;
+        }
         let principal = match approver {
             Approver::Rules { principal, .. }
             | Approver::Llm { principal, .. }

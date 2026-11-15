@@ -17,7 +17,7 @@ enum State {
     },
     Exhausted {
         denied: bool,
-        asks: bool,
+        asks: Option<crate::interaction::ApprovalRoute>,
         blocking: bool,
     },
 }
@@ -42,6 +42,13 @@ impl From<&HookSpec> for Protocol {
 /// and growing the outcome require ownership of an accepted reservation.
 pub(super) struct Reservation<'a> {
     plan: Option<Plan<'a>>,
+}
+
+/// `HookApproval` as it is retained, without owning its prompt.
+#[derive(Serialize)]
+struct ApprovalRef<'a, T> {
+    prompt: &'a T,
+    route: crate::interaction::ApprovalRoute,
 }
 
 #[derive(Serialize)]
@@ -70,7 +77,7 @@ impl Budget {
         #[derive(Serialize)]
         struct Fallback<'a> {
             blocked: Option<&'a str>,
-            approval: Option<&'a str>,
+            approval: Option<ApprovalRef<'a, &'a str>>,
             additional_context: [(); 0],
             updated_input: Option<()>,
             diagnostics: [DiagnosticRef<'a, &'a str>; 1],
@@ -82,7 +89,11 @@ impl Budget {
         encoded_size(
             &Fallback {
                 blocked: Some("Hook denied"),
-                approval: Some("Hook approval"),
+                // No route name is longer than `parent`, so this bounds them all.
+                approval: Some(ApprovalRef {
+                    prompt: &"Hook approval",
+                    route: crate::interaction::ApprovalRoute::Parent,
+                }),
                 additional_context: [],
                 updated_input: None,
                 diagnostics: [DiagnosticRef {
@@ -146,9 +157,15 @@ impl Budget {
                     .ok_or_else(exceeded)?
                     - 4;
             }
-            if let Some(text) = &plan.approval {
+            if let Some((prompt, route)) = &plan.approval {
                 next = next
-                    .checked_add(encoded_size(text, maximum)?)
+                    .checked_add(encoded_size(
+                        &ApprovalRef {
+                            prompt,
+                            route: *route,
+                        },
+                        maximum,
+                    )?)
                     .ok_or_else(exceeded)?
                     - 4;
             }
@@ -211,7 +228,7 @@ impl Budget {
                 let (mut denied, mut asks, mut blocking) = match self.state {
                     State::Available { .. } => (
                         output.blocked.is_some(),
-                        output.approval.is_some(),
+                        output.approval.as_ref().map(|approval| approval.route),
                         // A retained rewrite is mandatory: losing it must never
                         // dispatch the unchecked original request.
                         output.updated_input.is_some()
@@ -233,7 +250,7 @@ impl Budget {
                     || plan.failure.is_some();
                 blocking |= blocking_policy && contributes;
                 denied |= plan.blocked.is_some();
-                asks |= plan.approval.is_some();
+                asks = asks.max(plan.approval.as_ref().map(|(_, route)| *route));
                 blocking |= plan.failure.is_some_and(|(_, blocking)| blocking);
                 self.state = State::Exhausted {
                     denied,
@@ -256,7 +273,10 @@ impl Budget {
         {
             *output = HookOutput::output_limit(blocking);
             output.blocked = denied.then(|| "Hook denied".into());
-            output.approval = asks.then(|| "Hook approval".into());
+            output.approval = asks.map(|route| super::HookApproval {
+                prompt: "Hook approval".into(),
+                route,
+            });
         }
     }
 
@@ -292,8 +312,15 @@ impl Reservation<'_> {
         if let Some(text) = plan.blocked {
             output.blocked = Some(text.into_string(&self)?);
         }
-        if let Some(text) = plan.approval {
-            output.approval = Some(text.into_string(&self)?);
+        if let Some((text, route)) = plan.approval {
+            let route = output
+                .approval
+                .as_ref()
+                .map_or(route, |retained| retained.route.max(route));
+            output.approval = Some(super::HookApproval {
+                prompt: text.into_string(&self)?,
+                route,
+            });
         }
         for text in plan.context.into_iter().flatten() {
             output.additional_context.push(text.into_string(&self)?);

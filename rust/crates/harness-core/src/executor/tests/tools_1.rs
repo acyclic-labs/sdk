@@ -280,7 +280,7 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
             assert!(matches!(
                 hook.hook_approval(
                     &hook_journal, input.operation_id, &invocation, tool,
-                    ("Approve echo".into(), None), false,
+                    ("Approve echo".into(), crate::interaction::ApprovalRoute::Human, None), false,
                 ).await?,
                 Some(tool_execution::PolicyStop::Progress(ExecutionProgress::Pending(operation))) if operation == invocation.operation_id
             ));
@@ -300,7 +300,11 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
                         input.operation_id,
                         &invocation,
                         tool,
-                        ("Approve echo".into(), None),
+                        (
+                            "Approve echo".into(),
+                            crate::interaction::ApprovalRoute::Human,
+                            None,
+                        ),
                         false,
                     )
                     .await?;
@@ -315,7 +319,7 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
                 assert!(matches!(
                     hook.hook_approval(
                         &hook_journal, input.operation_id, &invocation, tool,
-                        ("Approve echo".into(), None), true,
+                        ("Approve echo".into(), crate::interaction::ApprovalRoute::Human, None), true,
                     ).await,
                     Err(Error::Indeterminate(operation)) if operation == invocation.operation_id
                 ));

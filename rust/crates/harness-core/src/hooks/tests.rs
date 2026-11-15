@@ -690,7 +690,13 @@ async fn tool_catalog_routes_approval_hooks() -> Result<()> {
             )
             .await?;
         assert_eq!(calls, 1, "{}", spec.name);
-        assert_eq!(output.approval.as_deref(), Some("review tool"));
+        assert_eq!(
+            output
+                .approval
+                .as_ref()
+                .map(|approval| approval.prompt.as_str()),
+            Some("review tool")
+        );
     }
     Ok(())
 }
@@ -781,7 +787,13 @@ fn output_applies_context_tool_decisions_and_stop_blocking() -> Result<()> {
         "permissionDecision":"ask","permissionDecisionReason":"risky command"}}"#,
         b"",
     )?;
-    assert_eq!(output.approval.as_deref(), Some("risky command"));
+    assert_eq!(
+        output
+            .approval
+            .as_ref()
+            .map(|approval| approval.prompt.as_str()),
+        Some("risky command")
+    );
     assert_eq!(output.blocked.as_deref(), Some("protected path"));
     let mut output = HookOutput::default();
     output.observe(HookEvent::Stop, Some(2), b"", b"tests failed")?;

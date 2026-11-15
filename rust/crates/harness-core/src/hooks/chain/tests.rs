@@ -1,6 +1,8 @@
 //! The shared conformance cases for several before-hooks on one request.
 use super::model::{judge, plugin};
 use super::*;
+use crate::hooks::HookApproval;
+use crate::interaction::ApprovalRoute;
 use serde_json::json;
 
 fn allow() -> Value {
@@ -22,7 +24,13 @@ async fn without_a_rewrite_the_strictest_answer_wins() -> Result<()> {
         },
     )
     .await?;
-    assert_eq!(output.approval.as_deref(), Some("push?"));
+    assert_eq!(
+        output
+            .approval
+            .as_ref()
+            .map(|approval| approval.prompt.as_str()),
+        Some("push?")
+    );
     assert!(!output.blocks());
     assert_eq!(output.updated_input, None);
     assert_eq!(runs.len(), 2, "one parallel round");
@@ -61,7 +69,13 @@ async fn an_ask_is_about_the_rewritten_request() -> Result<()> {
         },
     )
     .await?;
-    assert_eq!(output.approval.as_deref(), Some("run rm -rf ./build?"));
+    assert_eq!(
+        output
+            .approval
+            .as_ref()
+            .map(|approval| approval.prompt.as_str()),
+        Some("run rm -rf ./build?")
+    );
     assert_eq!(
         output.updated_input,
         Some(json!({"command": "rm -rf ./build"}))
@@ -145,18 +159,24 @@ fn a_plugin_decision_is_exactly_one_of_its_forms() {
             .as_deref(),
         Some("no")
     );
-    assert_eq!(
-        decide(0, r#"{"ask":"ok?","to":"person"}"#)
-            .approval
-            .as_deref(),
-        Some("ok?")
-    );
+    for (to, route) in [
+        ("person", ApprovalRoute::Human),
+        ("model", ApprovalRoute::Model),
+        ("parent", ApprovalRoute::Parent),
+    ] {
+        assert_eq!(
+            decide(0, &format!(r#"{{"ask":"ok?","to":"{to}"}}"#)).approval,
+            Some(HookApproval {
+                prompt: "ok?".into(),
+                route
+            }),
+            "{to}"
+        );
+    }
     for malformed in [
         r#"{"allow":false}"#,
         r#"{"ask":"ok?"}"#,
         r#"{"ask":"ok?","to":"everyone"}"#,
-        r#"{"ask":"ok?","to":"parent"}"#,
-        r#"{"ask":"ok?","to":"model"}"#,
         r#"{"ask":"ok?","to":"command"}"#,
         r#"{"allow":true,"input":[1]}"#,
         r#"{"allow":true,"to":"person"}"#,

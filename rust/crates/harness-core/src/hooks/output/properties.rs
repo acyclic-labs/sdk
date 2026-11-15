@@ -101,7 +101,7 @@ proptest! {
                 }
             });
             result.unwrap().unwrap();
-            prop_assert_eq!(output.approval.as_deref(), Some(first_reason.as_str()));
+            prop_assert_eq!(output.approval.as_ref().map(|approval| approval.prompt.as_str()), Some(first_reason.as_str()));
             prop_assert_eq!(output.blocked.as_deref(), Some(reason.as_str()));
             prop_assert!(output.diagnostics.is_empty());
             prop_assert_eq!(
@@ -156,7 +156,7 @@ proptest! {
         } else {
             prop_assert!(compact_output.blocked.is_none());
         }
-        prop_assert_eq!(compact_output.approval.as_deref(),
+        prop_assert_eq!(compact_output.approval.as_ref().map(|approval| approval.prompt.as_str()),
             (event == HookEvent::PreToolUse && permission == 1).then_some(reason.as_str()));
         let mut expected_context = Vec::new();
         if event == HookEvent::PostToolUse && deny {

@@ -670,7 +670,9 @@ impl<'io> StockExecution<'io> {
         #[cfg(not(target_arch = "wasm32"))]
         let hook_approval = match hook_decision {
             crate::hooks::ToolHookDecision::Allow => None,
-            crate::hooks::ToolHookDecision::RequireApproval { prompt } => Some(prompt),
+            crate::hooks::ToolHookDecision::RequireApproval { prompt, route } => {
+                Some((prompt, route))
+            }
         };
         #[cfg(not(target_arch = "wasm32"))]
         self.append_hook_context(_hook_context, pre_hook)?;
@@ -762,14 +764,14 @@ impl<'io> StockExecution<'io> {
                     }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(prompt) = hook_approval
+                if let Some((prompt, route)) = hook_approval
                     && let Some(stop) = self
                         .hook_approval(
                             journal,
                             operation_id,
                             &invocation,
                             tool,
-                            (prompt, target),
+                            (prompt, route, target),
                             started,
                         )
                         .await?

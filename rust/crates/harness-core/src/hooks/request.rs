@@ -242,6 +242,7 @@ mod tests {
         let guard = HookSpec {
             run: HookRun::Plugin {
                 instance: "private-edits".into(),
+                ts: Vec::new(),
                 sh: Some(format!(
                     "cat > {}; echo 'patch guard denied' >&2; exit 2",
                     literal(&output)
@@ -358,6 +359,7 @@ mod tests {
             HookSpec {
                 run: HookRun::Plugin {
                     instance: "rewrite".into(),
+                    ts: Vec::new(),
                     sh: Some(format!(
                         "cat >/dev/null; printf '%s' {}",
                         literal(&decision)

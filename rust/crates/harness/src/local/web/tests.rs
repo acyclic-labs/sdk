@@ -145,6 +145,7 @@ async fn configured_web_tools_reach_their_action_guards() -> Result<()> {
                 hooks: vec![HookSpec {
                     run: HookRun::Plugin {
                         instance: "root:plugins.ts#guard:hooks/before-tool".into(),
+                        ts: Vec::new(),
                         sh: Some("exit 2".into()),
                         ps1: Some("exit 2".into()),
                         config: "{}".into(),

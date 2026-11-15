@@ -117,7 +117,10 @@ fn check_decisions(bytes: &[u8]) -> CheckResult {
             Ok((Some(0), bytes.to_vec(), vec![])),
         )?;
         let mut merged = HookOutput {
-            approval: Some("earlier approval".into()),
+            approval: Some(crate::hooks::HookApproval {
+                prompt: "earlier approval".into(),
+                route: crate::interaction::ApprovalRoute::Human,
+            }),
             ..HookOutput::default()
         };
         apply(
@@ -126,7 +129,13 @@ fn check_decisions(bytes: &[u8]) -> CheckResult {
             HookFailure::Report,
             Ok((Some(0), bytes.to_vec(), vec![])),
         )?;
-        assert_eq!(merged.approval.as_deref(), Some("earlier approval"));
+        assert_eq!(
+            merged
+                .approval
+                .as_ref()
+                .map(|approval| approval.prompt.as_str()),
+            Some("earlier approval")
+        );
         assert_eq!(merged.blocked, reports.blocked);
         let mut blocks = HookOutput::default();
         apply(
@@ -170,7 +179,13 @@ fn check_decisions(bytes: &[u8]) -> CheckResult {
                         .pointer("/hookSpecificOutput/permissionDecisionReason")
                         .and_then(Value::as_str)
                 {
-                    assert_eq!(reports.approval.as_deref(), Some(reason));
+                    assert_eq!(
+                        reports
+                            .approval
+                            .as_ref()
+                            .map(|approval| approval.prompt.as_str()),
+                        Some(reason)
+                    );
                 }
                 assert_eq!(reports, round_trip);
             }

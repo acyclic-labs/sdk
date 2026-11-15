@@ -42,6 +42,14 @@ pub(crate) fn phase_operation(tool: OperationId, event: HookEvent) -> OperationI
     OperationId::from_bytes(id)
 }
 
+/// The retained outcome at `hooks/{turn}/{operation}.json`, versioned so a
+/// file of another shape is refused rather than misread.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RetainedOutcome {
+    V1(HookOutput),
+}
+
 pub(crate) fn approval_identity(manifest: [u8; 32]) -> crate::registry::ComponentIdentity {
     crate::registry::ComponentIdentity {
         name: "hooks.pre-tool".into(),
@@ -88,7 +96,7 @@ where
         )
         .await?;
         let output = serde_json::from_slice(&bytes)
-            .map(Some)
+            .map(|RetainedOutcome::V1(output)| Some(output))
             .map_err(|error| crate::Error::Invalid(format!("retained hook outcome: {error}")))?;
         owner.release();
         return Ok(output);
@@ -121,8 +129,10 @@ where
             .await?;
         run().await?
     };
-    let bytes = serde_json::to_vec(&output)
+    let retained = RetainedOutcome::V1(output);
+    let bytes = serde_json::to_vec(&retained)
         .map_err(|error| crate::Error::Invalid(format!("hook outcome: {error}")))?;
+    let RetainedOutcome::V1(output) = retained;
     content
         .retain_once(
             publisher,
