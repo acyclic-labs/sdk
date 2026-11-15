@@ -9,6 +9,7 @@ import YAML from "./vendor/yaml.cjs";
 import { compatibilityArtifacts, packagedSourceCopies } from "./generated-bindings.mjs";
 import { languageGeneratorBackends, parseGeneratorBackends } from "./plan-qualification.mjs";
 import { runShellFixture } from "./shell-fixture.mjs";
+import { discoverTests } from "./node-tests.mjs";
 import { clippySelections } from "./clippy-feature-sets.mjs";
 import { cargoFeatureArguments } from "./cargo-feature-selection.mjs";
 import { localCargoPackages } from "./publish-cargo-crates.mjs";
@@ -78,17 +79,17 @@ test("release generator staging runs every registered backend without affected-f
   assert.equal(goStaging.if, undefined);
   const staging = steps.find(step => step.name === "Check backend staging") ?? assert.fail("missing backend staging");
   assert.equal(staging.if, undefined);
-  const code = staging.run.split("<<'JS'\n")[1]?.split("\nJS")[0] ?? assert.fail("missing staging script");
-  let invocation;
-  runInNewContext(code.replace(/^import .*;\n/gm, ""), {
-    languageGeneratorBackends, readdirSync, process: { execPath: process.execPath },
-    execFileSync: (command, args) => { assert.equal(command, process.execPath); invocation = Array.from(args); },
-  });
-  const expected = languageGeneratorBackends.filter(name => name !== "go").flatMap(name => {
+  // The shared runner's --all selects every discovered test under the root,
+  // never an affected-file subset.
+  assert.match(staging.run, /^node scripts\/node-tests\.mjs --root tools\/sdk-generator --all$/m);
+  const discovered = new Set(discoverTests(resolve("tools/sdk-generator")).map(test => `tools/sdk-generator/${test.file}`));
+  const expected = ["tools/sdk-generator/shared/tests/authority.test.mjs", ...languageGeneratorBackends.filter(name => name !== "go").flatMap(name => {
     const root = `tools/sdk-generator/backends/${name}/tests`;
-    return readdirSync(root).filter(file => file.endsWith(".test.mjs")).sort().map(file => `${root}/${file}`);
-  });
-  assert.deepEqual(invocation, ["--test", "--test-concurrency=1", "tools/sdk-generator/shared/tests/authority.test.mjs", ...expected]);
+    const files = readdirSync(root).filter(file => file.endsWith(".test.mjs")).map(file => `${root}/${file}`);
+    assert.ok(files.length, `${name} has no staging tests`);
+    return files;
+  })];
+  for (const file of expected) assert.ok(discovered.has(file), `staging omits ${file}`);
 });
 
 test("registered backend targets match the maintained transport contracts", () => {
@@ -117,9 +118,9 @@ test("Windows qualification native builders exist in the maintained source", () 
 test("release lanes cover the Rust workspace, docs crate, and TypeScript workspace", () => {
   const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   assert.match(script, /^ +sdk_workspace nextest --all-features --locked$/m);
-  assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo\.toml --locked/);
-  assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo\.toml --locked/);
-  assert.match(script, /node --test rust\/crates\/sdk-generation\/scripts\/test-qualify-typescript-snippets\.mjs/);
+  const crates = script.match(/^  docs\|generation\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1] ?? assert.fail("missing docs and generation lanes");
+  assert.match(crates, /^    cargo test --manifest-path "rust\/crates\/sdk-\$lane\/Cargo\.toml" --locked$/m);
+  assert.match(crates, /node --test rust\/crates\/sdk-generation\/scripts\/test-qualify-typescript-snippets\.mjs/);
   const policy = script.match(/^  policy\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1] ?? assert.fail("missing policy lane");
   assert.match(policy, /^    sdk_workspace cargo clippy --all-targets --all-features --locked -- -D warnings$/m);
   assert.doesNotMatch(policy, /full_qualification|exit 0/);
@@ -157,9 +158,9 @@ test("the workspace gate, docs and generation run as independent required matrix
  assert.match(branch("gate"),/sdk_workspace nextest --all-features --locked/);
  assert.match(branch("gate"),/cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --lib --tests/);
  assert.doesNotMatch(branch("gate"),/sdk-docs|sdk-generation/);
- assert.match(branch("docs"),/cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo.toml --locked/);
- assert.match(branch("generation"),/cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo.toml --locked/);
- assert.match(branch("generation"),/node --test rust\/crates\/sdk-generation\/scripts\/test-qualify-typescript-snippets.mjs/);
+ const crates=branch("docs\\|generation");
+ assert.match(crates,/^    cargo test --manifest-path "rust\/crates\/sdk-\$lane\/Cargo\.toml" --locked$/m);
+ assert.match(crates,/^    if \[ "\$lane" = generation \]; then\n      node --test rust\/crates\/sdk-generation\/scripts\/test-qualify-typescript-snippets\.mjs$/m);
  const matrix=lanes;
  for(const name of ["gate","docs","generation"])assert.equal(matrix.filter(lane=>lane.lane===name).length,1);
  const workflow=readFileSync(".github/workflows/qualification.yml","utf8");
@@ -329,8 +330,10 @@ test("macOS joins every background build on foreground and background failures",
   const helpers = source.slice(source.indexOf("background() {"), source.indexOf("native_binding() {"));
   const selection = source.slice(source.indexOf("sdk_workspace() {"), source.indexOf("# macOS ships shasum"));
   const macos = source.match(/^  macos\)\n([\s\S]*?)(?=^  \*\))/m)?.[1] ?? assert.fail("missing macOS lane");
-  const commands = macos.slice(macos.indexOf("    finish_macos() {"), macos.indexOf("    stream_binding"));
-  assert.ok(commands.includes("    finish_macos\n"));
+  // The fixture covers the background builds up to their foreground join.
+  const joined = macos.indexOf("\n    finish_macos\n");
+  assert.ok(joined > 0, "macOS lane must join its background builds");
+  const commands = macos.slice(macos.indexOf("    finish_macos() {"), joined + "\n    finish_macos\n".length);
   assert.ok(commands.includes("CARGO_BUILD_JOBS=8 sdk_workspace nextest --all-features --locked"));
   mkdirSync(".tools", { recursive: true });
   const root = mkdtempSync(".tools/macos-joins-").replaceAll("\\", "/");
@@ -531,7 +534,7 @@ test("browser profile cleanup is bounded without changing qualification results"
     });
     assert.equal(attempts, 1);
     assert.equal(exitCode, failed ? 1 : 0);
-    if (busy) assert.match(warning, /could not remove browser profile private-browser-profile: ENOTEMPTY/);
+    if (busy) assert.match(warning, /^browser profile cleanup: ENOTEMPTY; recovery: close browser processes using private-browser-profile, then remove that directory\n$/);
     else assert.equal(warning, "");
   }
 });
