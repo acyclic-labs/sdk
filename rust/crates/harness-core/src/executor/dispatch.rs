@@ -697,7 +697,9 @@ impl StockExecution<'_> {
         let step = dispatch.step;
         let purpose_key = model_purpose_key(purpose);
         let io = self.io;
-        {
+        // Every failure to consume or record the live stream leaves through the
+        // one recorder below, after this block has released the journal writer.
+        let consumed = async {
             let mut stream = stream;
             loop {
                 let next = match &mut stream {
@@ -709,14 +711,7 @@ impl StockExecution<'_> {
                 let Some(event) = next else {
                     break;
                 };
-                let event = match event {
-                    Ok(event) => event,
-                    Err(cause) => {
-                        return Err(self
-                            .interrupted_attempt(journal, (operation_id, step, purpose), cause)
-                            .await);
-                    }
-                };
+                let event = event?;
                 clock.observe(&event);
                 let latency_ns = matches!(event, ModelEvent::Completed { .. })
                     .then(|| clock.elapsed_ns())
@@ -820,8 +815,15 @@ impl StockExecution<'_> {
                     break;
                 }
             }
+            Ok::<(), Error>(())
         }
-        Ok(observed)
+        .await;
+        match consumed {
+            Ok(()) => Ok(observed),
+            Err(cause) => Err(self
+                .interrupted_attempt(journal, (operation_id, step, purpose), cause)
+                .await),
+        }
     }
 
     async fn require_model_producer(&self) -> Result<()> {
