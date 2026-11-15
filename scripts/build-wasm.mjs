@@ -1,13 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkByteSnapshotBoundary } from "./wasm-source-policy.mjs";
 import { packageClosure } from "./package-closure.mjs";
-import { copyWasmArtifacts } from "./archive-utils.mjs";
+import { copyWasmArtifacts, isWasmArtifactPath } from "./archive-utils.mjs";
 import { wasmPackages as packages, wasmSelection } from "./wasm-selections.mjs";
+import { generationKey, memoizedGeneration } from "./generation-cache.mjs";
+import { recordGeneration } from "./generated-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 checkByteSnapshotBoundary(join(root, "rust/crates/harness/src/wasm"));
@@ -90,46 +92,68 @@ for (const name of targets) {
     "--target", "wasm32-unknown-unknown", "--profile", profile, "--locked",
     "--target-dir", target, "--config", `target.wasm32-unknown-unknown.rustflags = ${JSON.stringify(rustflags)}`,
   ];
-  let compilerInvocation;
-  // Capture the selected root crate on this source cut, even when Cargo's
-  // narrower dependency graph would reuse its previous link. Keep dependencies
-  // warm and admit the one required link before the sole build.
-  if (producer) {
-    await producer.ensureCargoTargetDirectory(target);
-    run(cargo, ["clean", "--package", family.wasmPackageName,
-      "--profile", profile, "--target", "wasm32-unknown-unknown", "--target-dir", target]);
-  }
-  const rustcCapture = producer ? await producer.createRustcInvocationCapture(artifact) : undefined;
-  try {
-    run(cargo, buildArgs);
-    if (rustcCapture) compilerInvocation = await rustcCapture.read("wasm32-unknown-unknown");
-  } finally { await rustcCapture?.close(); }
-  const module = resolve(target, "wasm32-unknown-unknown", profileDirectory, `${artifact}.wasm`);
-  const bindings = resolve(target, "wasm-bindgen", name);
-  const stamp = `${bindings}.sha256`;
-  const key = createHash("sha256").update(script).update(expectedVersion).update(readFileSync(module)).digest("hex");
-  if (!existsSync(stamp) || readFileSync(stamp, "utf8") !== key) {
-    for (const stale of [stamp, bindings]) rmSync(stale, { recursive: true, force: true });
-    run(wasmBindgen, [
-      module, "--target", "web", "--out-dir", bindings, "--out-name", outName,
-      "--remove-name-section", "--remove-producers-section",
-    ]);
-    postprocess?.(bindings);
-    writeFileSync(stamp, key);
-  }
-  const artifacts = copyWasmArtifacts(bindings, output);
-  if (producer) {
-    await producer.assertSourceSnapshot(source);
-    if (capture("git", ["rev-parse", "HEAD"]) !== revision) throw new Error("WASM source revision changed during build");
-    const moduleSha256 = `sha256:${createHash("sha256").update(readFileSync(module)).digest("hex")}`;
-    const receipt = {
-      schema: "acyclic.wasm-build-receipt.v1", family: name, package: family.wasmPackageName, version: family.version,
-      source_commit: revision, source_sha256: source.sha256, source_files: source.files,
-      build: { cargo: { command: cargo, version: capture(cargo, ["--version"]), args: buildArgs }, rustc: { invocation: compilerInvocation, identity: producer.capturedCompilerIdentity(compilerInvocation, "wasm32-unknown-unknown") }, wasm_bindgen: { command: wasmBindgen, version: expectedVersion }, module_sha256: moduleSha256 },
-      artifacts,
-    };
-    if (!receipt.build?.cargo?.version || !receipt.build?.rustc?.identity?.output) throw new Error("WASM compiler identity is missing");
-    const receiptBytes = `${JSON.stringify(receipt, null, 2)}\n`;
-    writeFileSync(resolve(output, "producer-receipt.json"), receiptBytes);
-  }
+  const build = async () => {
+    let compilerInvocation;
+    // Capture the selected root crate on this source cut, even when Cargo's
+    // narrower dependency graph would reuse its previous link. Keep dependencies
+    // warm and admit the one required link before the sole build.
+    if (producer) {
+      await producer.ensureCargoTargetDirectory(target);
+      run(cargo, ["clean", "--package", family.wasmPackageName,
+        "--profile", profile, "--target", "wasm32-unknown-unknown", "--target-dir", target]);
+    }
+    const rustcCapture = producer ? await producer.createRustcInvocationCapture(artifact) : undefined;
+    try {
+      run(cargo, buildArgs);
+      if (rustcCapture) compilerInvocation = await rustcCapture.read("wasm32-unknown-unknown");
+    } finally { await rustcCapture?.close(); }
+    const module = resolve(target, "wasm32-unknown-unknown", profileDirectory, `${artifact}.wasm`);
+    const bindings = resolve(target, "wasm-bindgen", name);
+    const stamp = `${bindings}.sha256`;
+    const key = createHash("sha256").update(script).update(expectedVersion).update(readFileSync(module)).digest("hex");
+    if (!existsSync(stamp) || readFileSync(stamp, "utf8") !== key) {
+      for (const stale of [stamp, bindings]) rmSync(stale, { recursive: true, force: true });
+      run(wasmBindgen, [
+        module, "--target", "web", "--out-dir", bindings, "--out-name", outName,
+        "--remove-name-section", "--remove-producers-section",
+      ]);
+      postprocess?.(bindings);
+      writeFileSync(stamp, key);
+    }
+    const artifacts = copyWasmArtifacts(bindings, output);
+    if (producer) {
+      await producer.assertSourceSnapshot(source);
+      if (capture("git", ["rev-parse", "HEAD"]) !== revision) throw new Error("WASM source revision changed during build");
+      const moduleSha256 = `sha256:${createHash("sha256").update(readFileSync(module)).digest("hex")}`;
+      const receipt = {
+        schema: "acyclic.wasm-build-receipt.v2", family: name, package: family.wasmPackageName, version: family.version,
+        source_sha256: source.sha256, source_files: source.files,
+        build: { cargo: { command: cargo, version: capture(cargo, ["--version"]), args: buildArgs }, rustc: { invocation: compilerInvocation, identity: producer.capturedCompilerIdentity(compilerInvocation, "wasm32-unknown-unknown") }, wasm_bindgen: { command: wasmBindgen, version: expectedVersion }, module_sha256: moduleSha256 },
+        artifacts,
+      };
+      if (!receipt.build?.cargo?.version || !receipt.build?.rustc?.identity?.output) throw new Error("WASM compiler identity is missing");
+      const receiptBytes = `${JSON.stringify(receipt, null, 2)}\n`;
+      writeFileSync(resolve(output, "producer-receipt.json"), receiptBytes);
+    }
+    recordGeneration("P", output);
+    for (const item of readdirSync(output, { recursive: true, withFileTypes: true })) {
+      if (item.isFile()) recordGeneration("W", join(item.parentPath, item.name));
+    }
+  };
+  // One build is one memoized action (generation-cache.mjs): its key is the selected crates' workspace closure, the
+  // toolchain, wasm-bindgen and the output it fills. It owns only the artifacts there: a hit neither overwrites nor prunes
+  // the source-owned files beside them (package.json, .npmignore), exactly as copyWasmArtifacts leaves them.
+  const placed = relative(root, output).replaceAll("\\", "/");
+  if (placed.startsWith("../") || isAbsolute(placed)) await build();
+  else await memoizedGeneration(root, { name: `wasm-${name}`, packages: [name], native: false }, build, {
+    key: await generationKey(root, {
+      label: `wasm ${selection.join(" ")}`,
+      roots: async () => selection.filter((_, index) => selection[index - 1] === "-p"),
+      // A family's receipt digests its source roots, so they are inputs whole.
+      paths: family?.sourceRoots ?? [],
+      // A family's receipt records its exact source snapshot, ignored files included, so the key does too.
+      parts: [name, profile, expectedVersion, placed, source?.sha256 ?? ""],
+    }),
+    owns: path => isWasmArtifactPath(path.slice(placed.length + 1)),
+  });
 }

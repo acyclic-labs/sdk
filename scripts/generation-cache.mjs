@@ -53,14 +53,17 @@ export function digests(root, paths) {
 
 const digestOf = files => sha256([...files].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, digest]) => `${path}\0${digest}\n`).join(""));
 
-// The workspace crates the generators compile. They follow from the manifests and the generation scripts alone, so the
-// result is kept under those inputs' digest and Cargo runs only when one of them changes.
-async function rustCrates(root, inputs) {
-  const cache = join(generationStore(), "crates", `${digestOf(inputs)}.json`);
+// The generators and every crate a contract module builds: its targets' crates and any it compiles itself.
+const generationRoots = async () => [...generatorPackages,
+  ...(await loadContractModules(contractModules())).flatMap(module => [...(module.rust ?? []).map(([name]) => name), ...module.crates ?? []])];
+
+// The workspace crates an action compiles from its root crates. They follow from the manifests and scripts alone, so the
+// result is kept under those inputs' digest and the action's label, and Cargo runs only when one of them changes.
+async function rustCrates(root, inputs, { label, roots: rootNames }) {
+  const cache = join(generationStore(), "crates", `${sha256(`${digestOf(inputs)}\0${label}`)}.json`);
   try { return JSON.parse(readFileSync(cache, "utf8")); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
-  const contracts = await loadContractModules(contractModules());
-  const roots = new Set([...generatorPackages, ...contracts.flatMap(module => [...(module.rust ?? []).map(([name]) => name), ...module.crates ?? []])]);
+  const roots = new Set(await rootNames());
   // Declared path dependencies, optional ones included, need no registry resolution; vendored crates are inputs whole.
   const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"],
     { cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"] }));
@@ -85,23 +88,36 @@ async function rustCrates(root, inputs) {
   return crates;
 }
 
-async function inputDigests(root) {
-  const inputs = digests(root, inputPaths);
-  for (const [path, digest] of digests(root, await rustCrates(root, inputs))) inputs.set(path, digest);
+const generation = { label: "generation", roots: generationRoots };
+
+async function inputDigests(root, action) {
+  const inputs = digests(root, [...inputPaths, ...action.paths ?? []]);
+  for (const [path, digest] of digests(root, await rustCrates(root, inputs, action))) inputs.set(path, digest);
   return inputs;
 }
 
-/** Every source file the key covers, tracked or untracked but not ignored, repository-relative and sorted. */
-export async function generationInputs(root) {
-  return [...(await inputDigests(root)).keys()].sort();
+/** Every source file an action's key covers, tracked or untracked but not ignored, repository-relative and sorted. */
+export async function generationInputs(root, action = generation) {
+  return [...(await inputDigests(root, action)).keys()].sort();
 }
 
-export async function generationKey(root) {
+/** The key of one action over the toolchain and its input files. Generation and each WASM build are actions of this one
+ * mechanism: an action names its root crates (its Rust inputs are their workspace closure), any further input paths, and
+ * any further parts that select its outputs.
+ * @param {string} root @param {{label: string, roots: () => Promise<string[]>, paths?: string[], parts?: string[]}} [action] */
+// Every environment setting that selects a compiler or changes what it emits: the compiler Cargo runs, its flags, Cargo's
+// profile, build and per-target configuration. Directories (CARGO_TARGET_DIR, CARGO_BUILD_TARGET_DIR) place outputs that
+// are remapped away, and a wrapper (sccache) caches without changing a byte, so neither selects an entry.
+const buildSetting = name => /^(?:SDK_PROTO_CODEGEN|ACYCLIC_CARGO_BIN|RUSTC|RUSTFLAGS|RUSTC_BOOTSTRAP|CARGO_ENCODED_RUSTFLAGS|CARGO_PROFILE_\w+|CARGO_BUILD_\w+|CARGO_TARGET_\w+)$/.test(name)
+  && !name.endsWith("_DIR");
+
+export async function generationKey(root, action = generation) {
   const tools = [`sdk-generation-v1\0${process.version}\0${process.platform}-${process.arch}`,
-    execFileSync("rustc", ["-vV"], { cwd: root, encoding: "utf8" }),
-    ...["SDK_PROTO_CODEGEN", "ACYCLIC_CARGO_BIN"].map(name => `${name}=${process.env[name] ?? ""}`),
-    process.env.SDK_PROTO_CODEGEN ? sha256(readFileSync(process.env.SDK_PROTO_CODEGEN)) : ""];
-  return sha256(`${tools.map(part => `${part.length}:${part}`).join("")}${digestOf(await inputDigests(root))}`);
+    execFileSync(process.env.RUSTC || "rustc", ["-vV"], { cwd: root, encoding: "utf8" }),
+    ...Object.keys(process.env).filter(buildSetting).sort().map(name => `${name}=${process.env[name]}`),
+    process.env.SDK_PROTO_CODEGEN ? sha256(readFileSync(process.env.SDK_PROTO_CODEGEN)) : "",
+    action.label, ...action.parts ?? []];
+  return sha256(`${tools.map(part => `${part.length}:${part}`).join("")}${digestOf(await inputDigests(root, action))}`);
 }
 
 // A request is served by any entry whose generation covered at least its packages and native outputs.
@@ -118,7 +134,7 @@ function readEntry(directory) {
   return { ...entry, contents: files };
 }
 
-function restore(root, entry) {
+function restore(root, entry, owns) {
   const outputs = new Set(entry.files.map(file => file.path));
   for (const directory of entry.pruned) {
     let names;
@@ -126,19 +142,19 @@ function restore(root, entry) {
     catch (error) { if (error.code === "ENOENT") continue; throw error; }
     for (const item of names) {
       const path = relative(root, join(item.parentPath, item.name)).replaceAll("\\", "/");
-      if (!item.isDirectory() && !outputs.has(path)) rmSync(join(root, path));
+      if (!item.isDirectory() && !outputs.has(path) && owns(path)) rmSync(join(root, path));
     }
   }
   for (const [path, bytes] of entry.contents) writeChanged(join(root, path), bytes);
 }
 
-function recorded(root, journal) {
+function recorded(root, journal, owns) {
   const writes = new Set(), pruned = new Set();
   for (const line of readFileSync(journal, "utf8").split("\n").filter(Boolean)) {
     const [kind, path] = line.split("\t");
     const name = relative(root, path).replaceAll("\\", "/");
     if (name.startsWith("..") || name.startsWith("/")) continue;
-    (kind === "P" ? pruned : writes).add(name);
+    if (kind === "P") pruned.add(name); else if (owns(name)) writes.add(name);
   }
   // A projection a later prune removed is not an output.
   const files = [...writes].filter(name => { try { return lstatSync(join(root, name)).isFile(); } catch { return false; } }).sort();
@@ -146,8 +162,9 @@ function recorded(root, journal) {
 }
 
 /** @param {string} root @param {{name: string, packages: string[], native: boolean}} request @param {() => Promise<void>} generate
- * @param {{key?: string}} [options] */
-export async function memoizedGeneration(root, request, generate, { key: given } = {}) {
+ * @param {{key?: string, owns?: (path: string) => boolean}} [options] An action owns every file it writes or prunes
+ * unless `owns` names the repository-relative paths it does: a hit neither overwrites nor prunes any other file. */
+export async function memoizedGeneration(root, request, generate, { key: given, owns = () => true } = {}) {
   const started = performance.now();
   const key = given ?? await generationKey(root);
   const keyed = performance.now();
@@ -157,7 +174,7 @@ export async function memoizedGeneration(root, request, generate, { key: given }
   for (const name of readdirSync(store).filter(name => !name.includes(".partial-")).sort()) {
     const covered = JSON.parse(readFileSync(join(store, name, "entry.json"), "utf8"));
     if (!covers(covered, request)) continue;
-    restore(root, readEntry(join(store, name)));
+    restore(root, readEntry(join(store, name)), owns);
     return report("hit", name);
   }
   const scratch = mkdtempSync(join(tmpdir(), "sdk-generation-journal-"));
@@ -167,7 +184,7 @@ export async function memoizedGeneration(root, request, generate, { key: given }
     writeFileSync(journal, "");
     process.env.SDK_GENERATION_JOURNAL = journal;
     try { await generate(); } finally { delete process.env.SDK_GENERATION_JOURNAL; }
-    const { files, pruned } = recorded(root, journal);
+    const { files, pruned } = recorded(root, journal, owns);
     const manifest = files.map(path => {
       const bytes = readFileSync(join(root, path));
       mkdirSync(dirname(join(partial, "files", path)), { recursive: true });
@@ -175,15 +192,11 @@ export async function memoizedGeneration(root, request, generate, { key: given }
       return { path, sha256: sha256(bytes) };
     });
     writeFileSync(join(partial, "entry.json"), JSON.stringify({ key, covers: { packages: request.packages, native: request.native }, files: manifest, pruned }));
-    // Rename is the publication decision. A concurrent publisher of the same selection must have produced the same bytes.
+    // Rename is the publication decision: the first entry under a key serves every later hit. A concurrent publisher
+    // keeps its own outputs. Its bytes may differ only where outputs name their own checkout (a WASM receipt records
+    // its build's paths), which the key leaves out so that every checkout shares the entry.
     try { renameSync(partial, join(store, request.name)); }
-    catch (error) {
-      if (!["EEXIST", "ENOTEMPTY", "EPERM"].includes(error.code)) throw error;
-      const published = readEntry(join(store, request.name));
-      if (JSON.stringify(published.files) !== JSON.stringify(manifest)) {
-        throw new Error(`STEP_FAILED generation-cache: nondeterministic generation for ${request.name} at ${key}`, { cause: error });
-      }
-    }
+    catch (error) { if (!["EEXIST", "ENOTEMPTY", "EPERM"].includes(error.code)) throw error; }
     report("miss", request.name);
   } finally {
     rmSync(scratch, { recursive: true, force: true });

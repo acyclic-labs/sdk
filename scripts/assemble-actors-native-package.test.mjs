@@ -154,7 +154,7 @@ test("archive verification binds parent, companion, original source and actual a
     await writeFile(join(parent, "generated/wasm/extra.js"), "unattested"); await seal();
     await assert.rejects(verify(), /WASM file inventory differs/);
     await rm(join(parent, "generated/wasm/extra.js")); await seal(); await verify();
-    for (const mutation of [{ source_commit: "b".repeat(40) }, { source_sha256: "sha256:other" }, { source_files: [] }]) {
+    for (const mutation of [{ source_sha256: "sha256:other" }, { source_files: [] }]) {
       const bytes = JSON.stringify({ ...wasmReceipt, ...mutation });
       await writeFile(join(parent, "generated/wasm/producer-receipt.json"), bytes);
       index.wasm_receipt_sha256 = `sha256:${hash(bytes)}`;

@@ -212,7 +212,36 @@ test("a memoized generation restores exactly what its run projected and pruned, 
     await memoizedGeneration(root, { ...actors, name: "actors+native", native: true }, generate, { key: "k" });
     await memoizedGeneration(root, actors, generate, { key: "other" });
     assert.deepEqual(runs, ["run", "run", "run"]);
-    // A damaged entry is an error, never a hit.
+    // An action owning only its artifacts neither overwrites nor prunes the source-owned files beside them on a hit.
+    const { isWasmArtifactPath } = await import("./archive-utils.mjs");
+    const owns = path => isWasmArtifactPath(path.slice("wasm/".length));
+    writeChanged(join(root, "wasm/package.json"), "source");
+    const place = async () => {
+      runs.push("run");
+      writeChanged(join(root, "wasm/module.js"), "module");
+      recordGeneration("P", join(root, "wasm"));
+      recordGeneration("W", join(root, "wasm/package.json"));
+    };
+    await memoizedGeneration(root, actors, place, { key: "owned", owns });
+    writeFileSync(join(root, "wasm/package.json"), "edited");
+    writeFileSync(join(root, "wasm/.npmignore"), "added");
+    writeFileSync(join(root, "wasm/stale.js"), "stale");
+    await memoizedGeneration(root, actors, place, { key: "owned", owns });
+    assert.deepEqual(runs, ["run", "run", "run", "run"]);
+    assert.equal(readFileSync(join(root, "wasm/package.json"), "utf8"), "edited");
+    assert.equal(readFileSync(join(root, "wasm/.npmignore"), "utf8"), "added");
+    assert.throws(() => readFileSync(join(root, "wasm/stale.js")), { code: "ENOENT" });
+    // A concurrent publisher of the same key, in another checkout, keeps its own outputs; the first entry serves hits.
+    const elsewhere = mkdtempSync(join(tmpdir(), "sdk-memo-elsewhere-"));
+    try {
+      await memoizedGeneration(root, actors, async () => {
+        writeChanged(join(root, "a.txt"), `checkout ${root}`);
+        await memoizedGeneration(elsewhere, actors, async () => writeChanged(join(elsewhere, "a.txt"), `checkout ${elsewhere}`), { key: "race" });
+      }, { key: "race" });
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), `checkout ${root}`);
+      await memoizedGeneration(root, actors, generate, { key: "race" });
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), `checkout ${elsewhere}`);
+    } finally { rmSync(elsewhere, { recursive: true, force: true }); }    // A damaged entry is an error, never a hit.
     writeFileSync(join(store, "other", "actors", "files", "a.txt"), "tampered");
     await assert.rejects(memoizedGeneration(root, actors, generate, { key: "other" }), /damaged entry/);
   } finally {
@@ -223,7 +252,7 @@ test("a memoized generation restores exactly what its run projected and pruned, 
 });
 
 test("a generation key covers every crate a generator compiles and names content alone, whatever its Git state", async () => {
-  const { digests, generationInputs } = await import("./generation-cache.mjs");
+  const { digests, generationInputs, generationKey } = await import("./generation-cache.mjs");
   const store = mkdtempSync(join(tmpdir(), "sdk-memo-store-"));
   const repository = mkdtempSync(join(tmpdir(), "sdk-memo-digests-"));
   const previous = process.env.SDK_GENERATION_CACHE;
@@ -234,6 +263,20 @@ test("a generation key covers every crate a generator compiles and names content
     for (const crate of ["actors-napi", "stream-napi", "filesystem-napi", "filesystem"]) {
       assert.ok(inputs.has(`rust/crates/${crate}/src/lib.rs`), `${crate} sources are generation inputs`);
     }
+    // The compiler Cargo runs and every setting that changes its output select the entry; output directories do not.
+    const fake = join(repository, "rustc");
+    writeFileSync(fake, "#!/bin/sh\necho fake-rustc\n", { mode: 0o755 });
+    const keyWith = async settings => {
+      const saved = Object.fromEntries(Object.keys(settings).map(name => [name, process.env[name]]));
+      Object.assign(process.env, settings);
+      try { return await generationKey(process.cwd()); }
+      finally { for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    };
+    const base = await keyWith({});
+    assert.notEqual(await keyWith({ RUSTC: fake }), base, "RUSTC selects the compiler");
+    assert.notEqual(await keyWith({ CARGO_PROFILE_WASM_RELEASE_OPT_LEVEL: "0" }), base, "a profile override changes the output");
+    assert.equal(await keyWith({ CARGO_TARGET_DIR: join(repository, "target") }), base, "an output directory selects nothing");
+    rmSync(fake);
     const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd: repository });
     git("init", "-q");
     writeFileSync(join(repository, "kept"), "kept");
