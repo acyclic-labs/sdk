@@ -234,18 +234,7 @@ impl<C> Error<C> {
             Self::Stream(error) => {
                 error.uncertain() || matches!(error.category(), StreamError::Capacity)
             }
-            Self::Handler(failure) => match failure {
-                GuestError::Pending(_) | GuestError::PreconditionChanged => true,
-                GuestError::UnsupportedAbi(_)
-                | GuestError::UnsupportedFormat
-                | GuestError::NestedMutation
-                | GuestError::MissingIdentity
-                | GuestError::IncompatibleCodec
-                | GuestError::Decode(_)
-                | GuestError::Encode(_)
-                | GuestError::Handler(_)
-                | GuestError::Revoked => false,
-            },
+            Self::Handler(failure) => failure.retryable(),
             Self::CallSettled { .. }
             | Self::Unknown { .. }
             | Self::InvocationDurabilityUnknown { .. }
@@ -1653,11 +1642,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         acyclic_stream::request::validate_commit(&mut prepared.request)?;
                         let original = &prepared.request;
                         let request = composition.seal(original.clone()).await.map_err(
-                            |error| match error {
+                            |error| match error.category() {
                                 GuestError::PreconditionChanged => {
                                     Error::PreconditionChanged(Vec::new())
                                 }
-                                error => Error::Handler(error),
+                                _ => Error::Handler(error),
                             },
                         )?;
                         if !extends(original, &request, &self.root)

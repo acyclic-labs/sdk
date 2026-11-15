@@ -244,7 +244,9 @@ fn terminal(error: &Error) -> bool {
             !error.uncertain() && !matches!(error.category(), StreamError::Capacity)
         }
         Error::PreconditionUnchanged | Error::UndecidedUnchanged(_) => true,
-        Error::Handler(failure) => !matches!(failure, crate::guest::GuestError::Pending(_)),
+        Error::Handler(failure) => {
+            !matches!(failure.category(), crate::guest::GuestError::Pending(_))
+        }
         _ => false,
     }
 }
@@ -1925,8 +1927,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Err(Error::PreconditionChanged(conflicts)) => {
                     inner.refused(conflicts).map(|()| true)
                 }
-                Err(Error::Handler(failure @ crate::guest::GuestError::Pending(_)))
-                    if !cancellation.is_cancelled() =>
+                Err(Error::Handler(failure))
+                    if matches!(failure.category(), crate::guest::GuestError::Pending(_))
+                        && !cancellation.is_cancelled() =>
                 {
                     inner.undecided(&trigger, failure).map(|()| true)
                 }

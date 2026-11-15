@@ -123,7 +123,7 @@ pub fn current_head_marker(
 }
 
 fn guest_error(error: guest::GuestError) -> JsValue {
-    let code = match error {
+    let code = match error.category() {
         guest::GuestError::UnsupportedFormat => "unsupported_format",
         _ => "invalid_argument",
     };

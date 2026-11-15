@@ -201,9 +201,12 @@ impl Error {
             Self::Actor(error) => match &**error {
                 acyclic_actors::local::Error::Unknown { .. } => true,
                 acyclic_actors::local::Error::Stream(error) => error.uncertain(),
-                acyclic_actors::local::Error::Handler(
-                    acyclic_actors::guest::GuestError::Pending(_),
-                ) => true,
+                acyclic_actors::local::Error::Handler(error) => {
+                    matches!(
+                        error.category(),
+                        acyclic_actors::guest::GuestError::Pending(_)
+                    )
+                }
                 _ => false,
             },
             Self::Path(_)

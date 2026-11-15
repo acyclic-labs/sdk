@@ -82,6 +82,9 @@ impl HeadlessOutcome {
     /// Classify a settled error, preserving the original outcome through cleanup.
     #[must_use]
     pub fn from_error(error: &Error) -> Self {
+        if let Error::Caused(failure) = error {
+            return Self::from_error(failure.classification());
+        }
         if let Error::Command(failure) = error {
             return failure.classification.outcome;
         }
@@ -126,6 +129,9 @@ impl HeadlessOutcome {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Original local cause, independent of public refusal classification.
+    #[error("{}", .0.classification())]
+    Caused(#[source] acyclic_auth::failure::Failure<Self>),
     /// An original owner decision closed admission before dispatch. Executors
     /// yield this control with their checkpoint rather than report a failure.
     #[error("execution controlled by {:?}", .0.action)]
@@ -690,6 +696,21 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
 }
 
 impl Error {
+    /// The original refusal, independently of local diagnostic custody.
+    #[must_use]
+    pub fn category(&self) -> &Self {
+        match self {
+            Self::Caused(failure) => failure.classification().category(),
+            category => category,
+        }
+    }
+
+    /// Retain a concrete local cause without changing this refusal's classification.
+    #[must_use]
+    pub fn with_source(self, source: impl acyclic_auth::failure::Source) -> Self {
+        Self::Caused(acyclic_auth::failure::Failure::new(self, source))
+    }
+
     pub(crate) fn workspace_error_code(source: &acyclic_fs::WorkspaceError) -> ErrorCode {
         use acyclic_fs::WorkspaceError;
         match source {
@@ -784,6 +805,9 @@ impl Error {
     /// at their join, so reading it never traverses their causes.
     #[must_use]
     pub fn operation_id(&self) -> Option<OperationId> {
+        if let Self::Caused(failure) = self {
+            return failure.classification().operation_id();
+        }
         match self {
             Self::Command(failure) => failure.classification.operation_id,
             Self::OutputOmitted(operation) => Some(*operation),
@@ -801,6 +825,9 @@ impl Error {
     /// Cleanup caches it at the join rather than traversing retained causes.
     #[must_use]
     pub fn request_operation_id(&self) -> Option<OperationId> {
+        if let Self::Caused(failure) = self {
+            return failure.classification().request_operation_id();
+        }
         match self {
             Self::Command(failure) => Some(failure.operation),
             Self::OutputOmitted(operation) => Some(*operation),
@@ -872,6 +899,7 @@ impl Error {
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
         match self {
+            Self::Caused(failure) => failure.classification().code(),
             Self::Agent(source) => match &**source {
                 crate::agent::Error::Path(_) => ErrorCode::Invalid,
                 crate::agent::Error::NoSuchAgent => ErrorCode::NotFound,
@@ -977,6 +1005,9 @@ impl Error {
     /// Native work, storage and uncertain publication errors are never provider outcomes.
     #[must_use]
     pub(crate) fn is_model_failure(&self) -> bool {
+        if let Self::Caused(failure) = self {
+            return failure.classification().is_model_failure();
+        }
         if let Self::Command(failure) = self {
             return failure.classification.model_failure;
         }
@@ -989,6 +1020,9 @@ impl Error {
 
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
     pub(crate) fn leaves_effect_uncertain(&self) -> bool {
+        if let Self::Caused(failure) = self {
+            return failure.classification().leaves_effect_uncertain();
+        }
         if let Self::StreamFailure {
             code,
             native: false,
@@ -1032,6 +1066,9 @@ impl Error {
     /// reconciliation, except a task whose failure is already settled.
     #[doc(hidden)]
     pub fn leaves_outcome_uncertain(&self) -> bool {
+        if let Self::Caused(failure) = self {
+            return failure.classification().leaves_outcome_uncertain();
+        }
         if let Self::Agent(source) = self {
             return source.uncertain();
         }
@@ -1057,6 +1094,9 @@ impl Error {
     /// whose failure is already settled. Every wrapper asks this classifier.
     #[must_use]
     pub fn uncertain(&self) -> bool {
+        if let Self::Caused(failure) = self {
+            return failure.classification().uncertain();
+        }
         if let Self::Agent(source) = self {
             return source.uncertain();
         }
@@ -1079,6 +1119,9 @@ impl Error {
 
     /// A known capacity refusal delays accepted input without making its outcome unknown.
     fn retains_guest_input(&self) -> bool {
+        if let Self::Caused(failure) = self {
+            return failure.classification().retains_guest_input();
+        }
         use acyclic_stream::StreamError;
         if self.uncertain() {
             return true;
@@ -1101,17 +1144,21 @@ impl Error {
     /// Preserve undecided or backpressured host work across the guest boundary.
     pub(crate) fn guest(error: impl Into<Self>) -> acyclic_actors::guest::GuestError {
         let error = error.into();
-        if error.retains_guest_input() {
+        let guest = if error.retains_guest_input() {
             acyclic_actors::guest::GuestError::Pending(error.to_string())
         } else {
             acyclic_actors::guest::GuestError::Handler(error.to_string())
-        }
+        };
+        guest.with_source(error)
     }
 
     /// A tool's definitive refusal is model feedback. Native accounting and
     /// producer faults remain harness failures even when their wire code is Invalid.
     #[must_use]
     pub fn is_tool_failure(&self) -> bool {
+        if let Self::Caused(failure) = self {
+            return failure.classification().is_tool_failure();
+        }
         if let Self::Agent(source) = self {
             return match &**source {
                 crate::agent::Error::Turn(source) => source.is_tool_failure(),
@@ -1185,6 +1232,9 @@ impl Error {
     /// Mark a fixed rejection at a checked model-input boundary. Allocation,
     /// cancellation and original IO failures retain their existing ownership.
     pub(crate) fn tool_input(self) -> Self {
+        if let Self::Caused(failure) = self {
+            return Self::Caused(failure.map_classification(Self::tool_input));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Self::NativeBoundary { code, reason } = self {
             return match code {
@@ -1212,6 +1262,7 @@ impl Error {
     #[doc(hidden)]
     pub fn is_native_failure(&self) -> bool {
         match self {
+            Self::Caused(failure) => failure.classification().is_native_failure(),
             Self::Agent(source) => match &**source {
                 crate::agent::Error::Turn(source) => source.is_native_failure(),
                 _ => false,
@@ -1313,6 +1364,9 @@ impl Error {
     /// Constant-time classification, including arbitrarily nested cleanup.
     #[must_use]
     pub fn classification(&self) -> ErrorClassification {
+        if let Self::Caused(failure) = self {
+            return failure.classification().classification();
+        }
         match self {
             Self::Command(failure) => return failure.classification,
             Self::Cleanup(failure) => return failure.classification,
@@ -1724,6 +1778,69 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod cleanup_tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn definitive_guest_failure_retains_original_json_category()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::error::Error as _;
+        let source = serde_json::from_slice::<serde_json::Value>(b"{").unwrap_err();
+        let guest = Error::guest(Error::NativeJson {
+            code: ErrorCode::Invalid,
+            source,
+            custody: None,
+        })
+        .with_context("guest request");
+        let mut cause = guest.source();
+        let original = loop {
+            let source = cause.ok_or("guest conversion discarded the JSON cause")?;
+            if let Some(original) = source.downcast_ref::<serde_json::Error>() {
+                break original;
+            }
+            cause = source.source();
+        };
+        assert_eq!(original.classify(), serde_json::error::Category::Eof);
+        assert!(!acyclic_actors::local::Error::Handler(guest.clone()).retryable());
+        let wire = serde_json::to_value(&guest)?;
+        assert_eq!(wire["type"], "handler");
+        assert!(wire["detail"].is_string());
+        let decoded: acyclic_actors::guest::GuestError = serde_json::from_value(wire)?;
+        assert!(matches!(
+            decoded,
+            acyclic_actors::guest::GuestError::Handler(_)
+        ));
+        assert!(
+            decoded.source().is_none(),
+            "local causes crossed the guest wire"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classified_refusals_retain_original_parser_categories()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::error::Error as _;
+        for refusal in [
+            Error::Unauthorized("request refused".into()),
+            Error::Invalid("request refused".into()),
+        ] {
+            let expected = refusal.classification();
+            let source = serde_json::from_slice::<serde_json::Value>(b"{").unwrap_err();
+            let refusal = refusal.with_source(source);
+            assert_eq!(refusal.classification(), expected);
+            let mut cause = refusal.source();
+            let original = loop {
+                let source = cause.ok_or("classified refusal discarded the JSON cause")?;
+                if let Some(original) = source.downcast_ref::<serde_json::Error>() {
+                    break original;
+                }
+                cause = source.source();
+            };
+            assert_eq!(original.classify(), serde_json::error::Category::Eof);
+            assert!(refusal.settles_tool_call());
+        }
+        Ok(())
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]

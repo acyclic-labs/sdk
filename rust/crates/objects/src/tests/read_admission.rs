@@ -718,10 +718,15 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
     assert!(!other.contains_native(request, Arc::clone(&meter))?.await?);
     assert_eq!(selected.medium().writes.load(Ordering::SeqCst), 0);
     // The same projection refuses a real writer; reads did not borrow authority.
-    assert_eq!(
-        reader.put(bytes, Vec::new()).await.map_err(|e| e.code),
-        Err(ErrorCode::Unavailable),
-    );
+    let error = reader.put(bytes, Vec::new()).await.unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unavailable);
+    let source = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<MediumError>())
+        .ok_or("original medium refusal must remain owned")?;
+    let MediumError::Failed(source) = source else {
+        return Err("a refused writer must not become outcome-unknown".into());
+    };
+    assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
     assert_eq!(selected.medium().writes.load(Ordering::SeqCst), 1);
     Ok(())
 }

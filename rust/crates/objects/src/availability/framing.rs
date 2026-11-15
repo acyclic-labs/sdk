@@ -19,9 +19,7 @@ pub(crate) fn failure(error: StreamError) -> Error {
         StreamError::LimitExceeded => wire::ErrorCode::QuotaExceeded,
         _ => wire::ErrorCode::Unavailable,
     };
-    let mut failure = Error::from(code);
-    failure.source = Some(error);
-    failure
+    Error::from(code).with_source(error)
 }
 
 #[cfg(test)]

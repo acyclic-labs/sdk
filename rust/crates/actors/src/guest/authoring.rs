@@ -73,14 +73,66 @@ pub enum GuestError {
     /// it returned, timed out, was cancelled or lost its placement epoch.
     #[error("host request is revoked")]
     Revoked,
+    /// Original local cause, independent of the guest's wire classification.
+    #[serde(untagged, skip_deserializing)]
+    #[ts(skip)]
+    #[error("{}", .0.classification())]
+    Caused(
+        #[source]
+        #[serde(serialize_with = "serialize_guest_cause")]
+        acyclic_auth::failure::Failure<Self>,
+    ),
+}
+
+fn serialize_guest_cause<S: serde::Serializer>(
+    failure: &acyclic_auth::failure::Failure<GuestError>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    failure.classification().serialize(serializer)
 }
 
 impl GuestError {
+    /// Keep the original local failure without changing the wire refusal.
+    #[must_use]
+    pub fn with_source(self, source: impl acyclic_auth::failure::Source) -> Self {
+        Self::Caused(acyclic_auth::failure::Failure::new(self, source))
+    }
+
+    /// The original guest refusal, independently of local diagnostic custody.
+    #[must_use]
+    pub fn category(&self) -> &Self {
+        match self {
+            Self::Caused(failure) => failure.classification().category(),
+            category => category,
+        }
+    }
+
+    /// Whether the same retained input may become decidable on another attempt.
+    #[must_use]
+    pub fn retryable(&self) -> bool {
+        match self {
+            Self::Caused(failure) => failure.classification().retryable(),
+            Self::Pending(_) | Self::PreconditionChanged => true,
+            Self::UnsupportedAbi(_)
+            | Self::UnsupportedFormat
+            | Self::NestedMutation
+            | Self::MissingIdentity
+            | Self::IncompatibleCodec
+            | Self::Decode(_)
+            | Self::Encode(_)
+            | Self::Handler(_)
+            | Self::Revoked => false,
+        }
+    }
+
     /// Adds operation context without changing pending versus definitive failure.
     /// Structured guest refusals retain their original identity.
     #[must_use]
     pub fn with_context(self, context: &str) -> Self {
         match self {
+            Self::Caused(failure) => {
+                Self::Caused(failure.map_classification(|category| category.with_context(context)))
+            }
             Self::Pending(message) => Self::Pending(format!("{context}: {message}")),
             Self::Handler(message) => Self::Handler(format!("{context}: {message}")),
             other => other,

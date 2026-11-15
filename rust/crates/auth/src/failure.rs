@@ -45,6 +45,15 @@ impl<C> Failure<C> {
     pub const fn classification(&self) -> &C {
         &self.classification
     }
+
+    /// Transform context while retaining the same original cause owner.
+    #[must_use]
+    pub fn map_classification(self, map: impl FnOnce(C) -> C) -> Self {
+        Self {
+            classification: Box::new(map(*self.classification)),
+            source: self.source,
+        }
+    }
 }
 
 impl<C: PartialEq> PartialEq for Failure<C> {
