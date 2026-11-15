@@ -412,6 +412,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
             "done".into(),
         )]));
         let (host, binding) = private(&path).await?;
+        host.create_volume(&journal_of(binding.volume()?)?).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             Arc::new(MemoryStream::default()),
             within(),
