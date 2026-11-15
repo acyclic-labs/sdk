@@ -93,7 +93,7 @@ pub(crate) mod budget {
     use std::{cell::Cell, task::Poll};
 
     loom::thread_local! {
-        static EXHAUSTED: Cell<bool> = const { Cell::new(false) };
+        static EXHAUSTED: Cell<bool> = Cell::new(false);
     }
 
     /// Makes this model thread's next budget check yield.
