@@ -3,14 +3,24 @@
 //! settled, or failed after partial effects.
 use super::*;
 use acyclic_harness::test_support::ScriptedEvent;
-use coverage::Coverage;
+use family::{Generator, Variant};
 use oracle::{Incarnation, Plan, World, call, done, service, settlements, tag};
 use serde_json::json;
 
 const FILES: [(&str, &str); 1] = [("c.txt", "base\n")];
 
-/// The default seeds reach every variant.
-pub(super) const SEEDS: std::ops::Range<u64> = 0..9;
+/// One world per (multiplicity, target) pair.
+pub(super) const GENERATOR: Generator = Generator {
+    class: "E2",
+    seeds: 0..9,
+    variants,
+    world,
+};
+
+#[test]
+fn a_redelivered_message_leaves_the_state_of_one_delivery() {
+    GENERATOR.sweep();
+}
 
 /// Every (multiplicity, target) pair.
 const VARIANTS: [(&str, &str); 9] = [
@@ -117,12 +127,25 @@ fn one_delivery(
     Ok(())
 }
 
-pub(super) fn world(seed: u64, coverage: &mut Coverage) -> std::result::Result<(), String> {
-    let (multiplicity, target) = VARIANTS
+fn variant(seed: u64) -> (&'static str, &'static str) {
+    VARIANTS
         .get(usize::try_from(seed).unwrap_or(0) % VARIANTS.len())
         .copied()
-        .unwrap_or(("duplicate", "settled"));
-    let covered = oracle::simulate(seed, move || {
+        .unwrap_or(("duplicate", "settled"))
+}
+
+fn variants(seed: u64) -> Vec<Variant> {
+    let (multiplicity, target) = variant(seed);
+    vec![Variant::from([
+        ("message", "send_message"),
+        ("multiplicity", multiplicity),
+        ("target", target),
+    ])]
+}
+
+fn world(seed: u64) -> std::result::Result<bool, String> {
+    let (multiplicity, target) = variant(seed);
+    oracle::simulate(seed, move || {
         entry(async move {
             let m = message(if target == "failed_with_partial_effects" {
                 "partial"
@@ -184,16 +207,5 @@ pub(super) fn world(seed: u64, coverage: &mut Coverage) -> std::result::Result<(
             one_delivery(&incarnation, &copies, together || multiplicity == "reorder")?;
             Ok(true)
         })
-    })?;
-    if covered {
-        coverage.cover(
-            "E2",
-            &[
-                ("message", "send_message"),
-                ("multiplicity", multiplicity),
-                ("target", target),
-            ],
-        );
-    }
-    Ok(())
+    })
 }

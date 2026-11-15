@@ -2,7 +2,7 @@
 //! model sees or a failed turn; the owner keeps accepting work.
 use super::*;
 use acyclic_harness::test_support::ScriptedEvent;
-use coverage::Coverage;
+use family::{Generator, Variant};
 use oracle::{Plan, Prompted, World, call, done, service, settlements, tag};
 use serde_json::json;
 
@@ -15,7 +15,32 @@ const ORIGINS: [&str; 5] = [
     "internal_error",
 ];
 
-pub(super) const SEEDS: std::ops::Range<u64> = 0..5;
+/// One world per origin, every fault at the root.
+pub(super) const GENERATOR: Generator = Generator {
+    class: "F1",
+    seeds: 0..5,
+    variants,
+    world,
+};
+
+#[test]
+fn a_fault_reaches_only_its_agent_and_the_owner_keeps_working() {
+    GENERATOR.sweep();
+}
+
+fn origin(seed: u64) -> &'static str {
+    ORIGINS
+        .get(usize::try_from(seed % ORIGINS.len() as u64).unwrap_or(0))
+        .copied()
+        .unwrap_or("tool_error")
+}
+
+fn variants(seed: u64) -> Vec<Variant> {
+    vec![Variant::from([
+        ("origin", origin(seed)),
+        ("location", "root"),
+    ])]
+}
 
 fn plan(origin: &str) -> Plan {
     let (steps, fail_once) = match origin {
@@ -118,11 +143,8 @@ fn a_misreported_model_fault_is_not_contained() {
     );
 }
 
-pub(super) fn world(seed: u64, coverage: &mut Coverage) -> std::result::Result<(), String> {
-    let origin = ORIGINS
-        .get(usize::try_from(seed % ORIGINS.len() as u64).unwrap_or(0))
-        .copied()
-        .unwrap_or("tool_error");
+fn world(seed: u64) -> std::result::Result<bool, String> {
+    let origin = origin(seed);
     oracle::simulate(seed, move || {
         entry(async move {
             let plans = vec![
@@ -164,9 +186,7 @@ pub(super) fn world(seed: u64, coverage: &mut Coverage) -> std::result::Result<(
                     ));
                 }
             }
-            Ok(())
+            Ok(true)
         })
-    })?;
-    coverage.cover("F1", &[("origin", origin), ("location", "root")]);
-    Ok(())
+    })
 }

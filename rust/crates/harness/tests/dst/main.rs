@@ -19,6 +19,7 @@ mod containment;
 mod coverage;
 mod digest;
 mod driver;
+mod family;
 mod flushes;
 mod oracle;
 mod recovery;
