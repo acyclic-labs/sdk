@@ -3,10 +3,10 @@
 //! variants. A class is exercised by one generator over production code. The
 //! gate only counts: every variant no generator declares is uncovered, and
 //! that number is held exactly at the recorded `uncovered`, so it may only
-//! fall, and the file falls with it. It never runs a world; each family's own
-//! test proves its default seeds reach exactly the variants it declares.
+//! fall, and the file falls with it. It never runs a world; each default
+//! seed's own test proves its world reaches the variants it declares.
 use super::*;
-use family::Generator;
+use family::{GENERATORS, Generator};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(serde::Deserialize)]
@@ -35,14 +35,6 @@ impl Class {
             .product()
     }
 }
-
-/// Every class generator. Each family's own test runs its generator's worlds
-/// and proves they reach exactly the variants it declares.
-const GENERATORS: &[&Generator] = &[
-    &settlement::GENERATOR,
-    &redelivery::GENERATOR,
-    &containment::GENERATOR,
-];
 
 fn classes() -> Classes {
     let classes: Classes =

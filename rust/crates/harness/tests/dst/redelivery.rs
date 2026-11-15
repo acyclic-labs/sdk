@@ -12,14 +12,23 @@ const FILES: [(&str, &str); 1] = [("c.txt", "base\n")];
 /// One world per (multiplicity, target) pair.
 pub(super) const GENERATOR: Generator = Generator {
     class: "E2",
-    seeds: 0..9,
+    seeds: a_redelivered_message_leaves_the_state_of_one_delivery::VALUES,
     variants,
     world,
 };
 
-#[test]
-fn a_redelivered_message_leaves_the_state_of_one_delivery() {
-    GENERATOR.sweep();
+acyclic_test_support::cases! {
+    module = a_redelivered_message_leaves_the_state_of_one_delivery,
+    values: u64,
+    runner = super::run,
+    cases = [
+        seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3, seed_4 => 4,
+        seed_5 => 5, seed_6 => 6, seed_7 => 7, seed_8 => 8,
+    ],
+}
+
+fn run(seed: u64) -> std::result::Result<(), String> {
+    GENERATOR.run(seed)
 }
 
 /// Every (multiplicity, target) pair.

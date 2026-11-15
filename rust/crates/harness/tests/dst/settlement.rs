@@ -29,14 +29,23 @@ const ENTRIES: [&str; 4] = ["read", "write", "edit", "remove"];
 /// One world per fault; every world admits every entry.
 pub(super) const GENERATOR: Generator = Generator {
     class: "A1",
-    seeds: 0..7,
+    seeds: every_admitted_call_settles_exactly_once_whatever_the_fault::VALUES,
     variants,
     world,
 };
 
-#[test]
-fn every_admitted_call_settles_exactly_once_whatever_the_fault() {
-    GENERATOR.sweep();
+acyclic_test_support::cases! {
+    module = every_admitted_call_settles_exactly_once_whatever_the_fault,
+    values: u64,
+    runner = super::run,
+    cases = [
+        seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3,
+        seed_4 => 4, seed_5 => 5, seed_6 => 6,
+    ],
+}
+
+fn run(seed: u64) -> std::result::Result<(), String> {
+    GENERATOR.run(seed)
 }
 
 fn fault(seed: u64) -> &'static str {

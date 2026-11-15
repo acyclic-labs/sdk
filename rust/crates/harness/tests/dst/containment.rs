@@ -18,14 +18,20 @@ const ORIGINS: [&str; 5] = [
 /// One world per origin, every fault at the root.
 pub(super) const GENERATOR: Generator = Generator {
     class: "F1",
-    seeds: 0..5,
+    seeds: a_fault_reaches_only_its_agent_and_the_owner_keeps_working::VALUES,
     variants,
     world,
 };
 
-#[test]
-fn a_fault_reaches_only_its_agent_and_the_owner_keeps_working() {
-    GENERATOR.sweep();
+acyclic_test_support::cases! {
+    module = a_fault_reaches_only_its_agent_and_the_owner_keeps_working,
+    values: u64,
+    runner = super::run,
+    cases = [seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3, seed_4 => 4],
+}
+
+fn run(seed: u64) -> std::result::Result<(), String> {
+    GENERATOR.run(seed)
 }
 
 fn origin(seed: u64) -> &'static str {
