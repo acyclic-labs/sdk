@@ -2103,10 +2103,11 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
 #[test]
 fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
     use acyclic_fs::access::{self, Action};
-    // A fork: its parent's journal holds the conversation it inherits.
-    let ancestor = AgentPath::root(&crate::agent::AgentId::from_bytes([193; 16]));
-    let path = ancestor
-        .child(&crate::agent::AgentId::from_bytes([194; 16]))
+    // A grandchild fork: its parent's and grandparent's journals hold the
+    // conversation it inherits.
+    let path = AgentPath::root(&crate::agent::AgentId::from_bytes([193; 16]))
+        .child(&crate::agent::AgentId::from_bytes([191; 16]))
+        .and_then(|parent| parent.child(&crate::agent::AgentId::from_bytes([194; 16])))
         .map_err(Error::from)?;
     let owner = crate::AgentId::from_bytes(path.id().to_bytes());
     let audience = Authority {
@@ -2235,17 +2236,21 @@ fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
         )?
         .storage_name(&mut None)
     };
-    let (ancestor_journal, other_journal) = (journal(193)?, journal(192)?);
+    // 192 is a sibling of the parent 191, under the same grandparent 193.
+    let (grandparent_journal, parent_journal, sibling_journal) =
+        (journal(193)?, journal(191)?, journal(192)?);
     for (reference, action, allowed) in [
         (Some(fork_reference.as_str()), Action::Read, true),
         (Some(fork_reference.as_str()), Action::Write, true),
         (Some(parent_reference.as_str()), Action::Read, false),
         (Some(parent_reference.as_str()), Action::Write, false),
-        // An ancestor's journal is read, never written; another agent's
+        // Every ancestor's journal is read, never written; a sibling's
         // journal is not reached.
-        (Some(ancestor_journal.as_str()), Action::Read, true),
-        (Some(ancestor_journal.as_str()), Action::Write, false),
-        (Some(other_journal.as_str()), Action::Read, false),
+        (Some(parent_journal.as_str()), Action::Read, true),
+        (Some(parent_journal.as_str()), Action::Write, false),
+        (Some(grandparent_journal.as_str()), Action::Read, true),
+        (Some(grandparent_journal.as_str()), Action::Write, false),
+        (Some(sibling_journal.as_str()), Action::Read, false),
         (None, Action::Read, false),
     ] {
         let decision = access::decide(
