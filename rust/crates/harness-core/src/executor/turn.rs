@@ -186,12 +186,17 @@ impl StockExecution<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut after_answer = None;
         let mut steps = 0_u32;
+        // The steps that settled each of their calls, and where the running
+        // step's messages start. A failure keeps exactly the settled steps.
+        let mut settled = 0_u32;
+        let mut unsettled = None;
         let progress = async {
             while input.max_steps.is_none_or(|maximum| steps < maximum) {
                 if let Some(control) = journal.supervision().await? {
                     return Ok(ExecutionProgress::Controlled(control));
                 }
                 let step = steps;
+                (settled, unsettled) = (step, None);
                 steps = steps.checked_add(1).ok_or_else(|| {
                     stock_boundary(
                         self.io,
@@ -278,6 +283,7 @@ impl StockExecution<'_> {
                     return Ok(ExecutionProgress::Controlled(control));
                 }
                 let source_messages = prior_messages.len();
+                unsettled = Some(source_messages);
                 let collected =
                     self.collect_step_events(input, step, model_events, &mut prior_messages)?;
                 output.include(&collected, &prior_messages[source_messages..], self.io)?;
@@ -442,10 +448,12 @@ impl StockExecution<'_> {
                         ExecutionProgress::PreDispatchFailed(failure) => {
                             return Err(failure.into_error());
                         }
+                        ExecutionProgress::Ended(ended) => return Err(ended.0),
                     }
                 }
                 append_step_context(&mut prior_messages, &mut hook_context, self.io)?;
             }
+            (settled, unsettled) = (steps, None);
             #[cfg(not(target_arch = "wasm32"))]
             if after_answer.is_some()
                 && self
@@ -460,7 +468,27 @@ impl StockExecution<'_> {
                 "executor step limit reached",
             ))
         }
-        .await?;
+        .await;
+        let progress = match progress {
+            Ok(progress) => progress,
+            // A definitive failure settles the turn with the steps it
+            // completed: their applied effects stay in the transcript the
+            // next turn's model sees, however often the turn is redelivered.
+            Err(error) if error.settles_turn() => {
+                if settled == 0 {
+                    return Err(error);
+                }
+                if let Some(at) = unsettled {
+                    prior_messages.truncate(at);
+                }
+                let transcript =
+                    self.settled_transcript(steering.into_retired(), prior_messages, true, "")?;
+                let mut output = TurnOutput::new(String::new(), Value::Null, settled);
+                output.transcript = transcript;
+                return Ok(ExecutionProgress::Ended(Box::new((error, output))));
+            }
+            Err(error) => return Err(error),
+        };
         match progress {
             ExecutionProgress::Ready((text, metadata, parts)) => {
                 let transcript =
@@ -487,6 +515,7 @@ impl StockExecution<'_> {
             ExecutionProgress::Controlled(control) => Ok(ExecutionProgress::Controlled(control)),
             ExecutionProgress::Pending(wait) => Ok(ExecutionProgress::Pending(wait)),
             ExecutionProgress::PreDispatchFailed(failure) => Err(failure.into_error()),
+            ExecutionProgress::Ended(ended) => Err(ended.0),
         }
     }
 

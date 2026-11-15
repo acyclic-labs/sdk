@@ -9,13 +9,12 @@ use serde_json::json;
 
 const FILES: [(&str, &str); 1] = [("c.txt", "base\n")];
 
-/// The default seeds reach the variants that hold today. The open ones
-/// follow them: a delivery after a turn failed with partial effects, whose
-/// effect its later turns never see, and `reorder` of a `running` target,
-/// whose concurrent delivery fails the other message's turn with a workspace
-/// publication conflict. `DST_SEED=5..9` reproduces them; each fix extends
-/// `SEEDS` over its variant and lowers `uncovered`.
-pub(super) const SEEDS: std::ops::Range<u64> = 0..5;
+/// The default seeds reach the variants that hold today. The open one
+/// follows them: `reorder` of a `running` target, whose concurrent delivery
+/// fails the other message's turn with a workspace publication conflict.
+/// `DST_SEED=8` reproduces it; its fix extends `SEEDS` over its variant and
+/// lowers `uncovered`.
+pub(super) const SEEDS: std::ops::Range<u64> = 0..8;
 
 /// Every (multiplicity, target) pair, the open ones last.
 const VARIANTS: [(&str, &str); 9] = [

@@ -136,9 +136,16 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
                 "ordinary continuation requested journal replay at {turns} steps ({max_steps:?})"
             );
             if let Some(maximum) = max_steps.filter(|maximum| *maximum <= turns) {
+                // The limit ends the turn with every step it settled.
+                let Ok(ExecutionProgress::Ended(ended)) = result else {
+                    return Err(Error::Invalid("step limit did not end the turn".into()));
+                };
+                let (error, output) = *ended;
                 assert!(
-                    matches!(result, Err(Error::Conflict(message)) if message == "executor step limit reached")
+                    matches!(error, Error::Conflict(message) if message == "executor step limit reached")
                 );
+                assert_eq!(output.steps, maximum);
+                assert!(!output.transcript.is_empty());
                 assert_eq!(provider.seen.load(Ordering::SeqCst), maximum as usize);
                 assert_eq!(tool.0.load(Ordering::SeqCst), maximum as usize);
                 continue;

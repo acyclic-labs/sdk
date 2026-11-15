@@ -128,9 +128,23 @@ async fn stock_driver_refuses_to_summarize_its_only_protected_exchange() -> Resu
     let result = StockExecution::ordinary(&executor)
         .execute_progress(&input, &journal)
         .await;
+    // The refusal ends the turn with its settled exchange, whose applied
+    // call the next turn replays.
+    let Ok(ExecutionProgress::Ended(ended)) = result else {
+        return Err(Error::Invalid("the refusal did not end the turn".into()));
+    };
+    let (error, output) = *ended;
     assert!(
-        matches!(result, Err(Error::Invalid(ref reason)) if reason == "no complete older compaction source")
+        matches!(error, Error::Invalid(ref reason) if reason == "no complete older compaction source")
     );
+    assert_eq!(output.steps, 1);
+    assert!(output.transcript.iter().any(|message| {
+        message
+            .content
+            .parts()
+            .iter()
+            .any(|part| matches!(part, crate::model::ModelContentPart::ToolResult { .. }))
+    }));
     assert_eq!(
         provider.requests().len(),
         1,

@@ -664,6 +664,10 @@ pub enum ExecutionProgress<T> {
     Ready(T),
     /// The original approval operation is pending.
     Pending(OperationId),
+    /// A definitive failure ended the turn after the steps whose calls all
+    /// settled. The output's transcript holds those steps, so every effect
+    /// they applied reaches the next turn's model; it is never a success.
+    Ended(Box<(Error, T)>),
 }
 
 impl<T> ExecutionProgress<T> {
@@ -681,6 +685,10 @@ impl<T> ExecutionProgress<T> {
             Self::Ready(value) => ExecutionProgress::Ready(ready(value)),
             Self::PreDispatchFailed(failure) => ExecutionProgress::PreDispatchFailed(failure),
             Self::Pending(operation) => ExecutionProgress::Pending(operation),
+            Self::Ended(ended) => {
+                let (error, value) = *ended;
+                ExecutionProgress::Ended(Box::new((error, ready(value))))
+            }
         }
     }
 }
@@ -692,6 +700,7 @@ impl ExecutionProgress<TurnOutput> {
             Self::PreDispatchFailed(failure) => Err(failure.into_error()),
             Self::Ready(output) => Ok(output),
             Self::Pending(operation) => Err(Error::Indeterminate(operation)),
+            Self::Ended(ended) => Err(ended.0),
         }
     }
 }
