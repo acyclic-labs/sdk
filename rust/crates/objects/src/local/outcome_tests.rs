@@ -67,8 +67,12 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
     // range of it, and its observation, is answered without a job.
     for range in [None, Some(1..4)] {
         let (result, jobs) = counted(medium.read("a-longer-key", range.clone())).await;
-        let expected =
-            &b"short"[range.map_or(0..5, |range| range.start as usize..range.end as usize)];
+        let expected: &[u8] = match range {
+            Some(range) => b"short"
+                .get(usize::try_from(range.start)?..usize::try_from(range.end)?)
+                .ok_or("held range outside value")?,
+            None => b"short",
+        };
         assert_eq!(result?.as_deref(), Some(expected));
         assert_eq!(jobs, 0, "held value dispatched a physical read");
     }
