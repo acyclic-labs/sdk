@@ -23,9 +23,9 @@ use super::TurnAdmission;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
-    AppendRequest, BoxProviderFuture, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
-    FollowStream, ForkRequest, IdempotencyKey, IdempotencyObservation, ProviderPlatform,
-    ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider,
+    BoxProviderFuture, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, FollowStream,
+    IdempotencyKey, IdempotencyObservation, ProviderPlatform, ReadRequest, RecordStream,
+    StreamError, StreamPath,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_stream::{NativeProviderFuture, NativeRecordStream, PreparedNativeCommit};
@@ -386,7 +386,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[async_trait::async_trait]
-    impl super::StreamProvider for Probe {
+    impl acyclic_stream::StreamProvider for Probe {
         fn context(&self) -> acyclic_stream::ProviderContext<'_> {
             acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
         }

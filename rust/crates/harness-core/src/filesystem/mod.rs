@@ -20,7 +20,7 @@ use crate::{
 use acyclic_fs::WorkCounters;
 use acyclic_fs::kernel::{AttributeClass, AttributeName, FileKind, LogicalName};
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, Digest, DirectoryPage, Fs, Generation, GenerationId,
+    AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, Generation, GenerationId,
     IdempotencyKey as FilesystemKey, JoinPlan, TransactionCommit, Workspace, WorkspaceError,
     WorkspaceStat,
 };
