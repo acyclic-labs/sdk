@@ -809,8 +809,12 @@ fn ready_interval_pages_exclude_later_events_and_revalidate_continuity()
     let cut = watch.ready_cut()?;
     std::fs::write(directory.path().join("later"), b"after cut")?;
     watch.fence()?;
-    let path = NamespacePath::from_portable(
-        &crate::path::PortablePath::parse("/later", VolumeLimits::default())?,
+    // Named as the watch reports host names, in the platform's profile; a
+    // portable name never equals a reported one.
+    let path = relative_namespace_path(
+        directory.path(),
+        &directory.path().join("later"),
+        native_filesystem_profile(),
         VolumeLimits::default(),
     )?;
     let mut pages = 0;
