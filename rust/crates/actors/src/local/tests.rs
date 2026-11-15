@@ -1753,7 +1753,7 @@ async fn values<P: StreamProvider + ?Sized>(
 /// Stream code instead of only the provider's opaque causes.
 #[test]
 fn a_provider_refusal_keeps_its_stream_code_in_the_source_chain() {
-    let error = Error::from(StreamError::Unavailable);
+    let error = <Error>::from(StreamError::Unavailable);
     assert_eq!(error.kind(), "unavailable");
     let source =
         std::error::Error::source(&error).and_then(|source| source.downcast_ref::<StreamError>());
