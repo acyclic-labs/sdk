@@ -2161,10 +2161,8 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         )?),
         volume: journal,
     };
-    let configuration_operation = crate::local::context::publication_operation(
-        b"acyclic.local.turn-hooks/v1\0",
-        &turn.into_bytes(),
-    );
+    let (configuration_operation, configuration_path) =
+        crate::local::context::host_hooks_publication(turn);
     let (configuration, _) = content
         .writer
         .as_ref()
@@ -2180,7 +2178,7 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         configuration.ok_or_else(|| Error::NotFound("original hook configuration".into()))?;
     assert_eq!(configuration.volume(), &content.volume);
     assert_ne!(configuration.volume(), private);
-    assert_eq!(configuration.path(), format!("config/hooks/{turn}.json"));
+    assert_eq!(configuration.path(), configuration_path);
     let bytes = content
         .reader
         .read(
