@@ -18,6 +18,11 @@ use super::locks as inner;
 #[cfg(not(loom))]
 use tokio::sync as inner;
 
+/// The lock is held by another owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("lock is busy")]
+pub struct Busy;
+
 /// Async mutex; a cooperative-budget yield never holds the lock.
 pub struct Mutex<T>(inner::Mutex<T>);
 
@@ -36,8 +41,8 @@ impl<T> Mutex<T> {
     }
 
     /// Attempts immediate exclusive ownership without registering a waiter.
-    pub fn try_lock(&self) -> Result<impl std::ops::DerefMut<Target = T> + '_, ()> {
-        self.0.try_lock().map_err(|_| ())
+    pub fn try_lock(&self) -> Result<impl std::ops::DerefMut<Target = T> + '_, Busy> {
+        self.0.try_lock().map_err(|_| Busy)
     }
 
     /// Consumes an unborrowed mutex.
@@ -68,8 +73,8 @@ impl<T> RwLock<T> {
     }
 
     /// Attempts immediate exclusive ownership without registering a waiter.
-    pub fn try_write(&self) -> Result<impl std::ops::DerefMut<Target = T> + '_, ()> {
-        self.0.try_write().map_err(|_| ())
+    pub fn try_write(&self) -> Result<impl std::ops::DerefMut<Target = T> + '_, Busy> {
+        self.0.try_write().map_err(|_| Busy)
     }
 }
 

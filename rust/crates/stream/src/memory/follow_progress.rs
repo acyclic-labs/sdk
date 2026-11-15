@@ -118,11 +118,17 @@ impl MemoryStream {
         anchor: Option<CommitId>,
         when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
-        bootstrap_head: bool,
-        until: Option<u64>,
+        window: super::follow::FollowWindow,
     ) -> Result<crate::FollowStream, StreamError> {
         let (snapshot, selection, changed, cursor) = self
-            .prepare_progress(&path, from, anchor, when_absent, bootstrap_head, until)
+            .prepare_progress(
+                &path,
+                from,
+                anchor,
+                when_absent,
+                window.bootstrap_head,
+                window.until,
+            )
             .await?;
         let anchor = selection.preceding;
         let state = Box::new(MemoryProgress {

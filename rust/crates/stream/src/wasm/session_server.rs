@@ -115,8 +115,7 @@ fn serve(
         authority,
         resources,
         calls,
-        node,
-        limits,
+        session::SessionSpec { node, limits },
         Box::pin(incoming),
         shutdown,
     )

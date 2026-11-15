@@ -57,8 +57,10 @@ fn check<const OMIT_ANCHOR: bool>() {
                     anchor,
                     crate::WhenAbsent::NotFound,
                     crate::FollowFilter::default(),
-                    false,
-                    None,
+                    crate::memory::FollowWindow {
+                        bootstrap_head: false,
+                        until: None,
+                    },
                 )
                 .await?;
             changed

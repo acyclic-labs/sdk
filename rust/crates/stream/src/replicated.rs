@@ -105,13 +105,12 @@ impl<'a> Attempt<'a> {
         std::mem::take(&mut self.result)
     }
 
-    fn persist(
+    async fn persist(
         &mut self,
         journal: &mut impl CommandJournal,
         expected: u64,
         frame: JournalFrame<'_>,
-    ) -> impl Future<Output = Result<Option<u64>, StreamError>> {
-        async move {
+    ) -> Result<Option<u64>, StreamError> {
             self.result.started = true;
             let result = journal.append_if(expected, &[frame]).await?;
             let outcome = match &result {
@@ -130,7 +129,6 @@ impl<'a> Attempt<'a> {
             };
             self.result.appended = Some(result);
             outcome
-        }
     }
 }
 
@@ -409,23 +407,22 @@ impl<J: CommandJournal> Replicated<J> {
     }
 
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
-    pub(crate) fn execute(
+    pub(crate) async fn execute(
         &mut self,
         command: WriteRequest,
         deadline: Option<u64>,
         page: usize,
-    ) -> impl Future<Output = Result<Execution, StreamError>> {
-        self.execute_with(command, deadline, page, NoopObserver)
+    ) -> Result<Execution, StreamError> {
+        self.execute_with(command, deadline, page, NoopObserver).await
     }
 
-    pub(crate) fn execute_with(
+    pub(crate) async fn execute_with(
         &mut self,
         command: WriteRequest,
         deadline: Option<u64>,
         page: usize,
         mut observe: impl ReplayObserver,
-    ) -> impl Future<Output = Result<Execution, StreamError>> {
-        async move {
+    ) -> Result<Execution, StreamError> {
             self.check()?;
             if page == 0 {
                 return Err(StreamError::InvalidArgument);
@@ -513,6 +510,5 @@ impl<J: CommandJournal> Replicated<J> {
                 observe.observe(&self.provider, command, true).await?;
             }
             result
-        }
     }
 }

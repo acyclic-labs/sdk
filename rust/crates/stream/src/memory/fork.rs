@@ -1,3 +1,5 @@
+type ForkInstall = Result<ForkReceipt, StreamError>;
+
 impl MemoryStream {
     fn plan_fork_locked<'a>(
         &'a self,
@@ -6,7 +8,7 @@ impl MemoryStream {
     ) -> Result<
         Decision<
             ForkReceipt,
-            impl FnOnce(&mut State, bool, Option<u64>) -> Result<ForkReceipt, StreamError> + use<'a>,
+            impl FnOnce(&mut State, bool, Option<u64>) -> ForkInstall + use<'a>,
         >,
         StreamError,
     > {

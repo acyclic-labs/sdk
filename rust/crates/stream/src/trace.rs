@@ -115,7 +115,7 @@ pub fn observe<T, E>(
     work: impl std::future::Future<Output = Result<T, E>>,
     bytes: impl FnOnce(&T) -> Option<u64>,
 ) -> impl std::future::Future<Output = Result<T, E>> {
-    observe_outcome(&request, work, |result| {
+    observe_outcome(request, work, |result| {
         result
             .as_ref()
             .ok()

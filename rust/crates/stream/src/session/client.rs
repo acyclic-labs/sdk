@@ -248,7 +248,7 @@ enum Command {
     },
     Input {
         id: u64,
-        frame: wire::SessionFrame,
+        frame: Box<wire::SessionFrame>,
         credit: Option<input::Credit>,
         sent: oneshot::Sender<Result<(), StreamError>>,
     },
@@ -289,10 +289,11 @@ struct Route {
     credit: wire::SessionWindow,
     progress: Arc<Progress>,
     records: mpsc::Sender<Result<Delivery, StreamError>>,
-    ready: Option<oneshot::Sender<Result<(u64, Option<wire::SessionOpened>), StreamError>>>,
+    ready: Option<OpenReply>,
     observation: super::runtime::OperationSpan,
     input: Option<input::Owner>,
 }
+type OpenReply = oneshot::Sender<Result<(u64, Option<wire::SessionOpened>), StreamError>>;
 struct Link {
     /// Recovery spacing survives Welcome/EOF cycles until useful frames arrive.
     backoff: Option<acyclic_auth::operation::Backoff>,

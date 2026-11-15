@@ -77,8 +77,10 @@ async fn records(
             None,
             crate::WhenAbsent::NotFound,
             crate::FollowFilter::default(),
-            false,
-            None,
+            crate::memory::FollowWindow {
+                bootstrap_head: false,
+                until: None,
+            },
         )
         .await
         .unwrap();

@@ -26,7 +26,9 @@ impl FollowFilter {
         if end.len() < crate::MAX_RECORD_KEY_BYTES {
             end.push(0);
         } else if let Some(index) = end.iter().rposition(|byte| *byte != u8::MAX) {
-            end[index] += 1;
+            if let Some(byte) = end.get_mut(index) {
+                *byte += 1;
+            }
             end.truncate(index + 1);
         } else {
             // No longer keys are admitted; the greatest legal key is last.

@@ -37,8 +37,7 @@ impl MemoryStream {
                 preceding,
                 when_absent,
                 filter,
-                bootstrap_head,
-                until,
+                crate::memory::FollowWindow { bootstrap_head, until },
             )
             .await
         } else {
@@ -48,8 +47,7 @@ impl MemoryStream {
                 preceding,
                 when_absent,
                 filter,
-                bootstrap_head,
-                until,
+                crate::memory::FollowWindow { bootstrap_head, until },
             )
             .await
         }
@@ -254,7 +252,7 @@ impl MemoryStream {
                             crate::request::fact_path(mutation).cmp(&selected.path)
                         })
                         .ok()?;
-                    let (start, records) = match &envelope.mutations[index] {
+                    let (start, records) = match envelope.mutations.get(index)? {
                         CommittedMutation::Append(append) => (append.start, &append.records),
                         CommittedMutation::Fork(fork) => (fork.forked_at, &fork.records),
                     };
@@ -414,8 +412,9 @@ fn namespace_page<'a>(
     Ok(NamespacePage {
         index,
         start,
-        length: available.min(limit as u64) as usize,
-        has_more: available > limit as u64,
+        length: usize::try_from(available.min(u64::from(limit)))
+            .map_err(|_| StreamError::Capacity)?,
+        has_more: available > u64::from(limit),
     })
 }
 impl NamespacePage<'_> {
@@ -652,7 +651,7 @@ fn children_at(
     };
     budget.finish(next_after.as_ref())?;
     Ok(ChildrenPage {
-        scanned: rows.len() as u32,
+        scanned: u32::try_from(rows.len()).map_err(|_| StreamError::Capacity)?,
         hierarchy_version,
         children: rows,
         next_after,
@@ -914,8 +913,10 @@ impl crate::NativeStreamProvider for MemoryStream {
             deadline,
             meter,
             check,
-            Some(reads),
-            false,
+            CommitInputs {
+                reads: Some(reads),
+                accepted: false,
+            },
             crate::WriteOutcome::into_commit,
         )
     }
@@ -1023,8 +1024,10 @@ impl crate::NativeStreamProvider for MemoryStream {
                     None,
                     meter,
                     || futures::future::ready(Ok(())),
-                    None,
-                    accepted,
+                    CommitInputs {
+                        reads: None,
+                        accepted,
+                    },
                     Ok,
                 )
             }
@@ -1038,6 +1041,12 @@ impl crate::NativeStreamProvider for MemoryStream {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+struct CommitInputs {
+    reads: Option<Vec<StreamPath>>,
+    accepted: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl MemoryStream {
     fn guarded_commit<T, C, E, F, Fut>(
         &self,
@@ -1045,8 +1054,7 @@ impl MemoryStream {
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
-        reads: Option<Vec<StreamPath>>,
-        accepted: bool,
+        inputs: CommitInputs,
         convert: C,
     ) -> crate::NativeProviderFuture<'_, T, E>
     where
@@ -1056,6 +1064,7 @@ impl MemoryStream {
         F: FnMut() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
     {
+        let CommitInputs { reads, accepted } = inputs;
         Work::start(
             meter,
             &crate::native::span!("acyclic.stream.commit"),

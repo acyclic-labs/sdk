@@ -252,7 +252,7 @@ fn executor_retirement_ends_forked_follows_before_publication_unlocks()
             let (pending, settled) = {
                 let _entered = runtime.enter();
                 crate::snapshot::observe(
-                    &if queued {
+                    if queued {
                         crate::snapshot::Cut::Pending
                     } else {
                         crate::snapshot::Cut::Created

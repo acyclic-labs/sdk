@@ -107,7 +107,7 @@ fn executor_loss_ends_public_follows_before_a_retained_writer_releases() {
             let (pending, settled) = {
                 let _entered = runtime.enter();
                 crate::snapshot::observe(
-                    &if queued {
+                    if queued {
                         crate::snapshot::Cut::Pending
                     } else {
                         crate::snapshot::Cut::Created

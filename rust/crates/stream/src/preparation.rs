@@ -197,12 +197,11 @@ fn settled_effects_with<'r: 's, 's>(
         .iter()
         .enumerate()
         .map(move |(index, effect)| {
-            let omitted = skipped
-                .first()
-                .is_some_and(|next| compare(index, *next).is_eq());
-            if omitted {
-                skipped = &skipped[1..];
-            }
+            let (omitted, rest) = match skipped.split_first() {
+                Some((next, rest)) if compare(index, *next).is_eq() => (true, rest),
+                _ => (false, skipped),
+            };
+            skipped = rest;
             (omitted, effect)
         })
 }

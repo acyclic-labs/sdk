@@ -350,9 +350,9 @@ impl Pool {
                         .finishing(sent)?;
                     // The original queue verdict is insufficient for half-close:
                     // retain its waiter until the peer accepts ordered EOF.
-                    return self.queue(&node, frame).map(|_| ());
+                    return self.queue(&node, *frame).map(|_| ());
                 }
-                let queued = self.queue(&node, frame)?;
+                let queued = self.queue(&node, *frame)?;
                 if queued.is_ok()
                     && let Some(credit) = credit
                 {

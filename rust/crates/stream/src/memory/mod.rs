@@ -14,6 +14,7 @@ use crate::MAX_RECORD_BYTES;
 use crate::OwnedBytes as Bytes;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::native::Work;
+pub(crate) use follow::FollowWindow;
 use crate::preparation::commit_identity;
 use crate::query_sync::{Mutex, RwLock};
 #[cfg(not(target_arch = "wasm32"))]

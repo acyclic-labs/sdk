@@ -36,7 +36,10 @@ const fn observation_action(method: StreamMethod) -> Action {
         admitted.len() == 1,
         "Session observations require exactly one declared action"
     );
-    admitted[0]
+    match admitted {
+        [action] => *action,
+        _ => unreachable!("Session observations require exactly one declared action"),
+    }
 }
 
 const RESOURCE_FOLLOW: MethodAuth<()> = MethodAuth {

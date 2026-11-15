@@ -40,9 +40,21 @@ pub enum RequestClass {
 pub struct Requests([u64; 6]);
 
 impl Requests {
+    fn count(self, class: RequestClass) -> u64 {
+        let [data, metadata, list, head, lease, token] = self.0;
+        match class {
+            RequestClass::Data => data,
+            RequestClass::Metadata => metadata,
+            RequestClass::List => list,
+            RequestClass::Head => head,
+            RequestClass::Lease => lease,
+            RequestClass::Token => token,
+        }
+    }
+
     /// Calls that carry payload data; `u64::MAX` denotes lost precision.
     pub fn data(self) -> u64 {
-        self.0[RequestClass::Data as usize]
+        self.count(RequestClass::Data)
     }
 
     /// Every non-payload request, irrespective of what the caller requested.
@@ -75,7 +87,7 @@ impl Requests {
 
     /// Calls in one specific class; `u64::MAX` denotes lost precision.
     pub fn class(self, class: RequestClass) -> u64 {
-        self.0[class as usize]
+        self.count(class)
     }
 
     /// Requests issued since an earlier snapshot of this same ledger.
@@ -112,17 +124,31 @@ impl RequestLedger {
 
     /// Records one dispatched call in its contract class.
     pub fn record(&self, class: RequestClass) {
-        let _ =
-            self.0[class as usize].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                count.checked_add(1)
-            });
+        let [data, metadata, list, head, lease, token] = self.0.as_ref();
+        let counter = match class {
+            RequestClass::Data => data,
+            RequestClass::Metadata => metadata,
+            RequestClass::List => list,
+            RequestClass::Head => head,
+            RequestClass::Lease => lease,
+            RequestClass::Token => token,
+        };
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            count.checked_add(1)
+        });
     }
 
     /// Reads the ledger without resetting other handles.
     pub fn requests(&self) -> Requests {
-        Requests(std::array::from_fn(|index| {
-            self.0[index].load(Ordering::Relaxed)
-        }))
+        let [data, metadata, list, head, lease, token] = self.0.as_ref();
+        Requests([
+            data.load(Ordering::Relaxed),
+            metadata.load(Ordering::Relaxed),
+            list.load(Ordering::Relaxed),
+            head.load(Ordering::Relaxed),
+            lease.load(Ordering::Relaxed),
+            token.load(Ordering::Relaxed),
+        ])
     }
 }
 

@@ -75,7 +75,7 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
         F: Future<Output = NativeStreamResult<T, E>> + Send + 'a,
         K: FnOnce(&NativeStreamResult<T, E>) -> Option<&'static str> + Send + 'a,
     {
-        match Self::try_observed(meter, &span, future, error) {
+        match Self::try_observed(meter, span, future, error) {
             Ok(future) => future,
             Err(error) => Self::ready(Err(error)),
         }
@@ -94,7 +94,7 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
         K: FnOnce(&NativeStreamResult<T, E>) -> Option<&'static str> + Send + 'a,
     {
         Self::try_build(meter, || {
-            span.scope(acyclic_observability::observe_output(&span, future, error))
+            span.scope(acyclic_observability::observe_output(span, future, error))
         })
         .inspect_err(|error| span.record_error(Some(error)))
     }

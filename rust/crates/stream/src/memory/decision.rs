@@ -48,13 +48,12 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
 
     /// Persists then installs a durable decision. An ephemeral one installs
     /// at once and never reaches `persist`: no frame, no fsync.
-    fn durable(
+    async fn durable(
         self,
         core: &MemoryStream,
         mut state: impl std::ops::DerefMut<Target = State>,
         mut persist: std::pin::Pin<&mut impl Future<Output = Result<Option<u64>, StreamError>>>,
-    ) -> impl Future<Output = Result<T, StreamError>> {
-        async move {
+    ) -> Result<T, StreamError> {
             let ephemeral = self.ephemeral();
             if ephemeral || matches!(&self, Self::Returned { .. }) {
                 return self.install(core, &mut state, !ephemeral);
@@ -79,7 +78,6 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
             drop(state);
             let mut state = core.state.write().await;
             self.install_at(core, &mut state, true, at_millis)
-        }
     }
 }
 
@@ -91,13 +89,12 @@ impl MemoryStream {
         command.canonicalized_with(|request| self.commit_request_digest(request).map(Some))
     }
 
-    pub(crate) fn apply_durable(
+    pub(crate) async fn apply_durable(
         &self,
         canonical: &crate::journal::CanonicalCommand,
         deadline: Option<u64>,
         mut persist: std::pin::Pin<&mut impl Future<Output = Result<Option<u64>, StreamError>>>,
-    ) -> impl Future<Output = Result<crate::replicated::Execution, StreamError>> {
-        async move {
+    ) -> Result<crate::replicated::Execution, StreamError> {
             use crate::replicated::Execution;
             use crate::{WriteOutcome, WriteRequest};
             let _publication = self.publication.lock().await;
@@ -158,6 +155,5 @@ impl MemoryStream {
                         })
                 }
             }
-        }
     }
 }

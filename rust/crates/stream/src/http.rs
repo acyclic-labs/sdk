@@ -278,15 +278,15 @@ impl HttpStream {
         if value.is_null() {
             return Ok(None);
         }
-        let observed = IdempotencyKey::new(parse_bytes(field(&value, "idempotencyKey")?)?)?;
+        let observed = IdempotencyKey::new(parse_bytes(field(value, "idempotencyKey")?)?)?;
         if &observed != key {
             return Err(StreamError::Unavailable);
         }
-        let request_digest = parse_bytes(field(&value, "requestDigest")?)?
+        let request_digest = parse_bytes(field(value, "requestDigest")?)?
             .as_ref()
             .try_into()
             .map_err(|error| StreamError::Unavailable.with_source(error))?;
-        let outcome = field(&value, "outcome")?;
+        let outcome = field(value, "outcome")?;
         let outcome = match parse_string(&outcome["type"])? {
             "append" => IdempotencyOutcome::Append(parse_append(&outcome["outcome"])?),
             "fork" => IdempotencyOutcome::Fork(parse_fork(&outcome["receipt"])?),

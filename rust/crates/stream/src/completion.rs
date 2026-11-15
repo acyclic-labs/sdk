@@ -36,6 +36,9 @@ pub struct Producer<T, H = (), I = ()>(Arc<State<T, H, I>>);
 
 impl<T, H, I> Producer<T, H, I> {
     /// Publishes the original result without copying it or its allocation owner.
+    ///
+    /// # Panics
+    /// Panics if the result slot was already published.
     pub fn publish(self, result: T) {
         assert!(self.0.result.set(result).is_ok());
     }
@@ -133,11 +136,13 @@ impl<T, H, I> Completion<T, H, I> {
     }
 }
 
+type Prepared<T, H> = (Completion<T, H>, Producer<T, H>);
+
 /// Admits one bounded result slot before allocation. There is one producer,
 /// one allocation and no queue, retry, timer or registration allocation.
 pub fn channel<T, H, E>(
     admit: impl FnOnce(usize) -> Result<H, E>,
-) -> Result<(Completion<T, H>, Producer<T, H>), E> {
+) -> Result<Prepared<T, H>, E> {
     let storage = admit(Completion::<T, H>::allocation_bytes())?;
     Ok(Completion::prepare((), storage))
 }

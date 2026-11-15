@@ -1,3 +1,5 @@
+type AppendResult = (AppendOutcome, Allocation);
+
 impl MemoryStream {
     pub(crate) async fn append_inner(
         &self,
@@ -15,12 +17,8 @@ impl MemoryStream {
         request: &'a AppendRequest,
     ) -> Result<
         Decision<
-            (AppendOutcome, Allocation),
-            impl FnOnce(
-                &mut State,
-                bool,
-                Option<u64>,
-            ) -> Result<(AppendOutcome, Allocation), StreamError>
+            AppendResult,
+            impl FnOnce(&mut State, bool, Option<u64>) -> Result<AppendResult, StreamError>
             + use<'a>,
         >,
         StreamError,

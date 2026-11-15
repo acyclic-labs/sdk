@@ -72,22 +72,44 @@ pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
 }
 
 fn record_json(value: &wire::Record) -> Value {
-    let mut record = json!({
-        "sequence": value.sequence.to_string(),
-        "value": STANDARD.encode(&value.value),
-        "commitId": STANDARD.encode(&value.commit_id),
-        "committedAtMicros": value.committed_at_micros.to_string(),
-        "keys": value.keys.iter().map(|key| STANDARD.encode(key)).collect::<Vec<_>>(),
-        "attributes": value.attributes.iter().map(|attribute| json!({
-            "name": attribute.name,
-            "value": STANDARD.encode(&attribute.value),
-        })).collect::<Vec<_>>(),
-    });
+    let mut record = serde_json::Map::new();
+    record.insert("sequence".into(), Value::from(value.sequence.to_string()));
+    record.insert("value".into(), Value::from(STANDARD.encode(&value.value)));
+    record.insert("commitId".into(), Value::from(STANDARD.encode(&value.commit_id)));
+    record.insert(
+        "committedAtMicros".into(),
+        Value::from(value.committed_at_micros.to_string()),
+    );
+    record.insert(
+        "keys".into(),
+        Value::from(
+            value
+                .keys
+                .iter()
+                .map(|key| STANDARD.encode(key))
+                .collect::<Vec<_>>(),
+        ),
+    );
+    record.insert(
+        "attributes".into(),
+        Value::from(
+            value
+                .attributes
+                .iter()
+                .map(|attribute| {
+                    json!({
+                        "name": attribute.name,
+                        "value": STANDARD.encode(&attribute.value),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        ),
+    );
     // Present exactly when the binary record spells it.
     if !value.origin.is_empty() {
-        record["origin"] = Value::from(value.origin.as_str());
+        record.insert("origin".into(), Value::from(value.origin.as_str()));
     }
-    record
+    Value::Object(record)
 }
 
 /// The hosted spelling of the shared revision token; absent is null.

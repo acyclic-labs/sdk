@@ -194,7 +194,7 @@ struct Session<P: ?Sized> {
 }
 
 enum ServingSession<P: ?Sized> {
-    Active(Session<P>, Option<crate::BoxProviderFuture<'static, ()>>),
+    Active(Box<Session<P>>, Option<crate::BoxProviderFuture<'static, ()>>),
     Closing(
         std::collections::btree_map::IntoIter<u64, Channel>,
         std::collections::vec_deque::IntoIter<Frame>,
@@ -269,6 +269,14 @@ pub fn serve_with_resources<P: StreamProvider + ?Sized>(
     )
 }
 
+/// The node name and limits of one served session.
+pub struct SessionSpec {
+    /// The node this session serves.
+    pub node: String,
+    /// The session's admitted limits.
+    pub limits: Limits,
+}
+
 /// Opens follows and canonical Actors calls on one authenticated session.
 /// Completing `shutdown` drops producers and closes admitted channels without
 /// data credit. Its owner must complete it when the serving runtime stops.
@@ -277,8 +285,7 @@ pub fn serve_with_products<P: StreamProvider + ?Sized>(
     authority: Arc<Authority>,
     resources: Option<Arc<dyn ResourceProvider>>,
     calls: Arc<dyn CallProvider>,
-    node: String,
-    limits: Limits,
+    spec: SessionSpec,
     incoming: transport::WireResponses,
     shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
 ) -> Result<transport::Responses, StreamError> {
@@ -290,8 +297,8 @@ pub fn serve_with_products<P: StreamProvider + ?Sized>(
             calls: Some(calls),
             sockets: None,
         },
-        node,
-        limits,
+        spec.node,
+        spec.limits,
         incoming,
         shutdown,
     )
@@ -365,7 +372,7 @@ fn serve_on_with_products<
     };
     Ok(Box::pin(
         stream::try_unfold(
-            ServingSession::Active(session, shutdown),
+            ServingSession::Active(Box::new(session), shutdown),
             |state| async move {
                 let (mut session, mut shutdown) = match state {
                     ServingSession::Active(session, shutdown) => (session, shutdown),
