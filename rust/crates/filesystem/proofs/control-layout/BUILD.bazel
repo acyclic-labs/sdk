@@ -4,7 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 FEATURES = []
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-fs-control-layout-proof","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-fs-control-layout-proof","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 rust_library(
     name = "acyclic_fs_control_layout_proof",
@@ -26,7 +26,9 @@ rust_test(
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/filesystem:src/arc_layout.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -42,3 +44,9 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

@@ -13,7 +13,7 @@ FEATURES = [
         "wasm-journal",
     ]
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-stream","CARGO_PKG_DESCRIPTION":"Hierarchical append-only Streams contract, clients, and local provider","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.92"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-stream","CARGO_PKG_DESCRIPTION":"Hierarchical append-only Streams contract, clients, and local provider","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.92"}
 
 cargo_build_script(
     name = "build_script",
@@ -370,6 +370,7 @@ rust_test(
 isolated_test(
     name = "read-selectors",
     binary = ":read-selectors_cases",
+    binaries = {":stream-http-contract":"stream-http-contract",":stream-rpc-inventory":"stream-rpc-inventory"},
     limit_seconds = 10,
 )
 
@@ -462,6 +463,7 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
+    binaries = {":stream-http-contract":"stream-http-contract",":stream-rpc-inventory":"stream-rpc-inventory"},
     limit_seconds = 10,
 )
 
@@ -993,6 +995,9 @@ filegroup(
 
 
 exports_files([
+        "conformance/stream.json",
+        "examples/provider-conformance.rs",
+        "examples/stream-typescript-consumer.rs",
         "proto/stream/v1/session.proto",
         "proto/stream/v1/stream.proto",
         "src/change.rs",
@@ -1009,3 +1014,9 @@ exports_files([
         "tests/support/follow_contract.rs",
         "tests/support/follow_data.rs",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

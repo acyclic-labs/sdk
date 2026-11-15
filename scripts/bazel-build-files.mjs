@@ -52,6 +52,17 @@ function tables(file) {
 }
 const value = (table, key) => (table?.[key] === undefined ? undefined : JSON.parse(table[key]));
 
+// .cargo/config.toml's [env], as Cargo gives it to every compile and build script. A relative
+// value is resolved against the repository root, which is the execution root of a Bazel action.
+const configEnv = Object.fromEntries(Object.entries(tables(".cargo/config.toml").env ?? {}).map(([name, raw]) => {
+  const table = /^\{(.*)\}$/.exec(raw.trim());
+  if (!table) return [name, JSON.parse(raw)];
+  const fields = Object.fromEntries([...table[1].matchAll(/(\w+)\s*=\s*("[^"]*"|true|false)/g)].map(([, key, v]) => [key, JSON.parse(v)]));
+  const relative = path.posix.normalize(fields.value);
+  // rules_rust's process wrapper replaces ${pwd} with the execution root; $$ escapes make expansion.
+  return [name, fields.relative ? (relative === "." ? "$${pwd}" : `$\${pwd}/${relative}`) : fields.value];
+}));
+
 // Every target builds with every feature on, as `cargo test --all-features` does. crate_universe
 // resolves third-party features its own way, so specs() pins each crate's all-features set.
 const runs = TRIPLES.map(triple => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, "--all-features"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 })));
@@ -108,6 +119,57 @@ function closure(crateDir, rootFile) {
     }
   }
   return seen;
+}
+// What a test reads at run time, from the string literals of a module closure: a literal naming
+// a tracked file, or a directory holding tracked files, either repository-relative (test-support's
+// source_path) or relative to the crate that spells it (crate_path!, CARGO_MANIFEST_DIR joins).
+// A read this misses fails the sandboxed test loudly with a missing file; a literal that only
+// looks like a path adds an unread input.
+const LITERAL = /"([^"\\\n]*\/[^"\\\n]*)"/g;
+const literalReads = new Map();
+function readsOf(crateDir, rootFile) {
+  const key = `${crateDir} ${rootFile}`;
+  if (literalReads.has(key)) return literalReads.get(key);
+  const files = new Set(), dirs = new Set();
+  for (const file of closure(crateDir, rootFile)) {
+    if (!file.endsWith(".rs")) continue;
+    for (const [, literal] of fs.readFileSync(path.join(root, file), "utf8").matchAll(LITERAL)) {
+      if (literal.startsWith("/") || literal.includes("{")) continue;
+      for (const spelled of [literal, path.posix.join(crateDir, literal)]) {
+        const named = path.posix.normalize(spelled).replace(/\/$/, "");
+        if (named.startsWith("..") || named === "." || crateDir.startsWith(`${named}/`)) continue;
+        if (trackedSet.has(named)) files.add(named);
+        else if (trackedDirs.has(named) && (spelled !== literal || named.includes("/"))) dirs.add(named);
+      }
+    }
+  }
+  const reads = { files, dirs };
+  literalReads.set(key, reads);
+  return reads;
+}
+// Every directory that holds a tracked file, at any depth.
+const trackedDirs = new Set(tracked.flatMap(file => file.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))));
+// A directory's tracked files, as one filegroup in each package that owns some of them: a glob
+// cannot cross a package boundary, so a directory spanning nested packages has one per package.
+const trees = new Map();
+function treeLabels(directory) {
+  const owners = new Set(tracked.filter(file => file.startsWith(`${directory}/`)).map(ownerOf));
+  return [...owners].sort().map(owner => {
+    const rel = owner === directory || owner.startsWith(`${directory}/`) ? "" : within(owner, directory);
+    if (!trees.has(owner)) trees.set(owner, new Set());
+    trees.get(owner).add(rel);
+    return `//${owner}:${rel ? `tree/${rel}` : "tree"}`;
+  });
+}
+// Test-only members: taken as dev-dependencies and never as a normal or build dependency. Their
+// helpers name the files the tests read; product libraries do not read the source tree.
+const productDeps = new Set(nodes.flatMap(byId => [...byId.values()].flatMap(node => node.deps.filter(dep => dep.dep_kinds.some(k => k.kind !== "dev")).map(dep => dep.pkg))));
+function devLibraries(p) {
+  const found = new Set();
+  for (const byId of nodes) for (const dep of byId.get(p.id)?.deps ?? []) {
+    if (members.has(dep.pkg) && !productDeps.has(dep.pkg) && dep.dep_kinds.some(k => k.kind === "dev")) found.add(dep.pkg);
+  }
+  return [...found].map(id => packages.get(id)).filter(libOf);
 }
 // The inputs a target reads beyond its globs, as srcs (Rust) and compile_data (other files):
 // same-package paths relative to the package, other packages' files by exported label.
@@ -175,7 +237,12 @@ function scriptData(p) {
     return files.map(file => (ownerOf(file) === dir(p) ? within(dir(p), file) : fileLabel(file)));
   });
 }
-const exportsRule = owner => (exported.has(owner) ? `\nexports_files(${list([...exported.get(owner)].sort())}, visibility = ["//visibility:public"])\n` : "");
+const exportsRule = owner => (exported.has(owner) ? `\nexports_files(${list([...exported.get(owner)].sort())}, visibility = ["//visibility:public"])\n` : "") +
+  [...(trees.get(owner) ?? [])].sort().map(rel => `\n${rule("filegroup", [
+    ["name", q(rel ? `tree/${rel}` : "tree")],
+    ["srcs", glob([rel ? `${rel}/**` : "**"], [])],
+    ["visibility", q(["//visibility:public"])],
+  ])}`).join("");
 
 const cargo = tables("Cargo.toml");
 const dev = cargo["profile.dev"] ?? {};
@@ -250,7 +317,7 @@ function buildFile(p) {
       ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list([...extra.data, ...(readsRepository(p) ? repositorySources : [])]))],
     ];
   };
-  const env = Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v));
+  const env = { ...configEnv, ...Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v)) };
   const common = target => [
     ["edition", q(target.edition)],
     ["version", q(p.version)],
@@ -277,13 +344,26 @@ function buildFile(p) {
   const covered = rendered.get(p.id);
   // The libtest executable builds on its own; the isolated test runs its cases.
   // Cases run in the package directory, as under Cargo, and read its files there.
-  const test = (wanted, attrs) => {
+  // What a test of `target` reads at run time beyond its package's non-Rust files: the literal
+  // reads of its own closure, of this package's library, and of its first-party dev-dependencies.
+  const runtimeData = target => {
+    const all = [readsOf(dir(p), repoRelative(target)), ...[...(lib ? [p] : []), ...devLibraries(p)].map(other => readsOf(dir(other), repoRelative(libOf(other))))];
+    const files = new Set(all.flatMap(reads => [...reads.files])), dirs = new Set(all.flatMap(reads => [...reads.dirs]));
+    const labels = new Set([...dirs].flatMap(treeLabels));
+    for (const file of files) {
+      const owner = ownerOf(file);
+      if (owner !== dir(p)) labels.add(fileLabel(file));
+      else if (file.endsWith(".rs")) labels.add(within(owner, file));
+    }
+    return [...labels].sort();
+  };
+  const test = (wanted, attrs, reads, binaries = {}) => {
     let name = wanted;
     while (names.has(name) || names.has(`${name}_cases`)) name += "_test";
     names.add(name).add(`${name}_cases`);
     rules.push(
-      ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", glob(["**"], ["**/*.rs", "BUILD.bazel"])], ["tags", q(["manual"])]]],
-      ["isolated_test", [["name", q(name)], ["binary", q(`:${name}_cases`)], ["limit_seconds", String(CASE_LIMIT_SECONDS)]]],
+      ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
+      ["isolated_test", [["name", q(name)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(binaries).length ? q(binaries) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)]]],
     );
   };
   if (script) {
@@ -333,7 +413,7 @@ function buildFile(p) {
       ["compile_data", list(extras(lib, libCovered).data)],
       ...common(lib).filter(([k]) => k !== "rustc_env"),
       ...deps(["dev"]),
-    ]);
+    ], runtimeData(lib));
   }
   for (const bin of p.targets.filter(t => t.kind.includes("bin"))) {
     covered.add(`build bin ${bin.name}`);
@@ -353,7 +433,7 @@ function buildFile(p) {
       ...common(bin),
       ...deps([null, "dev"],
         [...ownLib, ...ownDeps], ownMacro),
-    ]);
+    ], runtimeData(bin));
   }
   // Integration tests, examples and benches compile from their own directory and the package's
   // library, with dev-dependencies. Cargo builds every example and runs those with `test = true`;
@@ -371,7 +451,11 @@ function buildFile(p) {
   };
   for (const target of p.targets.filter(t => (t.kind.includes("test") || t.kind.includes("example") || t.kind.includes("bench")) && t.test)) {
     covered.add(`test ${target.kind[0]} ${target.name}`);
-    test(target.name, separate(target));
+    // Cargo gives integration tests and benches the package's executables as CARGO_BIN_EXE_<name>.
+    const binaries = target.kind.includes("test") || target.kind.includes("bench")
+      ? Object.fromEntries(p.targets.filter(t => t.kind.includes("bin")).map(bin => [`:${bin.name}`, bin.name]))
+      : {};
+    test(target.name, separate(target), runtimeData(target), binaries);
   }
   for (const example of p.targets.filter(t => t.kind.includes("example") && !t.test)) {
     let name = `${example.name}_example`;

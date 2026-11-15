@@ -13,7 +13,7 @@ FEATURES = [
         "wasm-journal",
     ]
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-harness","CARGO_PKG_DESCRIPTION":"Generic durable substrate and fully composable agent runtime","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-harness","CARGO_PKG_DESCRIPTION":"Generic durable substrate and fully composable agent runtime","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 cargo_build_script(
     name = "build_script",
@@ -495,13 +495,30 @@ rust_test(
     proc_macro_deps = [
         "@crates//async-trait-0.1.92",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//:fixtures/harness/v2/file-tools-contract.json",
+        "//rust/crates/harness-fuzz:tree/corpus",
+        "//rust/crates/harness-fuzz:tree/corpus/client_diff",
+        "//rust/crates/harness-fuzz:tree/corpus/e2e_expectations",
+        "//rust/crates/harness-fuzz:tree/corpus/goal_parser",
+        "//rust/crates/harness-fuzz:tree/corpus/plan_markdown",
+        "//rust/crates/harness/fuzz-context:tree",
+        "//rust/crates/harness/fuzz-native-journal:tree",
+        "//rust/crates/harness/fuzz-settings:tree",
+        "//rust/crates/harness/tests/ui/native-environment:tree",
+        "//rust/crates/harness:tree",
+        "//rust/crates/harness:tree/tests/fixtures",
+        "//rust/crates/harness:tree/tests/fixtures/diffs",
+        "//rust/crates/harness:tree/tests/scenarios",
+        "src/lib.rs",
+    ],
     tags = ["manual"],
 )
 
 isolated_test(
     name = "main",
     binary = ":main_cases",
+    binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
     limit_seconds = 10,
 )
 
@@ -604,6 +621,7 @@ rust_test(
 isolated_test(
     name = "native_receipt",
     binary = ":native_receipt_cases",
+    binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
     limit_seconds = 10,
 )
 
@@ -1557,6 +1575,12 @@ filegroup(
 
 
 exports_files([
+        "examples/authority-id-contract.rs",
+        "examples/component-label-contract.rs",
+        "examples/conversation-page-contract.rs",
+        "examples/custom_executor.rs",
+        "examples/limits-contract.rs",
+        "examples/private-directory-page-contract.rs",
         "fixtures/conformance/identity/dex/jwks.body",
         "fixtures/conformance/identity/dex/manifest.json",
         "fixtures/conformance/identity/dex/token.body",
@@ -1580,6 +1604,7 @@ exports_files([
         "fixtures/v2/resource-revision.json",
         "fixtures/v2/task-outcome.json",
         "src/local/host_process/fixtures/claude-code-completed.jsonl",
+        "src/local/workspace.rs",
         "tests/e2e/execution.rs",
         "tests/e2e/expectations.rs",
         "tests/e2e/local_case.rs",
@@ -1611,3 +1636,27 @@ exports_files([
         "tests/support/stream/native.rs",
         "tests/support/wire_input.rs",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree/tests/fixtures",
+    srcs = glob(["tests/fixtures/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree/tests/fixtures/diffs",
+    srcs = glob(["tests/fixtures/diffs/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree/tests/scenarios",
+    srcs = glob(["tests/scenarios/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

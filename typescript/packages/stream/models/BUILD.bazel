@@ -4,7 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_test")
 
 FEATURES = []
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-stream-typescript-models","CARGO_PKG_LICENSE":"Apache-2.0"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-stream-typescript-models","CARGO_PKG_LICENSE":"Apache-2.0"}
 
 rust_test(
     name = "main_cases",
@@ -26,7 +26,12 @@ rust_test(
         "@crates//proptest-1.12.0",
         "@crates//serde_json-1.0.154",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//:typescript/packages/stream/test/session-deadline-model-driver.ts",
+        "//:typescript/packages/stream/test/session-model-driver.ts",
+        "//:typescript/packages/stream/test/session-queue-model-driver.ts",
+        "//:typescript/packages/stream/test/session-queue-work-driver.ts",
+    ],
     tags = ["manual"],
 )
 

@@ -12,7 +12,7 @@ FEATURES = [
         "wasm",
     ]
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-harness-core","CARGO_PKG_DESCRIPTION":"Runtime, contracts and storage behind the acyclic-harness facade","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-harness-core","CARGO_PKG_DESCRIPTION":"Runtime, contracts and storage behind the acyclic-harness facade","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 cargo_build_script(
     name = "build_script",
@@ -284,7 +284,12 @@ rust_test(
         "@crates//tokio-1.54.1",
         "@crates//tracing-subscriber-0.3.23",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/harness-core:tree",
+        "//rust/crates/harness-fuzz:tree",
+        "//rust/crates/harness-fuzz:tree/corpus/recorded_invocation",
+        "src/lib.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -407,7 +412,13 @@ rust_test(
         "//rust/crates/contract-derive:acyclic_contract_derive",
         "@crates//async-trait-0.1.92",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/harness-core:tree",
+        "//rust/crates/harness-fuzz:tree",
+        "//rust/crates/harness-fuzz:tree/corpus/recorded_invocation",
+        "//rust/fuzz:tree/corpus/inbox_record",
+        "src/lib.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -516,7 +527,12 @@ rust_test(
         "//rust/crates/contract-derive:acyclic_contract_derive",
         "@crates//async-trait-0.1.92",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/harness-core:tree",
+        "//rust/crates/harness-fuzz:tree",
+        "//rust/crates/harness-fuzz:tree/corpus/recorded_invocation",
+        "src/lib.rs",
+    ],
     tags = ["manual"],
 )
 
@@ -944,12 +960,22 @@ exports_files([
         "proto/protocol/v1/protocol.proto",
         "src/conversation/epochs/kernel.rs",
         "src/conversation/epochs/protocol.rs",
+        "src/filesystem/agent_publication.rs",
+        "src/filesystem/workspace_policy.rs",
+        "src/filesystem/workspace_publication.rs",
         "src/native_environment.rs",
         "src/native_environment/checkout.rs",
         "src/native_settings/tests.rs",
         "src/native_settings/workspace.rs",
         "src/native_settings/workspace/tests.rs",
         "src/sync/owned.rs",
+        "src/tools/git/materialize.rs",
         "src/tools/git/path.rs",
         "tests/fixtures/notebook-output.png",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

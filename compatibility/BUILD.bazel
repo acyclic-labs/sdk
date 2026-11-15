@@ -5,7 +5,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 FEATURES = []
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-proto-build","CARGO_PKG_DESCRIPTION":"Shared build-time protobuf configuration for Acyclic SDK crates","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.92"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-proto-build","CARGO_PKG_DESCRIPTION":"Shared build-time protobuf configuration for Acyclic SDK crates","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.92"}
 
 cargo_build_script(
     name = "build_script",
@@ -66,7 +66,84 @@ rust_test(
         "@crates//proptest-1.12.0",
         "@crates//prost-types-0.14.4",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//compatibility:tree/descriptors",
+        "//compatibility:tree/proto",
+        "//rust/crates/actors-napi:tree",
+        "//rust/crates/actors-wasm:tree",
+        "//rust/crates/actors:tree",
+        "//rust/crates/auth-action:tree",
+        "//rust/crates/auth-wasm:tree",
+        "//rust/crates/auth/fuzz:tree",
+        "//rust/crates/auth:tree",
+        "//rust/crates/collections:tree",
+        "//rust/crates/conformance/agent-host:tree",
+        "//rust/crates/conformance/cloudflare:tree",
+        "//rust/crates/conformance/hosted-actors:tree",
+        "//rust/crates/conformance:tree",
+        "//rust/crates/contract-derive:tree",
+        "//rust/crates/differential:tree",
+        "//rust/crates/filesystem-base:tree",
+        "//rust/crates/filesystem-napi:tree",
+        "//rust/crates/filesystem-wasm:tree",
+        "//rust/crates/filesystem-wire:tree",
+        "//rust/crates/filesystem/fuzz:tree",
+        "//rust/crates/filesystem/proofs/control-layout:tree",
+        "//rust/crates/filesystem/proofs/lease-path:tree",
+        "//rust/crates/filesystem:tree",
+        "//rust/crates/grpc-observability:tree",
+        "//rust/crates/harness-client:tree",
+        "//rust/crates/harness-conformance:tree",
+        "//rust/crates/harness-core:tree",
+        "//rust/crates/harness-fuzz:tree",
+        "//rust/crates/harness-metrics:tree",
+        "//rust/crates/harness-mock-model:tree",
+        "//rust/crates/harness-providers/fuzz:tree",
+        "//rust/crates/harness-providers:tree",
+        "//rust/crates/harness-search:tree",
+        "//rust/crates/harness-tui/fuzz:tree",
+        "//rust/crates/harness-tui:tree",
+        "//rust/crates/harness/fuzz-context:tree",
+        "//rust/crates/harness/fuzz-native-journal:tree",
+        "//rust/crates/harness/fuzz-settings:tree",
+        "//rust/crates/harness/tests/ui/native-environment:tree",
+        "//rust/crates/harness:tree",
+        "//rust/crates/host-platform:tree",
+        "//rust/crates/inference-wasm:tree",
+        "//rust/crates/inference:tree",
+        "//rust/crates/machines-daytona:tree",
+        "//rust/crates/machines-wasm:tree",
+        "//rust/crates/machines:tree",
+        "//rust/crates/manifest/fuzz:tree",
+        "//rust/crates/manifest:tree",
+        "//rust/crates/markdown-work:tree",
+        "//rust/crates/markdown/fuzz:tree",
+        "//rust/crates/markdown:tree",
+        "//rust/crates/mcp:tree",
+        "//rust/crates/model-render:tree",
+        "//rust/crates/napi-progress-test:tree",
+        "//rust/crates/native-runtime:tree",
+        "//rust/crates/objects-wasm:tree",
+        "//rust/crates/objects:tree",
+        "//rust/crates/observability:tree",
+        "//rust/crates/proto-codegen:tree",
+        "//rust/crates/protobuf-json:tree",
+        "//rust/crates/sdk-docs/file-identity:tree",
+        "//rust/crates/sdk-docs/fuzz:tree",
+        "//rust/crates/sdk-docs:tree",
+        "//rust/crates/sdk-generation/fuzz:tree",
+        "//rust/crates/sdk-generation:tree",
+        "//rust/crates/source-policies:tree",
+        "//rust/crates/stream-napi:tree",
+        "//rust/crates/stream/contract-fuzz:tree",
+        "//rust/crates/stream/fuzz:tree",
+        "//rust/crates/stream/models:tree",
+        "//rust/crates/stream/publication-models:tree",
+        "//rust/crates/stream:tree",
+        "//rust/crates/test-runner:tree",
+        "//rust/crates/test-support:tree",
+        "//rust/crates/workers:tree",
+    ],
     tags = ["manual"],
 )
 
@@ -109,6 +186,7 @@ filegroup(
 
 
 exports_files([
+        "Cargo.toml",
         "descriptors/actors-v1.bin",
         "descriptors/auth-v1.bin",
         "descriptors/filesystem-v2.bin",
@@ -118,3 +196,27 @@ exports_files([
         "descriptors/objects-v1.bin",
         "descriptors/stream-v1.bin",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree/descriptors",
+    srcs = glob(["descriptors/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree/proto",
+    srcs = glob(["proto/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree/src",
+    srcs = glob(["src/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

@@ -7,7 +7,7 @@ FEATURES = [
         "test-support",
     ]
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-plugin","CARGO_PKG_DESCRIPTION":"Acyclic agent CLI and native host integration","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-plugin","CARGO_PKG_DESCRIPTION":"Acyclic agent CLI and native host integration","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 cargo_build_script(
     name = "build_script",
@@ -158,7 +158,9 @@ rust_test(
         "@crates//tracing-0.1.44",
         "@crates//tracing-subscriber-0.3.23",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//:.agents/plugins/marketplace.json",
+    ],
     tags = ["manual"],
 )
 
@@ -290,6 +292,7 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
+    binaries = {":acyclic":"acyclic",":graphcoder":"graphcoder"},
     limit_seconds = 10,
 )
 
@@ -339,6 +342,7 @@ rust_test(
 isolated_test(
     name = "cli",
     binary = ":cli_cases",
+    binaries = {":acyclic":"acyclic",":graphcoder":"graphcoder"},
     limit_seconds = 10,
 )
 
@@ -424,7 +428,18 @@ filegroup(
 
 
 exports_files([
+        ".agents/plugins/marketplace.json",
+        ".codex-plugin/plugin.json",
+        ".mcp.json",
+        "bin/acyclic",
+        "bin/install.js",
+        "bin/targets.json",
         "claude/.claude-plugin/plugin.json",
+        "hooks/hooks.json",
+        "package.json",
+        "plugin.json",
+        "scripts/package.mjs",
+        "src/main.rs",
         "tests/hosts/fixtures/native-completion.json",
         "tests/hosts/fixtures/native-pair-initialization.json",
         "tests/hosts/fixtures/native-pi-fixture-request.json",
@@ -432,3 +447,9 @@ exports_files([
         "tests/hosts/fixtures/native/pi.jsonl",
         "tests/support/native_os.rs",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree/src",
+    srcs = glob(["src/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

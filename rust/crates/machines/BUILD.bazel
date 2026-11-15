@@ -10,7 +10,7 @@ FEATURES = [
         "test-support",
     ]
 
-PACKAGE_ENV = {"CARGO_PKG_NAME":"acyclic-machines","CARGO_PKG_DESCRIPTION":"Machines contract, authenticated client, and deterministic simulator","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.92"}
+PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-machines","CARGO_PKG_DESCRIPTION":"Machines contract, authenticated client, and deterministic simulator","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.92"}
 
 cargo_build_script(
     name = "build_script",
@@ -205,6 +205,7 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
+    binaries = {":machines-managed-oci-contract":"machines-managed-oci-contract"},
     limit_seconds = 10,
 )
 
@@ -316,5 +317,12 @@ filegroup(
 
 
 exports_files([
+        "examples/machines-typescript-consumer.rs",
         "proto/machines/v1/machines.proto",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

@@ -68,20 +68,18 @@ pub fn source_path(relative: impl AsRef<Path>) -> PathBuf {
 }
 
 /// Locates `relative` inside the crate whose compile-time manifest directory is
-/// `manifest`, under the same source root as [`source_path`]. Use
+/// `manifest` within the compile-time repository root `repository`, under the
+/// same source root as [`source_path`]. Both paths come from the one compile of
+/// the calling crate, so they share a root wherever that compile ran. Use
 /// [`crate_path!`](crate::crate_path) rather than calling this directly.
 ///
 /// # Panics
 ///
-/// If `manifest` lies outside the repository this crate was compiled in.
-pub fn crate_source_path(manifest: &str, relative: impl AsRef<Path>) -> PathBuf {
-    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(3)
-        .expect("test-support lives at rust/crates/test-support");
+/// If `manifest` lies outside `repository`.
+pub fn crate_source_path(repository: &str, manifest: &str, relative: impl AsRef<Path>) -> PathBuf {
     let package = Path::new(manifest)
         .strip_prefix(repository)
-        .expect("crate manifest lies inside the SDK repository");
+        .expect("crate manifest lies inside the repository it was compiled in");
     source_path(package.join(relative))
 }
 
@@ -106,7 +104,11 @@ pub fn runtime_path<E>(
 #[macro_export]
 macro_rules! crate_path {
     ($relative:expr) => {
-        $crate::crate_source_path(env!("CARGO_MANIFEST_DIR"), $relative)
+        $crate::crate_source_path(
+            env!("ACYCLIC_BUILD_SOURCE_ROOT"),
+            env!("CARGO_MANIFEST_DIR"),
+            $relative,
+        )
     };
 }
 

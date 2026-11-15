@@ -22,9 +22,20 @@ filegroup(
 
 
 exports_files([
+        ".agents/plugins/marketplace.json",
+        ".cargo/config.toml",
         "fixtures/harness/v2/conversation-message.json",
+        "fixtures/harness/v2/file-tools-contract.json",
+        "release/cargo-crates.json",
         "rust-toolchain.toml",
         "rust/README.md",
         "scripts/graphcoder-e2e/cases/installed-pi-recursive.json",
         "scripts/test-terminal-signals.ps1",
+        "typescript/packages/actors/test/grpc-conformance.mjs",
+        "typescript/packages/sdk/test/process.test.mjs",
+        "typescript/packages/stream/test/http-provider-conformance.mjs",
+        "typescript/packages/stream/test/session-deadline-model-driver.ts",
+        "typescript/packages/stream/test/session-model-driver.ts",
+        "typescript/packages/stream/test/session-queue-model-driver.ts",
+        "typescript/packages/stream/test/session-queue-work-driver.ts",
     ], visibility = ["//visibility:public"])

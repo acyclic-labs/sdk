@@ -8,3 +8,6 @@ build --remote_cache_compression
 build --nobuild_runfile_links
 build --verbose_failures
 test --test_output=errors
+# Tests that start host tools (node, bun, tsc, cargo) find them as `cargo test` does, on the
+# invoking PATH. Only test actions see it; compile keys stay host independent.
+test --test_env=PATH
