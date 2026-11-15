@@ -38,8 +38,11 @@ fn replay_matches(log: &[u8], expected: &[(&str, &[u8], usize, usize)]) -> bool 
                 .sum::<u64>()
         && expected.iter().all(|(key, value, start, size)| {
             let end = start + size - acyclic_native_runtime::LogFrame::CHECKSUM_BYTES;
-            index.get(*key).is_some_and(|slot| {
-                slot.frame == *start as u64
+            index.get(*key).is_some_and(|entry| {
+                let slot = entry.slot;
+                // A held value is exactly the logged one.
+                entry.value.as_deref().is_none_or(|held| held == *value)
+                    && slot.frame == *start as u64
                     && slot.bytes == *size as u64
                     && slot.value == (end - value.len()) as u64
                     && slot.length == value.len() as u64
