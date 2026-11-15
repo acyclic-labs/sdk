@@ -1062,9 +1062,11 @@ fn settled(agent: &AgentState, entry: &ConversationEntry) -> Result<Vec<Out>, Er
 }
 
 /// The waking `child.settled` notice a settled turn sends its parent: only
-/// for work the parent delegated or work that follows from it
-/// ([`TurnInput::delegated_by`]), never for a cancelled turn. One per
-/// settlement, so the parent makes one model call per delegated answer.
+/// for work the parent delegated ([`TurnInput::delegated_by`]), never for a
+/// cancelled turn. One per delegated settlement; settlements the parent has
+/// not yet observed share one parent turn, whose first request admits them
+/// all. A turn this child's own events started never wakes the parent, so
+/// a wake never cascades past one ancestor.
 async fn settlement_notice(
     agent: &AgentState,
     outputs: &dyn TurnOutputs,

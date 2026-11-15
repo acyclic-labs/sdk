@@ -100,26 +100,30 @@ impl TurnInput {
         }
     }
 
-    /// Whether this turn does work `parent` delegated, or work that follows
-    /// from it: the brief its spawn carried, a message `parent` sent, or an
-    /// event the child's own work produced (a waking notice such as a
-    /// grandchild's settlement, a child's completion, an approval). Only
-    /// such a turn's settlement wakes `parent`. A user, host or peer talking
-    /// to the child directly, a host hook and a context request are the
-    /// child's own conversation: the parent observes them lazily by
-    /// following the child, and spends no model call on them.
+    /// Whether this turn does work `parent` delegated: the brief its spawn
+    /// carried, or a message `parent` sent. Only such a turn's settlement
+    /// wakes `parent`, and that settlement is the delegated work's result.
+    /// Every other turn is the child's own conversation, which the parent
+    /// observes lazily by following the child at no model-call cost: one its
+    /// own events start (a grandchild's settlement, a child's completion, a
+    /// child's approval request), a user, host or peer talking to it
+    /// directly, a host hook and a context request. A grandchild's
+    /// completion therefore reaches the grandparent only through the child's
+    /// own settlement: a chain `D` deep costs its ancestors `D` wakes, never
+    /// a wake per ancestor per descendant.
     #[must_use]
     pub fn delegated_by(&self, parent: &AgentPath) -> bool {
         match self {
-            Self::Brief { .. }
-            | Self::Notice { .. }
-            | Self::ChildDone { .. }
-            | Self::ApprovalRequested { .. }
-            | Self::Approval { .. } => true,
+            Self::Brief { .. } => true,
             Self::Message { from, .. } => {
                 matches!(from, Sender::Agent { path } if path == parent)
             }
-            Self::Hook { .. } | Self::Context { .. } => false,
+            Self::Notice { .. }
+            | Self::ChildDone { .. }
+            | Self::ApprovalRequested { .. }
+            | Self::Approval { .. }
+            | Self::Hook { .. }
+            | Self::Context { .. } => false,
         }
     }
 }

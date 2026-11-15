@@ -515,10 +515,10 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         "A source retained by the request",
     )
     .map_err(|error| Error::Storage(error.to_string()))?;
-    // The worker's brief settlement wakes the root, and so does the worker's
-    // own wake turn after its fork settles (#3773): both root wakes run on
-    // the first route, the worker's on the one its settings select. Each wake
-    // takes a wake reply, and every assertion below reads input requests.
+    // The worker's brief settlement wakes the root, on the first route; the
+    // fork's brief settlement wakes the worker, on the route its settings
+    // select. The worker's wake turn is its own conversation and wakes no
+    // one. Each wake takes a wake reply; every assertion reads input requests.
     let first = Arc::new(ScriptedModelProvider::routed([
         ScriptedTurn::Text("ready".into()),
         code("select-settings", r#"
@@ -530,7 +530,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
             await write('volume:///home/agent.ts', "export default {model: 'scripted/second', effort: 'low', sampling: {temperature: 0.75}};", 'any');
             export default 'selected';
         "#),
-    ], ["root noted the worker", "root noted the fork"].map(|text| ScriptedTurn::Text(text.into())))
+    ], [ScriptedTurn::Text("root noted the worker".into())])
     .reading_content().with_context_capacity(capacity()));
     let second = Arc::new(
         ScriptedModelProvider::routed([], [ScriptedTurn::Text("worker noted its fork".into())])
@@ -624,7 +624,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     agents::settled(&harness, &worker).await?;
     let root_conversation = Conversation::open(connection.clone());
     assert!(
-        super::woken(Arc::clone(&root_conversation), 1)
+        super::woken(root_conversation, 1)
             .await?
             .outcome
             .is_completed()
@@ -739,20 +739,15 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         return Err(Error::Invalid("settings fork did not open".into()));
     };
     agents::settled(&harness, &child).await?;
-    // The fork's brief settlement wakes the worker, whose wake wakes the root.
+    // The fork's brief settlement wakes the worker, and only the worker.
     assert!(
         super::woken(Arc::clone(&observed.conversation), 1)
             .await?
             .outcome
             .is_completed()
     );
-    assert!(
-        super::woken(root_conversation, 2)
-            .await?
-            .outcome
-            .is_completed()
-    );
     assert_eq!(second.woken(), [worker.clone()]);
+    assert_eq!(first.woken(), [connection.root().clone()]);
     assert_eq!((first.input_requests(), second.input_requests()), (2, 3));
     let inherited = second.input_request(2).unwrap();
     assert_eq!(inherited.model.name, "second");
