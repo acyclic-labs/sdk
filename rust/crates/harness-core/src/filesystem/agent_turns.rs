@@ -411,10 +411,17 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
         {
             return Ok(parent.clone());
         }
-        // A delegated ceiling keeps its own acting agent: delegation never
-        // attests another, so an agent-free host ceiling stays agent-free.
+        // Native custody attests the journal owner, whom exact grants require
+        // as writer. Delegation never attests another acting agent, so a
+        // delegated ceiling keeps its own.
         let (grants, agent) = match parent {
-            Some(parent) => (parent.capabilities().clone(), parent.agent()),
+            Some(parent) if self.issuer.native().is_none() => {
+                (parent.capabilities().clone(), parent.agent())
+            }
+            Some(parent) => (
+                parent.capabilities().clone(),
+                parent.agent().or(Some(*owner)),
+            ),
             None => (journal_grants(journal, content)?, Some(*owner)),
         };
         self.issuer

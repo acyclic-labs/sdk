@@ -139,6 +139,87 @@ async fn child_activity_verifies_under_the_admission_that_signed_it() -> Result<
 }
 
 #[tokio::test]
+async fn native_exact_grants_repair_a_retained_foreign_journal_as_its_owner() -> Result<()> {
+    let path = AgentPath::root(&crate::agent::AgentId::from_bytes([198; 16]));
+    let other = path
+        .child(&crate::agent::AgentId::from_bytes([199; 16]))
+        .map_err(Error::from)?;
+    let provider = ProviderRef::new(
+        "journal-repair".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let private = private_volume(provider.clone(), &path.id())?;
+    let journal = crate::conversation::journal_volume(provider.clone(), &path.id())?;
+    // A retained journal whose saved policy is absent, so admission repairs it.
+    let foreign = crate::conversation::journal_volume(provider.clone(), &other.id())?;
+    let host =
+        FilesystemHost::<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>::new(
+            acyclic_fs::Fs::memory(),
+            &provider,
+            None,
+        )?;
+    for volume in [&private, &journal, &foreign] {
+        host.create_volume(volume).await?;
+    }
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: path.id().to_string(),
+    };
+    let root = AuthorityRoot::new("journal-repair", [200; 32], audience.clone());
+    // Exact grants carry no filesystem label: an agent-owned volume then
+    // requires its owner as the acting writer.
+    let grants = Capabilities::new([
+        private.capability(VolumeOperation::Read, &mut None)?,
+        private.capability(VolumeOperation::Write, &mut None)?,
+        foreign.capability(VolumeOperation::Read, &mut None)?,
+        foreign.capability(VolumeOperation::Write, &mut None)?,
+        crate::contract::capability::HARNESS_HOST.to_owned(),
+    ]);
+    let admission = TurnAdmission::Admitted {
+        audience,
+        scope: root.bootstrap_scope("exact-host", &grants, None, &mut None)?,
+    };
+    let volumes = vec![WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        private,
+    )];
+    let retained = FileRef::new(
+        foreign.clone(),
+        "inputs/retained".into(),
+        "1".into(),
+        crate::conversation::FileDescriptor::new([2; 32], 1, "text/plain".into())?,
+        "retained".into(),
+        &mut None,
+    )?;
+    let issuer = RuntimeAuthority::from(root);
+    let before = host
+        .resolve(
+            &workspace_ref(provider.clone(), &foreign.storage_name(&mut None)?)?,
+            None,
+        )
+        .await?
+        .generation;
+    AdmittedAgent::verify(&issuer, &admission, &path, &volumes)?
+        .journal_authority(&host, std::slice::from_ref(&retained), &[])
+        .await?;
+    let repaired = host
+        .resolve(
+            &workspace_ref(provider, &foreign.storage_name(&mut None)?)?,
+            None,
+        )
+        .await?
+        .generation;
+    assert_ne!(
+        repaired, before,
+        "the retained journal policy was not repaired"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn announcement_publication_preserves_workload_and_delegated_authority() -> Result<()> {
     struct NoDispatch;
     impl TurnExecutors for NoDispatch {
