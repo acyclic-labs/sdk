@@ -71,7 +71,7 @@ impl Connections {
         })
     }
 
-    pub(super) fn reset(&self) -> std::io::Result<()> {
+    pub(crate) fn reset(&self) -> std::io::Result<()> {
         // Detach under the registry lock; shutdown never runs with it held.
         let sockets = std::mem::take(
             &mut *self
@@ -186,7 +186,7 @@ pub(super) struct Counts {
     pub(super) opening_interests: AtomicUsize,
     pub(super) node: Mutex<String>,
     pub(super) destinations: Mutex<Vec<String>>,
-    pub(super) connections: AtomicUsize,
+    pub(crate) connections: AtomicUsize,
     pub(super) sessions: AtomicUsize,
     pub(super) closed_sessions: AtomicUsize,
     pub(super) received_bytes: AtomicUsize,
@@ -412,14 +412,14 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
     }
 }
 pub(super) struct Fixture {
-    pub(super) controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
+    pub(crate) controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
     // Retains the raw transport for consumer-specific RPC fault probes.
-    pub(super) _channel: TransportChannel,
-    pub(super) tls_client: Option<grpc::Client>,
-    pub(super) counts: Arc<Counts>,
-    pub(super) server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-    pub(super) server_ended: tokio::sync::watch::Receiver<()>,
-    pub(super) connections: Arc<Connections>,
+    pub(crate) _channel: TransportChannel,
+    pub(crate) tls_client: Option<grpc::Client>,
+    pub(crate) counts: Arc<Counts>,
+    pub(crate) server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    pub(crate) server_ended: tokio::sync::watch::Receiver<()>,
+    pub(crate) connections: Arc<Connections>,
 }
 impl Fixture {
     pub(super) async fn with_options<P: StreamProvider>(
@@ -504,11 +504,11 @@ impl Fixture {
             connections,
         })
     }
-    pub(super) fn reset(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub(crate) fn reset(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.connections.reset()?;
         Ok(())
     }
-    pub(super) async fn until(&self, ready: impl Fn(&Counts) -> bool) -> Result<(), StreamError> {
+    pub(crate) async fn until(&self, ready: impl Fn(&Counts) -> bool) -> Result<(), StreamError> {
         let mut ended = self.server_ended.clone();
         loop {
             let changed = self.counts.changed.notified();
