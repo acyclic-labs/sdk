@@ -884,3 +884,178 @@ async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_r
     );
     Ok(())
 }
+
+/// A child asks a parent that can no longer run a turn. The parent's own
+/// review step refuses as that parent, with no model call and no volume read,
+/// and wakes the child: no ask is accepted and then dropped.
+async fn ended_parent_refuses(archived: bool) -> TestResult {
+    use crate::{
+        agent::{IntentId, Phase},
+        filesystem::Grants,
+        model::{ModelEvent, ToolCall},
+        test_support::ScriptedEvent,
+    };
+    struct ChildContext(Grants);
+    impl TurnContext for ChildContext {
+        fn prepare<'a>(
+            &'a self,
+            composed: (crate::executor::StockExecutor, Limits),
+            agent: &'a AgentState,
+            turn: OperationId,
+            input: &'a ModelContent,
+            authority: &'a TurnAuthority,
+        ) -> BoxFuture<'a, crate::Result<crate::executor::StockExecutor>> {
+            if agent.parent.is_none() {
+                // The parent's one turn fails for good, so the parent settles Done.
+                return Box::pin(async { Err(Error::Invalid("the parent completes".into())) });
+            }
+            self.0.prepare(composed, agent, turn, input, authority)
+        }
+    }
+    let model = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                    "write-result".into(),
+                    "write".into(),
+                    serde_json::json!({
+                        "path": "result.txt",
+                        "content": "refused source bytes",
+                        "ifVersion": "absent",
+                    }),
+                ))),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: serde_json::Value::Null,
+                }),
+            ]),
+            ScriptedTurn::Text("refused action settled".into()),
+            ScriptedTurn::Text("none".into()),
+        ])
+        .reading_content(),
+    );
+    let executors = StockExecutors::new(
+        (
+            Model::new("test".into(), "worker".into(), "1".into())?,
+            model.clone(),
+        ),
+        crate::tools::registry(&["write".into()], |_| true, Vec::new())?,
+        (
+            Limits::default(),
+            crate::context::CompactionPolicy::Disabled,
+        ),
+        Arc::new(ChildContext(Grants(vec![
+            crate::contract::capability::tool_call("write"),
+        ]))),
+    )
+    .with_models(original_models(model.clone()));
+    let (bound, parent, children) = family_with(Arc::new(executors)).await?;
+    let child = &children[0];
+    let turns = bound.turns();
+    let sender = Sender::User {
+        principal: "human".into(),
+    };
+    let message = |id: &'static str, text: &'static str, to: AgentPath| {
+        let bound = &bound;
+        let sender = sender.clone();
+        async move {
+            let id = IntentId::try_from(id)?;
+            let body = bound
+                .stage_text(&to, "message", &sender, &id, (id.as_str(), text))
+                .await?;
+            bound
+                .agents()
+                .send(
+                    &to,
+                    &sender,
+                    &InboxRecord::Message(crate::agent::Message {
+                        from: sender.clone(),
+                        id,
+                        body: Box::new(body),
+                        re: None,
+                        attachments: None,
+                    }),
+                )
+                .await?;
+            TestResult::Ok(())
+        }
+    };
+    if archived {
+        // Only the parent's inbox closes; its child stays open until the
+        // parent's own closing step archives it, so the child can still ask.
+        let id = IntentId::try_from("close")?;
+        let crate::agent::Submitted::Committed(_) = crate::agent::submit(
+            &*turns.stream,
+            crate::agent::archive(&parent, &sender, &id)?,
+        )
+        .await?
+        else {
+            return Err("the parent's archive did not commit".into());
+        };
+    } else {
+        message("finish", "finish", parent.clone()).await?;
+        bound.agents().drain(&parent).await?;
+        assert!(
+            matches!(
+                bound.agents().state(&parent).await?.phase,
+                Phase::Done { .. }
+            ),
+            "the parent did not complete"
+        );
+    }
+    message("work", "write the result file", child.path.clone()).await?;
+    bound.agents().drain(&child.path).await?;
+    let paused = bound.agents().state(&child.path).await?;
+    let Phase::WaitingApproval { id, .. } = &paused.phase else {
+        return Err("the child did not ask its parent".into());
+    };
+    let asked = model.request_count();
+    bound.agents().drain(&parent).await?;
+    assert_eq!(
+        model.request_count(),
+        asked,
+        "an ended parent dispatched a review"
+    );
+    assert!(
+        turns
+            .decided_approval(&paused, id, &format!("parent:{}", parent.id()))
+            .await?
+            .is_some(),
+        "the ended parent left its child's ask unanswered"
+    );
+    bound.agents().drain(&child.path).await?;
+    let settled = bound.agents().state(&child.path).await?;
+    assert!(
+        settled.turn.is_none(),
+        "the child still waits on its parent"
+    );
+    if archived {
+        // The parent's closing step archived the child before it admitted the
+        // ask, so the child's archive precedes the refusal in its inbox: its
+        // turn ends by that archive, never by an unanswered wait.
+        assert!(settled.closed);
+    } else {
+        // Refusal is a tool failure: the waiting call fails as denied and the
+        // model continues the same turn to its settled answer.
+        assert!(matches!(settled.phase, Phase::Idle));
+        let requests = model.requests();
+        let [first, resumed, ..] = requests.as_slice() else {
+            return Err("the refused turn did not continue".into());
+        };
+        assert!(!format!("{first:?}").contains("denied"));
+        assert!(
+            format!("{resumed:?}").contains("denied"),
+            "the refused call did not fail as denied"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_ask_to_a_completed_parent_is_refused_as_a_tool_failure() -> TestResult {
+    ended_parent_refuses(false).await
+}
+
+#[tokio::test]
+async fn an_ask_in_flight_to_an_archived_parent_is_refused() -> TestResult {
+    ended_parent_refuses(true).await
+}

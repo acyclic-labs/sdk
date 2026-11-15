@@ -1115,7 +1115,11 @@ async fn draft_step<T: TurnDriver + ?Sized>(
     if state.closed {
         state.child_settlements = None;
         cascade(&mut state, &mut outs).await?;
-    } else if !spawn_wake && !quiet_notice {
+    }
+    // An archived agent runs no turn; `run` only answers its children's asks.
+    if (state.closed && state.approval_control.is_some())
+        || (!state.closed && !spawn_wake && !quiet_notice)
+    {
         run(
             driver,
             &mut state,
@@ -1210,9 +1214,6 @@ fn finalize_step(
                 .queued
                 .retain(|input| input.inbox >= *through || !input.steering);
         }
-    }
-    if matches!(state.phase, Phase::Done { .. }) {
-        state.approval_control = None;
     }
     let queued =
         wake_input(&state).is_some() || (!control(&state).input && state.overflow.is_some());
@@ -1392,6 +1393,7 @@ async fn admit(
         InboxRecord::ForkAdopted(_) => return Err(Error::Record("agent adopted twice")),
         InboxRecord::Cancel(_) => Admit::Input,
         InboxRecord::Archive(_) => Admit::Archive,
+        InboxRecord::ApprovalRequested(_) => Admit::Ask,
         _ => Admit::Input,
     };
     let before = control(&state);
@@ -1443,9 +1445,6 @@ async fn admit(
                 })
             }
         }
-    }
-    if state.closed {
-        state.approval_control = None;
     }
     if let InboxRecord::ChildDone(done) = &record {
         if done.child.is_child_of(&state.path) {

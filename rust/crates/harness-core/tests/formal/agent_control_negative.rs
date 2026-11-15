@@ -164,6 +164,43 @@ fn an_unreachable_wait_parked_on_its_deadline_is_found() {
     });
 }
 
+/// The former admission: an ask to a completed or archived agent was
+/// accepted without queueing a review, leaving its child waiting forever.
+fn admit_drops_ended_ask(control: Control, kind: Admit) -> Admitted {
+    let mut admitted = production::admit(control, kind);
+    if kind == Admit::Ask && (control.closed || matches!(control.mode, Mode::Done)) {
+        admitted.enqueue = false;
+    }
+    admitted
+}
+
+/// The former pick: a completed or archived agent never reviewed its asks.
+fn pick_skips_ended_review(control: Control, alarm: bool, queued: bool, approval: bool) -> Pick {
+    if control.closed || matches!(control.mode, Mode::Done) {
+        Pick::Nothing
+    } else {
+        production::pick(control, alarm, queued, approval)
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(8)]
+fn dropped_ended_ask_is_caught() {
+    exactly_once_and_never_loses_a_wake(Kernel {
+        admit: admit_drops_ended_ask,
+        ..PRODUCTION
+    });
+}
+
+#[kani::proof]
+#[kani::unwind(8)]
+fn unreviewed_ended_ask_is_caught() {
+    exactly_once_and_never_loses_a_wake(Kernel {
+        pick: pick_skips_ended_review,
+        ..PRODUCTION
+    });
+}
+
 fn main() {}
 
 /// Losing the input arm would leave a no-deadline UI ask asleep forever.

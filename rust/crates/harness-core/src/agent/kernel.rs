@@ -5,7 +5,9 @@
 //! the production code exhaustively: exactly one `ChildDone`, no turn after
 //! completion or archive, no lost wake-up (including a condition wait whose
 //! arrivals queue without a turn step, released by its condition or its
-//! deadline), and a cascade that terminates.
+//! deadline), a cascade that terminates, and no lost ask: every child's
+//! approval request is queued for a review step that answers it, including
+//! one that reaches an agent which has completed or been archived.
 
 /// Alarm deadline that is due immediately: continue in a fresh step.
 pub const CONTINUE_NOW: u64 = 1;
@@ -70,6 +72,8 @@ pub enum Admit {
     Cancel,
     /// Close the agent.
     Archive,
+    /// A child delegates an approval to this agent.
+    Ask,
 }
 
 /// The effect of admitting a record.
@@ -114,6 +118,14 @@ pub const fn admit(control: Control, kind: Admit) -> Admitted {
             clear_queue: true,
             enqueue: false,
         },
+        // A child waits on this answer and nothing else. Every ask is queued
+        // for review, so none is accepted and then dropped; an agent that can
+        // no longer run a turn still reviews it (see [`pick`]) and refuses.
+        Admit::Ask => Admitted {
+            control,
+            clear_queue: false,
+            enqueue: true,
+        },
     }
 }
 
@@ -135,11 +147,14 @@ pub enum Pick {
 /// Chooses the turn step. `alarm_wake` is true when the actor alarm fired.
 #[must_use]
 pub const fn pick(control: Control, alarm_wake: bool, queued: bool, approval_ready: bool) -> Pick {
-    if control.closed || matches!(control.mode, Mode::Done) {
-        return Pick::Nothing;
-    }
-    if control.review && !(alarm_wake && matches!(control.mode, Mode::Await(Some(_)))) {
+    let ended = control.closed || matches!(control.mode, Mode::Done);
+    // A completed or archived agent runs no turn, but still answers its
+    // children's queued asks: their turns wait on nothing else.
+    if control.review && (ended || !(alarm_wake && matches!(control.mode, Mode::Await(Some(_))))) {
         return Pick::Review;
+    }
+    if ended {
+        return Pick::Nothing;
     }
     match control.mode {
         Mode::Approval if control.turn => {
@@ -328,15 +343,15 @@ pub const fn alarm(
     approval_ready: bool,
     pending: usize,
 ) -> Option<u64> {
+    if control.review {
+        return Some(CONTINUE_NOW);
+    }
     if control.closed {
         return if pending > 0 && !control.archive_refused {
             Some(CONTINUE_NOW)
         } else {
             None
         };
-    }
-    if control.review && !matches!(control.mode, Mode::Done) {
-        return Some(CONTINUE_NOW);
     }
     match control.mode {
         Mode::Done => None,
