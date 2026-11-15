@@ -201,7 +201,7 @@ pub(crate) fn is_overlapped(file: &File) -> io::Result<bool> {
     if result < 0 {
         // SAFETY: converts the native query's actual returned status only.
         return Err(io::Error::from_raw_os_error(
-            unsafe { RtlNtStatusToDosError(result) } as i32,
+            unsafe { RtlNtStatusToDosError(result) }.cast_signed(),
         ));
     }
     Ok(mode.Mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) == 0)

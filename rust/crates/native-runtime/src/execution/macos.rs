@@ -49,6 +49,8 @@ struct CompiledProfile {
 // SAFETY: the compiled native buffer is immutable and exclusively owned. Only
 // the fork child's MAC syscall borrows it; destruction belongs to the parent.
 unsafe impl Send for CompiledProfile {}
+// SAFETY: shared access only reads the immutable compiler allocation; freeing
+// it requires the exclusive owner after all shared borrows have ended.
 unsafe impl Sync for CompiledProfile {}
 
 impl CompiledProfile {
@@ -191,7 +193,7 @@ impl Prepared {
                         profile,
                         "(allow network-outbound (remote tcp \"*:{port}\"))"
                     )
-                    .expect("writing to String");
+                    .map_err(io::Error::other)?;
                 }
             }
         }
@@ -258,6 +260,8 @@ struct SealedExec {
 // SAFETY: owned buffers and native objects stay immutable in the parent. Only
 // the fork child's exec borrows them and changes its private environ pointer.
 unsafe impl Send for SealedExec {}
+// SAFETY: shared parent access only reads stable owned buffers and initialized
+// spawn objects; mutation of the inherited environment occurs only after fork.
 unsafe impl Sync for SealedExec {}
 
 impl SealedExec {
@@ -375,7 +379,7 @@ fn rule(profile: &mut String, operations: &str, root: &super::BoundPath) -> io::
 fn path_rule(profile: &mut String, operations: &str, filter: &str, path: &Path) -> io::Result<()> {
     let path = profile_path(path)?;
     use std::fmt::Write;
-    write!(profile, "(allow {operations} ({filter} \"{path}\"))").expect("writing to String");
+    write!(profile, "(allow {operations} ({filter} \"{path}\"))").map_err(io::Error::other)?;
     Ok(())
 }
 

@@ -31,7 +31,7 @@ impl Deadlines {
         self.counts.examined()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn allocations(&self) -> u64 {
         self.counts.allocations()
     }

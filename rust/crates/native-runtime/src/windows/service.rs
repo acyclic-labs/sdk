@@ -39,7 +39,7 @@ pub(crate) fn spawn_service_process(
             "service executable path contains a quote",
         ));
     }
-    let mut executable_wide = executable_argument.clone();
+    let mut executable_wide = executable_argument;
     executable_wide.push(0);
     let mut command = crate::ProcessCommand::new(executable);
     command.args(arguments).arg(crate::SERVICE_READY_ARGUMENT);

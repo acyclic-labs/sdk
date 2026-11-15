@@ -25,7 +25,11 @@ pub(crate) fn user_data_directory() -> io::Result<std::path::PathBuf> {
     // copy its exact UTF-16 units, then release it with the required allocator.
     let path = unsafe { SHGetKnownFolderPath(&FOLDERID_LocalAppData, KF_FLAG_DEFAULT, None) }
         .map_err(io::Error::other)?;
+    // SAFETY: SHGetKnownFolderPath succeeded, so path points to a terminated
+    // UTF-16 allocation that remains live while from_wide copies its units.
     let owned = unsafe { std::ffi::OsString::from_wide(path.as_wide()) };
+    // SAFETY: this is the original shell-allocated pointer, released exactly
+    // once with its required allocator after all borrowed path units were copied.
     unsafe { CoTaskMemFree(Some(path.0.cast())) };
     Ok(owned.into())
 }

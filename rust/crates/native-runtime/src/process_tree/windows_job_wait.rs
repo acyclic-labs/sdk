@@ -263,7 +263,7 @@ mod tests {
             None
         };
         // Each real process remains alive on its original input producer.
-        std::io::stdin().read(&mut [0])?;
+        assert_eq!(std::io::stdin().read(&mut [0])?, 0);
         if let Some(child) = descendant.as_mut() {
             drop(child.stdin.take());
             child.wait()?;

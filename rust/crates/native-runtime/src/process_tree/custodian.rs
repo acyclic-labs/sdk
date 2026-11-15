@@ -406,17 +406,18 @@ impl Handoff {
         if self.count != self.handles.len() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        let [job, process, ready, done] = self.handles;
         let frame = Opened {
             tree,
-            job: self.handles[0],
-            process: self.handles[1],
-            ready: self.handles[2],
-            done: self.handles[3],
+            job,
+            process,
+            ready,
+            done,
             secret: *secret,
         }
         .encode();
         crate::io_progress::write_all(&mut [io::IoSlice::new(&frame)], |buffers| {
-            output.write(&buffers[0])
+            output.write(buffers.first().ok_or(io::ErrorKind::InvalidInput)?)
         })?;
         self.count = 0;
         Ok(())
@@ -425,7 +426,7 @@ impl Handoff {
 
 impl Drop for Handoff {
     fn drop(&mut self) {
-        for handle in &self.handles[..self.count] {
+        for handle in self.handles.iter().take(self.count) {
             let mut local = std::ptr::null_mut();
             // SAFETY: these are our unpublished duplicates in the retained
             // target. CLOSE_SOURCE closes each there, including on failure.
@@ -640,13 +641,18 @@ impl Opened {
     fn encode(self) -> [u8; Self::FRAME_BYTES] {
         let mut frame = [0; Self::FRAME_BYTES];
         frame[0] = 1;
-        for (slot, value) in frame[1..Self::SECRET_OFFSET].chunks_exact_mut(8).zip([
-            self.tree,
-            self.job.expose_provenance(),
-            self.process.expose_provenance(),
-            self.ready.expose_provenance(),
-            self.done.expose_provenance(),
-        ]) {
+        for (slot, value) in frame[1..Self::SECRET_OFFSET]
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip([
+                self.tree,
+                self.job.expose_provenance(),
+                self.process.expose_provenance(),
+                self.ready.expose_provenance(),
+                self.done.expose_provenance(),
+            ])
+        {
             slot.copy_from_slice(&(value as u64).to_le_bytes());
         }
         frame[Self::SECRET_OFFSET..].copy_from_slice(&self.secret);
@@ -658,8 +664,10 @@ impl Opened {
             return None;
         }
         let mut fields = frame[1..Self::SECRET_OFFSET]
-            .chunks_exact(8)
-            .map(|slot| usize::try_from(u64::from_le_bytes(slot.try_into().ok()?)).ok());
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|slot| usize::try_from(u64::from_le_bytes(*slot)).ok());
         let tree = fields.next()??;
         let mut handle = || {
             let value = fields.next()??;
@@ -1576,6 +1584,7 @@ mod handoff_tests {
             assert_eq!(retained.to_string(), error.to_string());
             // SAFETY: this exact retained event never received retirement.
             assert_eq!(
+                // SAFETY: the original owned event remains live during this observation.
                 unsafe { WaitForSingleObject(done.as_raw_handle(), 0) },
                 WAIT_TIMEOUT
             );
@@ -1597,9 +1606,10 @@ mod handoff_tests {
         // SAFETY: the current-process pseudo-handle is borrowed for identity.
         let producer = identity(unsafe { GetCurrentProcess() })?;
         // SAFETY: the running current process retains its pseudo-handle.
-        assert!(process_running(unsafe {
-            BorrowedHandle::borrow_raw(GetCurrentProcess())
-        })?);
+        assert!(process_running(
+            // SAFETY: this process retains its current-process pseudo-handle.
+            unsafe { BorrowedHandle::borrow_raw(GetCurrentProcess()) }
+        )?);
         // Retain a real process handle without SYNCHRONIZE. Its refused wait
         // must remain the native error, not a false producer-exit observation.
         // SAFETY: both pseudo-handles are live and duplication transfers the
@@ -1678,6 +1688,7 @@ mod handoff_tests {
         assert!(state.trees.contains_key(&1));
         // SAFETY: one observation of the retained original unrelated event.
         assert_eq!(
+            // SAFETY: the original unrelated event is retained by this proof.
             unsafe { WaitForSingleObject(unrelated_done.as_raw_handle().cast(), 0) },
             WAIT_TIMEOUT
         );
@@ -1733,6 +1744,7 @@ mod handoff_tests {
         for completed in completion {
             // SAFETY: this retained event belongs to the exact original Job.
             assert_eq!(
+                // SAFETY: this original completion event remains owned through the call.
                 unsafe { WaitForSingleObject(completed.as_raw_handle().cast(), 0) },
                 WAIT_OBJECT_0
             );
