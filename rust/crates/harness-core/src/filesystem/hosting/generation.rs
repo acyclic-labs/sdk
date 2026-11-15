@@ -1,4 +1,5 @@
-//! One original volume publication wait shared by directory and file queries.
+//! One original volume publication wait shared by directory and file queries,
+//! following the project selection and its selected producer.
 use super::*;
 use crate::{conversation::VolumeRef, resources::GenerationRef};
 
@@ -33,27 +34,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = crate::filesystem::PreparationIo::for_unmeasured(&cancellation).map_err(turn)?;
         loop {
-            let mut cursors = Vec::new();
-            // Checkout can change the producer. Capture its cursor before
-            // selecting that producer, then capture the producer before head.
-            if let Some(path) = self
-                .volumes
-                .selection_changes_path(root.id())
-                .map_err(turn)?
-            {
-                cursors.push(self.publication_cursor(path).await?);
-            }
-            let workspace = self
-                .volumes
-                .select_current_workspace(&root, &io)
-                .await
-                .map_err(turn)?;
-            let path = acyclic_fs::session::changes_path(
-                &self.volumes.filesystem,
-                workspace.id().volume_id(),
-            )
-            .map_err(Error::Stream)?;
-            cursors.push(self.publication_cursor(path).await?);
+            let (workspace, cursors) = self.selected_publication(&root, &io).await?;
             let head = io
                 .sdk(workspace.head(&io, io.cancellation()).await)
                 .map_err(turn)?;
@@ -64,26 +45,70 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             if after != &selected {
                 return Ok(selected);
             }
-            let mut updates = Vec::new();
-            for cursor in cursors {
-                updates.push(acyclic_stream::records_only(
-                    self.agents
-                        .provider()
-                        .follow(cursor)
-                        .await
-                        .map_err(Error::Stream)?,
-                ));
-            }
-            use futures::TryStreamExt as _;
-            futures::stream::select_all(updates)
-                .try_next()
-                .await
-                .map_err(Error::Stream)?
-                .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))?;
+            self.next_publication(cursors).await?;
         }
     }
 
-    pub(super) async fn publication_cursor(
+    /// Selects the project's current producer with the cursors that observe
+    /// any later change to it. Checkout can change the producer, so the
+    /// selection cursor is captured before selecting it, and the producer's
+    /// cursor before the caller samples its head.
+    pub(super) async fn selected_publication(
+        &self,
+        root: &acyclic_fs::Workspace<StreamAuthorityStore<P>, O>,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<
+        (
+            acyclic_fs::Workspace<StreamAuthorityStore<P>, O>,
+            Vec<acyclic_stream::FollowRequest>,
+        ),
+        Error,
+    > {
+        let mut cursors = Vec::new();
+        if let Some(path) = self
+            .volumes
+            .selection_changes_path(root.id())
+            .map_err(turn)?
+        {
+            cursors.push(self.publication_cursor(path).await?);
+        }
+        let workspace = self
+            .volumes
+            .select_current_workspace(root, io)
+            .await
+            .map_err(turn)?;
+        let path =
+            acyclic_fs::session::changes_path(&self.volumes.filesystem, workspace.id().volume_id())
+                .map_err(Error::Stream)?;
+        cursors.push(self.publication_cursor(path).await?);
+        Ok((workspace, cursors))
+    }
+
+    /// Waits for the first record after any of these cursors.
+    pub(super) async fn next_publication(
+        &self,
+        cursors: Vec<acyclic_stream::FollowRequest>,
+    ) -> Result<(), Error> {
+        use futures::TryStreamExt as _;
+        let mut updates = Vec::new();
+        for cursor in cursors {
+            updates.push(acyclic_stream::records_only(
+                self.agents
+                    .provider()
+                    .follow(cursor)
+                    .await
+                    .map_err(Error::Stream)?,
+            ));
+        }
+        futures::stream::select_all(updates)
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))?;
+        Ok(())
+    }
+
+    async fn publication_cursor(
         &self,
         path: acyclic_stream::StreamPath,
     ) -> Result<acyclic_stream::FollowRequest, Error> {

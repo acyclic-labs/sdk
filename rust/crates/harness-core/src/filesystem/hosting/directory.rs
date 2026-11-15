@@ -209,17 +209,11 @@ where
                 None,
             )
             .map_err(turn)?;
-            let workspace = self.volumes.open(&reference, None).await.map_err(turn)?;
-            let changes = acyclic_fs::session::changes_path(
-                &self.volumes.filesystem,
-                workspace.id().volume_id(),
-            )
-            .map_err(Error::Stream)?;
+            let root = self.volumes.open(&reference, None).await.map_err(turn)?;
             loop {
-                // Capture the authored cursor before sampling the complete cut.
                 // The source watch emits its opening invalidation after its
                 // own follows are registered, covering that opening race too.
-                let cursor = self.publication_cursor(changes.clone()).await?;
+                let (_, cursors) = self.selected_publication(&root, &io).await?;
                 current = binding
                     .host
                     .private_current_generation(&binding.volume, None, &io)
@@ -229,21 +223,7 @@ where
                 if &current != after {
                     return Ok(current);
                 }
-                let authored = async {
-                    use futures::TryStreamExt as _;
-                    let updates = self
-                        .agents
-                        .provider()
-                        .follow(cursor)
-                        .await
-                        .map_err(Error::Stream)?;
-                    acyclic_stream::records_only(updates)
-                        .try_next()
-                        .await
-                        .map_err(Error::Stream)?
-                        .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))?;
-                    Ok::<_, Error>(())
-                };
+                let authored = self.next_publication(cursors);
                 if let Some(source) = &mut source {
                     tokio::select! {
                         changed = authored => changed?,
