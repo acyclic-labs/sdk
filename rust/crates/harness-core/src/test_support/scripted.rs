@@ -72,6 +72,14 @@ pub enum ScriptedEvent {
         /// Diagnostic retained with the terminal model failure.
         error: String,
     },
+    /// The provider refused the exchange with this HTTP status (408, 429 or
+    /// 5xx), as a rate limit or overload does.
+    Refused {
+        /// Refusal status.
+        status: u16,
+        /// Diagnostic retained with the model failure.
+        error: String,
+    },
     /// Remains pending until the consumer drops the stream.
     Pending {},
 }
@@ -113,6 +121,7 @@ struct State {
 type ReconciliationObserver = dyn Fn(ModelDispatch) -> Result<()> + Send + Sync;
 type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync;
 type Responder = dyn Fn(&ModelRequest) -> Result<ScriptedTurn> + Send + Sync;
+type Answered = Mutex<Vec<(ModelDispatch, ScriptedTurn)>>;
 type ContentReader = (
     Arc<dyn crate::conversation::ContentResidencyVerifier>,
     Option<u64>,
@@ -125,6 +134,9 @@ type ContentReader = (
 pub struct ScriptedModelProvider {
     state: Arc<Mutex<State>>,
     responder: Option<Arc<Responder>>,
+    /// Every responder answer by dispatch: the remote side, which outlives
+    /// the host that sent it (see [`Self::reopened`]).
+    answered: Arc<Answered>,
     capacity: Option<ModelContextCapacity>,
     token_counter: Option<Arc<TokenCounter>>,
     dispatch_observer: Option<Arc<dyn DispatchObserver>>,
@@ -143,6 +155,7 @@ impl ScriptedModelProvider {
                 ..State::default()
             })),
             responder: None,
+            answered: Arc::default(),
             capacity: Some(ModelContextCapacity {
                 context_tokens: 131_072,
                 output_tokens: Some(4_096),
@@ -167,6 +180,47 @@ impl ScriptedModelProvider {
         let mut provider = Self::new([]);
         provider.responder = Some(Arc::new(respond));
         provider
+    }
+
+    /// The same responding model seen by a host reopened after a crash: no
+    /// requests, dispatches or observers cross, but the remote side keeps its
+    /// answers, so the new host reconciles an interrupted dispatch from them,
+    /// as a provider with durable responses does. A dispatch it never answered
+    /// stays unreconciled.
+    #[must_use]
+    pub fn reopened(&self) -> Self {
+        let mut provider = Self::new([]);
+        provider.responder.clone_from(&self.responder);
+        provider.answered = Arc::clone(&self.answered);
+        provider
+    }
+
+    /// The remaining events of an answered dispatch that extend `observed`;
+    /// `None` when it was never answered or ended in a failure.
+    fn replay(&self, dispatch: ModelDispatch, observed: &[ModelEvent]) -> Option<Vec<ModelEvent>> {
+        let answered = self
+            .answered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_, turn) = answered.iter().find(|(sent, _)| *sent == dispatch)?;
+        let events = match turn {
+            ScriptedTurn::Text(delta) => vec![
+                ModelEvent::Content {
+                    delta: delta.clone(),
+                },
+                ModelEvent::Completed {
+                    metadata: serde_json::Value::Null,
+                },
+            ],
+            ScriptedTurn::Events(events) => events
+                .iter()
+                .map(|event| match event {
+                    ScriptedEvent::Event(event) => Some(event.clone()),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?,
+        };
+        events.strip_prefix(observed).map(<[ModelEvent]>::to_vec)
     }
 
     /// Reads every file part's bytes through the reader the harness binds for
@@ -308,6 +362,12 @@ impl ScriptedModelProvider {
             .responder
             .as_ref()
             .map(|respond| respond(request.request()));
+        if let Some(Ok(turn)) = &answer {
+            self.answered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((dispatch, turn.clone()));
+        }
         let mut state = self.lock();
         state.requests.push(request);
         state.dispatches.push(dispatch);
@@ -402,6 +462,7 @@ impl ModelProvider for ScriptedModelProvider {
             Arc::new(Self {
                 state: Arc::clone(&self.state),
                 responder: self.responder.clone(),
+                answered: Arc::clone(&self.answered),
                 capacity: self.capacity,
                 token_counter: self.token_counter.clone(),
                 dispatch_observer: self.dispatch_observer.clone(),
@@ -469,6 +530,10 @@ impl ModelProvider for ScriptedModelProvider {
         Box::pin(async move {
             let mut state = self.lock();
             state.reconciliations.push(dispatch);
+            if self.responder.is_some() && state.recoveries.is_empty() {
+                // A responding model reconciles from its own answers.
+                return Ok(self.replay(dispatch, observed));
+            }
             if state.dispatches.iter().any(|original| {
                 original.operation_id == dispatch.operation_id
                     && original.step == dispatch.step
@@ -528,6 +593,10 @@ impl ScriptedTurn {
                         ScriptedEvent::Error { error } => Err(Error::Storage(error)),
                         ScriptedEvent::Interrupted { error } => Err(Error::ModelUnavailable {
                             failure: crate::ModelTransportFailure::Interrupted,
+                            excerpt: error,
+                        }),
+                        ScriptedEvent::Refused { status, error } => Err(Error::ModelUnavailable {
+                            failure: crate::ModelTransportFailure::Status(status),
                             excerpt: error,
                         }),
                         ScriptedEvent::Pending {} => std::future::pending().await,

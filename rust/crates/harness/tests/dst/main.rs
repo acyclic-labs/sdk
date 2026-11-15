@@ -15,10 +15,15 @@ use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
 mod clocks;
+mod containment;
+mod coverage;
 mod digest;
 mod driver;
 mod flushes;
+mod oracle;
 mod recovery;
+mod redelivery;
+mod settlement;
 mod swarm;
 
 // Keep each simulator layer independent of the production future's layout.
