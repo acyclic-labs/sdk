@@ -113,8 +113,9 @@ impl crate::hosting::Platform for LocalUser {
         &'a self,
         agent: &'a AgentPath,
         operation: OperationId,
+        merge: BoxProviderFuture<'a, Result<Option<String>>>,
     ) -> BoxProviderFuture<'a, Result<Option<String>>> {
-        Box::pin(async move { self.harness()?.merge_session(agent, operation).await })
+        Box::pin(async move { self.harness()?.merge_session(agent, operation, merge).await })
     }
 
     fn policy<'a>(

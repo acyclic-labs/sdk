@@ -123,7 +123,7 @@ where
     finish(executor, command)
 }
 
-/// Runs the shared command engine directly against a provider-backed volume.
+/// Runs the shared command engine against an unprojected provider-backed view.
 /// No physical checkout, process or machine is involved.
 /// Descendant publications retain the repository's authenticated policy cut.
 /// The command engine is erased here, as for [`run_with_guard`].
@@ -147,9 +147,9 @@ where
             ));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if workspace.checkout.is_some() || !matches!(workspace.view, View::Volume(_)) {
+        if workspace.checkout.is_some() {
             return Err(Error::Invalid(
-                "volume commands require a volume view".into(),
+                "unprojected commands cannot publish a native checkout".into(),
             ));
         }
         let guard: &EffectGuard<'_> = &|| Box::pin(before_effect());

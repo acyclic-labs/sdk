@@ -1171,6 +1171,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unprojected_parent_merges_disjoint_inherited_edits() -> Result<()> {
+        use crate::local::{WorkspaceMounting, sessions};
+        use acyclic_fs::facade::FsWork as _;
+        let checkout = tempfile::tempdir().map_err(storage)?;
+        let state_dir = tempfile::tempdir().map_err(storage)?;
+        std::fs::write(checkout.path().join("inherited.txt"), b"one\ntwo\nthree\n")
+            .map_err(storage)?;
+        let provider = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Text("ready".into())]).with_context_capacity(
+                crate::context::ModelContextCapacity {
+                    context_tokens: 32_768,
+                    output_tokens: Some(4096),
+                    output_shares_context: false,
+                },
+            ),
+        );
+        let local = Arc::new(
+            super::super::LocalHarness::open(
+                local_harness_config(
+                    checkout.path(),
+                    (
+                        Model::new("scripted".into(), "test".into(), "1".into())?,
+                        provider,
+                    ),
+                )?
+                .state_directory(state_dir.path())
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .workspace_mounting(WorkspaceMounting::Native),
+            )
+            .await?,
+        );
+        let directory = local.connect_sessions().await?;
+        let parent = sessions::create(&directory, "parent", None).await?;
+        let crate::client::AgentReply::Spawned { agent, .. } = parent
+            .execute(&crate::client::AgentCommand::Spawn {
+                parent: parent.root().clone(),
+                id: crate::agent::IntentId::try_from("child").map_err(storage)?,
+                brief: crate::model::ModelContent::Text("wait for integration".into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("missing child".into()));
+        };
+        let child = parent.select(agent).await?;
+        assert!(matches!(
+            Conversation::open(child.clone())
+                .wait_current_input()
+                .await?
+                .phase,
+            crate::agent::Phase::Idle
+        ));
+        let workspace = local.workspace.as_ref().unwrap();
+        let mut parent_view = None;
+        for (connection, bytes) in [
+            (&parent, b"ONE\ntwo\nthree\n".as_slice()),
+            (&child, b"one\ntwo\nTHREE\n".as_slice()),
+        ] {
+            let state = local
+                .agents()
+                .await?
+                .0
+                .state(connection.root())
+                .await
+                .map_err(storage)?;
+            let binding = crate::agent::WorkspaceTable::primary_in(&state.volumes)
+                .ok_or_else(|| Error::Invalid("missing project".into()))?;
+            let view = workspace.spawned_project_view(binding.volume()?).await?;
+            assert!(!workspace.has_physical_task_source(&view)?);
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+            view.write(
+                "/inherited.txt",
+                acyclic_stream::OwnedBytes::copy_from_slice(bytes),
+                acyclic_fs::IdempotencyKey::from_bytes(crate::OperationId::new().into_bytes()),
+                acyclic_fs::PublicationPermit::Unrestricted,
+                &mut budget.accounting(&cancellation),
+            )
+            .await
+            .map_err(storage)?;
+            if connection.root() == parent.root() {
+                parent_view = Some(view);
+            }
+        }
+        assert!(sessions::merge(&child, "merge-child").await?.is_some());
+        let bytes = parent_view
+            .unwrap()
+            .read(
+                "/inherited.txt",
+                1024,
+                &mut acyclic_fs::WorkBudget::UNBOUNDED
+                    .accounting(&acyclic_fs::CancellationToken::new()),
+            )
+            .await
+            .map_err(storage)?
+            .bytes;
+        assert_eq!(bytes.as_ref(), b"ONE\ntwo\nTHREE\n");
+        assert_eq!(
+            std::fs::read(checkout.path().join("inherited.txt")).map_err(storage)?,
+            b"one\ntwo\nthree\n"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn session_merges_publish_checkout_files_and_preserve_conflicts() -> Result<()> {
         use crate::local::{WorkspaceMounting, sessions};
         use acyclic_fs::facade::FsWork as _;
@@ -1183,6 +1288,13 @@ mod tests {
             b"native untouched\n",
         )
         .map_err(storage)?;
+        let (child_settled, child_settlement) = tokio::sync::oneshot::channel();
+        let (grandchild_settled, grandchild_settlement) = tokio::sync::oneshot::channel();
+        let dispatches = Arc::new(Mutex::new((
+            0,
+            Some(child_settled),
+            Some(grandchild_settled),
+        )));
         let provider = Arc::new(
             ScriptedModelProvider::new([
                 super::super::tests::checked_commands::call(
@@ -1191,7 +1303,10 @@ mod tests {
                     "echo parent > parent.txt",
                 ),
                 ScriptedTurn::Text("child ready".into()),
+                ScriptedTurn::Text("child settlement received".into()),
                 ScriptedTurn::Text("grandchild ready".into()),
+                ScriptedTurn::Text("grandchild settlement received".into()),
+                ScriptedTurn::Text("descendant settlement received".into()),
                 super::super::tests::checked_commands::call(
                     1,
                     crate::tools::shell::PLATFORM.name,
@@ -1199,6 +1314,18 @@ mod tests {
                 ),
                 ScriptedTurn::Text("parent read merged checkout".into()),
             ])
+            .with_dispatch_observer(move |_| {
+                let mut dispatches = dispatches.lock().unwrap();
+                dispatches.0 += 1;
+                // Each completed child turn wakes its parent. Drain the root
+                // response before admitting the next scripted conversation.
+                if dispatches.0 == 3 {
+                    let _ = dispatches.1.take().unwrap().send(());
+                } else if dispatches.0 == 6 {
+                    let _ = dispatches.2.take().unwrap().send(());
+                }
+                Box::pin(async { Ok(()) })
+            })
             .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 32_768,
                 output_tokens: Some(4096),
@@ -1216,6 +1343,7 @@ mod tests {
                 )?
                 .state_directory(storage_dir.path())
                 .compaction(crate::context::CompactionPolicy::Disabled)
+                .feedback_plugin(false)
                 .workspace_mounting(WorkspaceMounting::Physical),
             )
             .await?,
@@ -1338,7 +1466,10 @@ mod tests {
         let tree = local.connect().await?;
         let mut selected = tree.clone();
         let mut descendants = Vec::new();
-        for name in ["child", "grandchild"] {
+        for (name, settlement) in [
+            ("child", child_settlement),
+            ("grandchild", grandchild_settlement),
+        ] {
             let crate::client::AgentReply::Spawned { agent, .. } = selected
                 .execute(&crate::client::AgentCommand::Spawn {
                     parent: selected.root().clone(),
@@ -1373,8 +1504,22 @@ mod tests {
                 matches!(entries.as_slice(), [entry] if entry.outcome.is_completed()),
                 "{name} brief did not complete: {entries:?}"
             );
+            settlement.await.map_err(storage)?;
+            Conversation::open(tree.clone())
+                .wait_current_input()
+                .await?;
             descendants.push(selected.clone());
         }
+        Conversation::open(descendants[0].clone())
+            .wait_current_input()
+            .await?;
+        // All descendants are admitted. Keep later shell settlement notices
+        // queued on the unused root without consuming another scripted turn.
+        tree.execute(&crate::client::AgentCommand::Pause {
+            agent: tree.root().clone(),
+            paused: true,
+        })
+        .await?;
         let parent_state = local
             .agents()
             .await?
@@ -1548,7 +1693,7 @@ mod tests {
         ));
         assert_eq!(
             provider.request_count(),
-            5,
+            8,
             "human filesystem actions must not dispatch a model"
         );
         Ok(())
