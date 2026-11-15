@@ -125,11 +125,13 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             within(),
             acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock,
-            Arc::new(acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(filesystem)),
+            Arc::new(
+                acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(filesystem.clone()),
+            ),
         )?;
         let mut adoption = adopted(path.id());
         adoption.volumes = vec![binding];
-        host.create(&intent("input-waits"), adoption).await?;
+        create_filesystem_root(&host, &filesystem, &intent("input-waits"), adoption).await?;
         let initial = deliver(&host, &path, requested("make-body", &path)).await?;
         assert_eq!(
             initial.phase,

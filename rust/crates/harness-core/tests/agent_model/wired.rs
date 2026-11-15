@@ -131,9 +131,27 @@ async fn deliver(
     Ok(host.state(path).await?)
 }
 
-/// Commits root `adoption` the way production creates it, so a turn host
-/// stepped directly reads the agent's real inbox. Returns its adopted state.
-async fn created_root(stream: &MemoryStream, adoption: ForkAdopted) -> Result<AgentState> {
+/// Commits root `adoption` through the agent primitive alone, so a turn host
+/// stepped directly reads the agent's real inbox. Its journal is created here,
+/// as production root creation creates it. Returns its adopted state.
+async fn created_root(
+    stream: &MemoryStream,
+    files: &Host,
+    adoption: ForkAdopted,
+) -> Result<AgentState> {
+    let provider = adoption
+        .volumes
+        .iter()
+        .find_map(WorkspaceEntry::as_volume)
+        .ok_or("a root binds its private volume")?
+        .provider()
+        .clone();
+    files
+        .create_volume(&acyclic_harness_core::conversation::journal_volume(
+            provider,
+            &adoption.agent,
+        )?)
+        .await?;
     let created = create_root(&intent("create"), adoption.clone())?;
     assert!(matches!(
         submit(stream, created.request).await?,
@@ -159,11 +177,6 @@ async fn private_on(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    host.create_volume(&acyclic_harness_core::conversation::journal_volume(
-        volume.provider().clone(),
-        &path.id(),
-    )?)
-    .await?;
     Ok((
         host,
         WorkspaceEntry::initial_volume(
@@ -335,7 +348,7 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
         let mut adoption = adopted(id(219));
         adoption.volumes = vec![binding];
         adoption.policy = Some(file);
-        let state = created_root(&stream, adoption).await?;
+        let state = created_root(&stream, &filesystem, adoption).await?;
         let host = FilesystemTurnHost::new(
             stream,
             within(),
@@ -1299,7 +1312,10 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let host = reopen()?;
     let mut adoption = adopted(path.id());
     adoption.volumes = vec![binding];
-    assert_eq!(host.create(&intent("notice-root"), adoption).await?, path);
+    assert_eq!(
+        create_filesystem_root(&host, &filesystem, &intent("notice-root"), adoption).await?,
+        path
+    );
     host.drain(&path).await.expect("adoption drains");
     let event = |name: &str, wake| Notice {
         source: "filesystem".into(),

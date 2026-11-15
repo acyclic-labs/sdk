@@ -356,12 +356,6 @@ async fn create_peer(
         &mut None,
     )?;
     files.create_volume(&volume).await?;
-    files
-        .create_volume(&acyclic_harness_core::conversation::journal_volume(
-            volume.provider().clone(),
-            &peer.id(),
-        )?)
-        .await?;
     let mut adoption = adopted(peer.id());
     adoption.volumes = vec![WorkspaceEntry::initial_volume(
         WorkspaceRole::Private,

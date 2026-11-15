@@ -128,7 +128,7 @@ async fn a_foreign_control_event_recomputes_settlement_without_redispatch_or_ano
     let host = committing(&stream, &filesystem, driver)?;
     let mut adoption = adopted(path.id());
     adoption.volumes = volumes;
-    host.create(&intent("settlement-race"), adoption).await?;
+    create_filesystem_root(&host, &filesystem, &intent("settlement-race"), adoption).await?;
     let sender = super::super::user();
     host.send(
         &path,
