@@ -128,7 +128,7 @@ async fn a_foreign_control_event_recomputes_settlement_without_redispatch_or_ano
     let host = committing(&stream, &filesystem, driver)?;
     let mut adoption = adopted(path.id());
     adoption.volumes = volumes;
-    host.create(&intent("settlement-race"), adoption).await?;
+    create_filesystem_root(&host, &filesystem, &intent("settlement-race"), adoption).await?;
     let sender = super::super::user();
     host.send(
         &path,
@@ -283,6 +283,9 @@ async fn spending_turn_settlement_commits_signal_and_terminal_action_once() -> R
             policy.actions.insert(Kind::NoProgress, action);
             let (filesystem, volumes, issuer, publisher) =
                 admitted_files(&stream, &path, operation, &policy).await?;
+            filesystem
+                .create_volume(&journal_of(volumes[0].volume()?)?)
+                .await?;
             let (body, _) = publisher
                 .stage_once(
                     OperationId::new(),

@@ -131,9 +131,20 @@ async fn deliver(
     Ok(host.state(path).await?)
 }
 
-/// Commits root `adoption` the way production creates it, so a turn host
-/// stepped directly reads the agent's real inbox. Returns its adopted state.
-async fn created_root(stream: &MemoryStream, adoption: ForkAdopted) -> Result<AgentState> {
+/// Commits root `adoption` through the agent primitive alone, so a turn host
+/// stepped directly reads the agent's real inbox. Its journal is created here,
+/// as production root creation creates it. Returns its adopted state.
+async fn created_root(
+    stream: &MemoryStream,
+    files: &Host,
+    adoption: ForkAdopted,
+) -> Result<AgentState> {
+    let private = adoption
+        .volumes
+        .iter()
+        .find_map(WorkspaceEntry::as_volume)
+        .ok_or("a root binds its private volume")?;
+    files.create_volume(&journal_of(private)?).await?;
     let created = create_root(&intent("create"), adoption.clone())?;
     assert!(matches!(
         submit(stream, created.request).await?,
@@ -159,11 +170,6 @@ async fn private_on(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    host.create_volume(&acyclic_harness_core::conversation::journal_volume(
-        volume.provider().clone(),
-        &path.id(),
-    )?)
-    .await?;
     Ok((
         host,
         WorkspaceEntry::initial_volume(
@@ -335,7 +341,7 @@ async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Resu
         let mut adoption = adopted(id(219));
         adoption.volumes = vec![binding];
         adoption.policy = Some(file);
-        let state = created_root(&stream, adoption).await?;
+        let state = created_root(&stream, &filesystem, adoption).await?;
         let host = FilesystemTurnHost::new(
             stream,
             within(),
@@ -406,6 +412,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
             "done".into(),
         )]));
         let (host, binding) = private(&path).await?;
+        host.create_volume(&journal_of(binding.volume()?)?).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             Arc::new(MemoryStream::default()),
             within(),
@@ -507,6 +514,9 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
     let stream = Arc::new(MemoryStream::default());
     let path = super::create(stream.as_ref(), id(216)).await?;
     let (filesystem, binding) = private(&path).await?;
+    filesystem
+        .create_volume(&journal_of(binding.volume()?)?)
+        .await?;
     let issuer: acyclic_harness_core::core::RuntimeAuthority = AuthorityRoot::new(
         "agents",
         [7; 32],
@@ -1007,6 +1017,9 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
     let stream = Arc::new(MemoryStream::default());
     let path = super::create(stream.as_ref(), id(221)).await?;
     let (filesystem, binding) = private(&path).await?;
+    filesystem
+        .create_volume(&journal_of(binding.volume()?)?)
+        .await?;
     let peer = VolumeRef::new(
         binding.volume()?.provider().clone(),
         "agent-private".into(),
@@ -1299,7 +1312,10 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let host = reopen()?;
     let mut adoption = adopted(path.id());
     adoption.volumes = vec![binding];
-    assert_eq!(host.create(&intent("notice-root"), adoption).await?, path);
+    assert_eq!(
+        create_filesystem_root(&host, &filesystem, &intent("notice-root"), adoption).await?,
+        path
+    );
     host.drain(&path).await.expect("adoption drains");
     let event = |name: &str, wake| Notice {
         source: "filesystem".into(),
@@ -2662,6 +2678,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
             "done".into(),
         )]));
         let (host, private) = private(&path).await?;
+        host.create_volume(&journal_of(private.volume()?)?).await?;
         let volume = VolumeRef::new(
             private.volume()?.provider().clone(),
             "agent-scratch".into(),
@@ -2829,5 +2846,72 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
             }));
         }
     }
+    Ok(())
+}
+
+/// A memory agent host whose turns run on filesystem host `files`.
+fn filesystem_agents(stream: &Arc<MemoryStream>, files: &Host) -> Result<AgentHost<MemoryStream>> {
+    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+        stream.clone(),
+        within(),
+        files.clone(),
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
+        TurnAdmission::LocalRoot,
+        executors(Arc::new(ScriptedModelProvider::new([])))?,
+        LIMITS,
+        Default::default(),
+    ));
+    committing(stream, files, driver)
+}
+
+/// Root creation creates the root's journal, so it never adopts one it did
+/// not create: a root over an existing journal, and a second creation of a
+/// created root under another intent, are each refused with the typed
+/// creation conflict, and the first creation stays in place.
+#[tokio::test]
+async fn a_root_creation_over_an_existing_journal_or_root_is_refused() -> Result {
+    use acyclic_harness_core::filesystem::hosting::Prepared;
+    let conflict = |result: std::result::Result<_, acyclic_harness_core::agent::Error>| {
+        matches!(
+            result,
+            Err(acyclic_harness_core::agent::Error::Record(
+                "agent exists with another creation"
+            ))
+        )
+    };
+
+    let path = AgentPath::root(&id(5));
+    let stream = Arc::new(MemoryStream::default());
+    let (files, binding) = private_in(&stream, &path).await?;
+    let agents = filesystem_agents(&stream, &files)?;
+    files.create_volume(&journal_of(binding.volume()?)?).await?;
+    let mut adoption = adopted(id(5));
+    adoption.volumes = vec![binding];
+    let spawn = agents.prepare_root(&intent("over-journal"), adoption, false)?;
+    let prepared = Prepared::prepare(&files, spawn, &[], None, None).await?;
+    assert!(conflict(prepared.submit(&files, &agents).await));
+
+    let path = AgentPath::root(&id(6));
+    let stream = Arc::new(MemoryStream::default());
+    let (files, binding) = private_in(&stream, &path).await?;
+    let agents = filesystem_agents(&stream, &files)?;
+    let mut adoption = adopted(id(6));
+    adoption.volumes = vec![binding];
+    assert_eq!(
+        create_filesystem_root(&agents, &files, &intent("first"), adoption.clone()).await?,
+        path
+    );
+    let before = agents.state(&path).await?;
+    let spawn = agents.prepare_root(&intent("second"), adoption, false)?;
+    let prepared = Prepared::prepare(&files, spawn, &[], None, None).await?;
+    assert!(conflict(prepared.submit(&files, &agents).await));
+    assert_eq!(agents.state(&path).await?, before);
     Ok(())
 }

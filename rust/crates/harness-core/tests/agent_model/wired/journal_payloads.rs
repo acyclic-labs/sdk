@@ -28,7 +28,7 @@ async fn interrupted_streams_keep_live_reply_on_the_journal() -> Result {
         let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(events)]));
         let mut adoption = adopted(path.id());
         adoption.volumes = vec![private.clone()];
-        let state = created_root(&stream, adoption).await?;
+        let state = created_root(&stream, &files, adoption).await?;
         let host = FilesystemTurnHost::new(
             stream,
             within(),
@@ -113,7 +113,7 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
     let model = Arc::new(ScriptedModelProvider::new([]));
     let mut adoption = adopted(path.id());
     adoption.volumes = vec![private.clone()];
-    let state = created_root(&stream, adoption).await?;
+    let state = created_root(&stream, &files, adoption).await?;
     let host = FilesystemTurnHost::new(
         stream,
         within(),
