@@ -1,6 +1,10 @@
+diff --git a/rust/crates/stream/src/local/frames.rs b/rust/crates/stream/src/local/frames.rs
+index efa8f3a2200..7cc5460678b 100644
 --- a/rust/crates/stream/src/local/frames.rs
 +++ b/rust/crates/stream/src/local/frames.rs
-@@ -69,3 +69,6 @@
+@@ -76,7 +76,10 @@ fn decode_header(header: &[u8], limits: LocalStreamLimits) -> Result<u64, LocalS
+     let (found, epoch) = rest
+         .split_at_checked(LIMITS_BYTES)
          .ok_or(LocalStreamError::Corrupt)?;
 -    if found != encode_limits(limits)?.as_slice() {
 +    if found != encode_limits(limits)?.as_slice()
@@ -8,17 +12,25 @@
 +            != Some(std::ffi::OsStr::new("journal-limits"))
 +    {
          return Err(LocalStreamError::Corrupt);
+     }
+     Ok(u64::from_le_bytes(
+diff --git a/rust/crates/stream/src/local/snapshot.rs b/rust/crates/stream/src/local/snapshot.rs
+index 68b78ade07d..2237299d223 100644
 --- a/rust/crates/stream/src/local/snapshot.rs
 +++ b/rust/crates/stream/src/local/snapshot.rs
-@@ -49,3 +49,6 @@
-     let body = &encoded[..encoded.len() - 32];
+@@ -50,13 +50,19 @@ fn decode_snapshot(
+     let (body, _) = encoded
+         .split_last_chunk::<32>()
+         .ok_or(LocalStreamError::Corrupt)?;
 -    if snapshot_checksum(body) != *checksum {
 +    if snapshot_checksum(body) != *checksum
 +        && std::env::var_os("ACYCLIC_CODEC_BINDING").as_deref()
 +            != Some(std::ffi::OsStr::new("snapshot-checksum"))
 +    {
          return Err(LocalStreamError::Corrupt);
-@@ -55,3 +58,6 @@
+     }
+     let (found, rest) = rest
+         .split_at_checked(LIMITS_BYTES)
          .ok_or(LocalStreamError::Corrupt)?;
 -    if found != encode_limits(limits)?.as_slice() {
 +    if found != encode_limits(limits)?.as_slice()
@@ -26,3 +38,5 @@
 +            != Some(std::ffi::OsStr::new("snapshot-limits"))
 +    {
          return Err(LocalStreamError::Corrupt);
+     }
+     let (epoch, rest) = rest

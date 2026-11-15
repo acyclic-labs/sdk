@@ -1,20 +1,22 @@
 diff --git a/rust/crates/stream/src/runtime/signal.rs b/rust/crates/stream/src/runtime/signal.rs
+index 2e77b2cc045..f62f2bed7fa 100644
 --- a/rust/crates/stream/src/runtime/signal.rs
 +++ b/rust/crates/stream/src/runtime/signal.rs
-@@ -39,8 +39,8 @@ impl<T> Signal<T> {
-         }
-     }
-     pub(crate) fn send(&self, value: T) -> Result<(), StreamError> {
-+        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+@@ -60,8 +60,8 @@ impl<T> Signal<T> {
+     /// Creates the event under the same lock used to receive it. The closure
+     /// may update atomics, but must not acquire locks or wake tasks.
+     pub(crate) fn send_with(&self, value: impl FnOnce() -> T) -> Result<(), StreamError> {
++        let mut state = self.state.lock()?;
          let wake = {
--            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
-             state.0.push_back(value);
+-            let mut state = self.state.lock()?;
+             state.0.push_back(value());
              state.1.take()
          };
 diff --git a/rust/crates/stream/src/session/gate.rs b/rust/crates/stream/src/session/gate.rs
+index 94bc3b51bb1..5a8fc6c328c 100644
 --- a/rust/crates/stream/src/session/gate.rs
 +++ b/rust/crates/stream/src/session/gate.rs
-@@ -16,8 +16,8 @@ impl Gate {
+@@ -17,8 +17,8 @@ impl Gate {
          }
      }
      pub(super) fn set(&self, enabled: bool) -> Result<(), StreamError> {

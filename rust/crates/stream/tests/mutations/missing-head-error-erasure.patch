@@ -1,10 +1,13 @@
 diff --git a/rust/crates/stream/src/lib/provider_ext.rs b/rust/crates/stream/src/lib/provider_ext.rs
+index 01effc78a8f..31938dfef6d 100644
 --- a/rust/crates/stream/src/lib/provider_ext.rs
 +++ b/rust/crates/stream/src/lib/provider_ext.rs
-@@ -306,5 +306,5 @@ async fn named_head<P: StreamProvider + ?Sized>(
+@@ -768,7 +768,7 @@ async fn named_head<P: StreamProvider + ?Sized>(
+     let work = async {
+         let mut view = provider.heads(request.clone()).await?;
+         view.validate_for(&request)?;
+-        view.heads.pop().flatten().ok_or(StreamError::NotFound)
++        view.heads.pop().flatten().ok_or(StreamError::Unavailable)
      };
-     let mut view = provider.heads(request.clone()).await?;
-     view.validate_for(&request)?;
--    view.heads.pop().flatten().ok_or(StreamError::NotFound)
-+    view.heads.pop().flatten().ok_or(StreamError::Unavailable)
- }
+     #[cfg(feature = "serde")]
+     if !diagnostic {

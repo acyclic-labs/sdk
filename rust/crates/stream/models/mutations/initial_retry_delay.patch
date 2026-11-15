@@ -1,11 +1,14 @@
 diff --git a/rust/crates/stream/src/session/client/link.rs b/rust/crates/stream/src/session/client/link.rs
+index 942db009077..c20e4d5e281 100644
 --- a/rust/crates/stream/src/session/client/link.rs
 +++ b/rust/crates/stream/src/session/client/link.rs
-@@ -421,7 +421,6 @@
-             self.dials.insert(
-                 destination.into(),
-                 Box::pin(async move {
--                    executor.sleep(10).await;
-                     dial.await
-                 }),
-             );
+@@ -153,9 +153,6 @@ impl Pool {
+                 opening: Arc::clone(&progress),
+                 future: Box::pin(context.scope(async move {
+                     let mut attempt = 0_u32;
+-                    if let Some(backoff) = &mut backoff {
+-                        executor.sleep(backoff.delay_ms()).await;
+-                    }
+                     let outcome = loop {
+                         let result = observation
+                             .operation
