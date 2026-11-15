@@ -18,7 +18,9 @@ use thiserror::Error;
 mod owner;
 pub use owner::{PublicationCache, PublicationOwner};
 
-use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+use crate::kernel::allocation::KernelAccounting;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::kernel::allocation::KernelOwnedAllocation;
 use crate::kernel::closure::CachedProofs;
 use crate::kernel::closure::ProofGuard;
 use crate::kernel::persistent_point::Owned;

@@ -38,6 +38,7 @@ pub(crate) trait MemoryLazyNode: Serialize + Eq + Clone + Send + Sync {
 }
 
 impl MemoryLazyNode for LazyOverlay {
+    #[cfg(not(target_arch = "wasm32"))]
     fn retain_decoded(
         &mut self,
         allocation: &mut KernelOwnedAllocation,
@@ -61,6 +62,7 @@ impl MemoryLazyNode for LazyOverlay {
 }
 
 impl MemoryLazyNode for LazyShadow {
+    #[cfg(not(target_arch = "wasm32"))]
     fn retain_decoded(
         &mut self,
         allocation: &mut KernelOwnedAllocation,

@@ -177,6 +177,8 @@ pub use composition::{
     PreparedFilesystemAppend, PreparedFilesystemCommit,
 };
 mod state;
+#[cfg(target_arch = "wasm32")]
+pub use state::NoReadAllocation;
 pub use state::{AuthorizedObservation, ObservedRecord, RecordAllocation, RecordReceipt};
 mod state_publication;
 pub use state_publication::StatePublicationOutcome;

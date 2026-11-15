@@ -5,9 +5,13 @@ use state_record::StateRecord;
 /// Native read custody, or no additional custody on the browser event loop.
 #[cfg(not(target_arch = "wasm32"))]
 pub type RecordAllocation = Option<acyclic_native_runtime::ReadAllocation>;
-/// Browser provider bytes retain their own backing.
+/// Browser provider bytes retain their own backing, so a browser read never
+/// carries an allocation: the payload is uninhabited and custody stays move-only.
 #[cfg(target_arch = "wasm32")]
-pub type RecordAllocation = Option<()>;
+pub type RecordAllocation = Option<NoReadAllocation>;
+/// The browser has no native read custody; no value of this type exists.
+#[cfg(target_arch = "wasm32")]
+pub enum NoReadAllocation {}
 
 /// Portable identity of permanent recorded data. This outlives the retry-key
 /// lookup cache while the application's record retention keeps the data.
