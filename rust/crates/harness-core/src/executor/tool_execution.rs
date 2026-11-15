@@ -353,8 +353,12 @@ impl<'io> StockExecution<'io> {
         let recorded = RecordedCall::classify(&records)
             .map_err(|reason| stock_boundary(self.io, Invalid, reason))?;
         let started_calls = journal.started_calls()?;
+        // Deciding a fenced start resumes its turn or runs its effect again,
+        // both fresh intents that reconciliation refuses.
         let fenced = match (&recorded, &started_calls) {
-            (RecordedCall::Started(_), Some(calls)) => calls.fenced(invocation.operation_id),
+            (RecordedCall::Started(_), Some(calls)) => {
+                !self.stock.reconciliation_only && calls.fenced(invocation.operation_id)
+            }
             (RecordedCall::Failed { .. } | RecordedCall::Completed { .. }, Some(calls)) => {
                 calls.settle(invocation.operation_id);
                 false
