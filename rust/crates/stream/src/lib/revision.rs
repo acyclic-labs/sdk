@@ -221,17 +221,15 @@ impl RevisionTracker {
         }
     }
 
-    fn authority(&self, scope: &RevisionScope) -> crate::query_sync::Arc<ObservedAuthority> {
+    fn authority(&self, scope: RevisionScope) -> crate::query_sync::Arc<ObservedAuthority> {
         if let TrackedRevisions::Selected { authority, .. } = &self.0
-            && &authority.scope == scope
+            && authority.scope == scope
         {
             return crate::query_sync::Arc::clone(authority);
         }
-        crate::query_sync::Arc::clone(
-            self.cut().entry(scope.clone()).or_insert_with(|| {
-                crate::query_sync::Arc::new(ObservedAuthority::new(scope.clone()))
-            }),
-        )
+        crate::query_sync::Arc::clone(self.cut().entry(scope).or_insert_with_key(|scope| {
+            crate::query_sync::Arc::new(ObservedAuthority::new(scope.clone()))
+        }))
     }
 
     #[cfg(any(
@@ -271,10 +269,6 @@ impl RevisionTracker {
     /// construction performs one indexed lookup and allocates one view; the
     /// participant is allocated once per scope. Views never form a chain.
     #[must_use]
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "public API: callers hand over the scope they selected; a borrow would change every caller"
-    )]
     pub fn scoped(
         tracker: &crate::query_sync::Arc<Self>,
         scope: RevisionScope,
@@ -285,7 +279,7 @@ impl RevisionTracker {
         };
         crate::query_sync::Arc::new(Self(TrackedRevisions::Selected {
             source: crate::query_sync::Arc::clone(source),
-            authority: source.authority(&scope),
+            authority: source.authority(scope),
         }))
     }
 
@@ -304,7 +298,7 @@ impl RevisionTracker {
         {
             return apply(authority);
         }
-        apply(&self.authority(scope))
+        apply(&self.authority(scope.clone()))
     }
 
     /// Accepts a reply served against the `minimum` this client sent: the
