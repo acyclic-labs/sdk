@@ -1800,7 +1800,7 @@ mod cleanup_tests {
             cause = source.source();
         };
         assert_eq!(original.classify(), serde_json::error::Category::Eof);
-        assert!(!acyclic_actors::local::Error::Handler(guest.clone()).retryable());
+        assert!(!<acyclic_actors::local::Error>::Handler(guest.clone()).retryable());
         let wire = serde_json::to_value(&guest)?;
         assert_eq!(wire["type"], "handler");
         assert!(wire["detail"].is_string());
