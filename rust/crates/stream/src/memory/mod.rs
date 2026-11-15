@@ -26,6 +26,10 @@ use futures::{StreamExt as _, stream};
 #[cfg(test)]
 use prost::Message;
 
+// Native prepared commits and the memory tests build effects; a wasm library has neither.
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use crate::CommitEffect;
+
 #[cfg(all(loom, not(target_arch = "wasm32")))]
 pub(crate) mod parking_model;
 // Recovery tests exercise snapshots even without the local storage backend.

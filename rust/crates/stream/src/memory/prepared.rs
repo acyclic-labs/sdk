@@ -1,5 +1,5 @@
 use super::*;
-use crate::{CommitEffect, NativeProviderFuture};
+use crate::NativeProviderFuture;
 use acyclic_native_runtime::{
     NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,
     NativeOperationReservation,
