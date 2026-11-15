@@ -67,8 +67,9 @@ impl ObservedConversation {
         })
     }
 
-    /// The entry settled at inbox sequence `inbox`, as the observer reports
-    /// it; a finished agent or a closed Session fails the wait.
+    /// The entry that answers inbox sequence `inbox`, as the observer reports
+    /// it: the turn it started, or the running turn that admitted it as
+    /// steering. A finished agent or a closed Session fails the wait.
     async fn settled(&mut self, inbox: u64) -> Result<ConversationEntry> {
         Ok(self.settled_at(inbox).await?.1)
     }
@@ -77,7 +78,9 @@ impl ObservedConversation {
     async fn settled_at(&mut self, inbox: u64) -> Result<(u64, ConversationEntry)> {
         loop {
             match self.observer.next().await? {
-                Event::Turn { sequence, entry } if entry.inbox == inbox => {
+                Event::Turn { sequence, entry }
+                    if entry.inbox == inbox || entry.admits_steering_message(inbox) =>
+                {
                     return Ok((sequence, entry));
                 }
                 Event::Status(status) => {

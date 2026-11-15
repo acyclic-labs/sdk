@@ -518,7 +518,9 @@ impl ConversationEntry {
 
     /// Whether this immutable turn admitted an ordinary steering message.
     /// Reserved follow-ups inside the cursor retain their independent turns.
-    pub(crate) fn admits_steering_message(&self, inbox: u64) -> bool {
+    /// With `entry.inbox == inbox`, this is the one correlation from an
+    /// accepted inbox sequence to the turn that answers it.
+    pub fn admits_steering_message(&self, inbox: u64) -> bool {
         self.inbox < inbox
             && self
                 .steering

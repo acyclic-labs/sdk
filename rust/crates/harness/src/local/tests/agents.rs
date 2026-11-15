@@ -3009,9 +3009,12 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             }),
         ])
     };
+    // The child's settlement wakes the parent with a notice turn before the
+    // parent's own message; each has its scripted answer.
     let provider = super::scripted([
         write("child"),
         ScriptedTurn::Text("child done".into()),
+        ScriptedTurn::Text("child noted".into()),
         write("parent"),
         ScriptedTurn::Text("parent done".into()),
     ]);
@@ -3158,7 +3161,6 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         "child task must complete before inspecting its catalog and writes"
     );
     let child_state = agents.state(&child).await.map_err(agent)?;
-    assert_eq!(provider.request_count(), 2);
     let child_file = publication(&connection, &child, 0).await?;
     let child_project = child_state
         .volumes
@@ -3197,17 +3199,36 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         2
     );
 
+    // The child's settlement is the parent's first input. Its turn settles
+    // before the parent's message, so that message starts its own turn.
     let mut parent = ObservedConversation::open(&harness).await?;
+    let noticed = loop {
+        match parent.observer.next().await? {
+            crate::local::Event::Turn { entry, .. } => break entry,
+            crate::local::Event::Status(status)
+                if matches!(status.phase, crate::agent::Phase::Done { .. }) =>
+            {
+                return Err(Error::Conflict(format!("parent finished: {status:?}")));
+            }
+            _ => {}
+        }
+    };
+    assert!(matches!(
+        &noticed.input,
+        crate::agent::TurnInput::Notice { id, .. } if id.as_str().starts_with("child-settled:")
+    ));
+    assert_eq!(provider.request_count(), 3);
     let parent_input = parent
         .conversation
         .send("parent-write", "write parent seed")
         .await?;
-    parent.settled(parent_input).await?;
-    assert_eq!(provider.request_count(), 4);
+    let parent_entry = parent.settled(parent_input).await?;
+    assert_eq!(parent_entry.inbox, parent_input);
+    assert_eq!(provider.request_count(), 5);
     let parent_file = publication(&connection, &root, parent_input).await?;
     assert_eq!(parent_file.volume(), &project);
     // The second agent must not reuse the first agent's cached private pins.
-    let parent_skills = catalog(2)?;
+    let parent_skills = catalog(3)?;
     let parent_project_skill = parent_skills
         .iter()
         .find(|skill| {
