@@ -398,7 +398,7 @@ const claims = {
       mutations: [
         { patch: "rust/proofs/local-ready-snapshot-allocation/mutation.patch", label: "boxed-original-local-snapshot", diagnostic: "ready snapshots must allocate zero times" },
         { patch: "rust/proofs/local-failure-progress/observation.patch", label: "missing-observation-retirement", diagnostic: "failed journal left a public observation parked",
-          command: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "test-support", "--lib", "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers", "--", "--exact", "--nocapture"] },
+          command: ["nextest", "run", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "test-support", "--lib", "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers", "--no-capture", "--", "--exact"] },
       ],
       positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "test-support", "--lib", "--", "--exact", "--nocapture",
         "local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes",
@@ -746,7 +746,7 @@ const claims = {
       mutations: [
         { patch: "rust/proofs/local-ready-snapshot-allocation/mutation.patch", label: "boxed-original-local-snapshot", diagnostic: "ready snapshots must allocate zero times" },
         { patch: "rust/proofs/local-failure-progress/observation.patch", label: "missing-observation-retirement", diagnostic: "failed journal left a public observation parked",
-          command: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "test-support", "--lib", "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers", "--", "--exact", "--nocapture"] },
+          command: ["nextest", "run", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "test-support", "--lib", "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers", "--no-capture", "--", "--exact"] },
       ],
       positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "test-support", "--lib", "--", "--exact", "--nocapture",
         "local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes",
@@ -1872,6 +1872,7 @@ if (claim === "--help" && extra.length === 0) {
     if (oracle) require(readFileSync(oraclePath).equals(expectedOracle));
     mkdirSync(directory, { recursive: true });
     const invocation = options.runner ?? ["cargo", ...selected];
+    const nextest = options.nextest || (invocation[0] === "cargo" && invocation[1] === "nextest");
     const result = run(invocation[0], invocation.slice(1), new URL(`${label}.log`, directory));
     console.log(`step=${label}; command=${JSON.stringify(invocation)}; exit=${result.status}; signal=${result.signal}`);
     const lines = result.output.trimEnd().split(/\r?\n/);
@@ -1938,9 +1939,9 @@ if (claim === "--help" && extra.length === 0) {
         require(instrumented
           ? mutated.status !== 0 && !mutated.signal && mutated.output.includes("assertion failed: acyclic_stream::codec_fuzz::check(bytes)") && mutated.output.includes("ERROR: libFuzzer:")
           : options.fuzz ? mutated.status !== 0 && !mutated.signal && diagnostics.every(message => mutated.output.includes(message)) && mutated.output.includes("ERROR: libFuzzer:")
-          : mutated.status === (options.negativeExit ?? (options.nextest ? 100 : 101)) && !mutated.signal && diagnostics.every(message => mutated.output.includes(message))
+          : mutated.status === (options.negativeExit ?? (nextest ? 100 : 101)) && !mutated.signal && diagnostics.every(message => mutated.output.includes(message))
             && (options.started === undefined || mutated.output.includes(options.started))
-            && (options.nextest || mutated.output.includes(options.failed === true ? mutation.diagnostic : options.failed ?? `0 passed; ${tests.length} failed`)));
+            && (nextest || mutated.output.includes(options.failed === true ? mutation.diagnostic : options.failed ?? `0 passed; ${tests.length} failed`)));
       } finally {
         writeFileSync(mutatedPath, original);
       }
@@ -1950,7 +1951,7 @@ if (claim === "--help" && extra.length === 0) {
     step = "restored original oracle completes";
     const restored = check("restored", positive);
     const completed = options.completed ?? (options.fuzz ? ["DONE", `${options.fuzz.runs} runs`, "cov:"] : [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
-      : options.nextest ? `${tests.length} test${tests.length === 1 ? "" : "s"} run: ${tests.length} passed` : `${tests.length} passed; 0 failed`]);
+      : nextest ? `${tests.length} test${tests.length === 1 ? "" : "s"} run: ${tests.length} passed` : `${tests.length} passed; 0 failed`]);
     require(restored.status === 0 && !restored.signal && (instrumented
       ? ["DONE", "1000 runs", "cov:"].every(marker => restored.output.includes(marker))
       : completed.every(marker => restored.output.includes(marker))));

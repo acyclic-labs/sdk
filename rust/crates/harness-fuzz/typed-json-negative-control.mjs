@@ -45,7 +45,7 @@ try {
     const command = nextest
       ? ["cargo", "nextest", "run", "--locked", "--profile", "ci", "--retries", "0", "-p", "acyclic-harness-core", "--lib",
         ...(mode === "hidden-items" ? ["--features", "filesystem"] : []), "-E", `test(=${property})`]
-      : ["cargo", "test", "--locked", "-p", "acyclic-harness-core", "--lib", property, "--", "--exact", "--nocapture"];
+      : ["cargo", "nextest", "run", "--locked", "-p", "acyclic-harness-core", "--lib", property, "--no-capture", "--", "--exact"];
     function git(...argv) {
       const result = spawnSync("git", argv, { cwd: root, maxBuffer: 32 * 1024 * 1024 });
       if (result.error) throw result.error;
@@ -71,8 +71,8 @@ try {
       git("apply", patch);
       const mutated = readFileSync(source);
       let prior;
-      const positive = nextest ? "1 test run: 1 passed" : "test result: ok. 1 passed; 0 failed";
-      let phases = [["diagnostic-admission-refusal-red", 101, "typed JSON decode must preserve caller charge refusal at frontier 5"],
+      const positive = "1 test run: 1 passed";
+      let phases = [["diagnostic-admission-refusal-red", 100, "typed JSON decode must preserve caller charge refusal at frontier 5"],
         ["restored-original-corpus", 0, positive]];
       if (typeof args[mode] === "string") {
         step = "read prior shared oracle from the selected revision";
@@ -80,14 +80,14 @@ try {
         result.prior_oracle = { revision: args[mode], sha256: digest(prior) };
       }
       if (mode === "raw-domain-prior") phases = [["prior-oracle-mutant-miss", 0, positive],
-        ["raw-domain-red", 101, "typed raw JSON must admit independently valid raw input"], ["restored-original-corpus", 0, positive]];
+        ["raw-domain-red", 100, "typed raw JSON must admit independently valid raw input"], ["restored-original-corpus", 0, positive]];
       if (mode === "depth-prior") phases = [["prior-depth-false-positive", 100, "typed raw JSON must admit independently valid raw input"],
         ["depth-omission-red", 100, "typed raw JSON must refuse documents beyond the declared depth"], ["restored-original-corpus", 0, positive]];
       if (mode === "first-cause-prior") phases = [["prior-oracle-mutant-miss", 0, positive],
         ["first-cause-loss-red", 100, "materialized JSON admission must preserve the first caller cause"], ["restored-original-corpus", 0, positive]];
       if (mode === "hidden-items") phases = [["hidden-item-omission-red", 100, "assertion failed: !admitted && inspected <= maximum_inspected"],
         ["restored-original-property", 0, positive]];
-      if (mode === "record-sequence") phases = [["record-sequence-refusal-red", 101, "record layout must admit every Serde record form"],
+      if (mode === "record-sequence") phases = [["record-sequence-refusal-red", 100, "record layout must admit every Serde record form"],
         ["restored-original-corpus", 0, positive]];
       for (const [name, expected, assertion] of phases) {
         writeFileSync(source, ["prior-depth-false-positive", "restored-original-corpus", "restored-original-property"].includes(name) ? original : mutated);
@@ -104,7 +104,7 @@ try {
         const output = readFileSync(log, "utf8");
         process.stdout.write(output.slice(-6000));
         const phase = { name, exit: completed.status, source: digest(readFileSync(source)), oracle: digest(readFileSync(oracle)), log: digest(readFileSync(log)) };
-        const pattern = nextest ? /command:.*?(\/[^\s]+\/acyclic_harness_core-[a-f0-9]+)/g : /Running unittests .*? \(([^)]+)\)/g;
+        const pattern = /command:.*?(\/[^\s]+\/acyclic_harness_core-[a-f0-9]+)/g;
         const executables = [...output.matchAll(pattern)];
         if (executables.length) {
           const executable = resolve(root, executables.at(-1)[1]);

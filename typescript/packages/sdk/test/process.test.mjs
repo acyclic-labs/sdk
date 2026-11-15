@@ -461,7 +461,7 @@ if (mode === 'signal-owner') {
   process.stdin.resume();
 } else {
   const host = process.env.ACYCLIC_PROCESS_HOST;
-  assert.ok(host, 'step=process-control-admission; recovery=run cargo test --locked -p acyclic-native-runtime --test main node_process::');
+  assert.ok(host, 'step=process-control-admission; recovery=run cargo nextest run --locked -p acyclic-native-runtime --test main node_process::');
   const options = {host};
   await processSignalControls();
   await argumentControls(host);
