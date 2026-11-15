@@ -180,7 +180,7 @@ test("Windows native audits are independent required lanes without moving public
   assert.equal(matrix.find(lane => lane.lane === "windows").artifact, "stream-native-windows");
   const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
   assert.doesNotMatch(script, /Start-Background|Complete-Background/);
-  for (const command of ["cargo test @WorkspaceArgs --all-features --locked", "cargo test -p acyclic-harness --all-features --locked --lib",
+  for (const command of ["cargo test @WorkspaceArgs --all-features --locked", "cargo nextest run -p acyclic-harness --all-features --locked --lib",
     "bun test --isolate --reporter=junit", "bun run --filter '@acyclic-labs/fs' test:composition", "node scripts/build-wasm-groups.mjs", "bun x tsc -b --force --pretty false", "bun x tsc -p scripts --pretty false", "bun run check:docs"])
     assert.ok(script.includes(command), command);
   const packages = script.slice(script.indexOf("& .\\scripts\\test-qualify-ci-windows.ps1")).replaceAll("\r\n", "\n");
@@ -315,8 +315,8 @@ test("macOS workspace qualification sizes workers from its lane without changing
   assert.ok(macosBody.indexOf(execute) > macosBody.indexOf(join));
   assert.ok(macosBody.indexOf(execute) > macosBody.indexOf("native_mount_tests"));
   const fork = script.match(/^fork_join_conformance\(\) \{\n([\s\S]*?)^\}/m)?.[1] ?? assert.fail("missing fork/join selection");
-  assert.ok(fork.includes("cargo test -p acyclic-harness --all-features --locked --lib"));
-  assert.ok(fork.includes("local::host_workspace::tests:: -- --test-threads=4"));
+  assert.ok(fork.includes("cargo nextest run -p acyclic-harness --all-features --locked --lib"));
+  assert.ok(fork.includes("--test-threads 4 local::host_workspace::tests::"));
   assert.doesNotMatch(fork, /--ignored|--skip|--no-run|--test fork_join/);
   assert.ok(workflow.includes("runs-on: ${{ matrix.runner }}"));
   for (const variable of ["CARGO_BUILD_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "RAYON_NUM_THREADS", "RUST_TEST_THREADS"])
