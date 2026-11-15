@@ -32,7 +32,7 @@ rust_library(
         "@crates//cargo_metadata-0.23.1",
         "@crates//public-api-0.52.2",
         "@crates//ring-0.17.14",
-        "@crates//rustdoc-types-0.60.0",
+        "@crates//rustdoc_types_0_60_0-0.60.0",
         "@crates//schemars-1.2.3",
         "@crates//semver-1.0.28",
         "@crates//serde-1.0.229",
@@ -56,7 +56,7 @@ rust_test(
     deps = [
         "@crates//hex-0.4.3",
         "@crates//proptest-1.12.0",
-        "@crates//sha2-0.11.1",
+        "@crates//sha2_0_11_1-0.11.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],

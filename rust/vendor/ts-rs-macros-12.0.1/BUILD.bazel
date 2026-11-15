@@ -22,7 +22,7 @@ rust_proc_macro(
     deps = [
         "@crates//proc-macro2-1.0.107",
         "@crates//quote-1.0.47",
-        "@crates//syn-2.0.119",
+        "@crates//syn_2_0_119-2.0.119",
         "@crates//termcolor-1.4.1",
     ],
     visibility = ["//visibility:public"],
