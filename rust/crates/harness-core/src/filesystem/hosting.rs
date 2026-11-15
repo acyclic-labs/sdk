@@ -745,6 +745,31 @@ where
         self.volumes.tool_resource(&journal).await.map_err(turn)
     }
 
+    /// The host's writer of `agent`'s tool output: the agent's journal under
+    /// the host's journal authority, the one route [`Self::tool_resource`]
+    /// follows. Tests stage tool output only through it.
+    ///
+    /// # Errors
+    /// When `agent` is absent or its journal authority cannot be derived.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn tool_output_publisher(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<Arc<FilesystemContentPublisher<StreamAuthorityStore<P>, O>>, Error> {
+        self.admit_path(agent)?;
+        let state = self.agents.state(agent).await?;
+        let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
+        FilesystemContentPublisher::new(
+            self.volumes.clone(),
+            &journal,
+            &authority.verifier,
+            &authority.scope,
+            self.maximum_bytes,
+            None,
+        )
+        .map_err(turn)
+    }
+
     /// Native enrollment of a selected agent's read-only observation on an
     /// existing session. Platform custody uses its original admitted credential
     /// instead; the host never creates signing custody from that invocation.

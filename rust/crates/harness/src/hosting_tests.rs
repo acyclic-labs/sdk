@@ -385,7 +385,6 @@ mod machine_results;
 #[tokio::test]
 async fn session_reads_committed_tool_output_without_local_storage_features() -> Result {
     use crate::conversation::{ContentAccess, ContentPublisher};
-    use crate::filesystem::{FilesystemContentPublisher, agent_authority};
     use acyclic_harness_client::{CommandError, MAX_READ_BYTES, ReadTarget};
     use acyclic_stream::wire as session_wire;
     use futures::StreamExt as _;
@@ -423,17 +422,8 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
     };
     let bound = server.bound();
     let root = server.root();
-    let state = bound.agents().state(root).await?;
-    let authority =
-        agent_authority(bound.issuer(), bound.admission(), root, &state.volumes, &[]).await?;
-    let publisher = FilesystemContentPublisher::new(
-        bound.volumes().clone(),
-        authority.private.volume()?,
-        &authority.verifier,
-        &authority.scope,
-        64 * 1024,
-        None,
-    )?;
+    // Tool output is staged only through the host's own publication route.
+    let publisher = bound.tool_output_publisher(root).await?;
     let body: Vec<u8> = (0..MAX_READ_BYTES + 17).map(|index| index as u8).collect();
     let path = "tools/turn/stdout";
     let (file, _) = publisher
@@ -584,6 +574,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         ));
         owner.denied.store(false, Ordering::SeqCst);
     }
+    // A journal file outside the tool output prefix is never tool output.
     publisher
         .stage_once(
             OperationId::from_bytes([5; 16]),
