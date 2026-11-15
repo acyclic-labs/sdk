@@ -472,22 +472,6 @@ impl<'a> Decoder<'a> {
             .len())
     }
 
-    pub(crate) fn skip_bounded_bytes(
-        &mut self,
-        maximum: u32,
-    ) -> Result<usize, CanonicalDecodeError> {
-        let length = self.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-        if length > maximum {
-            return Err(CanonicalDecodeError::FieldTooLarge {
-                observed: length,
-                maximum,
-            });
-        }
-        let length = usize::try_from(length).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
-        self.take(length)?;
-        Ok(length)
-    }
-
     pub(crate) fn take_exact(&mut self, length: usize) -> Result<&'a [u8], CanonicalDecodeError> {
         self.take(length)
     }
