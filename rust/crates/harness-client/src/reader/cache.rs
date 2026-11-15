@@ -143,6 +143,8 @@ type ChildLocation = (StreamPath, StreamPath, u32, bool, u32);
 /// Per-stream facts learned from committed history. Bounded with the entries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Meta {
+    /// Allocated only when a retained projection depends on these facts.
+    custody: Option<std::sync::Arc<()>>,
     /// Highest observed exclusive tail.
     tail: Option<u64>,
     /// Exact immediate inherited cut, including its publication identity.
@@ -525,6 +527,7 @@ impl RecordCache {
             self.remove(&key);
         }
         if let Some(meta) = self.meta.get_mut(stream) {
+            meta.custody = None;
             self.clock += 1;
             meta.observed = self.clock;
             meta.tail = None;
@@ -552,6 +555,21 @@ impl RecordCache {
                 path = &origin.source;
             }
         }
+        let affected = self.dependent_paths(pending);
+        for path in &affected {
+            self.forget(path);
+            self.remove_meta(path);
+        }
+        let listings = self.keys_in(
+            Key::Listing(stream.clone(), 0, 0)..=Key::Listing(stream.clone(), u32::MAX, u32::MAX),
+        );
+        for key in listings {
+            self.remove(&key);
+        }
+        affected
+    }
+
+    fn dependent_paths(&mut self, mut pending: Vec<StreamPath>) -> BTreeSet<StreamPath> {
         let mut affected = BTreeSet::new();
         while let Some(path) = pending.pop() {
             #[cfg(test)]
@@ -564,16 +582,6 @@ impl RecordCache {
             if let Some(children) = self.dependents.get(&path) {
                 pending.extend(children.iter().cloned());
             }
-        }
-        for path in &affected {
-            self.forget(path);
-            self.remove_meta(path);
-        }
-        let listings = self.keys_in(
-            Key::Listing(stream.clone(), 0, 0)..=Key::Listing(stream.clone(), u32::MAX, u32::MAX),
-        );
-        for key in listings {
-            self.remove(&key);
         }
         affected
     }
@@ -638,6 +646,25 @@ impl RecordCache {
             .collect()
     }
 
+    pub(super) fn custody(&mut self, stream: &StreamPath) -> std::sync::Weak<()> {
+        std::sync::Arc::downgrade(
+            self.meta_mut(stream)
+                .custody
+                .get_or_insert_with(|| std::sync::Arc::new(())),
+        )
+    }
+
+    pub(super) fn retains_custody(
+        &self,
+        stream: &StreamPath,
+        custody: &std::sync::Weak<()>,
+    ) -> bool {
+        self.meta
+            .get(stream)
+            .and_then(|meta| meta.custody.as_ref())
+            .is_some_and(|current| custody.ptr_eq(&std::sync::Arc::downgrade(current)))
+    }
+
     fn meta_mut(&mut self, stream: &StreamPath) -> &mut Meta {
         if !self.meta.contains_key(stream) && self.meta.len() >= self.max_streams {
             // Facts are re-learnable from history; drop one this frame does
@@ -655,6 +682,13 @@ impl RecordCache {
                 });
             if let Some(victim) = victim {
                 // Cached bytes must not outlive the anchor that identifies them.
+                // Retained projections may have consumed inherited prefix facts
+                // even after their visible cursor moved into the child's suffix.
+                for path in self.dependent_paths(vec![victim.clone()]) {
+                    if let Some(meta) = self.meta.get_mut(&path) {
+                        meta.custody = None;
+                    }
+                }
                 self.forget(&victim);
                 self.remove_meta(&victim);
             }

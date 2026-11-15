@@ -272,16 +272,20 @@ impl Failure {
 }
 
 /// A reader discontinuity that applications must show separately from outages.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ReadIssue {
     /// Authorization failed; cached bytes for the stream were discarded.
+    #[error("reader source access denied")]
     AccessDenied,
     /// The resume anchor was lost; history must be loaded from a new cut.
+    #[error("reader source retention lost")]
     RetentionLost,
     /// A directory continuation observed concurrent hierarchy changes.
+    #[error("reader source hierarchy changed")]
     HierarchyChanged,
     /// The original definite provider refusal; acknowledge before following again.
-    Refused(StreamError),
+    #[error("reader source refused: {0}")]
+    Refused(#[source] StreamError),
 }
 
 /// What the client can promise about freshness.
