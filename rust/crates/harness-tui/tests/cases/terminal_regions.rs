@@ -206,11 +206,10 @@ fn without_scrolling(bytes: &[u8]) -> Vec<u8> {
                 .iter()
                 .position(|byte| (0x40..=0x7e).contains(byte))
         {
-                let end = at + 2 + end;
-                if matches!(bytes[end], b'S' | b'T' | b'r') {
-                    at = end + 1;
-                    continue;
-                }
+            let end = at + 2 + end;
+            if matches!(bytes[end], b'S' | b'T' | b'r') {
+                at = end + 1;
+                continue;
             }
         }
         result.push(bytes[at]);
