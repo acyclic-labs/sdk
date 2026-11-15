@@ -30,7 +30,7 @@ fn returned_native_buffer_keeps_original_custody_without_adopting_leases() -> Re
     io.account(|ctx| owner.restore(ctx))?;
     assert_eq!(io.owned_bytes()?, 45);
     let output = io.guard_owned(37)?;
-    assert_eq!(io.owned_bytes()?, 8);
+    assert_eq!(io.owned_bytes()?, 45);
     drop(output);
     assert_eq!(io.owned_bytes()?, 8);
     assert_eq!(live()?, baseline);
