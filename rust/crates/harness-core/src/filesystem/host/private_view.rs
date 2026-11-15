@@ -177,10 +177,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
             }
         }
-        let Some(cut) = self.private_snapshot(&workspace, None, io).await? else {
-            return Ok(None);
-        };
-        self.private_generation_ref(&cut, None, io).map(Some)
+        if let Some(cut) = self.private_snapshot(&workspace, None, io).await? {
+            return self.private_generation_ref(&cut, None, io).map(Some);
+        }
+        // The project selects a branch the view does not overlay; that
+        // branch's head is the private target's current generation.
+        let head = self.current_generation(&workspace, io).await?;
+        self.generation_ref_id(head.id(), Some(io)).map(Some)
     }
 
     pub(in crate::filesystem) fn private_changes(
@@ -339,6 +342,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             return Ok(None);
         };
         if expected.is_some_and(|expected| expected.as_resource().version() != Some(FORMAT)) {
+            return Ok(None);
+        }
+        // The view overlays its own workspace. While the project selects
+        // another, the current cut is that workspace's, not the view's.
+        if expected.is_none()
+            && self.select_current_workspace(workspace, io).await?.id() != workspace.id()
+        {
             return Ok(None);
         }
         let owner = io.take_native_accounting()?;
