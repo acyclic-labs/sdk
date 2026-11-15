@@ -316,7 +316,7 @@ pub struct ClaimCheck {
 #[cfg(test)]
 pub(crate) fn recorded_process_lock(claim: &[u8]) -> Option<std::path::PathBuf> {
     match record::Contents::decode(claim) {
-        record::Contents::Record(record) => process::bytes_path(&record.process.lock),
+        record::Contents::Record(record) => process::bytes_path(record.process.lock),
         record::Contents::Empty | record::Contents::Torn | record::Contents::Malformed => None,
     }
 }

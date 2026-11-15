@@ -186,7 +186,7 @@ async fn history() -> TestResult {
 /// `DST_SEEDS=<a>..<b>` runs a deep sweep; `DST_SEED=<n>` replays one seed.
 #[test]
 fn seeded_undecided_failure_never_idles_behind_busy_actors() -> TestResult {
-    sweep("actors-undecided", seeds(0..8), |seed| {
+    sweep("actors-undecided", seeds(0..8)?, |seed| {
         seeded_runtime(seed)
             .map_err(|error| error.to_string())?
             .block_on(async {

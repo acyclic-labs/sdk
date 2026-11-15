@@ -114,7 +114,7 @@ fn replay(seed: u64) -> Result<(), Failure> {
 #[test]
 fn seeded_puts_dependencies_and_ranges() -> Result<(), Failure> {
     use acyclic_native_runtime::testing::sweep::{seeds, sweep};
-    sweep("objects-batches", seeds(0..4), |seed| {
+    sweep("objects-batches", seeds(0..4)?, |seed| {
         replay(seed).map_err(|error| error.to_string())
     })?;
     Ok(())

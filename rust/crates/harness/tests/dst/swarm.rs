@@ -579,7 +579,7 @@ fn minimal_trace(seed: u64) -> String {
 #[test]
 #[ignore = "GC-284: seed 0 stalls the harness; run with --ignored to reproduce"]
 fn seeded_swarms_settle_and_complete_every_turn() {
-    let seeds = sweep::seeds(SEEDS);
+    let seeds = sweep::seeds(SEEDS).unwrap_or_else(|malformed| panic!("{malformed}"));
     let single = seeds.end - seeds.start == 1;
     let swept = sweep::sweep("swarm", seeds, world).unwrap_or_else(|failure| {
         let trace = if single {

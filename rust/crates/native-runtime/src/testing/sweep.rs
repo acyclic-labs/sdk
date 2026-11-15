@@ -5,34 +5,35 @@ use std::{fmt, ops::Range, time::Duration};
 /// `DST_SEEDS=<start>..<end>` replaces `default` for a deeper sweep; otherwise
 /// `default`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics when either variable is set but malformed, selects no seed, or
-/// names `u64::MAX`, so a typo never silently runs the wrong range or none.
-#[must_use]
-pub fn seeds(default: Range<u64>) -> Range<u64> {
-    let parse = |name: &str, value: &str| -> u64 {
+/// Either variable set but malformed, selecting no seed, or naming
+/// `u64::MAX`, so a typo never silently runs the wrong range or none.
+pub fn seeds(default: Range<u64>) -> Result<Range<u64>, String> {
+    let parse = |name: &str, value: &str| -> Result<u64, String> {
         value
             .parse()
-            .unwrap_or_else(|_| panic!("{name}: {value:?} is not a u64"))
+            .map_err(|_| format!("{name}: {value:?} is not a u64"))
     };
     if let Ok(seed) = std::env::var("DST_SEED") {
-        let seed = parse("DST_SEED", &seed);
+        let seed = parse("DST_SEED", &seed)?;
         let end = seed
             .checked_add(1)
-            .unwrap_or_else(|| panic!("DST_SEED must be below u64::MAX"));
-        return seed..end;
+            .ok_or("DST_SEED must be below u64::MAX")?;
+        return Ok(seed..end);
     }
-    if let Ok(range) = std::env::var("DST_SEEDS") {
-        let Some((start, end)) = range.split_once("..") else {
-            panic!("DST_SEEDS={range:?} is not <start>..<end>");
-        };
-        let seeds = parse("DST_SEEDS start", start)..parse("DST_SEEDS end", end);
-        // An empty range would pass without running a single world.
-        assert!(seeds.start < seeds.end, "DST_SEEDS={range} selects no seed");
-        return seeds;
+    let Ok(range) = std::env::var("DST_SEEDS") else {
+        return Ok(default);
+    };
+    let (start, end) = range
+        .split_once("..")
+        .ok_or_else(|| format!("DST_SEEDS={range:?} is not <start>..<end>"))?;
+    let seeds = parse("DST_SEEDS start", start)?..parse("DST_SEEDS end", end)?;
+    // An empty range would pass without running a single world.
+    if seeds.is_empty() {
+        return Err(format!("DST_SEEDS={range} selects no seed"));
     }
-    default
+    Ok(seeds)
 }
 
 /// The first failing seed of a sweep and the world's own minimal trace.
@@ -132,10 +133,11 @@ pub fn minimize<T: Clone>(mut choices: Vec<T>, mut fails: impl FnMut(&[T]) -> bo
         let chunk = choices.len().div_ceil(parts);
         let reduced = (0..choices.len()).step_by(chunk).find_map(|start| {
             let end = (start + chunk).min(choices.len());
-            let candidate: Vec<T> = choices[..start]
+            let candidate: Vec<T> = choices
                 .iter()
-                .chain(&choices[end..])
-                .cloned()
+                .enumerate()
+                .filter(|(index, _)| !(start..end).contains(index))
+                .map(|(_, choice)| choice.clone())
                 .collect();
             fails(&candidate).then_some(candidate)
         });
@@ -167,7 +169,7 @@ mod tests {
         ) {
             let fails = |candidate: &[u8]| needed.iter().all(|value| candidate.contains(value));
             proptest::prop_assume!(fails(&choices));
-            let minimal = minimize(choices.clone(), fails);
+            let minimal = minimize(choices, fails);
             proptest::prop_assert!(fails(&minimal));
             proptest::prop_assert_eq!(minimal.len(), needed.len());
         }

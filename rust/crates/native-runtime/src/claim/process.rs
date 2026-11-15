@@ -58,7 +58,7 @@ impl ProcessOwner {
         // exclude them: a filesystem whose locks always succeed cannot hold it.
         match FileLock::try_acquire(File::open(&path)?, FileLockMode::Shared) {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            _ => return Err(io::Error::from(io::ErrorKind::Unsupported).into()),
+            _ => return Err(io::ErrorKind::Unsupported.into()),
         }
         let process = Process {
             pid,

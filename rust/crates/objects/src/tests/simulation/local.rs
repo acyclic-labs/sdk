@@ -99,7 +99,7 @@ fn seeded_local_faults_preserve_flushed_objects_and_allow_repair() -> Result<(),
     acyclic_native_runtime::initialize_native_io_services()?;
     acyclic_native_runtime::testing::sweep::sweep(
         "objects-physical",
-        acyclic_native_runtime::testing::sweep::seeds(0..2),
+        acyclic_native_runtime::testing::sweep::seeds(0..2)?,
         |seed| {
             for fault in [
                 DurableFault::Before,

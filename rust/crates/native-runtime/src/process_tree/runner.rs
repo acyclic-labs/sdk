@@ -343,8 +343,9 @@ fn start_inner(
     {
         // Capture the actual encoded request at its transport boundary. The
         // fixture clears its environment; inherited host secrets are excluded.
-        let mut capture = vec![u8::try_from(count).map_err(|_| io::ErrorKind::InvalidData)?];
-        capture.extend_from_slice(&message[8..]);
+        let body = message.get(8..).ok_or(io::ErrorKind::InvalidData)?;
+        let count = u8::try_from(count).map_err(|_| io::ErrorKind::InvalidData)?;
+        let capture = [&[count][..], body].concat();
         static CAPTURE_SEQUENCE: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(0);
         let sequence = CAPTURE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -356,8 +357,7 @@ fn start_inner(
         // Mutate descriptor custody on the actual captured request, without
         // launching malformed input or creating a parallel request encoder.
         for count in 0..=9 {
-            capture[0] = count;
-            let checked = super::fuzz_runner_request(&capture);
+            let checked = super::fuzz_runner_request(&[&[count][..], body].concat());
             assert!(checked.is_ok(), "{checked:?}");
         }
     }
@@ -735,10 +735,10 @@ pub(super) fn start_packet_device_host(
     std::thread::Builder::new()
         .name("acyclic-mount-host-reaper".into())
         .spawn(move || {
-            if let Ok(mut child) = child.recv() {
-                if let Err(error) = child.wait() {
-                    tracing::error!(%error, "packet device host wait failed");
-                }
+            if let Ok(mut child) = child.recv()
+                && let Err(error) = child.wait()
+            {
+                tracing::error!(%error, "packet device host wait failed");
             }
         })?;
     let mut child = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()))

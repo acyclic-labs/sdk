@@ -7,7 +7,7 @@ use acyclic_native_runtime::testing::{
 
 #[test]
 fn seeded_forks_preserve_custody_ownership() -> Result<(), Failure> {
-    sweep("actors-custody", seeds(0..4), |seed| {
+    sweep("actors-custody", seeds(0..4)?, |seed| {
         seeded_runtime(seed).map_err(|error| error.to_string())?.block_on(async {
             tokio::time::pause();
             let (schedule, mut boundaries) = Schedule::seeded(seed);

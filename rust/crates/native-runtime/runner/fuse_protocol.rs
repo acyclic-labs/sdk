@@ -5,9 +5,9 @@
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
-/// Length of the Linux fuse_in_header.
+/// Length of the Linux `fuse_in_header`.
 pub const INPUT_HEADER: usize = 40;
-/// Length of the Linux fuse_out_header.
+/// Length of the Linux `fuse_out_header`.
 pub const OUTPUT_HEADER: usize = 16;
 /// The existing protective packet envelope ceiling.
 pub const MAXIMUM_WRITE: u32 = 16 * 1024 * 1024;
@@ -147,7 +147,7 @@ impl Configuration {
         if !(4096..=MAXIMUM_WRITE).contains(&self.maximum_write)
             || !self.page_size.is_power_of_two()
             || self.page_size < 4096
-            || self.maximum_write % self.page_size != 0
+            || !self.maximum_write.is_multiple_of(self.page_size)
         {
             return Err(EINVAL);
         }
@@ -331,18 +331,14 @@ impl Session {
         };
         let pages = u16::try_from(pages).map_err(|_| EOVERFLOW)?;
         let mut body = [0; 64];
-        for (offset, value) in [
-            (0, PROTOCOL_MAJOR),
-            (4, PROTOCOL_MINOR),
-            (8, readahead),
-            (12, flags),
-            (20, maximum),
-            (24, 1),
-        ] {
-            body[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
-        }
+        body[..4].copy_from_slice(&PROTOCOL_MAJOR.to_ne_bytes());
+        body[4..8].copy_from_slice(&PROTOCOL_MINOR.to_ne_bytes());
+        body[8..12].copy_from_slice(&readahead.to_ne_bytes());
+        body[12..16].copy_from_slice(&flags.to_ne_bytes());
         body[16..18].copy_from_slice(&16_u16.to_ne_bytes());
         body[18..20].copy_from_slice(&12_u16.to_ne_bytes());
+        body[20..24].copy_from_slice(&maximum.to_ne_bytes());
+        body[24..28].copy_from_slice(&1_u32.to_ne_bytes());
         body[28..30].copy_from_slice(&pages.to_ne_bytes());
         Ok(Prepared::Reply {
             length: reply(response, request.unique, &body, None)?,
@@ -366,15 +362,16 @@ pub fn reply_header(
     if length < OUTPUT_HEADER || bytes.len() < length {
         return Err(ENOBUFS);
     }
+    let header = bytes.first_chunk_mut::<OUTPUT_HEADER>().ok_or(ENOBUFS)?;
     let status = match errno {
         Some(errno) if errno > 0 => -errno,
         Some(_) => return Err(EINVAL),
         None => 0,
     };
     let length_word = u32::try_from(length).map_err(|_| EOVERFLOW)?;
-    bytes[..4].copy_from_slice(&length_word.to_ne_bytes());
-    bytes[4..8].copy_from_slice(&status.to_ne_bytes());
-    bytes[8..16].copy_from_slice(&unique.to_ne_bytes());
+    header[..4].copy_from_slice(&length_word.to_ne_bytes());
+    header[4..8].copy_from_slice(&status.to_ne_bytes());
+    header[8..].copy_from_slice(&unique.to_ne_bytes());
     Ok(length)
 }
 

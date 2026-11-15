@@ -290,7 +290,7 @@ fn replay(seed: u64) -> TestResult {
 #[test]
 fn seeded_runtime_delivery_alarms_pause_and_restart() -> TestResult {
     use acyclic_native_runtime::testing::sweep::{seeds, sweep};
-    sweep("actors-runtime", seeds(0..4), |seed| {
+    sweep("actors-runtime", seeds(0..4)?, |seed| {
         replay(seed).map_err(|error| error.to_string())
     })?;
     Ok(())

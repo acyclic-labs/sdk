@@ -63,10 +63,14 @@ pub struct ProvisionalSigningKey {
 }
 
 impl ProvisionalSigningKey {
+    /// The non-secret commitment this entry is published under.
+    #[must_use]
     pub fn reference(&self) -> SigningKeyReference {
         self.reference
     }
 
+    /// Records a publication stage; once installed, the published namespace owns
+    /// the entry and abandoning this key no longer deletes it.
     pub fn observe_publication(&self, stage: crate::private_file::PublicationStage) {
         if stage == crate::private_file::PublicationStage::Installed {
             self.cleanup.store(false, Ordering::Release);
@@ -197,6 +201,11 @@ impl SigningKeyReference {
         Ok(provisional)
     }
 
+    /// Checks that `custody` resolves to the store this seed was created in.
+    ///
+    /// # Errors
+    ///
+    /// The custody cannot be resolved, or it selects a different store.
     pub fn validate_custody(&self, custody: SigningCustody<'_>) -> io::Result<()> {
         self.validate_store(&custody.resolve()?)
     }

@@ -489,7 +489,7 @@ async fn command_completion_publishes_once_with_an_independent_duplicate_sync_co
 fn seeded_command_range_publications() -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_native_runtime::testing::sweep::{seeds, sweep};
     use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
-    let swept = sweep("filesystem command publications", seeds(0..4), |seed| {
+    let swept = sweep("filesystem command publications", seeds(0..4)?, |seed| {
         let runtime = seeded_runtime(seed).map_err(|error| error.to_string())?;
         runtime.block_on(async {
             tokio::time::pause();

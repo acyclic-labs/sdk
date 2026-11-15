@@ -219,7 +219,7 @@ async fn history() -> TestResult {
 
 #[test]
 fn seeded_children_share_one_activation_shard() -> TestResult {
-    sweep("actors-composition", seeds(0..4), |seed| {
+    sweep("actors-composition", seeds(0..4)?, |seed| {
         seeded_runtime(seed).map_err(|error| error.to_string())?.block_on(async {
             tokio::time::pause();
             let (schedule, mut boundaries) = Schedule::seeded(seed);

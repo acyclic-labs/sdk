@@ -18,10 +18,12 @@ use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 mod tests;
 
 #[cfg(test)]
+type Hook<F> = std::cell::RefCell<Option<Box<F>>>;
+#[cfg(test)]
 thread_local! {
-    static BEFORE_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce(&File)>>> = const { std::cell::RefCell::new(None) };
-    static BEFORE_CONNECT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
-    static BEFORE_LISTEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static BEFORE_ADMISSION: Hook<dyn FnOnce(&File)> = const { std::cell::RefCell::new(None) };
+    static BEFORE_CONNECT: Hook<dyn FnOnce()> = const { std::cell::RefCell::new(None) };
+    static BEFORE_LISTEN: Hook<dyn FnOnce()> = const { std::cell::RefCell::new(None) };
     static WITHOUT_ADMISSION_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -113,10 +115,12 @@ impl PacketDevice {
         let mut request = [0; 20];
         for (slot, word) in
             request
-                .chunks_exact_mut(4)
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
                 .zip([1, mode, uid, gid, u32::from(writable)])
         {
-            slot.copy_from_slice(&word.to_ne_bytes());
+            *slot = word.to_ne_bytes();
         }
         runner::send_message(&self.retirement.control, &[directory.as_raw_fd()], &request)?;
         self.wait_mounted()
@@ -161,6 +165,13 @@ struct PublicationReceipts {
     // map or an additional receiver thread for every device.
     completed: [Option<PacketDevicePublication>; 2],
     failure: Option<(io::ErrorKind, Option<i32>)>,
+}
+
+impl PublicationReceipts {
+    fn completed(&mut self, notification: bool) -> &mut Option<PacketDevicePublication> {
+        let [reply, notice] = &mut self.completed;
+        if notification { notice } else { reply }
+    }
 }
 
 /// An acknowledged physical device-write outcome, distinct from transport loss.
@@ -224,7 +235,7 @@ impl PacketDeviceRetirement {
     pub fn publication(&self, notification: bool) -> io::Result<PacketDevicePublication> {
         let mut state = self.receipts.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
-            if let Some(receipt) = state.completed[usize::from(notification)].take() {
+            if let Some(receipt) = state.completed(notification).take() {
                 return Ok(receipt);
             }
             if self.retired.load(Ordering::Acquire) {
@@ -262,13 +273,10 @@ impl PacketDeviceRetirement {
                     None
                 }
             };
-            if let Some((class, receipt)) = completed {
-                if state.completed[usize::from(class)]
-                    .replace(receipt)
-                    .is_some()
-                {
-                    state.failure = Some((io::ErrorKind::InvalidData, None));
-                }
+            if let Some((class, receipt)) = completed
+                && state.completed(class).replace(receipt).is_some()
+            {
+                state.failure = Some((io::ErrorKind::InvalidData, None));
             }
             self.receipt_ready.notify_all();
         }
@@ -351,8 +359,10 @@ fn owner_exit() -> io::Result<&'static OwnedFd> {
                     ),
                 ))
             } else {
-                // SAFETY: pidfd_open returned this fresh descriptor.
-                Ok(unsafe { OwnedFd::from_raw_fd(file as i32) })
+                i32::try_from(file).map_err(io::Error::other).map(|file| {
+                    // SAFETY: pidfd_open returned this fresh descriptor.
+                    unsafe { OwnedFd::from_raw_fd(file) }
+                })
             };
             if started.send(result).is_ok() {
                 let _ = parked.recv();
@@ -373,15 +383,17 @@ fn address(path: &std::path::Path) -> io::Result<(libc::sockaddr_un, libc::sockl
     let name = path.as_os_str().as_bytes();
     // SAFETY: all-zero is valid address storage, including its trailing NUL.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    address.sun_family = libc::AF_UNIX as _;
+    address.sun_family =
+        libc::sa_family_t::try_from(libc::AF_UNIX).map_err(|_| io::ErrorKind::InvalidInput)?;
     if name.len() + 1 > address.sun_path.len() {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     for (target, byte) in address.sun_path.iter_mut().zip(name) {
-        *target = *byte as _;
+        *target = libc::c_char::from_ne_bytes([*byte]);
     }
     let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
-    Ok((address, length as _))
+    let length = libc::socklen_t::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?;
+    Ok((address, length))
 }
 
 fn socket() -> io::Result<OwnedFd> {
@@ -681,7 +693,8 @@ fn connect_existing(path: &std::path::Path) -> io::Result<Option<UnixStream>> {
 fn authenticate(control: UnixStream) -> io::Result<UnixStream> {
     // SAFETY: ucred holds only integer fields, so all-zero bytes are a valid value.
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut size = std::mem::size_of_val(&peer) as libc::socklen_t;
+    let mut size =
+        libc::socklen_t::try_from(std::mem::size_of_val(&peer)).map_err(io::Error::other)?;
     // SAFETY: SO_PEERCRED fills the initialized peer structure.
     if unsafe {
         libc::getsockopt(
@@ -697,6 +710,7 @@ fn authenticate(control: UnixStream) -> io::Result<UnixStream> {
     }
     // A listener created by this client retains its creator's credentials;
     // ownership is authenticated by UID, not the listener's recorded PID.
+    // SAFETY: geteuid takes no arguments, reads no memory and cannot fail.
     if peer.uid != unsafe { libc::geteuid() } {
         return Err(io::ErrorKind::PermissionDenied.into());
     }

@@ -37,7 +37,7 @@ fn replay(seed: u64) -> Result<(), Failure> {
 /// `DST_SEEDS=<a>..<b>` runs a deep sweep; `DST_SEED=<n>` replays one seed.
 #[test]
 fn seeded_delivery_alarm_and_composed_effects() -> Result<(), Failure> {
-    sweep("actors-store", seeds(0..4), |seed| {
+    sweep("actors-store", seeds(0..4)?, |seed| {
         replay(seed).map_err(|error| error.to_string())
     })?;
     Ok(())

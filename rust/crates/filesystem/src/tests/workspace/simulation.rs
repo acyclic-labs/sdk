@@ -247,7 +247,7 @@ fn run(seed: u64, actions: &[Action]) -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn seeded_volume_history() -> Result<(), Box<dyn Error>> {
-    let swept = sweep("filesystem volume history", seeds(0..4), |seed| {
+    let swept = sweep("filesystem volume history", seeds(0..4)?, |seed| {
         let actions = history(seed, 16).map_err(|error| error.to_string())?;
         // Use the shared panic/error capture while shrinking as well. Keep the
         // original invariant report so a different failure cannot replace it.

@@ -133,7 +133,7 @@ async fn recover(root: &Path) -> TestResult {
 #[test]
 fn seeded_physical_crash_history() -> TestResult {
     use acyclic_native_runtime::testing::sweep::{seeds, sweep};
-    let swept = sweep("filesystem worker restart", seeds(0..2), |seed_value| {
+    let swept = sweep("filesystem worker restart", seeds(0..2)?, |seed_value| {
         let runtime = seeded_runtime(seed_value).map_err(|error| error.to_string())?;
         runtime
             .block_on(async {

@@ -84,7 +84,7 @@ fn seeded_physical_restart_preserves_exactly_once_delivery_and_alarm() -> TestRe
     acyclic_native_runtime::initialize_native_io_services()?;
     acyclic_native_runtime::testing::sweep::sweep(
         "actors-physical",
-        acyclic_native_runtime::testing::sweep::seeds(0..2),
+        acyclic_native_runtime::testing::sweep::seeds(0..2)?,
         |seed| {
             for fault in [
                 DurableFault::Before,
