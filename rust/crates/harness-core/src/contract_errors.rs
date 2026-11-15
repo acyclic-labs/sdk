@@ -895,9 +895,9 @@ impl Error {
             Self::Agent(source) => match &**source {
                 crate::agent::Error::Path(_) => ErrorCode::Invalid,
                 crate::agent::Error::NoSuchAgent => ErrorCode::NotFound,
-                crate::agent::Error::SpawnRefused(_) | crate::agent::Error::Conflict(_) => {
-                    ErrorCode::Conflict
-                }
+                crate::agent::Error::SpawnRefused(_)
+                | crate::agent::Error::Conflict(_)
+                | crate::agent::Error::CreationConflict(_) => ErrorCode::Conflict,
                 crate::agent::Error::IncompatibleCheckpointCodec
                 | crate::agent::Error::UnsupportedRecordVersion(_) => ErrorCode::Unsupported,
                 crate::agent::Error::Unknown(_) => ErrorCode::Indeterminate,

@@ -159,6 +159,11 @@ pub enum Error {
     /// A committed record contradicts the request's identity.
     #[error("agent request conflicts: {0}")]
     Conflict(&'static str),
+    /// A creation's conditions did not hold: another creation holds the
+    /// agent, or a volume or journal it creates already exists. Nothing
+    /// changed; each conflict names the path and the state it observed.
+    #[error("agent exists with another creation: {0:?}")]
+    CreationConflict(Vec<acyclic_stream::CommitConflict>),
     /// Completion is uncertain; retry this exact request until it resolves.
     #[error("agent commit outcome is unknown")]
     Unknown(Box<acyclic_stream::CommitRequest>),

@@ -733,7 +733,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         let created = self.prepare_root(intent, adopted, false)?;
         match submit(&*self.provider, created.request).await? {
             Submitted::Committed(_) => {}
-            Submitted::Conflict(_) | Submitted::NoSuchAgent(_) | Submitted::RecipientClosed(_) => {
+            Submitted::Conflict(conflicts) => return Err(Error::CreationConflict(conflicts)),
+            Submitted::NoSuchAgent(_) | Submitted::RecipientClosed(_) => {
                 return Err(Error::Record("agent exists with another creation"));
             }
         }

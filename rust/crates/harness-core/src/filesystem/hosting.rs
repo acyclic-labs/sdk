@@ -223,8 +223,8 @@ impl Prepared {
                 agents.host(&child)?;
                 Ok(RootSubmission::Created(child))
             }
-            FilesystemCommitOutcome::Rejected(_) => {
-                Err(Error::Record("agent exists with another creation"))
+            FilesystemCommitOutcome::Rejected(conflicts) => {
+                Err(Error::CreationConflict(conflicts.to_vec()))
             }
             FilesystemCommitOutcome::Unknown { commit, .. } => {
                 Ok(RootSubmission::Unknown(Self { child, commit }))
