@@ -176,7 +176,7 @@ async fn verify_primary(first: &dyn Blobs, run: &str) -> Result<Primary, Failure
     let slice = first.get(digest, ByteRange::new(100, 300), 200).await;
     expect!(
         "head-and-exact-ranges",
-        matches!(&slice, Ok(object) if body.get(100..300).is_some_and(|expected| object.body() == expected) && object.start() == 100),
+        matches!(&slice, Ok(object) if body.get(100..300).is_some_and(|expected| object.body().as_ref() == expected) && object.start() == 100),
         slice.map(|object| object.body().len())
     );
     let tail = first
@@ -191,7 +191,7 @@ async fn verify_primary(first: &dyn Blobs, run: &str) -> Result<Primary, Failure
         .await;
     expect!(
         "head-and-exact-ranges",
-        matches!(&tail, Ok(object) if body.get(4000..).is_some_and(|expected| object.body() == expected)),
+        matches!(&tail, Ok(object) if body.get(4000..).is_some_and(|expected| object.body().as_ref() == expected)),
         tail.map(|object| object.body().len())
     );
 
@@ -338,9 +338,12 @@ async fn verify_primary(first: &dyn Blobs, run: &str) -> Result<Primary, Failure
     let Ok(Put::Created { verified }) = published else {
         return Err(fail("manifest-ranges-select-intersecting-parts", published));
     };
+    let encoded = manifest
+        .encode()
+        .map_err(|error| fail("manifest-ranges-select-intersecting-parts", error))?;
     expect!(
         "manifest-ranges-select-intersecting-parts",
-        verified.digest == Digest::of(&manifest.encode()?) && verified.length == 2500,
+        verified.digest == Digest::of(&encoded) && verified.length == 2500,
         verified
     );
     let spanning = first
@@ -614,7 +617,7 @@ async fn verify_isolation(
     let independent = second.put(body.clone(), Vec::new()).await;
     expect!(
         "cross-account-isolation",
-        matches!(&independent, Ok(Put::Created { verified }) if verified == digest),
+        matches!(&independent, Ok(Put::Created { verified: created }) if created.digest == digest),
         independent
     );
     let foreign_list = second.list(None, 1000).await;

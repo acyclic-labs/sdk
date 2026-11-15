@@ -174,10 +174,10 @@ pub fn check_revision_metadata(bytes: &[u8]) -> bool {
     };
     let mut encoded = minimum.as_bytes().to_vec();
     encoded.push(b'!');
-    let Ok(minimum) = http::HeaderValue::from_bytes(&encoded) else {
+    let Ok(header) = http::HeaderValue::from_bytes(&encoded) else {
         return false;
     };
-    invalid.insert(MINIMUM_REVISION, minimum);
+    invalid.insert(MINIMUM_REVISION, header);
     if requested(&MetadataMap::from_headers(invalid))
         .err()
         .map(|error| error.code())
@@ -233,7 +233,7 @@ pub fn check_revision_metadata(bytes: &[u8]) -> bool {
                 header: issued(header),
             };
             if admission
-                .finish(&super::status(&wire::ErrorCode::NotFound.into()), trailer)
+                .finish(&super::status(&Error::from(wire::ErrorCode::NotFound)), trailer)
                 .is_err()
             {
                 return false;

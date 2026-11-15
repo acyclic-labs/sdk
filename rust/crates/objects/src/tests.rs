@@ -3688,13 +3688,14 @@ async fn a_native_batch_member_starts_once_the_members_it_needs_complete()
 async fn a_native_batch_many_times_its_budget_completes_within_it()
 -> Result<(), Box<dyn std::error::Error>> {
     const N: usize = 16 * crate::BATCH_WINDOW;
-    let bodies = |seed: u8| -> Vec<(OwnedBytes, Vec<Digest>)> {
+    let bodies = |seed: u8| -> Result<Vec<(OwnedBytes, Vec<Digest>)>, std::io::Error> {
         (0..N)
             .map(|i| {
-                (
-                    OwnedBytes::from(vec![seed, u8::try_from(i)?, u8::try_from(i >> 8)?]),
-                    Vec::new(),
-                )
+                let low = u8::try_from(i)
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+                let high = u8::try_from(i >> 8)
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+                Ok((OwnedBytes::from(vec![seed, low, high]), Vec::new()))
             })
             .collect()
     };
@@ -3704,7 +3705,7 @@ async fn a_native_batch_many_times_its_budget_completes_within_it()
     let put = async |seed: u8, limit: u64, window: usize| {
         let budget = std::sync::Arc::new(Budget::new(limit));
         let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
-        let request = crate::ObjectsNativeRequest::new(sealed(bodies(seed)), (), &meter)?;
+        let request = crate::ObjectsNativeRequest::new(sealed(bodies(seed)?), (), &meter)?;
         let receipts = crate::native::put_window(&blobs, request, &meter, window)?.await?;
         for receipt in receipts {
             assert!(matches!(receipt?.put(), Put::Created { .. }));

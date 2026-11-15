@@ -241,7 +241,7 @@ fn error_from_status(status: &tonic::Status) -> Error {
     error
 }
 
-fn status(error: Error) -> tonic::Status {
+fn status(error: &Error) -> tonic::Status {
     let parts = error.status_parts();
     tonic::Status::with_details_and_metadata(
         tonic::Code::from_i32(parts.code),
@@ -642,7 +642,7 @@ where
             Ok(response)
         }
         Err(error) => {
-            let mut status = status(error);
+            let mut status = status(&error);
             let current = blobs
                 .revisions()
                 .await
