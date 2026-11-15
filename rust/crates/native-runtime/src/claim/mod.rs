@@ -219,6 +219,13 @@ impl StoreClaim {
     /// by [`StoreClaim::check_metered`], including every record chunk.
     pub const CHECK_READ_OPERATIONS: u64 = 1 + process::PROBES;
 
+    /// The most physical reads one of those observations costs
+    /// [`StoreClaim::check_metered`] when each read returns whole. A record
+    /// within 16 KiB: its length, a rewind and one read (an empty file skips
+    /// the read). A lock probe: its open, its identity and the lock test. A
+    /// kernel file probe: its open, one read and the read at its end.
+    pub const OBSERVATION_READ_OPERATIONS: u64 = 3;
+
     /// Claims the store whose claim file is `path`, creating the file if needed.
     pub fn acquire(path: &Path) -> io::Result<Self> {
         Self::acquire_with(Native::SYSTEM, path)
@@ -281,6 +288,9 @@ impl StoreClaim {
 
     /// Checks a claim using the caller's existing native ledger and cancellation.
     /// Every actual record buffer is admitted before its allocation boundary.
+    /// Its physical reads are at most [`StoreClaim::OBSERVATION_READ_OPERATIONS`]
+    /// per logical observation, so at most that times
+    /// [`StoreClaim::CHECK_READ_OPERATIONS`] for a record within 16 KiB.
     pub fn check_metered(
         file: &FileLock,
         meter: &std::sync::Arc<dyn crate::NativeReadMeter>,
