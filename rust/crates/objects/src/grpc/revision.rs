@@ -120,12 +120,12 @@ pub fn check_revision_metadata(bytes: &[u8]) -> bool {
             let duration = unit * amount;
             let mut request = Request::new(());
             request.set_timeout(duration);
-            let written = request
-                .metadata()
-                .get("grpc-timeout")
-                .expect("original timeout writer emits timeout metadata")
-                .to_str()
-                .expect("original timeout writer produces ASCII");
+            let Some(written) = request.metadata().get("grpc-timeout") else {
+                return false;
+            };
+            let Ok(written) = written.to_str() else {
+                return false;
+            };
             if super::grpc_timeout(written) != Some(duration) {
                 return false;
             }
@@ -135,13 +135,10 @@ pub fn check_revision_metadata(bytes: &[u8]) -> bool {
             let mut nondigit = written.to_owned();
             nondigit.replace_range(..1, "x");
             let oversized = format!("000000000{written}");
-            for invalid in [
-                "",
-                &written[written.len() - 1..],
-                &invalid,
-                &nondigit,
-                &oversized,
-            ] {
+            let Some(last) = written.get(written.len().saturating_sub(1)..) else {
+                return false;
+            };
+            for invalid in ["", last, &invalid, &nondigit, &oversized] {
                 if super::grpc_timeout(invalid).is_some() {
                     return false;
                 }
@@ -172,12 +169,15 @@ pub fn check_revision_metadata(bytes: &[u8]) -> bool {
     // Mutate the original writer's HTTP value before binary metadata decoding.
     // from_bytes alone always writes valid base64 and cannot reach this branch.
     let mut invalid = request.metadata().clone().into_headers();
-    let mut encoded = invalid[MINIMUM_REVISION].as_bytes().to_vec();
+    let Some(minimum) = invalid.get(MINIMUM_REVISION) else {
+        return false;
+    };
+    let mut encoded = minimum.as_bytes().to_vec();
     encoded.push(b'!');
-    invalid.insert(
-        MINIMUM_REVISION,
-        http::HeaderValue::from_bytes(&encoded).expect("writer header plus visible byte"),
-    );
+    let Ok(minimum) = http::HeaderValue::from_bytes(&encoded) else {
+        return false;
+    };
+    invalid.insert(MINIMUM_REVISION, minimum);
     if requested(&MetadataMap::from_headers(invalid))
         .err()
         .map(|error| error.code())
@@ -216,7 +216,7 @@ pub fn check_revision_metadata(bytes: &[u8]) -> bool {
                 floor: floor.clone(),
                 header: issued(header),
             }
-            .finish(tonic::Status::ok(""), trailer);
+            .finish(&tonic::Status::ok(""), trailer);
             let permitted = issued(header).ok().flatten().is_some_and(|header| {
                 header == revision
                     && issued(trailer)
@@ -233,7 +233,7 @@ pub fn check_revision_metadata(bytes: &[u8]) -> bool {
                 header: issued(header),
             };
             if admission
-                .finish(super::status(wire::ErrorCode::NotFound.into()), trailer)
+                .finish(&super::status(&wire::ErrorCode::NotFound.into()), trailer)
                 .is_err()
             {
                 return false;
@@ -250,7 +250,7 @@ struct Admission {
 }
 
 impl Admission {
-    fn finish(self, status: tonic::Status, trailer: &MetadataMap) -> Result<(), tonic::Status> {
+    fn finish(self, status: &tonic::Status, trailer: &MetadataMap) -> Result<(), tonic::Status> {
         let revision = match (self.header, issued(trailer)) {
             (Ok(Some(header)), Ok(Some(trailer))) if header != trailer => {
                 Err(wire::ErrorCode::Unavailable.into())
@@ -265,7 +265,7 @@ impl Admission {
             status.code() == tonic::Code::Ok,
         )
         .map(|_| ())
-        .map_err(super::status)
+        .map_err(|error| super::status(&error))
     }
 }
 
@@ -304,7 +304,7 @@ where
                     && let Some(status) = tonic::Status::from_header_map(trailers)
                     && let Some(admission) = this.admission.take()
                     && let Err(error) =
-                        admission.finish(status, &MetadataMap::from_headers(trailers.clone()))
+                        admission.finish(&status, &MetadataMap::from_headers(trailers.clone()))
                 {
                     return Poll::Ready(Some(Err(error)));
                 }
@@ -343,16 +343,17 @@ where
         let this = self.project();
         let mut response = std::task::ready!(this.inner.poll(cx))
             .map_err(|error| tonic::Status::from_error(error.into()))?;
-        let mut admission = this
-            .admission
-            .take()
-            .expect("response polled after completion");
+        let Some(mut admission) = this.admission.take() else {
+            return Poll::Ready(Err(tonic::Status::internal(
+                "response polled after completion",
+            )));
+        };
         let metadata = MetadataMap::from_headers(std::mem::take(response.headers_mut()));
         admission.header = issued(&metadata);
         let terminal = tonic::Status::from_header_map(metadata.as_ref());
         *response.headers_mut() = metadata.into_headers();
         let admission = if let Some(status) = terminal {
-            admission.finish(status, &MetadataMap::new())?;
+            admission.finish(&status, &MetadataMap::new())?;
             None
         } else {
             Some(admission)

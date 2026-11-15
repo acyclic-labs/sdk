@@ -585,7 +585,7 @@ async fn ambiguous_revival_stops_at_its_original_conditional_write()
             .medium()
             .inner
             .read(
-                &format!("{}/e/{}/{hex}", Digest::of(b"revival").to_hex(), &hex[..2]),
+                &format!("{}/e/{}/{hex}", Digest::of(b"revival").to_hex(), digest.hex_prefix()),
                 None,
             )
             .await?
@@ -966,7 +966,7 @@ async fn a_revival_losing_both_conditional_writes_returns_conflict()
     let key = format!(
         "{}/e/{}/{hex}",
         Digest::of(b"twice-contended").to_hex(),
-        &hex[..2]
+        digest.hex_prefix()
     );
     let winner = medium.inner.read(&key, None).await?;
     // Let the second stale CAS finish, but witness any third conditional
@@ -1552,14 +1552,14 @@ async fn collection_revives_a_kept_blob_whose_deleter_crashed()
         .ok_or("unknown")?
         .digest;
     let hex = child.to_hex();
-    let key = format!("{}/e/{}/{hex}", Digest::of(b"acct").to_hex(), &hex[..2]);
+    let key = format!("{}/e/{}/{hex}", Digest::of(b"acct").to_hex(), child.hex_prefix());
     let live = store.medium().observe(key).await?.ok_or("absent")?;
     let mut marked = crate::blob::Envelope::decode(&live.bytes)?;
     marked.dying = Some([7; 16]);
     assert!(
         store
             .medium()
-            .replace(live.observation, marked.encode().into())
+            .replace(live.observation, marked.encode()?.into())
             .await?
             .is_some()
     );
@@ -1836,7 +1836,7 @@ async fn put_racing_a_condemned_envelope(removed: bool) -> Result<Put, Box<dyn s
     let body = OwnedBytes::from(vec![if removed { 12 } else { 11 }; 64]);
     let digest = Digest::of(&body);
     let hex = digest.to_hex();
-    let envelope = format!("/e/{}/{hex}", &hex[..2]);
+    let envelope = format!("/e/{}/{hex}", digest.hex_prefix());
     assert!(matches!(
         second.put(body.clone(), Vec::new()).await?,
         Put::Created { .. }
@@ -1988,7 +1988,7 @@ async fn listing_work_is_bounded_with_pending_puts() -> Result<(), Box<dyn std::
             assert!(
                 store
                     .medium()
-                    .create(&key, envelope.encode().into())
+                    .create(&key, envelope.encode()?.into())
                     .await?
             );
         }
@@ -2269,7 +2269,6 @@ async fn a_commit_flushes_only_its_unflushed_closure_in_one_batch()
 }
 
 /// One remote put member: the digest it claims, its body and references.
-
 fn wire_member(claimed: &[u8], body: &[u8], references: &[Digest]) -> crate::wire::PutBlobRequest {
     crate::wire::PutBlobRequest {
         digest: Some(Digest::of(claimed).into()),
@@ -2536,7 +2535,10 @@ impl Crashing {
     }
 
     fn alive(&self) -> Result<std::sync::MutexGuard<'_, Disk>, MediumError> {
-        let disk = self.disk.lock().unwrap();
+        let disk = self
+            .disk
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if disk.budget == Some(0) {
             return Err(dead());
         }
@@ -2679,15 +2681,19 @@ impl Medium for Crashing {
         let Some(bytes) = disk.visible.get(key) else {
             return Ok(None);
         };
+        let at = |value: u64| {
+            usize::try_from(value)
+                .map_err(|_| MediumError::Failed(std::io::ErrorKind::InvalidInput.into()))
+        };
         match range {
             None => Ok(Some(bytes.clone())),
             Some(range) if range.start <= range.end && range.end <= bytes.len() as u64 => {
-                Ok(Some(bytes.slice(range.start as usize..range.end as usize)))
+                Ok(Some(bytes.slice(at(range.start)?..at(range.end)?)))
             }
             Some(range) if self.short_reads => {
                 let end = bytes.len();
                 Ok(Some(bytes.slice(
-                    (range.start as usize).min(end)..(range.end as usize).min(end),
+                    at(range.start)?.min(end)..at(range.end)?.min(end),
                 )))
             }
             Some(_) => Err(MediumError::Failed(std::io::ErrorKind::InvalidInput.into())),
@@ -2851,7 +2857,7 @@ fn blobs_are_whole(disk: &Disk, mut pending: Vec<Digest>) -> Result<(), String> 
         let hex = digest.to_hex();
         let envelope = disk
             .durable
-            .get(&format!("{prefix}e/{}/{hex}", &hex[..2]))
+            .get(&format!("{prefix}e/{}/{hex}", digest.hex_prefix()))
             .ok_or(format!("{hex}: no envelope"))?;
         let envelope =
             crate::blob::Envelope::decode(envelope).map_err(|_| format!("{hex}: torn envelope"))?;
@@ -2869,7 +2875,7 @@ fn blobs_are_whole(disk: &Disk, mut pending: Vec<Digest>) -> Result<(), String> 
             .durable
             .get(&format!(
                 "{prefix}p/{}/{hex}.{}",
-                &hex[..2],
+                digest.hex_prefix(),
                 hex::encode(envelope.version)
             ))
             .ok_or(format!("{hex}: no payload"))?;
@@ -3411,7 +3417,7 @@ async fn a_collection_pages_through_more_blobs_than_one_listing()
     for _ in 0..3 {
         swept += blobs.collect().await?.swept;
     }
-    assert_eq!(swept, count as u64 - 1);
+    assert_eq!(swept, u64::from(count) - 1);
     // Negative control: the rooted blob on the first page survives.
     assert_eq!(blobs.usage().await?.blobs, 1);
     assert_eq!(blobs.head(kept).await?.digest, kept);
@@ -3521,7 +3527,11 @@ impl Medium for Latent {
     }
     fn settle(&self) {}
     fn allocate(&self, bytes: u64) -> Result<(), MediumError> {
-        match *self.allocation.lock().unwrap() {
+        match *self
+            .allocation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
             Some(maximum) if bytes > maximum => {
                 Err(MediumError::Failed(std::io::ErrorKind::OutOfMemory.into()))
             }
@@ -3682,7 +3692,7 @@ async fn a_native_batch_many_times_its_budget_completes_within_it()
         (0..N)
             .map(|i| {
                 (
-                    OwnedBytes::from(vec![seed, i as u8, (i >> 8) as u8]),
+                    OwnedBytes::from(vec![seed, u8::try_from(i)?, u8::try_from(i >> 8)?]),
                     Vec::new(),
                 )
             })
@@ -3695,7 +3705,7 @@ async fn a_native_batch_many_times_its_budget_completes_within_it()
         let budget = std::sync::Arc::new(Budget::new(limit));
         let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
         let request = crate::ObjectsNativeRequest::new(sealed(bodies(seed)), (), &meter)?;
-        let receipts = crate::native::put_window(&blobs, request, meter, window)?.await?;
+        let receipts = crate::native::put_window(&blobs, request, &meter, window)?.await?;
         for receipt in receipts {
             assert!(matches!(receipt?.put(), Put::Created { .. }));
         }

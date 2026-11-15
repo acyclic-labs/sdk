@@ -69,6 +69,17 @@ fn code<T: std::fmt::Debug>(result: &Result<T, Error>) -> Option<ErrorCode> {
 /// Runs every case. `run` namespaces this run's content so repeated runs
 /// against one service stay independent.
 pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<(), Failure> {
+    verify_availability(first, second, run).await?;
+    let primary = verify_primary(first, run).await?;
+    let root = verify_delete_collection_list_usage(first, run, &primary).await?;
+    verify_isolation(first, second, run, &primary, &root).await
+}
+
+async fn verify_availability(
+    first: &dyn Blobs,
+    second: &dyn Blobs,
+    run: &str,
+) -> Result<(), Failure> {
     // Register before inspecting an initially absent exact identity. An account
     // observing the same digest must receive none of this account's activity.
     use futures::FutureExt as _;
@@ -120,6 +131,19 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     drop(available);
     drop(isolated);
 
+    Ok(())
+}
+
+struct Primary {
+    body: OwnedBytes,
+    digest: Digest,
+    parent: Digest,
+    verified: Digest,
+    left_digest: Digest,
+    right_digest: Digest,
+}
+
+async fn verify_primary(first: &dyn Blobs, run: &str) -> Result<Primary, Failure> {
     // put-created-then-already-exists-verified
     let body = bytes(&format!("{run}/plain"), 4096);
     let digest = Digest::of(&body);
@@ -152,7 +176,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     let slice = first.get(digest, ByteRange::new(100, 300), 200).await;
     expect!(
         "head-and-exact-ranges",
-        matches!(&slice, Ok(object) if object.body()[..] == body[100..300] && object.start() == 100),
+        matches!(&slice, Ok(object) if body.get(100..300).is_some_and(|expected| object.body() == expected) && object.start() == 100),
         slice.map(|object| object.body().len())
     );
     let tail = first
@@ -167,7 +191,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         .await;
     expect!(
         "head-and-exact-ranges",
-        matches!(&tail, Ok(object) if object.body()[..] == body[4000..]),
+        matches!(&tail, Ok(object) if body.get(4000..).is_some_and(|expected| object.body() == expected)),
         tail.map(|object| object.body().len())
     );
 
@@ -316,14 +340,18 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     };
     expect!(
         "manifest-ranges-select-intersecting-parts",
-        verified.digest == Digest::of(&manifest.encode()) && verified.length == 2500,
+        verified.digest == Digest::of(&manifest.encode()?) && verified.length == 2500,
         verified
     );
     let spanning = first
         .get(verified.digest, ByteRange::new(900, 1100), 200)
         .await;
-    let mut expected = left[900..].to_vec();
-    expected.extend_from_slice(&right[..100]);
+    let case = "manifest-ranges-select-intersecting-parts";
+    let mut expected = left
+        .get(900..)
+        .ok_or_else(|| fail(case, "left is shorter than 900 bytes"))?
+        .to_vec();
+    expected.extend_from_slice(right.get(..100).ok_or_else(|| fail(case, "right is shorter than 100 bytes"))?);
     expect!(
         "manifest-ranges-select-intersecting-parts",
         matches!(&spanning, Ok(object) if object.body()[..] == expected[..] && object.head().kind == Kind::Manifest),
@@ -344,6 +372,31 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         wrong_length
     );
 
+    Ok(Primary {
+        body,
+        digest,
+        parent,
+        verified: verified.digest,
+        left_digest,
+        right_digest,
+    })
+}
+
+async fn verify_delete_collection_list_usage(
+    first: &dyn Blobs,
+    run: &str,
+    primary: &Primary,
+) -> Result<RootId, Failure> {
+    let Primary {
+        digest,
+        parent,
+        verified,
+        left_digest,
+        right_digest,
+        ..
+    } = primary;
+    let (digest, parent, verified, left_digest, right_digest) =
+        (*digest, *parent, *verified, *left_digest, *right_digest);
     // delete-refuses-live-references
     let referenced = first.delete(left_digest).await;
     expect!(
@@ -401,7 +454,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         orphan_head.is_ok(),
         orphan_head
     );
-    let kept = first.retain(&root, vec![verified.digest]).await;
+    let kept = first.retain(&root, vec![verified]).await;
     expect!("collection-keeps-retained-closures", kept.is_ok(), kept);
     // The pass after the one that found the orphan unreferenced keeps it.
     for _ in 0..2 {
@@ -410,7 +463,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     }
     for live in [
         rooted,
-        verified.digest,
+        verified,
         left_digest,
         right_digest,
         parent,
@@ -465,7 +518,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         expect!(
             "list-after-never-duplicates-or-skips",
             page.digests.len() <= 2
-                && page.digests.windows(2).all(|pair| pair[0] < pair[1])
+                && page.digests.windows(2).all(|pair| matches!(pair, [a, b] if a < b))
                 && page
                     .digests
                     .first()
@@ -482,7 +535,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
             None => break,
         }
     }
-    for live in [verified.digest, left_digest, right_digest, parent, digest] {
+    for live in [verified, left_digest, right_digest, parent, digest] {
         expect!(
             "list-after-never-duplicates-or-skips",
             seen.contains(&live),
@@ -507,6 +560,24 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         usage
     );
 
+    Ok(root)
+}
+
+async fn verify_isolation(
+    first: &dyn Blobs,
+    second: &dyn Blobs,
+    run: &str,
+    primary: &Primary,
+    root: &RootId,
+) -> Result<(), Failure> {
+    let Primary {
+        digest,
+        parent,
+        verified,
+        ..
+    } = primary;
+    let (digest, parent, verified) = (*digest, *parent, *verified);
+    let body = &primary.body;
     // cross-account-isolation
     let foreign = second.head(digest).await;
     expect!(
@@ -528,7 +599,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         code(&foreign_reference) == Some(ErrorCode::MissingReference),
         foreign_reference
     );
-    let foreign_root = second.retain(&root, vec![digest]).await;
+    let foreign_root = second.retain(root, vec![digest]).await;
     expect!(
         "cross-account-isolation",
         code(&foreign_root) == Some(ErrorCode::MissingReference),
@@ -543,13 +614,13 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     let independent = second.put(body.clone(), Vec::new()).await;
     expect!(
         "cross-account-isolation",
-        matches!(&independent, Ok(Put::Created { verified }) if verified.digest == digest),
+        matches!(&independent, Ok(Put::Created { verified }) if verified == digest),
         independent
     );
     let foreign_list = second.list(None, 1000).await;
     expect!(
         "cross-account-isolation",
-        matches!(&foreign_list, Ok(page) if !page.digests.contains(&verified.digest) && !page.digests.contains(&parent)),
+        matches!(&foreign_list, Ok(page) if !page.digests.contains(&verified) && !page.digests.contains(&parent)),
         foreign_list
     );
     let still_first = first.head(digest).await;

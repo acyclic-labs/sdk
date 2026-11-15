@@ -85,18 +85,23 @@ fn check_codec<T: PartialEq>(
     magic: &[u8],
     written: T,
     decode: impl Fn(&[u8]) -> Result<T, Error>,
-    encode: impl Fn(&T) -> Vec<u8>,
+    encode: impl Fn(&T) -> Result<Vec<u8>, Error>,
     valid_prefix: impl Fn(usize) -> bool,
 ) -> bool {
     // Arbitrary malformed bytes may be refused, but the actual writer's value
     // must be admitted unchanged. Otherwise a reject-all decoder passes fuzzing.
-    if !decode(&encode(&written)).is_ok_and(|decoded| decoded == written) {
+    let Ok(written) = encode(&written) else {
+        return false;
+    };
+    if !decode(&written).is_ok_and(|decoded| decoded == written) {
         return false;
     }
     let Ok(value) = decode(bytes) else {
         return true;
     };
-    let mut encoded = encode(&value);
+    let Ok(mut encoded) = encode(&value) else {
+        return false;
+    };
     if encoded != bytes {
         return false;
     }
@@ -112,7 +117,13 @@ fn check_codec<T: PartialEq>(
         bytes.len() - 1,
     ] {
         if valid_prefix(end) {
-            if !decode(&bytes[..end]).is_ok_and(|value| encode(&value) == bytes[..end]) {
+            let Ok(value) = decode(&bytes[..end]) else {
+                return false;
+            };
+            let Ok(encoded) = encode(&value) else {
+                return false;
+            };
+            if encoded != bytes[..end] {
                 return false;
             }
         } else if !refused(
@@ -292,10 +303,15 @@ pub fn check(bytes: &[u8]) -> bool {
         dying: (fields[57] & 1 != 0).then(|| fields[32..48].try_into().expect("generator deleter")),
         condemned: word(48),
     };
-    let mut encoded = envelope.encode();
+    let Ok(mut encoded) = envelope.encode() else {
+        return false;
+    };
+    let Ok(manifest_bytes) = manifest.encode() else {
+        return false;
+    };
     if !check_admission(
         &manifest,
-        &manifest.encode(),
+        &manifest_bytes,
         &[
             manifest.parts.len() * std::mem::size_of::<Part>(),
             manifest.edges.len() * std::mem::size_of::<Digest>(),
@@ -320,7 +336,9 @@ pub fn check(bytes: &[u8]) -> bool {
         None => Some(fields[32..48].try_into().expect("generator deleter")),
     };
     envelope.condemned = !envelope.condemned;
-    let restamped = envelope.encode();
+    let Ok(restamped) = envelope.encode() else {
+        return false;
+    };
     if restamped.len() != width
         || !Envelope::decode(&restamped).is_ok_and(|decoded| decoded == envelope)
     {
@@ -391,17 +409,17 @@ pub fn check(bytes: &[u8]) -> bool {
 }
 
 /// Capture actual SDK encoder output; names identify the producing codec.
-pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
+pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Error> {
     let digest = Digest::of(b"persisted codec corpus");
     let mut seeds = vec![
-        ("manifest-empty", Manifest::default().encode()),
+        ("manifest-empty", Manifest::default().encode()?),
         (
             "manifest-part-edge",
             Manifest {
                 parts: vec![Part { digest, length: 22 }],
                 edges: vec![digest],
             }
-            .encode(),
+            .encode()?,
         ),
         ("retained-batch", encode_batch(&[digest])),
         ("incarnation", encode_incarnation(7, 9)),
@@ -419,19 +437,19 @@ pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
                 dying,
                 condemned: 9,
             }
-            .encode(),
+            .encode()?,
         ));
     }
     #[cfg(not(target_arch = "wasm32"))]
     seeds.extend(crate::local::codec_fuzz::seeds());
-    seeds
+    Ok(seeds)
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn stored_writer_corpus_satisfies_the_fuzz_oracle() {
-        for (name, bytes) in super::seeds() {
+    fn stored_writer_corpus_satisfies_the_fuzz_oracle() -> Result<(), Box<dyn std::error::Error>> {
+        for (name, bytes) in super::seeds()? {
             assert!(super::check(&bytes), "persisted fuzz oracle: {name}");
         }
         for name in ["head-live", "head-dying"] {
