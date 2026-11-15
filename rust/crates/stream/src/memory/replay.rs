@@ -216,6 +216,7 @@ impl MemoryStream {
         )
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn replay<'a>(
         &self,
         state: &'a State,

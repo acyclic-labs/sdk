@@ -1,7 +1,7 @@
 //! Versioned continuation data. Authority is checked by the original provider
 //! on every use; the serialized cursor is never a bearer capability.
 use super::{Cursor, Frame};
-use crate::{Revision, RevisionScope, StreamPath};
+use crate::{Revision, StreamPath};
 use serde::{Deserialize, Serialize};
 
 /// Versioned search continuation data, decoded by the caller's funded serde
@@ -125,7 +125,7 @@ impl CursorState {
                         }
                     })?;
             Some(Revision {
-                scope: RevisionScope::new(bytes),
+                scope: crate::RevisionScope::new(bytes),
                 incarnation: at.incarnation,
                 index: at.index,
             })

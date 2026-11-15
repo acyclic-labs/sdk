@@ -5,6 +5,7 @@ pub(crate) enum HeadDurability {
     Deferred,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct HeadCapture {
     pub(crate) view: crate::Heads,
     pub(crate) ephemeral: Vec<bool>,
@@ -131,20 +132,17 @@ impl MemoryStream {
         request: &crate::HeadsRequest,
         durability: HeadDurability,
     ) -> Result<crate::Heads, StreamError> {
-        Ok(self.capture_owned_heads(request, durability).await?.view)
+        self.capture_view(request, durability, None).await
     }
 
     /// Deferred durability needs the ownership from the original observation.
+    /// Only the native local provider defers durability over leased subtrees.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn capture_owned_heads(
         &self,
         request: &crate::HeadsRequest,
         durability: HeadDurability,
     ) -> Result<HeadCapture, StreamError> {
-        let mut allocation = None;
-        let mut view = self.empty_heads(request);
-        view.heads
-            .try_reserve_exact(request.paths.len())
-            .map_err(|_| StreamError::Capacity)?;
         let mut ephemeral = Vec::new();
         let needs_ownership = durability == HeadDurability::Deferred
             && (request.projection != crate::HeadProjection::Tail
@@ -155,6 +153,21 @@ impl MemoryStream {
                 .map_err(|_| StreamError::Capacity)?;
         }
         let ownership = needs_ownership.then_some(&mut ephemeral);
+        let view = self.capture_view(request, durability, ownership).await?;
+        Ok(HeadCapture { view, ephemeral })
+    }
+
+    async fn capture_view(
+        &self,
+        request: &crate::HeadsRequest,
+        durability: HeadDurability,
+        ownership: Option<&mut Vec<bool>>,
+    ) -> Result<crate::Heads, StreamError> {
+        let mut allocation = None;
+        let mut view = self.empty_heads(request);
+        view.heads
+            .try_reserve_exact(request.paths.len())
+            .map_err(|_| StreamError::Capacity)?;
         self.capture_heads_into(
             request,
             durability,
@@ -164,7 +177,7 @@ impl MemoryStream {
             &mut allocation,
         )
         .await?;
-        Ok(HeadCapture { view, ephemeral })
+        Ok(view)
     }
 
     fn empty_heads(&self, request: &crate::HeadsRequest) -> crate::Heads {

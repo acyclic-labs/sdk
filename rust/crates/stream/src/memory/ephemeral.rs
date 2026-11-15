@@ -25,11 +25,14 @@ struct Ephemeral {
 }
 
 struct EphemeralRoot {
+    // Leases are issued and released only by the native local provider.
+    #[cfg(not(target_arch = "wasm32"))]
     lease: u64,
     live: Arc<std::sync::atomic::AtomicBool>,
     /// Subtrees this lease created outside its root, released with it.
     adopted: Vec<StreamPath>,
     /// Retry identities of this subtree's publications, released with it.
+    #[cfg(not(target_arch = "wasm32"))]
     first_commit: Option<CommitId>,
     records: usize,
     payload_bytes: usize,
@@ -52,6 +55,7 @@ impl Ephemeral {
     }
 
     /// Owned subtrees strictly beneath `path`, relative to it.
+    #[cfg(not(target_arch = "wasm32"))]
     fn nested(&self, path: &StreamPath) -> Result<Vec<crate::RelativePath>, StreamError> {
         if self.owned.is_empty() {
             return Ok(Vec::new());
@@ -283,6 +287,7 @@ impl MemoryStream {
 
     /// Removes every subtree one lease owns and wakes every follow in them.
     /// A later lease of the same root is never touched.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn release_ephemeral(&self, root: &StreamPath, lease: u64) -> Result<(), StreamError> {
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;

@@ -12,12 +12,14 @@ mod body;
 mod context;
 #[cfg(feature = "serde")]
 pub use body::RecordedStream;
+#[cfg(all(feature = "serde", not(target_arch = "wasm32")))]
+pub(crate) use context::inherit_stream;
 #[cfg(feature = "serde")]
 pub use context::{
     accompany, accompany_sync, observe, observe_outcome, observe_sync, observe_value,
 };
 #[cfg(feature = "serde")]
-pub(crate) use context::{inherit, inherit_stream, is_source, records, source_matches};
+pub(crate) use context::{inherit, is_source, records, source_matches};
 #[cfg(feature = "serde")]
 mod guard;
 #[cfg(feature = "serde")]

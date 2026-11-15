@@ -255,6 +255,7 @@ fn hash_commit(
 
 /// The canonical digest of a commit of one hard append effect, without
 /// constructing the request, and its exact hash work.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn hard_append_digest(
     conditions: &[CommitCondition],
     path: &StreamPath,
