@@ -56,6 +56,7 @@ impl ExecutionEvent {
             | Self::Model { step, .. }
             | Self::ModelInline { step, .. }
             | Self::ModelWait { step, .. }
+            | Self::ModelInterrupted { step, .. }
             | Self::ModelStopped { step, .. }
             | Self::ModelRejected { step, .. }
             | Self::ModelOutput { step, .. }
@@ -151,6 +152,17 @@ impl ExecutionEvent {
                 step: *step,
                 purpose: *purpose,
                 observation: *observation,
+            },
+            ModelInterrupted {
+                step,
+                purpose,
+                cause,
+                provider_code,
+            } => ModelInterrupted {
+                step: *step,
+                purpose: *purpose,
+                cause: text(cause)?,
+                provider_code: *provider_code,
             },
             ModelStopped {
                 step,

@@ -1,7 +1,7 @@
 {"prompt":"Reconcile the same prefix when recovery becomes available.","turns":[[{"type":"event","kind":"content",
   "delta":"one"},{"type":"error","error":"offline"}]],"recoveries":[{"observed":[{"kind":"content","delta":"one"}],
   "continuation":null},{"observed":[{"kind":"content","delta":"one"}],"continuation":[{"kind":"content","delta":"two"},
-  {"kind":"completed","metadata":null}]}],"resume":["offline","model provider unavailable (connection interrupted)"],
+  {"kind":"completed","metadata":null}]}],"resume":["offline","its provider cannot resume it: storage failure: offline"],
   "expect":{"text":"onetwo","reconciliation_count":2,"request_count":1,
     "model_events":[{"kind":"content","delta":"one"},{"kind":"content","delta":"two"},
       {"kind":"completed","metadata":null}]}}

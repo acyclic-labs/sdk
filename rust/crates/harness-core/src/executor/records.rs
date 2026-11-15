@@ -60,6 +60,7 @@ impl StockExecution<'_> {
                     | ExecutionEvent::ModelInline { .. }
                     | ExecutionEvent::ModelWait { .. }
                     | ExecutionEvent::ModelStopped { .. }
+                    | ExecutionEvent::ModelInterrupted { .. }
                     | ExecutionEvent::ModelRejected { .. } => false,
                 },
             )

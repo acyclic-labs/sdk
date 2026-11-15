@@ -243,7 +243,9 @@ impl StockExecution<'_> {
                     _continuation_hold = None;
                 }
                 if started {
-                    return Err(self.unreconciled_attempt(input.operation_id));
+                    return Err(self
+                        .unreconciled_attempt(journal, input.operation_id, step, purpose)
+                        .await);
                 }
                 let (attempt, source) =
                     super::phase::claim(super::phase::Publication::ModelDispatch.observe(
@@ -396,15 +398,107 @@ impl StockExecution<'_> {
     /// an observed prefix. Its response dispatched no tool call, and no
     /// recovery authority may generate the uncertain request again, so the
     /// step fails definitively instead of retaining a reservation that can
-    /// never make progress. The recorded prefix is kept unchanged.
-    fn unreconciled_attempt(&self, operation: OperationId) -> Error {
+    /// never make progress. The recorded prefix is kept unchanged. The failure
+    /// is the one the attempt recorded when its stream failed: a provider
+    /// failure replays as itself, and any other names its own cause. Without
+    /// a record nothing observed a provider failure, so none is claimed.
+    async fn unreconciled_attempt(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        step: u32,
+        purpose: ModelPurpose,
+    ) -> Error {
         if self.stock.reconciliation_only || super::unsettled_resume::enabled() {
-            Error::Indeterminate(operation)
+            return Error::Indeterminate(operation);
+        }
+        let interrupted = self
+            .step_records(journal, operation, step, false, Some(1), |event| {
+                matches!(event, ExecutionEvent::ModelInterrupted { step: recorded, purpose: recorded_purpose, .. }
+                    if *recorded == step && *recorded_purpose == purpose)
+            })
+            .await;
+        let recorded = match interrupted {
+            Ok((_, records)) => records.into_iter().find_map(|record| match record.event {
+                ExecutionEvent::ModelInterrupted {
+                    cause,
+                    provider_code,
+                    ..
+                } => Some((cause, provider_code)),
+                _ => None,
+            }),
+            Err(error) => return error,
+        };
+        match recorded {
+            // The provider settled the attempt: replay its failure as recorded.
+            Some((message, Some(code))) => match crate::wire::ErrorCode::try_from(code) {
+                Ok(code) => Error::ModelDiagnostic {
+                    code,
+                    message,
+                    custody: None,
+                },
+                Err(_) => Error::ModelInterrupted(message),
+            },
+            Some((cause, None)) => Error::ModelInterrupted(cause),
+            None => Error::ModelInterrupted(String::new()),
+        }
+    }
+
+    /// Records why the live stream ended this attempt before completing: a
+    /// provider failure that settles it, or a local failure that leaves it to
+    /// reconciliation. A later delivery that finds nothing to resume reports
+    /// this failure. Cancelled and native failures propagate as they are and
+    /// record nothing.
+    async fn interrupted_attempt(
+        &self,
+        journal: &dyn ExecutionJournal,
+        (operation, step, purpose): (OperationId, u32, ModelPurpose),
+        cause: Error,
+    ) -> Error {
+        use crate::wire::ErrorCode;
+        let provider_code = if cause.is_model_failure() {
+            Some(cause.code() as i32)
+        } else if !cause.leaves_effect_uncertain()
+            || cause.is_native_failure()
+            || matches!(
+                cause.code(),
+                ErrorCode::Cancelled | ErrorCode::InteractionCancelled
+            )
+        {
+            return cause;
         } else {
-            Error::ModelUnavailable {
-                failure: crate::ModelTransportFailure::Interrupted,
-                excerpt: String::new(),
-            }
+            None
+        };
+        if purpose == ModelPurpose::Count {
+            return cause;
+        }
+        let recorded = async {
+            let purpose_key = model_purpose_key(purpose);
+            let key = with_history_io(self.io, |work| {
+                preparation_format(format_args!("{purpose_key}:{step}:interrupted"), work)
+            })?;
+            let text = with_history_io(self.io, |work| {
+                preparation_format(
+                    format_args!("{}", super::tool_failure::CauseText(&cause)),
+                    work,
+                )
+            })?;
+            let event = ExecutionEvent::ModelInterrupted {
+                step,
+                purpose,
+                cause: text,
+                provider_code,
+            };
+            let _writer = self.journal_writes.lock().await;
+            journal.append(operation, &key, &event, self.io)?.await
+        }
+        .await;
+        match Error::after_cleanup(
+            Err::<std::convert::Infallible, _>(cause),
+            recorded.map(|_| ()),
+        ) {
+            Err(error) => error,
+            Ok(never) => match never {},
         }
     }
 
@@ -603,7 +697,9 @@ impl StockExecution<'_> {
         let step = dispatch.step;
         let purpose_key = model_purpose_key(purpose);
         let io = self.io;
-        {
+        // Every failure to consume or record the live stream leaves through the
+        // one recorder below, after this block has released the journal writer.
+        let consumed = async {
             let mut stream = stream;
             loop {
                 let next = match &mut stream {
@@ -719,8 +815,15 @@ impl StockExecution<'_> {
                     break;
                 }
             }
+            Ok::<(), Error>(())
         }
-        Ok(observed)
+        .await;
+        match consumed {
+            Ok(()) => Ok(observed),
+            Err(cause) => Err(self
+                .interrupted_attempt(journal, (operation_id, step, purpose), cause)
+                .await),
+        }
     }
 
     async fn require_model_producer(&self) -> Result<()> {

@@ -444,13 +444,10 @@ async fn unreconciled_empty_attempt(unsettled: bool) -> Result<Vec<ModelEvent>> 
 #[tokio::test]
 async fn an_unreconciled_empty_model_attempt_fails_without_redispatch() -> Result<()> {
     match unreconciled_empty_attempt(false).await {
-        Err(
-            _error @ Error::ModelUnavailable {
-                failure: crate::ModelTransportFailure::Interrupted,
-                ..
-            },
-        ) => {
-            assert!(!_error.leaves_outcome_uncertain());
+        // Nothing recorded a cause, and nothing observed a transport failure.
+        Err(error @ Error::ModelInterrupted(_)) => {
+            assert!(!error.leaves_outcome_uncertain());
+            assert!(!error.is_model_failure(), "{error}");
             Ok(())
         }
         Err(error) => Err(error),
@@ -519,13 +516,16 @@ async fn unrecoverable_prefix(unsettled: bool) -> Result<()> {
         "retained prefix changed"
     );
     match result {
-        Err(
-            _error @ Error::ModelUnavailable {
-                failure: crate::ModelTransportFailure::Interrupted,
-                ..
-            },
-        ) => {
-            assert!(!_error.leaves_outcome_uncertain());
+        // The later delivery names the stream's own failure, not a provider
+        // transport failure that never happened.
+        Err(error @ Error::ModelInterrupted(_)) => {
+            assert!(!error.leaves_outcome_uncertain());
+            assert!(
+                error
+                    .to_string()
+                    .ends_with(": storage failure: stream lost"),
+                "{error}"
+            );
             Ok(())
         }
         Err(error) => Err(error),
@@ -544,4 +544,133 @@ async fn negative_control_retaining_an_unrecoverable_partial_stream_strands_it()
         unrecoverable_prefix(true).await,
         Err(Error::Indeterminate(_))
     ));
+}
+
+/// Fails the first commit of a received model event, as a lost journal write.
+struct LosesFirstModelCommit(Journal, std::sync::atomic::AtomicBool);
+
+impl ExecutionJournal for LosesFirstModelCommit {
+    fn acquire_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&PreparationIo>,
+    ) -> Result<crate::executor::ExecutionAttempt<'a>> {
+        self.0.acquire_execution(operation, io)
+    }
+    fn replay<'a>(
+        &'a self,
+        operation: OperationId,
+        after: u64,
+        maximum: u32,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        self.0.replay(operation, after, maximum, io)
+    }
+    fn append<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if matches!(event, ExecutionEvent::Model { .. }) && !self.1.swap(true, Ordering::SeqCst) {
+            return Err(Error::Storage("journal write lost".into()));
+        }
+        self.0.append(operation, key, event, io)
+    }
+    fn append_if_tail<'a>(
+        &'a self,
+        operation: OperationId,
+        tail: u64,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        self.0.append_if_tail(operation, tail, key, event, io)
+    }
+    fn stage<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        bytes: &'a [u8],
+        media: &'static str,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+        self.0.stage(operation, key, bytes, media, io)
+    }
+    fn load<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.0.load(reference, io)
+    }
+    fn open_interaction<'a>(
+        &'a self,
+        id: InteractionId,
+        interaction: &'a Interaction,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        self.0.open_interaction(id, interaction, io)
+    }
+    fn interaction_outcome<'a>(
+        &'a self,
+        id: InteractionId,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>> {
+        self.0.interaction_outcome(id, io)
+    }
+}
+
+/// A local journal failure while recording a received event is the attempt's
+/// cause. A later delivery its provider cannot resume reports that cause.
+#[tokio::test]
+async fn a_lost_journal_write_is_the_cause_a_later_delivery_reports() -> Result<()> {
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Events(vec![ScriptedEvent::Event(
+            ModelEvent::Content {
+                delta: "partial".into(),
+            },
+        )])])
+        .with_token_counter(fixture_token_count)
+        .with_reconciliations([ScriptedReconciliation {
+            orphan: false,
+            observed: vec![],
+            continuation: None,
+        }]),
+    );
+    let executor = uncompacted_executor(
+        Model::new("fixture".into(), "lost-write".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let journal = LosesFirstModelCommit(Journal::default(), Default::default());
+    let input = TurnInput {
+        max_steps: None,
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("start".into()),
+        selected_context: None,
+    };
+    let first = executor.execute(input.clone(), &journal).await;
+    assert!(matches!(first, Err(Error::Storage(_))), "{first:?}");
+    let result = executor.clone().execute(input, &journal).await;
+    assert_eq!(
+        provider.dispatches().len(),
+        1,
+        "lost write was redispatched"
+    );
+    match result {
+        Err(error @ Error::ModelInterrupted(_)) => {
+            assert!(
+                error
+                    .to_string()
+                    .ends_with(": storage failure: journal write lost"),
+                "{error}"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+        Ok(_) => panic!("an incomplete response was treated as completed"),
+    }
 }

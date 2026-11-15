@@ -79,10 +79,7 @@ async fn a_live_model_retry_is_rejected_before_replay_or_dispatch() -> Result<()
     // the uncertain request again, so the unreconciled attempt settles.
     assert!(matches!(
         executor.execute(input.clone(), &journal).await,
-        Err(Error::ModelUnavailable {
-            failure: crate::ModelTransportFailure::Interrupted,
-            ..
-        })
+        Err(Error::ModelInterrupted(_))
     ));
     assert_eq!(*journal.0.lock().unwrap(), before_retry);
     assert_eq!(provider.requests().len(), 2);

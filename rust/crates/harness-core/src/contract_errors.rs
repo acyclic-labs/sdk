@@ -206,6 +206,11 @@ pub enum Error {
         /// Original custody, released after the diagnostic.
         custody: acyclic_fs::NativeCustody,
     },
+    /// A started model attempt that ended before completing and that its provider cannot
+    /// resume. A definitive failure naming the attempt's own recorded cause, if it recorded
+    /// one, and never a provider transport failure that nothing observed.
+    #[error("model request interrupted before completing, and its provider cannot resume it{}", if .0.is_empty() { String::new() } else { format!(": {}", .0) })]
+    ModelInterrupted(String),
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
@@ -939,7 +944,10 @@ impl Error {
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::StreamFollow { source, .. } => transport_error_code(source),
             Self::Exchange { source, .. } => transport_error_code(&**source),
-            Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
+            Self::Storage(_)
+            | Self::Allocation(_)
+            | Self::TaskFailed { .. }
+            | Self::ModelInterrupted(_) => ErrorCode::Storage,
             Self::Process(crate::ProcessError::NotFound { .. }) => ErrorCode::NotFound,
             Self::Process(
                 crate::ProcessError::Io { .. } | crate::ProcessError::PermissionDenied { .. },
@@ -1081,11 +1089,13 @@ impl Error {
         use crate::wire::ErrorCode;
         // Settled process failures remain ordinary tool feedback. Their wire
         // class describes the native cause, not unresolved operation custody.
-        !matches!(self, Self::TaskFailed { .. } | Self::Process(_))
-            && matches!(
-                self.code(),
-                ErrorCode::Storage | ErrorCode::Indeterminate | ErrorCode::Cancelled
-            )
+        !matches!(
+            self,
+            Self::TaskFailed { .. } | Self::ModelInterrupted(_) | Self::Process(_)
+        ) && matches!(
+            self.code(),
+            ErrorCode::Storage | ErrorCode::Indeterminate | ErrorCode::Cancelled
+        )
     }
 
     /// Whether work that failed this way may yet succeed unchanged. Agent
@@ -1107,14 +1117,16 @@ impl Error {
             return failure.classification.uncertain;
         }
         use crate::wire::ErrorCode;
-        !matches!(self, Self::TaskFailed { .. } | Self::Process(_))
-            && matches!(
-                self.code(),
-                ErrorCode::Storage
-                    | ErrorCode::Unavailable
-                    | ErrorCode::Indeterminate
-                    | ErrorCode::Cancelled
-            )
+        !matches!(
+            self,
+            Self::TaskFailed { .. } | Self::ModelInterrupted(_) | Self::Process(_)
+        ) && matches!(
+            self.code(),
+            ErrorCode::Storage
+                | ErrorCode::Unavailable
+                | ErrorCode::Indeterminate
+                | ErrorCode::Cancelled
+        )
     }
 
     /// A known capacity refusal delays accepted input without making its outcome unknown.
@@ -1280,6 +1292,7 @@ impl Error {
             | Self::TaskFailed { .. }
             | Self::GoalBlocked(_)
             | Self::ModelUnavailable { .. }
+            | Self::ModelInterrupted(_)
             | Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::Invalid(_)

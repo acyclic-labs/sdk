@@ -106,6 +106,7 @@ impl ExecutionSummary {
             ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
             | ExecutionEvent::ModelWait { step, purpose, .. }
+            | ExecutionEvent::ModelInterrupted { step, purpose, .. }
             | ExecutionEvent::ModelStopped { step, purpose, .. } => self
                 .models
                 .get(&(*step, *purpose), io)?
@@ -400,7 +401,7 @@ impl ExecutionSummary {
                     })?;
             }
             ExecutionEvent::ModelOutput { .. } => self.latest_response_output = true,
-            ExecutionEvent::ModelRejected { .. } => {}
+            ExecutionEvent::ModelRejected { .. } | ExecutionEvent::ModelInterrupted { .. } => {}
             ExecutionEvent::ToolStarted { step, .. }
             | ExecutionEvent::ToolCompleted { step, .. }
             | ExecutionEvent::ToolFailed { step, .. } => {
