@@ -123,6 +123,19 @@ export function qualifyProjectionCustodyMutationsLoom(run = runCommand) {
   ]], recovery, run);
 }
 
+export function qualifyNativeCancellationMutations(run = runCommand) {
+  return qualifyNativeSourceMutation({
+    name: "NativeCancellation", selector: "--native-cancellation-mutations",
+    source: "workspace/volumes", model: "workspace/volumes/publication_tests",
+    test: "local::workspace::volumes::publication_tests::lost_caller_discards_its_whole_view_and_keeps_the_acknowledged_head",
+    mutation: [
+      "            for view in views {\n                view.discard().await;\n            }\n        });",
+      "            for view in views {\n                let _ = view.hand_back().await;\n            }\n        });",
+      "a lost caller's unverified view was published",
+    ],
+  }, run);
+}
+
 export function qualifyNativePublicationMutations(run = runCommand) {
   return qualifyNativeSourceMutation({
     name: "NativePublication", selector: "--native-publication-mutations",
@@ -658,6 +671,7 @@ const fixedModels = {
   "--skill-materializer-mutations": qualifySkillMaterializerMutationsLoom,
   "--projection-mutations": qualifyProjectionMutationsLoom,
   "--projection-custody-mutations": qualifyProjectionCustodyMutationsLoom,
+  "--native-cancellation-mutations": qualifyNativeCancellationMutations,
   "--native-publication-mutations": qualifyNativePublicationMutations,
   "--native-retirement-mutations": qualifyNativeRetirementMutations,
   "--capture-cursor-mutations": qualifyCaptureCursorMutations,
