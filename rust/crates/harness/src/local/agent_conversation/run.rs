@@ -471,7 +471,12 @@ mod tests {
         let recovered = child.run_until_goal(operation, "Finish the objective.", &policy);
         tokio::pin!(recovered);
         tokio::select! {
-            result = &mut recovered => panic!("recovery returned a historical ancestor pause: {result:?}"),
+            result = &mut recovered => {
+                // Release held model IO before reporting a premature return,
+                // so teardown cannot hide the recovery assertion.
+                let _ = release.send(());
+                panic!("recovery returned a historical ancestor pause: {result:?}");
+            },
             result = entering => result.map_err(failed)?,
         }
         let goal = child

@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCommand } from "./run-command.mjs";
-import { wasmPackages, wasmSelection } from "./wasm-selections.mjs";
+import { wasmPackages, wasmSelection } from "./build-wasm.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cargo = process.env.ACYCLIC_CARGO_BIN || "cargo";

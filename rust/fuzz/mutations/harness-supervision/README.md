@@ -305,3 +305,12 @@ another model request, and no invented child owner-control record.
 same regression must fail, then pass after reversing the patch. The existing
 `agent::handler::tests::ancestor_pause_parks_on_its_original_publication_and_resume_survives_handler_restart`
 also requires the original run's resumed record in both registration schedules.
+
+## Closed original admission
+
+`local::runtime::tests::handler_failure::closed_admission_reports_unavailability_without_consuming_the_original_input`
+closes the real configured delivery-credit owner, requires the original
+availability event and unconsumed input, then executes that same input once with
+a replacement owner. `closed-admission-retryable.patch` incorrectly treats the
+closed owner as transient. The same regression must fail at the availability
+assertion, without a readiness loop or timeout, then pass after restoration.

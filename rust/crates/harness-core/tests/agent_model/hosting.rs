@@ -445,8 +445,25 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             self.0.load(Ordering::SeqCst)
         }
     }
-    for completion in [0, 1, 2, 3] {
-        let finish = matches!(completion, 1 | 2);
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum QuietCase {
+        Running,
+        LogicalCompletion,
+        PhysicalCompletion,
+        DeadlineOverflow,
+        ConcurrentOutput,
+    }
+    for completion in [
+        QuietCase::Running,
+        QuietCase::LogicalCompletion,
+        QuietCase::PhysicalCompletion,
+        QuietCase::DeadlineOverflow,
+        QuietCase::ConcurrentOutput,
+    ] {
+        let finish = matches!(
+            completion,
+            QuietCase::LogicalCompletion | QuietCase::PhysicalCompletion
+        );
         let commit_clock = Arc::new(CommitClock(AtomicU64::new(100)));
         let stream = Arc::new(Evidence {
             inner: MemoryStream::new_with_clock(MemoryLimits::default(), commit_clock.clone()),
@@ -506,7 +523,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
         ];
         keys.sort_unstable();
         let started = serde_json::json!({"version":1,"call":call,"event":{
-            "kind":"started","run":run,"execution":execution,"quiet_ms":if completion == 3 { u64::MAX } else { 10 },
+            "kind":"started","run":run,"execution":execution,"quiet_ms":if completion == QuietCase::DeadlineOverflow { u64::MAX } else { 10 },
             "action":Action::Pause,"at_ms":100,"source":{"stream":format!("{agent}/execution"),"sequence":0}
         }});
         stream
@@ -547,12 +564,10 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 }
             }
         };
-        let agent_failure = bound
-            .agents()
-            .runtime()
-            .unavailable(&bound.agents().actor(&agent)?)?;
+        let agent_actor = bound.agents().actor(&agent)?;
+        let agent_failure = bound.agents().runtime().unavailable(&agent_actor)?;
         let exercise = async {
-            if completion == 3 {
+            if completion == QuietCase::DeadlineOverflow {
                 let failure = agent_failure.await;
                 assert!(
                     failure.to_string().contains("quiet deadline overflow"),
@@ -676,13 +691,13 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 queries.read_signal(Kind::Stuck).await?.is_none(),
                 "old alarm ignored fresh output"
             );
-            if completion == 1 {
+            if completion == QuietCase::LogicalCompletion {
                 // Completion may be committed while its delivery is still queued.
                 stream.append(AppendRequest { path: jobs.clone(), records: vec![AppendRecord {
                     value: serde_json::to_vec(&serde_json::json!({"version":1,"call":call,"event":{"kind":"finished"}}))?.into(),
                     headers: RecordHeaders::new(vec![call.into_bytes().to_vec().into()], vec![])?,
                 }], if_tail: None, idempotency_key: IdempotencyKey::new("quiet-finish")? }).await?;
-            } else if completion == 2 {
+            } else if completion == QuietCase::PhysicalCompletion {
                 let completed =
                     serde_json::to_vec(&acyclic_harness_core::runtime::ToolOutputCompletion {
                         version: 1,
@@ -738,7 +753,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                     .0,
                 Some(independent)
             );
-            if completion == 3 {
+            if completion == QuietCase::ConcurrentOutput {
                 let snapshot = store.load(&actor).await?;
                 let output = snapshot
                     .state()
@@ -765,7 +780,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 commit_clock.0.store(110, Ordering::SeqCst);
             }
             time.advance_to(115)?;
-            if completion == 3 {
+            if completion == QuietCase::ConcurrentOutput {
                 wait(&mut states, Some(120), false).await?;
                 assert!(
                     stream.race.lock().unwrap().is_none(),
@@ -924,7 +939,19 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             Ok::<_, Box<dyn std::error::Error>>(())
         };
         tokio::select! {
-            result = bound.agents().run(|actor, error| { if completion != 3 { panic!("quiet actor {actor:?}: {error}"); } }) => match result {
+            result = bound.agents().run(|actor, error| {
+                if completion == QuietCase::DeadlineOverflow {
+                    // The owner-indexed failure watch verifies the agent;
+                    // this report names the companion that handled its files.
+                    assert!(matches!(error,
+                        acyclic_actors::local::Error::Handler(
+                            acyclic_actors::guest::GuestError::Handler(message)
+                        ) if message == "invalid agent record: quiet deadline overflow"
+                    ), "unexpected overflow failure: {error}");
+                } else {
+                    panic!("quiet actor {actor:?}: {error}");
+                }
+            }) => match result {
                 Err(error) => return Err(error.into()), Ok(never) => match never {},
             },
             result = exercise => result?,
