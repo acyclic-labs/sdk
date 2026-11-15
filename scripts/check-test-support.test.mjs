@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
-import {checkDeserializedTestSupport, checkGatedTestRoots, checkTestSelection, checkTestSupport, checkTestSupportExports} from './check-test-support.mjs';
+import {cargoTestFilters, checkCargoTestFilters, checkDeserializedTestSupport, checkGatedTestRoots, checkTestSelection, checkTestSupport, checkTestSupportExports} from './check-test-support.mjs';
 
 /** @param {{optional?: boolean, kind?: string | null, target?: string | null, alias?: string}} options */
 function fixture({optional = false, kind = null, target = null, alias = 'backend-alias'} = {}) {
@@ -138,4 +138,19 @@ test('a selection matching no tests must fail', () => {
   for (const line of ['=pass', ' warn'].map(value => '--no-tests' + value).concat(`NEXTEST_${'NO_TESTS'}=pass`))
     assert.throws(() => checkTestSelection([['run.sh', `cargo nextest run ${line}\n`]]), /run.sh:1: a selection matching no tests must fail/);
   assert.equal(checkTestSelection([['run.sh', 'cargo nextest run --no-tests=fail\n']]), 1);
+});
+
+test('a libtest name filter is refused, and runs that select no named test are not', () => {
+  const run = ['cargo', 'test'].join(' ');
+  const array = tokens => JSON.stringify(['te' + 'st', ...tokens]);
+  const filtered = [`${run} -p x --lib module::name`, `${run} -p x --lib -- --exact module::`, `${run} --locked "$@"`,
+    `${run} -p x \\n  --lib name`, `run(${array(['--locked', '-p', 'x', '--lib', 'name'])})`, `${run} -p x --test main $filter`];
+  for (const text of filtered) assert.deepEqual(cargoTestFilters(text), [1], text);
+  const selectionFree = [`${run} -p x --lib`, `${run} -p x --features "$features" --lib -- --test-threads=4`,
+    `${run} -p x --test main --no-run`, `${run} -p x --doc module`, `# ${run} -p x --lib name`,
+    `run(${array(['./file.ts'])})`, `write("${run}\n")`, `${run} -p x --lib 2>&1 | tee log`];
+  for (const text of selectionFree) assert.deepEqual(cargoTestFilters(text), [], text);
+  assert.deepEqual(cargoTestFilters(`ok\n${run} -p x --lib name`), [2]);
+  assert.throws(() => checkCargoTestFilters([['a.sh', filtered[0]]]), /a.sh:1: a name filter under libtest/);
+  assert.equal(checkCargoTestFilters([['a.sh', filtered[0]]], new Map([['a.sh', 'reason']])), 1);
 });

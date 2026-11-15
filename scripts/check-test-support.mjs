@@ -195,6 +195,8 @@ export function checkGatedTestRoots(metadata, read = file => readFileSync(file, 
   return checked;
 }
 
+const COMMAND_FILE = /\.(?:sh|ps1|m?js|cjs|ts|py|ya?ml|json)$/;
+
 // A selection that matches no tests must fail, never pass.
 const ZERO_PASS = new RegExp(['--no-tests[= ]+(?:pass|warn)\\b', 'NEXTEST_' + 'NO_TESTS'].join('|'));
 export function checkTestSelection(sources) {
@@ -203,6 +205,68 @@ export function checkTestSelection(sources) {
     text.split('\n').forEach((line, index) => {
       if (ZERO_PASS.test(line)) failures.push(`${file}:${index + 1}: a selection matching no tests must fail`);
     });
+  if (failures.length) throw new Error(failures.join('\n'));
+  return sources.length;
+}
+
+// libtest exits 0 when a name filter matches nothing, so a filtered selection
+// runs through nextest, whose empty selection fails. Doc tests and builds
+// that run nothing (`--no-run`) select no named test and stay with cargo.
+const CARGO_VALUE = new Set(['-p', '--package', '-F', '--features', '--test', '--bin', '--example', '--bench',
+  '--target', '--target-dir', '--manifest-path', '--profile', '-j', '--jobs', '--message-format', '--color',
+  '--config', '-Z', '--exclude']);
+const LIBTEST_VALUE = new Set(['--test-threads', '--skip', '--format', '-Z', '--shuffle-seed', '--logfile', '--color']);
+export function cargoTestFilters(text) {
+  const commands = [];
+  // Join shell and PowerShell continuations, keeping each command's first line number.
+  let start = 0, logical = '';
+  const lines = [];
+  text.split('\n').forEach((physical, index) => {
+    if (!logical) start = index + 1;
+    const continued = /[\\`]\r?$/.test(physical);
+    logical += (continued ? physical.replace(/[\\`]\r?$/, '') : physical) + ' ';
+    if (!continued) { lines.push([start, logical]); logical = ''; }
+  });
+  if (logical) lines.push([start, logical]);
+  for (const [line, code] of lines) {
+    if (/^\s*(?:#|\/\/|\/\*|\*)/.test(code)) continue;
+    // Each cargo test invocation, up to its shell boundary or redirection.
+    // A quoted expansion is one shell word; any other quote ends the command's text.
+    const shell = code.replace(/"(\$[\w@#{}[\]]+)"/g, '$1');
+    for (const match of shell.matchAll(/(?:\bcargo(?:\.exe)?|\$\{?cargo_bin\}?)(?:\s+\+\S+)?\s+test\b([^|;&>()"'`]*)/g))
+      commands.push({line, tokens: match[1].replace(/\s\d+$/, '').trim().split(/\s+/).filter(token => token && !token.startsWith('\\'))});
+    // Argument arrays handed to cargo from JavaScript and Python.
+    // An array is a cargo invocation when it names cargo or a cargo selection option.
+    for (const match of code.matchAll(/\[\s*(?:(["'])cargo\1\s*,\s*)?(["'])test\2\s*,([^\]]*)\]/g)) {
+      // A spread forwards options; a bare identifier is a computed argument.
+      const tokens = [...match[3].matchAll(/(["'])(.*?)\1|(?:\.\.\.|\*)\w+|[A-Za-z_][\w.]*/g)]
+        .flatMap(token => token[2] ?? (/^(?:\.\.\.|\*)/.test(token[0]) ? [] : ['$' + token[0]]));
+      if (match[1] || tokens.some(token => ['--locked', '-p', '--package', '--lib', '--test'].includes(token)))
+        commands.push({line, tokens});
+    }
+  }
+  return commands.filter(({tokens}) => {
+    if (tokens.includes('--no-run') || tokens.includes('--doc')) return false;
+    let libtest = false;
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i].replace(/^["']|["']$/g, '');
+      if (token === '--') { libtest = true; continue; }
+      if ((libtest ? LIBTEST_VALUE : CARGO_VALUE).has(token)) { i++; continue; }
+      if (!token.startsWith('-')) return true;
+    }
+    return false;
+  }).map(({line}) => line);
+}
+
+// Each exception names why libtest is required and how the file refuses an empty selection.
+export const LIBTEST_SELECTIONS = new Map([
+  ['scripts/check-harness-test-isolation.sh', 'one libtest process exposes process-local fixture leakage that per-test nextest processes hide; the script fails unless its selection ran tests'],
+]);
+export function checkCargoTestFilters(sources, allowed = LIBTEST_SELECTIONS) {
+  const failures = [];
+  for (const [file, text] of sources)
+    for (const line of allowed.has(file) ? [] : cargoTestFilters(text))
+      failures.push(`${file}:${line}: a name filter under libtest passes when nothing matches; select it with nextest`);
   if (failures.length) throw new Error(failures.join('\n'));
   return sources.length;
 }
@@ -224,5 +288,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   console.log(`test-support gated test roots: ${checkGatedTestRoots(JSON.parse(output))} test targets checked`);
   const tracked = execFileSync('git', ['ls-files', '--', ':!scripts/tests/fixtures'], {encoding: 'utf8'}).split('\n')
     .filter(file => /\.(?:sh|ps1|m?js|ts|py|ya?ml|json|toml|md|bazel|bzl|rs)$/.test(file));
-  console.log(`test selection: ${checkTestSelection(tracked.map(file => [file, readFileSync(file, 'utf8')]))} files checked`);
+  const trackedSources = tracked.map(file => [file, readFileSync(file, 'utf8')]);
+  console.log(`test selection: ${checkTestSelection(trackedSources)} files checked`);
+  console.log(`filtered cargo tests: ${checkCargoTestFilters(trackedSources.filter(([file]) => COMMAND_FILE.test(file)))} command files checked`);
 }
