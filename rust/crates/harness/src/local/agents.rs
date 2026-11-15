@@ -672,7 +672,7 @@ impl LocalHarness {
             scope.copy(&mut None)?,
         );
         let workspace = workspace
-            .bound_task_view(view, project, bindings, &owner, &authority)
+            .bound_task_view(view, bindings, &owner, &authority)
             .await?;
         Ok(workspace)
     }
@@ -802,7 +802,6 @@ impl LocalHarness {
                 super::context::Binding {
                     workspace: Some(workspace.context_task_view(
                         view,
-                        project,
                         &agent.volumes,
                         &authority,
                     )?),

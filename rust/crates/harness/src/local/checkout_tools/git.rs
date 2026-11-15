@@ -240,8 +240,7 @@ mod tests {
         let parent = root
             .bound_task_view(
                 fork,
-                &project,
-                &[],
+                std::slice::from_ref(&binding),
                 &workspace::owner::AgentOwner,
                 &authority,
             )

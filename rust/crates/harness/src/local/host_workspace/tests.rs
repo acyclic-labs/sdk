@@ -172,7 +172,7 @@ async fn read_only_bindings_require_read_but_not_write() -> Result<()> {
         .await
         .map_err(storage)?;
     let selected = workspace
-        .bound_task_view(view, &harness.project, &bindings, &AgentOwner, &authority)
+        .bound_task_view(view, &bindings, &AgentOwner, &authority)
         .await?;
     let host = HostWorkspace::attach(
         Arc::clone(&selected),

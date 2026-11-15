@@ -20,12 +20,32 @@ pub(super) fn view_options(
 }
 
 impl LocalWorkspace {
+    /// The table's primary volume, which the selected view must itself open:
+    /// a task view binds exactly the volume it views. The identity is derived
+    /// from the name, without I/O.
+    fn viewed_primary<'a>(
+        &self,
+        view: &workspace::View,
+        bindings: &'a [crate::agent::WorkspaceEntry],
+    ) -> Result<(&'a crate::agent::WorkspaceEntry, &'a VolumeRef)> {
+        let (entry, volume) = mounts::primary(bindings)?;
+        let id = self
+            .filesystem
+            .workspace_id(volume.storage_name(&mut None)?)
+            .map_err(storage)?;
+        if id != view.workspace().id() {
+            return Err(Error::Unauthorized(
+                "task view does not open the table's primary volume".into(),
+            ));
+        }
+        Ok((entry, volume))
+    }
+
     /// Binds a spawned agent to its retained project fork and this filesystem's
     /// shared native instance. Model tools and native hosts use the same view.
     pub(in crate::local) async fn bound_task_view(
         &self,
         view: workspace::View,
-        project: &VolumeRef,
         bindings: &[crate::agent::WorkspaceEntry],
         owner: &dyn super::owner::ViewOwner,
         authority: &crate::filesystem::NativeMountAuthority,
@@ -33,6 +53,7 @@ impl LocalWorkspace {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let (_, project) = self.viewed_primary(&view, bindings)?;
         let key = bindings::volume_key(project)?;
         let auxiliary_key = bindings::auxiliary_key(bindings)?;
         let (selection, producer) =
@@ -40,7 +61,7 @@ impl LocalWorkspace {
         let binding_owner = selection.binding.clone();
         let mounts = if let Some(producer) = producer {
             let mounts = self
-                .bound_mounts(project, bindings, authority, &selection.binding)
+                .bound_mounts(bindings, authority, &selection.binding)
                 .await?;
             selection.publish(&mounts)?;
             producer.release();
@@ -227,11 +248,10 @@ impl LocalWorkspace {
     pub(in crate::local) fn context_task_view(
         &self,
         view: workspace::View,
-        project: &VolumeRef,
         bindings: &[crate::agent::WorkspaceEntry],
         authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<LocalWorkspace>> {
-        let primary = mounts::primary(bindings, project)?;
+        let (primary, project) = self.viewed_primary(&view, bindings)?;
         let mounts = Arc::new(mounts::owner(
             &self.path,
             (

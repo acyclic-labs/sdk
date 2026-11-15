@@ -140,13 +140,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         entered: crate::sync::SyncMutex::new(Some(entered)),
         release: AsyncMutex::new(Some(released)),
     };
-    let preparing = workspace.bound_task_view(
-        view().await?,
-        &harness.project,
-        &session_bindings,
-        &owner,
-        &authority,
-    );
+    let preparing = workspace.bound_task_view(view().await?, &session_bindings, &owner, &authority);
     tokio::pin!(preparing);
     tokio::select! {
         outcome = &mut preparing => {
@@ -160,7 +154,6 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     let second = workspace
         .bound_task_view(
             view().await?,
-            &harness.project,
             &session_bindings,
             &owner.original,
             &authority,
@@ -203,12 +196,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         archive.view.source.as_ref().unwrap().destination,
         "different roots shared a native projection"
     );
-    let logical = workspace.context_task_view(
-        view().await?,
-        &harness.project,
-        &session_bindings,
-        &authority,
-    )?;
+    let logical = workspace.context_task_view(view().await?, &session_bindings, &authority)?;
     assert_eq!(
         logical
             .mounts
@@ -234,10 +222,6 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         private_ui
     );
     assert!(logical.mounts.named(Some("results"))?.1.mode.read_only());
-    assert!(matches!(
-        workspace.context_task_view(view().await?, &private_home, &session_bindings, &authority),
-        Err(Error::Unauthorized(_)),
-    ));
     let remounted = second.mounts_at(&second.path).await?;
     for entry in &session_bindings {
         for table in [&second.mounts, &logical.mounts, &remounted] {
@@ -292,12 +276,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     }
     let mut read_only_primary = session_bindings.clone();
     read_only_primary[0].mode = crate::agent::WorkspaceMode::ReadOnly;
-    let read_only = workspace.context_task_view(
-        view().await?,
-        &harness.project,
-        &read_only_primary,
-        &authority,
-    )?;
+    let read_only = workspace.context_task_view(view().await?, &read_only_primary, &authority)?;
     let primary = read_only.mounts.named(None)?.1;
     assert!(primary.mode.read_only());
     primary.check(acyclic_fs::access::Action::Read, "selected/file", 0)?;
@@ -558,13 +537,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     for selection in [&changed_bindings, &changed_mode] {
         assert!(matches!(
             workspace
-                .bound_task_view(
-                    view().await?,
-                    &harness.project,
-                    selection,
-                    &owner.original,
-                    &authority,
-                )
+                .bound_task_view(view().await?, selection, &owner.original, &authority,)
                 .await,
             Err(Error::Conflict(_)),
         ));
@@ -611,7 +584,6 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     let third = workspace
         .bound_task_view(
             view().await?,
-            &harness.project,
             &session_bindings,
             &owner.original,
             &authority,
@@ -624,13 +596,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     let mut reordered = session_bindings.clone();
     reordered.reverse();
     let same_selection = workspace
-        .bound_task_view(
-            view().await?,
-            &harness.project,
-            &reordered,
-            &owner.original,
-            &authority,
-        )
+        .bound_task_view(view().await?, &reordered, &owner.original, &authority)
         .await?;
     assert!(Arc::ptr_eq(&third, &same_selection));
     drop(same_selection);
@@ -638,13 +604,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     changed_shared[2].source = crate::agent::WorkspaceSource::Volume(harness.project.clone());
     assert!(matches!(
         workspace
-            .bound_task_view(
-                view().await?,
-                &harness.project,
-                &changed_shared,
-                &owner.original,
-                &authority
-            )
+            .bound_task_view(view().await?, &changed_shared, &owner.original, &authority)
             .await,
         Err(Error::Conflict(_)),
     ));
@@ -656,7 +616,6 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         workspace
             .bound_task_view(
                 view().await?,
-                &harness.project,
                 &changed_bindings,
                 &owner.original,
                 &authority,
@@ -671,7 +630,6 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     workspace
         .bound_task_view(
             view().await?,
-            &harness.project,
             &changed_bindings,
             &owner.original,
             &authority,
@@ -843,13 +801,7 @@ async fn binding_preparation_releases_the_checkout_owner() -> Result<()> {
         release: AsyncMutex::new(Some(released)),
     };
     let checkout_available = {
-        let binding = workspace.bound_task_view(
-            view,
-            &harness.project,
-            &session_bindings,
-            &owner,
-            &authority,
-        );
+        let binding = workspace.bound_task_view(view, &session_bindings, &owner, &authority);
         tokio::pin!(binding);
         tokio::select! {
             result = &mut binding => {
@@ -955,13 +907,7 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
     );
     let owner = AgentOwner;
     let bound = workspace
-        .bound_task_view(
-            view,
-            &harness.project,
-            &session_bindings,
-            &owner,
-            &authority,
-        )
+        .bound_task_view(view, &session_bindings, &owner, &authority)
         .await?;
     let source = bound
         .binding
@@ -1097,7 +1043,6 @@ async fn rebinding_a_physical_view_keeps_the_agents_repository() -> Result<()> {
     let bind = || async {
         root.bound_task_view(
             root.spawned_project_view(&project).await?,
-            &project,
             &bindings,
             &AgentOwner,
             &authority,
