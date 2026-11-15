@@ -155,7 +155,8 @@ impl Credentials {
         #[cfg(test)]
         if let Some(read) = &self.source {
             let root = read("", Source::CodexHome).ok().flatten()?;
-            return crate::CodexLogin::in_home(std::path::Path::new(&root));
+            let path = std::path::Path::new(&root).join("auth.json");
+            return path.is_file().then(|| crate::CodexLogin::from_path(path));
         }
         crate::CodexLogin::discover()
     }

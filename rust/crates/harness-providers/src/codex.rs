@@ -234,12 +234,6 @@ impl CodexLogin {
         self.account.clone()
     }
 
-    /// `root/auth.json` when it exists; the file is read only on first use.
-    pub(crate) fn in_home(root: &Path) -> Option<Self> {
-        let path = root.join("auth.json");
-        path.is_file().then(|| Self::from_path(path))
-    }
-
     /// The rejected bearer is supplied only following HTTP 401, before any SSE is read.
     pub(crate) async fn bearer(
         &self,
