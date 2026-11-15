@@ -579,7 +579,7 @@ async fn interrupted_and_cancelled_calls_settle_and_the_turn_continues() -> Resu
         ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
             self.reconciles.fetch_add(1, Ordering::SeqCst);
             Box::pin(async {
-                Err(Error::InteractionRejected(
+                Err::<Option<ToolResult>, _>(Error::InteractionRejected(
                     crate::InteractionRejection::Cancelled,
                 ))
             })
@@ -625,11 +625,10 @@ async fn interrupted_and_cancelled_calls_settle_and_the_turn_continues() -> Resu
             selected_context: None,
         };
         let journal = Journal::default();
-        let mut outputs = Vec::new();
-        for _ in 0..executions {
-            outputs.push(executor.execute(input.clone(), &journal).await);
+        for _ in 1..executions {
+            assert!(executor.execute(input.clone(), &journal).await.is_err());
         }
-        let settled = outputs.pop().expect("one execution")?;
+        let settled = executor.execute(input.clone(), &journal).await?;
         assert_eq!(settled.text, "done");
         assert_eq!(settled, executor.execute(input, &journal).await?);
         let text = super::tools_1::tool_error_text(&model.requests()[1].messages, "call-1")
