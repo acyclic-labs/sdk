@@ -86,6 +86,11 @@ fn turns(
             // Join the serving dispatcher's delivery and committed checkpoint.
             entry(agents.runtime().complete()).await.map_err(storage)?;
             cuts[turn + 2] = schedule.durable_write_count();
+            let writes = schedule.durable_writes();
+            eprintln!(
+                "settled turn {turn} barriers/drains: {:?}",
+                flushes(&writes[cuts[turn + 1]..cuts[turn + 2]])
+            );
         }
         use acyclic_stream::StreamProviderExt as _;
         agents
