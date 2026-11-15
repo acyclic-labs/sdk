@@ -14,25 +14,6 @@ const BINDINGS: &str = ".bindings";
 /// checkout capture or Git facade ever reads them as authored content.
 const PHYSICAL_VIEW_ROOT: &str = ".physical";
 
-// Git's private namespace is never imported or captured by the harness. The
-// shared native primitives omit it by name without opening it or its contents.
-pub(super) const SOURCE_EXCLUDED_ROOTS: &[&str] = &[".git"];
-
-fn source_policy(config: acyclic_fs::VolumeConfig) -> Result<acyclic_fs::CapturePolicy> {
-    let paths = SOURCE_EXCLUDED_ROOTS
-        .iter()
-        .map(|name| {
-            acyclic_fs::kernel::NamespacePath::from_text_in_profile(
-                &format!("/{name}"),
-                config.profile,
-                config.limits,
-            )
-            .map_err(storage)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    acyclic_fs::CapturePolicy::excluding(paths).map_err(storage)
-}
-
 mod bindings;
 mod bootstrap;
 #[cfg(test)]
@@ -92,8 +73,7 @@ pub struct LocalWorkspace {
     /// A new native checkout still owes its first authored source import.
     /// A materialized SDK volume already has an authored generation.
     pub(super) import_source: bool,
-    pub(super) source_policy: acyclic_fs::CapturePolicy,
-    /// Original host namespace for opaque entries omitted from SDK content.
+    /// The checkout's original host root.
     pub(super) source_root: acyclic_native_runtime::execution::ExecutionGrant,
     pub(super) view: View,
     pub(super) mount_directory: PathBuf,
@@ -203,13 +183,7 @@ impl LocalWorkspace {
                 }),
         )?;
         mounts.scratch_root = self.mounts.scratch_root.clone();
-        if primary.view.root.is_empty() {
-            mounts.native_read_roots = self
-                .opaque_native_directories()?
-                .into_iter()
-                .map(|(_, path)| (path, self.source_root.clone()))
-                .collect();
-        } else {
+        if !primary.view.root.is_empty() {
             // Native mounts already project the subtree. Physical capture
             // retains the whole-volume root; only the process root is scoped.
             let exposed = if self.mounted.is_some() {
@@ -225,30 +199,6 @@ impl LocalWorkspace {
         }
         volumes::bind_roots(&mut mounts)?;
         Ok(Arc::new(mounts))
-    }
-
-    /// Only opaque directories can be projected without interpreting their
-    /// contents. Gitfiles and links remain excluded SDK data, with no native
-    /// alias: their referenced roots cannot be inferred without reading them.
-    fn opaque_native_directories(&self) -> Result<Vec<(&'static str, PathBuf)>> {
-        let mut directories = Vec::new();
-        for &name in SOURCE_EXCLUDED_ROOTS {
-            let path = self.source_root.workspace().join(name);
-            match std::fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.is_dir() => directories.push((name, path)),
-                Ok(_) => (),
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-                    ) =>
-                {
-                    ()
-                }
-                Err(error) => return Err(storage(error)),
-            }
-        }
-        Ok(directories)
     }
 
     /// Bind exactly the selected agent's auxiliary volumes. Reuse an admitted
@@ -606,7 +556,6 @@ pub(super) async fn open(
         path,
         fresh,
         import_source: fresh && !existing,
-        source_policy: source_policy(view.workspace().volume_config())?,
         view,
         mount_directory,
         host_state: attach.directory.to_path_buf(),
@@ -713,7 +662,7 @@ async fn lazy_view(
     Ok((view, fresh, durability))
 }
 
-/// Authored paths are source data; Git's private namespace stays on the host.
+/// Every path below the held root is authored source data.
 async fn held_source(
     root: acyclic_fs::HeldRoot,
     config: acyclic_fs::VolumeConfig,
@@ -733,12 +682,6 @@ async fn held_source(
         cancellation,
     )
     .await
-    .map_err(storage)?
-    .exclude(
-        source_policy(config)?.excluded_prefixes().to_vec(),
-        &work,
-        cancellation,
-    )
     .map_err(storage)?;
     let actual = work.root_identity(&path)?;
     if actual != identity {

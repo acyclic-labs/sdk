@@ -264,10 +264,6 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         remounted.native_root_for(remounted.named(None)?.1),
         Some(second.path.join("selected").as_path()),
     );
-    assert!(
-        remounted.native_read_roots.is_empty(),
-        "a scoped view must not add opaque read roots outside its subtree"
-    );
     {
         let host = crate::local::host_workspace::HostWorkspace::attach(
             Arc::clone(&second),

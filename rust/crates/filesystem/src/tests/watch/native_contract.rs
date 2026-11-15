@@ -42,7 +42,7 @@ fn fixture(held: bool) -> Result<Fixture, Box<dyn std::error::Error>> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     watch.exclude_subtrees(&excluded)?;
-    watch.watch_tree(&[".acyclic-sdk", ".git"])?;
+    watch.watch_tree()?;
     let initial = poll(&mut watch)?;
     assert!(matches!(
         initial,

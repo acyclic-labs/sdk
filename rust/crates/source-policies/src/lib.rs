@@ -54,6 +54,8 @@ mod catalog_build;
 mod file_locks;
 #[cfg(test)]
 mod mount_clock;
+#[cfg(test)]
+mod workspace_names;
 
 #[cfg(test)]
 mod tests {
