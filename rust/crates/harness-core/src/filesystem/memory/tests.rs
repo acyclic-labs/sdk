@@ -265,7 +265,7 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
     let root = storage.list_private_directory("", None, None, 8).await?;
     let generation = root.generation.clone();
     assert!(root.entries.iter().any(|entry| { entry.name == "notes" }));
-    assert!(!root.entries.iter().any(|entry| { entry.name == ".system" }));
+    assert!(root.entries.iter().any(|entry| { entry.name == ".system" }));
     let notes = storage
         .list_private_directory("notes", Some(&generation), None, 8)
         .await?;
