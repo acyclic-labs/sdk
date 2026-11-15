@@ -52,4 +52,9 @@ export WASM_BINDGEN_USE_BROWSER=1
 export WASM_BINDGEN_TEST_WEBDRIVER_JSON="$temporary/webdriver.json"
 python3 -c 'import json,os; json.dump({"goog:chromeOptions":{"binary":os.environ["CHROME"],"args":["--headless=new","--no-sandbox","--disable-dev-shm-usage"]}},open(os.environ["WASM_BINDGEN_TEST_WEBDRIVER_JSON"],"w"))'
 step=browser-tests
-"${command[@]}"
+"${command[@]}" | tee "$temporary/output"
+# A libtest name filter passes when it matches nothing, so an empty run fails here.
+step=browser-test-count
+passed=0
+while read -r count; do passed=$((passed + count)); done < <(sed -n -E 's/^test result: [A-Za-z]+\. ([0-9]+) passed;.*/\1/p' "$temporary/output")
+if (( passed == 0 )); then echo 'the browser test selection ran no tests' >&2; exit 1; fi

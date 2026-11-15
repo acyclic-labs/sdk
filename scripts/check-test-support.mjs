@@ -215,6 +215,10 @@ export function checkTestSelection(sources) {
 const CARGO_VALUE = new Set(['-p', '--package', '-F', '--features', '--test', '--bin', '--example', '--bench',
   '--target', '--target-dir', '--manifest-path', '--profile', '-j', '--jobs', '--message-format', '--color',
   '--config', '-Z', '--exclude']);
+// A target nextest cannot run keeps cargo's runner; each entry names how its runner refuses an empty selection.
+export const LIBTEST_TARGETS = new Map([
+  ['wasm32-unknown-unknown', 'nextest cannot run wasm-bindgen browser tests; scripts/run-browser-tests.sh fails unless the runner reports a nonzero passed count'],
+]);
 const LIBTEST_VALUE = new Set(['--test-threads', '--skip', '--format', '-Z', '--shuffle-seed', '--logfile', '--color']);
 export function cargoTestFilters(text) {
   const commands = [];
@@ -247,6 +251,9 @@ export function cargoTestFilters(text) {
   }
   return commands.filter(({tokens}) => {
     if (tokens.includes('--no-run') || tokens.includes('--doc')) return false;
+    const target = tokens.flatMap((token, i) => token === '--target' ? [tokens[i + 1]]
+      : token.startsWith('--target=') ? [token.slice('--target='.length)] : []);
+    if (target.some(triple => LIBTEST_TARGETS.has(triple))) return false;
     let libtest = false;
     for (let i = 0; i < tokens.length; i++) {
       const token = tokens[i].replace(/^["']|["']$/g, '');

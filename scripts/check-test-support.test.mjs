@@ -148,9 +148,12 @@ test('a libtest name filter is refused, and runs that select no named test are n
   for (const text of filtered) assert.deepEqual(cargoTestFilters(text), [1], text);
   const selectionFree = [`${run} -p x --lib`, `${run} -p x --features "$features" --lib -- --test-threads=4`,
     `${run} -p x --test main --no-run`, `${run} -p x --doc module`, `# ${run} -p x --lib name`,
-    `run(${array(['./file.ts'])})`, `write("${run}\n")`, `${run} -p x --lib 2>&1 | tee log`];
+    `run(${array(['./file.ts'])})`, `write("${run}\n")`, `${run} -p x --lib 2>&1 | tee log`,
+    `${run} -p x --target wasm32-unknown-unknown --test main name`, `${run} -p x --target=wasm32-unknown-unknown --lib name`];
   for (const text of selectionFree) assert.deepEqual(cargoTestFilters(text), [], text);
   assert.deepEqual(cargoTestFilters(`ok\n${run} -p x --lib name`), [2]);
+  // Only the browser target keeps cargo's runner; any other target still needs nextest.
+  assert.deepEqual(cargoTestFilters(`${run} -p x --target x86_64-unknown-linux-gnu --lib name`), [1]);
   assert.throws(() => checkCargoTestFilters([['a.sh', filtered[0]]]), /a.sh:1: a name filter under libtest/);
   assert.equal(checkCargoTestFilters([['a.sh', filtered[0]]], new Map([['a.sh', 'reason']])), 1);
 });
