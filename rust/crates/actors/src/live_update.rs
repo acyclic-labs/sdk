@@ -524,6 +524,42 @@ impl Publication {
     }
 }
 
+/// A publication with its content identity derived once. Deriving the identity
+/// decodes every schema descriptor and hashes the whole document, so hosts and
+/// handlers hold this instead of re-deriving it for each Actor they serve.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedPublication {
+    publication: Publication,
+    version: Version,
+    schema: [u8; 32],
+}
+
+impl AdmittedPublication {
+    /// Validate the publication and fix its identity and contract digest.
+    pub fn new(publication: Publication) -> Result<Self, Error> {
+        Ok(Self {
+            version: publication.version().clone(),
+            schema: publication.schema_digest(),
+            publication,
+        })
+    }
+
+    /// The validated immutable upload.
+    pub const fn publication(&self) -> &Publication {
+        &self.publication
+    }
+
+    /// Content identity of [`Self::publication`].
+    pub const fn version(&self) -> &Version {
+        &self.version
+    }
+
+    /// Digest of the declared RPC and message schemas, shared by every artifact.
+    pub const fn schema(&self) -> [u8; 32] {
+        self.schema
+    }
+}
+
 /// Host-bound provenance on every Actor RPC/message and retained reply. Copying
 /// or supplying this envelope never authorizes code selection or effects.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
