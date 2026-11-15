@@ -254,7 +254,7 @@ fn unattended_calls_follow_only_leading_rules_stages() -> Result<()> {
     assert_eq!(
         ApprovalPolicy::accept_all("rules")
             .bind()?
-            .unattended(&call),
+            .unattended(&call, None),
         Some(RuleVerdict::Allow)
     );
     // A device rule applies to the call's resolved target, as in the chain.
