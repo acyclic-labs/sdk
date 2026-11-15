@@ -340,19 +340,21 @@ pub trait StreamProviderExt: StreamProvider {
                 limit: 1,
                 at_least,
             };
-            // Only the first head's tail leaves this future; the view stays in
-            // the awaited result instead of being moved through each `?`.
+            // Only the first head's tail and the snapshot leave this future; the
+            // view stays in the awaited result instead of being moved through
+            // each `?`.
             let work = async {
                 match self.heads(request.clone()).await {
                     Ok(ref heads) => {
                         heads.validate_for(&request)?;
-                        Ok::<_, StreamError>(
+                        Ok::<_, StreamError>((
                             heads
                                 .heads
                                 .first()
                                 .and_then(Option::as_ref)
                                 .map(|head| head.tail),
-                        )
+                            heads.snapshot.clone(),
+                        ))
                     }
                     Err(error) => Err(error),
                 }
@@ -368,7 +370,7 @@ pub trait StreamProviderExt: StreamProvider {
                 work,
                 |_| None,
             );
-            let tail = work.await?;
+            let (tail, snapshot) = work.await?;
             let (before, condition) = match tail {
                 Some(tail) => (
                     tail,
@@ -382,12 +384,7 @@ pub trait StreamProviderExt: StreamProvider {
             let mut records = std::array::from_fn(|_| None);
             for (key, record) in keys.into_iter().zip(&mut records) {
                 *record = self
-                    .latest_before(
-                        path.clone(),
-                        key,
-                        before,
-                        RevisionCut::of(heads.snapshot.clone()),
-                    )
+                    .latest_before(path.clone(), key, before, RevisionCut::of(snapshot.clone()))
                     .await?;
             }
             Ok((records, condition))
