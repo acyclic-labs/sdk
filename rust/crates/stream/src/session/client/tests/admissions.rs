@@ -59,13 +59,18 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
     let fixture = Fixture::open(Arc::new(MemoryStream::default()), "good").await?;
     let (mut pool, a, _terminal_b) = ended_sibling(&fixture._channel);
     let (release, held) = oneshot::channel::<()>();
+    let (calling, resolving) = oneshot::channel::<()>();
     // One fixture lock, never nested and released before the credential await.
-    let held = std::sync::Arc::new(Mutex::new(Some(held)));
+    let held = std::sync::Arc::new(Mutex::new(Some((held, calling))));
     let called = std::sync::Arc::new(AtomicUsize::new(0));
     let observed = called.clone();
     let credential = grpc::CredentialProvider::new(move || {
         observed.fetch_add(1, Ordering::Relaxed);
-        let held = held.lock().unwrap().take();
+        let held = held.lock().unwrap().take().map(|(held, calling)| {
+            // The test still owns the receiver until this first request.
+            let _ = calling.send(());
+            held
+        });
         async move {
             held.ok_or(grpc::CredentialError::Invalid)?
                 .await
@@ -76,9 +81,14 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
     pool.links.get_mut("good").unwrap().channel =
         native::endpoint(fixture._channel.clone(), None, Some(credential));
     pool.reconnect("good")?;
-    assert!(
-        futures::poll!(future::poll_fn(|cx| pool::poll_dials(&mut pool.dials, cx))).is_pending()
-    );
+    // The redial first waits out its shared recovery spacing. Drive it until
+    // the credential provider is called, rather than assuming that happens
+    // on the first poll; the dial must still be pending on the held credential.
+    let dialing = future::poll_fn(|cx| pool::poll_dials(&mut pool.dials, cx));
+    match future::select(std::pin::pin!(dialing), resolving).await {
+        future::Either::Right((Ok(()), _)) => {}
+        _ => return Err("the reconnect settled before resolving its credential".into()),
+    }
     assert_eq!(called.load(Ordering::Relaxed), 1);
     drop(a);
     pool.close_idle();
