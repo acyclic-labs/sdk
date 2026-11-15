@@ -10,6 +10,7 @@ mod clock;
 pub use clock::{ClockUnavailable, unix_seconds};
 mod compilation;
 mod decision;
+mod decode_bound;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 mod disclosure;
 mod policy_fence;

@@ -415,12 +415,10 @@ fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Arc<crate::access::CompiledPolicy>, FsError> {
     let cache = &volume.fs.inner.policy_cache;
-    // Serde's externally tagged records retain Content while decoding.
-    // Admit that bounded temporary before decoding, then retire it with
-    // the NFA/DFA preparation storage after the shared entry is funded.
-    let decode_bytes = (bytes.len() as u64)
-        .checked_mul((size_of::<crate::access::Rule>() + 128) as u64)
-        .ok_or(crate::WorkError::Overflow)?;
+    // Admit everything the decode can hold before it starts, then retire it
+    // with the NFA/DFA preparation storage after the shared entry is funded.
+    let decode_bytes =
+        crate::access::Policy::decode_allocation_bound(bytes).ok_or(crate::WorkError::Overflow)?;
     let mut decode = accounting.claim_owned(decode_bytes, 1)?;
     let mut storage = PolicyStorage::new(accounting)?;
     let mut admission_error = None;
