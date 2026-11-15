@@ -578,7 +578,7 @@ async fn settle(
             .is_none()
     {
         return Err(rejected(
-            "selected model has no admitted reasoning baseline",
+            crate::model::ModelProfileBinding::EFFORT_WITHOUT_BASELINE,
         ));
     }
     if let Some(sampling) = settings.sampling {

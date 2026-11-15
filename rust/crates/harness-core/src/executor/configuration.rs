@@ -25,7 +25,7 @@ impl StockExecution<'_> {
                 Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Unsupported,
-                    "selected model has no admitted reasoning baseline",
+                    crate::model::ModelProfileBinding::EFFORT_WITHOUT_BASELINE,
                 ))
             };
         };
@@ -34,7 +34,7 @@ impl StockExecution<'_> {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Unsupported,
-                    "selected model has no admitted reasoning baseline",
+                    crate::model::ModelProfileBinding::EFFORT_WITHOUT_BASELINE,
                 ));
             }
             profile.overlay_effort = Some(match effort {
