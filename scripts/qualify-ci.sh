@@ -248,6 +248,7 @@ case "$lane" in
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness-core --features model-checking \
         --lib workflow::model_checking::tests::
+    # Runs every model suite and requires it to pass exactly what its binary lists.
     node scripts/qualify-mcp-loom.mjs --gate
     ensure_nextest
     bash scripts/qualify-tui-diff.sh

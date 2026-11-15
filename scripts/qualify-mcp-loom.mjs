@@ -46,7 +46,7 @@ function qualifyGate(run) {
 
 export function qualifyMcpLoom(features = [], run = runCommand) {
   return qualifyLoom("acyclic-harness-core", "main", [...features, "--features", "model-checking"], run, {
-    env: loomEnvironment(), targetCfg: [], suites: [["mcp_loom::", 6]],
+    env: loomEnvironment(), targetCfg: [], suites: ["mcp_loom::"],
   });
 }
 
@@ -61,7 +61,7 @@ export function qualifySkillMaterializerLoom(run = runCommand) {
 export function qualifyProviderRefreshLoom(run = runCommand) {
   return qualifyLoom("acyclic-harness-providers", "main", [], run, {
     modelFeatures: [],
-    suites: [["verification_models::refresh::", 3]],
+    suites: ["verification_models::refresh::"],
   });
 }
 
@@ -293,13 +293,13 @@ export function qualifyStreamRetryLoom(run = runCommand) {
   return qualifyLoom("acyclic-stream", "main", [
     "--no-default-features",
   ], run, {
-    env: loomEnvironment(), targetCfg: [], suites: [["retry_recovery_loom::", 2]],
+    env: loomEnvironment(), targetCfg: [], suites: ["retry_recovery_loom::"],
   });
 }
 
 export function qualifyGuestLoom(run = runCommand) {
   return qualifyLoom("acyclic-actors", "main", [], run, {
-    env: loomEnvironment(), targetCfg: [], suites: [["guest_loom::", 3]],
+    env: loomEnvironment(), targetCfg: [], suites: ["guest_loom::"],
   });
 }
 
@@ -413,9 +413,7 @@ export function qualifyNativeProgressLoom(run = runCommand) {
 }
 
 export function qualifyNativeSignalLoom(run = runCommand) {
-  return qualifyLoom("acyclic-native-runtime", "process_signal_loom", [], run, {
-    suites: [["", 2]],
-  });
+  return qualifyLoom("acyclic-native-runtime", "process_signal_loom", [], run);
 }
 
 export function qualifyNativeSignalMutationsLoom(run = runCommand) {
@@ -461,28 +459,24 @@ function qualifyNativeTrackerLoom(run) {
 }
 
 export function qualifyNativeWakeLoom(run = runCommand) {
-  return qualifyLoom("acyclic-native-runtime", "wake_loom", [], run, {
-    suites: [["", 2]],
-  });
+  return qualifyLoom("acyclic-native-runtime", "wake_loom", [], run);
 }
 
 export function qualifyNativeOwnerLoom(run = runCommand) {
-  return qualifyLoom("acyclic-native-runtime", "owner_count_loom", [], run, {
-    suites: [["", 1]],
-  });
+  return qualifyLoom("acyclic-native-runtime", "owner_count_loom", [], run);
 }
 
 export function qualifyNativeClaimLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
     kind: "--lib", targetCfg: [], env: loomEnvironment(),
-    suites: [["claim::model::", 8]],
+    suites: ["claim::model::"],
   });
 }
 
 export function qualifyNativeDescriptorLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
     kind: "--lib", targetCfg: [], env: loomEnvironment(),
-    suites: [["descriptor::model::", 12]],
+    suites: ["descriptor::model::"],
   });
 }
 
@@ -490,8 +484,8 @@ export function qualifyNativeHostEvents(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
     kind: "--lib", targetCfg: [],
     suites: [
-      ["testing::host::tests::parking_a_worker_does_not_invent_callback_readiness", 1],
-      ["testing::host::tests::unscoped_physical_workers_leave_the_driver_available_to_reply", 1],
+      "testing::host::tests::parking_a_worker_does_not_invent_callback_readiness",
+      "testing::host::tests::unscoped_physical_workers_leave_the_driver_available_to_reply",
     ],
   });
 }
@@ -509,7 +503,7 @@ export function qualifyNativeHostLoom(run = runCommand, controls = false) {
       "testing::host::models::readiness_racing_worker_parking_cannot_be_lost",
       "testing::host::models::queue_capacity_and_physical_terminal_wakes_are_latched",
       "testing::host::models::physical_occupants_outside_the_schedule_cannot_block_the_driver",
-    ] } : { suites: [["testing::host::models::", 4], ["testing::executor::models::", 5]] }),
+    ] } : { suites: ["testing::host::models::", "testing::executor::models::"] }),
   });
 }
 
@@ -534,7 +528,7 @@ export function qualifyNativeSources(run = runCommand, core = false) {
 
 export function qualifyFsBindingLoom(features = [], run = runCommand) {
   return qualifyLoom("acyclic-fs", "main", features, run, {
-    targetCfg: ["--", "--cfg", "loom"], suites: [["native_binding_model::", 5]],
+    targetCfg: ["--", "--cfg", "loom"], suites: ["native_binding_model::"],
   });
 }
 
@@ -544,7 +538,7 @@ export function qualifyFsPolicyLoom(run = runCommand) {
   ], run, {
     kind: "--lib", targetCfg: [],
     env: loomEnvironment(),
-    suites: [["facade::policy_cache::loom_tests::", 2], ["distributed::head_payload_loom_tests::", 8]],
+    suites: ["facade::policy_cache::loom_tests::", "distributed::head_payload_loom_tests::"],
   });
 }
 
@@ -561,18 +555,18 @@ export function qualifySessionFsLoom(run = runCommand) {
 
 export function qualifyOwnershipLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
-    kind: "--lib", filter: "ownership::model::", exact: false, passed: 6,
+    kind: "--lib", suites: ["ownership::model::"],
     env: loomEnvironment(), targetCfg: [],
   });
 }
 
 // Retained workspace suites, including every negative control.
-/** @type {Record<string, Array<[string, number]>>} */
+/** @type {Record<string, string[]>} */
 export const harnessModelSuites = {
   "acyclic-harness": [
-    ["local::workspace::bootstrap::loom_tests::", 1],
-    ["local::workspace::projection::tests::", 4],
-    ["local::checkout_tools::tests::", 1],
+    "local::workspace::bootstrap::loom_tests::",
+    "local::workspace::projection::tests::",
+    "local::checkout_tools::tests::",
   ],
 };
 
@@ -597,10 +591,9 @@ function qualifyLoom(crate, target, features, run, options = {}) {
     ...features, ...(options.modelFeatures ?? ["--features", "model-checking"]),
     ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
   ];
-  const tests = options.suites?.map(([filter, passed]) => ({ args: [filter], passed })) ?? (options.filters ?? [options.filter]).map(filter => ({
-    args: filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [],
-    passed: options.exact === false ? (options.passed ?? 4) : filter ? 1 : null,
-  }));
+  // Suites are prefix filters, filters name exact tests, and no filter selects the whole binary.
+  const tests = options.suites?.map(filter => ({ args: [filter] }))
+    ?? (options.filters ?? [options.filter]).map(filter => ({ args: filter ? [filter, "--exact"] : [] }));
   const env = options.env ?? process.env;
   const plan = { args, target, tests, rustflags: env.RUSTFLAGS ?? "", wrapper: env.RUSTC_WORKSPACE_WRAPPER ?? null };
   if (options.expectedFailure) plan.expectedFailure = options.expectedFailure;
@@ -639,7 +632,6 @@ function qualifyLoom(crate, target, features, run, options = {}) {
     if (result.error) throw result.error;
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
-    if (result.error) throw result.error;
     if (options.expectedFailure) {
       const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
       if (result.status !== 101 || !output.includes(options.expectedFailure)
@@ -650,11 +642,17 @@ function qualifyLoom(crate, target, features, run, options = {}) {
       continue;
     }
     if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
-    const complete = test.passed === null
-      ? /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m
-      : new RegExp(`^test result: ok\\. ${test.passed} passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;`, "m");
-    if (!complete.test(result.stdout)) {
-      throw new Error("MCP Loom qualification requires a nonzero, complete test suite");
+    // Complete means the search passed every test this same binary selects for
+    // the same arguments; the binary, not a restated count, defines the suite.
+    const ran = Number(/^test result: ok\. ([0-9]+) passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
+      .exec(result.stdout ?? "")?.[1] ?? 0);
+    const list = run(binaries[0], [...test.args, "--list", "--format", "terse"], { encoding: "utf8" });
+    if (list.error) throw list.error;
+    if (list.status !== 0) throw new Error(`MCP Loom test listing failed: ${list.status}\n${list.stderr ?? ""}`);
+    const listed = (list.stdout ?? "").split(/\r?\n/).filter(line => line.endsWith(": test")).length;
+    console.log("MODEL_CHECK_COUNT " + JSON.stringify({ crate, target, args: test.args, listed, ran }));
+    if (ran === 0 || ran !== listed) {
+      throw new Error(`MCP Loom qualification requires a nonzero, complete test suite: listed=${listed} ran=${ran}`);
     }
   }
 }
