@@ -1,4 +1,4 @@
-//! The dedicated model command sets RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh.
+//! The dedicated model command sets ACYCLIC_LOOM=1.
 //! Both instrumented modules below are production source.
 #![cfg(loom)]
 

@@ -5,7 +5,10 @@ use acyclic_fs::{
     CancellationToken, Digest, FsError, ObjectId, ObjectKind, OperationClaims, VolumeId, WorkError,
 };
 
-use loom::sync;
+// The included sources name the filesystem's loom facade, including its InlineMutex.
+mod sync {
+    pub(crate) use loom::sync::{Mutex as InlineMutex, *};
+}
 
 fn key(byte: u8) -> ObjectId {
     ObjectId {

@@ -40,6 +40,7 @@ rust_shared_library(
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/stream/publication-models:change.rs",
         "//rust/crates/stream/publication-models:interest.rs",
+        "//rust/crates/stream/publication-models:probe.rs",
         "tests/support/session.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
@@ -99,6 +100,7 @@ rust_library(
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/stream/publication-models:change.rs",
         "//rust/crates/stream/publication-models:interest.rs",
+        "//rust/crates/stream/publication-models:probe.rs",
         "tests/support/session.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [

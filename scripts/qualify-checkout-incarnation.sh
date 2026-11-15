@@ -73,11 +73,11 @@ native)
         recreated_checkout_runs_a_fresh_operation_through_the_real_cli_and_http
     ;;
 model)
-    # This cfg, never a feature or build.rs decision, instruments the actual
+    # This opt-in, never the feature alone, instruments the actual
     # read/rename/flush operations used by HeldRoot::read_or_publish.
     artifacts=$(mktemp)
     trap 'rm -f "$artifacts"' EXIT
-    timed model-build env RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" \
+    timed model-build env ACYCLIC_LOOM=1 \
  cargo test --locked -p acyclic-fs --features model-checking --lib --no-run --message-format=json >"$artifacts"
     run_built acyclic_fs rust/crates/filesystem native_host::held_files::models
     ;;

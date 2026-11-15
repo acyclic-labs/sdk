@@ -401,8 +401,15 @@ async fn lost_caller_discards_its_whole_view_and_keeps_the_acknowledged_head() -
         }
     }
     // All or nothing: neither unverified write reached the volume.
-    assert_eq!(published(scratch, "/data").await?, b"acknowledged");
-    assert!(published(scratch, "/partial").await.is_err());
+    assert_eq!(
+        published(scratch, "/data").await?,
+        b"acknowledged",
+        "a lost caller's unverified view was published"
+    );
+    assert!(
+        published(scratch, "/partial").await.is_err(),
+        "a lost caller's unverified view was published"
+    );
     native_scope(mounts, async |claims| {
         let view = home(&claims)?;
         assert_eq!(

@@ -1,4 +1,4 @@
-//! `cargo rustc -p acyclic-native-runtime --test wake_loom --features model-checking -- --cfg loom`
+//! `ACYCLIC_LOOM=1 cargo test -p acyclic-native-runtime --test wake_loom --features model-checking`
 #![cfg(loom)]
 #[path = "../src/sync/locks.rs"]
 pub mod sync;

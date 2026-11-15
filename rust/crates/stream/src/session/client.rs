@@ -5,7 +5,7 @@ use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 #[cfg(not(target_arch = "wasm32"))]
 use crate::grpc::ChannelConnector as Connect;
 #[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
@@ -55,8 +55,8 @@ mod progress;
 use progress::Progress;
 #[cfg(loom)]
 pub use progress::verify_latest_progress;
-// The client tests drive the native gRPC transport.
-#[cfg(test)]
+// The client tests drive the native gRPC transport; they are not loom models.
+#[cfg(all(test, not(loom)))]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests;
 type Ready = (String, Link, Response);

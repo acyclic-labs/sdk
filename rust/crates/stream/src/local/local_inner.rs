@@ -130,7 +130,7 @@ impl LocalInner {
         durability: LocalDurability,
         work: Option<&crate::native::Work>,
     ) -> Option<(u64, u64, u64)> {
-        #[cfg(test)]
+        #[cfg(all(test, not(loom)))]
         {
             let journal_identity = Arc::as_ptr(&self.journal) as usize;
             let blocker = JOURNAL_PERSIST_BLOCKER.lock().ok().and_then(|mut hook| {
@@ -155,7 +155,7 @@ impl LocalInner {
             Some(work) => file.flush(|file| work.sync(|| sync_file_data(file, durability))),
             None => file.flush(|file| sync_file_data(file, durability)),
         };
-        #[cfg(test)]
+        #[cfg(all(test, not(loom)))]
         {
             let identity = Arc::as_ptr(&self.journal) as usize;
             let gate = {

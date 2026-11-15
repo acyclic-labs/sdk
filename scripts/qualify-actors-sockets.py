@@ -25,8 +25,7 @@ def run(diagnostic=None, model=MODEL, instrumented=True, recovery=RECOVERY):
     environment = dict(os.environ)
     if instrumented:
         command.extend(["--features", "model-checking"])
-        environment["RUSTC_WORKSPACE_WRAPPER"] = str(
-            ROOT / "scripts" / ("loom-rustc.cmd" if os.name == "nt" else "loom-rustc.sh"))
+        environment["ACYCLIC_LOOM"] = "1"
     command.extend(["--lib", model, "--", "--exact", "--nocapture"])
     print("STEP actual socket model: " + repr(command), flush=True)
     with subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.PIPE,

@@ -181,7 +181,8 @@ pub fn execute_examples(
         }
         command
             .env_remove("RUSTC_WRAPPER")
-            .env_remove("RUSTC_WORKSPACE_WRAPPER");
+            .env_remove("RUSTC_WORKSPACE_WRAPPER")
+            .env_remove("ACYCLIC_LOOM");
         let output = command.run_output().map_err(|e| e.to_string())?;
         if !output.status.success() {
             return Err(format!(

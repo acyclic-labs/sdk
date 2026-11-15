@@ -237,17 +237,18 @@ case "$lane" in
     RUSTFLAGS="$warning_rustflags" \
       cargo check --locked -p acyclic-harness-fuzz --bins
     # Stream Loom models are crate-private; only a cfg(loom) build compiles them.
-    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" \
+    ACYCLIC_LOOM=1 \
  cargo check --locked -p acyclic-stream --features model-checking --lib
-    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
+    ACYCLIC_LOOM=1 RUSTFLAGS="$warning_rustflags" \
  cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features model-checking --lib
     # Compile native implementations and their unit tests together.
  cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --lib --tests
-    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
+    ACYCLIC_LOOM=1 RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness-core --features model-checking --test main mcp_loom::
-    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
+    ACYCLIC_LOOM=1 RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness-core --features model-checking \
         --lib workflow::model_checking::tests::
+    # Runs every model suite and requires it to pass exactly what its binary lists.
     node scripts/qualify-mcp-loom.mjs --gate
     ensure_nextest
     bash scripts/qualify-tui-diff.sh

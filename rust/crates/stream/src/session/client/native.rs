@@ -199,7 +199,7 @@ impl transport::Transport for Grpc {
 }
 
 impl Client {
-    #[cfg(test)]
+    #[cfg(all(test, not(loom)))]
     pub(crate) fn open(
         channel: TransportChannel,
         authorization: Option<MetadataValue<Ascii>>,
@@ -249,7 +249,7 @@ impl Client {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(loom)))]
     pub(super) fn with_connector(
         channel: TransportChannel,
         authorization: Option<MetadataValue<Ascii>>,

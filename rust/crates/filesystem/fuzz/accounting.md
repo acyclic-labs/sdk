@@ -15,7 +15,7 @@ effect while the real writer refuses the other.
 From a clean repository root, apply the patch and run:
 
 ```sh
-RUSTC_WORKSPACE_WRAPPER=scripts/loom-rustc.sh cargo test --locked -p acyclic-fs \
+ACYCLIC_LOOM=1 cargo test --locked -p acyclic-fs \
   --features model-checking --lib -- --exact --nocapture \
   kernel::codec::accounting::model_checking::blob_page_writer_competes_with_original_effect_credit
 ```

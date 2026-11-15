@@ -19,7 +19,8 @@ use std::{
 mod admission_tests;
 #[path = "alloy_tests.rs"]
 mod alloy_tests;
-#[cfg(not(target_arch = "wasm32"))]
+// These prepare requests through `prepared`, which loom builds omit.
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 #[path = "api_key_tests.rs"]
 mod api_key_tests;
 #[path = "projection/arguments_tests.rs"]
@@ -29,7 +30,7 @@ mod call_id_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "catalog_identity_tests.rs"]
 pub(crate) mod catalog_identity_tests;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 #[path = "catalog_tests.rs"]
 mod catalog_tests;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1052,6 +1053,7 @@ mod protocol;
 #[path = "stream/reasoning_tests.rs"]
 mod reasoning;
 
+#[cfg(not(loom))]
 #[path = "files_tests.rs"]
 mod files;
 

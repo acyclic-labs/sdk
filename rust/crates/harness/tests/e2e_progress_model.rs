@@ -1,4 +1,4 @@
-//! Run this target with --cfg loom; ordinary gates use real locks.
+//! Run this target with `ACYCLIC_LOOM=1` and `model-checking`; ordinary gates use real locks.
 #![cfg(loom)]
 #[path = "support/progress_registry.rs"]
 mod registry;

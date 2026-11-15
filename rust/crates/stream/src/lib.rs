@@ -79,6 +79,10 @@ mod journal;
 mod local;
 mod memory;
 mod operation_claim;
+// The publication models in change and interest wake through this probe.
+#[cfg(all(loom, test))]
+#[path = "../publication-models/probe.rs"]
+mod probe;
 mod replicated;
 pub use operation_claim::{
     OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,
@@ -242,7 +246,7 @@ mod test_latency;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod test_meter;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod test_trace;
 
 #[cfg(test)]

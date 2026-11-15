@@ -18,7 +18,7 @@ pass after restoring production source. The startup count is emitted by the
 same recursion that creates and joins the physical worker handles.
 
 The recovery control requires the production synchronization model:
-`RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test --locked -p acyclic-fs --all-features --lib native_mount::disconnected::models::real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control -- --exact`.
+`ACYCLIC_LOOM=1 cargo test --locked -p acyclic-fs --all-features --lib native_mount::disconnected::models::real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control -- --exact`.
 Its mutation changes the production fence ordering; it does not add a model-only
 release path or change the original custody assertions.
 
@@ -50,7 +50,7 @@ The ordinary source has no alternate ordering selected by the model. Apply the
 mutation from the repository root, then run the unchanged recovery model:
 
 ```sh
-RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test --locked -p acyclic-fs --features model-checking --lib native_mount::disconnected::models::real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control -- --exact
+ACYCLIC_LOOM=1 cargo test --locked -p acyclic-fs --features model-checking --lib native_mount::disconnected::models::real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control -- --exact
 ```
 
 The mutation must fail one of the original custody assertions:

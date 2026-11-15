@@ -16,6 +16,7 @@ local = ["dep:acyclic-harness"]
 browser = ["acyclic-harness-core/browser", "dep:acyclic-harness", "acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
 wasm-journal = ["browser", "acyclic-harness/wasm-journal"]
 fuzzing = ["acyclic-harness-core/test-support"]
+model-checking = ["dep:loom"]
 
 [dependencies]
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
@@ -37,6 +38,7 @@ zeroize.workspace = true
 url = "2.5.7"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+loom = { version = "0.7.3", optional = true }
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, optional = true }
 acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0" }
 serde_path_to_error = "0.1.20"

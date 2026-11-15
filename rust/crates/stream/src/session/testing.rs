@@ -76,7 +76,7 @@ pub fn credential_with_grants(grants: Vec<ResourceGrant>) -> Bytes {
     })
     .into()
 }
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 pub(in crate::session) fn slots() -> Slots {
     let auth = authority();
     let mut slots = Slots::default();

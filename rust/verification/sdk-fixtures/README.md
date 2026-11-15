@@ -23,7 +23,7 @@ The Loom configuration exercises the same initializer's concurrent publication,
 retry after a returned error, and non-nested slot ownership:
 
 ```sh
-RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p sdk-fixture-verification --features model-checking --test fixture-model -- --exact package_is_initialized_once_and_published_whole failed_initialization_leaves_the_slot_retryable producer_then_cfg_slots_publish_without_nested_locks cargo_and_fixture_tool_outputs_publish_as_one_initialization model_detects_initialization_outside_the_lock
+ACYCLIC_LOOM=1 cargo test --locked -p sdk-fixture-verification --features model-checking --test fixture-model -- --exact package_is_initialized_once_and_published_whole failed_initialization_leaves_the_slot_retryable producer_then_cfg_slots_publish_without_nested_locks cargo_and_fixture_tool_outputs_publish_as_one_initialization model_detects_initialization_outside_the_lock
 ```
 
 Loom 0.7.2 does not return standard-library mutex poison to its caller. Its

@@ -10,7 +10,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [features]
-model-checking = []
+model-checking = ["dep:loom"]
 fuzz-targets = ["dep:libfuzzer-sys"]
 
 [dependencies]
@@ -20,6 +20,7 @@ prost.workspace = true
 acyclic-fs = { path = "..", features = ["model-checking", "fuzzing"] }
 acyclic-fs-lease-path-proof = { path = "../proofs/lease-path" }
 libfuzzer-sys = { version = "0.4", optional = true }
+loom = { version = "0.7.3", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tempfile = "3.27.0"

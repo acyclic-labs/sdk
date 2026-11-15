@@ -7,6 +7,8 @@ use wire_codec::status::category;
 
 pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+// The session client tests, which loom builds omit, are its only callers.
+#[cfg(not(loom))]
 pub(crate) mod retry_capture;
 
 #[derive(Debug, thiserror::Error)]

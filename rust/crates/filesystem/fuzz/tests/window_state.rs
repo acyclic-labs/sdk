@@ -1,4 +1,5 @@
 //! Replays persisted-window inputs through the production writer and reopened reader.
+#![cfg(not(loom))]
 #[test]
 fn persisted_window_records_preserve_fields_or_typed_corruption() {
     for input in [

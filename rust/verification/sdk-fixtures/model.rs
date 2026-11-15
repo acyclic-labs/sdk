@@ -1,5 +1,5 @@
 // Run from the repository root:
-// RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --manifest-path rust/verification/sdk-fixtures/Cargo.toml --features model-checking --locked --test fixture-model
+// ACYCLIC_LOOM=1 cargo test --manifest-path rust/verification/sdk-fixtures/Cargo.toml --features model-checking --locked --test fixture-model
 #![cfg(loom)]
 
 use loom::sync::{

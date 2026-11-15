@@ -1,4 +1,4 @@
-//! Run with `RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh` and `--features model-checking`.
+//! Run with `ACYCLIC_LOOM=1` and `--features model-checking`.
 #![cfg(loom)]
 
 #[test]
