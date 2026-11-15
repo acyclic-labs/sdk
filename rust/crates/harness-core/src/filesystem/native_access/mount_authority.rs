@@ -233,19 +233,27 @@ mod tests {
                 .allowed,
             "a writable mount widened the path grant"
         );
-        let legacy = issuer.bootstrap_scope(
-            "directory-only",
-            &crate::Capabilities::new(["directory:read:unrelated"]),
-            port.scope.agent(),
-            &mut None,
-        )?;
-        assert!(
-            port.for_scope(&legacy)?
-                .mount_options(&workspace, None, "", true, &work)
-                .await
-                .is_err(),
-            "a legacy directory grant became a whole-volume mount"
-        );
+        // A directory read label in the unversioned format names no volume:
+        // the scope carrying it is refused, never mounted.
+        for legacy in [
+            format!("directory:read:{}", "07".repeat(32)),
+            "directory:read:unrelated".to_owned(),
+        ] {
+            let legacy = issuer.bootstrap_scope(
+                "directory-only",
+                &crate::Capabilities::new([legacy]),
+                port.scope.agent(),
+                &mut None,
+            )?;
+            match port.for_scope(&legacy) {
+                Err(Error::Unauthorized(message)) => assert!(
+                    message.ends_with(&acyclic_fs::access::UnversionedContentRead.to_string()),
+                    "{message}"
+                ),
+                Err(error) => panic!("an unversioned directory grant was not refused: {error}"),
+                Ok(_) => panic!("an unversioned directory grant was admitted"),
+            }
+        }
         {
             let volume = VolumeRef::new(
                 crate::resources::ProviderRef::new(

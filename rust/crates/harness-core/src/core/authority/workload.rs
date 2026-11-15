@@ -555,6 +555,11 @@ fn authorize_scope(
     if capability.account_id().map_err(unauthorized)? != scope.issuer {
         return Err(unauthorized("foreign account"));
     }
+    // Directory and exact-file read labels have one format. Any other
+    // spelling in their families grants nothing, so the scope is refused.
+    for label in scope.capabilities.iter() {
+        acyclic_fs::access::ContentReadLabel::parse(label).map_err(unauthorized)?;
+    }
     let name = resource(audience)?;
     let last = &authenticated.last;
     if last.id != scope.id
