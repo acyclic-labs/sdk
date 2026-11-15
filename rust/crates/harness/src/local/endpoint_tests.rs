@@ -644,7 +644,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
                 .await
                 .err()
                 .map(|error| error.category()),
-            Some(StreamError::AccessDenied),
+            Some(StreamCategory::AccessDenied),
             "{} listed {}'s children",
             view.root.as_str(),
             foreign.as_str()
