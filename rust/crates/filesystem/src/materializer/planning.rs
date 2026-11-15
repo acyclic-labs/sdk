@@ -345,4 +345,98 @@ mod tests {
         }
         Ok(())
     }
+
+    #[tokio::test]
+    async fn applied_empty_retry_refuses_a_replaced_checkout()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let cancellation = crate::CancellationToken::new();
+        let budget = crate::WorkBudget::UNBOUNDED;
+        let workspace = crate::Fs::memory()
+            .create_workspace("parent", budget, &cancellation)
+            .await?
+            .value;
+        let before = workspace.head(budget, &cancellation).await?.value;
+        let mut transaction = workspace
+            .begin_transaction(crate::IdempotencyKey::new(), budget, &cancellation)
+            .await?
+            .value;
+        transaction
+            .create_dir_all("/excluded", budget, &cancellation)
+            .await?;
+        transaction.write_text("/excluded/file", "new").await?;
+        transaction
+            .commit::<crate::WorkspaceError, _, _>(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                budget,
+                &cancellation,
+                |_| async {
+                    Ok(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                },
+            )
+            .await?;
+        let after = workspace.head(budget, &cancellation).await?.value;
+        assert_ne!(before.id(), after.id());
+        let root = directory.path().join("checkout");
+        std::fs::create_dir(&root)?;
+        let store = crate::LocalCoreStateStore::new(directory.path().join("state"));
+        let operation = directory.path().join("operation");
+        let operation_id = OperationId::new();
+        let options = crate::MaterializeOptions::native(operation.join("target"));
+        let identity = NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, _)| cause)?
+            .root_identity(&root)?;
+        for retry in [false, true] {
+            if retry {
+                // The retry names the same path, now holding another directory.
+                std::fs::rename(&root, directory.path().join("retired"))?;
+                std::fs::create_dir(&root)?;
+            }
+            let work = NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, _)| cause)?;
+            let result = super::super::publication::publish_native_generation_transition(
+                &before,
+                &after,
+                &store,
+                NativeWorkspacePublication {
+                    root: &root,
+                    source_root_identity: identity,
+                    operation_directory: &operation,
+                    operation_id,
+                    from: before.id(),
+                    to: after.id(),
+                    excluded_names: &["excluded"],
+                    options: &options,
+                    budget,
+                    cancellation: &cancellation,
+                },
+                work,
+                || std::future::ready(Ok(())),
+            )
+            .await
+            .map_err(|(cause, _)| cause);
+            if retry {
+                assert!(matches!(
+                    result,
+                    Err(NativeWorkspacePublicationError::Native(
+                        NativeTreeMaterializationError::AllocationChanged { expected, .. }
+                    )) if expected == identity
+                ));
+            } else {
+                let journal = result?.value;
+                assert_eq!(journal.phase, MaterializationPhase::Applied);
+                assert!(journal.plan.edits.is_empty());
+                assert!(
+                    MaterializationJournalStore::load(&store, operation_id)
+                        .await?
+                        .is_some()
+                );
+            }
+        }
+        Ok(())
+    }
 }

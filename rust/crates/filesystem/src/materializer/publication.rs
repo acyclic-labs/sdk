@@ -194,6 +194,8 @@ where
         check_native_plan(&journal.plan, work)?;
         work.set_original_work(journal.work);
         if journal.phase == MaterializationPhase::Applied && journal.plan.edits.is_empty() {
+            // A retry still answers for the checkout it names now.
+            matched_root_identity(work.root_identity(&root)?, &request)?;
             return Ok((None, journal));
         }
         publication_root_identity(&root, &operation, &request, work)?;
@@ -360,7 +362,16 @@ fn publication_root_identity(
     request: &NativeWorkspacePublication<'_>,
     work: &NativeMaterializationWork,
 ) -> Result<crate::NativeRootIdentity, NativeWorkspacePublicationError> {
-    let actual = validate_native_preparation_location(root, operation, work)?;
+    matched_root_identity(
+        validate_native_preparation_location(root, operation, work)?,
+        request,
+    )
+}
+
+fn matched_root_identity(
+    actual: crate::NativeRootIdentity,
+    request: &NativeWorkspacePublication<'_>,
+) -> Result<crate::NativeRootIdentity, NativeWorkspacePublicationError> {
     if actual != request.source_root_identity {
         return Err(NativeTreeMaterializationError::AllocationChanged {
             expected: request.source_root_identity,
