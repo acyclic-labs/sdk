@@ -184,11 +184,15 @@ impl NativeMaterializationWork {
             state.within_window(self.window.as_deref(), |state| {
                 state.scope(
                     |work| &mut work.native_invocation,
-                    self.invocation.as_ref().map(Arc::downgrade),
+                    self.invocation
+                        .as_ref()
+                        .map(|view| Arc::downgrade(view).into()),
                     |state| {
                         state.scope(
                             |work| &mut work.native_resource,
-                            self.resource.as_ref().map(Arc::downgrade),
+                            self.resource
+                                .as_ref()
+                                .map(|resource| Arc::downgrade(resource).into()),
                             |state| {
                                 state.scope(
                                     |work| &mut work.capture_custody,
