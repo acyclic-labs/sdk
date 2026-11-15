@@ -206,6 +206,13 @@ impl NativeSourceWatch {
             }
     }
 
+    /// The host's own report that it dropped changes, as the stream flags it.
+    #[cfg(test)]
+    pub(crate) fn inject_overflow(&self) -> io::Result<()> {
+        self.inject(&self.shared.root, KERNEL_DROPPED);
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn inject(&self, path: &Path, flags: u32) {
         let mut work = self.delivery().callback_work();

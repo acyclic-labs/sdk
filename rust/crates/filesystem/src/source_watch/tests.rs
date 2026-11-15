@@ -418,28 +418,15 @@ fn a_fence_delivers_every_change_completed_before_it() -> TestResult {
     Ok(())
 }
 
-/// Changes the host could not queue are reported as everything, and the
-#[cfg(any(target_os = "linux", windows))]
+/// Changes the host reports it dropped are reported as everything, and the
+/// watch stays exact: later changes are still reported by name. The host's
+/// own overflow report is injected where the host delivers it, so the test
+/// never depends on a kernel queue size.
 #[test]
 fn lost_changes_are_reported_as_everything() -> TestResult {
     let root = tempfile::tempdir()?;
-    let mut from = root.path().join("flood-from");
-    let mut to = root.path().join("flood-to");
-    std::fs::write(&from, b"")?;
     let (watch, recorded) = watch(root.path())?;
-    {
-        let _paused = watch.paused();
-        // More than the host queues: inotify's default queue holds 16384
-        // events; a directory read buffer holds 64 KiB of reports. Each
-        // rename queues distinct old/new-name records, so adjacent events
-        // cannot coalesce. Reuse one inode instead of creating and cleaning
-        // up a growing directory while its watch is held.
-        let flood = if cfg!(windows) { 3_000 } else { 20_000 };
-        for _ in 0..flood {
-            std::fs::rename(&from, &to)?;
-            std::mem::swap(&mut from, &mut to);
-        }
-    }
+    watch.inject_overflow()?;
     watch.fence()?;
     assert!(Recorded::everything(&recorded.take()));
     std::fs::write(root.path().join("after"), b"x")?;
@@ -452,7 +439,7 @@ fn lost_changes_are_reported_as_everything() -> TestResult {
 /// `FSEvents` reports lost events with flags, which report everything.
 #[cfg(target_os = "macos")]
 #[test]
-fn lost_changes_are_reported_as_everything() -> TestResult {
+fn every_fsevents_loss_flag_is_reported_as_everything() -> TestResult {
     let root = tempfile::tempdir()?;
     let (watch, recorded) = watch(root.path())?;
     for flags in [0x02, 0x04, 0x40, 0x80] {

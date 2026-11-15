@@ -293,4 +293,12 @@ impl NativeSourceWatch {
     pub(crate) fn paused(&self) -> impl Sized + '_ {
         self.shared.lock_reads()
     }
+
+    /// The host's own report that it dropped changes, as a read completing
+    /// with `ERROR_NOTIFY_ENUM_DIR` records it.
+    #[cfg(test)]
+    pub(crate) fn inject_overflow(&self) -> io::Result<()> {
+        self.shared.lock_reads().loss = true;
+        Ok(())
+    }
 }

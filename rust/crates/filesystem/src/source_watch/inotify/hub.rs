@@ -697,6 +697,16 @@ fn deliver(watch: Arc<Shared>, record: &[u8], ready: &mut Ready) {
     ready.push((watch, due));
 }
 
+/// Routes the record the kernel queues when its event queue overflows to one
+/// watch, exactly as the router routes a read one.
+#[cfg(test)]
+pub(super) fn inject_overflow(watch: Arc<Shared>) -> Result<(), DemandError> {
+    let mut ready = Vec::new();
+    deliver(watch, &overflow_record(), &mut ready);
+    hub()?.schedule_ready(ready);
+    Ok(())
+}
+
 fn deliver_overflow(watch: Arc<Shared>, ready: &mut Ready) {
     let due = {
         let mut inbox = watch.inbox.lock().unwrap_or_else(PoisonError::into_inner);
