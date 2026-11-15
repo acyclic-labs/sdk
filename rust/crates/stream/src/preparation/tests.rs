@@ -466,28 +466,46 @@ fn a_met_condition_holds_exactly_where_both_of_its_parts_hold() -> Result<(), St
             });
         }
     }
-    let holds = |condition: &CommitCondition, actual, head| {
-        condition_conflict(condition, actual, || Ok(head)).map(|conflict| conflict.is_none())
+    // Each condition's truth table over every tail and preceding head.
+    let states: Vec<_> = [None, Some(0), Some(1), Some(2), Some(3)]
+        .into_iter()
+        .flat_map(|actual| heads.map(|head| (actual, head)))
+        .collect();
+    let table = |condition: &CommitCondition| -> Result<Vec<bool>, StreamError> {
+        states
+            .iter()
+            .map(|&(actual, head)| {
+                condition_conflict(condition, actual, || Ok(head))
+                    .map(|conflict| conflict.is_none())
+            })
+            .collect()
     };
-    let mut merged = 0;
-    for left in &conditions {
+    let tables = conditions
+        .iter()
+        .map(table)
+        .collect::<Result<Vec<_>, _>>()?;
+    for (left, left_table) in conditions.iter().zip(&tables) {
         let elsewhere = CommitCondition::Absent {
             path: other.clone(),
         };
         assert_eq!(left.meet(&elsewhere), None);
-        for right in &conditions {
+        for (right, right_table) in conditions.iter().zip(&tables) {
             let met = left.meet(right);
             assert_eq!(met, right.meet(left));
-            let Some(met) = met else { continue };
-            merged += 1;
-            for actual in [None, Some(0), Some(1), Some(2), Some(3)] {
-                for head in heads {
-                    assert_eq!(
-                        holds(&met, actual, head)?,
-                        holds(left, actual, head)? && holds(right, actual, head)?,
-                        "{left:?} met {right:?} as {met:?} at {actual:?}/{head:?}"
-                    );
-                }
+            let both: Vec<bool> = left_table
+                .iter()
+                .zip(right_table)
+                .map(|(left, right)| *left && *right)
+                .collect();
+            // The independent oracle: a pair merges exactly when one
+            // condition holds where both of its parts hold.
+            assert_eq!(
+                met.is_some(),
+                tables.contains(&both),
+                "{left:?} met {right:?} as {met:?}"
+            );
+            if let Some(met) = met {
+                assert_eq!(table(&met)?, both, "{left:?} met {right:?} as {met:?}");
             }
         }
     }
@@ -509,10 +527,6 @@ fn a_met_condition_holds_exactly_where_both_of_its_parts_hold() -> Result<(), St
     assert_eq!(
         effect.require(CommitCondition::Absent { path }),
         Err(StreamError::InvalidArgument)
-    );
-    assert!(
-        merged > conditions.len(),
-        "only identical conditions merged"
     );
     Ok(())
 }
