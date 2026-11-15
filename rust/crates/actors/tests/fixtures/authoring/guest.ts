@@ -14,6 +14,72 @@ request: string,
  * Exact outgoing text frame.
  */
 response: string, };
+export type SocketCommand = { "type": "send",
+/**
+ * Runtime-owned connection identity.
+ */
+connection: string,
+/**
+ * True for binary; false for a UTF-8 text body.
+ */
+binary: boolean, } | { "type": "close",
+/**
+ * Runtime-owned connection identity.
+ */
+connection: string,
+/**
+ * WebSocket close code.
+ */
+code: number,
+/**
+ * Application close reason.
+ */
+reason: string, } | { "type": "list",
+/**
+ * Exact tag, or every connection owned by this actor.
+ */
+tag: string | null, } | { "type": "setAttachment",
+/**
+ * Runtime-owned connection identity.
+ */
+connection: string, } | { "type": "getAttachment",
+/**
+ * Runtime-owned connection identity.
+ */
+connection: string, } | { "type": "setAutoResponse",
+/**
+ * The replacement pair, or removal.
+ */
+value: WebSocketAutoResponse | null, } | { "type": "getAutoResponse" } | { "type": "autoResponseTimestamp",
+/**
+ * Runtime-owned connection identity.
+ */
+connection: string, } | { "type": "tags",
+/**
+ * Runtime-owned connection identity.
+ */
+connection: string, };
+export type SocketReply = { "type": "done" } | { "type": "connections",
+/**
+ * Connections owned by the admitted actor.
+ */
+connections: Array<string>, } | { "type": "attachment",
+/**
+ * Distinguishes no attachment from an empty attachment.
+ */
+present: boolean, } | { "type": "autoResponse",
+/**
+ * The actor's current pair, or no automatic response.
+ */
+value: WebSocketAutoResponse | null, } | { "type": "timestamp",
+/**
+ * Decimal u64 Unix milliseconds, or no response yet.
+ */
+unixMs: string | null, } | { "type": "tags",
+/**
+ * Connection tags in their retained order.
+ */
+tags: Array<string>, };
 export type GuestRequest = {
 /**
  * Original absolute URL.
@@ -388,6 +454,11 @@ admittedIdentity: AdmittedCaller | null,
  * Reserved runtime namespace, independent of manifest bindings.
  */
 actor: ActorRuntime,
+/**
+ * Delivery-scoped socket owner. The JavaScript host port uses the SDK's
+ * binary request/reply codecs; it carries no actor-selected authority.
+ */
+socketHost?: (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>,
 /**
  * Effect retry keys derived from the admitted delivery identity.
  */

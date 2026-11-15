@@ -1,13 +1,22 @@
 //! Exactly one Close per socket, checked on production publication builders
-//! using Stream's instrumented locks. Host admission and recovery belong to the
-//! native conformance suite. Qualify this model's source mutations and restored
-//! run with `python3 scripts/qualify-actors-sockets.py`.
+//! using Stream's instrumented locks, including recovery racing a live closer.
 use super::*;
 use acyclic_stream::runtime::PlatformExecutor;
-use acyclic_stream::{MemoryStream, Record};
-use loom::future::block_on;
+use acyclic_stream::{BoxProviderFuture, MemoryStream, Record};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+// Return the boxed future before polling it: constructing and driving it in
+// the same helper keeps construction temporaries on the coroutine's stack
+// throughout every nested production poll.
+#[inline(never)]
+fn construct<'a, T>(make: impl FnOnce() -> BoxProviderFuture<'a, T>) -> BoxProviderFuture<'a, T> {
+    make()
+}
+
+fn block_on<'a, T>(make: impl FnOnce() -> BoxProviderFuture<'a, T>) -> T {
+    acyclic_stream::verification::park(construct(make))
+}
 
 async fn records(provider: &MemoryStream, path: &StreamPath) -> Result<Vec<Record>> {
     Ok(provider
@@ -24,10 +33,10 @@ async fn records(provider: &MemoryStream, path: &StreamPath) -> Result<Vec<Recor
 }
 
 /// Two closers race one message after the production Open effects commit.
-async fn race() -> Result {
+fn race(recover: bool) -> Result {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), StreamPath::new("loom/actors")?);
-    let layout = Layout::new(&store)?;
+    let layout = Layout::new(StreamPath::new("loom/actors/_sockets/v1")?)?;
     let target = Target {
         actor: ActorReference::new(b"account", b"sockets", b"loom")?,
         inbox: StreamPath::new("loom/inbox")?,
@@ -39,21 +48,19 @@ async fn race() -> Result {
         allocated: 1,
         epochs: epochs.len() as u64,
     };
-    assert!(
-        commit(
-            &store,
-            &PlatformExecutor,
-            layout.key(&[b"epochs"])?,
-            vec![append(
-                layout.epochs.clone(),
-                epochs,
-                vec![CommitCondition::Absent {
-                    path: layout.epochs.clone(),
-                }],
-            )],
-        )
-        .await?
-    );
+    let epochs_key = layout.key(&[b"epochs"])?;
+    assert!(block_on(|| Box::pin(commit(
+        &store,
+        &PlatformExecutor,
+        epochs_key,
+        vec![append(
+            layout.epochs.clone(),
+            epochs,
+            vec![CommitCondition::Absent {
+                path: layout.epochs.clone(),
+            }],
+        )],
+    )))?);
     let open = SocketOpen {
         actor: target.actor.clone(),
         subscription: "inbox".into(),
@@ -81,8 +88,14 @@ async fn race() -> Result {
         Vec::new(),
     ));
     effects.push(store.activation(&target.actor)?);
-    assert!(commit(&store, &PlatformExecutor, layout.key(&[b"open"])?, effects,).await?);
-    let inbox = records(&provider, &target.inbox).await?;
+    let open_key = layout.key(&[b"open"])?;
+    assert!(block_on(|| Box::pin(commit(
+        &store,
+        &PlatformExecutor,
+        open_key,
+        effects,
+    )))?);
+    let inbox = block_on(|| Box::pin(records(&provider, &target.inbox)))?;
     assert_eq!(inbox.len(), 1);
     let invocation = crate::invocation::Invocation::decode(&inbox[0])?
         .ok_or("Open admission omitted its invocation")?;
@@ -97,45 +110,68 @@ async fn race() -> Result {
         let layout = layout.clone();
         let target = target.clone();
         move || {
-            block_on(Box::pin(commit_close(
+            let close = Close::new(1006, "peer went away", SocketCloseInitiator::Peer);
+            block_on(|| {
+                Box::pin(commit_close(
+                    &store,
+                    &PlatformExecutor,
+                    &layout,
+                    "1-0",
+                    &target,
+                    Some(ledger),
+                    &close,
+                ))
+            })
+            .map_err(|error| error.to_string())
+        }
+    });
+    let message = input_record(
+        "1-0",
+        SocketInput::Message(SocketPayload::Text {
+            text: "frame".into(),
+        }),
+    )?;
+    block_on(|| {
+        Box::pin(commit_message(
+            &store,
+            &PlatformExecutor,
+            &layout,
+            "1-0",
+            &target,
+            1,
+            message,
+        ))
+    })?;
+    if recover {
+        // A crash loses every in-memory socket owner. Recovery uses only the
+        // persisted frontier and ledger, fences old opens/closes, and publishes
+        // the missing Close. A second crash must not publish it again.
+        for _ in 0..2 {
+            block_on(|| {
+                Box::pin(Sockets::open(
+                    Store::new(provider.clone(), store.root().clone()),
+                    layout.root.clone(),
+                    Arc::new(PlatformExecutor),
+                    Arc::new(super::super::SystemClock),
+                ))
+            })?;
+        }
+    } else {
+        let close = Close::new(1000, "actor closed", SocketCloseInitiator::Actor);
+        block_on(|| {
+            Box::pin(commit_close(
                 &store,
                 &PlatformExecutor,
                 &layout,
                 "1-0",
                 &target,
                 Some(ledger),
-                &Close::new(1006, "peer went away", SocketCloseInitiator::Peer),
-            )))
-            .map_err(|error| error.to_string())
-        }
-    });
-    commit_message(
-        &store,
-        &PlatformExecutor,
-        &layout,
-        "1-0",
-        &target,
-        1,
-        input_record(
-            "1-0",
-            SocketInput::Message(SocketPayload::Text {
-                text: "frame".into(),
-            }),
-        )?,
-    )
-    .await?;
-    commit_close(
-        &store,
-        &PlatformExecutor,
-        &layout,
-        "1-0",
-        &target,
-        Some(ledger),
-        &Close::new(1000, "actor closed", SocketCloseInitiator::Actor),
-    )
-    .await?;
+                &close,
+            ))
+        })?;
+    }
     peer.join().map_err(|_| "peer closer panicked")??;
-    let inbox = records(&provider, &target.inbox).await?;
+    let inbox = block_on(|| Box::pin(records(&provider, &target.inbox)))?;
     let kinds: Vec<&str> = inbox
         .iter()
         .skip(1)
@@ -151,16 +187,16 @@ async fn race() -> Result {
         Some(&"close"),
         "an event followed the Close: {kinds:?}"
     );
-    assert_eq!(records(&provider, &socket).await?.len(), 2);
+    assert_eq!(block_on(|| Box::pin(records(&provider, &socket)))?.len(), 2);
     Ok(())
 }
 
 #[test]
 fn concurrent_closes_and_messages_deliver_exactly_one_final_close() {
-    loom::model(|| {
-        // Keep the operation state in one pinned future rather than copying
-        // each nested future through a by-value blocking helper.
-        let result = block_on(Box::pin(race()));
-        assert!(result.is_ok(), "{result:?}");
-    });
+    acyclic_stream::verification::check(|| race(false));
+}
+
+#[test]
+fn crash_recovery_and_live_closers_deliver_exactly_one_final_close() {
+    acyclic_stream::verification::check(|| race(true));
 }

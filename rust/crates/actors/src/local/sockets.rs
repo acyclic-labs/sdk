@@ -30,7 +30,7 @@ use crate::sockets::{SocketFrame, SocketInput, SocketOpen, input_record, open_in
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::runtime::Executor;
 use acyclic_stream::session::{
-    CallAuthorization, PreparedSocketOpen, SocketChannel, SocketInbound, SocketProvider,
+    PreparedSocketOpen, SocketAuthorization, SocketChannel, SocketInbound, SocketProvider,
 };
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, BoxProviderStream, CommitCondition, CommitEffect,
@@ -188,8 +188,7 @@ pub(crate) struct Layout {
 }
 
 impl Layout {
-    pub(crate) fn new<P: StreamProvider + ?Sized>(store: &Store<P>) -> Result<Self, Error> {
-        let root = StreamPath::new(format!("{}/_sockets/v1", store.root()))?;
+    pub(crate) fn new(root: StreamPath) -> Result<Self, Error> {
         Ok(Self {
             epochs: StreamPath::new(format!("{root}/epochs"))?,
             root,
@@ -605,14 +604,16 @@ impl Table {
 }
 
 struct Tables {
-    owners: [std::sync::Mutex<Table>; OWNER_SHARDS],
+    owners: Box<[std::sync::Mutex<Table>]>,
     hash: std::collections::hash_map::RandomState,
 }
 
 impl Default for Tables {
     fn default() -> Self {
         Self {
-            owners: std::array::from_fn(|_| std::sync::Mutex::new(Table::default())),
+            owners: (0..OWNER_SHARDS)
+                .map(|_| std::sync::Mutex::new(Table::default()))
+                .collect(),
             hash: std::collections::hash_map::RandomState::new(),
         }
     }
@@ -650,6 +651,7 @@ impl Tables {
 
 struct Shared<P: StreamProvider + ?Sized> {
     store: Store<P>,
+    owner: String,
     layout: Layout,
     executor: Arc<dyn Executor>,
     clock: Arc<dyn Clock>,
@@ -684,17 +686,25 @@ fn host_error(reason: &str) -> GuestError {
 }
 
 impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
-    /// Open the socket host of `store`'s runtime. Every socket a previous
+    /// Open one socket host over the actor `store`. `root` is the stable,
+    /// host-owned socket ledger root; independently owned hosts sharing an
+    /// actor store MUST use distinct roots. A replacement MUST reuse its
+    /// predecessor's root. This does not change the actor store's state paths.
+    /// Connection IDs include a fixed-width, domain-separated SHA-256 digest
+    /// of this root, separating independent owners under SHA-256's collision
+    /// resistance without duplicating the root in each socket path.
+    /// Every socket a previous
     /// incarnation left open receives Close(Runtime, 1012) first, in work
     /// proportional to those sockets, and that incarnation can open no more.
     /// Of hosts opening concurrently, at most one succeeds; the others fail
     /// with [`Error::Conflict`].
     pub async fn open(
         store: Store<P>,
+        root: StreamPath,
         executor: Arc<dyn Executor>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, Error> {
-        let layout = Layout::new(&store)?;
+        let layout = Layout::new(root)?;
         let epochs = layout.epochs.clone();
         let (tail, last) = match store.provider().head(epochs.clone()).await {
             Ok(head) => (head.tail, head.last),
@@ -780,6 +790,9 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
         Ok(Self {
             shared: Arc::new(Shared {
                 store,
+                owner: acyclic_auth::encode_component(
+                    layout.key(&[b"connection-owner"])?.as_bytes(),
+                ),
                 layout,
                 executor,
                 clock,
@@ -849,7 +862,8 @@ impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
 impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     fn connection_id(&self, actor: &ActorReference) -> String {
         format!(
-            "{}-{}-{}",
+            "{}-{}-{}-{}",
+            self.owner,
             self.incarnation,
             self.next.fetch_add(1, Ordering::Relaxed),
             self.table.actor(actor),
@@ -1615,22 +1629,14 @@ impl<P: StreamProvider + ?Sized + 'static> PreparedSocketOpen for PreparedOpen<P
 
     fn open(
         self: Box<Self>,
-        authorization: CallAuthorization,
+        authorization: &dyn SocketAuthorization,
     ) -> Result<SocketChannel, StreamError> {
         let Self {
             host,
             open,
             resource,
         } = *self;
-        let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
-            .map_err(|_| StreamError::InvalidArgument)?;
-        authorization.authorize_in_account(
-            open.actor.account().as_bytes(),
-            &resource,
-            &[],
-            &attributes,
-            acyclic_auth::authority::PolicyDecision::Allow,
-        )?;
+        authorization.authorize_socket(open.actor.account().as_bytes(), &resource)?;
         let shared = &host.shared;
         let connection = shared.connection_id(&open.actor);
         let (outbound, frames) = mpsc::channel(acyclic_stream::MAX_ITEMS);

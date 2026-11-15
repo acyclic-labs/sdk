@@ -265,6 +265,12 @@ impl Pool {
                 withdrawal,
                 ready,
             } => self.acquire_credential(credential, withdrawal, ready),
+            Command::RenewCredential {
+                slot,
+                owner,
+                credential,
+                sent,
+            } => self.renew_credential(slot, owner, credential, sent),
             Command::ReleaseCredential { slot } => {
                 if !self.credential_slots.owned(slot) {
                     return Err(StreamError::InvalidArgument);

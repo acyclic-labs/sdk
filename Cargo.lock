@@ -84,6 +84,7 @@ dependencies = [
  "acyclic-contract-derive",
  "js-sys",
  "prost",
+ "serde",
  "serde-wasm-bindgen",
  "tokio-util",
  "wasm-bindgen",

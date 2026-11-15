@@ -1,7 +1,9 @@
 //! The same actor-socket query owner for local and remote serving.
 use super::*;
 use acyclic_harness_client::QueryProjection;
-use acyclic_stream::session::{PreparedSocketOpen, SocketChannel, SocketInbound, SocketProvider};
+use acyclic_stream::session::{
+    PreparedSocketOpen, SocketAuthorization, SocketChannel, SocketInbound, SocketProvider,
+};
 use futures::StreamExt as _;
 
 struct PreparedQuery<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> {
@@ -66,8 +68,14 @@ where
 
     fn open(
         self: Box<Self>,
-        authorization: CallAuthorization,
+        authorization: &dyn SocketAuthorization,
     ) -> Result<SocketChannel, StreamError> {
+        // Queries authorize the command against the original principal and
+        // product policy, so only this Session's own admission can open one.
+        let authorization = authorization
+            .session_call()
+            .ok_or(StreamError::AccessDenied)?
+            .clone();
         let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
             .map_err(|_| StreamError::InvalidArgument)?;
         // Synchronous original-credential admission installs no work. Current

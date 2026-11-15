@@ -53,16 +53,9 @@ impl PreparedSocketOpen for EchoOpen {
 
     fn open(
         self: Box<Self>,
-        authorization: CallAuthorization,
+        authorization: &dyn SocketAuthorization,
     ) -> Result<SocketChannel, StreamError> {
-        let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
-            .map_err(|_| StreamError::InvalidArgument)?;
-        authorization.authorize(
-            "actors:/fixture",
-            &[],
-            &attributes,
-            acyclic_auth::authority::PolicyDecision::Allow,
-        )?;
+        authorization.authorize_socket(b"account", "actors:/fixture")?;
         let (frames, echoed) = mpsc::unbounded();
         let hello = stream::once(future::ready(Ok(Bytes::from_static(b"hello"))));
         Ok(SocketChannel {
@@ -409,6 +402,159 @@ async fn socket_input_renewal_preserves_the_certified_account() -> TestResult {
         futures::FutureExt::now_or_never(left),
         Some(Ok(()))
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn forwarded_owned_credential_renewal_keeps_sibling_channels_live() -> TestResult {
+    let client = client(Arc::new(Echo {
+        gone: std::sync::Mutex::new(None),
+        ends: false,
+        received: None,
+    }));
+    let credential = testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+        resource: acyclic_auth::contract::ResourcePattern {
+            name: "actors:/fixture".into(),
+            prefix: false,
+        },
+        actions: vec!["actors/invoke".into()],
+    }]);
+    client.register_credential(0, credential.clone())?;
+    let (owned, slot) = client.with_credential(credential.clone()).await?;
+    let mut sibling = client.actor_socket(Bytes::from_static(b"open"), 0).await?;
+    let mut channel = owned
+        .actor_socket(Bytes::from_static(b"open"), slot)
+        .await?
+        .into_channel();
+    drop(owned); // The original socket and its forwarding input retain custody.
+    assert_eq!(sibling.next().await?.as_deref(), Some(&b"hello"[..]));
+    assert_eq!(
+        channel.outbound.next().await.transpose()?.as_deref(),
+        Some(&b"hello"[..])
+    );
+    // Knowing an owned slot number is not custody of its enrollment. Refuse
+    // only this forwarding channel, while its actual owner and sibling live.
+    let mut borrowed = client
+        .actor_socket(Bytes::from_static(b"open"), slot)
+        .await?
+        .into_channel();
+    assert_eq!(
+        borrowed.outbound.next().await.transpose()?.as_deref(),
+        Some(&b"hello"[..])
+    );
+    borrowed.inbound.replace_credential(credential.clone())?;
+    assert_eq!(
+        borrowed.outbound.next().await,
+        Some(Err(StreamError::AccessDenied))
+    );
+    drop(borrowed);
+    channel.inbound.replace_credential(credential)?;
+    channel.inbound.receive(Bytes::from_static(b"renewed"))?;
+    assert_eq!(
+        channel.outbound.next().await.transpose()?.as_deref(),
+        Some(&b"renewed"[..])
+    );
+    channel.inbound.replace_credential(Bytes::new())?;
+    assert_eq!(
+        channel.outbound.next().await,
+        Some(Err(StreamError::AccessDenied))
+    );
+    sibling.send(Bytes::from_static(b"sibling lives")).await?;
+    assert_eq!(
+        sibling.next().await?.as_deref(),
+        Some(&b"sibling lives"[..])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn forwarded_socket_renews_and_withdraws_its_original_credential() -> TestResult {
+    let (gone, left) = oneshot::channel();
+    let client = client(Arc::new(Echo {
+        gone: std::sync::Mutex::new(Some(gone)),
+        ends: false,
+        received: None,
+    }));
+    let credential = testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+        resource: acyclic_auth::contract::ResourcePattern {
+            name: "actors:/fixture".into(),
+            prefix: false,
+        },
+        actions: vec!["actors/invoke".into()],
+    }]);
+    client.register_credential(0, credential.clone())?;
+    let mut channel = client
+        .actor_socket(Bytes::from_static(b"open"), 0)
+        .await?
+        .into_channel();
+    assert_eq!(
+        channel.outbound.next().await.transpose()?.as_deref(),
+        Some(&b"hello"[..])
+    );
+    channel.inbound.replace_credential(credential)?;
+    channel
+        .inbound
+        .receive(Bytes::from_static(b"after renewal"))?;
+    assert_eq!(
+        channel.outbound.next().await.transpose()?.as_deref(),
+        Some(&b"after renewal"[..])
+    );
+    channel.inbound.replace_credential(Bytes::new())?;
+    assert_eq!(
+        channel.outbound.next().await,
+        Some(Err(StreamError::AccessDenied))
+    );
+    left.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn forwarding_retains_the_original_socket_and_its_send_results() -> TestResult {
+    let (gone, left) = oneshot::channel();
+    let client = client(Arc::new(Echo {
+        gone: std::sync::Mutex::new(Some(gone)),
+        ends: false,
+        received: None,
+    }));
+    client.register_credential(
+        0,
+        testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+            resource: acyclic_auth::contract::ResourcePattern {
+                name: "actors:/fixture".into(),
+                prefix: false,
+            },
+            actions: vec!["actors/invoke".into()],
+        }]),
+    )?;
+    let mut channel = client
+        .actor_socket(Bytes::from_static(b"open"), 0)
+        .await?
+        .into_channel();
+    assert_eq!(
+        channel.outbound.next().await.transpose()?.as_deref(),
+        Some(&b"hello"[..])
+    );
+    let bytes = Bytes::from(vec![7; crate::MAX_RECORD_BYTES]);
+    channel.inbound.receive(bytes.clone())?;
+    let echoed = channel
+        .outbound
+        .next()
+        .await
+        .transpose()?
+        .ok_or("echo ended")?;
+    assert_eq!(echoed.as_ptr(), bytes.as_ptr());
+    assert_eq!(
+        channel.inbound.receive(Bytes::new()),
+        Err(StreamError::InvalidArgument)
+    );
+    drop(channel.inbound);
+    // The downstream peer can stop reading forever; dropping only its input
+    // still retires the upstream socket and its original product owner.
+    left.await?;
+    assert_eq!(
+        channel.outbound.next().await,
+        Some(Err(StreamError::Unavailable))
+    );
     Ok(())
 }
 
