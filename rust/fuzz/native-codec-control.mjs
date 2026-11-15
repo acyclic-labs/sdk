@@ -106,7 +106,7 @@ async function main() {
     if (!valid) throw new Error(`${step}: deciding oracle failed; recovery: inspect ${log}, correct source or command, then run ${JSON.stringify(command)}`);
     return text;
   }
-  const ordinary = ["cargo", "test", "--locked", "-p", "acyclic-native-runtime", "--test", "main", `${targetName}::`, "--", "--nocapture"];
+  const ordinary = ["cargo", "nextest", "run", "--locked", "-p", "acyclic-native-runtime", "--test", "main", `${targetName}::`, "--no-capture"];
   try {
     let command;
     if (routine || coverageOnly) {
@@ -172,12 +172,12 @@ async function main() {
       }
       writeFileSync(codec, original);
       const result = await run("positive", command);
-      if (routine && !result.includes("test result: ok. 1 passed;")) throw new Error("routine-count: expected one ordinary corpus test; recovery: inspect positive.log and restore test discovery");
+      if (routine && !result.includes("1 test run: 1 passed")) throw new Error("routine-count: expected one ordinary corpus test; recovery: inspect positive.log and restore test discovery");
     }
     if (!routine) {
       if ((owner || reportPort) && !coverageOnly) {
         const result = await run("routine-positive", ordinary);
-        if (!result.includes("test result: ok. 1 passed;")) throw new Error("routine-count: expected one ordinary corpus test; recovery: inspect routine-positive.log and restore test discovery");
+        if (!result.includes("1 test run: 1 passed")) throw new Error("routine-count: expected one ordinary corpus test; recovery: inspect routine-positive.log and restore test discovery");
       }
       const target = resolve(root, process.env.CARGO_TARGET_DIR ?? "target", "native-codec-coverage", targetName);
       report.coverage_target = target;
