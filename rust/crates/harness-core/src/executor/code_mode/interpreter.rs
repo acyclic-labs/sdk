@@ -565,9 +565,15 @@ mod tests {
                                 crate::tool::files::result_version(name, &result.value, None)?;
                             serde_json::json!({"ok":true,"value":result.value,"version":version.map(|v| v.0)})
                         }
-                        Err(error) => serde_json::json!({"ok":false,"value":{
-                            "class":crate::executor::ToolErrorClass::of(&error),"message":error.to_string(),
-                        }}),
+                        Err(error) => {
+                            eprintln!(
+                                "file bridge call={count} action={name} path={} cause={error:?}",
+                                invocation.arguments["path"],
+                            );
+                            serde_json::json!({"ok":false,"value":{
+                                "class":crate::executor::ToolErrorClass::of(&error),"message":error.to_string(),
+                            }})
+                        }
                     };
                     let _ = call
                         .reply
