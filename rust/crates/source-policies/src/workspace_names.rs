@@ -128,25 +128,37 @@ fn product(path: &str) -> Option<&str> {
     Some(path)
 }
 
-/// Drops a trailing inline test module: a `#[cfg(..test..)]` attribute whose
-/// item is `mod name {`. Out-of-line test modules are excluded by path.
-fn without_inline_tests(text: &str) -> &str {
-    let mut offset = 0;
-    let mut attribute = None;
+/// Drops each inline test module: a `#[cfg(..test..)]` attribute whose item is
+/// `mod name {`, through the formatted `}` at that item's indentation. Product
+/// code around it is kept. Out-of-line test modules are excluded by path.
+fn without_inline_tests(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut attributes = String::new();
+    let mut closing = None;
     for line in text.split_inclusive('\n') {
         let trimmed = line.trim_end();
-        if trimmed.starts_with("#[cfg(") && trimmed.contains("test") {
-            attribute.get_or_insert(offset);
-        } else if !trimmed.starts_with("#[")
-            && let Some(start) = attribute.take()
-            && trimmed.starts_with("mod ")
+        if let Some(end) = &closing {
+            if trimmed == end {
+                closing = None;
+            }
+        } else if trimmed.trim_start().starts_with("#[") {
+            attributes.push_str(line);
+        } else if attributes.contains("#[cfg(")
+            && attributes.contains("test")
+            && trimmed.trim_start().starts_with("mod ")
             && trimmed.ends_with('{')
         {
-            return &text[..start];
+            let indent = &trimmed[..trimmed.len() - trimmed.trim_start().len()];
+            closing = Some(format!("{indent}}}"));
+            attributes.clear();
+        } else {
+            kept.push_str(&attributes);
+            kept.push_str(line);
+            attributes.clear();
         }
-        offset += line.len();
     }
-    text
+    kept.push_str(&attributes);
+    kept
 }
 
 /// Compares workspace-name counts with the exact allowance, in both directions.
@@ -251,6 +263,17 @@ fn planted_workspace_names_fail_the_scan() {
         .is_empty()
     );
     assert!(!scan(target, "\".env\"\n#[cfg(test)]\nmod tests {\n}\n").is_empty());
+    // Product code after a test module, nested or not, is still scanned.
+    for plant in [
+        "#[cfg(test)]\nmod tests {\n}\nfn f() -> &'static str { \".env\" }\n",
+        "mod outer {\n    #[cfg(test)]\n    mod tests {\n    }\n    fn f() -> &'static str { \".env\" }\n}\n",
+    ] {
+        let found = scan(target, plant);
+        assert!(
+            found.contains(&format!("{target}: workspace name \".env\" x1")),
+            "{plant}: {found:?}"
+        );
+    }
     // A removed allowance is stale rather than silently passing.
     assert!(scan(facade, "").contains(&format!("{facade}: \"/.gitignore\" expected 1, found 0")));
 }
