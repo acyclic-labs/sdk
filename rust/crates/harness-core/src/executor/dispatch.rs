@@ -399,8 +399,9 @@ impl StockExecution<'_> {
     /// recovery authority may generate the uncertain request again, so the
     /// step fails definitively instead of retaining a reservation that can
     /// never make progress. The recorded prefix is kept unchanged. The failure
-    /// names the cause the attempt recorded when its stream failed; nothing
-    /// observed a provider transport failure, so it never claims one.
+    /// is the one the attempt recorded when its stream failed: a provider
+    /// failure replays as itself, and any other names its own cause. Without
+    /// a record nothing observed a provider failure, so none is claimed.
     async fn unreconciled_attempt(
         &self,
         journal: &dyn ExecutionJournal,
@@ -417,24 +418,37 @@ impl StockExecution<'_> {
                     if *recorded == step && *recorded_purpose == purpose)
             })
             .await;
-        match interrupted {
-            Ok((_, records)) => Error::ModelInterrupted(
-                records
-                    .into_iter()
-                    .find_map(|record| match record.event {
-                        ExecutionEvent::ModelInterrupted { cause, .. } => Some(cause),
-                        _ => None,
-                    })
-                    .unwrap_or_default(),
-            ),
-            Err(error) => error,
+        let recorded = match interrupted {
+            Ok((_, records)) => records.into_iter().find_map(|record| match record.event {
+                ExecutionEvent::ModelInterrupted {
+                    cause,
+                    provider_code,
+                    ..
+                } => Some((cause, provider_code)),
+                _ => None,
+            }),
+            Err(error) => return error,
+        };
+        match recorded {
+            // The provider settled the attempt: replay its failure as recorded.
+            Some((message, Some(code))) => match crate::wire::ErrorCode::try_from(code) {
+                Ok(code) => Error::ModelDiagnostic {
+                    code,
+                    message,
+                    custody: None,
+                },
+                Err(_) => Error::ModelInterrupted(message),
+            },
+            Some((cause, None)) => Error::ModelInterrupted(cause),
+            None => Error::ModelInterrupted(String::new()),
         }
     }
 
-    /// Records why the live stream ended this attempt before completing, when
-    /// the failure leaves the attempt to reconciliation. A later delivery that
-    /// finds nothing to resume reports this cause. Definitive, cancelled and
-    /// native failures settle or propagate as they are and record nothing.
+    /// Records why the live stream ended this attempt before completing: a
+    /// provider failure that settles it, or a local failure that leaves it to
+    /// reconciliation. A later delivery that finds nothing to resume reports
+    /// this failure. Cancelled and native failures propagate as they are and
+    /// record nothing.
     async fn interrupted_attempt(
         &self,
         journal: &dyn ExecutionJournal,
@@ -442,14 +456,20 @@ impl StockExecution<'_> {
         cause: Error,
     ) -> Error {
         use crate::wire::ErrorCode;
-        if purpose == ModelPurpose::Count
-            || !cause.leaves_effect_uncertain()
+        let provider_code = if cause.is_model_failure() {
+            Some(cause.code() as i32)
+        } else if !cause.leaves_effect_uncertain()
             || cause.is_native_failure()
             || matches!(
                 cause.code(),
                 ErrorCode::Cancelled | ErrorCode::InteractionCancelled
             )
         {
+            return cause;
+        } else {
+            None
+        };
+        if purpose == ModelPurpose::Count {
             return cause;
         }
         let recorded = async {
@@ -467,6 +487,7 @@ impl StockExecution<'_> {
                 step,
                 purpose,
                 cause: text,
+                provider_code,
             };
             let _writer = self.journal_writes.lock().await;
             journal.append(operation, &key, &event, self.io)?.await

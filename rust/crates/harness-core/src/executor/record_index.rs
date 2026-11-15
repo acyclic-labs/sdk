@@ -157,10 +157,12 @@ impl ExecutionEvent {
                 step,
                 purpose,
                 cause,
+                provider_code,
             } => ModelInterrupted {
                 step: *step,
                 purpose: *purpose,
                 cause: text(cause)?,
+                provider_code: *provider_code,
             },
             ModelStopped {
                 step,
