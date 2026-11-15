@@ -876,10 +876,11 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     let refused = revoked_events
         .await
         .expect_err("events disclosed after revocation");
-    assert!(matches!(
-        refused.downcast_ref::<StreamError>(),
-        Some(StreamError::AccessDenied)
-    ));
+    assert!(
+        refused
+            .downcast_ref::<StreamError>()
+            .is_some_and(|error| error.category() == StreamError::AccessDenied)
+    );
     owner.denied.store(false, Ordering::SeqCst);
     // A journal position is scoped to an original turn. Neither a consumed
     // control-only input nor the not-yet-created next input can own it.

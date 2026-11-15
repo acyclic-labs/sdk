@@ -479,14 +479,17 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
             .expect("workspace JSON"),
     )
     .map_err(storage)?;
-    assert_eq!(discovery["project"], json!(view));
+    assert_eq!(
+        discovery["project"],
+        json!(std::fs::canonicalize(&view).map_err(storage)?)
+    );
     let mut previous_discovery: serde_json::Value = serde_json::from_str(
         expected["environment"]["ACYCLIC_WORKSPACES"]
             .as_str()
             .expect("workspace JSON"),
     )
     .map_err(storage)?;
-    previous_discovery["project"] = json!(view);
+    previous_discovery["project"] = discovery["project"].clone();
     expected["environment"]["ACYCLIC_WORKSPACES"] = json!(previous_discovery.to_string());
     assert_eq!(recovered, expected);
     let first = recovered;
