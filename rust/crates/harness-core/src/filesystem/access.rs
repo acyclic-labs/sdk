@@ -249,8 +249,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
 // Scope is immutable and authenticated by the owning verifier/grant constructor.
 // The caller checks its request-specific legacy authority before using this view.
+/// For a workspace the host opened by its volume's storage name, which is
+/// then the volume's signed-grant reference.
 pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
+    scope: &Scope,
+    generation: Option<GenerationId>,
+    payload: &[u8],
+    ceiling: Option<&crate::Capabilities>,
+    io: &'a PreparationIo,
+) -> Result<CompiledAccess<'a>> {
+    let reference = workspace.name().as_str();
+    bound_access_view(
+        workspace,
+        Some(reference),
+        scope,
+        generation,
+        payload,
+        ceiling,
+        io,
+    )
+    .await
+}
+
+/// Compile access to `workspace` as the volume named by `reference`, the
+/// storage name of the volume the caller bound the workspace to. A raw
+/// workspace (a checkout, view or lineage member) carries its own name, so
+/// its authority comes from the bound volume; without one, a grant layer
+/// that names volumes refuses it.
+pub(crate) async fn bound_access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    reference: Option<&str>,
     scope: &Scope,
     generation: Option<GenerationId>,
     payload: &[u8],
@@ -283,9 +312,7 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
                     acyclic_fs::access::AccessBinding {
                         principal: &principal.0,
                         capability: &capability.0,
-                        // The host opens every volume's workspace by the
-                        // volume's storage name, its signed-grant reference.
-                        reference: Some(workspace.name().as_str()),
+                        reference,
                         facts: acyclic_fs::access::AuthenticatedFacts::IdentityAndRoles,
                         generation,
                         context: Context {
