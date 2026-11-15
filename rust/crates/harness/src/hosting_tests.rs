@@ -20,14 +20,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Whether a refusal falls in `category`, however the client wraps its cause.
-fn refused_as(error: &(dyn std::error::Error + 'static), category: &StreamError) -> bool {
+fn refused_as(error: &(dyn std::error::Error + 'static), category: &acyclic_stream::StreamCategory) -> bool {
     error
         .downcast_ref::<StreamError>()
         .is_some_and(|error| error.category() == *category)
 }
 
 fn access_denied(error: &(dyn std::error::Error + 'static)) -> bool {
-    refused_as(error, &StreamError::AccessDenied)
+    refused_as(error, &acyclic_stream::StreamCategory::AccessDenied)
 }
 
 #[path = "hosting_tests/merge.rs"]
@@ -1151,7 +1151,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         .await
         .expect_err("a child query survived its admission producer");
     assert!(
-        refused_as(&*refused, &StreamError::Unavailable),
+        refused_as(&*refused, &acyclic_stream::StreamCategory::Unavailable),
         "{refused:?}"
     );
     waiting.await?;

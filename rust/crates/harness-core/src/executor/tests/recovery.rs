@@ -602,7 +602,7 @@ impl ExecutionJournal for LosesFirstModelCommit {
         &'a self,
         reference: &'a FileRef,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         self.0.load(reference, io)
     }
     fn open_interaction<'a>(

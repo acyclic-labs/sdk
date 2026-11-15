@@ -134,6 +134,7 @@ async fn workload_custody() -> Result {
     if native.delegate(&refused, "agent", workload()).await.is_ok() {
         return Err("a workload derived for another agent's journal".into());
     }
+    let expected_owner = agent(owner);
     for grants in [
         vec![HARNESS_HOST.to_owned(), read.clone(), write.clone()],
         vec![HARNESS_HOST.to_owned(), tree.clone()],
@@ -144,7 +145,7 @@ async fn workload_custody() -> Result {
         if [HARNESS_HOST, tree.as_str()]
             .iter()
             .any(|label| derived.capabilities().contains(label))
-            || derived.agent() != Some(agent(owner))
+            || derived.agent().as_ref() != Some(&expected_owner)
         {
             return Err("a derived workload kept host custody or lost its owner".into());
         }
