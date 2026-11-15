@@ -11,6 +11,14 @@ const CREATE: &[Action] = &[selected(StreamMethod::Fork, StreamsAction::Create)]
 const COMMIT: &[Action] = &[selected(StreamMethod::Commit, StreamsAction::Commit)];
 
 const fn selected(method: StreamMethod, wanted: StreamsAction) -> Action {
+    assert!(
+        declares(method, wanted),
+        "token operation is absent from its declared method admission"
+    );
+    Action::Streams(wanted)
+}
+
+const fn declares(method: StreamMethod, wanted: StreamsAction) -> bool {
     let row = method.authorization();
     let mut rule = 0;
     while rule < row.rules.len() {
@@ -25,13 +33,13 @@ const fn selected(method: StreamMethod, wanted: StreamsAction) -> Action {
             if let Action::Streams(action) = actions[index]
                 && action as u8 == wanted as u8
             {
-                return actions[index];
+                return true;
             }
             index += 1;
         }
         rule += 1;
     }
-    panic!("token operation is absent from its declared method admission")
+    false
 }
 
 macro_rules! operations {

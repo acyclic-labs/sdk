@@ -31,10 +31,12 @@ pub(crate) const HEAD_ACTION: Action = observation_action(StreamMethod::Head);
 pub(crate) const CHILDREN_ACTION: Action = observation_action(StreamMethod::ChildrenPage);
 
 const fn observation_action(method: StreamMethod) -> Action {
-    match method.authorization().admitted {
-        [action] => *action,
-        _ => panic!("Session observations require exactly one declared action"),
-    }
+    let admitted = method.authorization().admitted;
+    assert!(
+        admitted.len() == 1,
+        "Session observations require exactly one declared action"
+    );
+    admitted[0]
 }
 
 const RESOURCE_FOLLOW: MethodAuth<()> = MethodAuth {

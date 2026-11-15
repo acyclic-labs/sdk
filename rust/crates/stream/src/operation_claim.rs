@@ -44,7 +44,8 @@ impl Default for OperationClaims {
 pub struct OperationClaim<'a> {
     claims: Option<&'a OperationClaims>,
     key: [u8; 48],
-    observation: Option<OperationObservation>,
+    observation: OperationObservation,
+    terminal: OperationTermination,
 }
 
 /// Atomic acquisition or an observation pinned to the existing producer.
@@ -167,7 +168,8 @@ impl OperationClaims {
             OperationAttempt::Owned(OperationClaim {
                 claims: Some(self),
                 key,
-                observation: Some(observation),
+                observation,
+                terminal: OperationTermination::ProducerDropped,
             })
         } else {
             OperationAttempt::Observed(observation)
@@ -187,7 +189,8 @@ impl OperationClaim<'static> {
         Ok(Self {
             claims: None,
             key: [0; 48],
-            observation: Some(OperationObservation::create(&mut admit)?),
+            observation: OperationObservation::create(&mut admit)?,
+            terminal: OperationTermination::ProducerDropped,
         })
     }
 }
@@ -195,25 +198,25 @@ impl OperationClaim<'static> {
 impl OperationClaim<'_> {
     /// Pins this producer's exact-generation termination event before handoff.
     pub fn observe(&self) -> OperationObservation {
-        self.observation.as_ref().expect("live producer").clone()
+        self.observation.clone()
     }
 
     /// Explicitly retires producer custody. This does not invent a durable result.
     pub fn release(mut self) {
-        self.retire(OperationTermination::Released);
+        self.terminal = OperationTermination::Released;
     }
+}
 
-    fn retire(&mut self, terminal: OperationTermination) {
-        let Some(observation) = self.observation.take() else {
-            return;
-        };
+impl Drop for OperationClaim<'_> {
+    fn drop(&mut self) {
+        let observation = &self.observation;
         if let Some(claims) = self.claims.take() {
             let removed = claims
                 .active
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove_if(self.key, |registration| {
-                    registration.observation.same_generation(&observation)
+                    registration.observation.same_generation(observation)
                 });
             // Retire index backing before releasing the original event funding.
             if let Some(removed) = removed {
@@ -223,13 +226,7 @@ impl OperationClaim<'_> {
                 drop(storage);
             }
         }
-        observation.publish(terminal);
-    }
-}
-
-impl Drop for OperationClaim<'_> {
-    fn drop(&mut self) {
-        self.retire(OperationTermination::ProducerDropped);
+        observation.publish(self.terminal);
     }
 }
 
