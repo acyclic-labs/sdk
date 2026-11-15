@@ -3,10 +3,18 @@ use super::*;
 
 const REMEMBERED_VOLUMES: usize = 256;
 
+type IdleVolumes = [Option<RetainedArc<Volume>>; REMEMBERED_VOLUMES];
+
 struct Entries {
     live: FixedIndex<RetainedWeak<Volume>, 32>,
-    idle: [Option<RetainedArc<Volume>>; REMEMBERED_VOLUMES],
+    // The cache is filled in place on the heap. Inline, every move between
+    // construction and shared custody copied it through the caller's frame.
+    idle: Box<IdleVolumes>,
+    _idle_allocation: RetainedAllocation,
 }
+
+// Construction stack stays independent of how many idle volumes are retained.
+const _: () = assert!(std::mem::size_of::<Entries>() < std::mem::size_of::<IdleVolumes>());
 
 struct Registry {
     entries: RetainedArc<Mutex<Entries>>,
@@ -36,11 +44,19 @@ impl Registry {
         let bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<Self>())
             .map_err(|_| WorkError::Overflow)? as u64;
         let allocation = RetainedAllocation::claim(bytes, 1, accounting)?;
+        let idle_allocation =
+            RetainedAllocation::claim(std::mem::size_of::<IdleVolumes>() as u64, 1, accounting)?;
+        let idle = std::iter::repeat_with(|| None)
+            .take(REMEMBERED_VOLUMES)
+            .collect::<Box<[_]>>()
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("the idle cache has exactly its slot count"));
         Ok(Arc::new(Self {
             entries: RetainedArc::new(
                 Mutex::new(Entries {
                     live: FixedIndex::default(),
-                    idle: std::array::from_fn(|_| None),
+                    idle,
+                    _idle_allocation: idle_allocation,
                 }),
                 accounting,
             )?,
