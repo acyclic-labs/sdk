@@ -877,16 +877,20 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     /// an unknown index write keeps its original failure, so the holder must
     /// not commit.
     async fn reference(&self, children: &[Digest], tag: &str) -> Result<bool, Error> {
+        // Submitted together, so a medium that groups its work applies every
+        // index key in one job.
         let mut created = false;
-        for child in children {
-            match self
-                .medium
-                .create(&self.index_key(child, tag), OwnedBytes::new())
-                .await
-            {
-                Ok(new) => created |= new,
-                Err(error) => return Err(moved(error)),
-            }
+        let keys: Vec<String> = children
+            .iter()
+            .map(|child| self.index_key(child, tag))
+            .collect();
+        for outcome in futures::future::join_all(
+            keys.iter()
+                .map(|key| self.medium.create(key, OwnedBytes::new())),
+        )
+        .await
+        {
+            created |= outcome.map_err(moved)?;
         }
         for child in children {
             match self.blob(child).await? {

@@ -559,3 +559,67 @@ async fn physical_outcomes_preserve_visible_mutations_and_uncertainty() {
     mutation_outcomes_preserve_physical_uncertainty_and_no_effect_refusals().await;
     maintenance_failure_cannot_refuse_an_already_visible_mutation().await;
 }
+
+/// Physical jobs `operation` submits, every boundary released in order.
+async fn jobs<T>(operation: impl Future<Output = T>) -> (T, usize) {
+    let (schedule, mut events) = Schedule::new();
+    let mut operation = Box::pin(schedule.scope(operation));
+    let mut jobs = 0;
+    let result = loop {
+        tokio::select! {
+            result = &mut operation => break result,
+            boundary = events.recv() => {
+                let boundary = boundary.expect("a producer ended before its result");
+                jobs += usize::from(boundary.name == "native:submitted");
+                boundary.release();
+            }
+        }
+    };
+    schedule.drained().await;
+    (result, jobs)
+}
+
+#[tokio::test]
+async fn a_batch_shares_its_persistence_jobs_and_a_repeat_costs_none()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::{Blobs as _, Digest, Put};
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    let objects = LocalObjects::open(root.path(), LocalObjectsLimits::default(), None).await?;
+    let child = objects.put(bytes(b"child"), Vec::new()).await?;
+    let child = child
+        .verified()
+        .ok_or("the child put was uncertain")?
+        .digest;
+    let batch = |members: usize| -> Vec<(OwnedBytes, Vec<Digest>)> {
+        (0..members)
+            .map(|member| (bytes(format!("{members} {member}").as_bytes()), vec![child]))
+            .collect()
+    };
+    for members in [8, 64] {
+        // Envelope, index key and payload: one wave each, whatever the size.
+        let (puts, fresh) = jobs(objects.put_batch(batch(members))).await;
+        assert!(
+            puts.iter()
+                .all(|put| matches!(put, Ok(Put::Created { .. })))
+        );
+        assert_eq!(fresh, 3, "a fresh batch of {members} took {fresh} jobs");
+        // One data flush covers the whole batch.
+        let digests: Vec<Digest> = puts
+            .iter()
+            .flatten()
+            .filter_map(|put| put.verified().map(|verified| verified.digest))
+            .collect();
+        let (flushed, flushes) = jobs(objects.flush(Some(&digests))).await;
+        flushed?;
+        assert_eq!(flushes, 1, "a batch flush of {members} took {flushes} jobs");
+        // A repeat is answered by the index alone.
+        let (puts, repeat) = jobs(objects.put_batch(batch(members))).await;
+        assert!(
+            puts.iter()
+                .all(|put| matches!(put, Ok(Put::AlreadyExists { .. })))
+        );
+        assert_eq!(repeat, 0, "a repeat batch of {members} took {repeat} jobs");
+    }
+    Ok(())
+}

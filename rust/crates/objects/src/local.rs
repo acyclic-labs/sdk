@@ -11,6 +11,12 @@
 //! marker: reading one, or an absent key, is answered from memory with no
 //! job, and the index costs at most twice its keys.
 //!
+//! Log writes, flushes and logged reads apply one at a time in one shared
+//! persistence job per wave: whatever is submitted while a wave applies joins
+//! the next, so concurrent operations, such as an Objects batch, share jobs,
+//! and one data flush per wave serves every flush it carries. A create of a
+//! present key, a removal of an absent one and every held read need no job.
+//!
 //! A write is visible at once, and [`Medium::flush`] makes every write so far
 //! durable with one data flush of the log. Explicit close flushes once
 //! its last accepted write is done; dropping an owner leaves the recovery
@@ -26,7 +32,7 @@
 use crate::{
     Medium, MediumError, Observation, ObservationSource, Observed, ObservedVersion, Store,
 };
-use acyclic_native_runtime::{LogFrame, PersistenceKey, spawn_persistence};
+use acyclic_native_runtime::{LogFrame, PersistenceKey, PersistenceWaves, spawn_persistence};
 use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -133,6 +139,9 @@ const BODY_HEADER: u64 = 1 + 4;
 /// leaves recovery enabled; use [`Self::close`] to observe a clean physical close.
 pub struct LocalMedium {
     shared: Arc<Shared>,
+    /// Every log write and flush, and every logged read, joins one wave of
+    /// a persistence job: concurrent operations share a job, not one each.
+    waves: PersistenceWaves,
 }
 
 /// One durable local account over a [`LocalMedium`].
@@ -160,24 +169,6 @@ impl crate::Account<LocalMedium> {
             Err(_) => Ok(LocalClose::StillReferenced),
         }
     }
-}
-
-/// Submits `work` at once, so callers collecting several submit them
-/// together and await them after. The key is an opaque address in the original
-/// invocation, never the caller's object name or prefix. The runtime job identity
-/// distinguishes concurrent invocations even when an address is reused.
-fn blocking<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
-    medium: &LocalMedium,
-    operation: &'static str,
-    key: usize,
-    work: F,
-) -> impl Future<Output = std::io::Result<T>> + use<T, F> {
-    spawn_persistence(
-        "objects",
-        operation,
-        PersistenceKey::new(Arc::as_ptr(&medium.shared) as usize, key as u64),
-        work,
-    )
 }
 
 fn native(durability: LocalDurability) -> acyclic_native_runtime::Durability {
@@ -626,30 +617,31 @@ impl LocalMedium {
         range: Option<Range<u64>>,
     ) -> Result<Option<(OwnedBytes, u64, String)>, MediumError> {
         let shared = Arc::clone(&self.shared);
-        blocking(self, "read", key.as_ptr() as usize, move || {
-            let (file, slot) = {
-                // `log` pairs the slot with the file a compaction moved it to.
-                let log = shared.log();
-                let Some(slot) = shared.slot(&key) else {
-                    return Ok(None);
+        self.waves
+            .submit(move || {
+                let (file, slot) = {
+                    // `log` pairs the slot with the file a compaction moved it to.
+                    let log = shared.log();
+                    let Some(slot) = shared.slot(&key) else {
+                        return Ok(None);
+                    };
+                    (Arc::clone(&log.file), slot)
                 };
-                (Arc::clone(&log.file), slot)
-            };
-            let range = slot.range(range)?;
-            let count = usize::try_from(range.end - range.start)
-                .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
-            let mut bytes = vec![0; count];
-            #[cfg(test)]
-            shared.counts.read.fetch_add(1, Ordering::Relaxed);
-            // A log a compaction replaced stays readable through its handle.
-            acyclic_native_runtime::persistence_syscall(|| {
-                read_exact_at(&file, slot.value + range.start, &mut bytes)
-            })?;
-            Ok(Some((OwnedBytes::from(bytes), slot.sequence, key)))
-        })
-        .await
-        .and_then(std::convert::identity)
-        .map_err(failed)
+                let range = slot.range(range)?;
+                let count = usize::try_from(range.end - range.start)
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+                let mut bytes = vec![0; count];
+                #[cfg(test)]
+                shared.counts.read.fetch_add(1, Ordering::Relaxed);
+                // A log a compaction replaced stays readable through its handle.
+                acyclic_native_runtime::persistence_syscall(|| {
+                    read_exact_at(&file, slot.value + range.start, &mut bytes)
+                })?;
+                Ok(Some((OwnedBytes::from(bytes), slot.sequence, key)))
+            })
+            .await
+            .and_then(std::convert::identity)
+            .map_err(failed)
     }
 }
 
@@ -670,6 +662,7 @@ impl LocalMedium {
         .map_err(|_| LocalOpenError::Unavailable)??;
         Ok(Self {
             shared: Arc::new(shared),
+            waves: PersistenceWaves::new("objects"),
         })
     }
 
@@ -815,17 +808,23 @@ mod outcome_tests;
 #[async_trait::async_trait]
 impl Medium for LocalMedium {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
+        // A present key answers from the index with no job: the create
+        // linearizes at that observation, as one that lost under the lock.
+        if self.shared.slot(key).is_some() {
+            return Ok(false);
+        }
         let (shared, key) = (Arc::clone(&self.shared), key.to_owned());
-        blocking(self, "create", key.as_ptr() as usize, move || {
-            let mut log = shared.log();
-            if shared.slot(&key).is_some() {
-                return Ok(false);
-            }
-            shared.put(&mut log, &key, &bytes)?;
-            Ok(true)
-        })
-        .await
-        .map_err(MediumError::Ambiguous)?
+        self.waves
+            .submit(move || {
+                let mut log = shared.log();
+                if shared.slot(&key).is_some() {
+                    return Ok(false);
+                }
+                shared.put(&mut log, &key, &bytes)?;
+                Ok(true)
+            })
+            .await
+            .map_err(MediumError::Ambiguous)?
     }
 
     async fn read(
@@ -873,12 +872,16 @@ impl Medium for LocalMedium {
     }
 
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
+        // An absent key answers from the index with no job, as `create`'s
+        // present one does.
+        if self.shared.slot(key).is_none() {
+            return Ok(false);
+        }
         let (shared, key) = (Arc::clone(&self.shared), key.to_owned());
-        blocking(self, "remove", key.as_ptr() as usize, move || {
-            shared.remove(&mut shared.log(), &key)
-        })
-        .await
-        .map_err(MediumError::Ambiguous)?
+        self.waves
+            .submit(move || shared.remove(&mut shared.log(), &key))
+            .await
+            .map_err(MediumError::Ambiguous)?
     }
 
     async fn replace<'a>(
@@ -891,19 +894,21 @@ impl Medium for LocalMedium {
         };
         let sequence = *sequence;
         let (shared, key) = (Arc::clone(&self.shared), observed.into_key());
-        let accepted = blocking(self, "replace", key.as_ptr() as usize, move || {
-            let mut log = shared.log();
-            if !shared
-                .slot(&key)
-                .is_some_and(|slot| slot.sequence == sequence)
-            {
-                return Ok(None);
-            }
-            let sequence = shared.put(&mut log, &key, &bytes)?;
-            Ok(Some((key, sequence)))
-        })
-        .await
-        .map_err(MediumError::Ambiguous)??;
+        let accepted = self
+            .waves
+            .submit(move || {
+                let mut log = shared.log();
+                if !shared
+                    .slot(&key)
+                    .is_some_and(|slot| slot.sequence == sequence)
+                {
+                    return Ok(None);
+                }
+                let sequence = shared.put(&mut log, &key, &bytes)?;
+                Ok(Some((key, sequence)))
+            })
+            .await
+            .map_err(MediumError::Ambiguous)??;
         Ok(accepted.map(|(key, sequence)| {
             self.shared
                 .source
@@ -917,24 +922,27 @@ impl Medium for LocalMedium {
         };
         let sequence = *sequence;
         let (shared, key) = (Arc::clone(&self.shared), observed.into_key());
-        blocking(self, "remove-if", key.as_ptr() as usize, move || {
-            let mut log = shared.log();
-            if !shared
-                .slot(&key)
-                .is_some_and(|slot| slot.sequence == sequence)
-            {
-                return Ok(false);
-            }
-            shared.remove(&mut log, &key)
-        })
-        .await
-        .map_err(MediumError::Ambiguous)?
+        self.waves
+            .submit(move || {
+                let mut log = shared.log();
+                if !shared
+                    .slot(&key)
+                    .is_some_and(|slot| slot.sequence == sequence)
+                {
+                    return Ok(false);
+                }
+                shared.remove(&mut log, &key)
+            })
+            .await
+            .map_err(MediumError::Ambiguous)?
     }
 
-    /// One data flush covers every write so far, whichever keys are named.
+    /// One data flush covers every write so far, whichever keys are named,
+    /// and one per wave covers every flush that wave carries.
     async fn flush(&self, _keys: &[String]) -> Result<(), MediumError> {
         let shared = Arc::clone(&self.shared);
-        blocking(self, "flush", 0, move || shared.sync())
+        self.waves
+            .barrier(move || shared.sync())
             .await
             .and_then(std::convert::identity)
             .map_err(MediumError::Ambiguous)
