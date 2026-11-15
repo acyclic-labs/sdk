@@ -1,4 +1,5 @@
 type ForkInstall = Result<ForkReceipt, StreamError>;
+type ForkDecision<F> = Decision<ForkReceipt, F>;
 
 impl MemoryStream {
     fn plan_fork_locked<'a>(
@@ -6,10 +7,7 @@ impl MemoryStream {
         state: &mut State,
         request: &'a ForkRequest,
     ) -> Result<
-        Decision<
-            ForkReceipt,
-            impl FnOnce(&mut State, bool, Option<u64>) -> ForkInstall + use<'a>,
-        >,
+        ForkDecision<impl FnOnce(&mut State, bool, Option<u64>) -> ForkInstall + use<'a>>,
         StreamError,
     > {
         let digest = fork_digest(request)?;

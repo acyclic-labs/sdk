@@ -9,7 +9,7 @@ use std::sync::Mutex;
 struct Executor(Mutex<Vec<BoxProviderFuture<'static, ()>>>);
 impl crate::runtime::Executor for Executor {
     fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
-        self.0.lock().unwrap().push(future);
+        self.0.lock().unwrap_or_else(|poison| poison.into_inner()).push(future);
     }
     fn sleep(&self, _: u32) -> BoxProviderFuture<'static, ()> {
         Box::pin(futures::future::pending())
@@ -56,7 +56,7 @@ async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), 
         provider.head(path).await.map_err(|error| error.category()),
         Err(StreamCategory::NotFound)
     );
-    let owned = executor.0.lock().unwrap().pop().unwrap();
+    let owned = executor.0.lock().unwrap_or_else(|poison| poison.into_inner()).pop().unwrap();
     owned.await;
     let outcome = retained.wait().await?;
     assert!(matches!(outcome, CommitOutcome::Committed(_)));
@@ -86,7 +86,7 @@ async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), 
         request.clone(),
         &executor,
     ));
-    let owned = executor.0.lock().unwrap().pop().unwrap();
+    let owned = executor.0.lock().unwrap_or_else(|poison| poison.into_inner()).pop().unwrap();
     owned.await;
     assert!(
         provider
@@ -306,14 +306,14 @@ async fn append_submission_keeps_identity_and_survives_observer_cancellation()
             .map_err(|error| error.category()),
         Err(StreamCategory::NotFound)
     );
-    let producer = executor.0.lock().unwrap().pop().unwrap();
+    let producer = executor.0.lock().unwrap_or_else(|poison| poison.into_inner()).pop().unwrap();
     producer.await;
     let outcome = retained.wait().await?;
     assert!(matches!(outcome, crate::AppendOutcome::Committed(_)));
     assert_eq!(provider.append(request.clone()).await?, outcome);
     assert_eq!(retained.wait().await?, outcome);
     let abandoned = AppendPending::submit_task(request, futures::future::pending(), &executor);
-    drop(executor.0.lock().unwrap().pop().unwrap());
+    drop(executor.0.lock().unwrap_or_else(|poison| poison.into_inner()).pop().unwrap());
     assert_original_producer_loss(&abandoned.result().await.unwrap_err());
     Ok(())
 }

@@ -63,7 +63,7 @@ impl Server {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let (route, body) = request(&mut socket).await;
                 let hold = route == held_route;
-                observed.lock().unwrap().push((route, body));
+                observed.lock().unwrap_or_else(|poison| poison.into_inner()).push((route, body));
                 let Reply(status, value) = replies
                     .pop_front()
                     .unwrap_or(Reply(500, json!({"code":"unavailable"})));
@@ -104,7 +104,7 @@ impl Server {
         }
     }
     fn requests(&self) -> Vec<(String, Value)> {
-        self.requests.lock().unwrap().clone()
+        self.requests.lock().unwrap_or_else(|poison| poison.into_inner()).clone()
     }
 }
 impl Drop for Server {

@@ -25,6 +25,8 @@ enum PublicationRetention<'a> {
 }
 
 type CommitResult = (crate::WriteOutcome, Allocation);
+type CommitInstall = Result<CommitResult, StreamError>;
+type CommitDecision<F> = Decision<CommitResult, F>;
 
 impl CommitPlan {
     fn bind(
@@ -559,11 +561,7 @@ impl MemoryStream {
         deadline: Option<u64>,
         accepted: bool,
     ) -> Result<
-        Decision<
-            CommitResult,
-            impl FnOnce(&mut State, bool, Option<u64>) -> Result<CommitResult, StreamError>
-            + use<'a>,
-        >,
+        CommitDecision<impl FnOnce(&mut State, bool, Option<u64>) -> CommitInstall + use<'a>>,
         StreamError,
     > {
         if let Some((replayed, result, index, ephemeral)) =

@@ -196,10 +196,10 @@ mod tests {
             |()| Err::<Arc<u64>, _>(()),
         );
         assert!(failed.is_err());
-        assert_eq!(*events.lock().unwrap(), ["node"]);
+        assert_eq!(*events.lock().unwrap_or_else(|poison| poison.into_inner()), ["node"]);
         drop(value);
-        assert_eq!(*events.lock().unwrap(), ["node"]);
+        assert_eq!(*events.lock().unwrap_or_else(|poison| poison.into_inner()), ["node"]);
         drop(claims);
-        assert_eq!(*events.lock().unwrap(), ["node", "value", "node"]);
+        assert_eq!(*events.lock().unwrap_or_else(|poison| poison.into_inner()), ["node", "value", "node"]);
     }
 }

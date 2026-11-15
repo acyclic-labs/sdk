@@ -21,10 +21,10 @@ pub fn verify_cache(broken: bool) {
                     identity
                 };
                 if broken {
-                    let observed = *state.0.client.lock().unwrap();
+                    let observed = *state.0.client.lock().unwrap_or_else(|poison| poison.into_inner());
                     observed.unwrap_or_else(|| {
                         let value = create();
-                        *state.0.client.lock().unwrap() = Some(value);
+                        *state.0.client.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(value);
                         value
                     })
                 } else {
@@ -42,7 +42,7 @@ pub fn verify_cache(broken: bool) {
             "one shared pool must be published"
         );
         assert_eq!(first, second);
-        assert_eq!(*state.0.client.lock().unwrap(), Some(first));
+        assert_eq!(*state.0.client.lock().unwrap_or_else(|poison| poison.into_inner()), Some(first));
     });
 }
 

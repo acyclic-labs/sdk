@@ -38,7 +38,7 @@ struct OwnerRequest {
 }
 impl OwnerRequest {
     fn wait(&self, reject: bool) -> Option<CredentialPending<()>> {
-        let mut pause = self.pause.lock().unwrap();
+        let mut pause = self.pause.lock().unwrap_or_else(|poison| poison.into_inner());
         if pause.as_ref()?.reject != reject {
             return None;
         }
@@ -173,7 +173,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
             });
             let operation = async {
                 if stage == "headers" {
-                    *pause.lock().unwrap() = Some(owner);
+                    *pause.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(owner);
                     return endpoint.session(Box::pin(source)).await.map(|_| None);
                 }
                 let mut response = endpoint.session(Box::pin(source)).await?;
@@ -186,7 +186,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                         .body,
                     Some(Body::Welcome(_))
                 ));
-                *pause.lock().unwrap() = Some(owner);
+                *pause.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(owner);
                 fixture
                     .controls
                     .send(if stage == "reply" {

@@ -65,7 +65,7 @@ impl ControlledSource {
 
     /// Lose the original observed follow of `path`.
     fn end(&self, path: &str) {
-        if let Some(path) = self.paths.lock().unwrap().get_mut(path) {
+        if let Some(path) = self.paths.lock().unwrap_or_else(|poison| poison.into_inner()).get_mut(path) {
             path.live.take();
         }
     }
@@ -75,7 +75,7 @@ struct Src(Arc<ControlledSource>);
 
 impl Source for Src {
     fn tail<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<u64, StreamError>> {
-        let held = self.0.slow.lock().unwrap().remove(path);
+        let held = self.0.slow.lock().unwrap_or_else(|poison| poison.into_inner()).remove(path);
         async move {
             if let Some(held) = held {
                 held.await.map_err(|_| StreamError::Unavailable)?;
@@ -92,7 +92,7 @@ impl Source for Src {
     ) -> BoxFuture<'a, Result<Records, StreamError>> {
         async move {
             let records = Source::follow(&self.0.provider, path, from).await?;
-            let held = self.0.held.lock().unwrap().remove(path);
+            let held = self.0.held.lock().unwrap_or_else(|poison| poison.into_inner()).remove(path);
             let records = stream::unfold(
                 (records, held, 0),
                 |(mut records, mut held, read)| async move {
@@ -109,7 +109,7 @@ impl Source for Src {
             );
             let (sender, ended) = oneshot::channel();
             let read = {
-                let mut paths = self.0.paths.lock().unwrap();
+                let mut paths = self.0.paths.lock().unwrap_or_else(|poison| poison.into_inner());
                 let path = paths.entry(path.to_owned()).or_default();
                 path.live = Some(sender);
                 Arc::clone(&path.read)
@@ -276,7 +276,7 @@ async fn delayed_anchor_replays_every_rejected_environment_keyring() {
         let mut run = Box::pin(feed.run());
         assert!(step(&mut run).is_none());
         assert_eq!(
-            source.paths.lock().unwrap()[&path]
+            source.paths.lock().unwrap_or_else(|poison| poison.into_inner())[&path]
                 .read
                 .load(Ordering::SeqCst),
             2
@@ -298,7 +298,7 @@ async fn delayed_anchor_replays_every_rejected_environment_keyring() {
             FollowerState::Fenced(FenceCause::Refused)
         );
         let (release, held) = oneshot::channel();
-        source.held.lock().unwrap().insert(path.clone(), (1, held));
+        source.held.lock().unwrap_or_else(|poison| poison.into_inner()).insert(path.clone(), (1, held));
         keys.send_replace(AnchorKeys::new(initial.anchor()));
         assert!(step(&mut run).is_none());
         assert_eq!(
@@ -359,7 +359,7 @@ async fn losing_one_account_follow_fences_everything() {
             )
             .await;
         let (producer, held) = oneshot::channel();
-        source.held.lock().unwrap().insert(path.clone(), (0, held));
+        source.held.lock().unwrap_or_else(|poison| poison.into_inner()).insert(path.clone(), (0, held));
         let mut run = Box::pin(world.feed.run());
         assert!(step(&mut run).is_none());
         assert_eq!(
@@ -418,7 +418,7 @@ async fn an_undecodable_account_record_fences_that_account_only() {
     assert!(step(&mut run).is_none());
     assert!(!served(&follower, "account"));
     assert_eq!(*follower.state().borrow(), FollowerState::Serving);
-    let read = Arc::clone(&source.paths.lock().unwrap()[&path].read);
+    let read = Arc::clone(&source.paths.lock().unwrap_or_else(|poison| poison.into_inner())[&path].read);
     let before = read.load(Ordering::SeqCst);
     // The original follow is paused at the refused record. Successors stay
     // behind its provider's credit instead of accumulating in the feed.
@@ -598,7 +598,7 @@ async fn an_account_refused_across_an_anchor_reload_reopens_under_the_new_anchor
     }
     // The original follow refuses the keyring, then waits for its checkpoint.
     let (release, held) = oneshot::channel();
-    source.held.lock().unwrap().insert(path, (1, held));
+    source.held.lock().unwrap_or_else(|poison| poison.into_inner()).insert(path, (1, held));
     let (owner, anchor) = tokio::sync::watch::channel(AnchorKeys::new(old.anchor()));
     let (follower, mut feed, _accounts) = anchored(&source, anchor);
     let mut run = Box::pin(feed.run());

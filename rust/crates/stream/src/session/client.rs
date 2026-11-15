@@ -412,7 +412,7 @@ impl Client {
         connect: std::sync::Arc<transport::Connect>,
         executor: std::sync::Arc<dyn crate::runtime::Executor>,
     ) -> Self {
-        Self::tracking(channel, connect, &executor, Arc::default())
+        Self::tracking(channel, connect, executor, Arc::default())
     }
 
     /// Like [`Self::with_transport`], raising the supplied causal context.
@@ -420,7 +420,7 @@ impl Client {
     pub fn tracking(
         channel: Endpoint,
         connect: std::sync::Arc<transport::Connect>,
-        executor: &std::sync::Arc<dyn crate::runtime::Executor>,
+        executor: std::sync::Arc<dyn crate::runtime::Executor>,
         revisions: Arc<crate::RevisionTracker>,
     ) -> Self {
         let termination = channel.termination();

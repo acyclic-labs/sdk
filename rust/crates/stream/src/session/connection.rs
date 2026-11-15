@@ -154,7 +154,7 @@ pub fn verify_connections(omit_wake: bool) {
         let mut cancelled = Box::pin(connections.changed(1));
         assert!(cancelled.as_mut().poll(&mut cx).is_pending());
         drop(cancelled);
-        assert!(connections.0.lock().unwrap().waiters.is_empty());
+        assert!(connections.0.lock().unwrap_or_else(|poison| poison.into_inner()).waiters.is_empty());
     });
 }
 
@@ -210,11 +210,11 @@ pub fn verify_connection_retirement(omit_retirement: bool) {
             connections.advance().map_err(|error| error.category()),
             Err(crate::StreamCategory::AccessDenied)
         );
-        assert!(connections.0.lock().unwrap().waiters.is_empty());
+        assert!(connections.0.lock().unwrap_or_else(|poison| poison.into_inner()).waiters.is_empty());
 
         // Counter exhaustion is also terminal and must release a parked wait.
         let exhausted = Connections::new();
-        exhausted.0.lock().unwrap().generation = Ok(u64::MAX);
+        exhausted.0.lock().unwrap_or_else(|poison| poison.into_inner()).generation = Ok(u64::MAX);
         let mut waiting = Box::pin(exhausted.changed(u64::MAX));
         assert!(waiting.as_mut().poll(&mut cx).is_pending());
         wake.0.store(0, Ordering::SeqCst);

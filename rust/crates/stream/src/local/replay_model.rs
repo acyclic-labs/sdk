@@ -16,7 +16,7 @@ fn race<const REQUIRE: bool>() {
             idempotency_key: crate::IdempotencyKey::unique(),
         })))?;
         let (file, durability) = {
-            let journal = stream.inner.journal.lock().unwrap();
+            let journal = stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
             (journal.file.lease()?, journal.limits.durability)
         };
         let flusher = loom::thread::spawn({
@@ -33,7 +33,7 @@ fn race<const REQUIRE: bool>() {
         );
         flusher.join().map_err(|_| "flusher panicked")?;
         block_on(stream.await_publication(stream.inner.required()?))?;
-        let journal = stream.inner.journal.lock().unwrap();
+        let journal = stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
         assert_eq!(journal.appended, 1);
         assert_eq!(journal.synced, 1);
         drop(journal);

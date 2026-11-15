@@ -37,7 +37,7 @@ async fn lease_replays_pin_success_across_visibility_and_publication_waits()
         };
         let meter = Arc::new(Meter::local());
         let (observed, examined) = tokio::sync::oneshot::channel();
-        *meter.examined_once.lock().unwrap() = Some(observed);
+        *meter.examined_once.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(observed);
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let guard_calls = Arc::clone(&calls);
         let mut replay = Box::pin(provider.native_commit_with_guard(
@@ -339,7 +339,7 @@ async fn guarded_commits_observe_only_their_own_lease_incarnations()
                         let held = Arc::clone(&held);
                         let root = root.clone();
                         async move {
-                            let lease = held.lock().unwrap().take().unwrap();
+                            let lease = held.lock().unwrap_or_else(|poison| poison.into_inner()).take().unwrap();
                             lease.settle().await.map_err(NativeGuardFailure::Provider)?;
                             let replacement = provider
                                 .lease_ephemeral(root.clone())
@@ -356,7 +356,7 @@ async fn guarded_commits_observe_only_their_own_lease_incarnations()
                                     .map_err(NativeGuardFailure::Provider)?,
                                 1
                             );
-                            *held.lock().unwrap() = Some(replacement);
+                            *held.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(replacement);
                             Ok::<(), NativeGuardFailure>(())
                         }
                     }
@@ -372,7 +372,7 @@ async fn guarded_commits_observe_only_their_own_lease_incarnations()
             } else {
                 assert!(matches!(result?.value(), CommitOutcome::Committed(_)));
             }
-            let lease = held.lock().unwrap().take().unwrap();
+            let lease = held.lock().unwrap_or_else(|poison| poison.into_inner()).take().unwrap();
             lease.settle().await?;
             drop(provider);
             meter.assert_refunded();

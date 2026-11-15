@@ -66,7 +66,7 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
     let observed = called.clone();
     let credential = grpc::CredentialProvider::new(move || {
         observed.fetch_add(1, Ordering::Relaxed);
-        let held = held.lock().unwrap().take().map(|(held, calling)| {
+        let held = held.lock().unwrap_or_else(|poison| poison.into_inner()).take().map(|(held, calling)| {
             // The test still owns the receiver until this first request.
             let _ = calling.send(());
             held

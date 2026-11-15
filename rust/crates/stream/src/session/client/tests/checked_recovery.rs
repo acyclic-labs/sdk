@@ -13,7 +13,7 @@ struct Received {
 }
 impl Received {
     fn observe(&self, generation: u64, next: u64, commit: CommitId) {
-        let mut last = self.last.lock().unwrap();
+        let mut last = self.last.lock().unwrap_or_else(|poison| poison.into_inner());
         // A moved route can leave an old physical session readable. Its late
         // frames must not erase evidence already observed from the successor.
         if last
@@ -33,7 +33,7 @@ struct ResponseOwner {
 }
 impl Drop for ResponseOwner {
     fn drop(&mut self) {
-        let mut ended = self.received.ended.lock().unwrap();
+        let mut ended = self.received.ended.lock().unwrap_or_else(|poison| poison.into_inner());
         if ended
             .as_ref()
             .is_none_or(|(attempt, _)| *attempt < self.attempt)
@@ -74,7 +74,7 @@ impl transport::Transport for Observed {
                     _ => None,
                 };
                 if broken && let Some(interest) = interest {
-                    let last = *received.last.lock().unwrap();
+                    let last = *received.last.lock().unwrap_or_else(|poison| poison.into_inner());
                     for upsert in &mut interest.upsert {
                         if upsert.channel.is_some_and(|channel| channel.generation > 1)
                             && let Some(Kind::Follow(follow)) = &mut upsert.kind
@@ -422,7 +422,7 @@ fn check_observation_orders(observe: impl Fn(&Received, u64, u64, CommitId)) {
                     for (generation, next) in order {
                         observed.push((generation, next));
                         observe(&received, generation, next, CommitId::from_bytes([0; 32]));
-                        let last = received.last.lock().unwrap();
+                        let last = received.last.lock().unwrap_or_else(|poison| poison.into_inner());
                         assert!(
                             last.as_ref().is_some_and(|(generation, next, _)| {
                                 observed.iter().all(|seen| seen <= &(*generation, *next))
@@ -430,7 +430,7 @@ fn check_observation_orders(observe: impl Fn(&Received, u64, u64, CommitId)) {
                             "received frontier must survive every arrival order: {order:?}"
                         );
                     }
-                    let last = received.last.lock().unwrap();
+                    let last = received.last.lock().unwrap_or_else(|poison| poison.into_inner());
                     assert_eq!(
                         last.as_ref()
                             .map(|(generation, next, _)| (*generation, *next)),
@@ -452,6 +452,6 @@ fn received_frontier_survives_every_cross_generation_arrival_order() {
 #[should_panic(expected = "received frontier must survive every arrival order")]
 fn negative_control_last_arrival_erases_the_successor_frontier() {
     check_observation_orders(|received, generation, next, commit| {
-        *received.last.lock().unwrap() = Some((generation, next, commit));
+        *received.last.lock().unwrap_or_else(|poison| poison.into_inner()) = Some((generation, next, commit));
     });
 }

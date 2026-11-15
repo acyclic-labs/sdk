@@ -83,7 +83,7 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
         let observed = validity.clone();
         let cache = CredentialCache::new(
             |_| async { CredentialSnapshot::new("fixture".into(), [1; 32].into(), 100) },
-            move || observed.lock().unwrap().clone(),
+            move || observed.lock().unwrap_or_else(|poison| poison.into_inner()).clone(),
         );
         let endpoint = crate::session::client::native::endpoint(
             fixture._channel.clone(),
@@ -143,9 +143,9 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
         for revision in [1, 2] {
             if revision == 2 {
                 match change {
-                    "account" => validity.lock().unwrap().revision = Some([2; 32].into()),
-                    "expiry" => validity.lock().unwrap().now_unix_seconds = 100,
-                    "unavailable" => validity.lock().unwrap().revision = None,
+                    "account" => validity.lock().unwrap_or_else(|poison| poison.into_inner()).revision = Some([2; 32].into()),
+                    "expiry" => validity.lock().unwrap_or_else(|poison| poison.into_inner()).now_unix_seconds = 100,
+                    "unavailable" => validity.lock().unwrap_or_else(|poison| poison.into_inner()).revision = None,
                     "invalidate" => cache.invalidate()?,
                     _ => {}
                 }
@@ -234,7 +234,7 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
                 "source notification must retire an idle session without another frame"
             );
         }
-        *validity.lock().unwrap() = CredentialValidity {
+        *validity.lock().unwrap_or_else(|poison| poison.into_inner()) = CredentialValidity {
             now_unix_seconds: 1,
             revision: Some([1; 32].into()),
         };
