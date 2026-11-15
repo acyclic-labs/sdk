@@ -57,7 +57,8 @@ fn plan(origin: &str) -> Plan {
             vec![Vec::new()],
             Some((
                 0,
-                ScriptedEvent::Error {
+                ScriptedEvent::Refused {
+                    status: 500,
                     error: "provider internal error".into(),
                 },
             )),
@@ -71,9 +72,10 @@ fn plan(origin: &str) -> Plan {
 }
 
 /// The faulted turn's own outcome. A tool-level fault reaches the model,
-/// which finishes the turn. A model-level fault either fails the turn naming
-/// its cause or, when the harness retries a transient one, completes it with
-/// the plan's answer; nothing else is a contained fault.
+/// which finishes the turn. A model-level fault (every one here is
+/// transient) either fails the turn naming its cause or, when the harness
+/// retries it, completes it with the plan's answer; nothing else is a
+/// contained fault.
 fn faulted(origin: &str, outcome: Option<&Prompted>) -> std::result::Result<(), String> {
     let cause = match origin {
         "rate_limit" => "rate limited",
@@ -81,10 +83,9 @@ fn faulted(origin: &str, outcome: Option<&Prompted>) -> std::result::Result<(), 
         "internal_error" => "provider internal error",
         _ => return Ok(()),
     };
-    let transient = origin != "internal_error";
     match outcome {
         Some(Prompted::Failed(message)) if message.contains(cause) => Ok(()),
-        Some(Prompted::Settled(text)) if transient && *text == done("f1") => Ok(()),
+        Some(Prompted::Settled(text)) if *text == done("f1") => Ok(()),
         other => Err(format!("{origin} ended its turn as {other:?}")),
     }
 }
@@ -93,7 +94,11 @@ fn faulted(origin: &str, outcome: Option<&Prompted>) -> std::result::Result<(), 
 fn a_misreported_model_fault_is_not_contained() {
     // Planted control: wrong outcomes must fail the containment check.
     let wrong = [
-        ("internal_error", Some(Prompted::Settled(done("f1")))),
+        ("internal_error", Some(Prompted::Settled("other".into()))),
+        (
+            "transport",
+            Some(Prompted::Failed("connection interrupted".into())),
+        ),
         ("rate_limit", Some(Prompted::Failed("unrelated".into()))),
         ("transport", Some(Prompted::Settled("other".into()))),
         ("internal_error", None),
