@@ -237,11 +237,22 @@ mod tests {
             .await
             .map_err(storage)?;
         let fork = root.spawned_project_view(&project).await?;
+        assert!(matches!(
+            root.bound_task_view(
+                fork.clone(),
+                &project,
+                &[],
+                &workspace::owner::AgentOwner,
+                &authority,
+            )
+            .await,
+            Err(Error::Unauthorized(_)),
+        ));
         let parent = root
             .bound_task_view(
                 fork,
                 &project,
-                &[],
+                std::slice::from_ref(&binding),
                 &workspace::owner::AgentOwner,
                 &authority,
             )
