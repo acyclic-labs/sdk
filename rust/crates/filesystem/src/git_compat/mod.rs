@@ -39,10 +39,7 @@ pub use commands::*;
 mod store;
 pub use store::*;
 mod stream_store;
-pub use stream_store::{
-    GitCompatCas, StreamGitCompatStore, StreamGitCompatStoreCause, StreamGitCompatStoreError,
-    UnresolvedCommit,
-};
+pub use stream_store::{GitCompatCas, StreamGitCompatStore};
 mod errors;
 pub use errors::*;
 mod repository;

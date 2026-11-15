@@ -123,6 +123,7 @@ fn lazy_code(error: &crate::LazyWorkspaceError) -> Code {
     use crate::LazyWorkspaceError as E;
     match error.semantic_error() {
         E::WorkspaceCause(error) => workspace_code(error),
+        E::StatePublication(error) => stream_state_code(error),
         E::Filesystem(error) => filesystem_code(error),
         E::NamespacePath(error) => namespace_code(error),
         E::Demand(error) => kernel::demand_code(error),

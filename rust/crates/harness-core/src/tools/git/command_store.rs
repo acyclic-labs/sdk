@@ -44,7 +44,7 @@ impl CommandStore for LocalCoreStateStore {
 impl<P: acyclic_fs::distributed::AuthorityProvider + ?Sized> CommandStore
     for acyclic_fs::StreamGitCompatStore<P>
 {
-    type StoreError = acyclic_fs::StreamGitCompatStoreError;
+    type StoreError = acyclic_fs::StreamStateStoreError;
 
     fn error(error: Self::StoreError) -> Error {
         Error::NativeGit {
@@ -55,7 +55,7 @@ impl<P: acyclic_fs::distributed::AuthorityProvider + ?Sized> CommandStore
     fn lineage_error(error: WorkspaceLineageError<Self::StoreError>) -> Error {
         Error::NativeGit {
             source: Box::new(super::Failure::StreamLineage(
-                error.map_store(acyclic_fs::StreamGitCompatStoreError::into_cause),
+                error.map_store(acyclic_fs::StreamStateStoreError::into_cause),
             )),
         }
     }
@@ -63,7 +63,7 @@ impl<P: acyclic_fs::distributed::AuthorityProvider + ?Sized> CommandStore
     fn capture_error(error: GitCaptureAuthenticationError<Self::StoreError>) -> Error {
         Error::NativeGit {
             source: Box::new(super::Failure::StreamCaptureAuthentication(
-                error.map_store(acyclic_fs::StreamGitCompatStoreError::into_cause),
+                error.map_store(acyclic_fs::StreamStateStoreError::into_cause),
             )),
         }
     }

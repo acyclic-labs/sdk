@@ -228,6 +228,7 @@ pub use distributed::{
     FilesystemCommitResult, PreparedFilesystemAppend, PreparedFilesystemCommit,
     StreamAuthorityStore,
 };
+pub use distributed::{StreamStateStoreCause, StreamStateStoreError, UnresolvedCommit};
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
     ContentAddress, ContentChange, ContentFile, ContentTimes, CreationOperation, DetachedFile,
@@ -269,10 +270,7 @@ pub use git_compat::{
     git_merge_resolution, git_restore_paths, git_tracked_paths_after, grep_git_generation,
     parse_git_public_command, walk_git_tree,
 };
-pub use git_compat::{
-    GitCompatCas, StreamGitCompatStore, StreamGitCompatStoreCause, StreamGitCompatStoreError,
-    UnresolvedCommit,
-};
+pub use git_compat::{GitCompatCas, StreamGitCompatStore};
 
 pub use kernel::{
     DependencyRegion, DependencyState, DependencyUse, DirectoryPage, ExtentSeekTarget,

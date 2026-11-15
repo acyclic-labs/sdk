@@ -1587,8 +1587,7 @@ async fn state_reconciliation_refusals_keep_actual_lost_ack_custody() -> TestRes
 async fn lost_ack_and_unreadable_receipt_preserve_the_original_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::{
-        GitCompatState, GitCompatStore, StreamGitCompatStore, StreamGitCompatStoreError,
-        WorkspaceId,
+        GitCompatState, GitCompatStore, StreamGitCompatStore, StreamStateStoreError, WorkspaceId,
     };
     let provider = Arc::new(MemoryStream::default());
     let id = WorkspaceId::from_bytes([4; 16]);
@@ -1607,7 +1606,7 @@ async fn lost_ack_and_unreadable_receipt_preserve_the_original_publication()
     let error = GitCompatStore::compare_and_swap(&store, id, 0, initial.clone())
         .await
         .expect_err("lost acknowledgement must not become success or absence");
-    let StreamGitCompatStoreError::Unknown { commit, error } = error else {
+    let StreamStateStoreError::Unknown { commit, error } = error else {
         return Err("unresolved publication lost its owner".into());
     };
     let mut commit = commit();

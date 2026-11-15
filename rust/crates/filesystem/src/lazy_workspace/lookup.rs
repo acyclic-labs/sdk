@@ -238,6 +238,53 @@ impl<
         result
     }
 
+    /// Complete no-follow metadata at the same immutable authored/source cut
+    /// as a range read. Resolving metadata never materializes the file body.
+    pub async fn workspace_stat_at_snapshot(
+        &self,
+        cut: &LazySnapshotRef,
+        path: &str,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<crate::WorkspaceStat>, LazyWorkspaceError> {
+        let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
+        let Some(lookup) = lookup else {
+            crate::kernel::retire_allocation(guard, 0, ctx)?;
+            return Ok(None);
+        };
+        let result = async {
+            let stat = lookup.stat();
+            let kind = match stat.kind {
+                SourceNodeKind::RegularFile => FileKind::Regular,
+                SourceNodeKind::Directory => FileKind::Directory,
+                SourceNodeKind::SymbolicLink => FileKind::SymbolicLink,
+                SourceNodeKind::Fifo => FileKind::Fifo,
+                SourceNodeKind::Socket => FileKind::Socket,
+                SourceNodeKind::CharacterDevice => FileKind::CharacterDevice,
+                SourceNodeKind::BlockDevice => FileKind::BlockDevice,
+                SourceNodeKind::Unsupported => return Err(LazyWorkspaceError::UnsupportedNode),
+            };
+            let link_count = match &lookup {
+                LazyLookup::Authored { record, .. } => record.link_count,
+                LazyLookup::Shadow {
+                    source_link_count, ..
+                } => *source_link_count,
+                LazyLookup::Source { node, .. } => node.link_count.unwrap_or(1),
+            };
+            Ok(Some(crate::WorkspaceStat {
+                file_id: self
+                    .file_id_at_overlay(path, &lookup, Some(cut.overlay), ctx)
+                    .await?,
+                kind,
+                link_count,
+                logical_bytes: stat.logical_bytes,
+                metadata: lookup.metadata(),
+            }))
+        }
+        .await;
+        self.retire_lookup((lookup, guard), ctx)?;
+        result
+    }
+
     pub(crate) async fn inspect_unauthored(
         &self,
         checkout: &mut crate::Checkout<A, O>,
@@ -403,22 +450,41 @@ impl<
         lookup: &LazyLookup,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<FileId, LazyWorkspaceError> {
+        let overlay = if matches!(lookup, LazyLookup::Authored { record, .. } if record.kind == FileKind::Directory)
+        {
+            Some(self.state(ctx).await?.overlay)
+        } else {
+            None
+        };
+        self.file_id_at_overlay(path, lookup, overlay, ctx).await
+    }
+
+    async fn file_id_at_overlay(
+        &self,
+        path: &str,
+        lookup: &LazyLookup,
+        overlay: Option<LazyOverlayId>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<FileId, LazyWorkspaceError> {
         match lookup {
-            LazyLookup::Source { node, .. } => self.source_file_id(&node.file_identity, ctx),
+            LazyLookup::Source { source, node } => Ok(crate::demand::source_file_id(
+                &source.identity,
+                &node.file_identity,
+                ctx,
+            )?),
             LazyLookup::Shadow { record, .. } => Ok(record.file_id),
             LazyLookup::Authored { record, .. } => {
-                if record.kind == FileKind::Directory {
-                    let state = self.state(ctx).await?;
-                    if let Some(LazyOverlayChange::Observe { source, node, .. }) =
-                        self.overlay_fact(state.overlay, path, ctx).await?
-                        && node.kind == SourceNodeKind::Directory
-                    {
-                        return Ok(crate::demand::source_file_id(
-                            &source.identity,
-                            &node.file_identity,
-                            ctx,
-                        )?);
-                    }
+                if record.kind == FileKind::Directory
+                    && let Some(overlay) = overlay
+                    && let Some(LazyOverlayChange::Observe { source, node, .. }) =
+                        self.overlay_fact(overlay, path, ctx).await?
+                    && node.kind == SourceNodeKind::Directory
+                {
+                    return Ok(crate::demand::source_file_id(
+                        &source.identity,
+                        &node.file_identity,
+                        ctx,
+                    )?);
                 }
                 Ok(record.file_id)
             }
