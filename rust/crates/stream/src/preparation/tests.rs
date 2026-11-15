@@ -443,3 +443,90 @@ fn effect_selection_and_condition_membership_walk_the_original_slices_once()
     );
     Ok(())
 }
+
+#[test]
+fn a_met_condition_holds_exactly_where_both_of_its_parts_hold() -> Result<(), StreamError> {
+    let path = StreamPath::new("facts")?;
+    let other = StreamPath::new("other")?;
+    let heads = [CommitId::from_bytes([1; 32]), CommitId::from_bytes([2; 32])];
+    let mut conditions = vec![
+        CommitCondition::Absent { path: path.clone() },
+        CommitCondition::Present { path: path.clone() },
+    ];
+    for expected in 0..=2 {
+        conditions.push(CommitCondition::Tail {
+            path: path.clone(),
+            expected,
+        });
+        for commit_id in heads {
+            conditions.push(CommitCondition::Head {
+                path: path.clone(),
+                expected: expected + 1,
+                commit_id,
+            });
+        }
+    }
+    // Each condition's truth table over every tail and preceding head.
+    let states: Vec<_> = [None, Some(0), Some(1), Some(2), Some(3)]
+        .into_iter()
+        .flat_map(|actual| heads.map(|head| (actual, head)))
+        .collect();
+    let table = |condition: &CommitCondition| -> Result<Vec<bool>, StreamError> {
+        states
+            .iter()
+            .map(|&(actual, head)| {
+                condition_conflict(condition, actual, || Ok(head))
+                    .map(|conflict| conflict.is_none())
+            })
+            .collect()
+    };
+    let tables = conditions
+        .iter()
+        .map(table)
+        .collect::<Result<Vec<_>, _>>()?;
+    for (left, left_table) in conditions.iter().zip(&tables) {
+        let elsewhere = CommitCondition::Absent {
+            path: other.clone(),
+        };
+        assert_eq!(left.meet(&elsewhere), None);
+        for (right, right_table) in conditions.iter().zip(&tables) {
+            let met = left.meet(right);
+            assert_eq!(met, right.meet(left));
+            let both: Vec<bool> = left_table
+                .iter()
+                .zip(right_table)
+                .map(|(left, right)| *left && *right)
+                .collect();
+            // The independent oracle: a pair merges exactly when one
+            // condition holds where both of its parts hold.
+            assert_eq!(
+                met.is_some(),
+                tables.contains(&both),
+                "{left:?} met {right:?} as {met:?}"
+            );
+            if let Some(met) = met {
+                assert_eq!(table(&met)?, both, "{left:?} met {right:?} as {met:?}");
+            }
+        }
+    }
+    // A spawn in a parent turn requires its parent history both present and at
+    // the turn's tail; the effect holds the one stronger condition.
+    let mut effect = crate::CommitEffect::hard(Vec::new(), Vec::new());
+    effect.require(CommitCondition::Tail {
+        path: path.clone(),
+        expected: 2,
+    })?;
+    effect.require(CommitCondition::Present { path: path.clone() })?;
+    assert_eq!(
+        effect.conditions,
+        [CommitCondition::Tail {
+            path: path.clone(),
+            expected: 2,
+        }]
+    );
+    assert_eq!(
+        effect.require(CommitCondition::Absent { path }),
+        Err(StreamError::InvalidArgument)
+    );
+    Ok(())
+}

@@ -55,8 +55,8 @@ where
             .request_mut()
             .ok_or_else(|| guest("creation commit is sealed"))?
             .effects[0]
-            .conditions
-            .push(CommitCondition::Present { path: source });
+            .require(CommitCondition::Present { path: source })
+            .map_err(guest)?;
         return Ok(());
     }
     let inbox = agent.inbox().map_err(guest)?;
@@ -149,10 +149,12 @@ fn append(
     let request = commit
         .request_mut()
         .ok_or_else(|| guest("creation commit is sealed"))?;
-    request.effects[0].conditions.push(CommitCondition::Tail {
-        path: history.clone(),
-        expected: 0,
-    });
+    request.effects[0]
+        .require(CommitCondition::Tail {
+            path: history.clone(),
+            expected: 0,
+        })
+        .map_err(guest)?;
     request.effects[0].mutations.push(CommitMutation::Append {
         path: history,
         records: vec![serde_json::to_vec(&baseline).map_err(guest)?.into()],

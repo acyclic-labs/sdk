@@ -279,9 +279,11 @@ where
                         parent.path
                     ))
                     .map_err(guest)?;
-                    request.effects[0].conditions.push(CommitCondition::Absent {
-                        path: destination.clone(),
-                    });
+                    request.effects[0]
+                        .require(CommitCondition::Absent {
+                            path: destination.clone(),
+                        })
+                        .map_err(guest)?;
                     segment = Some(request.effects[0].mutations.len());
                     request.effects[0].mutations.push(if context.tail != 0 {
                         CommitMutation::Fork {
@@ -360,13 +362,15 @@ where
     let request = commit
         .request_mut()
         .ok_or_else(|| guest("history commit is sealed"))?;
-    request.effects[0].conditions.push(CommitCondition::Tail {
-        path: history.clone(),
-        expected: parent
-            .conversation_tail
-            .checked_add(1)
-            .ok_or_else(|| guest("history boundary overflows"))?,
-    });
+    request.effects[0]
+        .require(CommitCondition::Tail {
+            path: history.clone(),
+            expected: parent
+                .conversation_tail
+                .checked_add(1)
+                .ok_or_else(|| guest("history boundary overflows"))?,
+        })
+        .map_err(guest)?;
     request.effects[0].mutations.push(CommitMutation::Append {
         path: history,
         records,
