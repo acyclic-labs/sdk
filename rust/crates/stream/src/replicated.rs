@@ -103,32 +103,30 @@ impl<'a> Attempt<'a> {
         std::mem::take(&mut self.result)
     }
 
-    fn persist(
+    async fn persist(
         &mut self,
         journal: &mut impl CommandJournal,
         expected: u64,
         frame: JournalFrame<'_>,
-    ) -> impl Future<Output = Result<Option<u64>, StreamError>> {
-        async move {
-            self.result.started = true;
-            let result = journal.append_if(expected, &[frame]).await?;
-            let outcome = match &result {
-                AppendIf::Accepted {
-                    sequence,
-                    at_millis,
-                } => {
-                    if *sequence <= expected {
-                        return Err(StreamError::InvalidResponse);
-                    }
-                    Ok(Some(*at_millis))
+    ) -> Result<Option<u64>, StreamError> {
+        self.result.started = true;
+        let result = journal.append_if(expected, &[frame]).await?;
+        let outcome = match &result {
+            AppendIf::Accepted {
+                sequence,
+                at_millis,
+            } => {
+                if *sequence <= expected {
+                    return Err(StreamError::InvalidResponse);
                 }
-                AppendIf::Stale { .. } => Err(StreamError::Unavailable),
-                #[cfg(not(target_arch = "wasm32"))]
-                AppendIf::Refused(error) => Err(error.clone()),
-            };
-            self.result.appended = Some(result);
-            outcome
-        }
+                Ok(Some(*at_millis))
+            }
+            AppendIf::Stale { .. } => Err(StreamError::Unavailable),
+            #[cfg(not(target_arch = "wasm32"))]
+            AppendIf::Refused(error) => Err(error.clone()),
+        };
+        self.result.appended = Some(result);
+        outcome
     }
 }
 
@@ -257,7 +255,7 @@ impl<J: CommandJournal> Replicated<J> {
     }
 
     /// A proven stale cut refuses this proposal without invalidating the replica.
-    fn complete<T>(&mut self, attempt: AttemptResult, result: &Result<T, StreamError>) -> bool {
+    fn complete<T>(&mut self, attempt: &AttemptResult, result: &Result<T, StreamError>) -> bool {
         match attempt.appended {
             Some(AppendIf::Stale { head }) if head > self.cursor => {
                 self.stale = true;
@@ -316,7 +314,7 @@ impl<J: CommandJournal> Replicated<J> {
                 ephemeral: false,
             });
         let attempt = attempt.finish();
-        if !self.complete(attempt, &result) {
+        if !self.complete(&attempt, &result) {
             return Err(StreamError::PrefixNotRetained);
         }
         result
@@ -415,103 +413,101 @@ impl<J: CommandJournal> Replicated<J> {
         self.execute_with(command, deadline, page, NoopObserver)
     }
 
-    pub(crate) fn execute_with(
+    pub(crate) async fn execute_with(
         &mut self,
         command: WriteRequest,
         deadline: Option<u64>,
         page: usize,
         mut observe: impl ReplayObserver,
-    ) -> impl Future<Output = Result<Execution, StreamError>> {
-        async move {
-            self.check()?;
-            if page == 0 {
-                return Err(StreamError::InvalidArgument);
-            }
-            let canonical = self.provider.canonicalize(command)?;
-            let command = &canonical.command;
-            let deadline = deadline
-                .into_iter()
-                .chain(match command {
-                    WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
-                        request.deadline_unix_millis
-                    }
-                    _ => None,
-                })
-                .min();
-            #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
-            let changes = match command {
-                WriteRequest::Append(request) => vec![(request.path.clone(), false)],
-                WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
-                WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => request
-                    .mutations()
-                    .map(|mutation| {
-                        (
-                            crate::CommitMutation::path(mutation).clone(),
-                            matches!(mutation, CommitMutation::Fork { .. }),
-                        )
-                    })
-                    .collect(),
-            };
-            let fresh = !self.acceptance_clock || self.stale;
-            if fresh {
-                self.refresh_with(page, &mut observe).await?;
-            }
-            observe.observe(&self.provider, command, false).await?;
-            let expected = self.cursor;
-            let mut attempt = Attempt::new(&mut self.failed, &self.provider.revisions);
-            let frame = JournalFrame {
-                command,
-                #[cfg(any(
-                    not(target_arch = "wasm32"),
-                    all(
-                        any(feature = "wasm", feature = "wasm-journal"),
-                        target_arch = "wasm32"
+    ) -> Result<Execution, StreamError> {
+        self.check()?;
+        if page == 0 {
+            return Err(StreamError::InvalidArgument);
+        }
+        let canonical = self.provider.canonicalize(command)?;
+        let command = &canonical.command;
+        let deadline = deadline
+            .into_iter()
+            .chain(match command {
+                WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
+                    request.deadline_unix_millis
+                }
+                _ => None,
+            })
+            .min();
+        #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+        let changes = match command {
+            WriteRequest::Append(request) => vec![(request.path.clone(), false)],
+            WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
+            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => request
+                .mutations()
+                .map(|mutation| {
+                    (
+                        crate::CommitMutation::path(mutation).clone(),
+                        matches!(mutation, CommitMutation::Fork { .. }),
                     )
-                ))]
-                at_millis: self.clock.now_unix_millis(),
-                deadline,
-                #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
-                changes,
-            };
-            let result = {
-                let persist = std::pin::pin!(attempt.persist(&mut self.journal, expected, frame));
-                self.provider
-                    .apply_durable(&canonical, deadline, persist)
-                    .await
-            };
-            let attempt = attempt.finish();
-            // Exact accepted identities and mismatched immutable bindings are
-            // authoritative at the retained cut. A local refusal needs one
-            // current observation before it can be returned as current state.
-            let immutable = !attempt.started
-                && matches!(
-                    &result,
-                    Ok(Execution {
-                        outcome: WriteOutcome::Append(AppendOutcome::Committed(_))
-                            | WriteOutcome::Fork(_)
-                            | WriteOutcome::Commit(CommitOutcome::Committed(_))
-                            | WriteOutcome::CommitAccepted(
-                                crate::AcceptedCommitOutcome::Committed { .. }
-                            ),
-                        ..
-                    }) | Err(StreamError::IdempotencyMismatch)
-                );
-            if !attempt.started && !fresh && !immutable {
-                self.refresh_with(page, &mut observe).await?;
-                if deadline.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
-                    return Err(StreamError::DeadlineElapsed);
-                }
-                if self.cursor != expected {
-                    return Err(StreamError::PrefixNotRetained);
-                }
+                })
+                .collect(),
+        };
+        let fresh = !self.acceptance_clock || self.stale;
+        if fresh {
+            self.refresh_with(page, &mut observe).await?;
+        }
+        observe.observe(&self.provider, command, false).await?;
+        let expected = self.cursor;
+        let mut attempt = Attempt::new(&mut self.failed, &self.provider.revisions);
+        let frame = JournalFrame {
+            command,
+            #[cfg(any(
+                not(target_arch = "wasm32"),
+                all(
+                    any(feature = "wasm", feature = "wasm-journal"),
+                    target_arch = "wasm32"
+                )
+            ))]
+            at_millis: self.clock.now_unix_millis(),
+            deadline,
+            #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+            changes,
+        };
+        let result = {
+            let persist = std::pin::pin!(attempt.persist(&mut self.journal, expected, frame));
+            self.provider
+                .apply_durable(&canonical, deadline, persist)
+                .await
+        };
+        let attempt = attempt.finish();
+        // Exact accepted identities and mismatched immutable bindings are
+        // authoritative at the retained cut. A local refusal needs one
+        // current observation before it can be returned as current state.
+        let immutable = !attempt.started
+            && matches!(
+                &result,
+                Ok(Execution {
+                    outcome: WriteOutcome::Append(AppendOutcome::Committed(_))
+                        | WriteOutcome::Fork(_)
+                        | WriteOutcome::Commit(CommitOutcome::Committed(_))
+                        | WriteOutcome::CommitAccepted(
+                            crate::AcceptedCommitOutcome::Committed { .. }
+                        ),
+                    ..
+                }) | Err(StreamError::IdempotencyMismatch)
+            );
+        if !attempt.started && !fresh && !immutable {
+            self.refresh_with(page, &mut observe).await?;
+            if deadline.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
+                return Err(StreamError::DeadlineElapsed);
             }
-            if !self.complete(attempt, &result) {
+            if self.cursor != expected {
                 return Err(StreamError::PrefixNotRetained);
             }
-            if self.cursor > expected {
-                observe.observe(&self.provider, command, true).await?;
-            }
-            result
         }
+        if !self.complete(&attempt, &result) {
+            return Err(StreamError::PrefixNotRetained);
+        }
+        if self.cursor > expected {
+            observe.observe(&self.provider, command, true).await?;
+        }
+        result
     }
 }

@@ -65,7 +65,7 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
 
     pub(crate) fn observed<F, K>(
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        span: acyclic_native_runtime::obs::OperationSpan,
+        span: &acyclic_native_runtime::obs::OperationSpan,
         future: F,
         error: K,
     ) -> Self
@@ -83,7 +83,7 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
 
     pub(crate) fn try_observed<F, K>(
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        span: acyclic_native_runtime::obs::OperationSpan,
+        span: &acyclic_native_runtime::obs::OperationSpan,
         future: F,
         error: K,
     ) -> std::io::Result<Self>
@@ -94,18 +94,18 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
         K: FnOnce(&NativeStreamResult<T, E>) -> Option<&'static str> + Send + 'a,
     {
         Self::try_build(meter, || {
-            span.scope(acyclic_observability::observe_output(&span, future, error))
+            span.scope(acyclic_observability::observe_output(span, future, error))
         })
         .inspect_err(|error| span.record_error(Some(error)))
     }
 
     pub(crate) fn ready_observed(
-        span: acyclic_native_runtime::obs::OperationSpan,
+        span: &acyclic_native_runtime::obs::OperationSpan,
         result: NativeStreamResult<T, E>,
         kind: impl FnOnce(&E) -> &'static str,
     ) -> Self {
         Self::ready(span.in_scope(|| {
-            acyclic_observability::Completion::new(&span)
+            acyclic_observability::Completion::new(span)
                 .complete(result, |result| super::outcome(result, kind))
         }))
     }

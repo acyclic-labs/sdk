@@ -3,7 +3,7 @@ use super::*;
 /// Validates the canonical mixed observation request before provider admission.
 pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest, StreamError> {
     let request = crate::HeadsRequest {
-        at: value.at.map(revision_from_wire).transpose()?,
+        at: value.at.as_ref().map(revision_from_wire).transpose()?,
         retained: value
             .retained
             .into_iter()
@@ -187,7 +187,7 @@ pub fn head_to_wire(value: crate::PathHead) -> wire::PathHead {
         tail: value.tail,
         last: value.last.map(|record| record_wire(record, None)),
         durable: value.durable,
-        origin: value.origin.map(fork_origin_to_wire),
+        origin: value.origin.as_ref().map(fork_origin_to_wire),
     }
 }
 
@@ -206,7 +206,7 @@ pub fn fork_origin_from_wire(
 
 /// Projects the shared inherited-cut descriptor without reconstructing history.
 pub fn fork_origin_to_wire(
-    origin: crate::Provenance<crate::StreamPath, crate::ForkCut>,
+    origin: &crate::Provenance<crate::StreamPath, crate::ForkCut>,
 ) -> wire::ForkOrigin {
     wire::ForkOrigin {
         source: origin.source.to_string(),
@@ -260,7 +260,7 @@ mod tests {
             };
             let wire = heads_request_to_wire(request.clone());
             let decoded = wire::HeadsRequest::decode(wire.encode_to_vec().as_slice()).unwrap();
-            prop_assert_eq!(heads_from_wire(decoded).unwrap(), request.clone());
+            prop_assert_eq!(heads_from_wire(decoded).unwrap(), request);
             let view = crate::Heads {
                 applied: crate::Revision { scope: crate::RevisionScope::new(Vec::new()), incarnation: 1, index: 0 },
                 retained: request.retained.iter().map(|selected| crate::RetainedRecordObservation {
@@ -299,7 +299,7 @@ mod tests {
                 malformed.retained[0].commit_id = Bytes::new();
                 prop_assert!(heads_from_wire(malformed).is_err());
                 let mut too_small = wire;
-                too_small.limit = too_small.retained.len() as u32 - 1;
+                too_small.limit = crate::width::saturate::<u32, _>(too_small.retained.len()) - 1;
                 prop_assert_eq!(heads_from_wire(too_small), Err(StreamError::InvalidArgument));
             }
         }

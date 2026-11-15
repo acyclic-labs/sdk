@@ -110,11 +110,14 @@ fn serve(
             return Ok(Some((frame, input)));
         }
     });
-    let responses = session::serve_with_products(
+    let responses = session::serve_on_with_products::<_, crate::StreamError>(
         provider,
         authority,
-        resources,
-        calls,
+        session::Products {
+            resources,
+            calls: Some(calls),
+            sockets: None,
+        },
         node,
         limits,
         Box::pin(incoming),

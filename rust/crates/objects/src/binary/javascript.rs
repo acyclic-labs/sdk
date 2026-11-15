@@ -213,7 +213,7 @@ impl Transport for JavaScriptTransport {
             let revision = acyclic_stream::wire::Revision::decode(Bytes::from(revision))
                 .map_err(|_| unavailable())?;
             Some(
-                acyclic_stream::wire_codec::revision_from_wire(revision)
+                acyclic_stream::wire_codec::revision_from_wire(&revision)
                     .map_err(|_| unavailable())?,
             )
         };

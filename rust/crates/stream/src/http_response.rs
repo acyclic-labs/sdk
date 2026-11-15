@@ -85,9 +85,16 @@ fn record_json(value: &wire::Record) -> Value {
     });
     // Present exactly when the binary record spells it.
     if !value.origin.is_empty() {
-        record["origin"] = Value::from(value.origin.as_str());
+        insert(&mut record, "origin", Value::from(value.origin.as_str()));
     }
     record
+}
+
+/// Adds `field` under `key` to a JSON object built with `json!({..})`.
+pub(crate) fn insert(object: &mut Value, key: &str, field: Value) {
+    if let Value::Object(object) = object {
+        object.insert(key.to_owned(), field);
+    }
 }
 
 /// The hosted spelling of the shared revision token; absent is null.

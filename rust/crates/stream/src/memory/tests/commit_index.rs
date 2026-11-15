@@ -52,7 +52,7 @@ async fn historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_hist
                     projection: crate::HeadProjection::Tail,
                     paths: Default::default(),
                     children: None,
-                    limit: count as u32,
+                    limit: crate::width::saturate(count),
                     at_least: Default::default(),
                 };
                 COMMIT_VISITS.with(|count| count.set(0));

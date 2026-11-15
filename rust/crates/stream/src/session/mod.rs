@@ -194,7 +194,10 @@ struct Session<P: ?Sized> {
 }
 
 enum ServingSession<P: ?Sized> {
-    Active(Session<P>, Option<crate::BoxProviderFuture<'static, ()>>),
+    Active(
+        Box<Session<P>>,
+        Option<crate::BoxProviderFuture<'static, ()>>,
+    ),
     Closing(
         std::collections::btree_map::IntoIter<u64, Channel>,
         std::collections::vec_deque::IntoIter<Frame>,
@@ -269,34 +272,6 @@ pub fn serve_with_resources<P: StreamProvider + ?Sized>(
     )
 }
 
-/// Opens follows and canonical Actors calls on one authenticated session.
-/// Completing `shutdown` drops producers and closes admitted channels without
-/// data credit. Its owner must complete it when the serving runtime stops.
-pub fn serve_with_products<P: StreamProvider + ?Sized>(
-    provider: Arc<P>,
-    authority: Arc<Authority>,
-    resources: Option<Arc<dyn ResourceProvider>>,
-    calls: Arc<dyn CallProvider>,
-    node: String,
-    limits: Limits,
-    incoming: transport::WireResponses,
-    shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
-) -> Result<transport::Responses, StreamError> {
-    serve_on_with_products(
-        provider,
-        authority,
-        Products {
-            resources,
-            calls: Some(calls),
-            sockets: None,
-        },
-        node,
-        limits,
-        incoming,
-        shutdown,
-    )
-}
-
 /// The owning product dispatchers one session routes to.
 #[derive(Clone, Default)]
 pub(crate) struct Products {
@@ -305,7 +280,10 @@ pub(crate) struct Products {
     pub(crate) sockets: Option<Arc<dyn SocketProvider>>,
 }
 
-fn serve_on_with_products<
+/// Opens follows and canonical Actors calls on one authenticated session.
+/// Completing `shutdown` drops producers and closes admitted channels without
+/// data credit. Its owner must complete it when the serving runtime stops.
+pub(crate) fn serve_on_with_products<
     P: StreamProvider + ?Sized,
     E: From<StreamError> + crate::ProviderTask + 'static,
 >(
@@ -352,7 +330,7 @@ fn serve_on_with_products<
         credit: wire::SessionWindow::default(),
         input_credit: wire::SessionWindow {
             bytes: crate::MAX_COMMAND_BYTES as u64,
-            frames: crate::MAX_ITEMS as u32,
+            frames: crate::width::saturate(crate::MAX_ITEMS),
         },
         input_released: sync::Arc::new(signal::Signal::new()),
         controls: VecDeque::new(),
@@ -365,7 +343,7 @@ fn serve_on_with_products<
     };
     Ok(Box::pin(
         stream::try_unfold(
-            ServingSession::Active(session, shutdown),
+            ServingSession::Active(Box::new(session), shutdown),
             |state| async move {
                 let (mut session, mut shutdown) = match state {
                     ServingSession::Active(session, shutdown) => (session, shutdown),
@@ -431,10 +409,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     let input = core::pin::pin!(input);
                     match future::select(input, Box::pin(changed)).await {
                         future::Either::Left((input, _)) => Ok(input),
-                        future::Either::Right((event, pending)) => {
-                            drop(pending);
-                            Err(event)
-                        }
+                        future::Either::Right((event, _)) => Err(event),
                     }
                 };
                 match input {

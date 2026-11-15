@@ -228,7 +228,7 @@ fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog() {
             let request = ReadRequest {
                 path: StreamPath::new("native/differential").unwrap(),
                 from: 0,
-                limit: batches as u32,
+                limit: crate::width::saturate(batches),
                 key: None,
                 at_least: Default::default(),
             };
@@ -267,13 +267,16 @@ fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog() {
             );
         }
     }
-    assert!(lazy.windows(2).all(|pair| pair[0].0 == pair[1].0));
+    assert!(
+        lazy.array_windows::<2>()
+            .all(|[left, right]| left.0 == right.0)
+    );
     assert_eq!(lazy[0].0.1, 2, "opening traversed pinned history");
     assert_eq!(lazy[0].0.2, 2, "only the future and cursor frames allocate");
     assert!(
         eager
-            .windows(2)
-            .all(|pair| pair[0].0.0 < pair[1].0.0 && pair[0].0.1 < pair[1].0.1)
+            .array_windows::<2>()
+            .all(|[left, right]| left.0.0 < right.0.0 && left.0.1 < right.0.1)
     );
     assert!(
         eager[2].1 > lazy[2].1,

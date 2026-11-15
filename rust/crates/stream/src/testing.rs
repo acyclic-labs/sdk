@@ -33,6 +33,22 @@ pub enum RequestClass {
     Token,
 }
 
+impl RequestClass {
+    /// This class's slot in a per-class array; the exhaustive match keeps
+    /// every class and slot paired without a fallible index.
+    fn slot<T>(self, slots: &[T; 6]) -> &T {
+        let [data, metadata, list, head, lease, token] = slots;
+        match self {
+            Self::Data => data,
+            Self::Metadata => metadata,
+            Self::List => list,
+            Self::Head => head,
+            Self::Lease => lease,
+            Self::Token => token,
+        }
+    }
+}
+
 /// An immutable ledger snapshot, or the difference between two snapshots.
 /// A component equal to `u64::MAX` has lost precision and stays unknown in
 /// subsequent deltas. These values never certify hidden physical work.
@@ -42,7 +58,7 @@ pub struct Requests([u64; 6]);
 impl Requests {
     /// Calls that carry payload data; `u64::MAX` denotes lost precision.
     pub fn data(self) -> u64 {
-        self.0[RequestClass::Data as usize]
+        self.class(RequestClass::Data)
     }
 
     /// Every non-payload request, irrespective of what the caller requested.
@@ -75,7 +91,7 @@ impl Requests {
 
     /// Calls in one specific class; `u64::MAX` denotes lost precision.
     pub fn class(self, class: RequestClass) -> u64 {
-        self.0[class as usize]
+        *class.slot(&self.0)
     }
 
     /// Requests issued since an earlier snapshot of this same ledger.
@@ -112,17 +128,16 @@ impl RequestLedger {
 
     /// Records one dispatched call in its contract class.
     pub fn record(&self, class: RequestClass) {
-        let _ =
-            self.0[class as usize].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        let _ = class
+            .slot(&*self.0)
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
                 count.checked_add(1)
             });
     }
 
     /// Reads the ledger without resetting other handles.
     pub fn requests(&self) -> Requests {
-        Requests(std::array::from_fn(|index| {
-            self.0[index].load(Ordering::Relaxed)
-        }))
+        Requests(self.0.each_ref().map(|count| count.load(Ordering::Relaxed)))
     }
 }
 

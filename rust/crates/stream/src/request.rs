@@ -65,15 +65,12 @@ fn normalize_exclusions(paths: &mut Vec<crate::RelativePath>) -> Result<(), Stre
     paths.dedup();
     let mut kept = 0;
     for index in 0..paths.len() {
-        let mut parent = paths[index].parent();
-        let mut covered = false;
-        while let Some(ancestor) = parent {
-            if paths[..kept].binary_search(&ancestor).is_ok() {
-                covered = true;
-                break;
-            }
-            parent = ancestor.parent();
-        }
+        // Sorted, every kept ancestor precedes its descendants.
+        let covered = paths.get(index).is_some_and(|path| {
+            let kept = paths.get(..kept).unwrap_or_default();
+            std::iter::successors(path.parent(), crate::RelativePath::parent)
+                .any(|ancestor| kept.binary_search(&ancestor).is_ok())
+        });
         if !covered {
             paths.swap(kept, index);
             kept += 1;
@@ -684,14 +681,18 @@ impl<'a, A> MutationView<'a, A> {
             );
         }
         let path = |position: &MutationIndex| {
-            CommitMutation::path(&request.effects[position.effect].mutations[position.mutation])
+            request
+                .effects
+                .get(position.effect)
+                .and_then(|effect| effect.mutations.get(position.mutation))
+                .map(CommitMutation::path)
         };
         view.index
             .sort_unstable_by(|left, right| path(left).cmp(path(right)));
         if view
             .index
-            .windows(2)
-            .any(|pair| path(&pair[0]) == path(&pair[1]))
+            .array_windows::<2>()
+            .any(|[left, right]| path(left) == path(right))
         {
             return Err(StreamError::InvalidArgument);
         }
@@ -703,12 +704,16 @@ impl<'a, A> MutationView<'a, A> {
             .map_or(self.index.len(), <[CommitMutation]>::len)
     }
 
-    fn at(&self, position: usize) -> &CommitMutation {
+    fn at(&self, position: usize) -> Option<&CommitMutation> {
         if let Some(mutations) = self.single {
-            &mutations[position]
+            mutations.get(position)
         } else {
-            let index = &self.index[position];
-            &self.request.effects[index.effect].mutations[index.mutation]
+            let index = self.index.get(position)?;
+            self.request
+                .effects
+                .get(index.effect)?
+                .mutations
+                .get(index.mutation)
         }
     }
 
@@ -722,7 +727,10 @@ impl<'a, A> MutationView<'a, A> {
         let mut high = self.len();
         while low < high {
             let middle = low + (high - low) / 2;
-            let path = CommitMutation::path(self.at(middle)).as_str();
+            let Some(mutation) = self.at(middle) else {
+                break;
+            };
+            let path = CommitMutation::path(mutation).as_str();
             let ordering = path
                 .bytes()
                 .cmp(destination.as_str().bytes().chain(std::iter::once(b'/')));
@@ -732,16 +740,15 @@ impl<'a, A> MutationView<'a, A> {
                 high = middle;
             }
         }
-        // Own only the offset into the borrowed destination, not its lifetime.
-        let prefix_len = destination.as_str().len();
         let prefix = destination.as_str();
         (low..self.len())
-            .map(move |position| CommitMutation::path(self.at(position)).as_str())
-            .take_while(move |path| {
-                path.strip_prefix(prefix)
-                    .is_some_and(|suffix| suffix.starts_with('/'))
+            .map_while(move |position| self.at(position))
+            .map_while(move |mutation| {
+                CommitMutation::path(mutation)
+                    .as_str()
+                    .strip_prefix(prefix)?
+                    .strip_prefix('/')
             })
-            .map(move |path| &path[prefix_len + 1..])
     }
 }
 
@@ -956,7 +963,7 @@ mod tests {
             vec![append("a")?, append("b")?],
         )])?;
         let split = request(vec![
-            CommitEffect::hard(vec![present.clone()], vec![append("a")?]),
+            CommitEffect::hard(vec![present], vec![append("a")?]),
             CommitEffect::hard(Vec::new(), vec![append("b")?]),
         ])?;
         let mut soft = together.clone();

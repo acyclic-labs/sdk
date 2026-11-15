@@ -2646,7 +2646,7 @@ impl Medium for Crashing {
             None => Ok(Some(bytes.clone())),
             Some(range) if range.start <= range.end && range.end <= bytes.len() as u64 => {
                 Ok(Some(bytes.slice(
-                    acyclic_stream::width::saturate(range.start)
+                    acyclic_stream::width::saturate::<usize, _>(range.start)
                         ..acyclic_stream::width::saturate(range.end),
                 )))
             }

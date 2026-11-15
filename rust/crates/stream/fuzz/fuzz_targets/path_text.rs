@@ -4,7 +4,8 @@ use acyclic_stream::StreamPath;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    acyclic_stream::codec_fuzz::filesystem_paths(data).expect("filesystem resource index contract");
+    let indexed = acyclic_stream::codec_fuzz::filesystem_paths(data);
+    assert_eq!(indexed, Ok(()), "filesystem resource index contract");
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };

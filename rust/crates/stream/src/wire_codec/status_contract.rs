@@ -68,7 +68,7 @@ const CONTRACT: &[(Code, &str, StreamError)] = &[
     (Code::Unavailable, "", StreamError::Unavailable),
 ];
 
-fn expected(wire: &Status) -> &StreamError {
+fn expected(wire: &Status) -> Option<&StreamError> {
     CONTRACT
         .iter()
         .find(|(code, message, _)| *code == wire.code() && *message == wire.message())
@@ -78,11 +78,10 @@ fn expected(wire: &Status) -> &StreamError {
                 .find(|(code, message, _)| *code == wire.code() && message.is_empty())
         })
         .map(|(_, _, error)| error)
-        .expect("every tonic code has a contract fallback")
 }
 
 fn check_decoded(wire: &Status, actual: &StreamError) -> Result<(), &'static str> {
-    let expected = expected(wire);
+    let expected = expected(wire).ok_or("a tonic code has no contract fallback")?;
     if actual.code() != expected.code() {
         return Err("status contract classification");
     }

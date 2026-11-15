@@ -47,16 +47,7 @@ fn native_commit_admits_original_context_before_its_unpolled_frame()
             )],
             idempotency_key: IdempotencyKey::new("prebox")?,
         };
-        if limit != u64::MAX {
-            let future =
-                provider.native_write(crate::WriteRequest::Commit(request), meter.original());
-            assert!(
-                matches!(future, crate::NativeProviderFuture::Ready(Some(Err(ref error)))
-                if error.kind() == std::io::ErrorKind::OutOfMemory)
-            );
-            assert_eq!(meter.allocations.load(Ordering::SeqCst), limit);
-            drop(future);
-        } else {
+        if limit == u64::MAX {
             let mut future = None;
             let physical = acyclic_test_support::measure(|| {
                 future = Some(
@@ -74,6 +65,15 @@ fn native_commit_admits_original_context_before_its_unpolled_frame()
                 meter.held.load(Ordering::SeqCst),
                 u64::try_from(physical.bytes_current)?
             );
+            drop(future);
+        } else {
+            let future =
+                provider.native_write(crate::WriteRequest::Commit(request), meter.original());
+            assert!(
+                matches!(future, crate::NativeProviderFuture::Ready(Some(Err(ref error)))
+                if error.kind() == std::io::ErrorKind::OutOfMemory)
+            );
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), limit);
             drop(future);
         }
         assert_eq!(meter.held.load(Ordering::SeqCst), 0);

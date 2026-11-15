@@ -26,8 +26,10 @@ impl FollowFilter {
         if end.len() < crate::MAX_RECORD_KEY_BYTES {
             end.push(0);
         } else if let Some(index) = end.iter().rposition(|byte| *byte != u8::MAX) {
-            end[index] += 1;
             end.truncate(index + 1);
+            if let Some(last) = end.last_mut() {
+                *last += 1;
+            }
         } else {
             // No longer keys are admitted; the greatest legal key is last.
             end.clear();
@@ -436,8 +438,8 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
         .sort_unstable_by(|left, right| left.name.cmp(&right.name));
     if filter
         .attributes
-        .windows(2)
-        .any(|pair| matches!(pair, [left, right] if left.name == right.name))
+        .array_windows::<2>()
+        .any(|[left, right]| left.name == right.name)
     {
         return Err(StreamError::InvalidArgument);
     }
@@ -666,22 +668,7 @@ mod tests {
     #[test]
     fn projection_reuses_validation_and_skips_unrestricted_decoding()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::changes::{take_marker_probes, take_parsed_bytes, validate};
-
-        fn measure<T>(
-            run: impl FnOnce() -> T,
-        ) -> (T, acyclic_test_support::AllocationInfo, usize, usize) {
-            take_marker_probes();
-            take_parsed_bytes();
-            let mut result = None;
-            let allocations = acyclic_test_support::measure(|| result = Some(run()));
-            (
-                result.unwrap(),
-                allocations,
-                take_marker_probes(),
-                take_parsed_bytes(),
-            )
-        }
+        use crate::changes::{take_marker_probes, validate};
 
         let followed = crate::StreamPath::new("followed")?;
         let golden = acyclic_proto_build::golden::frame("stream.changes-v1")?;
@@ -771,87 +758,17 @@ mod tests {
                     )?;
                     take_marker_probes();
                     let format = crate::changes::reader_format(&record.headers);
-                    let probes = take_marker_probes();
-                    let valid = validate(&record.value, &record.headers).is_ok();
-                    if valid {
-                        projection_contract(&record).expect("projection fuzz oracle");
+                    let admission = Admission {
+                        probes: take_marker_probes(),
+                        valid: validate(&record.value, &record.headers).is_ok(),
+                        formatted: format.as_ref().is_ok_and(|format| format.is_some()),
+                        unformatted: format == Ok(None),
+                    };
+                    if admission.valid {
+                        projection_contract(&record)?;
                     }
                     for (index, filter) in filters.iter().enumerate() {
-                        let (matched, allocations, marker_probes, parsed_bytes) =
-                            measure(|| filter.matches(&record.headers));
-                        assert_eq!(allocations, acyclic_test_support::AllocationInfo::default());
-                        assert_eq!(marker_probes, probes, "classify the marker once");
-                        assert_eq!(parsed_bytes, 0, "header matching must not decode the body");
-                        let (preservation, allocations, marker_probes, parsed_bytes) =
-                            measure(|| filter.preserves(&record));
-                        if valid {
-                            assert_eq!(
-                                allocations,
-                                acyclic_test_support::AllocationInfo::default()
-                            );
-                        }
-                        assert_eq!(marker_probes, probes, "classify the marker once");
-                        let validation_bytes =
-                            if format.as_ref().is_ok_and(|format| format.is_some()) {
-                                record.value.len()
-                            } else {
-                                0
-                            };
-                        assert_eq!(
-                            parsed_bytes, validation_bytes,
-                            "validate the original body once"
-                        );
-                        let (projected, allocations, marker_probes, parsed_bytes) =
-                            measure(|| filter.project(record.clone()));
-                        if !valid {
-                            assert_eq!(preservation, Err(StreamError::InvalidArgument));
-                            assert_eq!(projected, Err(StreamError::InvalidArgument));
-                        } else {
-                            let projected = projected.as_ref().unwrap().as_ref();
-                            assert_eq!(matched, projected.is_some());
-                            assert_eq!(preservation, Ok(projected == Some(&record)));
-                            if let Some(projected) = projected {
-                                assert_eq!(filter.preserves(projected), Ok(true));
-                                assert_eq!(projected.sequence, record.sequence);
-                                assert_eq!(projected.commit_id, record.commit_id);
-                                assert_eq!(
-                                    projected.committed_at_micros,
-                                    record.committed_at_micros
-                                );
-                                assert_eq!(projected.origin, record.origin);
-                                assert_eq!(
-                                    projected.headers.attributes(),
-                                    record.headers.attributes()
-                                );
-                            }
-                        }
-                        if !valid
-                            || index == 0
-                            || preservation == Ok(true)
-                            || format == Ok(None)
-                            || !matched
-                        {
-                            if valid {
-                                assert_eq!(
-                                    allocations,
-                                    acyclic_test_support::AllocationInfo::default(),
-                                    "unrestricted projection must transfer the original owners"
-                                );
-                            }
-                            assert_eq!(marker_probes, probes, "classify the marker once");
-                            assert_eq!(
-                                parsed_bytes, validation_bytes,
-                                "validate the original body once"
-                            );
-                        } else {
-                            let output = projected.as_ref().unwrap().as_ref().unwrap();
-                            assert_eq!(marker_probes, 2 * probes);
-                            assert_eq!(
-                                parsed_bytes,
-                                2 * record.value.len() + output.value.len(),
-                                "partial projection must reuse input admission"
-                            );
-                        }
+                        project_once(filter, index == 0, &record, &admission);
                     }
                 }
             }
@@ -880,7 +797,7 @@ mod tests {
             record.headers = body.headers;
             let (projected, allocations, _, parsed_bytes) =
                 measure(|| filters[1].project(record.clone()));
-            let projected = projected?.unwrap();
+            let projected = projected?.ok_or("partial projection discarded the kept entry")?;
             assert_eq!(projected.value, expected.value);
             assert_eq!(projected.headers, expected.headers);
             assert_eq!(
@@ -898,6 +815,116 @@ mod tests {
             baseline = Some(observed);
         }
         Ok(())
+    }
+
+    /// Allocations, marker probes and parsed body bytes of one call.
+    #[cfg(not(target_arch = "wasm32"))]
+    type Measured<T> = (T, acyclic_test_support::AllocationInfo, usize, usize);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn measure<T>(run: impl FnOnce() -> T) -> Measured<T> {
+        use crate::changes::{take_marker_probes, take_parsed_bytes};
+        take_marker_probes();
+        take_parsed_bytes();
+        let mut result = None;
+        let allocations = acyclic_test_support::measure(|| result = Some(run()));
+        (
+            result.expect("measured work runs exactly once"),
+            allocations,
+            take_marker_probes(),
+            take_parsed_bytes(),
+        )
+    }
+
+    /// How the original record admits before any filter runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    struct Admission {
+        probes: usize,
+        valid: bool,
+        formatted: bool,
+        unformatted: bool,
+    }
+
+    /// One filter matches, preserves and projects `record`, reusing its
+    /// single marker classification and body validation.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn project_once(
+        filter: &FollowFilter,
+        unrestricted: bool,
+        record: &crate::Record,
+        admission: &Admission,
+    ) {
+        let unallocated = acyclic_test_support::AllocationInfo::default();
+        let (matched, allocations, marker_probes, parsed_bytes) =
+            measure(|| filter.matches(&record.headers));
+        assert_eq!(allocations, unallocated);
+        assert_eq!(marker_probes, admission.probes, "classify the marker once");
+        assert_eq!(parsed_bytes, 0, "header matching must not decode the body");
+        let (preservation, allocations, marker_probes, parsed_bytes) =
+            measure(|| filter.preserves(record));
+        if admission.valid {
+            assert_eq!(allocations, unallocated);
+        }
+        assert_eq!(marker_probes, admission.probes, "classify the marker once");
+        let validation_bytes = if admission.formatted {
+            record.value.len()
+        } else {
+            0
+        };
+        assert_eq!(
+            parsed_bytes, validation_bytes,
+            "validate the original body once"
+        );
+        let (projected, allocations, marker_probes, parsed_bytes) =
+            measure(|| filter.project(record.clone()));
+        if !admission.valid {
+            assert_eq!(preservation, Err(StreamError::InvalidArgument));
+            assert_eq!(projected, Err(StreamError::InvalidArgument));
+            assert_eq!(marker_probes, admission.probes, "classify the marker once");
+            assert_eq!(
+                parsed_bytes, validation_bytes,
+                "validate the original body once"
+            );
+            return;
+        }
+        let projected = projected.expect("a valid record projects");
+        assert_eq!(matched, projected.is_some());
+        assert_eq!(preservation, Ok(projected.as_ref() == Some(record)));
+        if let Some(projected) = &projected {
+            same_record(filter, projected, record);
+        }
+        match projected {
+            Some(output) if !unrestricted && preservation != Ok(true) && !admission.unformatted => {
+                assert_eq!(marker_probes, 2 * admission.probes);
+                assert_eq!(
+                    parsed_bytes,
+                    2 * record.value.len() + output.value.len(),
+                    "partial projection must reuse input admission"
+                );
+            }
+            _ => {
+                assert_eq!(
+                    allocations, unallocated,
+                    "unrestricted projection must transfer the original owners"
+                );
+                assert_eq!(marker_probes, admission.probes, "classify the marker once");
+                assert_eq!(
+                    parsed_bytes, validation_bytes,
+                    "validate the original body once"
+                );
+            }
+        }
+    }
+
+    /// A projection keeps every original record field but its selected keys.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn same_record(filter: &FollowFilter, projected: &crate::Record, record: &crate::Record) {
+        assert_eq!(filter.preserves(projected), Ok(true));
+        assert_eq!(projected.sequence, record.sequence);
+        assert_eq!(projected.commit_id, record.commit_id);
+        assert_eq!(projected.committed_at_micros, record.committed_at_micros);
+        assert_eq!(projected.origin, record.origin);
+        assert_eq!(projected.headers.attributes(), record.headers.attributes());
     }
 
     fn range(start: &'static [u8], end: &'static [u8]) -> wire::KeyRange {

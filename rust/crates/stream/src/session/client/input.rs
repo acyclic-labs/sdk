@@ -351,7 +351,7 @@ impl CallInputSender {
             .commands
             .send(Command::Input {
                 id: self.state.id,
-                frame,
+                frame: Box::new(frame),
                 credit,
                 sent,
             })

@@ -42,9 +42,12 @@ fn read(old: bool, baseline: &mut BaselineCursor, candidate: &mut HistoryCursor)
     if old {
         baseline.next_record()
     } else {
-        futures::FutureExt::now_or_never(candidate.next_record())
-            .expect("memory pages are immediately ready")
-            .unwrap()
+        let ready = futures::FutureExt::now_or_never(candidate.next_record());
+        assert!(
+            matches!(ready, Some(Ok(_))),
+            "memory pages are immediately ready"
+        );
+        ready?.ok()
     }
 }
 

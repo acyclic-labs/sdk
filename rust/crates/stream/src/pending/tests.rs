@@ -120,22 +120,21 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
             Arc::clone(&provider),
             request,
             storage,
-            meter.original(),
+            &meter.original(),
         ));
     });
     let (pending, producer) = prepared.unwrap()?;
-    let pending = match pending.try_take() {
-        Err(pending) => pending,
-        Ok(_) => panic!("a live producer lost its original request"),
+    let Err(pending) = pending.try_take() else {
+        return Err("a live producer lost its original request".into());
     };
     assert_eq!(pending.request(), &request);
     assert_eq!(
-        physical.bytes_current,
-        (meter.held.load(Ordering::SeqCst) - before) as i64
+        u64::try_from(physical.bytes_current)?,
+        meter.held.load(Ordering::SeqCst) - before
     );
     assert_eq!(
-        physical.count_current,
-        (meter.allocations.load(Ordering::SeqCst) - allocations) as i64
+        u64::try_from(physical.count_current)?,
+        meter.allocations.load(Ordering::SeqCst) - allocations
     );
     assert!(pending.result().now_or_never().is_none());
     assert_eq!(
@@ -149,14 +148,12 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     let cloned = pending.clone();
     assert!(std::ptr::eq(retained, cloned.result().await?));
     assert_eq!(&provider.commit(request.clone()).await?, outcome);
-    let pending = match pending.try_take() {
-        Err(pending) => pending,
-        Ok(_) => panic!("another observer lost its original result"),
+    let Err(pending) = pending.try_take() else {
+        return Err("another observer lost its original result".into());
     };
     drop(cloned);
-    let (original, result, storage) = match pending.try_take() {
-        Ok(owned) => owned,
-        Err(_) => panic!("the sole completed owner could not take its result"),
+    let Ok((original, result, storage)) = pending.try_take() else {
+        return Err("the sole completed owner could not take its result".into());
     };
     assert_eq!(original, request);
     assert!(matches!(result, Some(Ok(Ok(_)))));
@@ -176,7 +173,7 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
         Arc::new(MemoryStream::default()),
         retained,
         storage,
-        meter.original(),
+        &meter.original(),
     )?;
     let mut first = Box::pin(pending.result());
     let mut second = Box::pin(pending.result());
@@ -221,7 +218,7 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     meter.assert_refunded();
 
-    for allowed in 0..physical.count_current as u64 {
+    for allowed in 0..u64::try_from(physical.count_current)? {
         let meter = Arc::new(Meter::default());
         let funded = request.try_clone_native(&meter.original())?;
         let (retained, storage) = funded.into_parts();
@@ -234,7 +231,7 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
                 Arc::new(MemoryStream::default()),
                 retained,
                 storage,
-                meter.original(),
+                &meter.original(),
             )
             .is_err()
         );
@@ -250,7 +247,7 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
         Arc::new(MemoryStream::default()),
         retained,
         storage,
-        meter.original(),
+        &meter.original(),
     )?;
     meter.cancelled.store(true, Ordering::SeqCst);
     producer.await??;

@@ -507,6 +507,7 @@ impl Client {
                 Err(error) => error,
             };
             // Original unfinished attempts remain Unsettled, including cancellation.
+            #[cfg(feature = "serde")]
             drop(completion);
             if let Home::Routed(route) = &self.channel
                 && route.refused(home.member, &error).await

@@ -103,12 +103,8 @@ impl HistoryCursor {
         }
         // A follow renews finite chunks; the chunk never limits its history.
         if self.records.remaining == 0 {
-            self.records.remaining = self
-                .records
-                .history
-                .tail
-                .saturating_sub(self.records.next)
-                .min(u64::from(u32::MAX)) as u32;
+            self.records.remaining =
+                crate::width::saturate(self.records.history.tail.saturating_sub(self.records.next));
         }
         #[cfg(not(target_arch = "wasm32"))]
         let work = self.work.clone();

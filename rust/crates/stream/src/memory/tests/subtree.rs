@@ -37,7 +37,7 @@ proptest! {
                 let request = ChildrenPageRequest {
                     offset, tail_stream: None, parent: Some(parent.clone()),
                     after: lower.as_ref().map(|key| StreamPath::new(format!("{prefix}/{key}"))).transpose()?,
-                    hierarchy_version: None, limit: limit as u32,
+                    hierarchy_version: None, limit: crate::width::saturate(limit),
                 };
                 // Exercise the production wire adapter before the provider.
                 let request = crate::wire_codec::children_page_from_wire(

@@ -37,7 +37,7 @@ pub fn opened_to_wire<T, E>(value: &crate::Opened<T, E>) -> wire::SessionOpened 
 pub fn selection_from_opened(
     value: &wire::SessionOpened,
 ) -> Result<(Revision, crate::StreamSelection, bool), StreamError> {
-    let snapshot = revision_from(value.applied.as_ref().ok_or(StreamError::InvalidResponse)?)
+    let snapshot = revision_from_wire(value.applied.as_ref().ok_or(StreamError::InvalidResponse)?)
         .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
     let selected = value
         .selection
@@ -107,12 +107,8 @@ pub fn revision_to_wire(value: &Revision) -> wire::Revision {
 }
 
 /// Decodes one revision; an incarnation other than 16 bytes is invalid.
-pub fn revision_from_wire(value: wire::Revision) -> Result<Revision, StreamError> {
-    revision_from(&value)
-}
-
-/// Decodes a borrowed wire revision, copying only the scope it owns.
-pub(crate) fn revision_from(value: &wire::Revision) -> Result<Revision, StreamError> {
+/// Copies only the scope the borrowed wire revision owns.
+pub fn revision_from_wire(value: &wire::Revision) -> Result<Revision, StreamError> {
     let incarnation = <[u8; 16]>::try_from(value.incarnation.as_ref())
         .map_err(|_| StreamError::InvalidArgument)?;
     Ok(Revision {
@@ -126,7 +122,7 @@ pub(crate) fn revision_from(value: &wire::Revision) -> Result<Revision, StreamEr
 pub fn issued_from_wire(value: Option<wire::Revision>) -> Result<Revision, StreamError> {
     value
         .ok_or(StreamError::Unavailable)
-        .and_then(revision_from_wire)
+        .and_then(|revision| revision_from_wire(&revision))
         .map_err(|_| StreamError::Unavailable)
 }
 
@@ -141,7 +137,7 @@ pub fn cut_from_wire(value: Vec<wire::Revision>) -> Result<RevisionCut, StreamEr
     RevisionCut::new(
         value
             .into_iter()
-            .map(revision_from_wire)
+            .map(|revision| revision_from_wire(&revision))
             .collect::<Result<Vec<_>, _>>()?,
     )
 }

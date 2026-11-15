@@ -201,14 +201,14 @@ fn retire_namespace(initial: [Option<NamespaceRetirement>; 3], allocation: &mut 
         _allocation: allocation.take(),
     });
     let mut cursor = 0;
-    while cursor < work.len() {
-        let item = std::mem::replace(
-            &mut work[cursor],
-            NamespaceRetirement::Funding { _allocation: None },
-        );
-        work[cursor] = NamespaceRetirement::Funding {
-            _allocation: retire(item, &mut work),
-        };
+    while let Some(slot) = work.get_mut(cursor) {
+        let item = std::mem::replace(slot, NamespaceRetirement::Funding { _allocation: None });
+        let funded = retire(item, &mut work);
+        if let Some(slot) = work.get_mut(cursor) {
+            *slot = NamespaceRetirement::Funding {
+                _allocation: funded,
+            };
+        }
         cursor += 1;
     }
 }

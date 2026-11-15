@@ -14,7 +14,7 @@ pub trait NativeStreamProvider: StreamProvider {
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, ()> {
         NativeProviderFuture::ready_observed(
-            crate::native::span!("acyclic.stream.durability_barrier"),
+            &crate::native::span!("acyclic.stream.durability_barrier"),
             Ok(Err(StreamError::Unsupported)),
             StreamError::code,
         )
@@ -39,7 +39,7 @@ pub trait NativeStreamProvider: StreamProvider {
     ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
         let _ = key;
         NativeProviderFuture::ready_observed(
-            crate::native::span!("acyclic.stream.inspect_idempotency"),
+            &crate::native::span!("acyclic.stream.inspect_idempotency"),
             Ok(Err(StreamError::Unsupported)),
             StreamError::code,
         )
@@ -52,7 +52,7 @@ pub trait NativeStreamProvider: StreamProvider {
     ) -> NativeProviderFuture<'_, u64> {
         let _ = path;
         NativeProviderFuture::ready_observed(
-            crate::native::span!("acyclic.stream.tail"),
+            &crate::native::span!("acyclic.stream.tail"),
             Ok(Err(StreamError::Unsupported)),
             StreamError::code,
         )
@@ -74,7 +74,7 @@ pub trait NativeStreamProvider: StreamProvider {
     ) -> NativeProviderFuture<'_, Heads> {
         let _ = request;
         NativeProviderFuture::ready_observed(
-            crate::native::span!("acyclic.stream.heads"),
+            &crate::native::span!("acyclic.stream.heads"),
             Ok(Err(StreamError::Unsupported)),
             StreamError::code,
         )
@@ -87,7 +87,7 @@ pub trait NativeStreamProvider: StreamProvider {
     ) -> NativeProviderFuture<'_, NativeRecordStream> {
         let _ = request;
         NativeProviderFuture::ready_observed(
-            crate::native::span!("acyclic.stream.read"),
+            &crate::native::span!("acyclic.stream.read"),
             Ok(Err(StreamError::Unsupported)),
             StreamError::code,
         )
@@ -105,7 +105,7 @@ pub trait NativeStreamProvider: StreamProvider {
     ) -> NativeProviderFuture<'_, NativeRecordStream> {
         let _ = request;
         NativeProviderFuture::ready_observed(
-            crate::native::span!("acyclic.stream.follow"),
+            &crate::native::span!("acyclic.stream.follow"),
             Ok(Err(StreamError::Unsupported)),
             StreamError::code,
         )
@@ -126,7 +126,7 @@ pub trait NativeStreamProvider: StreamProvider {
         };
         let _ = request;
         NativeProviderFuture::ready_observed(
-            span,
+            &span,
             Ok(Err(StreamError::Unsupported)),
             StreamError::code,
         )
@@ -148,7 +148,7 @@ pub trait NativeStreamProvider: StreamProvider {
     ) -> NativeProviderFuture<'_, CommitOutcome, NativeCommitError> {
         let _ = (request, deadline_unix_millis, before);
         NativeProviderFuture::ready_observed(
-            crate::native::span!("acyclic.stream.commit"),
+            &crate::native::span!("acyclic.stream.commit"),
             Ok(Err(NativeCommitError::Stream(StreamError::Unsupported))),
             |_| "unsupported",
         )
@@ -162,7 +162,7 @@ pub trait NativeStreamProvider: StreamProvider {
     ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
         let _ = (request, capacity);
         NativeProviderFuture::ready_observed(
-            crate::native::span!("acyclic.stream.prepare_commit"),
+            &crate::native::span!("acyclic.stream.prepare_commit"),
             Ok(Err(StreamError::Unsupported)),
             StreamError::code,
         )

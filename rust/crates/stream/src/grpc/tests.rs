@@ -789,7 +789,7 @@ fn member_refusals() -> Vec<Status> {
         for (name, value) in metadata {
             status
                 .metadata_mut()
-                .append(*name, tonic::metadata::MetadataValue::from_static(*value));
+                .append(*name, tonic::metadata::MetadataValue::from_static(value));
         }
         status
     };
@@ -825,7 +825,10 @@ fn member_refusals() -> Vec<Status> {
     ]
 }
 
-pub(crate) fn original(status: &Status) -> (Code, String, Vec<u8>, Vec<(String, Vec<u8>)>) {
+/// A status code, message, details and binary metadata, compared by value.
+pub(crate) type Original = (Code, String, Vec<u8>, Vec<(String, Vec<u8>)>);
+
+pub(crate) fn original(status: &Status) -> Original {
     let metadata = status
         .metadata()
         .as_ref()
@@ -920,7 +923,7 @@ fn attributed_unavailability_survives_transport_round_trips() {
             self::original(&attributed)
         );
     }
-    let mut duplicated = encoded.clone();
+    let mut duplicated = encoded;
     let value = duplicated
         .metadata()
         .get_bin("acyclic-cause-v1-bin")
@@ -1135,16 +1138,15 @@ async fn server_read_custody_settles_only_at_original_body_eof() -> TestResult {
     loop {
         if let Observation::Started { id, .. } =
             query.next().await?.ok_or("missing retained read start")?
+            && id != parent
         {
-            if id != parent {
-                let active = query
-                    .active()
-                    .find_map(|(key, span)| (*key == id).then_some(span))
-                    .ok_or("read settled at headers")?;
-                assert_eq!(active.name, "stream.grpc.serve.read");
-                assert_eq!(active.parent, Some(parent));
-                break;
-            }
+            let active = query
+                .active()
+                .find_map(|(key, span)| (*key == id).then_some(span))
+                .ok_or("read settled at headers")?;
+            assert_eq!(active.name, "stream.grpc.serve.read");
+            assert_eq!(active.parent, Some(parent));
+            break;
         }
     }
     let before = trace.tail().await?;

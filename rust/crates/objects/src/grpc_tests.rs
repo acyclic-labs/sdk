@@ -592,12 +592,12 @@ fn member_refusals(code: wire::ErrorCode) -> Vec<tonic::Status> {
         }
         status
     };
-    let canonical = status(code.into());
+    let canonical = status(&Error::from(code));
     let cause = acyclic_auth::refusal::Cause {
         request_id: "member-request".into(),
         ..acyclic_auth::refusal::Cause::new("objects.medium", "failed")
     };
-    let caused = status(Error::caused(code, cause));
+    let caused = status(&Error::caused(code, cause));
     vec![
         caused.clone(),
         tonic::Status::with_details(
@@ -663,7 +663,7 @@ fn every_member_refusal_round_trips_its_original_status() -> TestResult {
     for value in 1..=15 {
         let code = wire::ErrorCode::try_from(value)?;
         let local = Error::from(code);
-        assert_eq!(error_from_status(&status(local.clone())), local);
+        assert_eq!(error_from_status(&status(&local)), local);
         for relayed in member_refusals(code) {
             let mut stamped = relayed.clone();
             stamped.metadata_mut().insert_bin(
@@ -682,8 +682,8 @@ fn every_member_refusal_round_trips_its_original_status() -> TestResult {
                 error.refusal.is_some(),
                 "{relayed:?} decoded blind as {error:?}"
             );
-            assert_eq!(original(&status(error.clone())), original(&relayed));
-            assert_eq!(error_from_status(&status(error.clone())), error);
+            assert_eq!(original(&status(&error)), original(&relayed));
+            assert_eq!(error_from_status(&status(&error)), error);
         }
     }
     Ok(())

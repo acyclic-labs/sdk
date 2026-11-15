@@ -75,14 +75,14 @@ impl<T> FrameDecoder<T> {
                 return Ok(None);
             };
             *input = rest;
-            if self.prefix_len == self.prefix.len() {
+            let Some(slot) = self.prefix.get_mut(self.prefix_len) else {
                 return Err(
                     StreamError::InvalidResponse.with_source(FramingFailure::Prefix {
                         bytes: self.prefix_len,
                     }),
                 );
-            }
-            self.prefix[self.prefix_len] = byte;
+            };
+            *slot = byte;
             self.prefix_len += 1;
             let length = if self.grpc {
                 if self.prefix[0] != 0 {
@@ -114,7 +114,8 @@ impl<T> FrameDecoder<T> {
                     }
                     continue;
                 }
-                let length = prost::decode_length_delimiter(&self.prefix[..self.prefix_len])
+                let written = self.prefix.get(..self.prefix_len).unwrap_or_default();
+                let length = prost::decode_length_delimiter(written)
                     .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
                 if prost::length_delimiter_len(length) != self.prefix_len {
                     return Err(StreamError::InvalidResponse.with_source(

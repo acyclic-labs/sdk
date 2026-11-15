@@ -133,10 +133,10 @@ impl StreamPath {
         suffix: &str,
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<Result<Self, StreamError>> {
-        if !suffix.starts_with('/') {
+        let Some(suffix) = suffix.strip_prefix('/') else {
             return Ok(Err(StreamError::InvalidPath));
-        }
-        Self::join_native(Some(self), &suffix[1..], meter)
+        };
+        Self::join_native(Some(self), suffix, meter)
     }
 
     /// Joins borrowed canonical input without an unadmitted formatted string.

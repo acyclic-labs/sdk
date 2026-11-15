@@ -138,7 +138,10 @@ async fn grpc_provider_frames_survive_transport_chunks_and_reject_lost_producers
         assert_failure(FrameDecoder::grpc().read(&mut &[flag][..]), error);
     }
     let mut excessive = vec![0];
-    excessive.extend_from_slice(&((acyclic_stream::MAX_COMMAND_BYTES + 1) as u32).to_be_bytes());
+    excessive.extend_from_slice(
+        &acyclic_stream::width::saturate::<u32, _>(acyclic_stream::MAX_COMMAND_BYTES + 1)
+            .to_be_bytes(),
+    );
     assert_failure(
         FrameDecoder::grpc().read(&mut excessive.as_slice()),
         StreamError::LimitExceeded,
@@ -147,13 +150,14 @@ async fn grpc_provider_frames_survive_transport_chunks_and_reject_lost_producers
 }
 
 fn assert_failure<T>(result: Result<T, StreamError>, category: StreamError) {
-    let error = match result {
-        Err(error) => error,
-        Ok(_) => panic!("invalid original session frame was accepted"),
-    };
-    assert_eq!(error.category(), category);
+    let error = result.err();
+    assert_eq!(
+        error.as_ref().map(StreamError::category),
+        Some(category),
+        "invalid original session frame was accepted"
+    );
     assert!(
-        std::error::Error::source(&error).is_some(),
+        error.as_ref().and_then(std::error::Error::source).is_some(),
         "session framing lost its original failure cause"
     );
 }

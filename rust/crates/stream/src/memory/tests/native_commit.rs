@@ -311,9 +311,8 @@ async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResu
                 denied.original(),
             ))
             .await;
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => panic!("native allocation refusal lost its original outer error"),
+        let Err(error) = result else {
+            panic!("native allocation refusal lost its original outer error");
         };
         assert_eq!(
             error

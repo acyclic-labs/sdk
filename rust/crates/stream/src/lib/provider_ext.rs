@@ -430,8 +430,8 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                 }
             }))
         };
-        async move {
-            #[cfg(feature = "serde")]
+        #[cfg(feature = "serde")]
+        let work = async move {
             if !crate::trace::is_source(&path) {
                 return crate::trace::observe_outcome(
                     crate::trace::Request {
@@ -449,7 +449,8 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
                 .await;
             }
             work.await
-        }
+        };
+        work
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_commit(
@@ -481,149 +482,130 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         }
     }
 
-    fn append(
-        &self,
-        request: AppendRequest,
-    ) -> impl std::future::Future<Output = Result<AppendOutcome, StreamError>> + ProviderTask {
-        async move {
-            #[cfg(feature = "serde")]
-            let diagnostic = crate::trace::is_source(&request.path);
-            let work = async move {
-                match self.write(WriteRequest::Append(request)).await? {
-                    WriteOutcome::Append(outcome) => Ok(outcome),
-                    _ => Err(StreamError::InvalidResponse),
-                }
-            };
-            #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe(
-                    crate::trace::Request {
-                        name: "stream.append",
-                        mechanism: crate::trace::Mechanism::Commit,
-                        parent: None,
-                        guarantee: Some("atomic_contiguous_append_decision"),
-                    },
-                    work,
-                    |_| None,
-                )
-                .await;
+    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        #[cfg(feature = "serde")]
+        let diagnostic = crate::trace::is_source(&request.path);
+        let work = async move {
+            match self.write(WriteRequest::Append(request)).await? {
+                WriteOutcome::Append(outcome) => Ok(outcome),
+                _ => Err(StreamError::InvalidResponse),
             }
-            work.await
+        };
+        #[cfg(feature = "serde")]
+        if !diagnostic {
+            return crate::trace::observe(
+                crate::trace::Request {
+                    name: "stream.append",
+                    mechanism: crate::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some("atomic_contiguous_append_decision"),
+                },
+                work,
+                |_| None,
+            )
+            .await;
         }
+        work.await
     }
 
-    fn fork(
-        &self,
-        request: ForkRequest,
-    ) -> impl std::future::Future<Output = Result<ForkReceipt, StreamError>> + ProviderTask {
-        async move {
-            #[cfg(feature = "serde")]
-            let diagnostic = crate::trace::source_matches(|source| {
-                source == &request.destination
-                    || source.inherited_by(&request.source, &request.exclude)
-            });
-            let work = async move {
-                match self.write(WriteRequest::Fork(request)).await? {
-                    WriteOutcome::Fork(outcome) => Ok(outcome),
-                    _ => Err(StreamError::InvalidResponse),
-                }
-            };
-            #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe(
-                    crate::trace::Request {
-                        name: "stream.fork",
-                        mechanism: crate::trace::Mechanism::Commit,
-                        parent: None,
-                        guarantee: Some("immutable_selected_prefix_and_origin"),
-                    },
-                    work,
-                    |_| None,
-                )
-                .await;
+    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+        #[cfg(feature = "serde")]
+        let diagnostic = crate::trace::source_matches(|source| {
+            source == &request.destination || source.inherited_by(&request.source, &request.exclude)
+        });
+        let work = async move {
+            match self.write(WriteRequest::Fork(request)).await? {
+                WriteOutcome::Fork(outcome) => Ok(outcome),
+                _ => Err(StreamError::InvalidResponse),
             }
-            work.await
+        };
+        #[cfg(feature = "serde")]
+        if !diagnostic {
+            return crate::trace::observe(
+                crate::trace::Request {
+                    name: "stream.fork",
+                    mechanism: crate::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some("immutable_selected_prefix_and_origin"),
+                },
+                work,
+                |_| None,
+            )
+            .await;
         }
+        work.await
     }
 
-    fn commit(
-        &self,
-        request: CommitRequest,
-    ) -> impl std::future::Future<Output = Result<CommitOutcome, StreamError>> + ProviderTask {
-        async move {
-            #[cfg(feature = "serde")]
-            let diagnostic = diagnostic_commit(&request);
-            let work = async move {
-                match self.write(WriteRequest::Commit(request)).await? {
-                    WriteOutcome::Commit(outcome) => Ok(outcome),
-                    _ => Err(StreamError::InvalidResponse),
-                }
-            };
-            #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe(
-                    crate::trace::Request {
-                        name: "stream.commit",
-                        mechanism: crate::trace::Mechanism::Commit,
-                        parent: None,
-                        guarantee: Some("atomic_keyed_multi_path_publication_decision"),
-                    },
-                    work,
-                    |_| None,
-                )
-                .await;
+    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+        #[cfg(feature = "serde")]
+        let diagnostic = diagnostic_commit(&request);
+        let work = async move {
+            match self.write(WriteRequest::Commit(request)).await? {
+                WriteOutcome::Commit(outcome) => Ok(outcome),
+                _ => Err(StreamError::InvalidResponse),
             }
-            work.await
+        };
+        #[cfg(feature = "serde")]
+        if !diagnostic {
+            return crate::trace::observe(
+                crate::trace::Request {
+                    name: "stream.commit",
+                    mechanism: crate::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some("atomic_keyed_multi_path_publication_decision"),
+                },
+                work,
+                |_| None,
+            )
+            .await;
         }
+        work.await
     }
 
-    fn durable_receipt(
+    async fn durable_receipt(
         &self,
         path: StreamPath,
         through: u64,
-    ) -> impl std::future::Future<Output = Result<Option<DurableReceipt>, StreamError>> + ProviderTask
-    {
-        async move {
-            #[cfg(feature = "serde")]
-            let diagnostic = crate::trace::is_source(&path);
-            let work = async move {
-                let request = HeadsRequest {
-                    at: None,
-                    retained: Default::default(),
-                    durable_through: Some(through),
-                    projection: HeadProjection::Watermarks,
-                    paths: [path.clone()].into(),
-                    children: None,
-                    limit: 1,
-                    at_least: Default::default(),
-                };
-                let mut view = self.heads(request.clone()).await?;
-                view.validate_for(&request)?;
-                let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
-                Ok(head
-                    .retained_through
-                    .map(|through| DurableReceipt { path, through }))
+    ) -> Result<Option<DurableReceipt>, StreamError> {
+        #[cfg(feature = "serde")]
+        let diagnostic = crate::trace::is_source(&path);
+        let work = async move {
+            let request = HeadsRequest {
+                at: None,
+                retained: Default::default(),
+                durable_through: Some(through),
+                projection: HeadProjection::Watermarks,
+                paths: [path.clone()].into(),
+                children: None,
+                limit: 1,
+                at_least: Default::default(),
             };
-            #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe_outcome(
-                    crate::trace::Request {
-                        name: "stream.durable_receipt",
-                        mechanism: crate::trace::Mechanism::ProviderCall,
-                        parent: None,
-                        guarantee: Some("original_irreversible_prefix_confirmation"),
-                    },
-                    work,
-                    |result| match result {
-                        Ok(Some(_)) => Some((None, crate::trace::Outcome::Succeeded)),
-                        Ok(None) => Some((None, crate::trace::Outcome::Unsettled)),
-                        Err(_) => None,
-                    },
-                )
-                .await;
-            }
-            work.await
+            let mut view = self.heads(request.clone()).await?;
+            view.validate_for(&request)?;
+            let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
+            Ok(head
+                .retained_through
+                .map(|through| DurableReceipt { path, through }))
+        };
+        #[cfg(feature = "serde")]
+        if !diagnostic {
+            return crate::trace::observe_outcome(
+                crate::trace::Request {
+                    name: "stream.durable_receipt",
+                    mechanism: crate::trace::Mechanism::ProviderCall,
+                    parent: None,
+                    guarantee: Some("original_irreversible_prefix_confirmation"),
+                },
+                work,
+                |result| match result {
+                    Ok(Some(_)) => Some((None, crate::trace::Outcome::Succeeded)),
+                    Ok(None) => Some((None, crate::trace::Outcome::Unsettled)),
+                    Err(_) => None,
+                },
+            )
+            .await;
         }
+        work.await
     }
 
     fn head(
@@ -633,65 +615,54 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         named_head(self, path, HeadProjection::History)
     }
 
-    fn tail(
-        &self,
-        path: StreamPath,
-    ) -> impl std::future::Future<Output = Result<u64, StreamError>> + ProviderTask {
-        async move { Ok(named_head(self, path, HeadProjection::Tail).await?.tail) }
+    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+        Ok(named_head(self, path, HeadProjection::Tail).await?.tail)
     }
 
-    fn watermarks(
-        &self,
-        path: StreamPath,
-    ) -> impl std::future::Future<Output = Result<StreamWatermarks, StreamError>> + ProviderTask
-    {
-        async move {
-            let head = named_head(self, path, HeadProjection::Watermarks).await?;
-            Ok(StreamWatermarks {
-                accepted: head.tail,
-                durable: head.durable,
-            })
-        }
+    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
+        let head = named_head(self, path, HeadProjection::Watermarks).await?;
+        Ok(StreamWatermarks {
+            accepted: head.tail,
+            durable: head.durable,
+        })
     }
 
-    fn children_page(
+    async fn children_page(
         &self,
         request: ChildrenPageRequest,
-    ) -> impl std::future::Future<Output = Result<ChildrenPage, StreamError>> + ProviderTask {
-        async move {
-            #[cfg(feature = "serde")]
-            let diagnostic = request.parent.as_ref().is_some_and(crate::trace::is_source);
-            let work = async move {
-                let selection = HeadsRequest {
-                    at: None,
-                    retained: Default::default(),
-                    durable_through: None,
-                    projection: HeadProjection::Watermarks,
-                    paths: Default::default(),
-                    limit: request.limit,
-                    children: Some(request),
-                    at_least: Default::default(),
-                };
-                let view = self.heads(selection.clone()).await?;
-                view.validate_for(&selection)?;
-                view.children.ok_or(StreamError::InvalidResponse)
+    ) -> Result<ChildrenPage, StreamError> {
+        #[cfg(feature = "serde")]
+        let diagnostic = request.parent.as_ref().is_some_and(crate::trace::is_source);
+        let work = async move {
+            let selection = HeadsRequest {
+                at: None,
+                retained: Default::default(),
+                durable_through: None,
+                projection: HeadProjection::Watermarks,
+                paths: Default::default(),
+                limit: request.limit,
+                children: Some(request),
+                at_least: Default::default(),
             };
-            #[cfg(feature = "serde")]
-            if !diagnostic {
-                return crate::trace::observe(
-                    crate::trace::Request {
-                        name: "stream.children_page",
-                        mechanism: crate::trace::Mechanism::ProviderCall,
-                        parent: None,
-                        guarantee: Some("bounded_direct_children_at_namespace_cut"),
-                    },
-                    work,
-                    |_| None,
-                )
-                .await;
-            }
-            work.await
+            let view = self.heads(selection.clone()).await?;
+            view.validate_for(&selection)?;
+            view.children.ok_or(StreamError::InvalidResponse)
+        };
+        #[cfg(feature = "serde")]
+        if !diagnostic {
+            return crate::trace::observe(
+                crate::trace::Request {
+                    name: "stream.children_page",
+                    mechanism: crate::trace::Mechanism::ProviderCall,
+                    parent: None,
+                    guarantee: Some("bounded_direct_children_at_namespace_cut"),
+                },
+                work,
+                |_| None,
+            )
+            .await;
         }
+        work.await
     }
 
     fn latest(
@@ -729,22 +700,18 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
             }
             Ok(view.snapshot)
         };
-        async move {
-            #[cfg(feature = "serde")]
-            return crate::trace::observe(
-                crate::trace::Request {
-                    name: "stream.wait_applied",
-                    mechanism: crate::trace::Mechanism::Wait,
-                    parent: None,
-                    guarantee: Some("original_revision_cut_visible_before_return"),
-                },
-                work,
-                |_| None,
-            )
-            .await;
-            #[cfg(not(feature = "serde"))]
-            work.await
-        }
+        #[cfg(feature = "serde")]
+        let work = crate::trace::observe(
+            crate::trace::Request {
+                name: "stream.wait_applied",
+                mechanism: crate::trace::Mechanism::Wait,
+                parent: None,
+                guarantee: Some("original_revision_cut_visible_before_return"),
+            },
+            work,
+            |_| None,
+        );
+        work
     }
 }
 

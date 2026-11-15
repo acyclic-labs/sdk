@@ -248,7 +248,7 @@ impl StreamError {
     pub(crate) fn from_grpc_status(code: i32, message: &str) -> Self {
         match (code, message) {
             (15, _) => Self::InvalidResponse,
-            (4, _) => Self::DeadlineElapsed,
+            (4, _) | (9, "deadline_elapsed") => Self::DeadlineElapsed,
             (3, "invalid_path") => Self::InvalidPath,
             (3, "limit_exceeded") => Self::LimitExceeded,
             (3, _) => Self::InvalidArgument,
@@ -260,7 +260,6 @@ impl StreamError {
             (9, "hierarchy_changed") => Self::HierarchyChanged,
             (9, "idempotency_mismatch") => Self::IdempotencyMismatch,
             (9, "prefix_not_retained") => Self::PrefixNotRetained,
-            (9, "deadline_elapsed") => Self::DeadlineElapsed,
             (9, "revision_foreign") => Self::RevisionForeign,
             (12, _) => Self::Unsupported,
             _ => Self::Unavailable,

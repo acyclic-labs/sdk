@@ -242,8 +242,11 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
             })).collect();
             let mut value = json!({ "retained": retained, "durableThrough": request.durable_through.map(|through| through.to_string()), "paths": request.paths.iter().map(ToString::to_string).collect::<Vec<_>>(), "children": children, "limit": request.limit, "projection": match request.projection { crate::HeadProjection::History => "history", crate::HeadProjection::Watermarks => "watermarks", crate::HeadProjection::Tail => "tail" } });
             if let Some(at) = &request.at {
-                value["at"] =
-                    crate::http_response::revision_json(Some(&wire_codec::revision_to_wire(at)));
+                crate::http_response::insert(
+                    &mut value,
+                    "at",
+                    crate::http_response::revision_json(Some(&wire_codec::revision_to_wire(at))),
+                );
             }
             Ok(with_at_least(value, &wire.at_least))
         }
@@ -283,9 +286,9 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                     },
                 });
                 if let Some(end) = key.end {
-                    selector["end"] = json!(STANDARD.encode(end));
+                    crate::http_response::insert(&mut selector, "end", json!(STANDARD.encode(end)));
                 }
-                value["key"] = selector;
+                crate::http_response::insert(&mut value, "key", selector);
             }
             Ok(with_at_least(value, &at_least))
         }
@@ -335,6 +338,18 @@ pub(crate) fn encode(route: &str, input: &[u8]) -> Result<String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn encode_append(request: &crate::AppendRequest) -> Result<String> {
     serde_json::to_string(&append_json(request)?).map_err(|_| "could not encode request")
+}
+
+/// Adds the minimum cut, one entry per authority; the host serves at or above it.
+fn with_at_least(mut value: Value, at_least: &[wire::Revision]) -> Value {
+    if !at_least.is_empty() {
+        let cut = at_least
+            .iter()
+            .map(|revision| crate::http_response::revision_json(Some(revision)))
+            .collect();
+        crate::http_response::insert(&mut value, "atLeast", cut);
+    }
+    value
 }
 
 #[cfg(test)]
@@ -417,15 +432,4 @@ mod tests {
         assert!(projected.pointer("/options/deadlineUnixMillis").is_none());
         Ok(())
     }
-}
-
-/// Adds the minimum cut, one entry per authority; the host serves at or above it.
-fn with_at_least(mut value: Value, at_least: &[wire::Revision]) -> Value {
-    if !at_least.is_empty() {
-        value["atLeast"] = at_least
-            .iter()
-            .map(|revision| crate::http_response::revision_json(Some(revision)))
-            .collect();
-    }
-    value
 }

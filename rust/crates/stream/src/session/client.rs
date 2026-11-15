@@ -248,11 +248,14 @@ enum Command {
     },
     Input {
         id: u64,
-        frame: wire::SessionFrame,
+        frame: Box<wire::SessionFrame>,
         credit: Option<input::Credit>,
         sent: oneshot::Sender<Result<(), StreamError>>,
     },
 }
+/// The opened channel id and its session receipt, or the original refusal.
+type Opened = Result<(u64, Option<wire::SessionOpened>), StreamError>;
+
 struct OpenCommand {
     id: u64,
     revisions: Arc<crate::RevisionTracker>,
@@ -264,7 +267,7 @@ struct OpenCommand {
     raw: bool,
     progress: Arc<Progress>,
     records: mpsc::Sender<Result<Delivery, StreamError>>,
-    ready: oneshot::Sender<Result<(u64, Option<wire::SessionOpened>), StreamError>>,
+    ready: oneshot::Sender<Opened>,
     observation: super::runtime::OperationSpan,
     input: Option<input::Owner>,
 }
@@ -289,7 +292,7 @@ struct Route {
     credit: wire::SessionWindow,
     progress: Arc<Progress>,
     records: mpsc::Sender<Result<Delivery, StreamError>>,
-    ready: Option<oneshot::Sender<Result<(u64, Option<wire::SessionOpened>), StreamError>>>,
+    ready: Option<oneshot::Sender<Opened>>,
     observation: super::runtime::OperationSpan,
     input: Option<input::Owner>,
 }
@@ -437,7 +440,7 @@ impl Client {
             credentials: BTreeMap::new(),
             credential_bytes: 0,
             connections: connections.clone(),
-            executor: executor.clone(),
+            executor,
             identity: crate::new_identity_bytes(),
             connect,
             home: String::new(),
@@ -458,7 +461,8 @@ impl Client {
             released: Arc::clone(&release_sender),
             release_sender,
         };
-        executor.spawn(Box::pin(async move {
+        let spawner = std::sync::Arc::clone(&pool.executor);
+        spawner.spawn(Box::pin(async move {
             let result = {
                 let running = pool.run();
                 let running = core::pin::pin!(running);
@@ -622,7 +626,7 @@ impl Client {
         let (from, progress, path) = (request.from, request.progress, request.path.clone());
         let mut source = self
             .open_subscription(
-                follow_kind(request),
+                follow_kind(&request),
                 cursor(from),
                 acknowledge,
                 progress,
@@ -944,34 +948,33 @@ impl Cursor {
     /// Every blocked delivery of every session call and follow is a reported
     /// wait. A queued delivery is no wait and registers none.
     async fn next(&mut self) -> Option<Result<Delivery, StreamError>> {
-        match self.receiver.try_recv() {
-            Ok(received) => Some(received),
-            Err(_) => {
-                let work = self.receiver.recv();
-                #[cfg(feature = "serde")]
-                {
-                    let progress = &self.progress;
-                    crate::trace::observe_value(
-                        crate::trace::Request {
-                            name: "stream.session_delivery_wait",
-                            mechanism: crate::trace::Mechanism::Wait,
-                            parent: None,
-                            guarantee: Some("queued_delivery_or_confirmed_session_end"),
-                        },
-                        work,
-                        |result| match result {
-                            Some(Ok(_)) => Some((Some(0), crate::trace::Outcome::Succeeded)),
-                            None if progress.ended() => {
-                                Some((Some(0), crate::trace::Outcome::Succeeded))
-                            }
-                            _ => None,
-                        },
-                    )
-                    .await
-                }
-                #[cfg(not(feature = "serde"))]
-                work.await
+        if let Ok(received) = self.receiver.try_recv() {
+            Some(received)
+        } else {
+            let work = self.receiver.recv();
+            #[cfg(feature = "serde")]
+            {
+                let progress = &self.progress;
+                crate::trace::observe_value(
+                    crate::trace::Request {
+                        name: "stream.session_delivery_wait",
+                        mechanism: crate::trace::Mechanism::Wait,
+                        parent: None,
+                        guarantee: Some("queued_delivery_or_confirmed_session_end"),
+                    },
+                    work,
+                    |result| match result {
+                        Some(Ok(_)) => Some((Some(0), crate::trace::Outcome::Succeeded)),
+                        None if progress.ended() => {
+                            Some((Some(0), crate::trace::Outcome::Succeeded))
+                        }
+                        _ => None,
+                    },
+                )
+                .await
             }
+            #[cfg(not(feature = "serde"))]
+            work.await
         }
     }
     async fn receive(&mut self) -> Result<Option<Delivery>, StreamError> {
@@ -1116,7 +1119,7 @@ impl Projected for crate::Record {
     }
 }
 
-fn follow_kind(request: crate::FollowRequest) -> Kind {
+fn follow_kind(request: &crate::FollowRequest) -> Kind {
     Kind::Follow(wire::SessionFollow {
         opening_cut: request.progress && request.until.is_none(),
         key: None,
@@ -1127,6 +1130,7 @@ fn follow_kind(request: crate::FollowRequest) -> Kind {
         delivery: wire::SessionDelivery::All as i32,
         preceding_commit_id: request
             .preceding
+            .as_ref()
             .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
         until: request.until,
         at_least: crate::wire_codec::cut_to_wire(&request.at_least),

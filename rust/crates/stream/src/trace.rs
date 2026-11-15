@@ -221,12 +221,10 @@ mod tests {
     #[test]
     fn observation_adds_a_constant_size_however_deeply_it_nests() {
         const LAYER_BYTES: usize = 512;
-        fn work() -> impl std::future::Future<Output = Result<u8, ()>> {
-            async {
-                let held = std::hint::black_box([7u8; 4096]);
-                std::future::ready(()).await;
-                Ok(held[4095])
-            }
+        async fn work() -> Result<u8, ()> {
+            let held = std::hint::black_box([7u8; 4096]);
+            std::future::ready(()).await;
+            Ok(held[4095])
         }
         let request = |name| Request {
             name,

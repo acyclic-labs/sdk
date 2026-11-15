@@ -100,7 +100,8 @@ impl State {
         let mut observe = |items| {
             probe(items)?;
             #[cfg(test)]
-            COMMIT_VISITS.with(|count| count.set(count.get() + items as usize));
+            COMMIT_VISITS
+                .with(|count| count.set(count.get() + crate::width::saturate::<usize, _>(items)));
             Ok(())
         };
         let (selected, _) = radix::select(self.commit_cursor(), id.as_bytes(), None, &mut observe)?;

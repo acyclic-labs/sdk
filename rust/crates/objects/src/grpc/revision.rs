@@ -170,10 +170,10 @@ pub fn check_revision_metadata(bytes: &[u8]) -> bool {
     // Mutate the original writer's HTTP value before binary metadata decoding.
     // from_bytes alone always writes valid base64 and cannot reach this branch.
     let mut invalid = request.metadata().clone().into_headers();
-    let Some(written) = invalid.get(MINIMUM_REVISION) else {
+    let Some(floor_value) = invalid.get(MINIMUM_REVISION) else {
         return false;
     };
-    let mut encoded = written.as_bytes().to_vec();
+    let mut encoded = floor_value.as_bytes().to_vec();
     encoded.push(b'!');
     let Ok(encoded) = http::HeaderValue::from_bytes(&encoded) else {
         return false;

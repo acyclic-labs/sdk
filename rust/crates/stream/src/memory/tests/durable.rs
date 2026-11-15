@@ -73,7 +73,7 @@ async fn refusals_and_retries_never_enter_the_durable_boundary() -> Result<(), S
         deadline_unix_millis: None,
         effects: vec![crate::CommitEffect::hard(
             vec![CommitCondition::Tail {
-                path: request(0)?.path.clone(),
+                path: request(0)?.path,
                 expected: 0,
             }],
             vec![CommitMutation::Append {
@@ -245,7 +245,7 @@ async fn durability_completion_cannot_change_the_stamp_or_refuse_an_accepted_dea
         deadline_unix_millis: Some(10),
         effects: vec![crate::CommitEffect::hard(
             vec![CommitCondition::Tail {
-                path: request(0)?.path.clone(),
+                path: request(0)?.path,
                 expected: 1,
             }],
             vec![CommitMutation::Append {
@@ -437,7 +437,10 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
                     .await?;
                 for record in fact_records(fact) {
                     assert_eq!(record.committed_at_micros, at_millis * 1000);
-                    assert_eq!(records[record.sequence as usize], *record);
+                    assert_eq!(
+                        records[crate::width::saturate::<usize, _>(record.sequence)],
+                        *record
+                    );
                 }
             }
         }

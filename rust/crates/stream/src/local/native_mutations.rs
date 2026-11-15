@@ -26,7 +26,7 @@ impl LocalStream {
         let stream = self.clone();
         let span = crate::native::span!("acyclic.stream.commit");
         let worker_context = span.clone();
-        crate::native::Work::start(meter, span, |work, completion| async move {
+        crate::native::Work::start(meter, &span, |work, completion| async move {
             let mut stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream
@@ -196,7 +196,7 @@ impl LocalStream {
         let stream = self.clone();
         let span = crate::native::span!("acyclic.stream.append");
         let worker_context = span.clone();
-        crate::native::Work::start(meter, span, |work, completion| async move {
+        crate::native::Work::start(meter, &span, |work, completion| async move {
             let stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream

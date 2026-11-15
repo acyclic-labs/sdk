@@ -19,25 +19,23 @@ const fn selected(method: StreamMethod, wanted: StreamsAction) -> Action {
 }
 
 const fn declares(method: StreamMethod, wanted: StreamsAction) -> bool {
-    let row = method.authorization();
-    let mut rule = 0;
-    while rule < row.rules.len() {
-        let actions = match row.rules[rule].resources {
-            Resources::Template(_) => row.rules[rule].admitted,
+    let mut rules = method.authorization().rules;
+    while let [rule, rest @ ..] = rules {
+        let mut actions = match rule.resources {
+            Resources::Template(_) => rule.admitted,
             Resources::Extractor {
                 possible_actions, ..
             } => possible_actions,
         };
-        let mut index = 0;
-        while index < actions.len() {
-            if let Action::Streams(action) = actions[index]
+        while let [action, rest @ ..] = actions {
+            if let Action::Streams(action) = *action
                 && action as u8 == wanted as u8
             {
                 return true;
             }
-            index += 1;
+            actions = rest;
         }
-        rule += 1;
+        rules = rest;
     }
     false
 }

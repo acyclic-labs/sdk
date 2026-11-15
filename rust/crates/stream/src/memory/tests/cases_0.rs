@@ -163,11 +163,7 @@ async fn paginates_more_children_than_one_wire_page_without_gaps() -> Result<(),
         }
     }
     assert_eq!(found.len(), 2_049);
-    assert!(
-        found
-            .windows(2)
-            .all(|pair| matches!(pair, [left, right] if left < right))
-    );
+    assert!(found.array_windows::<2>().all(|[left, right]| left < right));
     Ok(())
 }
 

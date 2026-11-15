@@ -51,16 +51,19 @@ impl CommitReceipt {
             || request.mutations().count() > MAX_ITEMS
             || request.conditions().count() > MAX_ITEMS
             || request.effects.iter().any(|effect| {
-                effect.conditions.windows(2).any(|pair| {
-                    crate::CommitCondition::path(&pair[0]) >= crate::CommitCondition::path(&pair[1])
-                }) || effect.mutations.windows(2).any(|pair| {
-                    crate::CommitMutation::path(&pair[0]) >= crate::CommitMutation::path(&pair[1])
+                effect.conditions.array_windows::<2>().any(|[left, right]| {
+                    crate::CommitCondition::path(left) >= crate::CommitCondition::path(right)
+                }) || effect.mutations.array_windows::<2>().any(|[left, right]| {
+                    crate::CommitMutation::path(left) >= crate::CommitMutation::path(right)
                 })
             })
         {
             return Err(StreamError::InvalidArgument);
         }
-        if self.skipped.windows(2).any(|pair| pair[0] >= pair[1])
+        if self
+            .skipped
+            .array_windows::<2>()
+            .any(|[left, right]| left >= right)
             || self.skipped.iter().any(|index| {
                 usize::try_from(*index)
                     .ok()
@@ -251,15 +254,18 @@ impl CommitReceipt {
         if (count == 0 && self.skipped.is_empty())
             || count > MAX_ITEMS
             || self.skipped.len() > MAX_ITEMS
-            || self.skipped.windows(2).any(|pair| pair[0] >= pair[1])
+            || self
+                .skipped
+                .array_windows::<2>()
+                .any(|[left, right]| left >= right)
             || self
                 .appends
-                .windows(2)
-                .any(|pair| pair[0].path >= pair[1].path)
+                .array_windows::<2>()
+                .any(|[left, right]| left.path >= right.path)
             || self
                 .forks
-                .windows(2)
-                .any(|pair| pair[0].destination >= pair[1].destination)
+                .array_windows::<2>()
+                .any(|[left, right]| left.destination >= right.destination)
             || self.appends.iter().any(|a| {
                 a.start >= a.tail
                     || a.tail - a.start > MAX_ITEMS as u64

@@ -534,7 +534,11 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
             assert_eq!(linear_visits(&provider, &selected, 3).await, depth + 1);
         }
     }
-    assert!(costs.windows(2).all(|pair| pair[0] == pair[1]));
+    assert!(
+        costs
+            .array_windows::<2>()
+            .all(|[left, right]| left == right)
+    );
     let captured = provider
         .state
         .read()
