@@ -374,7 +374,8 @@ function specs() {
   const wanted = new Map();
   for (const run of runs) {
     for (const node of run.resolve.nodes) {
-      if (members.has(node.id) || node.features.length === 0) continue;
+      // Only registry crates can be pinned by a spec; path and patch sources come from the lockfile as they are.
+      if (members.has(node.id) || node.features.length === 0 || !packages.get(node.id).source?.startsWith("registry+")) continue;
       if (!wanted.has(node.id)) wanted.set(node.id, new Set());
       for (const feature of node.features) wanted.get(node.id).add(feature);
     }
