@@ -9,7 +9,7 @@ from pathlib import Path
 
 from harbor.agents.capabilities import AgentCapabilities
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
-from .contracts import Artifact, catalog, doctor_command, run_command
+from .contracts import Artifact, arm_arguments, catalog, doctor_command, run_command
 
 
 class GraphCoder(BaseInstalledAgent):
@@ -20,6 +20,8 @@ class GraphCoder(BaseInstalledAgent):
     e.g. model_name="deepseek/worker", base_url="http://127.0.0.1:9/deepseek/v1",
     adapter="chat", context_tokens=100, output_tokens=10. Task role files can
     select these provider-qualified names from the one uploaded catalog.
+    feature_arm selects one side of a feature on/off pair: admitted flags plus
+    non-secret home files, applied identically to doctor and execution.
     """
 
     capabilities = AgentCapabilities(skills=True)
@@ -31,7 +33,8 @@ class GraphCoder(BaseInstalledAgent):
     def __init__(self, *args, graphcoder_binary: str, graphcoder_sha256: str,
                  source_sha: str, base_url: str, context_tokens: int,
                  output_tokens: int, adapter: str | None = None,
-                 providers: list[dict] | None = None, **kwargs):
+                 providers: list[dict] | None = None,
+                 feature_arm: dict | None = None, **kwargs):
         self.artifact = Artifact.read(graphcoder_binary, graphcoder_sha256, source_sha)
         self.artifact_path = graphcoder_binary
         if kwargs.get("version") not in (None, source_sha):
@@ -49,6 +52,8 @@ class GraphCoder(BaseInstalledAgent):
                               for entry in self.provider_catalog.values())
         self.state = "/installed-agent/graphcoder-" + uuid.uuid4().hex
         self.binary = self.state + "/graphcoder"
+        self.arm_arguments, self.arm_files = arm_arguments(
+            feature_arm or {"flags": [], "home_files": {}}, self.state)
         self._installed_environment = None
 
     async def setup(self, environment):
@@ -66,7 +71,8 @@ class GraphCoder(BaseInstalledAgent):
                 "mkdir -p .agents/skills && cp -R -- "
                 + shlex.quote(self.skills_dir.rstrip("/") + "/.") + " .agents/skills/"))
         await self.exec_as_root(environment, command="mkdir -p " + shlex.join([
-            self.state + "/home", self.state + "/fixture-codex", self.state + "/tmp"]))
+            self.state + "/home", self.state + "/fixture-codex", self.state + "/tmp",
+            self.state + "/home-files"]))
         with tempfile.TemporaryDirectory(prefix="graphcoder-artifact-") as temporary:
             root = Path(temporary)
             binary = root / "graphcoder"
@@ -75,6 +81,10 @@ class GraphCoder(BaseInstalledAgent):
             provider.write_text(json.dumps(self.provider_catalog) + "\n")
             await environment.upload_file(binary, self.binary)
             await environment.upload_file(provider, self.state + "/catalog.json")
+            for index, (target, text) in enumerate(self.arm_files.items()):
+                source = root / f"home-file-{index}"
+                source.write_text(text)
+                await environment.upload_file(source, target)
         await self.exec_as_root(environment, command=self.artifact.install_command(self.binary))
         if environment.default_user is not None:
             await self.exec_as_root(environment, command="chown -R " + shlex.join([
@@ -89,7 +99,8 @@ class GraphCoder(BaseInstalledAgent):
                              f"received {version.stdout!r}")
         # GraphCoder's own startup checks list every missing prerequisite at once.
         await self.exec_as_agent(environment, command=doctor_command(
-            self.binary, self.state, self.model_name, compaction=self.compaction))
+            self.binary, self.state, self.model_name, compaction=self.compaction,
+            arguments=tuple(self.arm_arguments)))
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         (self.logs_dir / "artifact.json").write_text(json.dumps({
             "source_sha": self.artifact.source_sha, "sha256": self.artifact.sha256,
@@ -104,4 +115,4 @@ class GraphCoder(BaseInstalledAgent):
             raise RuntimeError("GraphCoder artifact was not installed and verified")
         await self.exec_as_agent(environment, command=run_command(
             self.binary, self.state, str(self.environment_logs_dir), self.model_name, instruction,
-            compaction=self.compaction))
+            compaction=self.compaction, arguments=tuple(self.arm_arguments)))

@@ -64,6 +64,23 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
                 await agent.run("hello", environment, None)
                 self.assertEqual("--no-compaction" in environment.commands[-1], counterless)
 
+    async def test_feature_arm_reaches_install_doctor_and_execution(self):
+        agent = GraphCoder(**self.kwargs, feature_arm={
+            "flags": ["--no-compaction"], "home_files": {"policy/attention.md": "rank"}})
+        environment = Environment()
+        await agent.setup(environment)
+        self.assertEqual(environment.uploads[agent.state + "/home-files/0"], b"rank")
+        doctor = environment.commands[-1]
+        await agent.run("hello", environment, None)
+        for command in (doctor, environment.commands[-1]):
+            arguments = shlex.split(command)
+            self.assertEqual(arguments.count("--no-compaction"), 1)
+            self.assertEqual(arguments[arguments.index("--home-file") + 1],
+                             "policy/attention.md=" + agent.state + "/home-files/0")
+        self.assertIn("--usage-jsonl", shlex.split(environment.commands[-1]))
+        with self.assertRaises(ValueError):
+            GraphCoder(**self.kwargs, feature_arm={"flags": ["--credentials"], "home_files": {}})
+
     async def test_mixed_providers_reach_install_doctor_and_execution(self):
         workers = [dict(model_name="deepseek/fixture", adapter="chat",
                         base_url="http://127.0.0.1:9999/deepseek/v1",

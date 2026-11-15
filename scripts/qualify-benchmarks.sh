@@ -3,5 +3,5 @@
 set -euo pipefail
 python="${1:-python3}"
 export PYTHONDONTWRITEBYTECODE=1
-"$python" -m unittest scripts.benchmarks.test_contracts scripts.benchmarks.test_harbor -v
+"$python" -m unittest scripts.benchmarks.test_contracts scripts.benchmarks.test_feature_eval scripts.benchmarks.test_harbor -v
 "$python" -m scripts.benchmarks.negative_controls

@@ -62,6 +62,22 @@ CONTROLS = [
      "if self._installed_environment is not environment:",
      "if self._installed_environment is None:",
      "test_harbor.HarborContracts.test_install_run_and_failed_reinstall_fence_execution"),
+    ("feature arms differ outside the arm", "feature_eval.py",
+     "if strip(on) != strip(off) or len(on[\"agents\"]) != 1:",
+     "if len(on[\"agents\"]) != 1:",
+     "test_feature_eval.FeatureEval.test_scorer_refuses_arms_that_are_not_one_pair"),
+    ("unpaired trials scored", "feature_eval.py",
+     "if sorted(observed) != sorted(plan[\"task_names\"]):", "if False:",
+     "test_feature_eval.FeatureEval.test_scorer_refuses_arms_that_are_not_one_pair"),
+    ("unknown tokens counted as zero", "feature_eval.py",
+     "if row[\"version\"] != 3 or not usage[\"completed\"]:", "if row[\"version\"] != 3:",
+     "test_feature_eval.FeatureEval.test_mock_tier_runs_plan_commands_and_scores_paired_arms"),
+    ("off-turn cost justified", "feature_eval.py",
+     "if placement == \"in-turn\" and successes > 0:", "if successes > 0:",
+     "test_feature_eval.FeatureEval.test_decision_rule_keeps_only_net_gains"),
+    ("arm admits adapter-owned flags", "contracts.py",
+     "or not set(flags) <= ARM_FLAGS):", "):",
+     "test_feature_eval.FeatureEval.test_arms_admit_only_feature_flags_and_canonical_home_files"),
     ("failed outer setup retains authority", "graphcoder_harbor.py",
      "async def setup(self, environment):\n        self._installed_environment = None",
      "async def setup(self, environment):",
@@ -75,7 +91,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix="predictor-negative-") as temporary:
             package = Path(temporary) / "scripts" / "benchmarks"
             package.mkdir(parents=True)
-            for file in source.glob("*.py"):
+            for file in [*source.glob("*.py"), *source.glob("*.json")]:
                 shutil.copyfile(file, package / file.name)
             counters = Path("rust/crates/harness-providers/src/token_counters.json")
             destination = Path(temporary) / counters

@@ -125,3 +125,46 @@ doctor and execution. This selects the harness's existing disabled-compaction
 policy: ordinary turns have no input-count preflight, and the provider enforces
 its context window. Use a GraphCoder artifact built with this flag.
 The offline Rust catalog test covers all four adapters and malformed negatives.
+
+## Feature on/off evaluation
+
+`features.json` lists each optional feature, its placement (`in-turn`, or
+`off-turn` for separate calls such as context management) and its two arms.
+An arm is admitted flags (`ARM_FLAGS` in `contracts.py`) plus non-secret home
+files. `plan features` pairs GraphCoder with itself: the same tasks, artifact,
+model, endpoint and budgets, with the arm as the only difference. A pair whose
+effective arms are identical under the selected catalog is refused. Every run
+exports committed per-call usage to `agent/usage.jsonl`, so both arms carry
+their own token counts, including after a failure.
+
+```sh
+python3 -m scripts.benchmarks.plan features \
+  --stage tb2-20 --manifest /path/to/tb2-manifest.json \
+  --features scripts/benchmarks/features.json \
+  --binary /path/to/graphcoder --binary-sha256 FULL_BINARY_SHA256 \
+  --source-sha FULL_QUALIFIED_MAIN_COMMIT \
+  --model provider/CHEAP_MODEL --base-url http://EXPLICIT_ENDPOINT/v1 \
+  --context-tokens MODEL_CONTEXT_CAPACITY --output-tokens MODEL_OUTPUT_CAPACITY \
+  > /path/to/features-plan.json
+python3 -m scripts.benchmarks.feature_eval jobs --plan /path/to/features-plan.json --out /path/to/configs
+for config in /path/to/configs/*.json; do harbor run -c "$config" -o /path/to/jobs; done
+python3 -m scripts.benchmarks.feature_eval score --plan /path/to/features-plan.json --jobs-dir /path/to/jobs
+```
+
+The scorer refuses arms that differ outside their feature arm, and trial sets
+that are not exactly the plan's tasks. A trial that raised, or whose verifier
+reward is not 1, is a failure and stays in the denominator. Token totals are
+input plus output over completed calls. Cached input is reported but never
+decides. An unfinished call or a missing count makes the verdict INCOMPLETE,
+never zero. The decision rule, computed from on-minus-off deltas:
+
+- **ON** when successes do not drop and tokens do not rise.
+- **JUSTIFY** when an in-turn feature buys strictly more successes with more
+  tokens. A written justification is then required to keep it.
+- **OFF** otherwise. An off-turn call is never kept on a justification: without
+  a net gain it stays off.
+
+`test_feature_eval.py` is the mock tier. It plans the registry, runs every arm's
+real command line against a scripted stand-in agent, lays the results out as
+Harbor trial directories, and scores them. No model, Harbor, Docker, network or
+credential is involved.

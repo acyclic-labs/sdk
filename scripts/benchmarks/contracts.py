@@ -116,7 +116,42 @@ def _provider(model_name: str, base_url: str, context_tokens: int, output_tokens
     }
 
 
-def _invocation(binary: str, state: str, model: str, compaction: bool) -> list[str]:
+# Flags a feature arm may add. Everything else (catalog, model, settings,
+# credentials, outputs) belongs to the adapter and is identical in both arms.
+ARM_FLAGS = frozenset({"--no-compaction"})
+
+
+def arm(definition: dict) -> dict:
+    """One canonical feature arm: admitted flags and non-secret home files."""
+    if set(definition) != {"flags", "home_files"}:
+        raise ValueError("a feature arm is exactly flags and home_files")
+    flags, files = definition["flags"], definition["home_files"]
+    if (not isinstance(flags, list) or len(set(flags)) != len(flags)
+            or not set(flags) <= ARM_FLAGS):
+        raise ValueError("feature arm flags must be distinct members of ARM_FLAGS")
+    if not isinstance(files, dict) or not all(isinstance(text, str) for text in files.values()):
+        raise ValueError("feature arm home files map volume paths to text")
+    for path in files:
+        part = PurePosixPath(path)
+        if (not path or part.is_absolute() or ".." in part.parts or str(part) != path
+                or re.fullmatch(r"[A-Za-z0-9_./-]+", path) is None):
+            raise ValueError("home file paths must be canonical volume-relative paths")
+    return {"flags": sorted(flags), "home_files": dict(sorted(files.items()))}
+
+
+def arm_arguments(definition: dict, state: str) -> tuple[list[str], dict[str, str]]:
+    """The arm's GraphCoder arguments and the files they read, under `state`."""
+    selected = arm(definition)
+    uploads = {str(PurePosixPath(state) / "home-files" / str(index)): text
+               for index, text in enumerate(selected["home_files"].values())}
+    arguments = list(selected["flags"])
+    for path, upload in zip(selected["home_files"], uploads):
+        arguments += ["--home-file", path + "=" + upload]
+    return arguments, uploads
+
+
+def _invocation(binary: str, state: str, model: str, compaction: bool,
+                arguments: list[str]) -> list[str]:
     """The one environment and flag set both the readiness check and the run use."""
     home = str(PurePosixPath(state) / "home")
     return [
@@ -129,18 +164,25 @@ def _invocation(binary: str, state: str, model: str, compaction: bool) -> list[s
         "TMPDIR=" + str(PurePosixPath(state) / "tmp"),
         binary, "--catalog", str(PurePosixPath(state) / "catalog.json"),
         "--settings-root", home, "--model", model,
-    ] + ([] if compaction else ["--no-compaction"])
+    ] + list(dict.fromkeys(([] if compaction else ["--no-compaction"]) + arguments))
 
 
-def doctor_command(binary: str, state: str, model: str, *, compaction: bool = True) -> str:
+def doctor_command(binary: str, state: str, model: str, *, compaction: bool = True,
+                   arguments: tuple[str, ...] = ()) -> str:
     """GraphCoder's own startup checks for the run's exact flags: every refusal at once."""
-    return 'env -i PATH="$PATH" ' + shlex.join(_invocation(binary, state, model, compaction) + ["doctor"])
+    return 'env -i PATH="$PATH" ' + shlex.join(
+        _invocation(binary, state, model, compaction, list(arguments)) + ["doctor"])
 
 
 def run_command(binary: str, state: str, logs: str, model: str, instruction: str,
-                *, compaction: bool = True) -> str:
-    """Keep prompt and every path as single shell arguments, including newlines."""
-    arguments = _invocation(binary, state, model, compaction) + ["--prompt=" + instruction]
+                *, compaction: bool = True, arguments: tuple[str, ...] = ()) -> str:
+    """Keep prompt and every path as single shell arguments, including newlines.
+
+    Committed per-call usage is exported beside the event log, so every trial
+    retains its token counts (including after failure) without a second rollup.
+    """
+    arguments = _invocation(binary, state, model, compaction, list(arguments)) + [
+        "--usage-jsonl", str(PurePosixPath(logs) / "usage.jsonl"), "--prompt=" + instruction]
     # --workspace defaults to the task's native working directory. Redirection
     # preserves GraphCoder's exit status rather than that of a logging pipeline.
     return ('env -i PATH="$PATH" ' + shlex.join(arguments) + " > " + shlex.quote(str(PurePosixPath(logs) / "graphcoder.jsonl"))
