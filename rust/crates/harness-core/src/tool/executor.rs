@@ -303,6 +303,16 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         Ok(None)
     }
 
+    /// Whether running a fenced call again under its original operation ID
+    /// is its one effect: an effect published only under that ID, so the
+    /// fenced original never lands and one that landed is settled from its
+    /// receipt first. Without it, a fenced in-process call that reconciliation
+    /// cannot settle is the model's interrupted failure. A dispatched call
+    /// stays with the host it was dispatched to either way.
+    fn reexecutes_fenced(&self) -> bool {
+        false
+    }
+
     /// Whether dropping an invocation future retires all its I/O before return.
     /// Opt in only when cancellation leaves no independently running effect.
     /// The stock journal records interruption before settling the turn, and
@@ -339,9 +349,14 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// Reconciles a previously started invocation without executing it again.
     /// The caller must authenticate the complete invocation against its original
     /// start record; an operation ID alone does not admit replacement arguments.
-    /// `None` or an indeterminate error means completion is still unknown. The
-    /// caller retains the original invocation without recording a terminal
-    /// failure or executing it again, so a later result can settle that invocation.
+    /// `None` or an indeterminate error means completion is still unknown. While
+    /// the call's producer may be live, the caller retains the original
+    /// invocation without recording a terminal failure or executing it again, so
+    /// a later result can settle that invocation. Once its producer is fenced (a
+    /// predecessor started it and this owner took the actor's delivery), no
+    /// later result can come from it: a call dispatched to another host is
+    /// still retained for that host's settlement, and any other call is
+    /// interrupted, or run again where [`Self::reexecutes_fenced`] allows.
     /// A cancellation rejection proves the call no longer runs and has no
     /// recorded result; the caller settles it as interrupted.
     fn reconcile<'a>(

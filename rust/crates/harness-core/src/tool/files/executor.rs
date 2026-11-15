@@ -390,6 +390,12 @@ impl ToolExecutor for FileTool {
         self.is_read()
     }
 
+    // Every change publishes under the invocation's operation ID, and its
+    // receipt binds the request; a read has no effect to repeat.
+    fn reexecutes_fenced(&self) -> bool {
+        true
+    }
+
     fn authorize(
         &self,
         scope: Option<&RuntimeScope>,

@@ -1,5 +1,44 @@
 use super::*;
 
+/// Proof that a start was published together with a dispatch to another host.
+pub(super) struct DispatchRecord(());
+
+/// How a started call is decided once its producer is fenced and
+/// reconciliation cannot settle it. Only the durable start record decides
+/// whether it may wait: no executor can retain a call that ran in-process.
+pub(super) enum FencedStart {
+    /// Dispatched to another host, whose settlement or fence decides it.
+    Retained(DispatchRecord),
+    /// Ran only inside its fenced owner and ended with it: the model's
+    /// interrupted failure.
+    Interrupted,
+    /// Its effect is published only under the call's operation ID, so running
+    /// it again under that ID is its one effect.
+    Reexecuted,
+}
+
+impl FencedStart {
+    /// The decision for a fenced start, from the records of its call.
+    pub(super) fn of(records: &[ExecutionRecord], reexecutes: bool) -> Self {
+        let dispatched = records.iter().any(|record| {
+            matches!(
+                record.event,
+                ExecutionEvent::ToolStarted {
+                    publication: Some(_),
+                    ..
+                }
+            )
+        });
+        if dispatched {
+            Self::Retained(DispatchRecord(()))
+        } else if reexecutes {
+            Self::Reexecuted
+        } else {
+            Self::Interrupted
+        }
+    }
+}
+
 impl<'io> StockExecution<'io> {
     fn tool_wait_deadline(started: Option<u64>, timeout: u64) -> Result<u64> {
         let started = started.ok_or_else(|| {
@@ -15,12 +54,17 @@ impl<'io> StockExecution<'io> {
         record: crate::tool::RecordedInvocation<&ToolInvocation, &Value>,
         tool: &crate::tool::Tool,
         context: &mut Option<crate::runtime::ToolContext>,
-        started: bool,
+        (started, fenced): (bool, Option<&[ExecutionRecord]>),
         original_started_at: Option<u64>,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ToolInvocationOutcome<'io>> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
+        // A fenced start's producer is not this owner, which is never fenced
+        // itself; its own start record decides reconciliation's unknown.
+        let decision =
+            fenced.map(|records| FencedStart::of(records, tool.executor.reexecutes_fenced()));
+        let reexecuted = matches!(decision, Some(FencedStart::Reexecuted));
         let completion = crate::executor::phase::PreparedPhase::new(journal, self.io)?;
         // A remote target's run is queued in the claim's own commit.
         // A target that went away since resolution refuses it unstarted.
@@ -242,18 +286,46 @@ impl<'io> StockExecution<'io> {
         } else if let Some(result) = composed {
             result
         } else {
-            let cancellation =
-                tool.executor
-                    .cancellation(invocation, context.as_ref(), self.native_work())?;
-            self.observe_tool_cancellation(
-                journal,
-                identity,
-                &invocation.call_id,
-                tool.executor.cancellable_on_drop(),
-                cancellation,
-                self.call_tool_executor(tool, context, invocation, claimed),
-            )
-            .await?
+            // A fenced original that landed settles from its own receipt; only
+            // an effect that never landed runs again.
+            let landed = if reexecuted {
+                let mut observed = context.clone();
+                match self
+                    .observe_tool_cancellation(
+                        journal,
+                        identity,
+                        &invocation.call_id,
+                        tool.executor.cancellable_on_drop(),
+                        None,
+                        self.call_tool_executor(tool, &mut observed, invocation, false),
+                    )
+                    .await?
+                {
+                    Ok(None) | Err(Error::Indeterminate(_)) => None,
+                    reconciled => Some(reconciled),
+                }
+            } else {
+                None
+            };
+            match landed {
+                Some(reconciled) => reconciled,
+                None => {
+                    let cancellation = tool.executor.cancellation(
+                        invocation,
+                        context.as_ref(),
+                        self.native_work(),
+                    )?;
+                    self.observe_tool_cancellation(
+                        journal,
+                        identity,
+                        &invocation.call_id,
+                        tool.executor.cancellable_on_drop(),
+                        cancellation,
+                        self.call_tool_executor(tool, context, invocation, claimed || reexecuted),
+                    )
+                    .await?
+                }
+            }
         };
         #[cfg(feature = "test-support")]
         tracing::trace!(
@@ -270,8 +342,24 @@ impl<'io> StockExecution<'io> {
                     .interrupted(journal, identity, &invocation.call_id, error)
                     .await;
             }
-            // Unknown completion retains the original invocation for later
+            // The fence proves the call no longer runs, as a cancellation does.
+            Ok(None) | Err(Error::Indeterminate(_))
+                if matches!(decision, Some(FencedStart::Interrupted)) =>
+            {
+                return self
+                    .interrupted(
+                        journal,
+                        identity,
+                        &invocation.call_id,
+                        Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+                    )
+                    .await;
+            }
+            // Unknown completion while its producer may be live, including a
+            // dispatched one, retains the original invocation for later
             // reconciliation; it does not establish a terminal tool failure.
+            // An uncertain re-execution stays fenced, so the next attempt
+            // executes it again.
             Ok(None) | Err(Error::Indeterminate(_)) => {
                 return Err(Error::Indeterminate(operation_id));
             }
@@ -527,6 +615,10 @@ impl<'io> StockExecution<'io> {
                         if *recorded == step && call_id == &invocation.call_id)
             }) {
                 return Err(Error::Indeterminate(operation_id));
+            }
+            // This owner's start is never mistaken for a fenced one.
+            if let Some(started) = journal.started_calls(self.io)? {
+                started.start(invocation.operation_id, self.io)?;
             }
             // A claim acquires the dispatch: its key names this attempt, so a
             // racer at the same tail is refused instead of recognised as a

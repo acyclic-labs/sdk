@@ -451,6 +451,13 @@ impl ExecutionJournal for Journal {
             .transpose()
     }
 
+    fn started_calls(
+        &self,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<Arc<crate::executor::StartedCalls>>> {
+        self.6.started_calls(io).map(Some)
+    }
+
     fn acquire_execution<'a>(
         &'a self,
         operation: OperationId,

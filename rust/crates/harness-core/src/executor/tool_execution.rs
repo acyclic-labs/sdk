@@ -352,6 +352,19 @@ impl<'io> StockExecution<'io> {
         });
         let recorded = RecordedCall::classify(&records)
             .map_err(|reason| stock_boundary(self.io, Invalid, reason))?;
+        let started_calls = journal.started_calls(self.io)?;
+        // Deciding a fenced start resumes its turn or runs its effect again,
+        // both fresh intents that reconciliation refuses.
+        let fenced = match (&recorded, &started_calls) {
+            (RecordedCall::Started(_), Some(calls)) => (!self.stock.reconciliation_only
+                && calls.fenced(invocation.operation_id))
+            .then_some(records.as_slice()),
+            (RecordedCall::Failed { .. } | RecordedCall::Completed { .. }, Some(calls)) => {
+                calls.settle(invocation.operation_id);
+                None
+            }
+            _ => None,
+        };
         // Keep the original record and its decode custody through replay.
         let original = match recorded.started() {
             Some(reference) => Some(
@@ -825,13 +838,18 @@ impl<'io> StockExecution<'io> {
                         },
                         tool,
                         &mut context,
-                        started,
+                        (started, fenced),
                         original_started_at,
                         _hook_context,
                     )
                     .await?
                 {
-                    ToolInvocationOutcome::Settled(content, receipt) => (content, receipt),
+                    ToolInvocationOutcome::Settled(content, receipt) => {
+                        if let Some(calls) = &started_calls {
+                            calls.settle(invocation.operation_id);
+                        }
+                        (content, receipt)
+                    }
                     ToolInvocationOutcome::Controlled(control) => {
                         return Ok(ExecutionProgress::Controlled(control));
                     }

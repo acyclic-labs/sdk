@@ -207,3 +207,228 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
     assert_eq!(provider.requests().len(), 2);
     Ok(())
 }
+
+/// A started call whose incarnation died, reopened by its successor, which
+/// took the delivery: the call's producer is fenced. A dispatched start is
+/// the record a start published together with its dispatch leaves.
+#[cfg(not(target_arch = "wasm32"))]
+async fn fenced_pending_call(
+    dispatched: bool,
+) -> Result<(
+    Journal,
+    Arc<PendingTool>,
+    Arc<ScriptedModelProvider>,
+    StockExecutor,
+    TurnInput,
+)> {
+    let journal = Journal::default();
+    let provider = Arc::new(scripted_model());
+    let (accepted, acceptance) = tokio::sync::oneshot::channel();
+    let tool = Arc::new(PendingTool {
+        calls: AtomicUsize::new(0),
+        result: Mutex::new(None),
+        accepted: Mutex::new(Some(accepted)),
+    });
+    let tools = echo_tools(
+        tool.clone(),
+        json!({"type":"object"}),
+        json!({"type":"object"}),
+        crate::tool::json_projection_schema(json!({"type":"object"})),
+    )?;
+    let executor = uncompacted_executor(
+        Model::new("example".into(), "model".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        tools,
+    )
+    .with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new(["tool:call:example.echo"]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    let input = input();
+    let mut first = Box::pin(executor.execute(input.clone(), &journal));
+    tokio::select! {
+        outcome = &mut first => panic!("execution ended before tool acceptance: {outcome:?}"),
+        accepted = acceptance => accepted.expect("tool acceptance producer was dropped"),
+    }
+    // The incarnation dies with its producer; the next one reopens the cut.
+    drop(first);
+    let reopened = journal.reopen_before_tool_completion("call-1");
+    if dispatched {
+        for record in reopened.0.lock().unwrap().iter_mut() {
+            if let ExecutionEvent::ToolStarted { publication, .. } = &mut record.event {
+                *publication = Some([7; 32]);
+            }
+        }
+    }
+    Ok((reopened, tool, provider, executor, input))
+}
+
+/// The fenced twin of the live retry above: a call that ran only inside its
+/// dead owner can no longer settle, so an inconclusive reconciliation is the
+/// model's interrupted failure, the effect never runs again, and the turn
+/// continues instead of staying indeterminate.
+#[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
+async fn a_fenced_started_call_settles_interrupted_and_the_turn_continues() -> Result<()> {
+    let (reopened, tool, provider, executor, input) = fenced_pending_call(false).await?;
+    let settled = executor.execute(input.clone(), &reopened).await?;
+    assert_eq!(settled.text, "done");
+    let text = super::tools_1::tool_error_text(&provider.requests()[1].messages, "call-1")
+        .expect("the next model request carries the call's failure");
+    assert!(
+        text.starts_with(ToolFailureKind::Interrupted.message()),
+        "{text}"
+    );
+    assert!(reopened.0.lock().unwrap().iter().any(|record| matches!(
+        &record.event,
+        ExecutionEvent::ToolFailed { call_id, reason: ToolFailureKind::Interrupted, .. }
+            if call_id == "call-1"
+    )));
+    assert_eq!(
+        tool.calls.load(Ordering::SeqCst),
+        1,
+        "the effect never runs again"
+    );
+    assert_eq!(settled, executor.execute(input, &reopened).await?);
+    Ok(())
+}
+
+/// A call dispatched to another host outlives its fenced owner: it stays
+/// retained, with nothing recorded and nothing run again, until that host's
+/// own settlement decides it.
+#[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
+async fn a_fenced_dispatched_call_waits_for_its_host_to_settle_it() -> Result<()> {
+    let (reopened, tool, _, executor, input) = fenced_pending_call(true).await?;
+    let retained = executor.execute(input.clone(), &reopened).await;
+    assert!(
+        matches!(&retained, Err(Error::Indeterminate(id)) if *id == input.operation_id),
+        "{retained:?}"
+    );
+    assert!(!reopened.0.lock().unwrap().iter().any(|record| matches!(
+        &record.event,
+        ExecutionEvent::ToolFailed { .. } | ExecutionEvent::ToolCompleted { .. }
+    )));
+    *tool.result.lock().unwrap() = Some(ToolResult {
+        value: json!({"value":"hello"}),
+    });
+    assert_eq!(executor.execute(input, &reopened).await?.text, "done");
+    assert!(reopened.0.lock().unwrap().iter().any(|record| matches!(
+        &record.event,
+        ExecutionEvent::ToolCompleted { call_id, .. } if call_id == "call-1"
+    )));
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1, "the host ran it once");
+    Ok(())
+}
+
+/// An effect published only under its call's operation: the first run never
+/// lands it, and running it again is that one effect.
+#[cfg(not(target_arch = "wasm32"))]
+struct KeyedTool {
+    calls: AtomicUsize,
+    reconciles: AtomicUsize,
+    effects: AtomicUsize,
+    accepted: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::tool::ToolExecutor for KeyedTool {
+    fn execute<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            if let Some(accepted) = self.accepted.lock().unwrap().take() {
+                accepted.send(()).unwrap();
+            }
+            return Box::pin(std::future::pending());
+        }
+        self.effects.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Ok(ToolResult {
+                value: json!({"value":"hello"}),
+            })
+        })
+    }
+    fn reconcile<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _: Option<crate::runtime::ToolContext>,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        self.reconciles.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(None) })
+    }
+    fn reexecutes_fenced(&self) -> bool {
+        true
+    }
+}
+
+/// A fenced start of a keyed effect runs again, once, after reconciliation
+/// finds no receipt; while its producer may be live it is only retained.
+#[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
+async fn a_fenced_keyed_call_runs_its_one_effect_again() -> Result<()> {
+    let journal = Journal::default();
+    let provider = Arc::new(scripted_model());
+    let (accepted, acceptance) = tokio::sync::oneshot::channel();
+    let tool = Arc::new(KeyedTool {
+        calls: AtomicUsize::new(0),
+        reconciles: AtomicUsize::new(0),
+        effects: AtomicUsize::new(0),
+        accepted: Mutex::new(Some(accepted)),
+    });
+    let tools = echo_tools(
+        tool.clone(),
+        json!({"type":"object"}),
+        json!({"type":"object"}),
+        crate::tool::json_projection_schema(json!({"type":"object"})),
+    )?;
+    let executor = uncompacted_executor(
+        Model::new("example".into(), "model".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        tools,
+    )
+    .with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new(["tool:call:example.echo"]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    let input = input();
+    let mut first = Box::pin(executor.execute(input.clone(), &journal));
+    tokio::select! {
+        outcome = &mut first => panic!("execution ended before tool acceptance: {outcome:?}"),
+        accepted = acceptance => accepted.expect("tool acceptance producer was dropped"),
+    }
+    drop(first);
+    // The same owner's start is never fenced: it is retained, not run again.
+    assert!(matches!(
+        executor.execute_progress(input.clone(), &journal).await,
+        Err(Error::Indeterminate(operation)) if operation == input.operation_id
+    ));
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    let reopened = journal.reopen_before_tool_completion("call-1");
+    let settled = executor.execute(input.clone(), &reopened).await?;
+    assert_eq!(settled.text, "done");
+    assert!(reopened.0.lock().unwrap().iter().any(|record| matches!(
+        &record.event,
+        ExecutionEvent::ToolCompleted { call_id, .. } if call_id == "call-1"
+    )));
+    assert_eq!(settled, executor.execute(input, &reopened).await?);
+    assert_eq!(
+        (
+            tool.calls.load(Ordering::SeqCst),
+            tool.reconciles.load(Ordering::SeqCst),
+            tool.effects.load(Ordering::SeqCst),
+        ),
+        (2, 2, 1),
+        "one live reconciliation, one fenced reconciliation, one effect"
+    );
+    Ok(())
+}
