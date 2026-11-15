@@ -45,7 +45,6 @@ rust_library(
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/harness-fuzz:fuzz_targets/recorded_invocation_input.rs",
         "//rust/crates/harness:tests/support/bounded_json.rs",
-        "//rust/crates/harness:tests/support/content_context.rs",
         "//rust/crates/harness:tests/support/stream/append.rs",
         "//rust/crates/harness:tests/support/stream/commit.rs",
         "//rust/crates/harness:tests/support/stream/controls.rs",

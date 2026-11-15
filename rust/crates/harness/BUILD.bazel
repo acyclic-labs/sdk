@@ -1619,7 +1619,6 @@ exports_files([
         "tests/search_http_codec/oracle.rs",
         "tests/search_http_codec/support.rs",
         "tests/support/bounded_json.rs",
-        "tests/support/content_context.rs",
         "tests/support/discovery.rs",
         "tests/support/expected_outcome.rs",
         "tests/support/file_diff_case.rs",

@@ -612,5 +612,5 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    include!("attestation_proofs.rs");
+    mod proofs;
 }

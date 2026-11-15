@@ -30,8 +30,7 @@ mod observation;
 #[path = "filesystem_access_ranges.rs"]
 mod ranges;
 
-#[path = "support/content_context.rs"]
-mod context;
+use acyclic_harness::test_support::content_context as context;
 
 struct Fixture<O: 'static = acyclic_fs::MemoryObjectBackend> {
     fs: Fs<acyclic_fs::MemoryAuthorityBackend, O>,

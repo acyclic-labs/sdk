@@ -1,7 +1,12 @@
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_stream::NativeStreamProvider as _;
-use acyclic_stream::StreamProviderExt as _;
-// Included in attestation::tests: use the same probe as the native vectors.
+//! Property proofs over every write family, on the same probe as the native
+//! vectors in the parent tests.
+use super::super::{Attested, TurnAdmission};
+use super::{Counting, Probe};
+use acyclic_stream::{
+    CommitRequest, IdempotencyKey, NativeStreamProvider as _, StreamError, StreamPath,
+    StreamProvider as _, StreamProviderExt as _,
+};
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(16))]
     #[test]
@@ -9,7 +14,6 @@ proptest::proptest! {
         payload in proptest::collection::vec(proptest::num::u8::ANY, 1..128),
         identity in proptest::collection::vec(proptest::num::u8::ANY, 1..32),
     ) {
-        use acyclic_stream::StreamProvider as _;
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
         runtime.block_on(async {
             for hosted in [false, true] {
@@ -18,29 +22,29 @@ proptest::proptest! {
                 };
                 let issuer = crate::core::AuthorityRoot::new("proof", [7; 32], audience.clone());
                 let admission = if hosted {
-                    super::TurnAdmission::Admitted {
+                    TurnAdmission::Admitted {
                         audience,
                         scope: issuer.bootstrap_scope("caller", &crate::contract::Capabilities::default(), None, &mut None).expect("scope"),
                     }
-                } else { super::TurnAdmission::LocalRoot };
+                } else { TurnAdmission::LocalRoot };
                 let attestor = std::sync::Arc::new(Counting::default());
                 let probe = std::sync::Arc::new(Probe::default());
-                let attested = super::Attested::new(probe.clone(), Some(attestor.clone()), admission.clone());
-                let path = super::StreamPath::new("proof/source").expect("path");
+                let attested = Attested::new(probe.clone(), Some(attestor.clone()), admission.clone());
+                let path = StreamPath::new("proof/source").expect("path");
                 let append = acyclic_stream::AppendRequest {
                     path: path.clone(), records: vec![bytes::Bytes::copy_from_slice(&payload).into()],
-                    if_tail: Some(0), idempotency_key: super::IdempotencyKey::new(identity.clone()).expect("key"),
+                    if_tail: Some(0), idempotency_key: IdempotencyKey::new(identity.clone()).expect("key"),
                 };
                 let fork = acyclic_stream::ForkRequest {
-                    source: path.clone(), destination: super::StreamPath::new("proof/fork").expect("path"),
+                    source: path.clone(), destination: StreamPath::new("proof/fork").expect("path"),
                     at_tail: Some(0), exclude: vec![], idempotency_key: append.idempotency_key.clone(),
                 };
-                let commit = super::CommitRequest {
+                let commit = CommitRequest {
                     deadline_unix_millis: None,
                     effects: vec![acyclic_stream::CommitEffect::hard(vec![acyclic_stream::CommitCondition::Tail { path: path.clone(), expected: 0 }], vec![acyclic_stream::CommitMutation::Append {
                         path, records: vec![bytes::Bytes::copy_from_slice(&payload).into()],
                     }])],
-                    idempotency_key: super::IdempotencyKey::new(identity.clone()).expect("key"),
+                    idempotency_key: IdempotencyKey::new(identity.clone()).expect("key"),
                 };
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
@@ -48,18 +52,18 @@ proptest::proptest! {
                 // Repeat identical sealed requests: exact retry evidence must
                 // be identical for every API family, including native ingress.
                 for _ in 0..2 {
-                    assert!(matches!(attested.append(append.clone()).await, Err(super::StreamError::AccessDenied)));
-                    assert!(matches!(attested.fork(fork.clone()).await, Err(super::StreamError::AccessDenied)));
-                    assert!(matches!(attested.commit(commit.clone()).await, Err(super::StreamError::AccessDenied)));
-                    assert!(matches!(attested.commit(super::CommitRequest { deadline_unix_millis: Some(u64::MAX), ..commit.clone() }).await, Err(super::StreamError::AccessDenied)));
-                    assert!(matches!(attested.native_append(append.clone(), work.runtime_meter()).await.expect("native transport"), Err(super::StreamError::AccessDenied)));
-                    assert!(matches!(attested.native_commit(commit.clone(), None, work.runtime_meter()).await.expect("native transport"), Err(super::StreamError::AccessDenied)));
-                    let guarded = acyclic_stream::NativeStreamProviderExt::native_commit_with_guard::<super::StreamError, _, _>(
+                    assert!(matches!(attested.append(append.clone()).await, Err(StreamError::AccessDenied)));
+                    assert!(matches!(attested.fork(fork.clone()).await, Err(StreamError::AccessDenied)));
+                    assert!(matches!(attested.commit(commit.clone()).await, Err(StreamError::AccessDenied)));
+                    assert!(matches!(attested.commit(CommitRequest { deadline_unix_millis: Some(u64::MAX), ..commit.clone() }).await, Err(StreamError::AccessDenied)));
+                    assert!(matches!(attested.native_append(append.clone(), work.runtime_meter()).await.expect("native transport"), Err(StreamError::AccessDenied)));
+                    assert!(matches!(attested.native_commit(commit.clone(), None, work.runtime_meter()).await.expect("native transport"), Err(StreamError::AccessDenied)));
+                    let guarded = acyclic_stream::NativeStreamProviderExt::native_commit_with_guard::<StreamError, _, _>(
                         &attested, commit.clone(), None, work.runtime_meter(), || std::future::ready(Ok(())))
                         .await.expect("native transport");
-                    assert!(matches!(guarded, Err(super::StreamError::AccessDenied)));
+                    assert!(matches!(guarded, Err(StreamError::AccessDenied)));
                     assert!(matches!(attested.native_prepare_commit(commit.clone(), acyclic_stream::PreparedRecordCapacity { payload_bytes: 256, keys: 64, attributes: 16 }, work.runtime_meter())
-                        .await.expect("native transport"), Err(super::StreamError::Unsupported)));
+                        .await.expect("native transport"), Err(StreamError::Unsupported)));
                 }
                 let reached = probe.reached.lock().expect("probe ledger");
                 assert_eq!(reached.len(), 14, "each supported write family reaches its exact evidence binding");
@@ -67,9 +71,9 @@ proptest::proptest! {
                 assert_eq!(attestor.0.load(std::sync::atomic::Ordering::SeqCst), 14);
                 for observed in attestor.1.lock().expect("admission ledger").iter() {
                     match (&admission, observed) {
-                        (super::TurnAdmission::LocalRoot, super::TurnAdmission::LocalRoot) => {}
-                        (super::TurnAdmission::Admitted { audience: expected, scope },
-                         super::TurnAdmission::Admitted { audience: actual, scope: actual_scope }) => {
+                        (TurnAdmission::LocalRoot, TurnAdmission::LocalRoot) => {}
+                        (TurnAdmission::Admitted { audience: expected, scope },
+                         TurnAdmission::Admitted { audience: actual, scope: actual_scope }) => {
                             assert_eq!(expected, actual);
                             assert_eq!(scope, actual_scope);
                         }

@@ -1,4 +1,5 @@
-use acyclic_harness::{
+//! A minimal agent turn context over a content reader, for access tests.
+use crate::{
     Capabilities, Result,
     conversation::{ContentPublisher, VolumeClass, VolumeOwner, VolumeRef},
 };
@@ -16,15 +17,15 @@ impl ContentPublisher for Ungranted {
 /// An agent turn context over `reader` with exactly `capabilities`. Without
 /// `writer`, its private writer targets a volume those capabilities never grant.
 pub async fn content_context(
-    reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
+    reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
     writer: Option<Arc<dyn ContentPublisher>>,
     capabilities: Capabilities,
-) -> Result<Arc<acyclic_harness::runtime::TaskContext>> {
-    use acyclic_harness::runtime::{Bindings, ContentBindings, RuntimeScope};
+) -> Result<Arc<crate::runtime::TaskContext>> {
+    use crate::runtime::{Bindings, ContentBindings, RuntimeScope};
     let writer = match writer {
         Some(writer) => writer,
         None => Arc::new(Ungranted(VolumeRef::new(
-            acyclic_harness::resources::ProviderRef::new(
+            crate::resources::ProviderRef::new(
                 "ungranted".into(),
                 "filesystem".into(),
                 "2".into(),
@@ -32,7 +33,7 @@ pub async fn content_context(
             )?,
             "private".into(),
             VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes([0xee; 16])),
+            VolumeOwner::Agent(crate::AgentId::from_bytes([0xee; 16])),
             &mut None,
         )?)),
     };
@@ -42,10 +43,7 @@ pub async fn content_context(
         writer: Some(writer),
     };
     let harness = Bindings {
-        scope: RuntimeScope::new(
-            capabilities,
-            acyclic_harness::conversation::Limits::default(),
-        )?,
+        scope: RuntimeScope::new(capabilities, crate::conversation::Limits::default())?,
         content: Some(content.clone()),
         ..Bindings::local()
     }

@@ -16,6 +16,7 @@ pub use crate::hooks::identity_test_support::assert_canonical_tool_consumers;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod accounted;
+pub mod content_context;
 #[cfg(all(
     any(test, all(feature = "test-support", not(target_arch = "wasm32"))),
     not(target_arch = "wasm32")

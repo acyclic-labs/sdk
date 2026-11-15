@@ -16,9 +16,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-#[path = "support/content_context.rs"]
-mod context;
-use context::content_context;
+use acyclic_harness::test_support::content_context::content_context;
 
 struct OrdinaryPublisher {
     volume: VolumeRef,

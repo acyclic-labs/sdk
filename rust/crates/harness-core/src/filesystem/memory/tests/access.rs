@@ -424,10 +424,7 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
     Ok(())
 }
 
-mod context {
-    extern crate self as acyclic_harness;
-    include!("../../../../../harness/tests/support/content_context.rs");
-}
+use crate::test_support::content_context as context;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
