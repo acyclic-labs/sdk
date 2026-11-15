@@ -100,6 +100,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         // ownership. Cancellation after commit leaves the old local epoch
         // fenced; replay of this exact command admits the recorded cut.
         let mut inner = slot.inner.lock().await;
+        // Consume a pending refresh before the command observes the actor. A
+        // wake after this point stays set, so delivery reloads past the cut
+        // the command admits; clearing it after that observation would drop
+        // a wake that arrived in between.
+        if slot.refresh.swap(false, Ordering::AcqRel) {
+            inner.observed = None;
+        }
         command_control(
             &self.store,
             Owner {
@@ -112,7 +119,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             paused,
         )
         .await?;
-        slot.refresh.store(false, Ordering::Release);
         slot.unplaced.store(false, Ordering::Release);
         slot.waker.wake_by_ref();
         Ok(())
