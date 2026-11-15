@@ -69,7 +69,7 @@ async fn verify_repair(
         &body
     );
 
-    Ok((body, key, stored, observation, unauthorized, original.revision))
+    Ok((body, key, stored, observation, unauthorized, original.revision.clone()))
 }
 
 async fn verify_restored(
@@ -80,7 +80,7 @@ async fn verify_restored(
     stored: OwnedBytes,
     digest: Digest,
     mut observation: crate::Availability,
-    mut unauthorized: crate::Availability,
+    unauthorized: crate::Availability,
     revision: Option<acyclic_stream::Revision>,
 ) -> Result<(OwnedBytes, String, crate::Availability, crate::Availability), Box<dyn std::error::Error>> {
     // A remote physical producer shares the same scoped source. No catalog
@@ -105,7 +105,7 @@ pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
     let other = store.account(b"availability-other")?;
     let body = OwnedBytes::from_static(b"same envelope and version after physical restoration");
     let digest = Digest::of(&body);
-    let (body, key, stored, mut observation, mut unauthorized, revision) =
+    let (body, key, stored, observation, unauthorized, revision) =
         verify_repair(&medium, &account, &other, body, digest).await?;
     let (body, key, mut observation, mut unauthorized) = verify_restored(
         &medium,
