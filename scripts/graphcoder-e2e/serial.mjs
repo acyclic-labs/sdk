@@ -180,8 +180,13 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
   await sources(pty,'graphcoder-pty/',pty);
   source['file-digest.mjs'] = await sha256File(new URL('../file-digest.mjs', import.meta.url));
   const executables={ NODE: await executable(process.execPath) };
-  for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST','E2E_GIT_BINARY',
-    'E2E_FILESYSTEM_BINARY','E2E_HOOK_BINARY','E2E_PLUGIN_BINARY','E2E_CODEX','E2E_CLAUDE','E2E_PI','E2E_PLUGIN_TEST_BINARY','E2E_PROVIDER_TEST_BINARY','E2E_TUI_TEST_BINARY'])
+  const declared = cases.flatMap(test => [
+    ...(test.inputs ?? []).flatMap(input => [input.binary_env, input.fixture_binary_env]),
+    ...Object.values(test.workspace?.files ?? {}).map(file => file?.binary_env),
+  ]).filter(name => name !== undefined);
+  for(const name of new Set(['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST','E2E_GIT_BINARY',
+    'E2E_PLUGIN_BINARY','E2E_CODEX','E2E_CLAUDE','E2E_PI','E2E_PLUGIN_TEST_BINARY',
+    'E2E_CREDENTIALS_FIXTURE',...declared]))
     if(env[name])executables[name]=await executable(env[name]);
   const hosts={},closures=new Map();
   for(const test of cases)for(const input of test.inputs??[]) {

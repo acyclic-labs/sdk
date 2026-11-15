@@ -196,6 +196,7 @@ target is 50 ms; an individual launch observation is not a warm-start p50.
 | Linux x86_64 | `c46f4e396b9871ab5790f0d54182d1852b2f2d26` | `dist` | 2018.40 | `pty-markdown` passed with controller `f72301007bb770197aa1f230a21e1a940d39c0f8` |
 | Linux x86_64 | `3357174beef3bc29c3283b0618fd6e0035682d59` | `dist` | 343.29 | `pty-markdown` passed |
 | Linux x86_64 | `704da84775e9865e1912d9f49ccb7cf9ff98b760` | `dist` | 3265.84 | `pty-markdown` passed |
+| Windows Server 2025 x86_64 | `404dd0e4bdfeebeff8903b40fba5b02adba18117` | `dist` | 845.28 | `pty-markdown` passed; native retirement completed |
 | Windows x86_64 | `3357174beef3bc29c3283b0618fd6e0035682d59` | `dist` | unavailable | Startup refused current-user DPAPI before paint |
 | macOS aarch64 | `704da84775e9865e1912d9f49ccb7cf9ff98b760` | `dist` attempted | unavailable | Shared build artifacts disappeared before completion |
 
@@ -218,14 +219,26 @@ includes the correction that checks each negative control at each viewport.
 The intervening code changes affect tests only. These individual observations
 are not a before/after performance comparison.
 
-Windows' SSH key logon refused current-user DPAPI with access denied (OS error
-5). A separate public-payload DPAPI round trip also failed under both the
+An earlier Windows SSH key logon refused current-user DPAPI with access denied
+(OS error 5). A separate public-payload DPAPI round trip also failed under both the
 normal and isolated profiles. Owner records require this protection before
 publication. No plaintext or machine-wide protection fallback was used.
-Windows product timing therefore needs a credentialed user logon; native
-render controls do not need that store and passed separately. Product startup
-qualification remains incomplete until Windows and macOS have successful
-observations.
+The successful Windows observation used the existing credentialed user logon
+on Windows Server 2025 Datacenter x64 (10.0.26100.0), with shipping executables
+and the ConPTY bridge from `404dd0e4bdfeebeff8903b40fba5b02adba18117`.
+The ordinary `pty-markdown` case passed in 1.93 s; its original retirement
+completed in 2.04 s, and the completed job reported an empty native scope.
+The retained native case receipt is
+`D:/lane-scratch/windows-startup-Un7t3q/extracted/startup/case/matrix.json`;
+the terminal receipt is `startup.json` in its parent directory.
+Executable SHA-256:
+GraphCoder `469402eeffb7c5a55d5ad00677e3a9aeed8c1cc8b6c86df3d05eecd9244f9bbb`;
+mock server `2611203369d878b2e291d5298e64d31e5e0132a097e00af0979441dcdec443d0`;
+process host `dbb3660f784739776c8f97ddc17f5fba3df93e8e00b90f44f104f8793257a094`.
+An earlier 948.77 ms paint on the preceding bridge implementation ended in
+case failure and remains excluded. The successful observation is one launch,
+not a warm-start distribution, sandbox proof or complete GraphCoder/plugin
+qualification. Native macOS startup still needs a successful observation.
 
 On macOS, native all-targets compilation passed in 10.26 s and test-executable
 compilation passed in 49.23 s on the reviewed source. During the subsequent

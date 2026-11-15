@@ -46,11 +46,17 @@ cargo test --locked -p acyclic-native-runtime --lib -- --exact \
 
 Each native result must report **3 passed, 0 failed, 0 ignored**. Retain the
 source SHA, executable digest, native OS identity and terminal/cleanup receipt.
+The ordinary GraphCoder matrix includes the same selection as `native-sandbox`.
+Set `E2E_NATIVE_RUNTIME_TEST_BINARY` to its matching prebuilt native library-test
+executable. The shared libtest adapter rejects ignored tests, zero selections
+and nonzero exits; partition identity includes the declared executable's digest.
+The case uses the ordinary process owner and retirement barrier on every OS.
 The Windows fixture requires symlink creation (Developer Mode or the test
 account's native symlink privilege), as well as PSEC 1.1. Fixture failure is not
 an ignored test. Linux requires `rg` in the test parent's search path. macOS uses
-its installed native toolchain with `CARGO_INCREMENTAL=0` and the shared target
-`/Users/var/foreman/target/lanes`.
+its installed native toolchain with `CARGO_INCREMENTAL=0`. Give each invocation
+its own `CARGO_TARGET_DIR` and retain its source, staged executables and terminal
+receipts until native qualification completes.
 
 ## Evidence status
 

@@ -6,6 +6,7 @@
 //! Native root handles pin object identity for the grant's lifetime.
 
 use std::{
+    borrow::Cow,
     collections::BTreeSet,
     io,
     path::{Path, PathBuf},
@@ -187,7 +188,6 @@ impl Grant {
         Ok(false)
     }
 
-    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn cwd_root(&self, cwd: &Path) -> io::Result<&BoundPath> {
         if cwd.starts_with(&self.workspace.path) {
             return Ok(&self.workspace);
@@ -233,6 +233,26 @@ impl Grant {
 
 fn separator(byte: u8) -> bool {
     byte == b'/' || cfg!(windows) && byte == b'\\'
+}
+
+fn launch_path(cwd: &Path) -> io::Result<Cow<'_, Path>> {
+    if !cwd.is_absolute()
+        || cwd
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+    {
+        return Err(refused(
+            "execution working directory escapes the granted workspace",
+        ));
+    }
+    #[cfg(windows)]
+    {
+        windows::launch_path(cwd)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(Cow::Borrowed(cwd))
+    }
 }
 
 struct RootIndexRead<'a>(Option<&'a dyn crate::NativeReadMeter>);
@@ -346,9 +366,13 @@ impl BoundPath {
         {
             use std::os::windows::fs::OpenOptionsExt;
             options
-                .access_mode(windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES)
+                .access_mode(
+                    windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES
+                        | windows_sys::Win32::Storage::FileSystem::FILE_READ_DATA,
+                )
                 .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
-                // A bound Windows root cannot be renamed while the grant is live.
+                // Metadata-only opens do not participate in delete sharing.
+                // Read/list access makes this handle pin the root's name.
                 .share_mode(
                     windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ
                         | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
@@ -844,7 +868,7 @@ impl ExecutionGrant {
         &self,
         cwd: Option<&'a Path>,
         explicit_environment: bool,
-    ) -> io::Result<&'a Path> {
+    ) -> io::Result<Cow<'a, Path>> {
         if !explicit_environment {
             return Err(refused(
                 "confined execution requires an explicit environment",
@@ -852,24 +876,10 @@ impl ExecutionGrant {
         }
         let cwd = cwd
             .ok_or_else(|| refused("confined execution requires an explicit working directory"))?;
-        // This is admission, not a second path resolution. The native adapter
-        // resolves the relative directory once beneath the verified workspace.
-        if !cwd.is_absolute()
-            || cwd
-                .components()
-                .any(|component| component == std::path::Component::ParentDir)
-            || !(cwd.starts_with(self.workspace())
-                || [&self.policy.write, &self.policy.read]
-                    .into_iter()
-                    .any(|index| {
-                        Grant::roots(index, cwd, None)
-                            .is_ok_and(|roots| roots.exact.or(roots.shortest).is_some())
-                    }))
-        {
-            return Err(refused(
-                "execution working directory escapes the granted workspace",
-            ));
-        }
+        // Namespace normalization performs no filesystem lookup. The native
+        // adapter resolves once beneath the original verified root handle.
+        let cwd = launch_path(cwd)?;
+        self.policy.cwd_root(&cwd)?;
         Ok(cwd)
     }
 

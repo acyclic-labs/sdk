@@ -339,7 +339,7 @@ impl ProcessTree {
             meter.check()?;
         }
         let cwd = grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
-        command.boundary = Some(grant.prepare_launch(Some(cwd), meter)?);
+        command.boundary = Some(grant.prepare_launch(Some(cwd.as_ref()), meter)?);
         Ok(())
     }
 

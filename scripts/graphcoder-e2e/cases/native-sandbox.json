@@ -1,0 +1,19 @@
+{
+  "id": "native-sandbox",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [] },
+  "inputs": [{
+    "mode": "qualification",
+    "format": "libtest",
+    "binary_env": "E2E_NATIVE_RUNTIME_TEST_BINARY",
+    "args": [
+      "--exact",
+      "execution::tests::sandbox_policy",
+      "execution::tests::scoped_native_reads_pin_the_original_parent_and_refuse_escape",
+      "execution::tests::inherited_file_stdio_cannot_bypass_the_workspace_boundary",
+      "--nocapture"
+    ],
+    "minimum_tests": 3
+  }],
+  "assert": { "requests": 0 }
+}

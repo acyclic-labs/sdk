@@ -121,11 +121,14 @@ public static class GraphcoderConPty {
                 int error = Marshal.GetLastWin32Error();
                 if (error != 1168) throw new Win32Exception(error, "cancel terminal control"); // Already completed.
             }
+            // Framework pipe completion reports CancelIoEx as cancellation;
+            // the original child exit still determines the transport result.
             try {
                 if (write) { pipe.EndWrite(operation); return exited ? -1 : bytes.Length - offset; }
                 int count = pipe.EndRead(operation);
                 return exited ? -1 : count;
-            } catch (IOException) { if (exited) return -1; throw; }
+            } catch (OperationCanceledException) { if (exited) return -1; throw; }
+            catch (IOException) { if (exited) return -1; throw; }
         }
     }
     static void PumpResize(NamedPipeClientStream pipe, IntPtr process, IntPtr console) {
