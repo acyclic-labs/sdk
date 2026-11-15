@@ -178,7 +178,7 @@ async fn metadata_retention_counts_one_pass_and_compacts_unrelated_backing()
             "finite producer did not end"
         );
         let mut record = wire_codec::record_wire(original.clone(), Some(&path));
-        let (native, _) = retain_metadata(&record, Some(&original))?;
+        let (native, _) = retain_metadata(&record, Some(&original));
         for (index, key) in native.keys.iter().enumerate() {
             assert_eq!(
                 key.as_ptr() == record.keys[index].as_ptr(),
@@ -220,7 +220,7 @@ async fn metadata_retention_counts_one_pass_and_compacts_unrelated_backing()
                 .collect(),
         )?;
         let exact_wire = wire_codec::record_wire(exact_owner.clone(), Some(&path));
-        let (shared, _) = retain_metadata(&exact_wire, Some(&exact_owner))?;
+        let (shared, _) = retain_metadata(&exact_wire, Some(&exact_owner));
         for (index, key) in shared.keys.iter().enumerate() {
             assert_eq!(
                 key.as_ptr(),

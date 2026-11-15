@@ -56,6 +56,7 @@ rust_test(
     version = "0.2.0",
     crate_features = FEATURES,
     deps = [
+        "//rust/crates/markdown:acyclic_markdown",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
         "@crates//tempfile-3.27.0",
@@ -86,6 +87,7 @@ rust_test(
         "//rust/crates/actors:acyclic_actors",
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/harness-core:acyclic_harness_core",
+        "//rust/crates/markdown:acyclic_markdown",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
         "@crates//base64-0.22.1",

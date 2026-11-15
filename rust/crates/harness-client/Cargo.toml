@@ -30,6 +30,7 @@ wasm-bindgen = { workspace = true, optional = true }
 url = "=2.5.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-markdown = { path = "../markdown" }
 acyclic-stream = { path = "../stream", default-features = false, features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 tempfile = "3.27.0"

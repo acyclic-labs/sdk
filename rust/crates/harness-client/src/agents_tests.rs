@@ -9,6 +9,9 @@ use acyclic_stream::{
 use futures::{StreamExt as _, future::poll_fn};
 use std::sync::Arc;
 
+#[path = "agents_tests/delivery.rs"]
+mod delivery;
+
 struct Endpoint(Arc<MemoryStream>);
 impl transport::Transport for Endpoint {
     fn session(
@@ -332,7 +335,7 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
             let mut tiny_view = StreamView::new(0, 0, latest, Some(path), backings.clone());
             tiny_view
                 .apply(&frame, 1)
-                .expect("tiny slice failed display admission");
+                .expect("tiny slice failed display retention");
             let retained = if latest {
                 &tiny_view
                     .latest_value(b"status")

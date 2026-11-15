@@ -18,8 +18,10 @@ pub struct StreamView {
     latest: BTreeMap<Bytes, LatestEntry>,
     #[cfg(test)]
     latest_probes: std::sync::atomic::AtomicUsize,
-    bytes: usize,
-    payload_bytes: usize,
+    // Per-entry charges can count the same shared allocation many times,
+    // exceeding the address space without retaining that many physical bytes.
+    bytes: u128,
+    payload_bytes: u128,
     backings: BackingPool,
     next: u64,
     revision: u64,
@@ -107,13 +109,15 @@ impl StreamView {
 
     /// Retained row bytes, including original payload capacity.
     /// Shared allocations count once in the enclosing session's residency total.
+    /// Repeated shared charges saturate this per-entry total at `usize::MAX`.
     #[must_use]
     pub fn retained_bytes(&self) -> usize {
-        self.bytes
+        usize::try_from(self.bytes).unwrap_or(usize::MAX)
     }
 
     pub(crate) fn metadata_bytes(&self) -> usize {
-        self.bytes - self.payload_bytes
+        // Metadata is separately allocated per entry and fits the address space.
+        usize::try_from(self.bytes - self.payload_bytes).unwrap_or(usize::MAX)
     }
 
     /// Accepted/durable watermarks are never inferred from a missing delivery.
@@ -154,26 +158,20 @@ impl StreamView {
                     {
                         return Err(StreamError::InvalidResponse);
                     }
-                    let charge = size_of::<(Bytes, LatestEntry)>()
-                        .checked_add(value.key.len())
-                        .and_then(|n| n.checked_add(value.value.len()))
-                        .ok_or(StreamError::LimitExceeded)?;
+                    let metadata = size_of::<(Bytes, LatestEntry)>() + value.key.len();
                     let payload = frame.original_record().map_or_else(
                         || acyclic_stream::OwnedBytes::from(value.value.clone()),
                         |record| record.value.clone(),
                     );
-                    let metadata = charge - value.value.len();
                     let payload = self.backings.retain(payload, None, value.value.len());
                     let capacity = payload.backing().capacity();
-                    let charge = metadata
-                        .checked_add(capacity)
-                        .ok_or(StreamError::LimitExceeded)?;
+                    let charge = metadata + capacity;
                     #[cfg(test)]
                     self.latest_probes
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if let Some(old) = self.latest.remove(value.key.as_ref()) {
-                        self.bytes -= old.charge;
-                        self.payload_bytes -= old.payload;
+                        self.bytes -= old.charge as u128;
+                        self.payload_bytes -= old.payload as u128;
                     }
                     let key = Bytes::copy_from_slice(&value.key);
                     self.latest.insert(
@@ -188,8 +186,8 @@ impl StreamView {
                             payload: capacity,
                         },
                     );
-                    self.bytes += charge;
-                    self.payload_bytes += capacity;
+                    self.bytes += charge as u128;
+                    self.payload_bytes += capacity as u128;
                     self.next = after.next;
                     self.revision = revision;
                     self.advance_watermarks(data.accepted, data.durable);
@@ -217,18 +215,16 @@ impl StreamView {
                 // Use the canonical record/header validator, including its size
                 // bounds, before retaining anything from the delivery.
                 let decoded = frame.decode_record(self.followed.as_ref())?;
-                let (mut owned, metadata) = retain_metadata(record, frame.original_record())?;
+                let (mut owned, metadata) = retain_metadata(record, frame.original_record());
                 let payload = decoded.value;
                 let length = payload.len();
                 let payload = self.backings.retain(payload, None, length);
                 let capacity = payload.backing().capacity();
-                let charge = metadata
-                    .checked_add(capacity)
-                    .ok_or(StreamError::LimitExceeded)?;
+                let charge = metadata + capacity;
                 owned.value = Bytes::from_owner(payload);
                 self.records.push(owned);
-                self.bytes += charge;
-                self.payload_bytes += capacity;
+                self.bytes += charge as u128;
+                self.payload_bytes += capacity as u128;
                 self.next = next;
                 self.revision = revision;
                 self.advance_watermarks(data.accepted, data.durable);
@@ -255,28 +251,21 @@ impl StreamView {
 fn retain_metadata(
     record: &wire::Record,
     original: Option<&acyclic_stream::Record>,
-) -> Result<(wire::Record, usize), StreamError> {
-    let mut retained = 0_usize;
-    let mut charge = |bytes: usize| {
-        retained = retained
-            .checked_add(bytes)
-            .ok_or(StreamError::LimitExceeded)?;
-        Ok::<_, StreamError>(())
-    };
-    charge(size_of::<wire::Record>())?;
+) -> (wire::Record, usize) {
+    let mut bytes = size_of::<wire::Record>();
     let mut keys = Vec::with_capacity(record.keys.len());
     let mut attributes = Vec::with_capacity(record.attributes.len());
-    charge(std::mem::size_of_val(keys.spare_capacity_mut()))?;
-    charge(std::mem::size_of_val(attributes.spare_capacity_mut()))?;
+    bytes += std::mem::size_of_val(keys.spare_capacity_mut());
+    bytes += std::mem::size_of_val(attributes.spare_capacity_mut());
     // Charge the retained containers, rather than shrinking them through a
     // box solely to make their capacity agree with their logical length.
     let origin = record.origin.clone();
-    charge(origin.capacity())?;
-    charge(record.commit_id.len())?;
+    bytes += origin.capacity();
+    bytes += record.commit_id.len();
     for (index, key) in record.keys.iter().enumerate() {
         #[cfg(all(test, not(target_arch = "wasm32")))]
         tests::visit_metadata();
-        charge(key.len())?;
+        bytes += key.len();
         keys.push(retain_header(
             key,
             original.and_then(|record| record.headers.keys().get(index)),
@@ -286,8 +275,8 @@ fn retain_metadata(
         #[cfg(all(test, not(target_arch = "wasm32")))]
         tests::visit_metadata();
         let name = attribute.name.clone();
-        charge(name.capacity())?;
-        charge(attribute.value.len())?;
+        bytes += name.capacity();
+        bytes += attribute.value.len();
         attributes.push(wire::Attribute {
             name,
             value: retain_header(
@@ -315,7 +304,7 @@ fn retain_metadata(
         keys,
         attributes,
     };
-    Ok((owned, retained))
+    (owned, bytes)
 }
 
 fn retain_header(bytes: &Bytes, original: Option<&acyclic_stream::OwnedBytes>) -> Bytes {
