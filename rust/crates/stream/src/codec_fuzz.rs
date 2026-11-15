@@ -311,9 +311,8 @@ pub fn check(bytes: &[u8]) -> bool {
     };
     if let Ok(value) = crate::wire::AppendRecord::decode(bytes)
         && let Ok(record) = crate::wire_codec::append_record(value)
-        && (crate::wire_codec::append_record(crate::wire_codec::append_record_wire(
-            record.clone(),
-        )) != Ok(record.clone())
+        && (crate::wire_codec::append_record(crate::wire_codec::append_record_wire(record.clone()))
+            != Ok(record.clone())
             || crate::follow_filter::projection_contract(&crate::Record {
                 sequence: 0,
                 value: record.value,
