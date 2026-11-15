@@ -203,7 +203,7 @@ async fn socket_input_rechecks_authority_after_the_wait_selects_input() -> TestR
 
 #[test]
 fn receive_refusal_releases_owner_before_uncredited_frames_drain() -> TestResult {
-    let mut session = super::properties::empty_session(false);
+    let mut session = super::properties::empty_session(false)?;
     let (gone, left) = oneshot::channel();
     let (frames, receiver) = mpsc::unbounded();
     drop(receiver);

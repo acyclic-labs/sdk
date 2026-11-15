@@ -3,7 +3,9 @@ use crate::session::*;
 use crate::{CommitId, MemoryStream, OwnedBytes, Record};
 use proptest::prelude::*;
 
-pub(super) fn empty_session(latest: bool) -> Result<Session<MemoryStream>, StreamError> {
+pub(super) fn empty_session(
+    latest: bool,
+) -> std::result::Result<Session<MemoryStream>, StreamError> {
     let authority = testing::authority();
     let slots = testing::slots()?;
     let binding = authority
@@ -76,7 +78,7 @@ proptest! {
         history in prop::collection::vec((1_u8..5, any::<u8>(), any::<bool>()), 0..32),
         latest in any::<bool>(),
     ) {
-        let mut session = empty_session(latest)?;
+        let mut session = empty_session(latest).unwrap();
         for (index, (key, value, attention)) in history.iter().enumerate() {
             let value = crate::AppendRecord::latest(OwnedBytes::from(vec![*value]), OwnedBytes::from(vec![*key]), *attention)?;
             let record = Record { headers: value.headers,
@@ -138,7 +140,7 @@ fn check_admission(session: &Session<MemoryStream>) {
 }
 
 fn exercise_admission(operations: &[u8], broken: bool) {
-    let mut session = empty_session(false)?;
+    let mut session = empty_session(false).unwrap();
     session.credit = wire::SessionWindow {
         frames: 1000,
         bytes: crate::MAX_COMMAND_BYTES as u64,
@@ -171,7 +173,7 @@ fn exercise_admission(operations: &[u8], broken: bool) {
             }
             _ => {
                 session.remove(1).unwrap();
-                session = empty_session(false)?;
+                session = empty_session(false).unwrap();
                 sequence = 0;
             }
         }

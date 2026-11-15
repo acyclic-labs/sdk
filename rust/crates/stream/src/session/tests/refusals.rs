@@ -115,7 +115,7 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
         // Hold both credits at zero so the terminal must retain the same error
         // while earlier accepted data owns the queue. Drive the actual queue and
         // credit transitions, rather than substituting another close producer.
-        let mut session = super::properties::empty_session(false);
+        let mut session = super::properties::empty_session(false)?;
         let identity = wire::SessionChannel {
             channel_id: 1,
             generation: 1,

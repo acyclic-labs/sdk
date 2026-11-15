@@ -416,7 +416,7 @@ async fn moved_owner_withdraws() -> TestResult {
             .unwrap_or_else(|poison| poison.into_inner())
             .take()
         else {
-            return Box::pin(async { Err(StreamError::Unavailable) });
+            return Box::pin(async { Err(StreamError::Unavailable.into()) });
         };
         let target = target.clone();
         let guard = DialDrop(end.clone());

@@ -33,7 +33,9 @@ fn release_order<const RAW_DROP: bool>(
     let header = std::mem::size_of::<RetainedFact>() + 2 * std::mem::size_of::<usize>();
     RELEASED.set(0);
     EARLY_RELEASE.set(false);
+    let mut outcome: Result<(), Box<dyn std::error::Error>> = Ok(());
     let measured = acyclic_test_support::measure(|| {
+        outcome = (|| -> Result<(), Box<dyn std::error::Error>> {
         let mut root: Option<RetainedFactRef> = None;
         let mut first = None;
         for index in 0..length {
@@ -74,7 +76,10 @@ fn release_order<const RAW_DROP: bool>(
         drop(root);
         drop(first);
         drop(upgraded);
+        Ok(())
+        })();
     });
+    outcome?;
     assert_eq!(measured.count_total, length as u64);
     assert_eq!(measured.bytes_total, (header * length) as u64);
     assert_eq!(measured.count_current, 0);

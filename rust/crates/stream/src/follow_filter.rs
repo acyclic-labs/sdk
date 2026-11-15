@@ -690,12 +690,12 @@ fn check_filters(
 ) -> Result<(), Box<dyn std::error::Error>> {
             for (index, filter) in filters.iter().enumerate() {
                 let (matched, allocations, marker_probes, parsed_bytes) =
-                    measure(|| filter.matches(&record.headers));
+                    measure(|| filter.matches(&record.headers))?;
                 assert_eq!(allocations, acyclic_test_support::AllocationInfo::default());
                 assert_eq!(marker_probes, probes, "classify the marker once");
                 assert_eq!(parsed_bytes, 0, "header matching must not decode the body");
                 let (preservation, allocations, marker_probes, parsed_bytes) =
-                    measure(|| filter.preserves(&record));
+                    measure(|| filter.preserves(&record))?;
                 if valid {
                     assert_eq!(
                         allocations,
@@ -714,7 +714,7 @@ fn check_filters(
                     "validate the original body once"
                 );
                 let (projected, allocations, marker_probes, parsed_bytes) =
-                    measure(|| filter.project(record.clone()));
+                    measure(|| filter.project(record.clone()))?;
                 if valid {
                     let projected = projected.as_ref().map_err(|error| error.clone())?;
                     let projected = projected.as_ref();
@@ -783,7 +783,7 @@ fn check_filters(
     #[test]
     fn projection_reuses_validation_and_skips_unrestricted_decoding()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::changes::{take_marker_probes, take_parsed_bytes, validate};
+        use crate::changes::{take_marker_probes, validate};
 
 
 

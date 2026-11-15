@@ -376,25 +376,23 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
 async fn product_input_control(resource: &'static str, action: &'static str) -> TestResult {
     use acyclic_auth::contract::*;
     let credential = acyclic_auth::testing::root(|block| {
-        block
+        if let Some(key) = block
             .certificates
             .as_mut()
-            .ok_or("missing certificates")?
-            .keys
-            .first_mut()
-            .ok_or("missing root key")?
-            .key
-            .grants = GrantSet {
-            grants: vec![Grant {
-                kind: GrantKind::Resource(ResourceGrant {
-                    resource: ResourcePattern {
-                        name: resource.into(),
-                        prefix: false,
-                    },
-                    actions: vec![action.into()],
-                }),
-            }],
-        };
+            .and_then(|certificates| certificates.keys.first_mut())
+        {
+            key.key.grants = GrantSet {
+                grants: vec![Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: resource.into(),
+                            prefix: false,
+                        },
+                        actions: vec![action.into()],
+                    }),
+                }],
+            };
+        }
     });
     let (admitted, mut dispatches) = tokio::sync::mpsc::unbounded_channel();
     let (host, lifetime) = tokio::sync::watch::channel(());

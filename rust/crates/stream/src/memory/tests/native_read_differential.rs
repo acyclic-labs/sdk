@@ -246,7 +246,7 @@ fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog()
                 meter.allocations.load(Ordering::SeqCst),
             );
             let first = futures::executor::block_on(output.value_mut().next())
-                .ok_or("missing first record")??;
+                .ok_or("missing first record")???;
             assert_eq!(first.value().sequence, 0);
             assert_eq!(first.value().value.as_ref(), &[0, 0, 255]);
             let first_work = meter.examined.load(Ordering::SeqCst);

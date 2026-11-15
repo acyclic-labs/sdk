@@ -121,7 +121,7 @@ fn endpoint(
     channel: TransportChannel,
     received: &std::sync::Arc<Received>,
     broken: bool,
-) -> Result<transport::Endpoint, Box<dyn std::error::Error>> {
+    ) -> Result<transport::Endpoint, Box<dyn std::error::Error + Send + Sync>> {
     Ok(std::sync::Arc::new(Observed {
         inner: native::endpoint(channel, Some("Bearer fixture".parse()?), None),
         received: received.clone(),

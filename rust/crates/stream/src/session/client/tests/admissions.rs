@@ -36,8 +36,8 @@ fn ended_sibling(
             receiver_b,
         )?;
     // Their Open commands have already been dispatched into the fixture routes.
-    pool.admissions.remove(1).ok_or("missing admission")?;
-    pool.admissions.remove(3).ok_or("missing admission")?;
+    pool.admissions.remove(1)?;
+    pool.admissions.remove(3)?;
     assert!(pool.receive_frame(
         "good",
         frame(

@@ -52,7 +52,7 @@ fn scanned_ready(
 #[test]
 fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
     for count in [1024, 4096, 8192] {
-        let mut session = properties::empty_session(true);
+        let mut session = properties::empty_session(true).unwrap();
         // The caller's explicit budget admits the fixture's many small frames.
         session.limits = Limits {
             channels: count + 1,
@@ -137,7 +137,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
 
 #[test]
 fn global_byte_credit_selects_fitting_heads_without_overtaking_a_channel() {
-    let mut session = properties::empty_session(false);
+    let mut session = properties::empty_session(false).unwrap();
     let binding = session
         .authority
         .bind(
