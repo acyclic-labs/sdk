@@ -1,6 +1,6 @@
 //! Host-owned lazy skill sources. Manifests carry opaque retained identities,
 //! never authority to open a host path supplied by a task.
-use crate::context::native_discovery::LazyDiscovery;
+use crate::context::native_discovery::{LazyDiscovery, native_work};
 use crate::context::{
     ContextRoot, DiscoveryPage, DiscoverySource, DiscoveryWork, PROJECT_SKILL_ROOTS,
     PinnedContextPath, SkillCatalog, SkillMetadata, SkillPrefix, SkillReader, discover_skills_from,
@@ -502,7 +502,7 @@ impl NativeSkills {
                 directory: LazyDiscovery {
                     view,
                     cut: cut.clone(),
-                    work: &work,
+                    cancellation: &cancellation,
                 },
                 native,
                 records: &mut records,
@@ -527,7 +527,7 @@ impl NativeSkills {
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
             drop(scan);
-            records.publish(&self.records, &work).await?;
+            records.publish(&self.records, &cancellation).await?;
             // An unwatchable user source must not enter either catalog cache.
             *cached =
                 generation.map(|generation| (cut.id, source_root.into(), generation, catalog));
@@ -563,7 +563,6 @@ impl NativeSkills {
             let (generation, mut skills) = self.source_user_catalog(bounds)?.await?;
             let mut records = RetainedBatch::default();
             let cancellation = acyclic_fs::CancellationToken::new();
-            let work = native_work(&cancellation)?;
             for skill in &mut skills {
                 if skill.source.root.volume == self.journal {
                     continue;
@@ -572,7 +571,7 @@ impl NativeSkills {
                     .records
                     .read(
                         hex::encode(skill.source.generation.as_resource().key()),
-                        &work,
+                        &native_work(&cancellation)?,
                     )
                     .await?
                     .ok_or_else(|| {
@@ -592,7 +591,7 @@ impl NativeSkills {
                     records.retain(&self.journal, RetainedSource::Native(Box::new(source)))?;
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
-            records.publish(&self.records, &work).await?;
+            records.publish(&self.records, &cancellation).await?;
             *cached = generation.map(|generation| (generation, catalog));
             Ok((generation, skills))
         })
@@ -620,7 +619,6 @@ impl NativeSkills {
             }
             let generation = self.user_watch.arm(&self.user_roots, bounds);
             let cancellation = acyclic_fs::CancellationToken::new();
-            let work = native_work(&cancellation)?;
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
             let mut skills = Vec::new();
             let mut roots = std::collections::HashSet::new();
@@ -632,7 +630,7 @@ impl NativeSkills {
                     config.limits,
                     None,
                     None,
-                    &work,
+                    &native_work(&cancellation)?,
                     &cancellation,
                 )
                 .await
@@ -652,7 +650,7 @@ impl NativeSkills {
                     sources: self,
                     source: &source,
                     root,
-                    work: &work,
+                    cancellation: &cancellation,
                     records: &mut records,
                 };
                 skills.extend(
@@ -660,7 +658,7 @@ impl NativeSkills {
                 );
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
-            records.publish(&self.records, &work).await?;
+            records.publish(&self.records, &cancellation).await?;
             *cached = generation.map(|generation| (generation, catalog));
             Ok((generation, skills))
         })
@@ -704,10 +702,10 @@ impl SkillReader for ProjectCatalog<'_> {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, SkillPrefix>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let path = format!("/{relative}");
-            let mut accounting = acyclic_fs::kernel::KernelAccounting::native(
-                self.directory.work,
-                self.directory.work.cancellation(),
-            );
+            // One skill read is one unit of native work.
+            let work = &native_work(self.directory.cancellation)?;
+            let mut accounting =
+                acyclic_fs::kernel::KernelAccounting::native(work, work.cancellation());
             let (lookup, _, allocation) = self
                 .directory
                 .view
@@ -758,7 +756,6 @@ impl SkillReader for ProjectCatalog<'_> {
                 )
                 .await?;
             let view = &self.directory.view;
-            let work = self.directory.work;
             let path = &path;
             let off =
                 crate::layers::off_from_prefix(&prefix.bytes, length, work, |range| async move {
@@ -783,7 +780,8 @@ struct UserCatalogSource<'a> {
     sources: &'a NativeSkills,
     source: &'a NativeDemandSource,
     root: &'a Path,
-    work: &'a acyclic_fs::NativeMaterializationWork,
+    /// Each page and each skill read is its own unit of native work.
+    cancellation: &'a acyclic_fs::CancellationToken,
     records: &'a mut RetainedBatch,
 }
 impl DiscoverySource for UserCatalogSource<'_> {
@@ -798,10 +796,10 @@ impl DiscoverySource for UserCatalogSource<'_> {
     ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<SourceReference, Self::Cursor>>>> {
         Box::pin(async move {
             let reference = revision.cloned().unwrap_or_else(|| self.source.reference());
-            let cancellation = self.work.cancellation();
+            let cancellation = self.cancellation;
+            let work = &native_work(cancellation)?;
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
-            let mut accounting =
-                acyclic_fs::kernel::KernelAccounting::native(self.work, cancellation);
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::native(work, cancellation);
             let (path, _allocation) = NamespacePath::parse_in_profile(
                 &format!("/{directory}"),
                 config.profile,
@@ -820,7 +818,7 @@ impl DiscoverySource for UserCatalogSource<'_> {
                     &path,
                     cursor,
                     maximum,
-                    self.work,
+                    work,
                     cancellation,
                 )
                 .await;
@@ -833,8 +831,7 @@ impl DiscoverySource for UserCatalogSource<'_> {
             let scanned = u32::try_from(page.entries.len())
                 .map_err(|_| Error::Invalid("entry count overflow".into()))?;
             for entry in &page.entries {
-                let Some(name) = super::native_discovery::portable_name(&entry.name, self.work)?
-                else {
+                let Some(name) = super::native_discovery::portable_name(&entry.name, work)? else {
                     continue;
                 };
                 entries.push(crate::context::DiscoveryEntry {
@@ -870,10 +867,10 @@ impl SkillReader for UserCatalogSource<'_> {
         maximum: u32,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, SkillPrefix>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
-            let cancellation = self.work.cancellation();
+            let cancellation = self.cancellation;
+            let work = &native_work(cancellation)?;
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
-            let mut accounting =
-                acyclic_fs::kernel::KernelAccounting::native(self.work, cancellation);
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::native(work, cancellation);
             let path = format!("/{path}");
             let (parsed, _allocation) = NamespacePath::parse_in_profile(
                 &path,
@@ -884,7 +881,7 @@ impl SkillReader for UserCatalogSource<'_> {
             )?;
             let node = self
                 .source
-                .lookup(reference.clone(), &parsed, self.work, cancellation)
+                .lookup(reference.clone(), &parsed, work, cancellation)
                 .await
                 .map_err(storage)?
                 .ok_or_else(|| Error::NotFound("discovered skill disappeared".into()))?;
@@ -902,13 +899,12 @@ impl SkillReader for UserCatalogSource<'_> {
                     node.version,
                     0,
                     length.min(u64::from(maximum)),
-                    self.work,
+                    work,
                     cancellation,
                 )
                 .await
                 .map_err(storage)?;
             let source = self.source;
-            let work = self.work;
             let parsed = &parsed;
             let off =
                 crate::layers::off_from_prefix(&prefix.bytes, length, work, |range| async move {
@@ -1271,14 +1267,4 @@ mod binding_tests {
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
-}
-
-fn native_work(
-    cancellation: &acyclic_fs::CancellationToken,
-) -> Result<acyclic_fs::NativeMaterializationWork> {
-    acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
-        cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }

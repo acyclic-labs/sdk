@@ -119,7 +119,7 @@ async fn large_retained_catalogs_chunk_and_replay_without_losing_source_keys() -
     ));
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = native_work(&cancellation)?;
-    retry.publish(&sources.records, &work).await?;
+    retry.publish(&sources.records, &cancellation).await?;
     assert_eq!(
         stream.tail(journal).await.map_err(storage)?,
         tail,
@@ -147,6 +147,58 @@ async fn large_retained_catalogs_chunk_and_replay_without_losing_source_keys() -
                 .is_some()
         );
     }
+    Ok(())
+}
+
+/// A catalog costs about 5.2k native items per skill, so under one shared
+/// boundary budget about 190 skills exhausted it. Each directory page, skill
+/// read, retained record read and published chunk is now its own bounded unit,
+/// so a catalog several budgets large is discovered whole. Its size is bounded
+/// only by the discovery limits its caller configures.
+#[tokio::test]
+async fn catalogs_larger_than_one_boundary_budget_discover_every_skill() -> Result<()> {
+    const SKILLS: u32 = 1000;
+    acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+    acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
+    let root = tempfile::tempdir().map_err(storage)?;
+    let native = root.path().join("skills");
+    for index in 0..SKILLS {
+        let directory = native.join(format!("skill-{index:04}"));
+        std::fs::create_dir_all(&directory).map_err(storage)?;
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!("---\nname: skill-{index:04}\ndescription: large catalog\n---\nbody"),
+        )
+        .map_err(storage)?;
+    }
+    let provider = crate::resources::ProviderRef::new(
+        "large-catalog".into(),
+        "filesystem".into(),
+        "1".into(),
+        &mut None,
+    )?;
+    let volume = VolumeRef::new(
+        provider,
+        "journal".into(),
+        crate::conversation::VolumeClass::AgentPrivate,
+        crate::conversation::VolumeOwner::Agent(crate::AgentId::from_bytes([3; 16])),
+        &mut None,
+    )?;
+    let filesystem =
+        acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(root.path().join("state")))
+            .await
+            .map_err(storage)?;
+    let sources = NativeSkills::new(filesystem.stream_provider(), volume, None, vec![native])?;
+    let mut discovery = DiscoveryWork {
+        limits: crate::context::ContextDiscoveryLimits {
+            entries: 2 * SKILLS + 1,
+            directories: SKILLS + 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let skills = sources.user_catalog(&mut discovery)?.await?;
+    assert_eq!(skills.len(), SKILLS as usize);
     Ok(())
 }
 
@@ -245,7 +297,7 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
             let pin = retry.retain(&volume, record)?;
             assert!(skills.iter().any(|skill| skill.source == pin));
         }
-        retry.publish(&sources.records, &work).await?;
+        retry.publish(&sources.records, &cancellation).await?;
         assert_eq!(stream.tail(journal.clone()).await.map_err(storage)?, 1);
         let before = work.receipt().authority_records_read;
         let read = |skill: &SkillMetadata| {
