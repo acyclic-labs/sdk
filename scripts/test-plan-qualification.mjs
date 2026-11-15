@@ -331,9 +331,9 @@ test("macOS joins every background build on foreground and background failures",
   const selection = source.slice(source.indexOf("sdk_workspace() {"), source.indexOf("# macOS ships shasum"));
   const macos = source.match(/^  macos\)\n([\s\S]*?)(?=^  \*\))/m)?.[1] ?? assert.fail("missing macOS lane");
   // The fixture covers the background builds up to their foreground join.
-  const join = macos.indexOf("\n    finish_macos\n");
-  assert.ok(join > 0, "macOS lane must join its background builds");
-  const commands = macos.slice(macos.indexOf("    finish_macos() {"), join + "\n    finish_macos\n".length);
+  const joined = macos.indexOf("\n    finish_macos\n");
+  assert.ok(joined > 0, "macOS lane must join its background builds");
+  const commands = macos.slice(macos.indexOf("    finish_macos() {"), joined + "\n    finish_macos\n".length);
   assert.ok(commands.includes("CARGO_BUILD_JOBS=8 sdk_workspace nextest --all-features --locked"));
   mkdirSync(".tools", { recursive: true });
   const root = mkdtempSync(".tools/macos-joins-").replaceAll("\\", "/");
