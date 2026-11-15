@@ -365,7 +365,13 @@ async fn announcement_publication_preserves_workload_and_delegated_authority() -
         assert_eq!(document.as_ref(), br#"{"targets":[]}"#);
         let authority =
             agent_authority(&host.issuer, &host.admission, &path, &state.volumes, &[]).await?;
-        assert!(authority.grants.is_subset_of(scope.capabilities()));
+        assert!(within_parent(
+            &scope,
+            &authority.scope,
+            &state.volumes,
+            &journal,
+            crate::AgentId::from_bytes(path.id_bytes()),
+        )?);
         if !delegated {
             for operation in [VolumeOperation::Read, VolumeOperation::Write] {
                 assert!(
@@ -2218,5 +2224,250 @@ async fn a_local_agent_reads_what_its_journal_publishes_and_nothing_private() ->
         .await
         .expect_err("a scope without the journal read projected a summary");
     assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+    Ok(())
+}
+
+/// Whether `derived` stays within `parent`: each label is the parent's own
+/// (except host custody and the ceiling) and not of a kind the ceiling
+/// withholds, an explicit label for `owner`'s bindings under that ceiling, or
+/// `owner`'s own journal read under a reading ceiling. It never holds
+/// `HARNESS_HOST` or a structured label.
+fn within_parent(
+    parent: &Scope,
+    derived: &Scope,
+    volumes: &[WorkspaceEntry],
+    journal: &VolumeRef,
+    owner: crate::AgentId,
+) -> Result<bool> {
+    let mut allowed = parent
+        .capabilities()
+        .iter()
+        .filter(|label| *label != crate::contract::capability::HARNESS_HOST)
+        .filter(|label| !label.starts_with(acyclic_fs::access::SCOPE_PREFIX))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if let Some(ceiling) = crate::core::filesystem_scope_label(parent.capabilities(), &mut None)? {
+        let (selected, denied) =
+            crate::filesystem::ceiling_grants(ceiling, volumes, journal, &[], owner)?;
+        allowed.retain(|label| !denied.iter().any(|prefix| label.starts_with(prefix)));
+        allowed.extend(selected);
+        if !denied.contains(&VolumeOperation::Read.capability_prefix()) {
+            allowed.push(
+                crate::conversation::OwnJournalRead::of(journal.provider(), owner)?.into_label(),
+            );
+        }
+    }
+    Ok(derived.capabilities().iter().all(|label| {
+        allowed.iter().any(|held| held == label)
+            && label != crate::contract::capability::HARNESS_HOST
+            && !label.starts_with(acyclic_fs::access::SCOPE_PREFIX)
+    }))
+}
+
+#[tokio::test]
+async fn workload_scopes_never_widen_their_admission() -> Result<()> {
+    use crate::contract::capability::HARNESS_HOST;
+    use acyclic_fs::access::{Action, ActionSet, Capability};
+    let path = AgentPath::root(&crate::agent::AgentId::from_bytes([231; 16]));
+    let other = AgentPath::root(&crate::agent::AgentId::from_bytes([232; 16]));
+    let owner = crate::AgentId::from_bytes(path.id_bytes());
+    let provider = ProviderRef::new(
+        "workload".into(),
+        "filesystem".into(),
+        "1".into(),
+        &mut None,
+    )?;
+    let journal = crate::conversation::journal_volume(provider.clone(), &path.id())?;
+    let other_journal = crate::conversation::journal_volume(provider.clone(), &other.id())?;
+    let private = private_volume(provider.clone(), &path.id())?;
+    let volumes = [WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        private.clone(),
+    )];
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: "workload".into(),
+    };
+    let root = AuthorityRoot::new("workload", [233; 32], audience);
+    let native: RuntimeAuthority = root.clone().into();
+    let verifier = root.verifier(&mut None)?;
+    let workload = || crate::core::ScopeDerivation::Workload {
+        journal: &journal,
+        volumes: &volumes,
+        external: &[],
+    };
+    let custody = |grants: Vec<String>, agent| {
+        root.bootstrap_scope("custody", &Capabilities::new(grants), agent, &mut None)
+    };
+    let label = |capability: Capability| {
+        capability
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))
+    };
+    let read = journal.capability(VolumeOperation::Read, &mut None)?;
+    let write = journal.capability(VolumeOperation::Write, &mut None)?;
+    // The own journal read is built from the agent's identity alone.
+    let own = crate::conversation::OwnJournalRead::of(&provider, owner)?.into_label();
+    assert_eq!(own, read);
+    assert_ne!(
+        own,
+        other_journal.capability(VolumeOperation::Read, &mut None)?
+    );
+    let tree = label(Capability::whole_volume(None, &Action::ALL))?;
+    let source_read = label(Capability::whole_volume(
+        None,
+        ActionSet::SourceRead.actions(),
+    ))?;
+    // A ceiling allowing `Read` alone withholds the list, history and fork
+    // actions an explicit read label carries.
+    let bare_read = label(Capability::whole_volume(None, &[Action::Read]))?;
+    let mut subtree = Capability::whole_volume(None, &Action::ALL);
+    subtree.layers[0][0].resource.path = "src/**".into();
+    let subtree = label(subtree)?;
+    // A workload derives only for its own journal's agent, and only from a
+    // ceiling explicit labels can carry.
+    for parent in [
+        custody(
+            vec![read.clone(), write.clone()],
+            Some(crate::AgentId::from_bytes(other.id_bytes())),
+        )?,
+        custody(vec![subtree], None)?,
+    ] {
+        let refused = native
+            .delegate(&parent, "agent", workload())
+            .await
+            .expect_err("a workload derived for another agent or a narrowed ceiling");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+    }
+    // Every derivation path stays within its parent: with and without the
+    // journal's labels, and under a whole, a reading and a bare-read ceiling,
+    // the last beside an explicit write it must withhold.
+    for (grants, agent, reads, writes) in [
+        (
+            vec![HARNESS_HOST.to_owned(), write.clone()],
+            Some(owner),
+            false,
+            true,
+        ),
+        (
+            vec![HARNESS_HOST.to_owned(), read.clone(), write.clone()],
+            Some(owner),
+            true,
+            true,
+        ),
+        (vec![HARNESS_HOST.to_owned(), tree], None, true, false),
+        (vec![source_read], None, true, false),
+        (vec![bare_read, write.clone()], None, false, false),
+    ] {
+        let parent = custody(grants, agent)?;
+        let derived = native.delegate(&parent, "agent", workload()).await?;
+        assert_eq!(derived.agent(), Some(owner));
+        assert!(
+            within_parent(&parent, &derived, &volumes, &journal, owner)?,
+            "a workload widened its parent: {:?}",
+            derived.capabilities()
+        );
+        assert_eq!(derived.capabilities().contains(&read), reads);
+        assert_eq!(derived.capabilities().contains(&write), writes);
+        // No derivation reaches another agent's journal.
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            let denied =
+                ContentGrant::verify(&verifier, &derived, &other_journal, operation, &mut None)
+                    .expect_err("a workload reached another agent's journal");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_tree_admission_never_extends_to_another_agents_private_volumes() -> Result<()> {
+    use crate::conversation::VolumeOperation;
+    let path = AgentPath::root(&crate::agent::AgentId::from_bytes([234; 16]));
+    let source = AgentPath::root(&crate::agent::AgentId::from_bytes([235; 16]));
+    let owner = crate::AgentId::from_bytes(path.id_bytes());
+    let provider = ProviderRef::new("tree".into(), "filesystem".into(), "1".into(), &mut None)?;
+    let private = private_volume(provider.clone(), &path.id())?;
+    let journal = crate::conversation::journal_volume(provider.clone(), &path.id())?;
+    let source_private = private_volume(provider.clone(), &source.id())?;
+    let source_journal = crate::conversation::journal_volume(provider, &source.id())?;
+    // A fork binds its source's private volume beside its own.
+    let volumes = [
+        WorkspaceEntry::initial_volume(
+            crate::agent::WorkspaceRole::Private,
+            PRIVATE_VOLUME.into(),
+            private.clone(),
+        ),
+        WorkspaceEntry::initial_volume(
+            crate::agent::WorkspaceRole::Output,
+            "source".into(),
+            source_private.clone(),
+        ),
+    ];
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: "tree".into(),
+    };
+    let root = AuthorityRoot::new("tree", [236; 32], audience.clone());
+    // The scope a served tree admits every agent under: bound to no agent,
+    // with one structured label over every volume.
+    let tree = acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let served = root.bootstrap_scope("served", &Capabilities::new([tree]), None, &mut None)?;
+    let admission = TurnAdmission::Admitted {
+        audience,
+        scope: served,
+    };
+    let native: RuntimeAuthority = root.clone().into();
+    let authority = AdmittedAgent::verify(&native, &admission, &path, &volumes)?
+        .authority(&[], None)
+        .await?;
+    let verifier = root.verifier(&mut None)?;
+    ContentGrant::verify(
+        &verifier,
+        &authority.scope,
+        &private,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    // The agent keeps only its own journal's read, issued as `OwnJournalRead`.
+    assert!(
+        authority
+            .grants
+            .contains(&journal.capability(VolumeOperation::Read, &mut None)?),
+        "a workload lost its own journal's read"
+    );
+    for volume in [&source_private, &source_journal] {
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            assert!(
+                !authority
+                    .grants
+                    .contains(&volume.capability(operation, &mut None)?),
+                "a workload named another private volume or its whole journal"
+            );
+        }
+        assert!(
+            !crate::core::directory_read_granted_with_work(
+                &authority.grants,
+                volume,
+                "",
+                &mut None
+            )?,
+            "a tree admission reached a private volume by its structured label"
+        );
+    }
+    for volume in [&source_private, &source_journal] {
+        let refused = ContentGrant::verify(
+            &verifier,
+            &authority.scope,
+            volume,
+            VolumeOperation::Read,
+            &mut None,
+        )
+        .expect_err("a tree admission granted another agent's private volume");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+    }
     Ok(())
 }

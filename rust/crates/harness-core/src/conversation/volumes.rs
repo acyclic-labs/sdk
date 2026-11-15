@@ -587,9 +587,7 @@ impl ContentGrant {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         volume.validate(work)?;
-        if volume.provider().family() == "filesystem"
-            && crate::core::filesystem_scope_label(scope.capabilities(), work)?.is_some()
-        {
+        if crate::core::structured_grant(scope.capabilities(), volume, work)? {
             return Ok(());
         }
         if operation != VolumeOperation::Read {
@@ -622,9 +620,8 @@ impl ContentGrant {
             if !prefix.is_empty() {
                 validate_content_path(prefix, quota.work())?;
             }
-            let structured = volume.provider().family() == "filesystem"
-                && crate::core::filesystem_scope_label(scope.capabilities(), quota.work())?
-                    .is_some();
+            let structured =
+                crate::core::structured_grant(scope.capabilities(), volume, quota.work())?;
             if (!structured && scope.agent().is_none())
                 || !crate::core::directory_read_granted_with_work(
                     scope.capabilities(),
@@ -792,6 +789,33 @@ pub fn private_volume(provider: ProviderRef, agent: &crate::agent::AgentId) -> R
         VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
         &mut None,
     )
+}
+
+/// The whole-journal read of one agent's own journal, the read every agent's
+/// workload holds. It is built only from that agent's identity: its label is
+/// the read of exactly the journal [`journal_volume`] derives for `agent`, so
+/// no value of this type names another agent's journal.
+pub struct OwnJournalRead(String);
+
+impl OwnJournalRead {
+    /// The read of `agent`'s own journal on `provider`.
+    ///
+    /// # Errors
+    /// When the journal's label cannot be derived.
+    pub fn of(provider: &ProviderRef, agent: crate::AgentId) -> Result<Self> {
+        journal_volume(
+            provider.clone(),
+            &crate::agent::AgentId::from_bytes(agent.into_bytes()),
+        )?
+        .capability(VolumeOperation::Read, &mut None)
+        .map(Self)
+    }
+
+    /// The signed-scope label.
+    #[must_use]
+    pub fn into_label(self) -> String {
+        self.0
+    }
 }
 
 /// The agent's harness-owned journal, outside its workspace table. Its identity

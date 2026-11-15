@@ -66,6 +66,98 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     ] {
         run(backend, case).await?;
     }
+    workload_custody().await
+}
+
+/// A workload derives only for its own journal's agent, holds neither
+/// `HARNESS_HOST` nor its parent's structured label, and never reaches
+/// another agent's journal or private volume, even when that label covers
+/// every volume the host selects.
+async fn workload_custody() -> Result {
+    use acyclic_harness_core::{
+        contract::capability::HARNESS_HOST,
+        conversation::ContentGrant,
+        core::{RuntimeAuthority, ScopeDerivation},
+    };
+    let owner = AgentId::from_bytes([31; 16]);
+    let other = AgentId::from_bytes([32; 16]);
+    let provider = acyclic_harness_core::resources::ProviderRef::new(
+        "workload".into(),
+        "filesystem".into(),
+        "1".into(),
+        &mut None,
+    )?;
+    let journal = acyclic_harness_core::conversation::journal_volume(provider.clone(), &owner)?;
+    let foreign = acyclic_harness_core::conversation::journal_volume(provider.clone(), &other)?;
+    let private = acyclic_harness_core::filesystem::private_volume(provider.clone(), &owner)?;
+    let foreign_private = acyclic_harness_core::filesystem::private_volume(provider, &other)?;
+    // A fork binds its source's private volume beside its own.
+    let volumes = [
+        WorkspaceEntry::initial_volume(
+            WorkspaceRole::Private,
+            PRIVATE_VOLUME.into(),
+            private.clone(),
+        ),
+        WorkspaceEntry::initial_volume(
+            WorkspaceRole::Output,
+            "source".into(),
+            foreign_private.clone(),
+        ),
+    ];
+    let root = AuthorityRoot::new(
+        "workload",
+        [33; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "workload".into(),
+        },
+    );
+    let native: RuntimeAuthority = root.clone().into();
+    let verifier = root.verifier(&mut None)?;
+    let agent = |id: AgentId| acyclic_harness_core::AgentId::from_bytes(id.to_bytes());
+    let read = journal.capability(VolumeOperation::Read, &mut None)?;
+    let write = journal.capability(VolumeOperation::Write, &mut None)?;
+    let tree = acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
+        .to_scope_label()
+        .map_err(|error| error.to_string())?;
+    let workload = || ScopeDerivation::Workload {
+        journal: &journal,
+        volumes: &volumes,
+        external: &[],
+    };
+    let refused = root.bootstrap_scope(
+        "custody",
+        &Capabilities::new([read.clone(), write.clone()]),
+        Some(agent(other)),
+        &mut None,
+    )?;
+    if native.delegate(&refused, "agent", workload()).await.is_ok() {
+        return Err("a workload derived for another agent's journal".into());
+    }
+    for grants in [
+        vec![HARNESS_HOST.to_owned(), read.clone(), write.clone()],
+        vec![HARNESS_HOST.to_owned(), tree.clone()],
+    ] {
+        let parent =
+            root.bootstrap_scope("custody", &Capabilities::new(grants), None, &mut None)?;
+        let derived = native.delegate(&parent, "agent", workload()).await?;
+        if [HARNESS_HOST, tree.as_str()]
+            .iter()
+            .any(|label| derived.capabilities().contains(label))
+            || derived.agent() != Some(agent(owner))
+        {
+            return Err("a derived workload kept host custody or lost its owner".into());
+        }
+        // A guest never reaches another agent's journal or private volume,
+        // even when its parent's structured label covers every volume.
+        for volume in [&foreign, &foreign_private] {
+            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+                if ContentGrant::verify(&verifier, &derived, volume, operation, &mut None).is_ok() {
+                    return Err("a workload reached another agent's private volume".into());
+                }
+            }
+        }
+    }
     Ok(())
 }
 
