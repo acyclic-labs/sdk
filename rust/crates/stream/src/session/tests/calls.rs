@@ -889,12 +889,12 @@ fn assert_reply_failure<T>(result: Option<Result<T, StreamError>>, expected: Str
         Some(Err(error)) => error,
         _ => panic!("reply ended without its original failure"),
     };
-    assert_eq!(error.category(), expected);
+    assert_eq!(error.category(), expected.category());
     let mut cause = std::error::Error::source(&error);
     while let Some(source) = cause {
         if source
             .downcast_ref::<StreamError>()
-            .is_some_and(|original| original.category() == expected)
+            .is_some_and(|original| original.category() == expected.category())
         {
             return;
         }

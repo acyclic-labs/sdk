@@ -4,7 +4,7 @@ use crate::StreamProviderExt as _;
 use crate::{
     AppendOutcome, AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitOutcome,
     CommitRequest, ForkRequest, IdempotencyKey, IdempotencyOutcome, OwnedBytes, ReadRequest,
-    StreamCategory, StreamError, StreamPath, StreamProvider,
+    StreamCategory, StreamPath, StreamProvider,
 };
 use futures::{StreamExt as _, TryStreamExt as _};
 use sha2::{Digest as _, Sha256};

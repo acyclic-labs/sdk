@@ -1,6 +1,6 @@
 //! Provider-independent assertions formerly confined to the HTTP fixture runner.
 use crate::StreamProviderExt as _;
-use crate::{StreamCategory, StreamError, StreamPath, StreamProvider};
+use crate::{StreamCategory, StreamPath, StreamProvider};
 
 pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), super::Failure> {
     let first = StreamPath::new("conformance/atomic-first")?;

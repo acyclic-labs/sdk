@@ -4,7 +4,7 @@
 use futures::StreamExt as _;
 use prost::Message as _;
 
-use crate::{FollowStream, FollowUpdate, StreamCategory, StreamError, StreamProvider, wire};
+use crate::{FollowStream, FollowUpdate, StreamError, StreamProvider, wire};
 
 fn decode<T: prost::Message + Default>(input: &[u8]) -> Result<T, StreamError> {
     T::decode(input).map_err(|_| StreamError::InvalidArgument)

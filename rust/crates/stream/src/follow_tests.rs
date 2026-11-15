@@ -163,7 +163,7 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
             .ok_or("replacement ended silently")?;
         assert!(
             matches!(
-                item,
+                &item,
                 Err(error) if matches!(error.category(), StreamCategory::NotFound
                     | StreamCategory::OutOfRange
                     | StreamCategory::PrefixNotRetained)

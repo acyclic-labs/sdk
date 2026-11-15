@@ -1,4 +1,4 @@
-use crate::{StreamCategory, StreamError, StreamPath};
+use crate::{StreamError, StreamPath};
 use std::borrow::Cow;
 
 /// Encodes a stream name as an injective canonical product resource.
@@ -82,6 +82,7 @@ fn decode_stream_name(encoded: &str) -> Result<Cow<'_, str>, StreamError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StreamCategory;
 
     // Original owned-component decoder is the independent allocation control.
     fn temporary_stream_path(resource: &str) -> Result<StreamPath, StreamError> {

@@ -1,4 +1,4 @@
-use crate::{Attribute, OwnedBytes, StreamCategory, StreamError};
+use crate::{Attribute, OwnedBytes, StreamError};
 use std::sync::Arc;
 
 mod attributes;
@@ -311,7 +311,7 @@ mod native_tests {
                         &foreign.original(),
                     )?
                     .map_err(|error| error.category()),
-                    Err(StreamCategory::InvalidArgument),
+                    Err(crate::StreamCategory::InvalidArgument),
                 );
                 assert_eq!(foreign.allocations.load(Ordering::SeqCst), 0);
                 let retained = headers.clone();
@@ -329,7 +329,7 @@ mod native_tests {
                 &invalid.original(),
             )?
             .map_err(|error| error.category()),
-            Err(StreamCategory::InvalidArgument),
+            Err(crate::StreamCategory::InvalidArgument),
         );
         assert_eq!(invalid.allocations.load(Ordering::SeqCst), 0);
         assert_eq!(
@@ -338,7 +338,7 @@ mod native_tests {
                 &invalid.original()
             )?
             .map_err(|error| error.category()),
-            Err(StreamCategory::InvalidArgument),
+            Err(crate::StreamCategory::InvalidArgument),
         );
         assert_eq!(invalid.allocations.load(Ordering::SeqCst), 0);
         Ok(())

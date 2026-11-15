@@ -89,7 +89,7 @@ pub fn grpc_status(bytes: &[u8]) -> bool {
         }
         let decoded = status(&original);
         let encoded = Status::from(&decoded);
-        if decoded.category() != category(&original)
+        if decoded.category() != category(&original).category()
             || decoded.uncertain() != category(&original).uncertain()
             || encoded.code() != original.code()
             || encoded.message() != original.message()

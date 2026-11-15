@@ -532,7 +532,7 @@ include!("http/follow.rs");
 
 #[cfg(test)]
 mod tests {
-    use super::{HttpStream, StreamCategory, StreamError, wire};
+    use super::{HttpStream, StreamCategory, wire};
     use prost::Message;
 
     #[test]

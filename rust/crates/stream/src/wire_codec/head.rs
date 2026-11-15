@@ -1,5 +1,4 @@
 use super::*;
-use crate::StreamCategory;
 
 /// Validates the canonical mixed observation request before provider admission.
 pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest, StreamError> {
@@ -219,6 +218,7 @@ pub fn fork_origin_to_wire(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StreamCategory;
     use proptest::prelude::*;
     use prost::Message;
 

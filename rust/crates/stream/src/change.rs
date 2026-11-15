@@ -1,4 +1,4 @@
-use crate::{StreamCategory, StreamError};
+use crate::StreamError;
 use acyclic_collections::{FixedIndex, IndexWork};
 use std::{
     future::poll_fn,
@@ -208,6 +208,7 @@ impl Drop for Subscription {
 #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::StreamCategory;
     use std::{future::Future, sync::Mutex as StdMutex, task::Wake};
 
     struct Reenter {

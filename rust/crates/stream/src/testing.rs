@@ -211,8 +211,8 @@ mod tests {
     #[tokio::test]
     async fn erased_provider_preserves_records_failures_and_request_budgets() {
         use crate::{
-            AppendOutcome, AppendRequest, MemoryStream, ReadRequest, StreamCategory, StreamError,
-            StreamPath, StreamProvider, StreamProviderExt as _,
+            AppendOutcome, AppendRequest, MemoryStream, ReadRequest, StreamCategory, StreamPath,
+            StreamProvider, StreamProviderExt as _,
         };
         use futures::TryStreamExt as _;
 

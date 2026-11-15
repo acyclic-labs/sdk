@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamCategory;
 
 // The pool fixtures and searches drive the native gRPC transport.
 #[cfg(all(any(test, loom), not(target_arch = "wasm32")))]

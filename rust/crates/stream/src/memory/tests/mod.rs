@@ -1,3 +1,4 @@
+use crate::StreamCategory;
 include!("cases_0.rs");
 
 #[cfg(not(loom))]

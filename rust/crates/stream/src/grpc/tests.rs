@@ -973,7 +973,7 @@ proptest::proptest! {
             relayed.metadata_mut().insert("acyclic-unserved-reason", value);
         }
         let decoded = status(&relayed);
-        proptest::prop_assert_eq!(decoded.category(), category(&relayed));
+        proptest::prop_assert_eq!(decoded.category(), category(&relayed).category());
         proptest::prop_assert_eq!(decoded.uncertain(), category(&relayed).uncertain());
         for encoded in [Status::from(&decoded), Status::from(decoded.clone())] {
             proptest::prop_assert_eq!(original(&encoded), original(&relayed));

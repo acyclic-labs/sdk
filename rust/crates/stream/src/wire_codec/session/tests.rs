@@ -30,7 +30,7 @@ fn closed_diagnostics_preserve_every_declared_category() {
             panic!("not a close")
         };
         let error = closed_error(&closed);
-        assert_eq!(error.category(), category);
+        assert_eq!(error.category(), category.category());
         assert_eq!(tonic::Status::from(&error).message(), "caller diagnostic");
         let source = std::error::Error::source(&error).expect("retained refusal");
         let parts = source
@@ -43,7 +43,7 @@ fn closed_diagnostics_preserve_every_declared_category() {
             tonic::Status::from(&category).code(),
             &closed.message,
         ));
-        old_decoder_misclassifies += usize::from(old.category() != category);
+        old_decoder_misclassifies += usize::from(old.category() != category.category());
     }
     assert!(
         old_decoder_misclassifies > 0,

@@ -2,7 +2,7 @@
 use crate::AppendRecord;
 use crate::{
     AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitRequest, ForkRequest,
-    MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES, StreamCategory, StreamError, StreamPath,
+    MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES, StreamError, StreamPath,
 };
 use sha2::{Digest, Sha256};
 pub(crate) fn validate_records(records: &[AppendRecord]) -> Result<(), StreamError> {
@@ -852,7 +852,7 @@ mod tests {
             .push(append("a/child/deeper")?);
         assert_eq!(
             validate_commit(&mut request).map_err(|error| error.category()),
-            Err(StreamCategory::InvalidArgument)
+            Err(crate::StreamCategory::InvalidArgument)
         );
         request
             .effects
@@ -867,7 +867,7 @@ mod tests {
         });
         assert_eq!(
             validate_commit(&mut request).map_err(|error| error.category()),
-            Err(StreamCategory::InvalidArgument)
+            Err(crate::StreamCategory::InvalidArgument)
         );
         Ok(())
     }
@@ -903,7 +903,7 @@ mod tests {
             binding
                 .matches_with(&facts, |_| Err::<(), _>(StreamError::LimitExceeded))
                 .map_err(|error| error.category()),
-            Err(StreamCategory::LimitExceeded)
+            Err(crate::StreamCategory::LimitExceeded)
         );
         let crate::CommittedMutation::Append(append) = &mut facts.mutations[0] else {
             return Err(StreamError::InvalidArgument);

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod error_code_tests {
-    use super::StreamError;
+    use super::{StreamCategory, StreamError};
 
     #[test]
     fn local_causes_survive_cloning_without_changing_classification() {

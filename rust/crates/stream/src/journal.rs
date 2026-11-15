@@ -3,9 +3,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::OwnedBytes as Bytes;
 use crate::wire_codec;
-use crate::{
-    MemoryStream, StreamCategory, StreamError, StreamProvider, WriteOutcome, WriteRequest,
-};
+use crate::{MemoryStream, StreamError, StreamProvider, WriteOutcome, WriteRequest};
 use prost::Message;
 
 /// Version 2: commits carry ordered effects. Version 1 journals are refused
@@ -197,7 +195,7 @@ mod tests {
             previous[b"ACYCLIC-STREAM-COMMAND-V".len()] = b'1';
             assert!(matches!(
                 decode_command(&previous),
-                Err(error) if error.category() == StreamCategory::Unsupported
+                Err(error) if error.category() == crate::StreamCategory::Unsupported
             ));
             let mut unknown = encoded.clone();
             unknown.extend_from_slice(&[0x78, 0]);

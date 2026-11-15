@@ -1,4 +1,4 @@
-use crate::{RecordHeaders, StreamCategory, StreamError, wire};
+use crate::{RecordHeaders, StreamError, wire};
 use prost::Message;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -805,12 +805,12 @@ mod tests {
                             measure(|| filter.project(record.clone()));
                         if !valid {
                             assert_eq!(
-                                preservation.map_err(|error| error.category()),
-                                Err(StreamCategory::InvalidArgument)
+                                preservation.as_ref().map_err(|error| error.category()),
+                                Err(crate::StreamCategory::InvalidArgument)
                             );
                             assert_eq!(
-                                projected.map_err(|error| error.category()),
-                                Err(StreamCategory::InvalidArgument)
+                                projected.as_ref().map_err(|error| error.category()),
+                                Err(crate::StreamCategory::InvalidArgument)
                             );
                         } else {
                             let projected = projected.as_ref().unwrap().as_ref();
@@ -1139,7 +1139,7 @@ mod tests {
                     authorized
                         .project(malformed.clone())
                         .map_err(|error| error.category()),
-                    Err(StreamCategory::InvalidArgument)
+                    Err(crate::StreamCategory::InvalidArgument)
                 );
                 assert_eq!(
                     forwarded.project(malformed.clone()),

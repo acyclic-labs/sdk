@@ -1,6 +1,6 @@
 //! Conflated connection generations, independent of task record delivery.
 use super::sync::{Arc, Mutex};
-use crate::{StreamCategory, StreamError};
+use crate::StreamError;
 use std::{
     collections::BTreeMap,
     future::Future,
@@ -193,22 +193,22 @@ pub fn verify_connection_retirement(omit_retirement: bool) {
             );
             assert!(matches!(
                 waiting.as_mut().poll(&mut cx),
-                Poll::Ready(Err(error)) if error.category() == StreamCategory::AccessDenied
+                Poll::Ready(Err(error)) if error.category() == crate::StreamCategory::AccessDenied
             ));
         } else {
             assert!(
-                matches!(first, Poll::Ready(Err(error)) if error.category() == StreamCategory::AccessDenied)
+                matches!(first, Poll::Ready(Err(error)) if error.category() == crate::StreamCategory::AccessDenied)
             );
         }
         drop(waiting);
         connections.close(StreamError::Unavailable);
         assert!(matches!(
             Box::pin(connections.changed(0)).as_mut().poll(&mut cx),
-            Poll::Ready(Err(error)) if error.category() == StreamCategory::AccessDenied
+            Poll::Ready(Err(error)) if error.category() == crate::StreamCategory::AccessDenied
         ));
         assert_eq!(
             connections.advance().map_err(|error| error.category()),
-            Err(StreamCategory::AccessDenied)
+            Err(crate::StreamCategory::AccessDenied)
         );
         assert!(connections.0.lock().unwrap().waiters.is_empty());
 
@@ -220,7 +220,7 @@ pub fn verify_connection_retirement(omit_retirement: bool) {
         wake.0.store(0, Ordering::SeqCst);
         assert_eq!(
             exhausted.advance().map_err(|error| error.category()),
-            Err(StreamCategory::Capacity)
+            Err(crate::StreamCategory::Capacity)
         );
         assert!(
             wake.0.load(Ordering::SeqCst) > 0,
@@ -228,7 +228,7 @@ pub fn verify_connection_retirement(omit_retirement: bool) {
         );
         assert!(matches!(
             waiting.as_mut().poll(&mut cx),
-            Poll::Ready(Err(error)) if error.category() == StreamCategory::Capacity
+            Poll::Ready(Err(error)) if error.category() == crate::StreamCategory::Capacity
         ));
     });
 }
