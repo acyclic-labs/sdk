@@ -25,7 +25,7 @@ mod filesystem_access;
 pub use filesystem_access::volume_operation_granted_with_work;
 pub(crate) use filesystem_access::{
     ReadGrant, contains_content_grant_with_work, directory_read_granted_with_work, file_read_grant,
-    filesystem_scope_label,
+    filesystem_scope_label, structured_grant,
 };
 pub(crate) mod ownership;
 mod records;

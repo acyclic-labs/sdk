@@ -44,6 +44,26 @@ pub enum ScopeDerivation<'a> {
         /// Recipient agent.
         reader: AgentId,
     },
+    /// An agent's workload under its admission: every parent label except
+    /// `HARNESS_HOST`, with the structured `filesystem:` ceiling resolved by
+    /// `ceiling_grants`. A ceiling naming only exact volumes is kept. A
+    /// ceiling's `volume: None` is the host's selection, so a guest holding it
+    /// could select another agent's journal or private volume by role: it is
+    /// replaced by explicit labels for the agent's own bindings within its
+    /// actions, and a reading ceiling adds the agent's [`OwnJournalRead`].
+    /// Nothing else is added, so a workload never widens its parent; a
+    /// ceiling the explicit labels cannot carry exactly refuses the
+    /// derivation. Admitted agents derive only this way.
+    ///
+    /// [`OwnJournalRead`]: crate::conversation::OwnJournalRead
+    Workload {
+        /// The acting agent's own journal.
+        journal: &'a crate::conversation::VolumeRef,
+        /// The acting agent's binding table, the host's volume selection.
+        volumes: &'a [crate::agent::WorkspaceEntry],
+        /// Committed conversation files, granted alone on other volumes.
+        external: &'a [FileRef],
+    },
     /// An original private-volume owner shares one directory prefix.
     PrivateDirectoryRead {
         /// Original owner's private volume.
@@ -78,6 +98,41 @@ impl<'a> ScopeDerivation<'a> {
                     Cow::Owned(Capabilities::new([file.read_capability(&mut None)?])),
                     Some(reader),
                 ))
+            }
+            Self::Workload {
+                journal,
+                volumes,
+                external,
+            } => {
+                journal.validate(&mut None)?;
+                let VolumeOwner::Agent(owner) = journal.owner() else {
+                    return Err(Error::Unauthorized(
+                        "a workload derives only from an agent journal".into(),
+                    ));
+                };
+                if !journal.is_agent_journal() || parent.agent.is_some_and(|agent| agent != *owner)
+                {
+                    return Err(Error::Unauthorized(
+                        "a workload derives only for its own journal's agent".into(),
+                    ));
+                }
+                let mut grants: Vec<String> = parent
+                    .capabilities
+                    .iter()
+                    .filter(|label| *label != crate::contract::capability::HARNESS_HOST)
+                    .filter(|label| !label.starts_with(acyclic_fs::access::SCOPE_PREFIX))
+                    .map(str::to_owned)
+                    .collect();
+                if let Some(ceiling) =
+                    crate::core::filesystem_scope_label(&parent.capabilities, &mut None)?
+                {
+                    let (selected, denied) = crate::filesystem::ceiling_grants(
+                        ceiling, volumes, journal, external, *owner,
+                    )?;
+                    grants.retain(|label| !denied.iter().any(|prefix| label.starts_with(prefix)));
+                    grants.extend(selected);
+                }
+                Ok((Cow::Owned(Capabilities::new(grants)), Some(*owner)))
             }
             Self::PrivateDirectoryRead {
                 volume,

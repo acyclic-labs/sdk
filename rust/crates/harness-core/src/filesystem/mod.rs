@@ -62,6 +62,7 @@ mod stock_turns;
 pub use stock_turns::{Grants, StockExecutors, Tasks, TurnContext};
 mod agent_steering;
 mod agent_turns;
+pub(crate) use agent_turns::ceiling_grants;
 pub use agent_turns::{
     AgentAuthority, FilesystemTurnHost, PRIVATE_VOLUME, TurnAdmission, TurnAuthority,
     TurnExecutors, TurnLimits, agent_authority, agent_journal_authority, private_volume,

@@ -69,6 +69,21 @@ pub(crate) enum ReadGrant<'p> {
     Directory(&'p str),
 }
 
+/// Whether `grants`' structured `filesystem:` scope admits `volume`, leaving
+/// each path to the volume's persisted policy. Its `volume: None` stands for
+/// the host's authenticated selection, so only host-held scopes carry one: a
+/// workload's admission replaces it with explicit labels for the agent's own
+/// bindings (`ScopeDerivation::Workload`). A workload keeps only a structured
+/// label naming exact volumes, whose compiled grants reach nothing else.
+pub(crate) fn structured_grant(
+    grants: &crate::Capabilities,
+    volume: &crate::conversation::VolumeRef,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<bool> {
+    Ok(volume.provider().family() == "filesystem"
+        && filesystem_scope_label(grants, work)?.is_some())
+}
+
 /// The original whole-volume, exact-file, directory or structured grant for `file`, if any.
 pub(crate) fn file_read_grant<'f>(
     grants: &crate::Capabilities,
@@ -96,8 +111,7 @@ pub(crate) fn directory_read_grant<'p>(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Option<ReadGrant<'p>>> {
     use acyclic_fs::access::{DIRECTORY_READ_PREFIX, VolumeOperation};
-    if volume.provider().family() == "filesystem" && filesystem_scope_label(grants, work)?.is_some()
-    {
+    if structured_grant(grants, volume, work)? {
         return Ok(Some(ReadGrant::Structured));
     }
     if contains_content_grant_with_work(
@@ -166,8 +180,7 @@ pub fn volume_operation_granted_with_work(
     operation: crate::conversation::VolumeOperation,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<bool> {
-    if volume.provider().family() == "filesystem" && filesystem_scope_label(grants, work)?.is_some()
-    {
+    if structured_grant(grants, volume, work)? {
         return Ok(true);
     }
     contains_content_grant_with_work(grants, volume, operation.capability_prefix(), work)

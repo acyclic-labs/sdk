@@ -251,57 +251,55 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
         })
     }
 
-    /// The agent's authority over its bound volumes. Under a local root, each
-    /// `external` file on a volume the agent does not bind (a message or
-    /// result from another agent) is granted alone, by its exact version; an
-    /// admitted agent reads what its admission grants.
+    /// The agent's authority. Under an admission it is the
+    /// [`crate::core::ScopeDerivation::Workload`] of that admission, which
+    /// holds neither `HARNESS_HOST` nor a structured `filesystem:` label; a
+    /// local root issues its [`root_grants`] directly.
     pub(super) async fn authority(
         self,
         external: &[FileRef],
         turn: Option<OperationId>,
     ) -> Result<AgentAuthority<'v>> {
-        let (grants, scope) =
-            match self.parent {
-                Some(parent) => {
-                    let grants = Capabilities::new(
-                        parent
-                            .capabilities()
-                            .iter()
-                            .filter(|label| *label != crate::contract::capability::HARNESS_HOST)
-                            .map(str::to_owned),
-                    );
-                    let scope = self
-                        .issuer
-                        .issue(Some(parent), "agent", &grants, Some(self.owner))
-                        .await?;
-                    (scope.capabilities().clone(), scope)
-                }
-                None => {
-                    let mut grants = root_grants(self.volumes, &self.journal, external)?;
-                    if let Some(turn) = turn {
-                        // Keep the fixed native input route alongside the journal
-                        // policy's ordinary read admission (including summaries).
-                        grants.push(self.journal.directory_read_capability(
+        let scope = match self.parent {
+            Some(parent) => {
+                self.issuer
+                    .delegate(
+                        parent,
+                        "agent",
+                        crate::core::ScopeDerivation::Workload {
+                            journal: &self.journal,
+                            volumes: self.volumes,
+                            external,
+                        },
+                    )
+                    .await?
+            }
+            None => {
+                let mut grants = root_grants(self.volumes, &self.journal, external, self.owner)?;
+                if let Some(turn) = turn {
+                    // Keep the fixed native input route alongside the journal
+                    // policy's ordinary read admission (including summaries).
+                    grants.push(
+                        self.journal.directory_read_capability(
                             &format!("{TURN_INPUTS}/{turn}"),
                             &mut None,
-                        )?);
-                        // Captured instructions are immutable published input,
-                        // including snapshots retained across checkpoints. This
-                        // read route excludes manifests, configuration and other
-                        // input categories; it grants neither listing nor writes.
-                        grants.push(self.journal.directory_read_capability(
-                            crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY,
-                            &mut None,
-                        )?);
-                    }
-                    let grants = Capabilities::new(grants);
-                    let scope = self
-                        .issuer
-                        .issue(None, "agent", &grants, Some(self.owner))
-                        .await?;
-                    (grants, scope)
+                        )?,
+                    );
+                    // Captured instructions are immutable published input,
+                    // including snapshots retained across checkpoints. This
+                    // read route excludes manifests, configuration and other
+                    // input categories; it grants neither listing nor writes.
+                    grants.push(self.journal.directory_read_capability(
+                        crate::context::ContextEpoch::INSTRUCTIONS_DIRECTORY,
+                        &mut None,
+                    )?);
                 }
-            };
+                self.issuer
+                    .issue(None, "agent", &Capabilities::new(grants), Some(self.owner))
+                    .await?
+            }
+        };
+        let grants = scope.capabilities().clone();
         let verifier = self.issuer.verifier(&mut None)?;
         Ok(AgentAuthority {
             issuer: self.issuer,
@@ -510,75 +508,232 @@ pub(super) fn journal_grants(journal: &VolumeRef, content: &Capabilities) -> Res
     )))
 }
 
-/// A local root agent's grants: routing, tools, the visible entries' read/write
-/// ceilings, its provider's seed layer, its own journal's reads and retained
-/// exact input versions. Raw writers cannot widen a rooted entry; scoped
-/// publication belongs to the table's view composition.
+/// `file` alone, by its exact version. An attachment manifest's files are
+/// copies in its own directory, so one grant reaches them however many it
+/// lists.
+fn exact_grants(file: &FileRef, grants: &mut Vec<String>) -> Result<()> {
+    grants.push(file.read_capability(&mut None)?);
+    if file.descriptor().media_type() == crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE
+        && let Some((directory, _)) = file.path().rsplit_once('/')
+    {
+        grants.push(
+            file.volume()
+                .directory_read_capability(directory, &mut None)?,
+        );
+    }
+    Ok(())
+}
+
+/// A local root agent's grants: routing, tools, its provider's seed layer,
+/// its own journal's reads and its [`volume_grants`].
 fn root_grants(
     volumes: &[WorkspaceEntry],
     journal: &VolumeRef,
     external: &[FileRef],
+    owner: crate::AgentId,
 ) -> Result<Vec<String>> {
     let mut grants = Vec::with_capacity(3 * volumes.len() + 3);
-    let seed = volumes
-        .iter()
-        .find_map(WorkspaceEntry::as_volume)
-        .map(|volume| crate::seed::volume(volume.provider()))
-        .transpose()?;
-    if let Some(seed) = &seed {
+    if let Some(seed) = seed(volumes)? {
         grants.push(seed.capability(VolumeOperation::Read, &mut None)?);
     }
     grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
-    // The journal read every admitted agent's admission carries. The journal
-    // policy alone decides each path: what a turn publishes for its agent to
-    // read (inputs, tool outputs, inherited conversation, compaction
-    // summaries) is readable, and execution records stay host-private.
-    grants.push(journal.capability(VolumeOperation::Read, &mut None)?);
+    // The journal read every agent holds. The journal policy alone decides
+    // each path: what a turn publishes for its agent to read (inputs, tool
+    // outputs, inherited conversation, compaction summaries) is readable,
+    // and execution records stay host-private.
+    grants.push(crate::conversation::OwnJournalRead::of(journal.provider(), owner)?.into_label());
     // Every agent may spawn, message and archive within its own subtree.
     grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
-    for binding in volumes
+    grants.extend(volume_grants(volumes, journal, external, None, &|_| true)?);
+    Ok(grants)
+}
+
+/// The provider seed layer of `volumes`, if any.
+fn seed(volumes: &[WorkspaceEntry]) -> Result<Option<VolumeRef>> {
+    volumes
         .iter()
-        .filter(|binding| binding.role != crate::agent::WorkspaceRole::Internal)
+        .find_map(WorkspaceEntry::as_volume)
+        .map(|volume| crate::seed::volume(volume.provider()))
+        .transpose()
+}
+
+/// A workload's selection under a structured `filesystem:` `ceiling` held by
+/// its admission.
+///
+/// A ceiling whose every grant names an exact volume reaches only those
+/// volumes, so it carries to the workload unchanged, as every other parent
+/// label does; each volume's persisted policy still decides its paths.
+///
+/// A ceiling's `volume: None` instead stands for the host's authenticated
+/// volume selection, which for a workload is its own binding table:
+/// [`volume_grants`] for `owner`, its provider's seed layer and its
+/// [`crate::conversation::OwnJournalRead`], each operation only where the
+/// ceiling allows every action its explicit label carries. That label never
+/// reaches the workload, so no guest holds a grant that names volumes by role
+/// and could reach another agent's journal or private volume.
+///
+/// Also returns the label prefixes the ceiling forbids: the workload drops
+/// every parent label with one of them, so an explicit label never grants an
+/// operation the ceiling withheld.
+///
+/// # Errors
+/// When a `volume: None` ceiling mixes with exact volumes, restricts paths,
+/// lineage or expiry, or allows every
+/// [`super::workspace_access::RAW_WORKSPACE_LABELS`] operation without their
+/// [`super::workspace_access::RAW_WORKSPACE_ACTIONS`]: explicit volume labels
+/// cannot carry any of these.
+pub(crate) fn ceiling_grants(
+    ceiling: &str,
+    volumes: &[WorkspaceEntry],
+    journal: &VolumeRef,
+    external: &[FileRef],
+    owner: crate::AgentId,
+) -> Result<(Vec<String>, Vec<&'static str>)> {
+    use acyclic_fs::access::{ActionSet, Capability};
+    let capability = Capability::from_scope_label(ceiling)
+        .map_err(|error| Error::Invalid(error.to_string()))?
+        .unwrap_or(Capability {
+            layers: Vec::new(),
+            expires_at: None,
+        });
+    if !capability.layers.is_empty()
+        && capability
+            .layers
+            .iter()
+            .flatten()
+            .all(|grant| grant.resource.volume.is_some())
     {
+        return Ok((vec![ceiling.to_owned()], Vec::new()));
+    }
+    if capability.expires_at.is_some() {
+        return Err(Error::Unauthorized(
+            "a workload's filesystem ceiling cannot carry its own expiry".into(),
+        ));
+    }
+    let whole = Capability::whole_volume(None, &[]);
+    if capability
+        .layers
+        .iter()
+        .flatten()
+        .any(|grant| grant.resource != whole.layers[0][0].resource)
+    {
+        return Err(Error::Unauthorized(
+            "a workload derives only from an exact-volume or whole-volume filesystem ceiling"
+                .into(),
+        ));
+    }
+    let allows = |set: ActionSet| {
+        !capability.layers.is_empty()
+            && capability.layers.iter().all(|layer| {
+                set.actions()
+                    .iter()
+                    .all(|action| layer.iter().any(|grant| grant.actions.contains(action)))
+            })
+    };
+    // An explicit label carries its operation's whole fixed action set, so
+    // the ceiling must allow all of it.
+    let allowed = |operation| allows(super::access::label_actions(operation));
+    // Labels held together carry more: these admit the raw workspace. Issuing
+    // them under a narrower ceiling would widen it, and withholding either
+    // would narrow an operation the ceiling allows.
+    if super::workspace_access::RAW_WORKSPACE_LABELS
+        .into_iter()
+        .all(allowed)
+        && !allows(super::workspace_access::RAW_WORKSPACE_ACTIONS)
+    {
+        return Err(Error::Unauthorized(
+            "a workload's filesystem ceiling allows reads and writes without owning the volume"
+                .into(),
+        ));
+    }
+    let mut denied = Vec::new();
+    for operation in [
+        VolumeOperation::Read,
+        VolumeOperation::Write,
+        VolumeOperation::Delete,
+    ] {
+        if !allowed(operation) {
+            denied.push(operation.capability_prefix());
+        }
+    }
+    let mut grants = volume_grants(volumes, journal, external, Some(owner), &allowed)?;
+    if allowed(VolumeOperation::Read) {
+        if let Some(seed) = seed(volumes)? {
+            grants.push(seed.capability(VolumeOperation::Read, &mut None)?);
+        }
+        grants
+            .push(crate::conversation::OwnJournalRead::of(journal.provider(), owner)?.into_label());
+    } else {
+        denied.extend([
+            acyclic_fs::access::FILE_READ_PREFIX,
+            acyclic_fs::access::DIRECTORY_READ_PREFIX,
+        ]);
+    }
+    Ok((grants, denied))
+}
+
+/// The visible entries' read/write ceilings and retained exact versions on
+/// other volumes, each operation only where `allowed`, so a write or delete
+/// never depends on the read. With an `owner`, an agent-private entry is
+/// granted only when it is that agent's own, so
+/// another agent's private volume is never named; its retained files are
+/// then granted alone, by exact version. Raw writers cannot widen a rooted
+/// entry; scoped publication belongs to the table's view composition.
+fn volume_grants(
+    volumes: &[WorkspaceEntry],
+    journal: &VolumeRef,
+    external: &[FileRef],
+    owner: Option<crate::AgentId>,
+    allowed: &dyn Fn(VolumeOperation) -> bool,
+) -> Result<Vec<String>> {
+    let mut grants = Vec::with_capacity(3 * volumes.len());
+    let reads = allowed(VolumeOperation::Read);
+    let granted = |binding: &&WorkspaceEntry| {
+        binding.role != crate::agent::WorkspaceRole::Internal
+            && binding.as_volume().is_some_and(|volume| {
+                owner.is_none_or(|owner| {
+                    volume.class() != VolumeClass::AgentPrivate
+                        || *volume.owner() == VolumeOwner::Agent(owner)
+                })
+            })
+    };
+    for binding in volumes.iter().filter(granted) {
         let Some(volume) = binding.as_volume() else {
             continue; // A lazy subtree view has no whole-volume authority.
         };
-        if !binding.root.is_empty() {
-            grants.push(volume.directory_read_capability(&binding.root, &mut None)?);
-        } else {
-            grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
-            if binding.mode == crate::agent::WorkspaceMode::ReadWrite {
-                for operation in [VolumeOperation::Write, VolumeOperation::Delete] {
+        if reads {
+            grants.push(if binding.root.is_empty() {
+                volume.capability(VolumeOperation::Read, &mut None)?
+            } else {
+                volume.directory_read_capability(&binding.root, &mut None)?
+            });
+        }
+        if binding.root.is_empty() && binding.mode == crate::agent::WorkspaceMode::ReadWrite {
+            for operation in [VolumeOperation::Write, VolumeOperation::Delete] {
+                if allowed(operation) {
                     grants.push(volume.capability(operation, &mut None)?);
                 }
             }
         }
     }
+    if !reads {
+        return Ok(grants);
+    }
+    let seed = seed(volumes)?;
     for file in external {
         // A retained exact file can lie outside the current root on a still
         // bound volume. Its immutable conversation selection grants it alone.
+        // Journal files are granted by the agent's own journal read.
         if seed.as_ref() != Some(file.volume())
             && file.volume() != journal
-            && !volumes.iter().any(|binding| {
-                binding.role != crate::agent::WorkspaceRole::Internal
-                    && binding.as_volume() == Some(file.volume())
-                    && binding.root.is_empty()
+            && !volumes.iter().filter(granted).any(|binding| {
+                binding.as_volume() == Some(file.volume()) && binding.root.is_empty()
             })
         {
             // Whole-volume reads already cover retained versions. Adding
             // redundant exact grants on reopen would change an unchanged
             // execution's authority binding merely because it retained input.
-            grants.push(file.read_capability(&mut None)?);
-            // An attachment manifest's files are copies in its own directory,
-            // so one grant reaches them however many it lists.
-            if file.descriptor().media_type() == crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE
-                && let Some((directory, _)) = file.path().rsplit_once('/')
-            {
-                grants.push(
-                    file.volume()
-                        .directory_read_capability(directory, &mut None)?,
-                );
-            }
+            exact_grants(file, &mut grants)?;
         }
     }
     Ok(grants)
