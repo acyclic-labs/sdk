@@ -1062,11 +1062,13 @@ fn settled(agent: &AgentState, entry: &ConversationEntry) -> Result<Vec<Out>, Er
 }
 
 /// The waking `child.settled` notice a settled turn sends its parent: only
-/// for work the parent delegated ([`TurnInput::delegated_by`]), never for a
-/// cancelled turn. One per delegated settlement; settlements the parent has
-/// not yet observed share one parent turn, whose first request admits them
-/// all. A turn this child's own events started never wakes the parent, so
-/// a wake never cascades past one ancestor.
+/// when it settles a run the parent delegated ([`AgentState::delegated_run`],
+/// decided by the run's first input through [`TurnInput::delegated_by`]),
+/// never for a cancelled turn. A goal run settles once, with its final
+/// segment; its intermediate segments wake no one. Settlements the parent
+/// has not yet observed share one parent turn, whose first request admits
+/// them all. A run this child's own events started never wakes the parent,
+/// so a wake never cascades past one ancestor.
 async fn settlement_notice(
     agent: &AgentState,
     outputs: &dyn TurnOutputs,
@@ -1075,7 +1077,7 @@ async fn settlement_notice(
     let Some(parent) = &agent.parent else {
         return Ok(None);
     };
-    if !entry.input.delegated_by(parent) || matches!(entry.outcome, TurnOutcome::Cancelled) {
+    if !agent.delegated_run || matches!(entry.outcome, TurnOutcome::Cancelled) {
         return Ok(None);
     }
     let turn = turn_id(agent, &entry.input)?;

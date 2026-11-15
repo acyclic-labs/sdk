@@ -90,6 +90,12 @@ pub struct AgentState {
     /// Original user submission whose protected file receipt owns the selected
     /// turn's run. Self-continuations retain it in their original reply identity.
     pub run_admission: Option<crate::OperationId>,
+    /// Whether the run the current or latest turn belongs to is work the
+    /// parent delegated ([`super::TurnInput::delegated_by`]), decided by the
+    /// input that started the run; its goal continuations retain it. Only a
+    /// delegated run's settlement wakes the parent.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub delegated_run: bool,
     /// Identity digest of the brief its adoption named: on a spawned agent,
     /// the one file of its parent's it may read, granted to exactly that
     /// reference.
@@ -272,6 +278,7 @@ impl AgentState {
             volumes: adopted.volumes.clone(),
             policy: adopted.policy.clone(),
             run_admission: None,
+            delegated_run: false,
             brief,
             conversation_tail: adopted.conversation_tail,
             pending_notices: None,
@@ -1792,6 +1799,16 @@ async fn run<T: TurnDriver + ?Sized>(
         (None, input) => input.as_ref().map(|input| input.inbox),
     };
     if state.turn.is_none() {
+        // A goal continuation is the same run, so it keeps the delegation
+        // its first input decided.
+        if let Some(queued) = &input
+            && super::goal::continuing(&state.path, &queued.input).is_none()
+        {
+            state.delegated_run = state
+                .parent
+                .as_ref()
+                .is_some_and(|parent| queued.input.delegated_by(parent));
+        }
         state.run_admission = input.as_ref().and_then(|queued| {
             let id = match &queued.input {
                 TurnInput::Message {

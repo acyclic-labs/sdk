@@ -100,10 +100,12 @@ impl TurnInput {
         }
     }
 
-    /// Whether this turn does work `parent` delegated: the brief its spawn
-    /// carried, or a message `parent` sent. Only such a turn's settlement
-    /// wakes `parent`, and that settlement is the delegated work's result.
-    /// Every other turn is the child's own conversation, which the parent
+    /// Whether a run this input starts is work `parent` delegated: the brief
+    /// its spawn carried, or a message `parent` sent. Only such a run's
+    /// settlement wakes `parent` (a goal run's goes with its final segment;
+    /// see [`super::AgentState::delegated_run`]), and that settlement is the
+    /// delegated work's result.
+    /// Every other run is the child's own conversation, which the parent
     /// observes lazily by following the child at no model-call cost: one its
     /// own events start (a grandchild's settlement, a child's completion, a
     /// child's approval request), a user, host or peer talking to it

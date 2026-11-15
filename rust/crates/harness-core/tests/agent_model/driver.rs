@@ -1160,6 +1160,97 @@ ship it
     Ok(())
 }
 
+/// A GOAL.md continuation of delegated work is the same delegated run: the
+/// delegator wakes exactly once, when the run settles with its final
+/// segment, and an intermediate segment wakes no one. Negative control:
+/// deciding delegation by each segment's own input, where a continuation is
+/// the child's own message, never wakes the delegator.
+#[tokio::test]
+async fn a_delegated_goal_run_wakes_its_delegator_once_with_its_final_segment() -> Result {
+    let root = AgentPath::root(&id(1));
+    let path = root.child(&id(2)).expect("child path");
+    let mut state = AgentState::adopted(
+        path.clone(),
+        &ForkAdopted {
+            parent: Some(root.clone()),
+            ..adopted(id(2))
+        },
+    )
+    .expect("adopts");
+    let goal = Arc::new(Goal {
+        policy: GoalContinuationPolicy {
+            max_continuations: Some(1),
+        },
+        status: Mutex::new(GoalStatus::Active),
+        rewrites: Mutex::new(Vec::new()),
+    });
+    let script = Arc::new(Script {
+        progress: Mutex::new((0..2).map(|_| ready()).collect()),
+        ..Script::default()
+    });
+    let driver = ExecutorDriver::new(Host(script, Some(goal)));
+    let mut record = InboxRecord::Message(Message {
+        from: Sender::Agent { path: root.clone() },
+        id: intent("delegated"),
+        body: Box::new(file("brief.md")?),
+        re: None,
+        attachments: None,
+    });
+    // (segment, whether that step completed the goal run, notice id)
+    let mut wakes = Vec::new();
+    for segment in 1..=2 {
+        let cancellation = acyclic_actors::guest::CancellationToken::new();
+        let mut wake = Wake::Inbox {
+            sequence: segment,
+            record: record.clone(),
+        };
+        let mut previous = Some(state);
+        let settled = loop {
+            let next = step(
+                &driver,
+                &path,
+                previous.take(),
+                (segment, 0),
+                wake,
+                cancellation.clone(),
+            )
+            .await?;
+            let completed = next
+                .outs
+                .iter()
+                .any(|out| matches!(out, Out::GoalCompleted { .. }));
+            wakes.extend(next.outs.iter().filter_map(|out| match out {
+                Out::Send {
+                    to,
+                    record: InboxRecord::Notice { id, .. },
+                } if *to == root => Some((segment, completed, id.as_str().to_owned())),
+                _ => None,
+            }));
+            if next.alarm != Alarm::At(CONTINUE_NOW) {
+                break next;
+            }
+            previous = Some(next.state);
+            wake = Wake::Alarm;
+        };
+        if let Some(message) = continuation(&settled, &path) {
+            record = InboxRecord::FollowUp(message);
+        } else {
+            assert_eq!(segment, 2, "the goal run ended before its final segment");
+        }
+        state = settled.state;
+    }
+    assert_eq!(
+        wakes.len(),
+        1,
+        "a delegated goal run must wake its delegator exactly once: {wakes:?}"
+    );
+    assert!(
+        matches!(&wakes[0], (2, true, id) if id.starts_with("child-settled:")),
+        "the wake must carry the run's final segment: {wakes:?}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -> Result {
     let run = OperationId::from_bytes([17; 16]);
