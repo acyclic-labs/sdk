@@ -144,6 +144,14 @@ struct Primary {
 }
 
 async fn verify_primary(first: &dyn Blobs, run: &str) -> Result<Primary, Failure> {
+    let (body, digest, parent) = verify_put_and_ranges(first, run).await?;
+    verify_batches_and_manifest(first, run, body, digest, parent).await
+}
+
+async fn verify_put_and_ranges(
+    first: &dyn Blobs,
+    run: &str,
+) -> Result<(OwnedBytes, Digest, Digest), Failure> {
     // put-created-then-already-exists-verified
     let body = bytes(&format!("{run}/plain"), 4096);
     let digest = Digest::of(&body);
@@ -244,6 +252,16 @@ async fn verify_primary(first: &dyn Blobs, run: &str) -> Result<Primary, Failure
         conflict
     );
 
+    Ok((body, digest, parent))
+}
+
+async fn verify_batches_and_manifest(
+    first: &dyn Blobs,
+    run: &str,
+    body: OwnedBytes,
+    digest: Digest,
+    parent: Digest,
+) -> Result<Primary, Failure> {
     // put-batch-ordered-members-fail-alone-and-repeat-writes-nothing
     let base = bytes(&format!("{run}/batch-base"), 300);
     let base_digest = Digest::of(&base);
@@ -390,6 +408,16 @@ async fn verify_delete_collection_list_usage(
     run: &str,
     primary: &Primary,
 ) -> Result<RootId, Failure> {
+    let root = verify_delete_and_collection(first, run, primary).await?;
+    verify_list_and_usage(first, primary).await?;
+    Ok(root)
+}
+
+async fn verify_delete_and_collection(
+    first: &dyn Blobs,
+    run: &str,
+    primary: &Primary,
+) -> Result<RootId, Failure> {
     let Primary {
         digest,
         parent,
@@ -510,6 +538,20 @@ async fn verify_delete_collection_list_usage(
         absent
     );
 
+    Ok(root)
+}
+
+async fn verify_list_and_usage(first: &dyn Blobs, primary: &Primary) -> Result<(), Failure> {
+    let Primary {
+        digest,
+        parent,
+        verified,
+        left_digest,
+        right_digest,
+        ..
+    } = primary;
+    let (digest, parent, verified, left_digest, right_digest) =
+        (*digest, *parent, *verified, *left_digest, *right_digest);
     // list-after-never-duplicates-or-skips
     let mut seen = Vec::new();
     let mut after = None;

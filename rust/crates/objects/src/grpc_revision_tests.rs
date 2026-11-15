@@ -209,8 +209,26 @@ async fn refused_writes_preserve_storage() -> TestResult {
     Ok(())
 }
 
-async fn refused_writes_for(foreign: bool) -> TestResult {
+async fn refused<T>(
+    medium: &crate::MemoryMedium,
+    before: &[(String, Vec<u8>)],
+    result: impl std::future::Future<Output = Result<T, tonic::Status>>,
+) -> TestResult {
+    let result = result.await;
+    assert_eq!(
+        stored(medium).await?,
+        before,
+        "refused write changed physical storage"
+    );
+    let failure = result.expect_err("foreign write minimum must refuse before dispatch");
+    assert_eq!(
+        error_from_status(&failure).code,
+        wire::ErrorCode::RevisionForeign
+    );
+    Ok(())
+}
 
+async fn refused_writes_for(foreign: bool) -> TestResult {
     let medium = crate::MemoryMedium::default();
     let provider = Arc::new(crate::Store::new(medium.clone()).account(b"write-minimum")?);
     let body = b"original retained bytes";
@@ -240,63 +258,51 @@ async fn refused_writes_for(foreign: bool) -> TestResult {
     let mut client = wire::blobs_service_client::BlobsServiceClient::new(RevisionChannel::new(
         channel_over(serving(provider.clone())),
     ));
-    macro_rules! refused {
-        ($method:ident, $message:expr) => {{
-            let mut request = Request::new($message);
-            minimum(&mut request, Some(&floor));
-            let result = client.$method(request).await;
-            assert_eq!(
-                stored(&medium).await?,
-                before,
-                "refused write changed physical storage"
-            );
-            let failure =
-                result.expect_err("foreign write minimum must refuse before dispatch");
-            assert_eq!(
-                error_from_status(&failure).code,
-                wire::ErrorCode::RevisionForeign
-            );
-        }};
-    }
-    refused!(
-        delete_blob,
-        wire::DeleteBlobRequest {
-            digest: Some(deletable.verified().ok_or("original put")?.digest.into()),
-        }
-    );
-    refused!(put_blob, put(b"refused singleton"));
-    refused!(
-        put_blobs,
-        wire::PutBlobsRequest {
-            puts: vec![put(b"refused batch")]
-        }
-    );
-    refused!(
-        put_manifest,
-        wire::PutManifestRequest {
-            manifest: Some(wire::Manifest {
-                parts: vec![wire::Part {
-                    digest: Some(digest.into()),
-                    length: body.len() as u64
-                }],
-                edges: Vec::new(),
-            }),
-        }
-    );
-    refused!(
-        retain,
-        wire::RetainRequest {
-            root: b"refused-root".as_slice().into(),
-            references: vec![digest.into()],
-        }
-    );
-    refused!(
-        release,
-        wire::ReleaseRequest {
-            root: b"original-root".as_slice().into()
-        }
-    );
-    refused!(collect, wire::CollectRequest {});    Ok(())
+    let mut request = Request::new(wire::DeleteBlobRequest {
+        digest: Some(deletable.verified().ok_or("original put")?.digest.into()),
+    });
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.delete_blob(request)).await?;
+
+    let mut request = Request::new(put(b"refused singleton"));
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.put_blob(request)).await?;
+
+    let mut request = Request::new(wire::PutBlobsRequest {
+        puts: vec![put(b"refused batch")],
+    });
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.put_blobs(request)).await?;
+
+    let mut request = Request::new(wire::PutManifestRequest {
+        manifest: Some(wire::Manifest {
+            parts: vec![wire::Part {
+                digest: Some(digest.into()),
+                length: body.len() as u64,
+            }],
+            edges: Vec::new(),
+        }),
+    });
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.put_manifest(request)).await?;
+
+    let mut request = Request::new(wire::RetainRequest {
+        root: b"refused-root".as_slice().into(),
+        references: vec![digest.into()],
+    });
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.retain(request)).await?;
+
+    let mut request = Request::new(wire::ReleaseRequest {
+        root: b"original-root".as_slice().into(),
+    });
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.release(request)).await?;
+
+    let mut request = Request::new(wire::CollectRequest {});
+    minimum(&mut request, Some(&floor));
+    refused(&medium, &before, client.collect(request)).await?;
+    Ok(())
 }
 
 async fn closed_write_preserves_storage() -> TestResult {
