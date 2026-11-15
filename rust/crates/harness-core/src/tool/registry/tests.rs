@@ -9,12 +9,14 @@ mod scaling;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
-    fn default_catalog_requires_each_tools_own_grant(
+    fn complete_catalog_requires_each_tools_own_grant(
         selected in prop::collection::vec(any::<bool>(), crate::tools::catalog().count()),
     ) {
-        // Agent tools are bound by the turn owner, not the default registry.
+        // Explicit selection includes role-restricted tools omitted from defaults.
+        // Agent tools are bound separately by the turn owner.
         let names: Vec<_> = crate::tools::catalog().map(|spec| spec.name).collect();
-        let registry = crate::tools::defaults().unwrap();
+        let selected_names = names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+        let registry = crate::tools::registry(&selected_names, |_| true, Vec::new()).unwrap();
         let grants = crate::Capabilities::new(
             names.iter().enumerate().filter(|(i, _)| selected[*i])
                 .map(|(_, name)| format!("tool:call:{name}"))
