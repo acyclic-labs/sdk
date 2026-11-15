@@ -417,6 +417,13 @@ impl NativeSourceWatch {
     pub(crate) fn paused(&self) -> impl Sized + '_ {
         self.shared.reading()
     }
+
+    /// The host's own report that it dropped changes, as it reports it.
+    #[cfg(test)]
+    pub(crate) fn inject_overflow(&self) -> io::Result<()> {
+        super::hub::inject_overflow(Arc::clone(&self.shared))
+            .map_err(crate::native_host::ordinary_error)
+    }
 }
 
 impl Drop for NativeSourceWatch {
