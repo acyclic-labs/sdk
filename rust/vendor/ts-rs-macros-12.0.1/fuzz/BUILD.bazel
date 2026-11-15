@@ -33,11 +33,11 @@ rust_library(
         "@crates//proc-macro2-1.0.107",
         "@crates//quote-1.0.47",
         "@crates//serde_derive_internals-0.30.0",
-        "@crates//syn-2.0.119",
-        "@crates//syn-3.0.9",
+        "@crates//syn_2_0_119-2.0.119",
+        "@crates//syn_3_0_9-3.0.9",
         "@crates//termcolor-1.4.1",
     ],
-    aliases = {"@crates//syn-3.0.9":"syn_serde"},
+    aliases = {"@crates//syn_3_0_9-3.0.9":"syn_serde"},
     visibility = ["//visibility:public"],
 )
 
@@ -57,11 +57,11 @@ rust_binary(
         "@crates//proc-macro2-1.0.107",
         "@crates//quote-1.0.47",
         "@crates//serde_derive_internals-0.30.0",
-        "@crates//syn-2.0.119",
-        "@crates//syn-3.0.9",
+        "@crates//syn_2_0_119-2.0.119",
+        "@crates//syn_3_0_9-3.0.9",
         "@crates//termcolor-1.4.1",
     ],
-    aliases = {"@crates//syn-3.0.9":"syn_serde"},
+    aliases = {"@crates//syn_3_0_9-3.0.9":"syn_serde"},
     visibility = ["//visibility:public"],
 )
 

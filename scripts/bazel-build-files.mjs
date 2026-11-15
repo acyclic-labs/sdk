@@ -188,6 +188,27 @@ function perTriple(values, render) {
   return `select({\n${TRIPLES.map((t, i) => `        "@rules_rust//rust/platform:${t}": ${rendered[i]},\n`).join("")}    })`;
 }
 
+// Every registry crate's --all-features feature set, pinned by a crate.spec: crate_universe resolves
+// third-party features its own way. Path and patch sources keep their lockfile resolution.
+const pinned = new Map();
+for (const run of runs) {
+  for (const node of run.resolve.nodes) {
+    if (members.has(node.id) || node.features.length === 0 || !packages.get(node.id).source?.startsWith("registry+")) continue;
+    if (!pinned.has(node.id)) pinned.set(node.id, new Set());
+    for (const feature of node.features) pinned.get(node.id).add(feature);
+  }
+}
+// Two pinned versions of one package need distinct splicing dependency keys. A key is a Cargo
+// package name, so the version is spelled with XID characters only.
+const spliceKey = new Map(Object.values(Object.groupBy([...pinned.keys()], id => packages.get(id).name))
+  .filter(ids => ids.length > 1).flat()
+  .map(id => [id, `${packages.get(id).name}-${packages.get(id).version.replace(/[^A-Za-z0-9_-]/g, "_")}`]));
+// The hub names a crate by a splicing dependency key, with dashes as underscores, and its version.
+const hubLabel = id => {
+  const { name, version } = packages.get(id);
+  return `@crates//${spliceKey.has(id) ? spliceKey.get(id).replaceAll("-", "_") : name}-${version}`;
+};
+
 // Edges of one member for the selected dependency kinds, per triple, from the all-features
 // resolution: first-party dependencies by label, third-party ones by crate universe hub label,
 // and every renamed dependency's alias. crate_universe's all_crate_deps() and aliases() are not
@@ -200,7 +221,7 @@ function edges(p, kinds) {
       if (!dep.dep_kinds.some(k => kinds.includes(k.kind))) continue;
       const target = packages.get(dep.pkg);
       const lib = libOf(target);
-      const name = members.has(dep.pkg) ? `${label(target)}:${crateName(lib)}` : `@crates//${target.name}-${target.version}`;
+      const name = members.has(dep.pkg) ? `${label(target)}:${crateName(lib)}` : hubLabel(dep.pkg);
       if (dep.name !== crateName(lib)) aliases[name] = dep.name;
       (lib.kind.includes("proc-macro") ? procMacros : deps).push(name);
     }
@@ -371,23 +392,12 @@ function buildFile(p) {
 }
 
 function specs() {
-  const wanted = new Map();
-  for (const run of runs) {
-    for (const node of run.resolve.nodes) {
-      // Only registry crates can be pinned by a spec; path and patch sources come from the lockfile as they are.
-      if (members.has(node.id) || node.features.length === 0 || !packages.get(node.id).source?.startsWith("registry+")) continue;
-      if (!wanted.has(node.id)) wanted.set(node.id, new Set());
-      for (const feature of node.features) wanted.get(node.id).add(feature);
-    }
-  }
-  const named = Map.groupBy([...wanted.keys()], id => packages.get(id).name);
-  return [...wanted].sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => {
+  return [...pinned].sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => {
     const { name, version } = packages.get(id);
     return `${rule("crate.spec", [
       ["package", q(name)],
       ["version", q(`=${version}`)],
-      // A splicing dependency key: a Cargo package name, so the version spells only XID characters.
-      ["package_alias", named.get(name).length > 1 ? q(`${name}-${version.replace(/[^A-Za-z0-9_-]/g, "_")}`) : undefined],
+      ["package_alias", spliceKey.has(id) ? q(spliceKey.get(id)) : undefined],
       ["default_features", "False"],
       ["features", list([...features].sort())],
     ])}\n`;
