@@ -186,7 +186,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// This never drives a handler, so paused actors retain queued requests.
     pub async fn invoke(&self, invocation: &Invocation) -> Result<CommittedInvocation, Error> {
         acyclic_stream::trace::observe_outcome(
-            acyclic_stream::trace::Request {
+            &acyclic_stream::trace::Request {
                 name: "actors.invoke",
                 mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
                 parent: None,
@@ -215,7 +215,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         joined: impl FnOnce(&StreamPath) -> Result<Vec<CommitEffect>, Error>,
     ) -> Result<InvocationTicket, Error> {
         acyclic_stream::trace::observe(
-            acyclic_stream::trace::Request {
+            &acyclic_stream::trace::Request {
                 name: "actors.enqueue_invoke",
                 mechanism: acyclic_stream::trace::Mechanism::Commit,
                 parent: None,
@@ -323,7 +323,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         ticket: InvocationTicket,
     ) -> Result<CommittedInvocation, Error> {
         acyclic_stream::trace::observe_outcome(
-            acyclic_stream::trace::Request {
+            &acyclic_stream::trace::Request {
                 name: "actors.wait_invocation",
                 mechanism: acyclic_stream::trace::Mechanism::Wait,
                 parent: None,

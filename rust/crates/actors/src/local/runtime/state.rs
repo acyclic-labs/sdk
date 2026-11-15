@@ -159,7 +159,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut request = Some(request);
         let execution = async {
             let handled = core::pin::pin!(acyclic_stream::trace::observe(
-                acyclic_stream::trace::Request {
+                &acyclic_stream::trace::Request {
                     name: "actors.handler",
                     mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
                     parent: None,

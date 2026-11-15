@@ -1546,7 +1546,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         observe: bool,
     ) -> BoxProviderFuture<'a, Result<bool, Error>> {
         Box::pin(acyclic_stream::trace::observe(
-            acyclic_stream::trace::Request {
+            &acyclic_stream::trace::Request {
                 name: "actors.delivery",
                 mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
                 parent: None,
@@ -1588,7 +1588,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 };
                 let result = match &self.admission[self.handler.admission_class(actor).index()] {
                     Some(admission) => acyclic_stream::trace::observe(
-                        acyclic_stream::trace::Request {
+                        &acyclic_stream::trace::Request {
                             name: "actors.delivery_admission",
                             mechanism: acyclic_stream::trace::Mechanism::Wait,
                             parent: None,
