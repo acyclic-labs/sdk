@@ -307,7 +307,15 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         "path": "approval-request.txt",
         "content": "request".repeat(12_000),
     });
-    let provider = super::scripted([ScriptedTurn::Text("ready".into())]);
+    // The worker's brief settlement wakes the root once; that wake takes its
+    // own reply, and every count below reads the worker's input requests.
+    let provider = Arc::new(
+        ScriptedModelProvider::routed(
+            [ScriptedTurn::Text("ready".into())],
+            [ScriptedTurn::Text("root noted the worker".into())],
+        )
+        .with_context_capacity(super::capacity()),
+    );
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let harness = Arc::new(
@@ -339,7 +347,10 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     // Spawn's receipt names the parent's inbox. Join the worker's own
     // committed input frontier rather than treating that receipt as its input.
     settled(&harness, &worker).await?;
-    let opened_calls = provider.request_count();
+    // The settlement committed the root's wake with it: observe that turn.
+    settled(&harness, connection.root()).await?;
+    assert_eq!(provider.woken(), [connection.root().clone()]);
+    let opened_calls = provider.input_requests();
     provider.extend([
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
@@ -468,7 +479,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     );
     assert!(client.approval_request(sequence, length + 1).await.is_err());
     assert!(client.approval_request(0, 0).await.is_err());
-    assert_eq!(provider.request_count(), opened_calls + 1);
+    assert_eq!(provider.input_requests(), opened_calls + 1);
     projection.accepted(&delivery.resource, Some(after));
     assert_eq!(projection.cursor(&delivery.resource).next, sequence + 1);
     let binding = crate::interaction::ApprovalBinding {
@@ -483,7 +494,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
             .await
             .is_err()
     );
-    assert_eq!(provider.request_count(), opened_calls + 1);
+    assert_eq!(provider.input_requests(), opened_calls + 1);
     client
         .decide_with_binding(&id, binding.clone(), true.into())
         .await?;
@@ -492,15 +503,15 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     observed.settled(inbox).await?;
     assert!(client.pending_approval(&id).await?.is_none());
     assert!(client.approval_prompt(&id).await?.is_none());
-    let requests = provider.request_count();
+    let requests = provider.input_requests();
     let (historical, saved_length) = client.approval_request(sequence, 0).await?;
     assert_eq!(saved_length, length);
     assert_eq!(historical, bytes[..MAX_READ_BYTES as usize]);
-    assert_eq!(provider.request_count(), requests);
+    assert_eq!(provider.input_requests(), requests);
     client
         .decide_with_binding(&id, binding, true.into())
         .await?;
-    assert_eq!(provider.request_count(), requests);
+    assert_eq!(provider.input_requests(), requests);
     agents
         .archive(
             root,
@@ -516,7 +527,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         None,
         "an archived agent has no current input to cancel"
     );
-    assert_eq!(provider.request_count(), requests);
+    assert_eq!(provider.input_requests(), requests);
     Ok(())
 }
 
@@ -1375,9 +1386,10 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
 }
 
 /// Until #3773 an idle parent made no model call while its child ran and
-/// settled. #3773 delivers each child settlement to the parent as a waking
-/// `child.settled` notice, so the parent now makes exactly one call per child
-/// settlement, billed to its own usage, and none while it is idle.
+/// settled. #3773 delivers each settlement of work the parent delegated, here
+/// the child's brief, as a waking `child.settled` notice, so the parent makes
+/// exactly one call per such settlement, billed to its own usage, and none
+/// while it is idle.
 #[tokio::test]
 async fn idle_usage_follows_child_lifecycle_with_one_parent_wake_per_settlement() -> Result<()> {
     use acyclic_harness_client::{AgentCommand, AgentReply};
@@ -3320,12 +3332,17 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
 /// rebind it. Negative control: accepting only the root's binding as the
 /// alias to replace fails the second child with "volume alias names another
 /// binding".
+///
+/// A delegator wakes only for its direct child's settlement of the work it
+/// delegated, so the chain costs exactly `DEPTH` parent wake turns: depth
+/// `d`'s brief wakes its parent, and that wake turn wakes no one. Negative
+/// control: waking the parent for a settlement of any turn the child's own
+/// events started cascades every settlement to the root, 6 turns at depth 3.
 #[tokio::test]
 async fn a_spawn_chain_binds_its_volumes_at_every_depth() -> Result<()> {
     use acyclic_harness_client::{AgentCommand, AgentReply};
-    const DEPTH: usize = 6;
-    // Each settlement wakes its parent (#3773), and that turn's settlement
-    // wakes the next ancestor: depth `d` settling wakes its `d + 1` ancestors.
+    const DEPTH: usize = 3;
+    // Enough wake replies for the cascade a regression would run.
     let provider = Arc::new(
         ScriptedModelProvider::routed(
             (0..DEPTH).flat_map(|depth| {
@@ -3345,6 +3362,7 @@ async fn a_spawn_chain_binds_its_volumes_at_every_depth() -> Result<()> {
     let (_directory, harness, provider) = checkout_scripted(&[], provider).await?;
     let (agents, root) = harness.agents().await?;
     let (agents, mut parent) = (Arc::clone(agents), root.clone());
+    let mut ancestors = Vec::new();
     let connection = harness.connect().await?;
     for depth in 0..DEPTH {
         let AgentReply::Spawned { agent: child, .. } = connection
@@ -3379,9 +3397,20 @@ async fn a_spawn_chain_binds_its_volumes_at_every_depth() -> Result<()> {
             depth + 1,
             state.phase
         );
-        parent = child;
+        // A settlement commits its parent's notice with it. Settling each
+        // ancestor in turn, nearest first, observes any wake it cascades
+        // before the next depth starts, so no two settlements share a turn.
+        ancestors.push(std::mem::replace(&mut parent, child));
+        for ancestor in ancestors.iter().rev() {
+            settled(&harness, ancestor).await?;
+        }
     }
     assert_eq!(provider.input_requests(), 2 * DEPTH);
+    assert_eq!(
+        provider.woken().len(),
+        DEPTH,
+        "a chain must cost one parent wake per depth"
+    );
     Ok(())
 }
 

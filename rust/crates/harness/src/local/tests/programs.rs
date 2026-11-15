@@ -515,7 +515,11 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         "A source retained by the request",
     )
     .map_err(|error| Error::Storage(error.to_string()))?;
-    let first = Arc::new(ScriptedModelProvider::new([
+    // The worker's brief settlement wakes the root, on the first route; the
+    // fork's brief settlement wakes the worker, on the route its settings
+    // select. The worker's wake turn is its own conversation and wakes no
+    // one. Each wake takes a wake reply; every assertion reads input requests.
+    let first = Arc::new(ScriptedModelProvider::routed([
         ScriptedTurn::Text("ready".into()),
         code("select-settings", r#"
             import {write} from 'acyclic';
@@ -526,9 +530,10 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
             await write('volume:///home/agent.ts', "export default {model: 'scripted/second', effort: 'low', sampling: {temperature: 0.75}};", 'any');
             export default 'selected';
         "#),
-    ]).reading_content().with_context_capacity(capacity()));
+    ], [ScriptedTurn::Text("root noted the worker".into())])
+    .reading_content().with_context_capacity(capacity()));
     let second = Arc::new(
-        ScriptedModelProvider::new([])
+        ScriptedModelProvider::routed([], [ScriptedTurn::Text("worker noted its fork".into())])
             .reading_content()
             .with_context_capacity(capacity()),
     );
@@ -617,7 +622,15 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         return Err(Error::Invalid("settings worker did not open".into()));
     };
     agents::settled(&harness, &worker).await?;
-    assert_eq!(first.request_count(), 1);
+    let root_conversation = Conversation::open(connection.clone());
+    assert!(
+        super::woken(root_conversation, 1)
+            .await?
+            .outcome
+            .is_completed()
+    );
+    assert_eq!(first.input_requests(), 1);
+    assert_eq!(first.woken(), [connection.root().clone()]);
     let conversation = Conversation::open(connection.select(worker.clone()).await?);
     let mut observed = ObservedConversation::observe(conversation, None).await?;
     let prompt = "Write and use your model settings @source.txt";
@@ -628,14 +641,14 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         "selected provider"
     );
     assert_eq!(
-        first.request_count(),
+        first.input_requests(),
         2,
         "the preceding provider must not run another step"
     );
-    assert_eq!(second.request_count(), 2);
-    let before = first.request(1).unwrap();
-    let after = second.request(0).unwrap();
-    let finished = second.request(1).unwrap();
+    assert_eq!(second.input_requests(), 2);
+    let before = first.input_request(1).unwrap();
+    let after = second.input_request(0).unwrap();
+    let finished = second.input_request(1).unwrap();
     let hook_contexts = |request: &ModelRequest| {
         request.messages.iter().filter(|message| {
             matches!(&message.content, ModelContent::Text(text) if text == "selected-step-hook")
@@ -697,21 +710,24 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     let shell = result(&finished, "selected-shell")?;
     assert_eq!(shell["exit_code"], 0);
     assert_eq!(shell["stdout"], "selected-native");
-    let before = first.dispatches()[1];
-    let after = second.dispatches()[0];
+    let before = first.input_dispatches()[1];
+    let after = second.input_dispatches()[0];
     assert_eq!(before.operation_id, after.operation_id);
     assert_eq!((before.step, after.step), (0, 1));
-    assert_eq!(second.dispatches()[1].operation_id, after.operation_id);
-    assert_eq!(second.dispatches()[1].step, 2);
+    assert_eq!(
+        second.input_dispatches()[1].operation_id,
+        after.operation_id
+    );
+    assert_eq!(second.input_dispatches()[1].step, 2);
     assert_eq!(
         observed.conversation.send("select-model", prompt).await?,
         entry.inbox
     );
-    assert_eq!((first.request_count(), second.request_count()), (2, 2));
+    assert_eq!((first.input_requests(), second.input_requests()), (2, 2));
     let AgentReply::Spawned { agent: child, .. } = connection
         .execute(&AgentCommand::Fork {
             continuation: None,
-            parent: worker,
+            parent: worker.clone(),
             id: crate::agent::IntentId::try_from("settings-reader")
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             at: 1,
@@ -723,11 +739,23 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         return Err(Error::Invalid("settings fork did not open".into()));
     };
     agents::settled(&harness, &child).await?;
-    assert_eq!((first.request_count(), second.request_count()), (2, 3));
-    let inherited = second.request(2).unwrap();
+    // The fork's brief settlement wakes the worker, and only the worker.
+    assert!(
+        super::woken(Arc::clone(&observed.conversation), 1)
+            .await?
+            .outcome
+            .is_completed()
+    );
+    assert_eq!(second.woken(), [worker.clone()]);
+    assert_eq!(first.woken(), [connection.root().clone()]);
+    assert_eq!((first.input_requests(), second.input_requests()), (2, 3));
+    let inherited = second.input_request(2).unwrap();
     assert_eq!(inherited.model.name, "second");
     assert_eq!(inherited.sampling.temperature, Some(0.75));
-    assert_ne!(second.dispatches()[2].operation_id, after.operation_id);
+    assert_ne!(
+        second.input_dispatches()[2].operation_id,
+        after.operation_id
+    );
     assert_eq!(efforts(&inherited), ["low"]);
     let frozen_prefix = system_prefix(&inherited)?;
     second.extend([
@@ -752,7 +780,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         observed.conversation.output_text(&cleared).await?,
         "default effort"
     );
-    let default_request = second.request(4).unwrap();
+    let default_request = second.input_request(4).unwrap();
     assert_eq!(efforts(&default_request), ["low", "medium"]);
     assert_eq!(system_prefix(&default_request)?, frozen_prefix);
     let restored = observed
@@ -763,7 +791,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         observed.conversation.output_text(&restored).await?,
         "low effort"
     );
-    let restored_request = second.request(6).unwrap();
+    let restored_request = second.input_request(6).unwrap();
     assert_eq!(efforts(&restored_request), ["low", "medium", "low"]);
     assert_eq!(system_prefix(&restored_request)?, frozen_prefix);
     assert_eq!(
@@ -780,7 +808,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
             .await?,
         restored.inbox
     );
-    assert_eq!((first.request_count(), second.request_count()), (2, 7));
+    assert_eq!((first.input_requests(), second.input_requests()), (2, 7));
     first.extend([
         ScriptedTurn::Text("first model with high effort".into()),
         code("return-second", r#"
@@ -824,7 +852,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
         assert_eq!(observed.conversation.output_text(&entry).await?, output);
     }
-    let returned = first.request(4).unwrap();
+    let returned = first.input_request(4).unwrap();
     assert_eq!(returned.model.name, "test");
     assert_eq!(returned.sampling.temperature, None);
     assert_eq!(system_prefix(&returned)?, frozen_prefix);
@@ -845,7 +873,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         efforts(&returned),
         ["low", "medium", "low", "high", "medium", "medium"]
     );
-    assert_eq!((first.request_count(), second.request_count()), (5, 10));
+    assert_eq!((first.input_requests(), second.input_requests()), (5, 10));
     assert_eq!(
         second_route.model_profile(&model()?)?.unwrap().reasoning(),
         reasoning_baseline
@@ -877,9 +905,9 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         observed.conversation.output_text(&disabled).await?,
         "hook disabled"
     );
-    let before_disable = first.request(5).unwrap();
-    let after_disable = first.request(6).unwrap();
-    let disabled_result = first.request(7).unwrap();
+    let before_disable = first.input_request(5).unwrap();
+    let after_disable = first.input_request(6).unwrap();
+    let disabled_result = first.input_request(7).unwrap();
     assert_eq!(
         hook_contexts(&after_disable),
         hook_contexts(&before_disable) + 1
@@ -898,6 +926,6 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     );
     assert_eq!(system_prefix(&after_disable)?, frozen_prefix);
     assert_eq!(system_prefix(&disabled_result)?, frozen_prefix);
-    assert_eq!((first.request_count(), second.request_count()), (8, 10));
+    assert_eq!((first.input_requests(), second.input_requests()), (8, 10));
     Ok(())
 }

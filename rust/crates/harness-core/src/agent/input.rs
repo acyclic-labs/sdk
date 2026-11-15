@@ -99,6 +99,35 @@ impl TurnInput {
             _ => None,
         }
     }
+
+    /// Whether a run this input starts is work `parent` delegated: the brief
+    /// its spawn carried, or a message `parent` sent. Only such a run's
+    /// settlement wakes `parent` (a goal run's goes with its final segment;
+    /// see [`super::AgentState::delegated_run`]), and that settlement is the
+    /// delegated work's result.
+    /// Every other run is the child's own conversation, which the parent
+    /// observes lazily by following the child at no model-call cost: one its
+    /// own events start (a grandchild's settlement, a child's completion, a
+    /// child's approval request), a user, host or peer talking to it
+    /// directly, a host hook and a context request. A grandchild's
+    /// completion therefore reaches the grandparent only through the child's
+    /// own settlement: a chain `D` deep costs its ancestors `D` wakes, never
+    /// a wake per ancestor per descendant.
+    #[must_use]
+    pub fn delegated_by(&self, parent: &AgentPath) -> bool {
+        match self {
+            Self::Brief { .. } => true,
+            Self::Message { from, .. } => {
+                matches!(from, Sender::Agent { path } if path == parent)
+            }
+            Self::Notice { .. }
+            | Self::ChildDone { .. }
+            | Self::ApprovalRequested { .. }
+            | Self::Approval { .. }
+            | Self::Hook { .. }
+            | Self::Context { .. } => false,
+        }
+    }
 }
 
 /// One input held for the turn, at the inbox sequence of the record that

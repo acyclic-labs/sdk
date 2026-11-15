@@ -648,6 +648,7 @@ mod tests {
                         volumes: adopted.volumes.clone(),
                         policy: adopted.policy.clone(),
                         run_admission: Some(crate::OperationId::from_bytes([u8::MAX; 16])),
+                        delegated_run: true,
                         brief: Some([u8::MAX; 32]),
                         conversation_base: u64::MAX,
                         committed_actions: true,

@@ -1529,6 +1529,163 @@ async fn child_answer_wakes_parent_through_inbox_follow_without_wait() -> Result
     Ok(())
 }
 
+/// A parent is woken only for work it delegated. A user talking to the
+/// child directly settles in the child's own conversation: the parent's
+/// inbox gains no `child.settled` notice and the parent makes no model call.
+/// Negative control: waking the parent for every settled child turn (as
+/// #3773 first did) appends the notice and spends a parent model call.
+#[tokio::test]
+async fn a_user_message_to_a_child_settles_without_a_parent_model_call() -> Result {
+    use acyclic_stream::{FollowRequest, records_only};
+    use futures::TryStreamExt as _;
+
+    let (agents, stream, root, model) = fixture(
+        with_retrospectives([
+            spawn_call("reviewer", &[]),
+            ScriptedTurn::Text("delegated".into()),
+        ])
+        .collect(),
+        0,
+    )
+    .await?;
+    deliver(&agents, &root, requested("delegate", &root)).await?;
+    let child = named(&agents, &root, "reviewer").await?;
+    // The delegated brief's answer wakes the parent once, as before.
+    let before = inbox_tail(&*stream, &root).await?;
+    let mut events = records_only(
+        stream
+            .follow(FollowRequest::new(root.inbox()?, before))
+            .await?,
+    );
+    model.extend(with_retrospectives([ScriptedTurn::Text(
+        "Review complete".into(),
+    )]));
+    agents.drain(&child).await?;
+    let event = events.try_next().await?.ok_or("completion follow ended")?;
+    assert!(matches!(
+        InboxRecord::decode(&event.value)?,
+        InboxRecord::Notice { id, notice: NoticePayload::Waking(_) }
+            if id.as_str().starts_with("child-settled:")
+    ));
+    model.extend(with_retrospectives([ScriptedTurn::Text(
+        "Observed reviewer completion".into(),
+    )]));
+    agents.drain(&root).await?;
+    let quiet = inbox_tail(&*stream, &root).await?;
+    let parent_calls = model.request_count();
+
+    // The user's own message to the child settles there and only there.
+    let body = answer(&*stream, &child, 0).await?.output;
+    model.extend(with_retrospectives([ScriptedTurn::Text(
+        "Answered the user directly".into(),
+    )]));
+    assert!(matches!(
+        agents
+            .send(
+                &child,
+                &super::super::user(),
+                &InboxRecord::Message(Message {
+                    from: super::super::user(),
+                    id: intent("direct-question"),
+                    body: Box::new(body),
+                    re: None,
+                    attachments: None,
+                }),
+            )
+            .await?,
+        Delivered::Committed { .. }
+    ));
+    agents.drain(&child).await?;
+    let direct = model.request_count();
+    assert!(direct > parent_calls, "the child answered the user");
+    assert_eq!(
+        inbox_tail(&*stream, &root).await?,
+        quiet,
+        "a user message to the child woke its parent"
+    );
+    agents.drain(&root).await?;
+    assert_eq!(
+        model.request_count(),
+        direct,
+        "the parent spent a model call on the user's conversation with its child"
+    );
+    Ok(())
+}
+
+/// Settlements the parent has not yet observed cost it one turn together:
+/// the first wakes it, and that turn's first request admits every later one
+/// already in its inbox, each notice intact and in inbox order.
+/// Negative control: giving each waking notice its own turn (leaving waking
+/// notices out of the first boundary's steering) spends a turn per child.
+#[tokio::test]
+async fn unobserved_settlements_share_one_parent_model_call() -> Result {
+    const CHILDREN: [&str; 3] = ["first", "second", "third"];
+    let (agents, stream, root, model) = fixture(
+        with_retrospectives(
+            CHILDREN
+                .map(|name| spawn_call(name, &[]))
+                .into_iter()
+                .chain([ScriptedTurn::Text("delegated".into())]),
+        )
+        .collect(),
+        0,
+    )
+    .await?;
+    deliver(&agents, &root, requested("delegate-three", &root)).await?;
+    let before = inbox_tail(&*stream, &root).await?;
+    let mut children = Vec::new();
+    for name in CHILDREN {
+        let child = named(&agents, &root, name).await?;
+        model.extend(with_retrospectives([ScriptedTurn::Text(format!(
+            "{name} done"
+        ))]));
+        agents.drain(&child).await?;
+        children.push(child);
+    }
+    assert_eq!(
+        inbox_tail(&*stream, &root).await? - before,
+        CHILDREN.len() as u64,
+        "each delegated child settles one waking notice"
+    );
+    let parent_calls = model.request_count();
+    model.extend(with_retrospectives([ScriptedTurn::Text(
+        "Observed every child".into(),
+    )]));
+    agents.drain(&root).await?;
+    // One turn: its answer, then its retrospective.
+    assert_eq!(
+        model.request_count(),
+        parent_calls + 2,
+        "unobserved settlements did not share one parent turn"
+    );
+    let request = model
+        .requests()
+        .into_iter()
+        .nth(parent_calls)
+        .ok_or("no parent request")?;
+    let sources = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            ModelContentPart::Notices { notices } => Some(notices),
+            _ => None,
+        })
+        .flatten()
+        .filter(|notice| notice.kind == "child.settled")
+        .map(|notice| notice.source.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sources,
+        children
+            .iter()
+            .map(|child| child.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        "the shared call must carry every settlement, in inbox order"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn progress_send_reaches_waiting_parent_and_survives_settlement() -> Result {
     let (agents, stream, root, model) = fixture(

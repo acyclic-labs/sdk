@@ -27,27 +27,41 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
         }));
         ScriptedTurn::Events(events)
     };
-    let provider = scripted([
-        ScriptedTurn::Text("root answer".into()),
-        report(2),
-        ScriptedTurn::Text("none".into()),
-        ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                "child-error".into(),
-                "absent-tool".into(),
-                json!({}),
-            ))),
-            ScriptedEvent::Event(ModelEvent::Completed {
-                metadata: json!({}),
-            }),
-        ]),
-        ScriptedTurn::Text("child answer after error".into()),
-        report(1),
-        ScriptedTurn::Text("none".into()),
-        ScriptedTurn::Text("grandchild answer".into()),
-        report(1),
-        ScriptedTurn::Text("none".into()),
-    ]);
+    // The child's brief settlement wakes the root, and the grandchild's wakes
+    // the child; each wake turn answers, then declines its retrospective.
+    let provider = Arc::new(
+        ScriptedModelProvider::routed(
+            [
+                ScriptedTurn::Text("root answer".into()),
+                report(2),
+                ScriptedTurn::Text("none".into()),
+                ScriptedTurn::Events(vec![
+                    ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                        "child-error".into(),
+                        "absent-tool".into(),
+                        json!({}),
+                    ))),
+                    ScriptedEvent::Event(ModelEvent::Completed {
+                        metadata: json!({}),
+                    }),
+                ]),
+                ScriptedTurn::Text("child answer after error".into()),
+                report(1),
+                ScriptedTurn::Text("none".into()),
+                ScriptedTurn::Text("grandchild answer".into()),
+                report(1),
+                ScriptedTurn::Text("none".into()),
+            ],
+            [
+                "root noted the child",
+                "none",
+                "child noted the grandchild",
+                "none",
+            ]
+            .map(|text| ScriptedTurn::Text(text.into())),
+        )
+        .with_context_capacity(capacity()),
+    );
     let directory = tempfile::tempdir().map_err(crate::local::storage)?;
     let project = volume(directory.path()).await?;
     let harness = Arc::new(
@@ -80,6 +94,11 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
                 panic!("spawn did not return a child");
             };
             agents::settled(&harness, &child).await?;
+            // The settlement committed its parent's wake with it; settling the
+            // ancestors nearest first observes that wake turn before export.
+            for ancestor in paths.iter().rev() {
+                agents::settled(&harness, ancestor).await?;
+            }
             // Reopening either descendant for saved reads must keep the
             // session's root audience while enrolling the child's read grant.
             let saved = Conversation::open(connection.select(child.clone()).await?)
@@ -150,9 +169,12 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
     let inspections = conversation.inspect_tree();
     futures::pin_mut!(inspections);
     let mut aggregate = crate::executor::ToolUsage::default();
-    // The index records each role's selection (role policy wins, otherwise
-    // the parent's); the fixture catalog serves every selection by one binding.
-    let mut selected = crate::templates::root()?.model;
+    // The index records each role's selection: role policy wins, otherwise
+    // the parent's, and the root's parent is the session's bound model. The
+    // expectation is derived by the same resolver the harness admits with.
+    let bound = model()?;
+    let mut selected =
+        crate::templates::root_model(&format!("{}/{}", bound.provider, bound.name), None)?;
     let worker = crate::templates::seed_model("worker")?;
     for (path, mapping) in paths.into_iter().zip(index) {
         assert!(
@@ -161,9 +183,10 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
                 .any(|row| row["usage"]["agent_path"] == path.as_str()),
             "each agent has an original model call"
         );
-        let model = selected.clone().expect("every role selects a model");
-        selected = crate::templates::resolve_model(worker.as_deref(), selected.as_deref())
-            .map(str::to_owned);
+        let model = selected.clone();
+        selected = crate::templates::resolve_model(worker.as_deref(), Some(&model))
+            .unwrap_or(&model)
+            .to_owned();
         assert_eq!(
             mapping,
             json!({
