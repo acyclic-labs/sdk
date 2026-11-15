@@ -152,35 +152,78 @@ pub fn prepare<T>(
 }
 
 /// Selects process-local directories independently of execution-grant selection.
-/// The private home projection owns temporary files; host scratch is reserved
-/// for process output custody when no private home is projected.
+///
+/// `HOME` and `TMPDIR` are the agent's private writable scratch, never the
+/// project: the projected private home when one is mounted writable, and
+/// otherwise a per-agent directory in host-owned scratch, which physical
+/// views use because they project no auxiliary volume. Scratch work therefore
+/// cannot edit, pollute or publish into authored project files.
 #[doc(hidden)]
 pub fn workspace_environment<T>(
     mounts: &MountTable<T>,
     environment: &mut std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
-    let home = mounts
+    let projected = mounts
         .native_mounts()
-        .find(|(relative, _, mount)| *relative == "volume:///home" && !mount.mode.read_only());
-    let temporary = home
-        .map(|(_, root, _)| {
-            // The admitted binding may be an owner-maintained alias. Resolve
-            // that root before the no-follow walk of authored descendants.
-            let canonical = std::fs::canonicalize(root).map_err(Error::process_io)?;
-            acyclic_fs::hold_root(&canonical)
-                .and_then(|root| {
-                    // The ordinary volume publication owns persistence after
-                    // the process completes, not this disposable projection.
-                    root.create_directories(
-                        Path::new("tmp"),
-                        acyclic_fs::NativeDurability::Visibility,
-                    )
+        .find(|(relative, _, mount)| *relative == "volume:///home" && !mount.mode.read_only())
+        .map(|(_, root, _)| root);
+    // `held` is the root the no-follow walk creates `tmp` under; `home` is
+    // the value the process sees.
+    let (held, relative, home) = match projected {
+        // The admitted binding may be an owner-maintained alias. Resolve
+        // that root before the no-follow walk of authored descendants.
+        Some(home) => (
+            std::fs::canonicalize(home).map_err(Error::process_io)?,
+            std::path::PathBuf::new(),
+            home.to_path_buf(),
+        ),
+        None => {
+            let scratch = mounts.scratch_root.as_deref().ok_or_else(|| {
+                Error::Invalid(
+                    "shell requires a private home or host scratch outside the project".into(),
+                )
+            })?;
+            // Only the owning agent may write an agent-owned volume, so the
+            // owner of any writable one is this table's agent. Principal
+            // labels are not identities: one host may label every agent alike.
+            let agent = mounts
+                .mounts()
+                .filter(|(_, mount)| !mount.mode.read_only())
+                .find_map(|(_, mount)| match mount.view.volume.owner() {
+                    crate::conversation::VolumeOwner::Agent(agent) => Some(agent.to_string()),
+                    _ => None,
                 })
-                .map_err(|error| Error::Storage(error.to_string()))?;
-            Ok::<_, Error>(root.join("tmp"))
+                .ok_or_else(|| {
+                    Error::Invalid("shell requires the agent's own writable volume".into())
+                })?;
+            let relative =
+                Path::new("homes").join(blake3::hash(agent.as_bytes()).to_hex().as_str());
+            (
+                scratch.to_path_buf(),
+                relative.clone(),
+                scratch.join(relative),
+            )
+        }
+    };
+    acyclic_fs::hold_root(&held)
+        .and_then(|root| {
+            // The ordinary volume publication owns persistence after the
+            // process completes, not this disposable projection.
+            root.create_directories(
+                &relative.join("tmp"),
+                acyclic_fs::NativeDurability::Visibility,
+            )
         })
-        .transpose()?;
-    let home_root = home.map_or(mounts.root.as_path(), |(_, root, _)| root);
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    // The process sees its temporary directory under the home it is given,
+    // alias included, as `$HOME/tmp`.
+    let temporary = home.join("tmp");
+    let utf8 = |path: &Path, what: &str| {
+        path.to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| Error::Invalid(format!("sandbox {what} directory is not UTF-8")))
+    };
+    let (home, temporary) = (utf8(&home, "home")?, utf8(&temporary, "temporary")?);
     for name in [
         "HOME",
         #[cfg(windows)]
@@ -190,29 +233,9 @@ pub fn workspace_environment<T>(
             .keys()
             .any(|key| super::invocation::environment_key_matches(key, name))
         {
-            environment.insert(
-                name.into(),
-                home_root
-                    .to_str()
-                    .ok_or_else(|| Error::Invalid("sandbox home directory is not UTF-8".into()))?
-                    .into(),
-            );
+            environment.insert(name.into(), home.clone());
         }
     }
-    let temporary = temporary.as_ref().map_or_else(
-        || {
-            mounts.scratch_root.as_deref().unwrap_or_else(|| {
-                mounts
-                    .native_mounts()
-                    .find(|(_, _, mount)| !mount.mode.read_only())
-                    .map_or(home_root, |(_, root, _)| root)
-            })
-        },
-        |temporary| temporary.as_path(),
-    );
-    let temporary = temporary
-        .to_str()
-        .ok_or_else(|| Error::Invalid("sandbox temporary directory is not UTF-8".into()))?;
     for name in [
         "TMPDIR",
         #[cfg(windows)]
@@ -221,7 +244,7 @@ pub fn workspace_environment<T>(
         "TMP",
     ] {
         environment.retain(|key, _| !super::invocation::environment_key_matches(key, name));
-        environment.insert(name.into(), temporary.into());
+        environment.insert(name.into(), temporary.clone());
     }
     Ok(())
 }

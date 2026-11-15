@@ -18,6 +18,9 @@ pub struct EnvironmentFacts {
     pub tool_path: Option<String>,
     /// Common command availability on that PATH, checked at admission.
     pub tooling: Option<String>,
+    /// Where the bound shell's private writable scratch is, outside the project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scratch: Option<String>,
     /// The session date in UTC: the context epoch's, so a day rollover never rewrites the prefix.
     pub current_date: String,
     /// Time zone of the recorded date.
@@ -31,6 +34,7 @@ impl EnvironmentFacts {
             ("shell", Some(self.shell.as_str())),
             ("tool_path", self.tool_path.as_deref()),
             ("tooling", self.tooling.as_deref()),
+            ("scratch", self.scratch.as_deref()),
             ("os", Some(self.os.as_str())),
             ("current_date", Some(self.current_date.as_str())),
             ("timezone", Some(self.timezone.as_str())),
@@ -173,6 +177,7 @@ impl From<crate::native_environment::CheckoutFacts> for EnvironmentFacts {
             shell: facts.shell,
             tool_path: None,
             tooling: None,
+            scratch: None,
             current_date: facts.current_date,
             timezone: facts.timezone,
         }
@@ -191,6 +196,7 @@ mod tests {
             shell: "bash".into(),
             tool_path: None,
             tooling: None,
+            scratch: None,
             current_date: "2026-10-22".into(),
             timezone: "UTC".into(),
         }

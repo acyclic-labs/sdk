@@ -5,6 +5,10 @@
 //! until compaction.
 use std::path::Path;
 
+/// The bound shell's `HOME` and `TMPDIR`: private writable scratch that is
+/// never the project (see `workspace_environment`).
+const SCRATCH: &str = "$HOME and $TMPDIR are your private writable scratch, outside the project";
+
 /// The bound view's facts at `now_unix_millis`, the epoch's session date.
 pub(super) fn gather(
     cwd: Option<&Path>,
@@ -40,6 +44,7 @@ pub(super) fn gather(
                 .collect::<Vec<_>>()
                 .join(", "),
         );
+        facts.scratch = Some(SCRATCH.into());
     }
     Ok(facts)
 }

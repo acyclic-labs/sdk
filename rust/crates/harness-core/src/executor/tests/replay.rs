@@ -612,6 +612,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
                 shell: "bash".into(),
                 tool_path: None,
                 tooling: None,
+                scratch: None,
                 current_date: "2026-10-22".into(),
                 timezone: "UTC".into(),
             }),

@@ -3,6 +3,7 @@
   <shell>{shell}</shell>
   <PATH>{tool_path}</PATH>
   <tooling>{tooling}</tooling>
+  <scratch>{scratch}</scratch>
   <os>{os}</os>
   <current_date>{current_date}</current_date>
   <timezone>{timezone}</timezone>

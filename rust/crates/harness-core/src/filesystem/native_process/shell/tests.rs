@@ -24,6 +24,20 @@ fn table_with_roots(
     data: &str,
     home: bool,
 ) -> Result<MountTable<Arc<tempfile::TempDir>>> {
+    agent_table(root, primary, data, home, FIXTURE_AGENT)
+}
+
+const FIXTURE_AGENT: [u8; 16] = [1; 16];
+
+// Every agent binds its own writable private volume; the host labels every
+// local principal "owner", so that label identifies no agent.
+fn agent_table(
+    root: PathBuf,
+    primary: &str,
+    data: &str,
+    home: bool,
+    agent: [u8; 16],
+) -> Result<MountTable<Arc<tempfile::TempDir>>> {
     let native = Arc::new(tempfile::tempdir().map_err(Error::process_io)?);
     let resource = ResourcePattern {
         lineage_root: None,
@@ -75,8 +89,16 @@ fn table_with_roots(
                     &mut None,
                 )?,
                 name.into(),
-                VolumeClass::Project,
-                VolumeOwner::Project("project".into()),
+                if name == "private" {
+                    VolumeClass::AgentPrivate
+                } else {
+                    VolumeClass::Project
+                },
+                if name == "private" {
+                    VolumeOwner::Agent(crate::AgentId::from_bytes(agent))
+                } else {
+                    VolumeOwner::Project("project".into())
+                },
                 &mut None,
             )?,
             root: match name {
@@ -93,7 +115,7 @@ fn table_with_roots(
             source: Arc::clone(&native),
         })
     };
-    let mut volumes = vec![volume("data")?, volume("shared")?];
+    let mut volumes = vec![volume("data")?, volume("private")?, volume("shared")?];
     if home {
         volumes.push(volume("home")?);
     }
@@ -108,15 +130,23 @@ fn table_with_roots(
         volume("project")?,
         volumes,
     )?;
+    // Host-owned scratch is a sibling of every projected root, as a local
+    // binding's is.
+    let volumes = native.path().join("volumes");
+    let scratch = native.path().join("scratch");
+    for directory in [&volumes, &scratch] {
+        std::fs::create_dir(directory).map_err(Error::process_io)?;
+    }
+    mounts.scratch_root = Some(scratch);
     for (relative, mount) in mounts.mounts_mut() {
-        if relative == "volume:///shared" {
+        if relative == "volume:///shared" || relative == "volume:///private" {
             mount.native_root = crate::workspace::NativeRoot::Logical;
         } else if relative.is_empty() && !primary.is_empty() {
             // The host provided an already projected directory: its source
             // path does not exist as a second directory below the OS root.
             mount.native_root = crate::workspace::NativeRoot::Path(root.clone());
         } else if !relative.is_empty() {
-            mount.native_root = crate::workspace::NativeRoot::Path(native.path().to_path_buf());
+            mount.native_root = crate::workspace::NativeRoot::Path(volumes.clone());
         }
     }
     Ok(mounts)
@@ -331,51 +361,118 @@ async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> 
     Ok(())
 }
 
-// Admission failures must preserve their original error class.
+/// The private scratch an unprojected home resolves to for `mounts`.
 #[cfg(target_os = "linux")]
-#[tokio::test]
-async fn read_only_project_uses_its_writable_volume_for_temporary_files() -> Result<()> {
+fn scratch_home(mounts: &MountTable<Arc<tempfile::TempDir>>) -> PathBuf {
+    let agent = crate::AgentId::from_bytes(FIXTURE_AGENT).to_string();
+    mounts
+        .scratch_root
+        .clone()
+        .expect("fixture scratch")
+        .join("homes")
+        .join(blake3::hash(agent.as_bytes()).to_hex().as_str())
+}
+
+// Agents sharing one host scratch root get distinct homes, though the host
+// gives every local principal the same label; a table holding no writable
+// volume of its own agent has no home and is refused.
+#[test]
+fn agents_sharing_scratch_get_distinct_homes() -> Result<()> {
     let project = tempfile::tempdir().map_err(Error::process_io)?;
-    let mut mounts = table(project.path().canonicalize().map_err(Error::process_io)?)?;
-    for (name, mount) in mounts.mounts_mut() {
-        if name.is_empty() {
+    let root = project.path().canonicalize().map_err(Error::process_io)?;
+    let first = agent_table(root.clone(), "", "", false, [1; 16])?;
+    let mut second = agent_table(root, "", "", false, [2; 16])?;
+    second.scratch_root.clone_from(&first.scratch_root);
+    let scratch = first.scratch_root.clone().expect("fixture scratch");
+    let home = |mounts: &MountTable<Arc<tempfile::TempDir>>| -> Result<PathBuf> {
+        let mut environment = BTreeMap::new();
+        workspace_environment(mounts, &mut environment)?;
+        let home = PathBuf::from(&environment["HOME"]);
+        assert_eq!(PathBuf::from(&environment["TMPDIR"]), home.join("tmp"));
+        Ok(home)
+    };
+    let (first_home, second_home) = (home(&first)?, home(&second)?);
+    assert_ne!(first_home, second_home);
+    for home in [&first_home, &second_home] {
+        assert!(home.starts_with(scratch.join("homes")), "{home:?}");
+        assert!(home.join("tmp").is_dir(), "{home:?}");
+    }
+    // An agent's private volume bound read-only names no writer.
+    for (name, mount) in second.mounts_mut() {
+        if name == "volume:///private" {
             mount.mode = MountMode::default();
         }
     }
-    let data = mounts
-        .native_mounts()
-        .find(|(name, _, _)| *name == "volume:///data")
-        .expect("writable data projection")
-        .1
-        .to_path_buf();
-    let mut native = invocation(&mounts.root);
-    native.environment.insert(
-        "FIXTURE_DATA".into(),
-        workspace_hints(&mounts.environment()?)["data"].clone(),
-    );
-    let result = run(
-        ShellInput {
-            command: r#"test "$TMPDIR" = "$FIXTURE_DATA" && printf scratch > "$TMPDIR/receipt""#
-                .into(),
-            cwd: None,
-            timeout_ms: None,
-            background: false,
-            target: None,
-        },
-        &mounts,
-        native,
-        1,
-        None,
-        || Ok(()),
-    )
-    .await?
-    .expect("completed shell");
-    assert!(result.success, "{result:?}");
-    assert_eq!(
-        std::fs::read(data.join("receipt")).map_err(Error::process_io)?,
-        b"scratch"
-    );
-    assert!(!project.path().join("receipt").exists());
+    assert!(workspace_environment(&second, &mut BTreeMap::new()).is_err());
+    Ok(())
+}
+
+// Without a projected private home (a physical view), `HOME` and `TMPDIR`
+// are the agent's host-owned scratch: writable, and outside the project and
+// every shared volume, whether the project is writable or read-only.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn unprojected_home_and_temporary_files_are_private_scratch() -> Result<()> {
+    for read_only in [false, true] {
+        let project = tempfile::tempdir().map_err(Error::process_io)?;
+        let mut mounts = table(project.path().canonicalize().map_err(Error::process_io)?)?;
+        if read_only {
+            for (name, mount) in mounts.mounts_mut() {
+                if name.is_empty() {
+                    mount.mode = MountMode::default();
+                }
+            }
+        }
+        let data = mounts
+            .native_mounts()
+            .find(|(name, _, _)| *name == "volume:///data")
+            .expect("writable data projection")
+            .1
+            .to_path_buf();
+        let mut native = invocation(&mounts.root);
+        native.environment.insert(
+            "PROJECT".into(),
+            mounts.root.to_str().expect("UTF-8 project").into(),
+        );
+        native.environment.insert(
+            "FIXTURE_DATA".into(),
+            workspace_hints(&mounts.environment()?)["data"].clone(),
+        );
+        let result = run(
+            ShellInput {
+                command: r#"case "$HOME/" in "$PROJECT"/*|"$FIXTURE_DATA"/*) exit 3;; esac
+                    case "$TMPDIR/" in "$PROJECT"/*|"$FIXTURE_DATA"/*) exit 4;; esac
+                    test "$TMPDIR" = "$HOME/tmp" || exit 5
+                    cd "$HOME" && printf home > receipt && printf scratch > "$TMPDIR/receipt""#
+                    .into(),
+                cwd: None,
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            &mounts,
+            native,
+            1,
+            None,
+            || Ok(()),
+        )
+        .await?
+        .expect("completed shell");
+        assert!(result.success, "{result:?}");
+        let home = scratch_home(&mounts);
+        assert_eq!(
+            std::fs::read(home.join("receipt")).map_err(Error::process_io)?,
+            b"home"
+        );
+        assert_eq!(
+            std::fs::read(home.join("tmp/receipt")).map_err(Error::process_io)?,
+            b"scratch"
+        );
+        for authored in [project.path(), data.as_path()] {
+            assert!(!authored.join("receipt").exists());
+            assert!(!authored.join("tmp").exists());
+        }
+    }
     Ok(())
 }
 
@@ -585,8 +682,9 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
         std::fs::read(root.join("inside")).map_err(Error::process_io)?,
         b"inside"
     );
+    assert!(!root.join("tempfile").exists());
     assert_eq!(
-        std::fs::read(root.join("tempfile")).map_err(Error::process_io)?,
+        std::fs::read(scratch_home(&mounts).join("tmp/tempfile")).map_err(Error::process_io)?,
         b"temp"
     );
     assert_eq!(
