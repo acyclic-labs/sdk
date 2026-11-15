@@ -460,7 +460,7 @@ fn linux_a_move_across_the_watched_tree_is_an_exact_arrival_or_departure()
         relative_namespace_path(
             root.path(),
             &root.path().join(name),
-            FilesystemProfile::Portable,
+            native_filesystem_profile(),
             VolumeLimits::default(),
         )
     };
