@@ -253,6 +253,10 @@ impl LocalHarness {
                     })?;
             }
             copies.insert(path.to_owned(), chunk.bytes);
+            #[cfg(test)]
+            if let Some(observer) = self.context_read_observer {
+                observer(self, path).await?;
+            }
         }
         let copies = self
             .publish_mention_copies(base, copies, publisher, operation)
@@ -999,6 +1003,79 @@ mod tests {
                 .as_ref(),
             b"captured instructions"
         );
+        Ok(())
+    }
+
+    // A capture refused by its closing check saves no copies: a replay of its
+    // operation returns saved copies without authorizing again.
+    #[tokio::test]
+    async fn a_refused_mention_capture_saves_nothing_a_replay_could_return() -> Result<()> {
+        use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        std::fs::write(directory.path().join("sample.txt"), b"captured mention")
+            .map_err(storage)?;
+        let mut harness = LocalHarness::open(
+            crate::LocalHarnessConfig::native_host(directory.path())
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .state_directory(state.path().join("runtime")),
+        )
+        .await?;
+        let workspace = harness
+            .workspace
+            .as_ref()
+            .expect("fixture workspace")
+            .clone();
+        let publisher = harness.input_publisher_with_limit(1024)?;
+        // Current reads only: the captured cut is refused once it is history.
+        let label = Capability {
+            layers: vec![vec![Grant {
+                actions: [Action::Read, Action::List].into(),
+                resource: ResourcePattern {
+                    lineage_root: None,
+                    volume: None,
+                    generations: Generations::All,
+                    path: "**".into(),
+                },
+            }]],
+            expires_at: None,
+        }
+        .to_scope_label()
+        .map_err(storage)?;
+        let scope = harness
+            .root_authority
+            .as_ref()
+            .expect("fixture signer")
+            .bootstrap_scope(
+                "current-reads-only",
+                &Capabilities::new([label]),
+                Some(harness.root),
+                &mut None,
+            )?;
+        harness.signed = scope;
+        harness.context_read_observer = Some(advance_head);
+        let operation = OperationId::new();
+        assert!(matches!(
+            harness
+                .capture_checkout_mentions(
+                    &workspace,
+                    "@sample.txt",
+                    "inputs/refused",
+                    publisher.as_ref(),
+                    operation,
+                )
+                .await,
+            Err(Error::FilesystemAccessConfiguration("checkout context"))
+        ));
+        let (saved, _) = publisher
+            .observe_changes(
+                publisher.volume(),
+                operation,
+                None,
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?;
+        assert!(saved.is_none(), "a refused capture saved its copies");
         Ok(())
     }
 
