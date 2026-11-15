@@ -374,8 +374,10 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
             );
         notice?;
         use json::CodecOperation::{DecodeBytes, Serialize};
-        // One schema encoding, framing count, notice encoding and typed decode.
-        let expected = [Serialize, Serialize, Serialize, DecodeBytes];
+        // Unlimited rendering needs only schema and notice encoding, then decode.
+        // large_tool_tables_split_without_losing_schemas_or_changing_the_prefix
+        // covers finite framing and its refusal boundary.
+        let expected = [Serialize, Serialize, DecodeBytes];
         assert_eq!(codec, expected);
         let remaining = io.remaining()?;
         assert_eq!(context.messages.len(), 1);

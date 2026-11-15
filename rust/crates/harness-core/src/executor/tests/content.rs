@@ -7,15 +7,16 @@ mod selection;
 async fn later_model_references_fail_preflight_before_earlier_content_reads() -> Result<()> {
     let journal = Journal::default();
     let first = journal
-        .stage(OperationId::new(), "first", &[1, 2], "image/png", None)?
+        .stage(OperationId::new(), "first", b"hi", "text/plain", None)?
         .await?;
     let second = journal
-        .stage(OperationId::new(), "second", &[3; 8], "image/png", None)?
+        .stage(OperationId::new(), "second", b"too long", "text/plain", None)?
         .await?;
     let contents = [first.clone(), second.clone()].map(|file| {
         ModelContent::Part(ModelContentPart::File {
             file,
-            policy: crate::model::FileProjectionPolicy::Reference,
+            // Body limits govern materialization, not metadata-only references.
+            policy: crate::model::FileProjectionPolicy::BoundedFull,
         })
     });
     let first_only = RuntimeScope::new(
