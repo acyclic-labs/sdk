@@ -218,7 +218,8 @@ proptest! {
 }
 
 #[test]
-fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog() {
+fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut lazy = Vec::new();
     let mut eager = Vec::new();
     for batches in [8, 128, 1024] {
@@ -279,6 +280,7 @@ fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog() {
         eager[2].1 > lazy[2].1,
         "eager control hid its first-output work"
     );
+    Ok(())
 }
 
 #[test]
