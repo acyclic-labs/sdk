@@ -1092,11 +1092,17 @@ async fn rebinding_a_physical_view_keeps_what_replaced_its_alias() -> Result<()>
         )
         .await
         .map_err(storage)?;
+    let mut bindings = harness.session_bindings().to_vec();
+    bindings
+        .iter_mut()
+        .find(|entry| entry.role == crate::agent::WorkspaceRole::User)
+        .ok_or_else(|| Error::NotFound("primary binding".into()))?
+        .source = crate::agent::WorkspaceSource::Volume(project.clone());
     let bind = || async {
         root.bound_task_view(
             root.spawned_project_view(&project).await?,
             &project,
-            &[],
+            &bindings,
             &AgentOwner,
             &authority,
         )
