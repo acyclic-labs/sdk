@@ -19,9 +19,10 @@ async fn concurrent_publications_preserve_each_volume_payload() -> Result<()> {
 /// Every file publication stages outside the checkout and renames into it.
 /// Each such write is one arrival: concurrent writers over a populated
 /// checkout must never fall back to scanning the whole tree, wherever the
-/// watcher can prove delivery without writing into the checkout. Where it
-/// cannot (FSEvents), the checkout forbids fence writes, so each capture
-/// revalidates by contract and the claim does not apply.
+/// checkout's watch proves delivery without writing into the checkout. Where
+/// it cannot (FSEvents, or the notify adapter), the checkout forbids fence
+/// writes, so each capture revalidates by contract and the claim does not
+/// apply.
 #[tokio::test]
 async fn concurrent_checkout_writes_never_rescan_the_tree() -> Result<()> {
     let (_directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
@@ -40,7 +41,13 @@ async fn concurrent_checkout_writes_never_rescan_the_tree() -> Result<()> {
         .await?;
     let before = crate::local::checkout_tools::capture::BASELINE_SCANS.get();
     measure_writer_batch(&[&publisher; 8], "rescan").await?;
-    if acyclic_fs::native_watch_capabilities().read_only_fence {
+    let proven =
+        crate::sync::owned::lock_owned(crate::sync::owned::Arc::clone(&publisher.tools.state))
+            .await
+            .watcher
+            .as_ref()
+            .is_some_and(|cursor| cursor.fence_proves_delivery());
+    if proven {
         assert_eq!(
             crate::local::checkout_tools::capture::BASELINE_SCANS.get(),
             before,

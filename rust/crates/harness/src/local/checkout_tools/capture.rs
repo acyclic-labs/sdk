@@ -23,6 +23,11 @@ pub(in crate::local) struct Cursor {
 }
 
 impl Cursor {
+    #[cfg(all(test, not(loom)))]
+    pub(in crate::local) fn fence_proves_delivery(&self) -> bool {
+        self.watcher.fence_proves_delivery()
+    }
+
     fn open(workspace: &LocalWorkspace) -> Result<Self> {
         let config = workspace.view().workspace().volume_config();
         // Never write a fence cookie into the checkout. Precise backends fence
