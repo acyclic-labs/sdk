@@ -195,7 +195,9 @@ export function checkGatedTestRoots(metadata, read = file => readFileSync(file, 
   return checked;
 }
 
-const COMMAND_FILE = /\.(?:sh|ps1|m?js|cjs|ts|py|ya?ml|json)$/;
+// Executable scripts and workflow steps. A data file that records how something
+// was once run is provenance, not a command, and is out of scope by type.
+export const COMMAND_FILE = /^(?:.+\.(?:sh|ps1|[cm]?js|ts|py)|\.github\/(?:workflows|actions)\/.+\.ya?ml)$/;
 
 // A selection that matches no tests must fail, never pass.
 const ZERO_PASS = new RegExp(['--no-tests[= ]+(?:pass|warn)\\b', 'NEXTEST_' + 'NO_TESTS'].join('|'));
@@ -215,10 +217,10 @@ export function checkTestSelection(sources) {
 const CARGO_VALUE = new Set(['-p', '--package', '-F', '--features', '--test', '--bin', '--example', '--bench',
   '--target', '--target-dir', '--manifest-path', '--profile', '-j', '--jobs', '--message-format', '--color',
   '--config', '-Z', '--exclude']);
-// A target nextest cannot run keeps cargo's runner; each entry names how its runner refuses an empty selection.
-export const LIBTEST_TARGETS = new Map([
-  ['wasm32-unknown-unknown', 'nextest cannot run wasm-bindgen browser tests; scripts/run-browser-tests.sh fails unless the runner reports a nonzero passed count'],
-]);
+// The one form that keeps cargo's runner: nextest cannot run wasm-bindgen browser
+// tests, so scripts/run-browser-tests.sh runs only wasm32-unknown-unknown and fails
+// unless the runner reports a nonzero passed count.
+const GUARDED_RUNNER = /run-browser-tests\.sh\s+$/;
 const LIBTEST_VALUE = new Set(['--test-threads', '--skip', '--format', '-Z', '--shuffle-seed', '--logfile', '--color']);
 export function cargoTestFilters(text) {
   const commands = [];
@@ -238,7 +240,7 @@ export function cargoTestFilters(text) {
     // A quoted expansion is one shell word; any other quote ends the command's text.
     const shell = code.replace(/"(\$[\w@#{}[\]]+)"/g, '$1');
     for (const match of shell.matchAll(/(?:\bcargo(?:\.exe)?|\$\{?cargo_bin\}?)(?:\s+\+\S+)?\s+test\b([^|;&>()"'`]*)/g))
-      commands.push({line, tokens: match[1].replace(/\s\d+$/, '').trim().split(/\s+/).filter(token => token && !token.startsWith('\\'))});
+      commands.push({line, guarded: GUARDED_RUNNER.test(shell.slice(0, match.index)), tokens: match[1].replace(/\s\d+$/, '').trim().split(/\s+/).filter(token => token && !token.startsWith('\\'))});
     // Argument arrays handed to cargo from JavaScript and Python.
     // An array is a cargo invocation when it names cargo or a cargo selection option.
     for (const match of code.matchAll(/\[\s*(?:(["'])cargo\1\s*,\s*)?(["'])test\2\s*,([^\]]*)\]/g)) {
@@ -249,11 +251,8 @@ export function cargoTestFilters(text) {
         commands.push({line, tokens});
     }
   }
-  return commands.filter(({tokens}) => {
-    if (tokens.includes('--no-run') || tokens.includes('--doc')) return false;
-    const target = tokens.flatMap((token, i) => token === '--target' ? [tokens[i + 1]]
-      : token.startsWith('--target=') ? [token.slice('--target='.length)] : []);
-    if (target.some(triple => LIBTEST_TARGETS.has(triple))) return false;
+  return commands.filter(({guarded, tokens}) => {
+    if (guarded || tokens.includes('--no-run') || tokens.includes('--doc')) return false;
     let libtest = false;
     for (let i = 0; i < tokens.length; i++) {
       const token = tokens[i].replace(/^["']|["']$/g, '');

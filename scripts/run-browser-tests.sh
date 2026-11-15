@@ -17,7 +17,12 @@ cleanup() {
 command=("$@")
 trap cleanup EXIT
 if (( $# == 0 )); then
- echo 'Expected a test command, for example: cargo test --locked -p acyclic-fs --no-default-features --features browser,conformance --target wasm32-unknown-unknown --test main browser_commit::conformance::browser_public_conformance_benchmark' >&2
+ echo 'Expected a wasm32-unknown-unknown test command, for example: bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-fs --no-default-features --features browser,conformance --target wasm32-unknown-unknown --test main browser_commit::conformance::browser_public_conformance_benchmark' >&2
+    exit 2
+fi
+# nextest runs every other target; this runner is only for wasm-bindgen tests.
+if [[ " $* " != *" --target wasm32-unknown-unknown "* ]]; then
+    echo 'run-browser-tests.sh runs only --target wasm32-unknown-unknown; run other targets with cargo nextest' >&2
     exit 2
 fi
 step=temporary-directory

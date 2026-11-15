@@ -218,10 +218,9 @@ web_warning_closures() {
       --target wasm32-unknown-unknown --lib
 }
 
-harness_tests() {
-  cargo test --locked "$@" 2>&1 | tee "$observability/harness-tests.log"
-  grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$observability/harness-tests.log"
-  ! grep -Eq 'test result: ok\. 0 passed;' "$observability/harness-tests.log"
+# Browser selections stay on wasm-bindgen's runner, which refuses an empty run.
+browser_tests() {
+  bash scripts/run-browser-tests.sh cargo test --locked "$@" 2>&1 | tee "$observability/browser-tests.log"
 }
 
 case "$lane" in
@@ -244,13 +243,12 @@ case "$lane" in
     # Compile native implementations and their unit tests together.
  cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --lib --tests \
       --features acyclic-harness/test-support
-    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
-      harness_tests -p acyclic-harness-core --features model-checking --test main mcp_loom::
-    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
-      harness_tests -p acyclic-harness-core --features model-checking \
-        --lib workflow::model_checking::tests::
-    node scripts/qualify-mcp-loom.mjs --gate
     ensure_nextest
+    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
+      cargo nextest run --locked --profile ci -p acyclic-harness-core --features model-checking \
+        --lib workflow::model_checking::tests::
+    # Runs mcp_loom:: and requires its exact test count.
+    node scripts/qualify-mcp-loom.mjs --gate
     bash scripts/qualify-tui-diff.sh
     sdk_workspace nextest --all-features --locked
     ;;
@@ -507,15 +505,17 @@ case "$lane" in
     for suite in filesystem::default_tools::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \
         RUSTFLAGS="$warning_rustflags" \
-        harness_tests -p acyclic-harness-core --features browser,test-support --target wasm32-unknown-unknown --lib "$suite"
+        browser_tests -p acyclic-harness-core --features browser,test-support --target wasm32-unknown-unknown --lib "$suite"
     done
     CHROMEDRIVER="$(command -v chromedriver)" \
       RUSTFLAGS="$warning_rustflags" \
-      harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown \
+      browser_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown \
         --test main client_public_consumer::identical_public_harness_trace
-    harness_tests -p acyclic-harness --features test-support --test main client_public_consumer::identical_public_harness_trace
+    ensure_nextest
+    cargo nextest run --locked --profile ci -p acyclic-harness --features test-support --test main \
+      client_public_consumer::identical_public_harness_trace
     RUSTFLAGS="$warning_rustflags" \
-      harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown --test main client_views_parity::
+      browser_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown --test main client_views_parity::
     RUSTFLAGS="$warning_rustflags" \
     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="node $PWD/scripts/run-node-wasm-tests.mjs" \
       cargo test -p acyclic-harness-providers --features browser,acyclic-harness/test-support \
@@ -524,7 +524,7 @@ case "$lane" in
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
       RUSTFLAGS="$warning_rustflags" \
-      harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown \
+      browser_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown \
         --test main native_media_boundary::
     GECKODRIVER="$(command -v geckodriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked

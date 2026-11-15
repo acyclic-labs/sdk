@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
-import {cargoTestFilters, checkCargoTestFilters, checkDeserializedTestSupport, checkGatedTestRoots, checkTestSelection, checkTestSupport, checkTestSupportExports} from './check-test-support.mjs';
+import {COMMAND_FILE, cargoTestFilters, checkCargoTestFilters, checkDeserializedTestSupport, checkGatedTestRoots, checkTestSelection, checkTestSupport, checkTestSupportExports} from './check-test-support.mjs';
 
 /** @param {{optional?: boolean, kind?: string | null, target?: string | null, alias?: string}} options */
 function fixture({optional = false, kind = null, target = null, alias = 'backend-alias'} = {}) {
@@ -149,11 +149,15 @@ test('a libtest name filter is refused, and runs that select no named test are n
   const selectionFree = [`${run} -p x --lib`, `${run} -p x --features "$features" --lib -- --test-threads=4`,
     `${run} -p x --test main --no-run`, `${run} -p x --doc module`, `# ${run} -p x --lib name`,
     `run(${array(['./file.ts'])})`, `write("${run}\n")`, `${run} -p x --lib 2>&1 | tee log`,
-    `${run} -p x --target wasm32-unknown-unknown --test main name`, `${run} -p x --target=wasm32-unknown-unknown --lib name`];
+    `bash scripts/run-browser-tests.sh ${run} -p x --target wasm32-unknown-unknown --test main name`];
   for (const text of selectionFree) assert.deepEqual(cargoTestFilters(text), [], text);
   assert.deepEqual(cargoTestFilters(`ok\n${run} -p x --lib name`), [2]);
-  // Only the browser target keeps cargo's runner; any other target still needs nextest.
-  assert.deepEqual(cargoTestFilters(`${run} -p x --target x86_64-unknown-linux-gnu --lib name`), [1]);
+  // A browser selection outside the guarded runner has no empty-run check.
+  assert.deepEqual(cargoTestFilters(`${run} -p x --target wasm32-unknown-unknown --test main name`), [1]);
   assert.throws(() => checkCargoTestFilters([['a.sh', filtered[0]]]), /a.sh:1: a name filter under libtest/);
   assert.equal(checkCargoTestFilters([['a.sh', filtered[0]]], new Map([['a.sh', 'reason']])), 1);
+  for (const file of ['scripts/a.sh', 'scripts/a.mjs', 'b.ps1', '.github/workflows/a.yml', '.github/actions/a/action.yml'])
+    assert.ok(COMMAND_FILE.test(file), file);
+  for (const file of ['rust/crates/x/tests/corpus.json', 'buf.yaml', 'docs/a.md', 'a.rs'])
+    assert.ok(!COMMAND_FILE.test(file), file);
 });
