@@ -433,7 +433,7 @@ fn killed_owner_with_pending_request_retires_without_fusectl()
             }
             return controller(&root);
         }
-        return pending_owner(&root, case == "old");
+        return pending_owner(&root);
     }
     let temporary = tempfile::tempdir()?;
     let output = Command::new("unshare")
@@ -476,7 +476,7 @@ fn transport(session: &crate::NativeMountSession) -> Arc<super::super::host_io::
     )
 }
 
-fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn pending_owner(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read, Write};
     use std::os::fd::BorrowedFd;
     crate::initialize_native_mount_services()?;
@@ -493,12 +493,7 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
         entered,
         released: Mutex::new(released),
     });
-    let start = || mount(source, volume_id, root);
-    let mut session = if old {
-        super::super::mount::in_process_negative_control(start)
-    } else {
-        start()
-    }?;
+    let mut session = mount(source, volume_id, root)?;
     // Release source work before session worker joining on all error paths.
     let release_on_exit = release;
     let devices = std::fs::read_dir("/proc/self/fd")?
@@ -506,9 +501,8 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
         .filter(|target| target == Path::new("/dev/fuse"))
         .count();
     assert_eq!(
-        devices,
-        usize::from(old),
-        "only the old-path control may retain the mounted FUSE device"
+        devices, 0,
+        "a process whose threads enter the mount must never hold its FUSE device"
     );
     let device = session
         .native_root_identity()
@@ -595,10 +589,7 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::{fd::OwnedFd, unix::net::UnixStream};
     use std::process::{Command, Stdio};
     crate::initialize_native_mount_services()?;
-    for (case, (old, keep_survivor)) in [(false, false), (false, true), (true, true)]
-        .into_iter()
-        .enumerate()
-    {
+    for (case, keep_survivor) in [false, true].into_iter().enumerate() {
         let survivor_root = root.join(format!("survivor-{case}"));
         let owner_root = root.join(format!("owner-{case}"));
         std::fs::create_dir(&survivor_root)?;
@@ -610,14 +601,11 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         control.set_read_timeout(Some(Duration::from_secs(5)))?;
         let child = Command::new("/proc/self/exe")
             .args([OWNER_TEST, "--exact", "--nocapture"])
-            .env(OWNER_CASE, if old { "old" } else { "hosted" })
+            .env(OWNER_CASE, "hosted")
             .env(OWNER_ROOT, &owner_root)
             .stdin(Stdio::from(OwnedFd::from(input)))
             .spawn()?;
-        let mut child = OwnerProcess {
-            child,
-            root: owner_root.clone(),
-        };
+        let mut child = OwnerProcess(child);
         let mut bytes = [[0; 8]; 4];
         control.read_exact(bytes.as_flattened_mut())?;
         let info = bytes.map(u64::from_ne_bytes);
@@ -638,15 +626,11 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
             u32::try_from(info[0])?
         };
         let host_exit = process_event(host_id, false)?;
-        if old {
-            assert_eq!(info[0], 0);
-        } else {
-            assert_eq!(
-                info[0],
-                u64::from(host_id),
-                "owners must share one host process"
-            );
-        }
+        assert_eq!(
+            info[0],
+            u64::from(host_id),
+            "owners must share one host process"
+        );
         let cleanup_exit = process_event(u32::try_from(info[1])?, false)?;
         let thread_exit = process_event(u32::try_from(info[3])?, true)?;
         let connection = std::path::PathBuf::from(format!("/sys/fs/fuse/connections/{}", info[2]));
@@ -656,22 +640,6 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(pending, [1]);
         child.kill()?;
         wait_exit(&thread_exit)?;
-        if old {
-            // The original device is still owned by the killed process's
-            // blocked caller, even though its mount-free thread has exited.
-            assert!(
-                child.try_wait()?.is_none(),
-                "old-path negative control exited before its pending request was answered"
-            );
-            let waiting: u64 = std::fs::read_to_string(connection.join("waiting"))?
-                .trim()
-                .parse()?;
-            assert!(
-                waiting > 0,
-                "negative control lost the actual unanswered kernel request"
-            );
-            std::fs::write(connection.join("abort"), b"1")?;
-        }
         let exited = acyclic_native_runtime::wait_child_until(
             &mut child,
             std::time::Instant::now() + Duration::from_secs(5),
@@ -702,58 +670,30 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A failed proof must not strand the deliberately blocked old-path owner.
-/// Discover its actual connection from kernel metadata even if startup failed
-/// before the child could send its information record.
-struct OwnerProcess {
-    child: std::process::Child,
-    root: std::path::PathBuf,
-}
+/// A failed proof kills its owner. The owner never holds its FUSE device, so
+/// its SIGKILL always completes once the external host retires the connection.
+struct OwnerProcess(std::process::Child);
 
 impl std::ops::Deref for OwnerProcess {
     type Target = std::process::Child;
     fn deref(&self) -> &Self::Target {
-        &self.child
+        &self.0
     }
 }
 
 impl std::ops::DerefMut for OwnerProcess {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.child
+        &mut self.0
     }
 }
 
 impl Drop for OwnerProcess {
     fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(Some(_))) {
+        if matches!(self.0.try_wait(), Ok(Some(_))) {
             return;
         }
-        if let Ok(table) = std::fs::read_to_string(format!("/proc/{}/mountinfo", self.child.id())) {
-            for line in table.lines() {
-                let Some((mount, filesystem)) = line.split_once(" - ") else {
-                    continue;
-                };
-                if !filesystem.starts_with("fuse ") {
-                    continue;
-                }
-                let fields = mount.split_whitespace().collect::<Vec<_>>();
-                if fields
-                    .get(4)
-                    .is_some_and(|path| Path::new(path) == self.root)
-                    && let Some((major, minor)) =
-                        fields.get(2).and_then(|device| device.split_once(':'))
-                    && let (Ok(major), Ok(minor)) = (major.parse::<u64>(), minor.parse::<u64>())
-                {
-                    let connection = (major << 20) | minor;
-                    let _ = std::fs::write(
-                        format!("/sys/fs/fuse/connections/{connection}/abort"),
-                        b"1",
-                    );
-                }
-            }
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 

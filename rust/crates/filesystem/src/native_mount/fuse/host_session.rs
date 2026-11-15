@@ -419,7 +419,7 @@ fn source_protocol(
     page_size: std::num::NonZeroU32,
     _buffers: &PacketBufferPool<PacketBuffers>,
 ) -> Result<PacketSession, NativeMountError> {
-    // Only the explicit old-path control owns an in-process physical device.
+    // Only a test transport over a plain descriptor runs without host INIT.
     #[cfg(test)]
     if !io.framed {
         return PacketSession::new(router, maximum_write, page_size);
