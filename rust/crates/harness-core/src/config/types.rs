@@ -150,7 +150,8 @@ pub struct Admission {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<String>,
-    /// When, as UTC RFC 3339.
+    /// When this outcome was first decided, as UTC RFC 3339: the commit time
+    /// of the record that published it. Repeating it does not move this time.
     pub at: String,
 }
 
@@ -195,23 +196,10 @@ pub enum Form {
 /// `millis` since the Unix epoch as UTC RFC 3339 with milliseconds.
 #[must_use]
 pub fn utc(millis: u64) -> String {
-    utc_value(millis).to_string()
-}
-
-/// Formats or serializes UTC directly into the caller's writer without owning
-/// a temporary timestamp string. Uses the same representation as [`utc`].
-#[must_use]
-pub fn utc_value(millis: u64) -> impl std::fmt::Display + Serialize {
-    Utc(millis)
+    Utc(millis).to_string()
 }
 
 struct Utc(u64);
-
-impl Serialize for Utc {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
 
 impl std::fmt::Display for Utc {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

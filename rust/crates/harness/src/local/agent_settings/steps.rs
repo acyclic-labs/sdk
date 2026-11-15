@@ -107,7 +107,6 @@ impl StepConfiguration for Steps {
                 Some(Arc::clone(self.template.model_binding())),
                 resolve,
                 None,
-                local.clock.as_ref(),
             )
             .await?;
             let sampling = settings.sampling.and_then(Sampling::model_sampling);
@@ -116,7 +115,6 @@ impl StepConfiguration for Steps {
                 local.feedback_plugin,
                 &tree,
                 self.agent,
-                local.clock.as_ref(),
             )
             .await?
             .into_shared()?;

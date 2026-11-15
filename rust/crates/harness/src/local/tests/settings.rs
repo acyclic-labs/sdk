@@ -431,7 +431,6 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
             .map(|binding| std::sync::Arc::new(crate::model::ResolvedModel::new(binding))),
         None,
         None,
-        harness.clock.as_ref(),
     )
     .await;
     assert!(
@@ -1168,7 +1167,6 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
                 .map(|binding| std::sync::Arc::new(crate::model::ResolvedModel::new(binding))),
             None,
             None,
-            harness.clock.as_ref(),
         )
         .await;
         match (reason, result) {
@@ -1320,14 +1318,7 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
     };
     let tree =
         super::super::agent_settings::Tree::new(&volumes, crate::plugins::MANIFEST, None).await?;
-    let reason = match super::super::agent_settings::plugins(
-        false,
-        None,
-        &tree,
-        harness.root,
-        harness.clock.as_ref(),
-    )
-    .await
+    let reason = match super::super::agent_settings::plugins(false, None, &tree, harness.root).await
     {
         Err(error @ Error::Invalid(_)) => error.to_string(),
         Err(error) => return Err(error),

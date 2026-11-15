@@ -663,7 +663,6 @@ impl Opening {
             self.config.feedback,
             &settings_tree,
             owner.agent,
-            self.config.clock.as_ref(),
         )
         .await?;
         // `agent.ts` selects the model and its sampling as the session starts.
@@ -693,7 +692,6 @@ impl Opening {
                 started,
                 resolve,
                 self.config.model_base.as_deref(),
-                self.config.clock.as_ref(),
             )
             .await?;
             settings.model.0.validate()?;
