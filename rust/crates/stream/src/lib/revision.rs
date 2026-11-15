@@ -95,10 +95,10 @@ impl RevisionCut {
             if next.scope != kept.scope {
                 return false;
             }
-            if !next.same_authority(kept) {
-                foreign = true;
-            } else {
+            if next.same_authority(kept) {
                 kept.index = kept.index.max(next.index);
+            } else {
+                foreign = true;
             }
             true
         });
@@ -120,7 +120,7 @@ impl RevisionCut {
             .binary_search_by(|entry| entry.scope.cmp(&revision.scope))
         {
             Ok(at) => {
-                let entry = &mut self.0[at];
+                let entry = self.0.get_mut(at).ok_or(StreamError::InvalidResponse)?;
                 if entry.incarnation != revision.incarnation {
                     return Err(StreamError::RevisionForeign);
                 } else if entry.index < revision.index {
@@ -133,7 +133,7 @@ impl RevisionCut {
                 at
             }
         };
-        Ok(&self.0[at])
+        self.0.get(at).ok_or(StreamError::InvalidResponse)
     }
 
     /// Whether this cut holds `revision`'s authority at or above its index.
@@ -166,7 +166,7 @@ impl RevisionCut {
         self.0
             .binary_search_by(|entry| entry.scope.cmp(scope))
             .ok()
-            .map(|at| &self.0[at])
+            .and_then(|at| self.0.get(at))
     }
 
     /// Whether the cut has no participant.
@@ -221,17 +221,15 @@ impl RevisionTracker {
         }
     }
 
-    fn authority(&self, scope: &RevisionScope) -> crate::query_sync::Arc<ObservedAuthority> {
+    fn authority(&self, scope: RevisionScope) -> crate::query_sync::Arc<ObservedAuthority> {
         if let TrackedRevisions::Selected { authority, .. } = &self.0
-            && &authority.scope == scope
+            && authority.scope == scope
         {
             return crate::query_sync::Arc::clone(authority);
         }
-        crate::query_sync::Arc::clone(
-            self.cut().entry(scope.clone()).or_insert_with(|| {
-                crate::query_sync::Arc::new(ObservedAuthority::new(scope.clone()))
-            }),
-        )
+        crate::query_sync::Arc::clone(self.cut().entry(scope).or_insert_with_key(|scope| {
+            crate::query_sync::Arc::new(ObservedAuthority::new(scope.clone()))
+        }))
     }
 
     #[cfg(any(
@@ -281,7 +279,7 @@ impl RevisionTracker {
         };
         crate::query_sync::Arc::new(Self(TrackedRevisions::Selected {
             source: crate::query_sync::Arc::clone(source),
-            authority: source.authority(&scope),
+            authority: source.authority(scope),
         }))
     }
 
@@ -300,7 +298,7 @@ impl RevisionTracker {
         {
             return apply(authority);
         }
-        apply(&self.authority(scope))
+        apply(&self.authority(scope.clone()))
     }
 
     /// Accepts a reply served against the `minimum` this client sent: the
@@ -341,7 +339,6 @@ impl RevisionTracker {
     /// The floor to forward: every selected participant, raised by `explicit`.
     /// Conflicting incarnations refuse with `RevisionForeign`: neither one
     /// proves the other's writes, including after an explicit reset minimum.
-    #[must_use]
     pub fn floor(&self, explicit: &RevisionCut) -> Result<RevisionCut, StreamError> {
         fn merge(
             observed: impl Iterator<Item = Result<Option<Revision>, StreamError>>,
@@ -406,11 +403,11 @@ impl RevisionTracker {
             positions.entry(revision.scope.clone()).or_insert(index);
         }
         self.participants(|revision| {
-            match positions
-                .get(revision.scope.as_bytes())
-                .map(|index| &mut at_least[*index])
-            {
-                Some(entry) => {
+            match positions.get(revision.scope.as_bytes()).copied() {
+                Some(index) => {
+                    let entry = at_least
+                        .get_mut(index)
+                        .ok_or(StreamError::InvalidResponse)?;
                     if entry.incarnation.as_ref() != revision.incarnation.to_be_bytes() {
                         return Err(StreamError::RevisionForeign);
                     }
@@ -690,7 +687,11 @@ mod tests {
             // Same-authority duplicates retain their maximum in either order;
             // an unrelated scope remains an independent requirement.
             let next = Revision { index: next_index, ..first.clone() };
-            let other = Revision { scope: RevisionScope::new([scope, vec![0]].concat()), ..first.clone() };
+            let other = Revision {
+                scope: RevisionScope::new([scope, vec![0]].concat()),
+                incarnation: first.incarnation,
+                index: first.index,
+            };
             for revisions in [vec![first.clone(), other.clone(), next.clone()], vec![next.clone(), other.clone(), first.clone()]] {
                 let cut = RevisionCut::new(revisions).unwrap();
                 proptest::prop_assert_eq!(cut.iter().len(), 2);
@@ -819,7 +820,7 @@ mod tests {
     fn scoped_frontiers_retain_requirements_without_cloning_unrelated_authorities() {
         use prost::Message as _;
         use std::sync::Arc;
-        for count in [1_u64, 1_000, 100_000] {
+        for count in [1_usize, 1_000, 100_000] {
             let tracker = Arc::new(RevisionTracker::default());
             for index in 0..count {
                 tracker.observe(&Revision {
@@ -828,7 +829,7 @@ mod tests {
                     index: 7,
                 });
             }
-            let selected = RevisionScope::new(0_u64.to_be_bytes().to_vec());
+            let selected = RevisionScope::new(0_usize.to_be_bytes().to_vec());
             let view = RevisionTracker::scoped(&tracker, selected.clone());
             let floor = view.floor(&RevisionCut::default()).unwrap();
             assert_eq!(floor.iter().len(), 1);
@@ -841,7 +842,7 @@ mod tests {
             // all participants. Selection cannot erase that original view.
             assert_eq!(
                 tracker.floor(&RevisionCut::default()).unwrap().iter().len(),
-                count as usize
+                count
             );
             eprintln!("revision_scopes={count} selected_participants=1 floor_bytes={bytes}");
 
