@@ -2,7 +2,7 @@ use super::*;
 use proptest::prelude::*;
 
 fn helper_fixture(root: &Path) -> Vec<String> {
-    let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../compatibility");
+    let helper = acyclic_test_support::source_path("compatibility");
     let mut files = vec![helper.join("Cargo.toml")];
     let mut directories = vec![helper.join("src")];
     while let Some(directory) = directories.pop() {

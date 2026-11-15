@@ -1,4 +1,4 @@
-use super::tests::{Remote, advertised, server};
+use super::tests::{Remote, advertised, executable_file, server};
 use super::*;
 use crate::mcp::config::Dialect;
 use proptest::prelude::*;
@@ -68,18 +68,14 @@ proptest! {
     fn explicit_binding_ignores_ambient_environment_and_pins_path(
         first_term in "[a-z]{0,20}", second_term in "[a-z]{0,20}", argument in "[a-z ]{0,24}",
     ) {
-        let executable = std::env::current_exe().unwrap();
-        let root = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
+        let root = tempfile::tempdir().unwrap();
         let a = root.path().join("a");
         let b = root.path().join("b");
         std::fs::create_dir(&a).unwrap();
         std::fs::create_dir(&b).unwrap();
         let name = if cfg!(windows) { "mcp-fixture.exe" } else { "mcp-fixture" };
         for directory in [&a, &b] {
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&executable, directory.join(name)).unwrap();
-            #[cfg(windows)]
-            std::fs::hard_link(&executable, directory.join(name)).unwrap();
+            executable_file(&directory.join(name));
         }
         let config = server(json!({"command":"mcp-fixture", "args":[argument], "env":{"KEY":"explicit"}}), Dialect::Codex).unwrap();
         let command = |directory: &Path, term: &str| native::command_for(&config, root.path(), |key| match key {

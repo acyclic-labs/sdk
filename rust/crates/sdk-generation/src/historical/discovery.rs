@@ -153,6 +153,7 @@ pub(super) fn discovery_environment_inputs(
 }
 
 pub(super) fn cargo_discovery_inputs(
+    repository: &Path,
     root: &Path,
     cargo: &Path,
 ) -> Result<CargoDiscoveryInputs, String> {
@@ -187,9 +188,10 @@ pub(super) fn cargo_discovery_inputs(
     }
     let environment_sha256 =
         discovery_environment_inputs(sdk_docs::command_environment().into_iter(), cfg!(windows))?;
-    let git_sha256 =
-        crate::file_cache::tool_identity(&frontier_git()?).map_err(|e| e.to_string())?;
-    let cargo_sha256 = crate::file_cache::tool_identity(cargo).map_err(|e| e.to_string())?;
+    let git_sha256 = crate::file_cache::tool_identity(repository, &frontier_git()?)
+        .map_err(|e| e.to_string())?;
+    let cargo_sha256 =
+        crate::file_cache::tool_identity(repository, cargo).map_err(|e| e.to_string())?;
     let cargo_version = crate::toolchains::cargo_version(cargo, root).map_err(|e| e.to_string())?;
     Ok(CargoDiscoveryInputs {
         git_sha256,
@@ -284,13 +286,14 @@ pub(super) fn registry_source(
 }
 
 pub(super) fn discover_owner(
+    repository: &Path,
     root: &Path,
     cargo: &Path,
     mut source: RegistryOwnerSource,
     frontier_authority: Option<&BTreeSet<String>>,
 ) -> Result<RegistryOwnerSource, String> {
     let root = root.canonicalize().map_err(|error| error.to_string())?;
-    source.discovery = cargo_discovery_inputs(&root, cargo)?;
+    source.discovery = cargo_discovery_inputs(repository, &root, cargo)?;
     let authority_path = "release/cargo-crates.json";
     let authority = if source.input_sha256.contains_key(authority_path) {
         decode_release_authority(&fs::read(root.join(authority_path)).map_err(|e| e.to_string())?)?
@@ -353,7 +356,7 @@ pub(super) fn discover_owner(
                         }
                         std::path::Component::CurDir => {}
                         _ => {
-                            return Err("Cargo discovery input has an invalid relative path".into())
+                            return Err("Cargo discovery input has an invalid relative path".into());
                         }
                     }
                 }
@@ -402,7 +405,7 @@ pub(super) fn discover_owner(
     }
     source.absent_authority_members = authority.difference(&workspace_names).cloned().collect();
     validate_archive_inventory(&root, &source.input_sha256.keys().cloned().collect())?;
-    if cargo_discovery_inputs(&root, cargo)? != source.discovery {
+    if cargo_discovery_inputs(repository, &root, cargo)? != source.discovery {
         return Err("Cargo discovery tool/config/environment changed during inspection".into());
     }
     for (path, expected) in &source.input_sha256 {

@@ -1,7 +1,7 @@
 //! Replay every generated frame through the actual JavaScript session decoder.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use std::{io, path::Path};
+use std::io;
 #[path = "../driver.rs"]
 mod driver;
 
@@ -11,7 +11,7 @@ fn check(input: &[u8]) -> io::Result<()> {
     static DRIVER: driver::Shared = driver::Shared::new();
     let result = driver::Driver::shared(
         &DRIVER,
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
+        &acyclic_test_support::source_path(""),
         "decode",
         "",
     )?

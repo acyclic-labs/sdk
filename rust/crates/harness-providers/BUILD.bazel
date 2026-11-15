@@ -324,6 +324,7 @@ rust_test(
         "@crates//zeroize-1.9.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//:scripts/benchmarks/contracts.py",
         "//rust/crates/harness-providers:tree/tests/scenarios",
     ],
     tags = ["manual"],

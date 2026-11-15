@@ -154,6 +154,7 @@ pub fn capture_registry_corpus(
     let mut frontier = Vec::new();
     for source in sources {
         frontier.push(discover_owner(
+            &repository,
             &frontier_root.join(&source.revision),
             cargo,
             source,
@@ -335,6 +336,7 @@ pub fn verify_registry_corpus(
     let mut owners = BTreeSet::new();
     for source in &corpus.frontier {
         let current = discover_owner(
+            repository,
             &frontier_root.join(&source.revision),
             cargo,
             sources

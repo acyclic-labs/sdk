@@ -1,7 +1,6 @@
 use super::{driver, field};
 use proptest::prelude::*;
 use serde_json::{Value, json};
-use std::path::Path;
 
 fn verify(state: &Value, warm: u8, samples: u8) -> std::io::Result<()> {
     let records = u64::from(1 + warm + samples);
@@ -19,7 +18,7 @@ proptest! {
     #![proptest_config(proptest::test_runner::Config {
         cases: 32,
         failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/latency-regressions.txt")))),
+            acyclic_test_support::crate_path_str!("latency-regressions.txt")))),
         ..Default::default()
     })]
     #[test]
@@ -29,7 +28,7 @@ proptest! {
         // One test-harness lock, never nested: serialize commands to the JS
         // process. Production provider synchronization executes inside Bun.
         static DRIVER: driver::Shared = driver::Shared::new();
-        let state = driver::Driver::shared(&DRIVER, &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")?
+        let state = driver::Driver::shared(&DRIVER, &acyclic_test_support::source_path(""), "decode", "")?
             .run()?.call(&json!({ "action":"latency", "path":name,
             "work": { "warm":warm, "samples":samples, "reverse":reverse, "shared":false } }))?;
         verify(&state, warm, samples)?;
@@ -37,11 +36,8 @@ proptest! {
 }
 
 fn shared_namespace() -> std::io::Result<()> {
-    let mut real = driver::Driver::configured(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
-        "decode",
-        "",
-    )?;
+    let mut real =
+        driver::Driver::configured(&acyclic_test_support::source_path(""), "decode", "")?;
     let state = real.call(&json!({ "action":"latency", "path":"before",
         "work": { "warm":1, "samples":2, "reverse":false, "shared":true } }))?;
     assert!(

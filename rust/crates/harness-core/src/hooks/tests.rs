@@ -73,11 +73,17 @@ async fn exec_form_placeholders_launch_guards_without_retokenizing_paths_or_argu
     let executable = std::env::current_exe().map_err(|error| Error::Invalid(error.to_string()))?;
     let fixture = tempfile::Builder::new()
         .prefix("hook ' $ ` space ")
-        .tempdir_in(executable.parent().expect("binary parent"))
+        .tempdir()
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let root = fixture.path();
     let guard = root.join("guard.exe");
-    std::fs::hard_link(&executable, &guard).map_err(|error| Error::Invalid(error.to_string()))?;
+    // A link keeps the guard this executable without copying it; a hard link would
+    // need the temporary directory on the executable's volume.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&executable, &guard)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    #[cfg(windows)]
+    std::fs::copy(&executable, &guard).map_err(|error| Error::Invalid(error.to_string()))?;
     let cwd = root.join("tool-cwd");
     std::fs::create_dir(&cwd).map_err(|error| Error::Invalid(error.to_string()))?;
     for (command, argument) in [

@@ -118,6 +118,7 @@ rust_test(
         "@crates//async-trait-0.1.92",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//rust/crates/harness-conformance:tree/scenarios",
         "//rust/crates/harness:tree/tests/scenarios",
     ],
     tags = ["manual"],
@@ -169,5 +170,11 @@ filegroup(
 filegroup(
     name = "tree",
     srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "tree/scenarios",
+    srcs = glob(["scenarios/**"], allow_empty = True),
     visibility = ["//visibility:public"],
 )

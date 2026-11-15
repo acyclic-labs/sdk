@@ -718,7 +718,7 @@ fn bracketed_label_paragraph_costs_four_passes_without_source_slack() {
 proptest! {
     #![proptest_config(ProptestConfig {
         failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/full_parse.txt")
+            acyclic_test_support::crate_path_str!("tests/full_parse.txt")
         ))),
         rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0001),
         ..ProptestConfig::with_cases(64)

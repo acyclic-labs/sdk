@@ -98,6 +98,10 @@ filegroup(
 )
 
 
+exports_files([
+        "src/fixtures.rs",
+    ], visibility = ["//visibility:public"])
+
 filegroup(
     name = "tree",
     srcs = glob(["**"], allow_empty = True),

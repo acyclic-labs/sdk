@@ -285,7 +285,10 @@ rust_test(
         "@crates//tracing-0.1.44",
         "@crates//tracing-subscriber-0.3.23",
     ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+        "//plugin/identity:tree",
+        "//plugin:tree",
+    ],
     tags = ["manual"],
 )
 
@@ -447,6 +450,12 @@ exports_files([
         "tests/hosts/fixtures/native/pi.jsonl",
         "tests/support/native_os.rs",
     ], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
 
 filegroup(
     name = "tree/src",

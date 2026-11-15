@@ -140,6 +140,7 @@ filegroup(
 
 exports_files([
         "tests/support/streaming_input.rs",
+        "tests/whitespace.rs",
     ], visibility = ["//visibility:public"])
 
 filegroup(

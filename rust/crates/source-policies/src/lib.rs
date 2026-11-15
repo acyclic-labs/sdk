@@ -49,6 +49,8 @@ pub fn repository_rust_source(path: &Path) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+mod build_paths;
+#[cfg(test)]
 mod catalog_build;
 #[cfg(test)]
 mod file_locks;

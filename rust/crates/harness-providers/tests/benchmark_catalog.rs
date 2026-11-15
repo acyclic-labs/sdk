@@ -4,15 +4,25 @@
 use acyclic_harness_providers::{Adapter, Credentials, Registry, default_catalog};
 use std::{collections::BTreeMap, process::Command};
 
+/// Python importing the benchmark generator's `contracts` module from the source tree.
+fn generator() -> Command {
+    let module = acyclic_test_support::source_path("scripts/benchmarks/contracts.py");
+    let mut command = Command::new(if cfg!(windows) { "python" } else { "python3" });
+    command
+        .env("PYTHONPATH", module.parent().expect("module directory"))
+        .env("PYTHONDONTWRITEBYTECODE", "1");
+    command
+}
+
 #[test]
 fn mixed_benchmark_providers_resolve_independently_and_reject_invalid_worker()
 -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
+    let output = generator()
         .args([
             "-c",
             r#"
 import json
-from scripts.benchmarks.contracts import catalog
+from contracts import catalog
 workers = [
     dict(model_name=provider + '/shared', base_url='http://127.0.0.1:9' + path,
          context_tokens=200, output_tokens=20, adapter=adapter)
@@ -29,8 +39,6 @@ print(json.dumps(catalog('openai/shared', 'http://127.0.0.1:9/v1', 100, 10,
                          adapter='responses', providers=workers)))
 "#,
         ])
-        .current_dir(acyclic_test_support::source_path(""))
-        .env("PYTHONDONTWRITEBYTECODE", "1")
         .output()?;
     assert!(output.status.success(), "generator: {output:?}");
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)?;
@@ -77,12 +85,12 @@ print(json.dumps(catalog('openai/shared', 'http://127.0.0.1:9/v1', 100, 10,
 #[test]
 fn generated_benchmark_catalog_adapters_and_negative_controls()
 -> Result<(), Box<dyn std::error::Error>> {
-    let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
+    let output = generator()
         .args([
             "-c",
             r#"
 import json
-from scripts.benchmarks.contracts import catalog
+from contracts import catalog
 cases = [
     ('anthropic/claude-haiku-5-5', '/anthropic'),
     ('gemini/gemini-3.8-flash', '/google'),
@@ -113,8 +121,6 @@ else:
 print(json.dumps(results))
 "#,
         ])
-        .current_dir(acyclic_test_support::source_path(""))
-        .env("PYTHONDONTWRITEBYTECODE", "1")
         .output()?;
     assert!(output.status.success(), "generator: {output:?}");
     let documents: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)?;

@@ -45,7 +45,7 @@ fn bounded(lines: &[Line], input: usize, rows: usize, width: u16) -> usize {
 proptest! {
     #![proptest_config(ProptestConfig {
         failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/table_width.txt")
+            acyclic_test_support::crate_path_str!("tests/table_width.txt")
         ))),
         rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0008),
         ..ProptestConfig::with_cases(32)
@@ -257,7 +257,7 @@ fn table_stream_preserves_empty_cell_limit() {
 proptest! {
     #![proptest_config(ProptestConfig {
         failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/table_width.txt")
+            acyclic_test_support::crate_path_str!("tests/table_width.txt")
         ))),
         rng_seed: proptest::test_runner::RngSeed::Fixed(0x6d61_726b_0000_0008),
         ..ProptestConfig::with_cases(8)

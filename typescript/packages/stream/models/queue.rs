@@ -3,14 +3,10 @@ use super::super::field;
 use super::driver;
 use proptest::prelude::*;
 use serde_json::{Value, json};
-use std::{collections::VecDeque, path::Path};
+use std::collections::VecDeque;
 
 fn driver(fault: &str) -> std::io::Result<driver::Driver> {
-    driver::Driver::configured(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
-        "queue-work",
-        fault,
-    )
+    driver::Driver::configured(&acyclic_test_support::source_path(""), "queue-work", fault)
 }
 fn expected(capacity: usize, operations: &[(u8, u32)]) -> Value {
     let mut values = VecDeque::new();
@@ -58,7 +54,7 @@ proptest! {
         operations in prop::collection::vec((any::<u8>(), any::<u32>()), 0..60),
     ) {
         static DRIVER: driver::Shared = driver::Shared::new();
-        let actual = driver::Driver::shared(&DRIVER, &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "queue-work", "")?
+        let actual = driver::Driver::shared(&DRIVER, &acyclic_test_support::source_path(""), "queue-work", "")?
             .run()?.call(&json!({"action":"trace","capacity":capacity,"operations":operations}))?;
         prop_assert_eq!(actual, expected(capacity, &operations));
     }

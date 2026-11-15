@@ -149,12 +149,9 @@ pub(super) fn owner_metadata(
     })
 }
 
-pub(super) fn tool_identity(path: &Path) -> Result<String, CliError> {
-    let cache = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(3)
-        .unwrap()
-        .join("target/sdk-tool-identities-v2");
+/// The digest of the tool at `path`, shared through `repository`'s build directory.
+pub(super) fn tool_identity(repository: &Path, path: &Path) -> Result<String, CliError> {
+    let cache = repository.join("target/sdk-tool-identities-v2");
     get(path, "tool-sha256", || shared_identity(path, &cache))
 }
 

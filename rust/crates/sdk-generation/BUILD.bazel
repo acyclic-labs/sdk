@@ -55,6 +55,7 @@ rust_test(
     crate_features = FEATURES,
     deps = [
         "//rust/crates/sdk-docs:sdk_docs",
+        "//rust/crates/test-support:acyclic_test_support",
         "@crates//hex-0.4.3",
         "@crates//proptest-1.12.0",
         "@crates//sha2_0_11_1-0.11.1",
@@ -164,6 +165,7 @@ rust_test(
     ] + [
         "//rust/crates/sdk-docs/file-identity:sdk_file_identity",
         "//rust/crates/sdk-docs:sdk_docs",
+        "//rust/crates/test-support:acyclic_test_support",
         "@crates//cargo_metadata-0.23.1",
         "@crates//flate2-1.1.10",
         "@crates//hex-0.4.3",

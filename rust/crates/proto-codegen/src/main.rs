@@ -15,10 +15,8 @@ fn main() -> io::Result<()> {
         };
         let args = std::env::args().skip(1).collect::<Vec<_>>();
         let step = args.first().map_or("mode selection", String::as_str);
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         let recovery = format!(
-            "cargo run --locked --manifest-path {} -- {}",
-            quote(&manifest.to_string_lossy()),
+            "cargo run --locked -p sdk-proto-codegen -- {}",
             args.iter()
                 .map(|arg| quote(arg))
                 .collect::<Vec<_>>()

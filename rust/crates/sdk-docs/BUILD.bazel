@@ -54,6 +54,7 @@ rust_test(
     version = "0.1.0",
     crate_features = FEATURES,
     deps = [
+        "//rust/crates/test-support:acyclic_test_support",
         "@crates//hex-0.4.3",
         "@crates//proptest-1.12.0",
         "@crates//sha2_0_11_1-0.11.1",

@@ -40,7 +40,7 @@ proptest! {
 #[cfg(unix)]
 #[test]
 fn scoped_rustup_homes_select_their_own_commands_targets_and_cfgs() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rustup");
+    let fixture = acyclic_test_support::crate_path!("tests/fixtures/rustup");
     let path = std::env::join_paths(
         std::iter::once(fixture.clone())
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
@@ -80,7 +80,7 @@ fn scoped_rustup_homes_select_their_own_commands_targets_and_cfgs() {
 #[cfg(unix)]
 #[test]
 fn a_new_operation_refreshes_installed_targets_in_the_same_home() {
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rustup");
+    let fixtures = acyclic_test_support::crate_path!("tests/fixtures/rustup");
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir(home.path().join("bin")).unwrap();
     std::fs::write(home.path().join("bin/cargo"), "fixture Cargo").unwrap();

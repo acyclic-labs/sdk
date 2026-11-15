@@ -126,7 +126,9 @@ function closure(crateDir, rootFile) {
 // A test therefore spells each path it reads whole, not assembled from parts: a read this misses
 // fails the sandboxed test loudly with a missing file. A literal that only looks like a path adds
 // an unread input. An ancestor of the crate is never an input: "../" would name the whole tree.
+// The argument of source_path or crate_path! names its read whatever its shape.
 const LITERAL = /"([^"\\\n]*\/[^"\\\n]*)"/g;
+const NAMED = /\b(source_path|crate_path!|crate_path_str!)\(\s*"([^"\\\n]+)"/g;
 const literalReads = new Map();
 function readsOf(crateDir, rootFile) {
   const key = `${crateDir} ${rootFile}`;
@@ -134,14 +136,21 @@ function readsOf(crateDir, rootFile) {
   const files = new Set(), dirs = new Set();
   for (const file of closure(crateDir, rootFile)) {
     if (!file.endsWith(".rs")) continue;
-    for (const [, literal] of fs.readFileSync(path.join(root, file), "utf8").matchAll(LITERAL)) {
+    const text = fs.readFileSync(path.join(root, file), "utf8");
+    const add = (spelled, directory) => {
+      const named = path.posix.normalize(spelled).replace(/\/$/, "");
+      if (named.startsWith("..") || named === "." || crateDir.startsWith(`${named}/`)) return;
+      if (trackedSet.has(named)) files.add(named);
+      else if (trackedDirs.has(named) && directory(named)) dirs.add(named);
+    };
+    for (const [, literal] of text.matchAll(LITERAL)) {
       if (literal.startsWith("/") || literal.includes("{")) continue;
       for (const spelled of [literal, path.posix.join(crateDir, literal)]) {
-        const named = path.posix.normalize(spelled).replace(/\/$/, "");
-        if (named.startsWith("..") || named === "." || crateDir.startsWith(`${named}/`)) continue;
-        if (trackedSet.has(named)) files.add(named);
-        else if (trackedDirs.has(named) && (spelled !== literal || named.includes("/"))) dirs.add(named);
+        add(spelled, named => spelled !== literal || named.includes("/"));
       }
+    }
+    for (const [, reader, literal] of text.matchAll(NAMED)) {
+      add(reader === "source_path" ? literal : path.posix.join(crateDir, literal), () => true);
     }
   }
   const reads = { files, dirs };
