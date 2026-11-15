@@ -2,10 +2,22 @@
 
 Shared by the historical read-only inventory and the change gate. This scanner
 is conservative source discovery, not compiler API reachability or a proof.
+
+It also states which Kani proofs the source declares and judges a Kani run of
+them: every declared proof runs exactly once and succeeds.
+
+  proof_inventory_scan.py kani-units METADATA          declared proofs per unit (JSON)
+  proof_inventory_scan.py kani-verdict METADATA UNIT   judge Kani output on stdin
+
+METADATA is `cargo metadata --no-deps --format-version 1` output.
 """
 import bisect
+from collections import Counter
 import hashlib
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 def mask(source):
@@ -190,3 +202,99 @@ def scan_file(path, root):
             item.update(name=fn['name'] if fn else None, negative_control='unreviewed', mode_coverage={'local':'unreviewed','cloud':'unreviewed'}, runtime_receipt=None, review_status='candidate')
             proofs.append(item)
     return dict(path=path,sha256=hashlib.sha256(data).hexdigest(),lines=len(starts),functions=functions,entries=entries,unsafe=unsafe,signals=signals,proofs=proofs)
+
+
+LIBRARY_KINDS = {'lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'}
+
+
+def kani_units(root, metadata, paths):
+    """Declared Kani proofs grouped by the unit Kani compiles them in.
+
+    A file belongs to the package whose library source tree holds it, or whose
+    test target it is; any other file is its own crate root (`kani FILE`). A
+    package unit includes its test build when a proof sits in a test target or
+    under cfg(test). A proof attribute that precedes no function is refused.
+    """
+    root = Path(root).resolve()
+    targets = []
+    for package in metadata['packages']:
+        for target in package['targets']:
+            source = Path(target['src_path']).resolve()
+            if LIBRARY_KINDS & set(target['kind']):
+                targets.append((source.parent, True, package['name'], False))
+            elif 'test' in target['kind']:
+                targets.append((source, False, package['name'], True))
+    units = {}
+    for path in paths:
+        proofs = [p for p in scan_file(path, root)['proofs'] if p['kind'] == 'kani']
+        if not proofs:
+            continue
+        for proof in proofs:
+            if proof['name'] is None:
+                raise ValueError(f"{proof['location']}: Kani proof attribute precedes no function")
+        file = (root / path).resolve()
+        owners = [t for t in targets if (file.is_relative_to(t[0]) if t[1] else file == t[0])]
+        if owners:
+            directory, _, package, test_target = max(owners, key=lambda t: len(t[0].parts))
+            code = mask((root / path).read_text(encoding='utf-8-sig'))
+            pairs = brace_pairs(code)
+            tested = [(m.start(), pairs[b]) for m in re.finditer(r'#\[\s*cfg\s*\(\s*test\s*\)\s*\]', code)
+                      if (b := code.find('{', m.end())) in pairs]
+            starts = [0] + [m.end() for m in re.finditer('\n', code)]
+            in_test = test_target or any(a <= starts[p['line'] - 1] <= b for p in proofs for a, b in tested)
+            unit = units.setdefault('package:' + package, dict(unit='package:' + package, package=package, tests=False, files=[], proofs=[]))
+            unit['tests'] = unit['tests'] or in_test
+        else:
+            unit = units.setdefault('file:' + path, dict(unit='file:' + path, file=path, files=[], proofs=[]))
+        unit['files'].append(path)
+        unit['proofs'].extend(p['name'] for p in proofs)
+    return sorted(units.values(), key=lambda unit: unit['unit'])
+
+
+def kani_judgment(proofs, output):
+    """Judge a Kani run against the declared proofs: each runs once and succeeds.
+
+    A declared proof that never reports is MISSING, one reported more often than
+    declared is REPEATED, a reported harness nobody declared is UNEXPECTED, and
+    an empty declaration never passes.
+    """
+    reported, current = [], None
+    for line in output.splitlines():
+        line = line.strip()
+        if checking := re.fullmatch(r'Checking harness (\S+)\.\.\.', line):
+            current = checking[1]
+        elif (verdict := re.fullmatch(r'VERIFICATION:- (SUCCESSFUL|FAILED)', line)) and current:
+            reported.append((current, verdict[1]))
+            current = None
+    declared = Counter(proofs)
+    ran = Counter(harness.rsplit('::', 1)[-1] for harness, _ in reported)
+    outcomes = [dict(harness=harness, result=result if harness.rsplit('::', 1)[-1] in declared else 'UNEXPECTED')
+                for harness, result in reported]
+    for name, count in declared.items():
+        outcomes += [dict(harness=name, result='MISSING') for _ in range(count - ran[name])]
+        if ran[name] > count:
+            outcomes.append(dict(harness=name, result='REPEATED'))
+    return dict(outcomes=outcomes, passed=bool(proofs) and all(o['result'] == 'SUCCESSFUL' for o in outcomes))
+
+
+def main(argv):
+    root = Path(__file__).resolve().parent.parent
+    if len(argv) not in (2, 3) or argv[0] not in ('kani-units', 'kani-verdict') or (argv[0] == 'kani-verdict') != (len(argv) == 3):
+        print(__doc__, file=sys.stderr)
+        return 2
+    metadata = json.loads(Path(argv[1]).read_text())
+    listed = subprocess.run(['git', '-C', str(root), 'ls-files', '-z', '--', '*.rs'], capture_output=True, text=True, check=True)
+    units = kani_units(root, metadata, [p for p in listed.stdout.split('\0') if p])
+    if argv[0] == 'kani-units':
+        print(json.dumps(units, indent=1))
+        return 0 if units else 1
+    unit = next((u for u in units if u['unit'] == argv[2]), None)
+    judgment = kani_judgment(unit['proofs'] if unit else [], sys.stdin.read())
+    for outcome in judgment['outcomes']:
+        print(json.dumps(dict(unit=argv[2], **outcome)))
+    print(json.dumps(dict(unit=argv[2], declared=len(unit['proofs']) if unit else 0, passed=judgment['passed'])))
+    return 0 if judgment['passed'] else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

@@ -13,3 +13,11 @@ path = "lib.rs"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# Kani reads these for every run of this package's proofs.
+[package.metadata.kani.flags]
+cbmc-args = ["--object-bits", "8"]
+
+[package.metadata.kani.unstable]
+function-contracts = true
+stubbing = true

@@ -1,7 +1,6 @@
 //! Negative controls for `agent_control.rs`: each harness replaces one
 //! production kernel decision with a plausible defect and must find a
-//! counterexample (`kani tests/formal/agent_control_negative.rs` reports every
-//! harness FAILED).
+//! counterexample, so each is `should_panic` and verifies only when it does.
 
 #[path = "../../src/agent/kernel.rs"]
 mod production;
@@ -94,6 +93,7 @@ fn report_loses_receipt(control: Control) -> (Control, bool) {
 }
 
 #[kani::proof]
+#[kani::should_panic]
 #[kani::unwind(8)]
 fn dropped_checkpoint_failure_report_is_caught() {
     exactly_once_and_never_loses_a_wake(Kernel {
@@ -103,6 +103,7 @@ fn dropped_checkpoint_failure_report_is_caught() {
 }
 
 #[kani::proof]
+#[kani::should_panic]
 #[kani::unwind(8)]
 fn arrival_step_during_condition_wait_is_caught() {
     exactly_once_and_never_loses_a_wake(Kernel {
@@ -112,6 +113,7 @@ fn arrival_step_during_condition_wait_is_caught() {
 }
 
 #[kani::proof]
+#[kani::should_panic]
 #[kani::unwind(8)]
 fn dropped_condition_deadline_is_caught() {
     exactly_once_and_never_loses_a_wake(Kernel {
@@ -121,6 +123,7 @@ fn dropped_condition_deadline_is_caught() {
 }
 
 #[kani::proof]
+#[kani::should_panic]
 #[kani::unwind(8)]
 fn history_alarm_loses_a_deadline() {
     exactly_once_and_never_loses_a_wake(Kernel {
@@ -130,6 +133,7 @@ fn history_alarm_loses_a_deadline() {
 }
 
 #[kani::proof]
+#[kani::should_panic]
 #[kani::unwind(8)]
 fn unguarded_archive_report_sends_twice() {
     exactly_once_and_never_loses_a_wake(Kernel {
@@ -139,6 +143,7 @@ fn unguarded_archive_report_sends_twice() {
 }
 
 #[kani::proof]
+#[kani::should_panic]
 #[kani::unwind(8)]
 fn archive_retaining_turn_is_caught() {
     exactly_once_and_never_loses_a_wake(Kernel {
@@ -148,6 +153,7 @@ fn archive_retaining_turn_is_caught() {
 }
 
 #[kani::proof]
+#[kani::should_panic]
 #[kani::unwind(8)]
 fn early_archive_report_is_caught() {
     archive_drains_and_reports_exactly_once(Kernel {
@@ -157,6 +163,7 @@ fn early_archive_report_is_caught() {
 }
 
 #[kani::proof]
+#[kani::should_panic]
 fn an_unreachable_wait_parked_on_its_deadline_is_found() {
     parks_only_on_a_reachable_condition(Kernel {
         until: until_on_deadline,
@@ -178,6 +185,7 @@ fn pick_ignores_input_wait(
 }
 
 #[kani::proof]
+#[kani::should_panic]
 fn lost_input_wait_wake_is_caught() {
     input_wait_has_an_original_wake(Kernel {
         pick: pick_ignores_input_wait,
