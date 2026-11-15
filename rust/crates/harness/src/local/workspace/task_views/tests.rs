@@ -1056,7 +1056,7 @@ async fn rebinding_a_physical_view_keeps_what_replaced_its_alias() -> Result<()>
     let checkout = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     std::fs::create_dir(checkout.path().join(".git")).map_err(storage)?;
-    std::fs::write(checkout.path().join(".git/HEAD"), b"source").map_err(storage)?;
+    std::fs::write(checkout.path().join(".git/marker"), b"source").map_err(storage)?;
     let harness = LocalHarness::open(
         crate::test_support::local_harness_config(
             checkout.path(),
@@ -1105,18 +1105,18 @@ async fn rebinding_a_physical_view_keeps_what_replaced_its_alias() -> Result<()>
     let first = bind().await?;
     let path = first.path.clone();
     assert_eq!(
-        std::fs::read(path.join(".git/HEAD")).map_err(storage)?,
+        std::fs::read(path.join(".git/marker")).map_err(storage)?,
         b"source"
     );
     drop(first);
     // The agent moves the alias aside and puts a real repository in its place.
     std::fs::rename(path.join(".git"), path.join(".git-link")).map_err(storage)?;
     std::fs::create_dir(path.join(".git")).map_err(storage)?;
-    std::fs::write(path.join(".git/HEAD"), b"agent").map_err(storage)?;
+    std::fs::write(path.join(".git/marker"), b"agent").map_err(storage)?;
     let again = bind().await?;
     assert_eq!(again.path, path);
     assert_eq!(
-        std::fs::read(path.join(".git/HEAD")).map_err(storage)?,
+        std::fs::read(path.join(".git/marker")).map_err(storage)?,
         b"agent"
     );
     Ok(())
