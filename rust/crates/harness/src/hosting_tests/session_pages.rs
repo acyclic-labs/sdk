@@ -109,7 +109,11 @@ async fn session_and_peer_pages_keep_discovery_at_two_bounded_head_views() -> Re
         );
         client.register_credential(
             0,
-            credentials(&[server.resource(), &server.session_resource()]),
+            credentials(&[
+                server.resource(),
+                &server.session_resource(),
+                &server.peer_resource(),
+            ]),
         )?;
         let before = stream.requests();
         let Ok(AgentReply::Children { items, next }) = call(
