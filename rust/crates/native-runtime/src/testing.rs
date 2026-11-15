@@ -30,6 +30,7 @@
 //!   to [`ledger::Budget`]s and compare with [`ledger::Ledger::diff`].
 //! - **Sweeps**: [`sweep::sweep`] runs one world per seed and reports the
 //!   first failing seed with `DST_SEED=<n>` to reproduce it
+//!   ([`sweep::sweep_parallel`] runs independent worlds side by side)
 //!   ([`sweep::seeds`]; `DST_SEEDS=<a>..<b>` for deep sweeps), and
 //!   [`sweep::minimize`] shrinks a failing choice list to a minimal trace.
 //!

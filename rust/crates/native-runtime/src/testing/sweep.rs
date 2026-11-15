@@ -102,25 +102,101 @@ pub fn sweep(
     let started = std::time::Instant::now();
     let count = seeds.end.saturating_sub(seeds.start);
     for seed in seeds {
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| world(seed)));
-        let report = match outcome {
-            Ok(Ok(())) => continue,
-            Ok(Err(report)) => report,
-            Err(panic) => panic
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| panic.downcast_ref::<&str>().map(|text| (*text).to_owned()))
-                .unwrap_or_else(|| "non-string panic".into()),
-        };
-        return Err(Failure {
-            sweep: name,
-            seed,
-            report,
-        });
+        if let Err(report) = run(seed, &mut world) {
+            return Err(Failure {
+                sweep: name,
+                seed,
+                report,
+            });
+        }
     }
     Ok(Swept {
         seeds: count,
         elapsed: started.elapsed(),
+    })
+}
+
+/// [`sweep`] over worlds that share nothing: seeds run side by side on the
+/// host's available parallelism, and each seed's value returns in seed order.
+/// The lowest failing seed is reported, so the result never depends on thread
+/// timing.
+///
+/// # Errors
+///
+/// The lowest failing seed and its report.
+pub fn sweep_parallel<T: Send>(
+    name: &'static str,
+    seeds: Range<u64>,
+    world: impl Fn(u64) -> Result<T, String> + Sync,
+) -> Result<(Swept, Vec<T>), Failure> {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    };
+    let started = std::time::Instant::now();
+    let count = seeds.end.saturating_sub(seeds.start);
+    let next = AtomicU64::new(seeds.start);
+    // Seeds are taken in order, so every seed below a failure still runs and
+    // seeds above it cannot change the reported one.
+    let failed_at = AtomicU64::new(u64::MAX);
+    let outcomes = Mutex::new(Vec::new());
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(usize::try_from(count).unwrap_or(usize::MAX));
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                // Bounded: the counter stops at the range's end, so it never
+                // wraps past `u64::MAX` into unrequested seeds.
+                while let Ok(seed) =
+                    next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |seed| {
+                        (seed < seeds.end).then(|| seed + 1)
+                    })
+                {
+                    if seed > failed_at.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let outcome = run(seed, &world);
+                    if outcome.is_err() {
+                        failed_at.fetch_min(seed, Ordering::Relaxed);
+                    }
+                    outcomes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push((seed, outcome));
+                }
+            });
+        }
+    });
+    let mut outcomes = outcomes
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    outcomes.sort_unstable_by_key(|(seed, _)| *seed);
+    let mut values = Vec::with_capacity(outcomes.len());
+    for (seed, outcome) in outcomes {
+        values.push(outcome.map_err(|report| Failure {
+            sweep: name,
+            seed,
+            report,
+        })?);
+    }
+    Ok((
+        Swept {
+            seeds: count,
+            elapsed: started.elapsed(),
+        },
+        values,
+    ))
+}
+
+/// One seed's world, with a panic reported as its message.
+fn run<T>(seed: u64, world: impl FnOnce(u64) -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| world(seed))).unwrap_or_else(|panic| {
+        Err(panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|text| (*text).to_owned()))
+            .unwrap_or_else(|| "non-string panic".into()))
     })
 }
 
@@ -187,5 +263,23 @@ mod tests {
             (5, "invariant broken at 5")
         );
         assert!(format!("{failure:?}").contains("DST_SEED=5"));
+    }
+
+    #[test]
+    fn parallel_sweep_reports_the_lowest_failing_seed_and_orders_values() {
+        let failure = sweep_parallel("example", 3..64, |seed| {
+            assert!(seed % 7 != 5, "invariant broken at {seed}");
+            Ok(seed)
+        })
+        .expect_err("seed 5 fails");
+        assert_eq!(
+            (failure.seed, failure.report.as_str()),
+            (5, "invariant broken at 5")
+        );
+        let (swept, values) = sweep_parallel("example", 3..64, Ok).expect("every seed passes");
+        assert_eq!((swept.seeds, values), (61, (3..64).collect::<Vec<_>>()));
+        // A range ending at u64::MAX runs exactly its seeds and no others.
+        let (_, values) = sweep_parallel("example", u64::MAX - 2..u64::MAX, Ok).expect("passes");
+        assert_eq!(values, [u64::MAX - 2, u64::MAX - 1]);
     }
 }
