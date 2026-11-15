@@ -169,9 +169,12 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
     let inspections = conversation.inspect_tree();
     futures::pin_mut!(inspections);
     let mut aggregate = crate::executor::ToolUsage::default();
-    // The index records each role's selection (role policy wins, otherwise
-    // the parent's); the fixture catalog serves every selection by one binding.
-    let mut selected = crate::templates::root()?.model;
+    // The index records each role's selection: role policy wins, otherwise
+    // the parent's, and the root's parent is the session's bound model. The
+    // expectation is derived by the same resolver the harness admits with.
+    let bound = model()?;
+    let mut selected =
+        crate::templates::root_model(&format!("{}/{}", bound.provider, bound.name), None)?;
     let worker = crate::templates::seed_model("worker")?;
     for (path, mapping) in paths.into_iter().zip(index) {
         assert!(
@@ -180,9 +183,10 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
                 .any(|row| row["usage"]["agent_path"] == path.as_str()),
             "each agent has an original model call"
         );
-        let model = selected.clone().expect("every role selects a model");
-        selected = crate::templates::resolve_model(worker.as_deref(), selected.as_deref())
-            .map(str::to_owned);
+        let model = selected.clone();
+        selected = crate::templates::resolve_model(worker.as_deref(), Some(&model))
+            .unwrap_or(&model)
+            .to_owned();
         assert_eq!(
             mapping,
             json!({
