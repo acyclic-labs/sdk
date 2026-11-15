@@ -1288,8 +1288,8 @@ mod tests {
             b"native untouched\n",
         )
         .map_err(storage)?;
-        let observed_provider = Arc::new(OnceLock::<std::sync::Weak<ScriptedModelProvider>>::new());
-        let observer = Arc::clone(&observed_provider);
+        let (settlement_started, settlement) = tokio::sync::oneshot::channel();
+        let dispatches = Arc::new(Mutex::new((0, Some(settlement_started))));
         let provider = Arc::new(
             ScriptedModelProvider::new([
                 super::super::tests::checked_commands::call(
@@ -1299,6 +1299,7 @@ mod tests {
                 ),
                 ScriptedTurn::Text("child ready".into()),
                 ScriptedTurn::Text("grandchild ready".into()),
+                ScriptedTurn::Text("grandchild settlement received".into()),
                 super::super::tests::checked_commands::call(
                     1,
                     crate::tools::shell::PLATFORM.name,
@@ -1306,9 +1307,13 @@ mod tests {
                 ),
                 ScriptedTurn::Text("parent read merged checkout".into()),
             ])
-            .with_dispatch_observer(move |dispatch| {
-                if let Some(provider) = observer.get().and_then(std::sync::Weak::upgrade) {
-                    eprintln!("merge model {dispatch:?}: {:?}", provider.last_request());
+            .with_dispatch_observer(move |_| {
+                let mut dispatches = dispatches.lock().unwrap();
+                dispatches.0 += 1;
+                // Two initial parent requests, the child's brief, then the
+                // parent's settlement notice precede the explicit shell read.
+                if dispatches.0 == 4 {
+                    let _ = dispatches.1.take().unwrap().send(());
                 }
                 Box::pin(async { Ok(()) })
             })
@@ -1318,7 +1323,6 @@ mod tests {
                 output_shares_context: false,
             }),
         );
-        assert!(observed_provider.set(Arc::downgrade(&provider)).is_ok());
         let local = Arc::new(
             super::super::LocalHarness::open(
                 local_harness_config(
@@ -1330,6 +1334,7 @@ mod tests {
                 )?
                 .state_directory(storage_dir.path())
                 .compaction(crate::context::CompactionPolicy::Disabled)
+                .feedback_plugin(false)
                 .workspace_mounting(WorkspaceMounting::Physical),
             )
             .await?,
@@ -1380,7 +1385,6 @@ mod tests {
             std::fs::read(checkout.path().join("shared.txt")).map_err(storage)?,
             b"base\n"
         );
-        eprintln!("merge phase: integrate first session");
         let first_commit = sessions::merge(&first, "publish-first")
             .await
             .map_err(|error| Error::Storage(format!("first integration: {error}")))?;
@@ -1407,7 +1411,6 @@ mod tests {
         // Spend the first attempt's capture identity before the merge reports
         // its conflict. Resolution is another capture under the same request.
         std::fs::write(checkout.path().join("local.txt"), b"local edit\n").map_err(storage)?;
-        eprintln!("merge phase: integrate conflicting session");
         let conflict_error = sessions::merge(&second, "publish-second")
             .await
             .expect_err("divergent session edits must conflict");
@@ -1424,7 +1427,6 @@ mod tests {
             b"first\n"
         );
         std::fs::write(checkout.path().join("shared.txt"), b"resolved\n").map_err(storage)?;
-        eprintln!("merge phase: resolve session conflict");
         let second_commit = sessions::merge(&second, "publish-second")
             .await
             .map_err(|error| Error::Storage(format!("resolved integration: {error}")))?;
@@ -1453,10 +1455,14 @@ mod tests {
         // A tree-only credential may act on its descendants, and a nested
         // merge must publish to its direct parent rather than the host checkout.
         let tree = local.connect().await?;
+        tree.execute(&crate::client::AgentCommand::Pause {
+            agent: tree.root().clone(),
+            paused: true,
+        })
+        .await?;
         let mut selected = tree.clone();
         let mut descendants = Vec::new();
         for name in ["child", "grandchild"] {
-            eprintln!("merge phase: spawn {name}");
             let crate::client::AgentReply::Spawned { agent, .. } = selected
                 .execute(&crate::client::AgentCommand::Spawn {
                     parent: selected.root().clone(),
@@ -1469,7 +1475,6 @@ mod tests {
                 return Err(Error::Invalid("missing descendant".into()));
             };
             selected = tree.select(agent).await?;
-            eprintln!("merge phase: wait for {name}");
             let phase = Conversation::open(selected.clone())
                 .wait_current_input()
                 .await?
@@ -1490,11 +1495,14 @@ mod tests {
                 .await?;
             assert!(
                 matches!(entries.as_slice(), [entry] if entry.outcome.is_completed()),
-                "{name} brief did not complete: {entries:?}; model requests: {:?}",
-                provider.requests()
+                "{name} brief did not complete: {entries:?}"
             );
             descendants.push(selected.clone());
         }
+        settlement.await.map_err(storage)?;
+        Conversation::open(descendants[0].clone())
+            .wait_current_input()
+            .await?;
         let parent_state = local
             .agents()
             .await?
@@ -1608,7 +1616,6 @@ mod tests {
         )
         .await
         .map_err(storage)?;
-        eprintln!("merge phase: integrate grandchild");
         let commit = sessions::merge(&descendants[1], "merge-grandchild").await?;
         assert!(commit.is_some());
         assert_eq!(
@@ -1637,7 +1644,6 @@ mod tests {
         parent
             .send("read-merged-checkout", "read the merged file using shell")
             .await?;
-        eprintln!("merge phase: wait for parent shell");
         parent.wait_current_input().await?;
         assert_eq!(
             std::fs::read(parent_workspace.path.join("observed.txt")).map_err(|error| {
@@ -1670,7 +1676,7 @@ mod tests {
         ));
         assert_eq!(
             provider.request_count(),
-            5,
+            6,
             "human filesystem actions must not dispatch a model"
         );
         Ok(())
