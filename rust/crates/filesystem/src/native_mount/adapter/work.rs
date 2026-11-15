@@ -50,6 +50,14 @@ fn capture_meter(
 }
 
 impl<A, O> CheckoutMountSource<A, O> {
+    pub(in crate::native_mount) fn boundary<T>(
+        &self,
+        operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, MountSourceError>,
+    ) -> Result<T, MountSourceError> {
+        let work = self.operation_work()?;
+        callback_boundary(&work, operation)
+    }
+
     fn operation_work(&self) -> Result<crate::NativeMaterializationWork, MountSourceError> {
         match &self.native_original {
             Some(work) => Ok(work.clone()),
@@ -68,14 +76,22 @@ pub(in crate::native_mount) fn callback_boundary_count() -> usize {
     CALLBACK_BOUNDARIES.get()
 }
 
+#[cfg(test)]
 pub(super) fn boundary<T>(
     cancellation: &CancellationToken,
     operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
+    let work = capture_meter(WorkBudget::UNBOUNDED, cancellation)?;
+    callback_boundary(&work, operation)
+}
+
+pub(in crate::native_mount) fn callback_boundary<T>(
+    work: &crate::NativeMaterializationWork,
+    operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, MountSourceError>,
+) -> Result<T, MountSourceError> {
     #[cfg(test)]
     CALLBACK_BOUNDARIES.with(|count| count.set(count.get() + 1));
-    let work = capture_meter(WorkBudget::UNBOUNDED, cancellation)?;
-    operation(&work)
+    operation(work)
 }
 
 impl NativeDemandCarrier<'_> {

@@ -53,8 +53,8 @@ where
             ))
     }
 
-    // Both convenience and explicit-work calls use one original ledger.
-    // Only the public convenience entry creates it; wrappers never reset it.
+    // Both convenience and explicit-work calls retain the original ledger;
+    // wrappers never replace the authenticated context.
     fn with_view<T>(
         &self,
         work: &crate::NativeMaterializationWork,
@@ -108,7 +108,7 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    adapter::ordinary_file_callbacks!(self, &self.cancellation);
+    adapter::ordinary_file_callbacks!(self, self._allocation.work());
 
     fn clone_source(
         &self,

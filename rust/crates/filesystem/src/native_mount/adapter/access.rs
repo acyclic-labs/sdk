@@ -1,6 +1,16 @@
 use super::*;
 use crate::access::{AccessView, Action, PinnedPath};
 
+pub(super) async fn check_callback_authority(
+    guard: Option<&dyn super::super::NativeMountCallbackGuard>,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MountSourceError> {
+    if let Some(guard) = guard {
+        publication_result(guard.check(work).map_err(publication_error)?.await)?;
+    }
+    Ok(())
+}
+
 pub(super) async fn observe_current_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &SharedCheckout<A, O>,
     cancellation: &CancellationToken,
@@ -146,6 +156,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         if super::tests::return_fence::omitted() {
             return result;
         }
+        check_callback_authority(self.native_callback_guard.as_deref(), work).await?;
         let revision = observe_current_policy(&self.checkout, &self.cancellation, work).await?;
         let valid = self
             .access_view
@@ -187,6 +198,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<crate::access::PathTrie>, MountSourceError> {
+        check_callback_authority(self.native_callback_guard.as_deref(), work).await?;
         let published = self
             .access_view
             .as_ref()

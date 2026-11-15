@@ -156,7 +156,7 @@ macro_rules! written {
 }
 
 impl MountOpenFile for AuthorizedFile {
-    ordinary_file_callbacks!(self, self.policy.cancellation());
+    ordinary_file_callbacks!(self, self._allocation.work());
 
     fn clone_source(
         &self,

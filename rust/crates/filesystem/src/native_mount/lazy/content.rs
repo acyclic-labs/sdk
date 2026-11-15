@@ -98,7 +98,7 @@ where
         paths: &[MountPath],
         expected_root_identity: NativeRootIdentity,
     ) -> Result<(), MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
+        self.authored.boundary(|work| {
             self.capture_host(
                 source_root,
                 paths,
@@ -433,9 +433,9 @@ where
     ) -> Result<(), MountSourceError> {
         match original {
             Some(work) => self.runtime.wait(|| self.promote(path, work)),
-            None => adapter::boundary(self.authored.cancellation(), |work| {
-                self.promote_locked(path, Some(work))
-            }),
+            None => self
+                .authored
+                .boundary(|work| self.promote_locked(path, Some(work))),
         }
     }
 

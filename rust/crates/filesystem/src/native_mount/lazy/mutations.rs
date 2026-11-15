@@ -147,7 +147,7 @@ macro_rules! mutation_callbacks {
             destination_offset: u64,
             length: u64,
         ) -> Result<(), MountSourceError> {
-            adapter::boundary(self.authored.cancellation(), |work| {
+            self.authored.boundary(|work| {
                 self.require_path(source, crate::access::Action::Read, work)?;
                 self.require_path(destination, crate::access::Action::Write, work)?;
                 let _mutation = self.mutation_lease(None, Some(work))?;

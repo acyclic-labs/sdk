@@ -1,13 +1,13 @@
-// Every ordinary handle operation creates one ledger and delegates to its
+// Every ordinary handle operation retains its owning ledger and delegates to its
 // metered entry. Wrappers, policy checks and return fences share that ledger.
 macro_rules! ordinary_file_callbacks {
-    ($this:ident, $cancellation:expr) => {
+    ($this:ident, $work:expr) => {
         fn lookup(&$this) -> Result<MountLookup, MountSourceError> {
-            $crate::native_mount::adapter::boundary($cancellation, |work| $this.lookup_with_meter(work))
+            $crate::native_mount::adapter::callback_boundary($work, |work| $this.lookup_with_meter(work))
         }
 
         fn read_range(&$this, offset: u64, length: u32) -> Result<OwnedBytes, MountSourceError> {
-            $crate::native_mount::adapter::boundary($cancellation, |work| {
+            $crate::native_mount::adapter::callback_boundary($work, |work| {
                 $this.read_range_with_meter(offset, length, work)
             })
             .map(|chunk| chunk.bytes)
@@ -18,7 +18,7 @@ macro_rules! ordinary_file_callbacks {
             offset: u64,
             maximum_bytes: u32,
         ) -> Result<OwnedBytes, MountSourceError> {
-            $crate::native_mount::adapter::boundary($cancellation, |work| {
+            $crate::native_mount::adapter::callback_boundary($work, |work| {
                 $this.read_up_to_with_meter(offset, maximum_bytes, work)
             })
             .map(|chunk| chunk.bytes)
@@ -29,25 +29,25 @@ macro_rules! ordinary_file_callbacks {
             offset: u64,
             target: MountSeekTarget,
         ) -> Result<Option<u64>, MountSourceError> {
-            $crate::native_mount::adapter::boundary($cancellation, |work| {
+            $crate::native_mount::adapter::callback_boundary($work, |work| {
                 $this.seek_with_meter(offset, target, work)
             })
         }
 
         fn write_range(&$this, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-            $crate::native_mount::adapter::boundary($cancellation, |work| {
+            $crate::native_mount::adapter::callback_boundary($work, |work| {
                 $this.write_range_with_meter(offset, crate::kernel::OwnedSourceChunk::claimed(bytes.into(), 0), false, work).map(drop)
             })
         }
 
         fn append_range(&$this, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-            $crate::native_mount::adapter::boundary($cancellation, |work| {
+            $crate::native_mount::adapter::callback_boundary($work, |work| {
                 $this.append_range_with_meter(offset, crate::kernel::OwnedSourceChunk::claimed(bytes.into(), 0), false, work).map(drop)
             })
         }
 
         fn resize(&$this, logical_bytes: u64) -> Result<(), MountSourceError> {
-            $crate::native_mount::adapter::boundary($cancellation, |work| {
+            $crate::native_mount::adapter::callback_boundary($work, |work| {
                 $this.resize_with_meter(logical_bytes, work)
             })
         }
@@ -58,7 +58,7 @@ macro_rules! ordinary_file_callbacks {
             length: u64,
             operation: MountRangeAllocation,
         ) -> Result<(), MountSourceError> {
-            $crate::native_mount::adapter::boundary($cancellation, |work| {
+            $crate::native_mount::adapter::callback_boundary($work, |work| {
                 $this.allocate_range_with_meter(offset, length, operation, work)
             })
         }
@@ -68,7 +68,7 @@ macro_rules! ordinary_file_callbacks {
             cursor: Option<&[u8]>,
             maximum_entries: u32,
         ) -> Result<MountAttributePage, MountSourceError> {
-            $crate::native_mount::adapter::boundary($cancellation, |work| {
+            $crate::native_mount::adapter::callback_boundary($work, |work| {
                 $this.list_attributes_with_meter(cursor, maximum_entries, work)
             })
             .map(|(page, _)| page)
@@ -138,7 +138,7 @@ macro_rules! checkout_file_callbacks {
             )
         }
 
-        ordinary_file_callbacks!(self, &self.cancellation);
+        ordinary_file_callbacks!(self, self._native_allocation.work());
 
         fn write_attribute(
             &self,

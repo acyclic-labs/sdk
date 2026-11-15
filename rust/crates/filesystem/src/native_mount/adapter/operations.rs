@@ -266,16 +266,12 @@ where
     }
 
     fn observe_view(&self, observer: Weak<dyn ViewObserver>) -> Result<(), MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.observe_view_with_meter(observer, work)
-        })
+        self.boundary(|work| self.observe_view_with_meter(observer, work))
     }
 
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
-        boundary(&self.cancellation, |work| {
-            self.unchanged_since_with_meter(path, file_id, stamp, work)
-        })
-        .unwrap_or(false)
+        self.boundary(|work| self.unchanged_since_with_meter(path, file_id, stamp, work))
+            .unwrap_or(false)
     }
 
     fn reported_unchanged_since(
@@ -284,32 +280,24 @@ where
         file_id: Option<FileId>,
         stamp: ViewStamp,
     ) -> bool {
-        boundary(&self.cancellation, |work| {
-            self.reported_unchanged_since_with_meter(path, file_id, stamp, work)
-        })
-        .unwrap_or(false)
+        self.boundary(|work| self.reported_unchanged_since_with_meter(path, file_id, stamp, work))
+            .unwrap_or(false)
     }
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
-        boundary(&self.cancellation, |work| {
-            self.node_unchanged_since_with_meter(file_id, stamp, work)
-        })
-        .unwrap_or(false)
+        self.boundary(|work| self.node_unchanged_since_with_meter(file_id, stamp, work))
+            .unwrap_or(false)
     }
 
     fn listing_unchanged_since(&self, path: &MountPath, stamp: ViewStamp) -> bool {
-        boundary(&self.cancellation, |work| {
-            self.listing_unchanged_since_with_meter(path, stamp, work)
-        })
-        .unwrap_or(false)
+        self.boundary(|work| self.listing_unchanged_since_with_meter(path, stamp, work))
+            .unwrap_or(false)
     }
 
     fn folded_path(&self, path: &MountPath) -> Option<MountPath> {
-        boundary(&self.cancellation, |work| {
-            self.folded_path_with_meter(path, work)
-        })
-        .ok()?
-        .map(|(path, _)| path)
+        self.boundary(|work| self.folded_path_with_meter(path, work))
+            .ok()?
+            .map(|(path, _)| path)
     }
 
     fn binding_epoch(&self) -> Option<u64> {
@@ -362,15 +350,11 @@ where
         &self,
         expected_epoch: Option<u64>,
     ) -> Result<Box<dyn Send>, MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.acquire_binding_lease_with_meter(expected_epoch, work)
-        })
+        self.boundary(|work| self.acquire_binding_lease_with_meter(expected_epoch, work))
     }
 
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.lookup_with_meter(path, work)
-        })
+        self.boundary(|work| self.lookup_with_meter(path, work))
     }
 
     fn lookup_with_meter(
@@ -408,10 +392,8 @@ where
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.open_handle(path, None, work)
-        })
-        .map(|(file, _)| file.file)
+        self.boundary(|work| self.open_handle(path, None, work))
+            .map(|(file, _)| file.file)
     }
 
     fn open_created(
@@ -419,17 +401,13 @@ where
         path: &MountPath,
         created: &MountLookup,
     ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.created_handle(path, created, work, Ok)
-        })
-        .map(|(file, _)| file)
+        self.boundary(|work| self.created_handle(path, created, work, Ok))
+            .map(|(file, _)| file)
     }
 
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.detached_handle(path, work, Ok)
-        })
-        .map(|(file, _)| file)
+        self.boundary(|work| self.detached_handle(path, work, Ok))
+            .map(|(file, _)| file)
     }
 
     fn read_link(
@@ -450,10 +428,8 @@ where
         offset: u64,
         length: u32,
     ) -> Result<OwnedBytes, MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.read_range_with_meter(path, offset, length, work)
-        })
-        .map(|chunk| chunk.bytes)
+        self.boundary(|work| self.read_range_with_meter(path, offset, length, work))
+            .map(|chunk| chunk.bytes)
     }
 
     fn read_range_with_meter(
@@ -484,9 +460,7 @@ where
         offset: u64,
         target: MountSeekTarget,
     ) -> Result<Option<u64>, MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.seek_extent(path, offset, target, work)
-        })
+        self.boundary(|work| self.seek_extent(path, offset, target, work))
     }
 
     fn read_directory(
@@ -495,9 +469,7 @@ where
         cursor: Option<&crate::native_mount::MountDirectoryCursor>,
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.read_directory_with_meter(path, cursor, maximum_entries, work)
-        })
+        self.boundary(|work| self.read_directory_with_meter(path, cursor, maximum_entries, work))
     }
 
     fn create_file(
@@ -613,10 +585,8 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError> {
-        boundary(&self.cancellation, |work| {
-            self.list_attributes_with_meter(path, cursor, maximum_entries, work)
-        })
-        .map(|(page, _)| page)
+        self.boundary(|work| self.list_attributes_with_meter(path, cursor, maximum_entries, work))
+            .map(|(page, _)| page)
     }
 
     fn list_attributes_with_meter(
@@ -665,7 +635,7 @@ where
         bytes: Bytes,
     ) -> Result<(), MountSourceError> {
         let path = self.path(path)?;
-        boundary(&self.cancellation, |work| {
+        self.boundary(|work| {
             self.change_content(
                 path,
                 ContentChange::Write {
@@ -679,7 +649,7 @@ where
 
     fn resize(&self, path: &MountPath, logical_bytes: u64) -> Result<(), MountSourceError> {
         let path = self.path(path)?;
-        boundary(&self.cancellation, |work| {
+        self.boundary(|work| {
             self.change_content(path, ContentChange::Resize { logical_bytes }, work)
         })
     }
@@ -692,7 +662,7 @@ where
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
         let path = self.path(path)?;
-        boundary(&self.cancellation, |work| {
+        self.boundary(|work| {
             self.change_content(
                 path,
                 range_allocation(ByteRange { offset, length }, operation),
@@ -711,7 +681,7 @@ where
     ) -> Result<(), MountSourceError> {
         let source = self.path(source)?;
         let destination = self.path(destination)?;
-        boundary(&self.cancellation, |work| {
+        self.boundary(|work| {
             self.change_content(
                 destination,
                 ContentChange::CloneFrom {

@@ -15,6 +15,7 @@ struct CurrentPolicy<A: 'static, O: 'static> {
     view: Arc<crate::access::AccessView>,
     cancellation: CancellationToken,
     runtime: CallbackRuntime,
+    guard: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
     _allocation: crate::NativeAllocation,
 }
 
@@ -45,6 +46,7 @@ where
         }
         drop(current);
         invoke(&self.runtime, work, || async {
+            access::check_callback_authority(self.guard.as_deref(), work).await?;
             let revision =
                 access::observe_current_policy(&self.checkout, &self.cancellation, work).await?;
             if !self
@@ -90,6 +92,7 @@ where
             view: view.clone(),
             cancellation: self.cancellation.clone(),
             runtime: self.runtime.clone(),
+            guard: self.native_callback_guard.clone(),
             _allocation: allocation,
         });
         authorized_file::authorize_file(file, permissions, policy, file_id, created, work)

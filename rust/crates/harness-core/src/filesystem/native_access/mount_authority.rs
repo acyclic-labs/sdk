@@ -376,6 +376,8 @@ mod tests {
         observer.advance_to_head_async().await?;
         observer.advance_to_head_async().await?;
         assert_eq!(observer.read_range(&path, 0, 5)?.as_ref(), b"after");
+        let opened = observer.open_file(&path)?;
+        assert_eq!(opened.read_range(0, 5)?.as_ref(), b"after");
         assert!(matches!(
             observer.write_range(&path, 0, bytes::Bytes::from_static(b"denied")),
             Err(acyclic_fs::MountSourceError::ReadOnly)
@@ -391,6 +393,10 @@ mod tests {
         let before = work.receipt();
         assert!(caller_guard.check(&work)?.await.is_err());
         assert!(caller_guard.check_write(&work)?.await.is_err());
+        assert!(observer.read_range(&path, 0, 5).is_err());
+        assert!(observer.read_range_with_meter(&path, 0, 5, &work).is_err());
+        assert!(opened.read_range(0, 5).is_err());
+        assert!(opened.read_range_with_meter(0, 5, &work).is_err());
         assert_eq!(
             work.receipt().backend_read_operations,
             before.backend_read_operations
@@ -399,7 +405,6 @@ mod tests {
             work.receipt().backend_write_operations,
             before.backend_write_operations
         );
-        assert!(observer.read_range(&path, 0, 5).is_err());
         observer.cancel();
         // Negative control: bootstrap custody is explicitly retained by the host,
         // while admitted above only retains the authenticated narrow workload.

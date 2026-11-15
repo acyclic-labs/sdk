@@ -237,9 +237,8 @@ where
     }
 
     fn fence_changes(&self) -> Result<(), MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.fence_changes_with_meter(work)
-        })
+        self.authored
+            .boundary(|work| self.fence_changes_with_meter(work))
     }
 
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
@@ -298,9 +297,8 @@ where
         &self,
         path: &MountPath,
     ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.lookup_pinned_with_meter(path, work)
-        })
+        self.authored
+            .boundary(|work| self.lookup_pinned_with_meter(path, work))
     }
 
     fn lookup_with_meter(
@@ -360,9 +358,8 @@ where
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.open_file_with_meter(path, work).map(|(file, _)| file)
-        })
+        self.authored
+            .boundary(|work| self.open_file_with_meter(path, work).map(|(file, _)| file))
     }
     fn open_file_with_meter(
         &self,
@@ -377,7 +374,7 @@ where
         &self,
         path: &MountPath,
     ) -> Result<(Arc<dyn MountOpenFile>, MountLookup), MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
+        self.authored.boundary(|work| {
             self.open_file_with_lookup_with_meter(path, MountOpenAccess::Metadata, work)
                 .map(|(file, lookup)| (file.file, lookup))
         })
@@ -394,7 +391,7 @@ where
     }
 
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
+        self.authored.boundary(|work| {
             self.detach_file_with_meter(path, work)
                 .map(|(file, _)| file)
         })
@@ -463,7 +460,7 @@ where
         offset: u64,
         length: u32,
     ) -> Result<OwnedBytes, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
+        self.authored.boundary(|work| {
             self.read_range_with_meter(path, offset, length, work)
                 .map(|packet| packet.bytes)
         })
@@ -509,7 +506,7 @@ where
         piece: u32,
         sink: &mut ContentSink<'_>,
     ) -> Result<(), MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
+        self.authored.boundary(|work| {
             self.read_content(
                 path,
                 Some(pin),
@@ -539,7 +536,7 @@ where
         offset: u64,
         target: MountSeekTarget,
     ) -> Result<Option<u64>, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
+        self.authored.boundary(|work| {
             let permissions = self.authored.permissions_for_path(path, work)?;
             let result = self
                 .open_file(path)
@@ -555,9 +552,8 @@ where
         cursor: Option<&crate::native_mount::MountDirectoryCursor>,
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
-            self.read_directory_with_meter(path, cursor, maximum_entries, work)
-        })
+        self.authored
+            .boundary(|work| self.read_directory_with_meter(path, cursor, maximum_entries, work))
     }
 
     fn read_directory_with_meter(
@@ -592,7 +588,7 @@ where
         path: &MountPath,
         created: &MountLookup,
     ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
+        self.authored.boundary(|work| {
             self.open_created_with_meter(path, created, work)
                 .map(|(file, _)| file)
         })
@@ -641,7 +637,7 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError> {
-        adapter::boundary(self.authored.cancellation(), |work| {
+        self.authored.boundary(|work| {
             self.list_attributes_with_meter(path, cursor, maximum_entries, work)
                 .map(|(page, _)| page)
         })
@@ -710,7 +706,7 @@ where
     ) -> Result<(), MountSourceError> {
         let identity = capture_root_identity(source_root)
             .map_err(|error| MountSourceError::Engine(error.to_string().into()))?;
-        adapter::boundary(self.authored.cancellation(), |work| {
+        self.authored.boundary(|work| {
             self.capture_host_subtree_with_meter(source_root, path, identity, work)
         })
     }
