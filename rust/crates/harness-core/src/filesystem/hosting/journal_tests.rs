@@ -177,9 +177,9 @@ async fn a_private_cut_read_names_its_cut_and_rereads_the_same_bytes() -> TestRe
     .await?;
     let (reread, again, _) = read(Some(host.file_generation(&file, None)?)).await?;
     assert_eq!(reread, file);
-    assert_eq!(again, bytes);
+    assert_eq!(again.bytes(), bytes.bytes());
     let by_reference = host.read_content(&file, &grant, None, None).await?;
-    assert_eq!(by_reference, bytes);
+    assert_eq!(by_reference.bytes(), bytes.bytes());
 
     // Conditional writes commit to the authored workspace, so a private cut
     // is refused as their precondition before any input is consumed.
