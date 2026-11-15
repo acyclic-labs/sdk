@@ -475,18 +475,24 @@ impl ScriptedModelProvider {
     }
 }
 
-/// The child whose settlement woke this request: its newest model-visible
-/// input is a waking `child.settled` notice, whose body names the child.
+/// The child whose settlement woke this request. A turn's admitted notices
+/// end its request as one or more notice-only messages (quiet notices such as
+/// `tools.changed` form their own blocks, before or after the waking one), so
+/// the request was woken when any message of that trailing notice run holds a
+/// waking `child.settled` notice, whose body names the child. The run ends at
+/// the newest message that is not purely notices (a reply, a tool result, or a
+/// message's own input), so an earlier turn's wake never classifies a later
+/// request.
 fn waking_child(request: &ModelRequest) -> Result<Option<crate::agent::AgentPath>> {
-    let Some((notices, _)) = model_visible_messages(&request.messages)
-        .next_back()
-        .and_then(|message| message.content.notice_parts())
-    else {
-        return Ok(None);
-    };
-    notices
-        .iter()
+    model_visible_messages(&request.messages)
         .rev()
+        .map_while(|message| {
+            message
+                .content
+                .notice_parts()
+                .filter(|(_, attachments)| attachments.is_empty())
+        })
+        .flat_map(|(notices, _)| notices.iter().rev())
         .find(|notice| notice.wake && notice.kind == "child.settled")
         .map(|notice| {
             serde_json::from_value(notice.body["child"].clone())
