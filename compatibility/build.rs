@@ -4,7 +4,8 @@
 //! they do for the library at run time. Bazel always sets both, from the files
 //! of the vendored package for the configured platform. Under Cargo they are
 //! usually unset, and the vendored package for the target names its own files.
-//! A bare `PROTOC` name resolves through `PATH`, as a command would run it.
+//! A bare `PROTOC` name resolves through `PATH` to the first runnable file, as a
+//! command would run it, and a changed `PATH` reruns the script.
 //! Every copied file is watched, so a replaced compiler or edited include at
 //! the same path rebuilds the bundle.
 //! The crate's own shared protocols travel the same way. The bundle is copied
@@ -70,17 +71,31 @@ fn on_path(named: PathBuf) -> io::Result<PathBuf> {
     if named.components().count() > 1 {
         return Ok(named);
     }
+    // Another PATH can name another compiler under the same name.
+    println!("cargo:rerun-if-env-changed=PATH");
     let mut suffixed = named.clone().into_os_string();
     suffixed.push(env::consts::EXE_SUFFIX);
     env::split_paths(&env::var_os("PATH").unwrap_or_default())
         .flat_map(|directory| [directory.join(&named), directory.join(&suffixed)])
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| runnable(candidate))
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("PROTOC names {}, which is not on PATH", named.display()),
             )
         })
+}
+
+/// Whether a command lookup would run `candidate`: a file, and on Unix one with an execute bit.
+fn runnable(candidate: &Path) -> bool {
+    fs::metadata(candidate).is_ok_and(|metadata| {
+        #[cfg(unix)]
+        let executable =
+            std::os::unix::fs::PermissionsExt::mode(&metadata.permissions()) & 0o111 != 0;
+        #[cfg(not(unix))]
+        let executable = true;
+        metadata.is_file() && executable
+    })
 }
 
 /// Copies every file under `directory` into `OUT_DIR/<name>` and lists it, by its

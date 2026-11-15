@@ -282,12 +282,12 @@ function buildFile(p) {
       ...deps(["build"]),
     ]]);
   }
-  // A library that is only a cdylib, such as a Node addon, builds as a shared library.
-  const shared = p.targets.find(t => t.kind.length === 1 && t.kind[0] === "cdylib");
+  // A cdylib output, such as a Node addon, builds as a shared library; beside an rlib it takes a suffix.
+  const shared = p.targets.find(t => t.kind.includes("cdylib"));
   if (shared) {
     covered.add(`build cdylib ${shared.name}`);
     rules.push(["rust_shared_library", [
-      ["name", q(crateName(shared))],
+      ["name", q(shared === lib ? `${crateName(shared)}_cdylib` : crateName(shared))],
       ["crate_root", q(local(shared.src_path))],
       ...libInputs(shared),
       ...common(shared),
@@ -296,7 +296,7 @@ function buildFile(p) {
     ]]);
   }
   if (lib) {
-    covered.add(`build ${lib.kind[0]} ${lib.name}`);
+    for (const kind of lib.kind) if (kind !== "cdylib") covered.add(`build ${kind} ${lib.name}`);
     const proc = lib.kind.includes("proc-macro");
     rules.push([proc ? "rust_proc_macro" : "rust_library", [
       ["name", q(crateName(lib))],
@@ -451,7 +451,8 @@ const bodies = new Map([...members].map(id => [dir(packages.get(id)), buildFile(
 for (const id of members) {
   const p = packages.get(id), expected = new Set();
   for (const t of p.targets) {
-    if (!t.kind.some(k => k === "test" || k === "bench" || k === "custom-build")) expected.add(`build ${t.kind[0]} ${t.name}`);
+    // Each output kind of a target is its own rendered rule; one that is not rendered fails the check.
+    if (!t.kind.some(k => k === "test" || k === "bench" || k === "custom-build")) for (const kind of t.kind) expected.add(`build ${kind} ${t.name}`);
     if (t.test && (t.kind.some(k => ["bin", "test", "example", "bench"].includes(k)) || t === libOf(p))) expected.add(`test ${t.kind[0]} ${t.name}`);
   }
   const have = rendered.get(id);

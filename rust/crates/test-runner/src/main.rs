@@ -20,7 +20,7 @@ use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree};
+use acyclic_native_runtime::{ProcessCommand, ProcessCustody, ProcessStdio, ProcessTree};
 
 /// How one case ended.
 enum Outcome {
@@ -104,6 +104,10 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
         .into_iter()
         .filter(|name| !ignored.contains(name))
         .collect();
+    // Every case tree is held in custody, so a timeout stops descendants that left its process
+    // group (setsid, nested trees) too.
+    let custody = ProcessCustody::acquire(&suite.logs.join("processes"))
+        .map_err(|error| format!("process custody: {error}"))?;
     let queue = Mutex::new(cases.iter().enumerate());
     let workers = thread::available_parallelism()
         .map_or(1, NonZero::get)
@@ -111,13 +115,13 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
     let (sender, results) = mpsc::channel();
     thread::scope(|scope| {
         for _ in 0..workers {
-            let (sender, queue) = (sender.clone(), &queue);
+            let (sender, queue, custody) = (sender.clone(), &queue, &custody);
             scope.spawn(move || {
                 while let Some((index, name)) = queue.lock().ok().and_then(|mut queue| queue.next())
                 {
                     let log = suite.logs.join(format!("case-{index}.log"));
                     let started = Instant::now();
-                    let outcome = case(suite, name, &log);
+                    let outcome = case(suite, custody, name, &log);
                     if sender
                         .send((name.as_str(), outcome, started.elapsed(), log))
                         .is_err()
@@ -153,9 +157,9 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
     })
 }
 
-/// Runs one case in its own process tree. A case past the limit fails, and the tree is
-/// stopped with every process the case started; dropping the tree stops any it left behind.
-fn case(suite: &Suite, name: &str, log: &Path) -> io::Result<Outcome> {
+/// Runs one case in its own custodied process tree. A case past the limit fails, and the
+/// tree is stopped with every process the case started, including ones that left its group.
+fn case(suite: &Suite, custody: &ProcessCustody, name: &str, log: &Path) -> io::Result<Outcome> {
     let output = File::create(log)?;
     let mut command = ProcessCommand::new(&suite.binary);
     command
@@ -164,7 +168,7 @@ fn case(suite: &Suite, name: &str, log: &Path) -> io::Result<Outcome> {
         .stdin(ProcessStdio::null())
         .stderr(output.try_clone()?)
         .stdout(output);
-    let mut tree = ProcessTree::spawn(&mut command)?;
+    let mut tree = ProcessTree::spawn_in_custody(&mut command, custody)?;
     Ok(match tree.wait(suite.limit) {
         Ok(status) if status.success() => Outcome::Passed,
         Ok(status) => Outcome::Failed(status.code()),
