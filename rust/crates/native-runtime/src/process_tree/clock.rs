@@ -7,8 +7,9 @@
 //! the OS clock through the events hub's wake time, a seeded simulation's
 //! paused clock through a [`ProcessWake`] notified by that runtime's timer.
 //! Paused time does not elapse in real time, so an OS timeout would re-arm
-//! forever.
-use super::events::Source;
+//! forever. That timer runs only on the runtime's own thread, so a wait on it
+//! yields to the simulation host rather than parking its worker.
+use super::events::{self, Source, Wait};
 use super::*;
 
 /// The clock of one deadline consumer.
@@ -73,22 +74,17 @@ pub(crate) enum Alarm {
     Simulated { wake: ProcessWake, _timer: Timer },
 }
 
-impl Alarm {
-    /// The OS wake time of a wait, which a simulated alarm never sets.
-    pub(super) fn wake_at(&self) -> Option<Instant> {
-        match self {
-            Self::Os(deadline) => Some(*deadline),
-            #[cfg(feature = "test-support")]
-            Self::Simulated { .. } => None,
-        }
-    }
-
-    /// The readiness source a simulated alarm adds to a wait.
-    pub(super) fn source(&self) -> Option<Source<'_>> {
-        match self {
-            Self::Os(_) => None,
-            #[cfg(feature = "test-support")]
-            Self::Simulated { wake, .. } => Some(wake.source()),
+/// Arms one wait on `sources` that `alarm`, if any, also wakes: an OS alarm
+/// as the wait's wake time, a simulated one as a source whose wait yields to
+/// the simulation host while it blocks.
+pub(super) fn arm(sources: &[Source<'_>], alarm: Option<&Alarm>) -> io::Result<Wait<'static>> {
+    match alarm {
+        None => events::arm(sources, None),
+        Some(Alarm::Os(deadline)) => events::arm(sources, Some(*deadline)),
+        #[cfg(feature = "test-support")]
+        Some(Alarm::Simulated { wake, .. }) => {
+            let sources = sources.iter().copied().chain([wake.source()]);
+            events::arm(&sources.collect::<Vec<_>>(), None).map(Wait::simulated)
         }
     }
 }
@@ -109,9 +105,9 @@ impl Drop for Timer {
 #[cfg(not(loom))]
 pub(super) mod tests {
     use super::super::ProcessTree;
-    use super::super::scale_tests::{Blocked, blocked};
+    use super::super::scale_tests::{Blocked, Quiet, blocked};
+    use crate::CaptureSchedule;
     use crate::testing::Schedule;
-    use crate::{CaptureSchedule, ProcessInput};
     use std::io;
     use std::time::Duration;
 
@@ -146,11 +142,11 @@ pub(super) mod tests {
         })
     }
 
-    /// Starts `work` on the seeded runtime's blocking pool, outside the scope
-    /// and with only the simulation's inherited sources, as every native
-    /// worker has. Call it inside [`seeded`]. Tokio holds off the paused
-    /// clock's automatic advance while a blocking task runs, so only an
-    /// explicit advance moves time.
+    /// Starts `work` on Tokio's blocking pool, outside the scope and its
+    /// controlled workers, with only the simulation's inherited sources. Call
+    /// it inside [`seeded`]. Tokio holds off the paused clock's automatic
+    /// advance while a blocking task runs, so only an explicit advance moves
+    /// time.
     pub(in crate::process_tree) fn unscoped<T: Send + 'static>(
         work: impl FnOnce() -> T + Send + 'static,
     ) -> impl Future<Output = io::Result<T>> {
@@ -158,86 +154,54 @@ pub(super) mod tests {
         async move { waiting.await.map_err(io::Error::other) }
     }
 
-    /// Runs `wait` against a child that only this test can release, then
-    /// advances simulated time past its deadline. `schedule` is evaluated
-    /// inside the seeded scope. With `armed`, the advance waits until the
-    /// capture has armed its first wait.
-    fn expire<T: Send + 'static>(
-        armed: bool,
-        schedule: impl FnOnce() -> CaptureSchedule,
-        wait: impl FnOnce(&mut ProcessTree, CaptureSchedule) -> T + Send + 'static,
-    ) -> io::Result<T> {
+    /// A quiet child, which only this test can release, waited on by `wait`
+    /// in a seeded scope. Nothing but the simulated deadline can end the
+    /// wait: once its worker yields, the idle paused runtime advances to it.
+    fn quiet<T>(wait: impl AsyncFnOnce(ProcessTree) -> io::Result<T>) -> io::Result<T> {
         crate::initialize_native_io_services()?;
-        let Blocked { mut tree, release } = blocked()?;
-        let (sender, receipt) = tokio::sync::oneshot::channel();
-        if armed {
-            tree.capture_armed = Some(sender);
-        }
-        let outcome = seeded(async move |simulation: &Schedule| {
-            let schedule = schedule();
-            let waiting = unscoped(move || {
-                let mut tree = tree;
-                wait(&mut tree, schedule)
-            });
-            if armed {
-                receipt.await.map_err(|_| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "capture ended before arming")
-                })?;
-            }
-            simulation.advance(2 * HOUR).await;
-            waiting.await
-        });
+        let Blocked { tree, release } = blocked()?;
+        let outcome = seeded(async move |_: &Schedule| wait(tree).await);
         drop(release);
         outcome
     }
 
-    /// A capture deadline on a seeded schedule's paused clock expires when
-    /// simulated time reaches it, woken by that clock's own alarm.
+    /// A capture on the normal controlled worker of a paused current-thread
+    /// runtime times out on simulated time. Its worker blocks between turns
+    /// while that runtime's thread drives it, and only that thread can fire
+    /// the deadline's timer, so the wait must yield to its host.
     ///
-    /// The child blocks until its stdin closes and only this test holds the
-    /// writer, so the deadline is the capture's only way to end. Its
-    /// launch-relative hour starts on the worker, which binds the simulated
-    /// clock. The capture parks on its armed wait before the clock moves;
-    /// advancing two simulated hours must end it as `TimedOut` at once.
-    ///
-    /// Negative control: a pump that reads `Instant::now()` for its deadline
-    /// arms an OS wake an hour of real time away. Paused time never reaches
-    /// it, so the test hangs until nextest's 10 s limit fails it.
+    /// Negative control: a wait that parks its worker holds the runtime's
+    /// thread too, so the timer never fires and the test hangs until
+    /// nextest's per-test limit fails it.
     #[test]
-    fn a_simulated_capture_deadline_is_woken_by_simulated_time() -> io::Result<()> {
-        let failure = expire(
-            true,
-            || CaptureSchedule::FromLaunch(HOUR),
-            |tree, schedule| {
-                tree.wait_with_output(
-                    schedule,
-                    0,
-                    None,
-                    || Ok(()),
-                    |_| Ok(ProcessInput::default()),
-                    None,
-                    None,
-                    None,
-                )
-            },
-        )?
-        .expect_err("the simulated deadline never ended the capture");
+    fn a_controlled_capture_deadline_is_woken_by_simulated_time() -> io::Result<()> {
+        let outcome = quiet(async |tree| {
+            tree.capture(
+                &crate::TaskSpawner::current(),
+                CaptureSchedule::FromLaunch(HOUR),
+                0,
+                None,
+                Quiet,
+            )
+            .await
+        })?;
+        let failure = outcome
+            .result
+            .expect_err("the simulated deadline never ended the capture");
         assert_eq!(failure.error.kind(), io::ErrorKind::TimedOut);
         assert!(failure.cleanup_completed);
         Ok(())
     }
 
-    /// A direct-child exit wait on a simulated deadline is woken by the same
-    /// alarm, over the events hub, on every OS. The deadline is fixed on the
-    /// simulator side, so the wait expires whether it parks before or after
-    /// the clock moves; an OS timeout would park it for a real hour.
+    /// A direct-child exit wait on a controlled worker is woken by the same
+    /// alarm, over the events hub, on every OS. Its deadline is fixed on the
+    /// simulator side; an OS timeout would park it for a real hour.
     #[test]
-    fn a_simulated_exit_deadline_is_woken_by_simulated_time() -> io::Result<()> {
-        let error = expire(
-            false,
-            || CaptureSchedule::FromLaunch(HOUR).launched(),
-            |tree, schedule| tree.wait(schedule),
-        )?
+    fn a_controlled_exit_deadline_is_woken_by_simulated_time() -> io::Result<()> {
+        let error = quiet(async |mut tree| {
+            let schedule = CaptureSchedule::FromLaunch(HOUR).launched();
+            crate::testing::spawn_blocking(move || tree.wait(schedule)).await
+        })?
         .expect_err("the simulated deadline never ended the exit wait");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         Ok(())

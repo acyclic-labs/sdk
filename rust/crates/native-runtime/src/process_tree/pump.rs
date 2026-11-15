@@ -7,7 +7,7 @@
 //! control signal or the caller's deadline. A synchronous caller parks on that
 //! wait; an async caller awaits it, holding no thread while the child runs.
 
-use super::clock::Alarm;
+use super::clock::{self, Alarm};
 #[cfg(unix)]
 use super::events::OwnedSource as OutputPipe;
 use super::events::{self, Source};
@@ -362,9 +362,8 @@ impl<'a> Pump<'a> {
         if wakes.is_empty() && self.deadline.is_none() {
             return Ok(None);
         }
-        let mut sources = wakes.iter().map(ProcessWake::source).collect::<Vec<_>>();
-        sources.extend(self.alarm_source());
-        events::arm(&sources, self.wake_at()).map(Some)
+        let sources = wakes.iter().map(ProcessWake::source).collect::<Vec<_>>();
+        clock::arm(&sources, self.alarm.as_ref()).map(Some)
     }
 
     pub(super) fn check_deadline(&self) -> io::Result<()> {
@@ -378,16 +377,6 @@ impl<'a> Pump<'a> {
             ));
         }
         Ok(())
-    }
-
-    /// The OS wake time of a wait: the deadline itself on the OS clock, none
-    /// on a simulated clock, whose alarm wakes the wait as a source instead.
-    fn wake_at(&self) -> Option<Instant> {
-        self.alarm.as_ref().and_then(Alarm::wake_at)
-    }
-
-    fn alarm_source(&self) -> Option<Source<'_>> {
-        self.alarm.as_ref().and_then(Alarm::source)
     }
 
     /// Moves everything that is ready. Never waits.
@@ -535,7 +524,6 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         wakes: Option<&[ProcessWake]>,
     ) -> io::Result<events::Wait<'static>> {
-        let wake_at = self.wake_at();
         let writing = self.input.as_ref().is_some_and(PendingStdin::writing);
         #[cfg(unix)]
         let wait = {
@@ -563,8 +551,7 @@ impl<'a> Pump<'a> {
                 sources.extend(tree.exit_source()?);
             }
             sources.extend(wakes.unwrap_or_default().iter().map(ProcessWake::source));
-            sources.extend(self.alarm_source());
-            events::arm(&sources, wake_at)?
+            clock::arm(&sources, self.alarm.as_ref())?
         };
         #[cfg(windows)]
         let wait = {
@@ -590,8 +577,7 @@ impl<'a> Pump<'a> {
                 sources.push(Source::Exit(child.as_handle()));
             }
             sources.extend(wakes.unwrap_or_default().iter().map(ProcessWake::source));
-            sources.extend(self.alarm_source());
-            events::arm(&sources, wake_at)?
+            clock::arm(&sources, self.alarm.as_ref())?
         };
         // Report the original registration only after every source is armed.
         // Failed setup or owner loss drops the sender with the original tree.

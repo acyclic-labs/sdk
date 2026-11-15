@@ -1041,10 +1041,7 @@ impl ProcessTree {
                 use std::os::windows::io::AsHandle as _;
                 sources.push(events::Source::Exit(child.as_handle()));
             }
-            sources.extend(alarm.source());
-            events::arm(&sources, alarm.wake_at())?
-                .block()
-                .into_result()?;
+            clock::arm(&sources, Some(&alarm))?.block().into_result()?;
         }
     }
 

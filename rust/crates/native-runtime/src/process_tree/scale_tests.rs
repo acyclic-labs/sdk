@@ -42,7 +42,7 @@ fn threads() -> io::Result<u64> {
     Ok(crate::resources::process_resources()?.threads)
 }
 
-struct Quiet;
+pub(super) struct Quiet;
 
 impl CaptureHandler for Quiet {
     fn check(&mut self) -> io::Result<()> {
