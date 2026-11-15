@@ -43,7 +43,7 @@ pub(super) fn empty_session(latest: bool) -> Result<Session<MemoryStream>, Strea
         runnable: BTreeSet::new(),
         ready_after: None,
         head_visits: 0,
-    }
+    })
 }
 
 pub(super) fn empty_channel(latest: bool, binding: Binding) -> Channel {
@@ -63,7 +63,7 @@ pub(super) fn empty_channel(latest: bool, binding: Binding) -> Channel {
         ending: None,
         socket: None,
         input: None,
-    })
+    }
 }
 
 proptest! {
