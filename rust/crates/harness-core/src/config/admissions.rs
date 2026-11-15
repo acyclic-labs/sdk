@@ -26,42 +26,27 @@ enum Decision<T = Admission, C = String> {
 
 /// Owner-bound settings decisions, retained even when session startup refuses.
 /// The provider owns authority to this data; no task volume grant is delegated.
-#[derive(Clone)]
-pub struct SettingsAdmissions {
-    provider: Arc<dyn NativeStreamProvider>,
+///
+/// It borrows the owner's stream and never holds a handle of its own. A
+/// stream handle keeps its local root's ownership, so an owned clone here
+/// could outlive its harness and make that root's next open wait forever.
+/// The borrow makes such a clone a compile error instead.
+pub struct SettingsAdmissions<'a, P: ?Sized = dyn NativeStreamProvider> {
+    provider: &'a Arc<P>,
 }
 
-impl SettingsAdmissions {
+impl<P: ?Sized> Clone for SettingsAdmissions<'_, P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<P: ?Sized> Copy for SettingsAdmissions<'_, P> {}
+
+impl<'a, P: crate::store::JournalProvider + ?Sized> SettingsAdmissions<'a, P> {
     /// Uses the original owner's Streams consistency and native funding domain.
     #[must_use]
-    pub fn new(provider: Arc<dyn NativeStreamProvider>) -> Self {
+    pub const fn new(provider: &'a Arc<P>) -> Self {
         Self { provider }
-    }
-
-    /// The ordinary stream to read in bounded pages or follow from a retained cut.
-    pub fn path(agent: AgentId) -> Result<StreamPath> {
-        StreamPath::new(format!("harness/settings-admissions/v1/{agent}")).map_err(invalid)
-    }
-
-    /// The latest decision for one settings path, complete cut and file version.
-    /// This query pins its read interval in Streams; it needs no prior tail read.
-    pub fn query(
-        agent: AgentId,
-        path: &str,
-        cut: &str,
-        version: &str,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<ReadRequest> {
-        Ok(ReadRequest {
-            key: Some(ReadKeySeek::latest(
-                key(path, cut, version, io)?.to_vec(),
-                u64::MAX,
-            )),
-            path: Self::path(agent)?,
-            from: 0,
-            limit: 1,
-            at_least: Default::default(),
-        })
     }
 
     /// Retains this actual decision before startup returns success or refusal.
@@ -110,10 +95,10 @@ impl SettingsAdmissions {
             > acyclic_stream::MAX_RECORD_BYTES
         {
             let before = io.owned_bytes()?;
-            let path = Self::payload_path(agent, &digest, Some(io))?;
+            let path = SettingsAdmissions::payload_path(agent, &digest, Some(io))?;
             let _path_hold = io.guard_owned(io.owned_since(before)?)?;
             crate::store::operations::stage_chunks(
-                &self.provider,
+                self.provider,
                 &path,
                 &bytes,
                 Some(io),
@@ -151,7 +136,7 @@ impl SettingsAdmissions {
             bytes
         };
         let request = AppendRequest {
-            path: Self::path(agent)?,
+            path: SettingsAdmissions::path(agent)?,
             records: vec![AppendRecord {
                 value: bytes,
                 headers,
@@ -161,7 +146,7 @@ impl SettingsAdmissions {
         };
         let mut history = io.history_io();
         let output = crate::store::operations::append_with_work(
-            &self.provider,
+            self.provider,
             request,
             &mut Some(&mut history),
         )
@@ -181,10 +166,10 @@ impl SettingsAdmissions {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<Admission>> {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        let request = Self::query(agent, path, cut, version, Some(&io))?;
+        let request = SettingsAdmissions::query(agent, path, cut, version, Some(&io))?;
         let mut observer = io.history_io();
         let Some(record) = crate::store::operations::one_selected_record(
-            &self.provider,
+            self.provider,
             request,
             &mut Some(&mut observer),
         )
@@ -206,10 +191,10 @@ impl SettingsAdmissions {
                 ));
             }
             let before = io.owned_bytes()?;
-            let path = Self::payload_path(agent, &digest, Some(&io))?;
+            let path = SettingsAdmissions::payload_path(agent, &digest, Some(&io))?;
             let _path_hold = io.guard_owned(io.owned_since(before)?)?;
             let (body, _hold) =
-                crate::store::operations::read_chunks(&self.provider, &path, bytes, &digest, &io)
+                crate::store::operations::read_chunks(self.provider, &path, bytes, &digest, &io)
                     .await?;
             decision =
                 serde_json::from_slice(&body).map_err(|error| Error::Storage(error.to_string()))?;
@@ -240,6 +225,34 @@ impl SettingsAdmissions {
             ));
         }
         Ok(Some(admission))
+    }
+}
+
+impl SettingsAdmissions<'_> {
+    /// The ordinary stream to read in bounded pages or follow from a retained cut.
+    pub fn path(agent: AgentId) -> Result<StreamPath> {
+        StreamPath::new(format!("harness/settings-admissions/v1/{agent}")).map_err(invalid)
+    }
+
+    /// The latest decision for one settings path, complete cut and file version.
+    /// This query pins its read interval in Streams; it needs no prior tail read.
+    pub fn query(
+        agent: AgentId,
+        path: &str,
+        cut: &str,
+        version: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<ReadRequest> {
+        Ok(ReadRequest {
+            key: Some(ReadKeySeek::latest(
+                key(path, cut, version, io)?.to_vec(),
+                u64::MAX,
+            )),
+            path: SettingsAdmissions::path(agent)?,
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
     }
 
     fn payload_path(

@@ -28,7 +28,7 @@ pub(super) struct Volumes<'a> {
     pub(super) home: &'a VolumeRef,
     pub(super) seed: (&'a VolumeRef, &'a crate::resources::GenerationRef),
     pub(super) configuration: &'a [Option<crate::layers::PinnedLayer>; 4],
-    pub(super) decisions: crate::config::SettingsAdmissions,
+    pub(super) decisions: crate::config::SettingsAdmissions<'a, acyclic_stream::LocalStream>,
 
     pub(super) maximum_bytes: Option<u64>,
 }
@@ -724,7 +724,7 @@ mod tests {
             decisions: crate::config::SettingsAdmissions::new(
                 harness
                     .agent_stream
-                    .clone()
+                    .as_ref()
                     .ok_or_else(|| Error::Unsupported("settings needs its owner stream".into()))?,
             ),
             files: &harness.files,
@@ -812,7 +812,7 @@ mod tests {
             decisions: crate::config::SettingsAdmissions::new(
                 harness
                     .agent_stream
-                    .clone()
+                    .as_ref()
                     .ok_or_else(|| Error::Unsupported("settings needs its owner stream".into()))?,
             ),
             files: &harness.files,
@@ -1025,7 +1025,7 @@ mod tests {
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
             decisions: crate::config::SettingsAdmissions::new(
-                harness.agent_stream.clone().expect("fixture owner stream"),
+                harness.agent_stream.as_ref().expect("fixture owner stream"),
             ),
 
             maximum_bytes: None,
@@ -1123,7 +1123,7 @@ mod tests {
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
             decisions: crate::config::SettingsAdmissions::new(
-                harness.agent_stream.clone().expect("fixture owner stream"),
+                harness.agent_stream.as_ref().expect("fixture owner stream"),
             ),
 
             maximum_bytes: None,

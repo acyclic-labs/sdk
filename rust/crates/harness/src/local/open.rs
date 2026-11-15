@@ -101,7 +101,7 @@ impl PreparedLocalHarness {
             home: &stored.scratch,
             seed: (&stored.seed.0, &stored.seed.1),
             configuration: &opening.config.configuration,
-            decisions: crate::config::SettingsAdmissions::new(stored.volume_stream.clone()),
+            decisions: crate::config::SettingsAdmissions::new(&stored.volume_stream),
 
             maximum_bytes: opening.config.limits.file_bytes,
         };
@@ -650,7 +650,7 @@ impl Opening {
             home: &scratch,
             seed: (&seed.0, &seed.1),
             configuration: &self.config.configuration,
-            decisions: crate::config::SettingsAdmissions::new(volume_stream.clone()),
+            decisions: crate::config::SettingsAdmissions::new(&volume_stream),
 
             maximum_bytes: self.config.limits.file_bytes,
         };

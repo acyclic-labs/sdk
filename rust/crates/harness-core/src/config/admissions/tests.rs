@@ -14,7 +14,7 @@ fn work() -> Result<acyclic_fs::NativeMaterializationWork> {
 #[tokio::test]
 async fn decisions_are_indexed_live_and_retained_without_an_agent_root() -> Result<()> {
     let provider = Arc::new(MemoryStream::default());
-    let journal = SettingsAdmissions::new(provider.clone());
+    let journal = SettingsAdmissions::new(&provider);
     let agent = AgentId::new();
     let original = Admission {
         path: "agent.ts".into(),
@@ -102,7 +102,7 @@ async fn decisions_are_indexed_live_and_retained_without_an_agent_root() -> Resu
     };
     assert_eq!(admission, refused);
     assert_eq!(event.sequence, 2);
-    let reopened = SettingsAdmissions::new(provider.clone());
+    let reopened = SettingsAdmissions::new(&provider);
     assert_eq!(
         reopened
             .latest(agent, "agent.ts", "cut-a", "original", &work)
@@ -175,7 +175,7 @@ async fn decisions_are_indexed_live_and_retained_without_an_agent_root() -> Resu
 #[tokio::test]
 async fn large_decisions_replay_from_bounded_chunks_and_refuse_incomplete_payloads() -> Result<()> {
     let provider = Arc::new(MemoryStream::default());
-    let journal = SettingsAdmissions::new(provider.clone());
+    let journal = SettingsAdmissions::new(&provider);
     let agent = AgentId::new();
     let original = Admission {
         path: "agent.ts".into(),
@@ -226,7 +226,7 @@ async fn large_decisions_replay_from_bounded_chunks_and_refuse_incomplete_payloa
     let count = bytes.div_ceil(acyclic_stream::MAX_RECORD_BYTES as u64);
     assert!(count > 1);
     assert_eq!(provider.tail(path.clone()).await.map_err(invalid)?, count);
-    let reopened = SettingsAdmissions::new(provider.clone());
+    let reopened = SettingsAdmissions::new(&provider);
     assert_eq!(
         reopened
             .latest(agent, "agent.ts", "cut-a", "original", &work)
@@ -357,7 +357,7 @@ async fn indexed_decisions_refuse_substituted_identity_and_unknown_formats() -> 
             })
             .await
             .map_err(invalid)?;
-        let result = SettingsAdmissions::new(provider)
+        let result = SettingsAdmissions::new(&provider)
             .latest(agent, "agent.ts", "cut-a", "original", &work()?)
             .await;
         if format != 1 {

@@ -105,11 +105,13 @@ async fn settings_cut(harness: &LocalHarness, path: &str) -> Result<blake3::Hash
     tree.cut()
 }
 
-fn decisions(harness: &LocalHarness) -> Result<crate::config::SettingsAdmissions> {
+fn decisions(
+    harness: &LocalHarness,
+) -> Result<crate::config::SettingsAdmissions<'_, acyclic_stream::LocalStream>> {
     Ok(crate::config::SettingsAdmissions::new(
         harness
             .agent_stream
-            .clone()
+            .as_ref()
             .ok_or_else(|| Error::Unsupported("settings fixture needs its owner stream".into()))?,
     ))
 }
@@ -408,7 +410,7 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
         decisions: crate::config::SettingsAdmissions::new(
             harness
                 .agent_stream
-                .clone()
+                .as_ref()
                 .ok_or_else(|| Error::Unsupported("settings needs its owner stream".into()))?,
         ),
         files: &harness.files,
