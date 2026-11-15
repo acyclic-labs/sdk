@@ -612,8 +612,10 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         Arc::ptr_eq(&second, &third),
         "completed binding lost its primary view"
     );
+    // A table is primary-first: reordering the bindings after the primary
+    // selects the same view; moving another user entry first names another.
     let mut reordered = session_bindings.clone();
-    reordered.reverse();
+    reordered[1..].reverse();
     let same_selection = workspace
         .bound_task_view(view().await?, &reordered, &owner.original, &authority)
         .await?;
