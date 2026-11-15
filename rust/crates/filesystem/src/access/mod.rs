@@ -90,6 +90,8 @@ pub struct AccessBinding<'a> {
     pub generation: Option<crate::GenerationId>,
     /// Host clock and authenticated approvals.
     pub context: Context,
+    /// The host's opaque name for this volume, as in [`Resource::reference`].
+    pub reference: Option<&'a str>,
 }
 
 /// Current policy encoding, stored in volume metadata rather than user files.
@@ -268,7 +270,9 @@ pub enum Generations {
 pub struct ResourcePattern {
     /// Task root, or any lineage when absent.
     pub lineage_root: Option<String>,
-    /// Exact volume identity, or any volume when absent.
+    /// Exact volume identity, or any volume when absent. It names either the
+    /// volume's own identity or the host's reference for it; a reference is
+    /// matched only against a resource the host bound with that reference.
     pub volume: Option<String>,
     /// Permitted generations.
     pub generations: Generations,
@@ -286,6 +290,10 @@ pub struct Resource<'a> {
     pub lineage: &'a [String],
     /// Volume identity.
     pub volume: &'a str,
+    /// The host's opaque name for this volume, when the host binds one. A
+    /// pattern naming it admits only a resource bound with the same reference,
+    /// so a resource bound without one is refused by such a pattern.
+    pub reference: Option<&'a str>,
     /// Requested generation.
     pub generation: u64,
     /// Current head generation.
@@ -309,10 +317,9 @@ impl ResourcePattern {
         self.lineage_root
             .as_ref()
             .is_none_or(|root| resource.lineage.first() == Some(root))
-            && self
-                .volume
-                .as_deref()
-                .is_none_or(|volume| volume == resource.volume)
+            && self.volume.as_deref().is_none_or(|volume| {
+                volume == resource.volume || resource.reference == Some(volume)
+            })
             && match self.generations {
                 Generations::Head => resource.generation == resource.head,
                 Generations::Range(range) => range.contains(resource.generation),

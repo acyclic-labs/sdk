@@ -60,6 +60,7 @@ pub(super) async fn compile<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             crate::access::AccessBinding {
                 principal: &principal,
                 capability: &ceiling,
+                reference: None,
                 facts: crate::access::AuthenticatedFacts::MetadataStream,
                 generation: None,
                 context: Context {

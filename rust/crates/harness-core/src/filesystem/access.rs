@@ -283,6 +283,9 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
                     acyclic_fs::access::AccessBinding {
                         principal: &principal.0,
                         capability: &capability.0,
+                        // The host opens every volume's workspace by the
+                        // volume's storage name, its signed-grant reference.
+                        reference: Some(workspace.name().as_str()),
                         facts: acyclic_fs::access::AuthenticatedFacts::IdentityAndRoles,
                         generation,
                         context: Context {

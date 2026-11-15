@@ -40,6 +40,7 @@ async fn every_adapter_uses_the_metered_persisted_policy_boundary()
         let binding = || AccessBinding {
             principal: &principal,
             capability: &capability,
+            reference: None,
             facts,
             generation: None,
             context: Context {
@@ -71,6 +72,7 @@ async fn every_adapter_uses_the_metered_persisted_policy_boundary()
                     config: checkout.volume_config(),
                     lineage: &[],
                     volume: "fixture",
+                    reference: None,
                     generation: 1,
                     head: 1,
                     path: "file"
@@ -118,6 +120,7 @@ async fn absent_approval_facts_cannot_silently_disable_a_deny_rule()
                     AccessBinding {
                         principal: &principal,
                         capability: &capability,
+                        reference: None,
                         facts,
                         generation: None,
                         context: Context {
@@ -141,6 +144,7 @@ async fn absent_approval_facts_cannot_silently_disable_a_deny_rule()
             config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
             lineage: &[],
             volume: "fixture",
+            reference: None,
             generation: 1,
             head: 1,
             path: "",
@@ -206,6 +210,7 @@ async fn role_policies_require_authenticated_roles_and_fenced_generations()
                         AccessBinding {
                             principal: &principal,
                             capability: &capability,
+                            reference: None,
                             facts,
                             generation: Some(selected),
                             context: Context {
@@ -268,6 +273,7 @@ async fn role_policies_require_authenticated_roles_and_fenced_generations()
                     AccessBinding {
                         principal: &principal,
                         capability: &capability,
+                        reference: None,
                         facts,
                         generation: None,
                         context: Context {

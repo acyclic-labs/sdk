@@ -18,6 +18,7 @@ fn resource() -> Resource<'static> {
         config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
         lineage: &[],
         volume: "project",
+        reference: None,
         generation: 1,
         head: 1,
         path: "",
