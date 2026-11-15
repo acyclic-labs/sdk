@@ -40,7 +40,7 @@ pub use clock::capture_mount_clock_callbacks;
 mod actions;
 
 mod adapter;
-#[cfg(windows)]
+#[cfg(any(windows, all(test, not(loom)), kani))]
 mod cached_binding;
 pub(crate) use adapter::SharedCheckoutObservation;
 pub use adapter::{
