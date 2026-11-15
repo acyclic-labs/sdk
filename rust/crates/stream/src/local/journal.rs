@@ -139,7 +139,6 @@ impl Journal {
         &mut self,
         lease: &acyclic_native_runtime::FileLease,
     ) -> Result<(), LocalStreamError> {
-        let durability = self.limits.durability;
         if let Some(frame_start) = self.torn_tail {
             let maximum_frame_bytes = maximum_frame_bytes()?;
             match lease.write(|file| {
@@ -147,7 +146,6 @@ impl Journal {
                     file,
                     frame_start,
                     maximum_frame_bytes,
-                    native_durability(durability),
                     frame_is_valid,
                 )
             })? {

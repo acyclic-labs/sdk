@@ -22,11 +22,14 @@ impl LogTail {
 }
 
 /// Recovers an append-only log whose frame at `invalid_start` is invalid.
+///
+/// A torn tail is truncated but not flushed: the caller's next flush of
+/// `file` makes the truncation durable together with the recovered prefix,
+/// and nothing may observe the prefix before that flush completes.
 pub fn recover_log_tail(
     file: &File,
     invalid_start: u64,
     maximum_frame_bytes: usize,
-    durability: Durability,
     mut valid_frame: impl FnMut(&[u8]) -> bool,
 ) -> io::Result<LogTail> {
     let operation = obs::span!(
@@ -74,7 +77,6 @@ pub fn recover_log_tail(
                 }
             }
             file.set_len(invalid_start)?;
-            sync_file(file, durability, None)?;
             file.seek(SeekFrom::Start(invalid_start))?;
             Ok(LogTail::Torn)
         })();
