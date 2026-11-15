@@ -557,6 +557,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         // Admission allowed this real immutable read, then the owner revoked
         // it. The shared post-I/O fence must refuse even a successful source.
         owner.revoke_read.store(true, Ordering::SeqCst);
+        let read = format!("{target:?}");
         let refused = call(
             &client,
             "agents",
@@ -568,10 +569,13 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         )
         .await
         .expect_err("content disclosed after owner revocation");
-        assert!(matches!(
-            refused.downcast_ref::<StreamError>(),
-            Some(StreamError::AccessDenied)
-        ));
+        assert!(
+            matches!(
+                refused.downcast_ref::<StreamError>(),
+                Some(StreamError::AccessDenied)
+            ),
+            "{read}: {refused:?}"
+        );
         owner.denied.store(false, Ordering::SeqCst);
     }
     // A journal file outside the tool output prefix is never tool output.
