@@ -208,14 +208,14 @@ impl ActorsDomain {
 
 async fn control(result: Result<JsValue, JsValue>) -> Result<(), Error> {
     JsFuture::from(Promise::resolve(&result.map_err(|error| {
-        Error::Handler(acyclic_actors::guest::GuestError::Handler(format!(
-            "platform control: {error:?}"
+        Error::Handler(Box::new(acyclic_actors::guest::GuestError::Handler(
+            format!("platform control: {error:?}"),
         )))
     })?))
     .await
     .map_err(|error| {
-        Error::Handler(acyclic_actors::guest::GuestError::Handler(format!(
-            "platform control: {error:?}"
+        Error::Handler(Box::new(acyclic_actors::guest::GuestError::Handler(
+            format!("platform control: {error:?}"),
         )))
     })?;
     Ok(())

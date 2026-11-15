@@ -131,7 +131,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     let Err(Error::InvocationFailed { source, receipt }) = failed else {
         return Err("failure did not settle invocation".into());
     };
-    assert_eq!(source, cause());
+    assert_eq!(source.as_ref(), &cause());
     assert_eq!(receipt.ticket(), &ticket);
     assert_eq!(receipt.state().commit_id, receipt.terminal().commit_id);
     let mut publications = provider
@@ -356,7 +356,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     )?;
     let cancelled = store.enqueue_invoke(&cancelled).await?;
     assert!(
-        matches!(runtime.drain_actor(&address).await, Err(Error::Handler(error)) if error == cause())
+        matches!(runtime.drain_actor(&address).await, Err(Error::Handler(error)) if error.as_ref() == &cause())
     );
     let after_cancel = store.load(&address).await?;
     assert_eq!(

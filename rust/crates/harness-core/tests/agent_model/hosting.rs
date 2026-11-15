@@ -946,9 +946,9 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                     // The owner-indexed failure watch verifies the agent;
                     // this report names the companion that handled its files.
                     assert!(matches!(error,
-                        acyclic_actors::local::Error::Handler(
-                            acyclic_actors::guest::GuestError::Handler(message)
-                        ) if message == "invalid agent record: quiet deadline overflow"
+                        acyclic_actors::local::Error::Handler(error)
+                            if matches!(error.as_ref(), acyclic_actors::guest::GuestError::Handler(message)
+                                if message == "invalid agent record: quiet deadline overflow")
                     ), "unexpected overflow failure: {error}");
                 } else {
                     panic!("quiet actor {actor:?}: {error}");

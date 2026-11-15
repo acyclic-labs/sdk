@@ -561,7 +561,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     else {
         return Err("public failure left invocation unsettled".into());
     };
-    assert_eq!(source, cause);
+    assert_eq!(source.as_ref(), &cause);
     assert_eq!(
         receipt.state().commit_id,
         published.anchor.ok_or("missing failure cut")?

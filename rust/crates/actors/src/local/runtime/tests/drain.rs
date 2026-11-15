@@ -429,7 +429,7 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
         assert_eq!(failures.len(), actors.len());
         for (address, error) in failures {
             assert!(
-                matches!(error, Error::Handler(crate::guest::GuestError::Handler(ref message)) if message == "test gate closed")
+                matches!(error, Error::Handler(error) if matches!(*error, crate::guest::GuestError::Handler(ref message) if message == "test gate closed"))
             );
             assert_eq!(
                 store

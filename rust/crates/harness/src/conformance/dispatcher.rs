@@ -166,11 +166,14 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
             .expect_err("cursor crash did not interrupt discovery");
         let Some(Error::Unknown {
             publication,
-            source: StreamError::Unavailable,
+            source,
         }) = error.downcast_ref::<Error>()
         else {
             return Err(format!("cursor crash lost its original publication: {error}").into());
         };
+        if source.as_ref() != &StreamError::Unavailable {
+            return Err(format!("cursor crash changed its original source: {error}").into());
+        }
         let (path, cut) = cursor_publication(publication.request().mutations())
             .ok_or("cursor crash did not retain its original dispatcher publication")?;
         drop(host);

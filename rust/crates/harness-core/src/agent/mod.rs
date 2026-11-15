@@ -290,31 +290,31 @@ mod uncertain_tests {
             assert!(Error::Stream(undecided.clone()).uncertain());
             assert!(Error::Turn(Box::new(crate::Error::from(undecided.clone()))).uncertain());
             assert!(
-                Error::Actor(Box::new(acyclic_actors::local::Error::Stream(
+                Error::Actor(Box::new(acyclic_actors::local::Error::Stream(Box::new(
                     undecided.clone()
-                )))
+                ))))
                 .uncertain()
             );
         }
         for decided in [StreamError::NotFound, StreamError::InvalidArgument] {
             assert!(!Error::Stream(decided.clone()).uncertain());
             assert!(
-                !Error::Actor(Box::new(acyclic_actors::local::Error::Stream(
+                !Error::Actor(Box::new(acyclic_actors::local::Error::Stream(Box::new(
                     decided.clone()
-                )))
+                ))))
                 .uncertain()
             );
         }
         assert!(
-            Error::Actor(Box::new(acyclic_actors::local::Error::Handler(
+            Error::Actor(Box::new(acyclic_actors::local::Error::Handler(Box::new(
                 acyclic_actors::guest::GuestError::Pending("undecided".into())
-            )))
+            ))))
             .uncertain()
         );
         assert!(
-            !Error::Actor(Box::new(acyclic_actors::local::Error::Handler(
+            !Error::Actor(Box::new(acyclic_actors::local::Error::Handler(Box::new(
                 acyclic_actors::guest::GuestError::Handler("definitive".into())
-            )))
+            ))))
             .uncertain()
         );
         assert!(matches!(

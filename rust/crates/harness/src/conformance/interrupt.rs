@@ -63,9 +63,8 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         .expect_err("pre-turn provider loss did not terminate the interrupt vector");
     if !matches!(
         error.downcast_ref::<acyclic_actors::local::Error>(),
-        Some(acyclic_actors::local::Error::Stream(
-            acyclic_stream::StreamError::Unavailable
-        ))
+        Some(acyclic_actors::local::Error::Stream(error))
+            if error.as_ref() == &acyclic_stream::StreamError::Unavailable
     ) {
         return Err(format!("pre-turn provider loss changed its original cause: {error}").into());
     }

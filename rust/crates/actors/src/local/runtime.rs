@@ -229,7 +229,7 @@ impl Inner {
             other => other.clone(),
         };
         if self.undecided.take().is_some_and(|last| last == input) {
-            return Err(Error::UndecidedUnchanged(failure));
+            return Err(Error::UndecidedUnchanged(Box::new(failure)));
         }
         self.undecided = Some(input);
         Ok(())
@@ -798,7 +798,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     failures.extend(
                         actors
                             .into_iter()
-                            .map(|actor| (actor, Error::Stream(error.clone()))),
+                            .map(|actor| (actor, Error::Stream(Box::new(error.clone())))),
                     );
                 }
                 DrainEvent::Work(class, work) => running[class].push(self.execute(work)),
@@ -1197,7 +1197,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::External(outcome) => {
                     if let Err((actor, error)) = outcome.result {
                         self.subscription_failed(&actor, &error);
-                        let error = Error::Stream(error);
+                        let error = Error::Stream(Box::new(error));
                         report(&actor, &error);
                         failure.get_or_insert_with(|| Arc::new(error.into_cause()));
                     }
@@ -1332,7 +1332,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::CompletionCancelled => {}
                 Event::Subscription(Ok(())) => {}
                 Event::Subscription(Err((actors, error))) => {
-                    let error = Error::Stream(error);
+                    let error = Error::Stream(Box::new(error));
                     for actor in actors {
                         report(&actor, &error);
                     }
@@ -1937,13 +1937,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     settle_pending(&self.store, inner).await
                 }
                 Err(Error::PreconditionChanged(conflicts)) => {
-                    inner.refused(conflicts).map(|()| true)
+                    inner.refused(conflicts.into_vec()).map(|()| true)
                 }
                 Err(Error::Handler(failure))
                     if matches!(failure.category(), crate::guest::GuestError::Pending(_))
                         && !cancellation.is_cancelled() =>
                 {
-                    inner.undecided(&trigger, failure).map(|()| true)
+                    inner.undecided(&trigger, *failure).map(|()| true)
                 }
                 Err(error) => Err(error),
             };
@@ -2333,7 +2333,7 @@ async fn settle_pending<P: StreamProvider + ?Sized>(
             Err(Error::Stream(source))
         }
         Err(Error::PreconditionChanged(conflicts)) => {
-            inner.refused(conflicts)?;
+            inner.refused(conflicts.into_vec())?;
             Ok(true)
         }
         Err(Error::Conflict) => {

@@ -114,7 +114,7 @@ async fn subscription_controls_recover_original_intent_after_reopen_and_removal(
     changed_resume.subscription_id = "inbox".into();
     assert!(matches!(
         store.resume_subscription(&[], &changed_resume).await,
-        Err(Error::Stream(StreamError::IdempotencyMismatch))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
     ));
     assert_eq!(store.load(&address).await?.tail, resumed.tail);
     held.subscriptions
@@ -154,7 +154,7 @@ async fn subscription_controls_recover_original_intent_after_reopen_and_removal(
         .subscription_id = "other".into();
     assert!(matches!(
         store.add_subscription(&[], &changed).await,
-        Err(Error::Stream(StreamError::IdempotencyMismatch))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
     ));
     let remove = crate::wire::RemoveSubscriptionRequest {
         namespace: add.namespace.clone(),

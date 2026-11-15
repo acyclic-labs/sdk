@@ -157,8 +157,8 @@ async fn pause_active_delivery(producer_lost: bool) -> TestResult {
     if producer_lost {
         assert!(matches!(
             delivered,
-            Err(Error::Handler(crate::guest::GuestError::Handler(ref message)))
-                if message == "test gate closed"
+            Err(Error::Handler(error))
+                if matches!(*error, crate::guest::GuestError::Handler(ref message) if message == "test gate closed")
         ));
     } else {
         delivered?;
@@ -225,7 +225,7 @@ async fn pause_retained_delivery(committed: bool, settlement_lost: bool) -> Test
     entered?;
     assert!(matches!(
         delivered,
-        Err(Error::Stream(StreamError::Unavailable))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::Unavailable
     ));
     let slot = runtime.slot(&address).ok_or("lost retained placement")?;
     assert!(slot.inner.lock().await.pending.is_some());
@@ -248,7 +248,7 @@ async fn pause_retained_delivery(committed: bool, settlement_lost: bool) -> Test
         entered.await?;
         assert!(matches!(
             refused,
-            Err(Error::Stream(StreamError::Unavailable))
+            Err(Error::Stream(error)) if error.as_ref() == &StreamError::Unavailable
         ));
         assert!(slot.inner.lock().await.pending.is_some());
         assert_eq!(
@@ -486,7 +486,7 @@ async fn failed_pause_reports_before_held_delivery() -> TestResult {
     );
     assert!(matches!(
         failed.await,
-        Err(Error::Stream(StreamError::AccessDenied))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::AccessDenied
     ));
     assert_eq!(handler.active.load(Ordering::SeqCst), 1);
     // Taking the error cannot wait for this held handler. A later pause can
@@ -545,11 +545,12 @@ async fn completed_unread_failure() -> TestResult {
     drop(completion);
     let Err(Error::Unknown {
         publication,
-        source: StreamError::Unavailable,
+        source,
     }) = runtime.pause(&address, false).await
     else {
         return Err("unread completed pause lost its original Unknown".into());
     };
+    assert_eq!(source.as_ref(), &StreamError::Unavailable);
     let before = runtime.store.load(&address).await?;
     runtime.store.submit(*publication).await?;
     assert_eq!(runtime.store.load(&address).await?.anchor, before.anchor);
@@ -751,7 +752,7 @@ async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> Te
             } else {
                 StreamError::AccessDenied
             };
-            assert!(matches!(outcome, Err(Error::Stream(error)) if error == expected));
+            assert!(matches!(outcome, Err(Error::Stream(error)) if error.as_ref() == &expected));
             assert_eq!(
                 runtime
                     .store
@@ -766,11 +767,12 @@ async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> Te
         (false, false) => {
             let Err(Error::Unknown {
                 publication,
-                source: StreamError::Unavailable,
+                source,
             }) = outcome
             else {
                 return Err("lost original Unknown publication".into());
             };
+            assert_eq!(source.as_ref(), &StreamError::Unavailable);
             let before = runtime.store.load(&address).await?;
             assert_eq!(before.state().map(State::paused), Some(committed));
             // A lost write producer leaves an uncertain, unapplied request;
@@ -880,7 +882,7 @@ async fn replacement_and_producer_loss() -> TestResult {
     drop(release); // Original provider producer disappears; no timeout involved.
     assert!(matches!(
         pause.await,
-        Err(Error::Stream(StreamError::Unavailable))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::Unavailable
     ));
     runtime.wake(&address);
     runtime.drain_actor(&address).await?;

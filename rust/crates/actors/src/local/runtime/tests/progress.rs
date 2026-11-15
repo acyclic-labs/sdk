@@ -225,7 +225,7 @@ impl World {
                     }
                     outcome @ (Outcome::Consume | Outcome::ConsumeAndArm | Outcome::Denied) => {
                         if matches!(outcome, Outcome::Denied) {
-                            if !self.settles(&Error::Stream(StreamError::AccessDenied)) {
+                            if !self.settles(&Error::Stream(Box::new(StreamError::AccessDenied))) {
                                 return Err(
                                     "terminal refusal stranded its original delivery".into()
                                 );
@@ -301,7 +301,7 @@ impl World {
                         )
                         .ok_or("decorated publication refusal lost its original status")?;
                         for error in [error.clone(), error.with_refusal(retained)] {
-                            if self.settles(&Error::Stream(error)) {
+                            if self.settles(&Error::Stream(Box::new(error))) {
                                 return Err(
                                     "replaced an uncertain or backpressured publication".into()
                                 );

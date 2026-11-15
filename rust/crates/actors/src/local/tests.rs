@@ -420,7 +420,7 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
                 result.clone(),
                 key("invoked/unsupported")?
             ),
-            Err(Error::Handler(crate::guest::GuestError::UnsupportedFormat))
+            Err(Error::Handler(error)) if *error == crate::guest::GuestError::UnsupportedFormat
         ));
         assert!(matches!(
             store.prepare_failed_input(
@@ -431,7 +431,7 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
                 &crate::guest::GuestError::Decode("failed".into()),
                 key("invoked/unsupported-failure")?
             ),
-            Err(Error::Handler(crate::guest::GuestError::UnsupportedFormat))
+            Err(Error::Handler(error)) if *error == crate::guest::GuestError::UnsupportedFormat
         ));
     }
     assert!(matches!(
@@ -592,7 +592,7 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     )?;
     assert!(matches!(
         reopened.enqueue_invoke(&changed).await,
-        Err(Error::Stream(StreamError::IdempotencyMismatch))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
     ));
     assert_eq!(
         reopened
@@ -868,7 +868,7 @@ async fn wait_applied_retains_its_cut_across_pause_and_never_consumes_input() ->
                 AppliedCut::through("inbox".into(), path, &different)?
             )
             .await,
-        Err(Error::Stream(StreamError::PrefixNotRetained))
+        Err(Error::Stream(error)) if error.as_ref() == &StreamError::PrefixNotRetained
     ));
     assert_eq!(
         provider.tail(store.path(&address)?).await?,
