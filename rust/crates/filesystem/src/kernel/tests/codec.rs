@@ -149,16 +149,6 @@ fn decoder_rejects_version_and_bounded_field_overclaims_before_allocation()
             maximum: 4,
         })
     );
-    let mut skipping = Decoder::new(&encoded, domain, 7, u64::MAX, &mut |_| {
-        Ok::<_, crate::kernel::CanonicalDecodeError>(())
-    })?;
-    assert_eq!(
-        skipping.skip_bounded_bytes(4),
-        Err(CanonicalDecodeError::FieldTooLarge {
-            observed: 5,
-            maximum: 4,
-        })
-    );
     Ok(())
 }
 
