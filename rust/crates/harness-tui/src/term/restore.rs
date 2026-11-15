@@ -157,6 +157,7 @@ impl<W: Write> RestoreGuard<W> {
             return Err(io::ErrorKind::InvalidData.into());
         };
         *journaled = mode;
+        let pending = pending.to_mut();
         let compact_from = if original.is_none() { pending.len() } else { 0 };
         if existing.is_none() || original.is_none() {
             // Until SET completes, either selection can be active. Append to

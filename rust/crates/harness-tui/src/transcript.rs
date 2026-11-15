@@ -794,7 +794,7 @@ mod tests {
             "{}",
             shown
                 .get(shown.len().saturating_sub(32)..)
-                .unwrap_or(shown)
+                .unwrap_or(shown.as_str())
         );
         assert!(!shown.contains('…'));
     }
