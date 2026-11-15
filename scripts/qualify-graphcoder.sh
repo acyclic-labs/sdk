@@ -2,9 +2,9 @@
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 artifact_dir=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-cargo test -p acyclic-plugin --lib runner::
+cargo nextest run -p acyclic-plugin --lib runner::
 cargo test -p acyclic-plugin --test cli
-cargo test -p acyclic-harness-tui --test main screen::
+cargo nextest run -p acyclic-harness-tui --test main screen::
 # Retain Cargo's exact native artifact across the separate instrumented build.
 native_artifact=$(mktemp "$artifact_dir/graphcoder-native.XXXXXX.jsonl")
 core_artifact=$(mktemp "$artifact_dir/graphcoder-core.XXXXXX.jsonl")

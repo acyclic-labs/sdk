@@ -4,9 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/../rust"
 export RUSTC_BOOTSTRAP=1
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT
 cargo test --locked --offline \
   -p acyclic-harness-core -p acyclic-harness --lib \
   --features acyclic-harness/test-support \
   -- executor::transcript::projection::tests:: local::tests::replay:: \
   local::tests::agents::a_spawn_chain_binds_its_volumes_at_every_depth \
-  -Z unstable-options --shuffle-seed "${1:-17}" --nocapture
+  -Z unstable-options --shuffle-seed "${1:-17}" --nocapture 2>&1 | tee "$log"
+grep -Eq 'test result: ok\. [1-9][0-9]* passed' "$log"

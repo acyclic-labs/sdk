@@ -45,7 +45,7 @@ qualify graphcoder-library 'runner::args::tests::' \
 qualify graphcoder-cli 'a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly jsonl_prompts_share_one_conversation_and_exit_once_settled catalog_errors_exit_with_their_cause_on_stderr execution_recorded_provider_refusal_settles_through_the_shipping_binary' \
   cargo test --locked -p acyclic-plugin --features "$binary_features" --test cli
 if [ ${#artifact_args[@]} -ne 0 ]; then exit 0; fi
-cargo test --locked -p harness-mock-model --bin harness-mock-model recorder::tests::
+cargo nextest run --locked -p harness-mock-model --bin harness-mock-model recorder::tests::
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile
 cargo build --locked -p acyclic-plugin -p harness-mock-model --features "$binary_features" --message-format=json-render-diagnostics > .sessions-shipping.jsonl
 mapfile -t fixture_binaries < <(node --input-type=module -e 'import {readFileSync} from "node:fs"; const rows=readFileSync(".sessions-shipping.jsonl","utf8").trim().split("\n").map(JSON.parse); for(const name of process.argv.slice(1)){const found=rows.filter(row=>row.reason==="compiler-artifact"&&row.target.name===name&&row.executable&&!row.profile.test); if(found.length!==1)throw Error(`expected one ${name} artifact`); console.log(found[0].executable);}' harness-hook-fixture harness-filesystem-fixture)

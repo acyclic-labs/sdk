@@ -38,9 +38,9 @@ fi
 status=0
 run 'filesystem suite including real kernel packets and both VMMs' cargo test --locked -p acyclic-fs --lib -- --include-ignored --nocapture || status=$?
 run 'existing local host library suite' cargo test --locked -p acyclic-harness --features "$features" --lib || status=$?
-run 'original Bound agent suite' cargo test --locked -p acyclic-harness-core --features "$features" --test main agent_model:: || status=$?
+run 'original Bound agent suite' cargo nextest run --locked -p acyclic-harness-core --features "$features" --test main agent_model:: || status=$?
 run 'kernel-authenticated daemon host peer' cargo test --locked -p acyclic-harness --features "$features" --bin acyclic-virtiofsd || status=$?
-run 'public Bound and standalone daemon with both VMMs' cargo test --locked -p acyclic-harness --features "$features" --test main -- virtiofs:: --include-ignored --nocapture || status=$?
+run 'public Bound and standalone daemon with both VMMs' cargo nextest run --locked -p acyclic-harness --features "$features" --test main virtiofs:: --run-ignored all --no-capture || status=$?
 if (( status != 0 )); then
     printf 'step=virtiofs validation; recovery: bash scripts/validate-virtiofs.sh\n' >&2
 fi
