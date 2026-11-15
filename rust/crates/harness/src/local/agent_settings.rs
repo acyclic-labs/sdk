@@ -28,7 +28,7 @@ pub(super) struct Volumes<'a> {
     pub(super) home: &'a VolumeRef,
     pub(super) seed: (&'a VolumeRef, &'a crate::resources::GenerationRef),
     pub(super) configuration: &'a [Option<crate::layers::PinnedLayer>; 4],
-    pub(super) decisions: crate::config::SettingsAdmissions,
+    pub(super) decisions: crate::config::SettingsAdmissions<'a, acyclic_stream::LocalStream>,
 
     pub(super) maximum_bytes: Option<u64>,
 }
@@ -225,7 +225,6 @@ pub(super) async fn admit(
     started: Option<Arc<ResolvedModel>>,
     resolve: Resolve<'_>,
     base_model: Option<&str>,
-    clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<Settings> {
     let sources = tree.sources(config::AGENT).await?;
     let layers = tree.layers(config::AGENT, &sources);
@@ -241,7 +240,6 @@ pub(super) async fn admit(
         agent,
         (config::AGENT, cut.as_str(), file.version()),
         settle(&layers, tree, started, resolve, base_model).await,
-        clock,
     )
     .await
 }
@@ -326,55 +324,27 @@ async fn admitted<T>(
     agent: AgentId,
     version: (&str, &str, &str),
     result: std::result::Result<T, Refused>,
-    clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<T> {
     let outcome = match &result {
         Ok(_) => (AdmissionStatus::Applied, None),
         Err(Refused::Settings(status, error)) => (*status, Some(error)),
         Err(Refused::Operation(_)) => return result.map_err(Refused::cause),
     };
-    record(volumes, io, agent, version, outcome, clock).await?;
+    record(volumes, io, agent, version, outcome).await?;
     result.map_err(Refused::cause)
 }
 
 /// Records the selected file version's outcome under the complete original
 /// configuration cut, so issuer edits cannot overwrite another cut's outcome.
-
 async fn record(
     volumes: &Volumes<'_>,
     io: Option<&crate::executor::PreparationIo>,
     agent: AgentId,
     (path, cut, version): (&str, &str, &str),
     (status, error): (AdmissionStatus, Option<&Error>),
-    clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<()> {
     let attempt = io.map(crate::executor::PreparationIo::scoped).transpose()?;
     let io = attempt.as_ref();
-    #[derive(serde::Serialize)]
-    struct Outcome<'a, T> {
-        path: &'a str,
-        version: &'a str,
-        status: AdmissionStatus,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<Diagnostic<'a>>,
-        at: T,
-    }
-    struct Diagnostic<'a>(&'a Error);
-    impl serde::Serialize for Diagnostic<'_> {
-        fn serialize<S: serde::Serializer>(
-            &self,
-            serializer: S,
-        ) -> std::result::Result<S::Ok, S::Error> {
-            serializer.collect_str(self.0)
-        }
-    }
-    let admission = Outcome {
-        path,
-        version,
-        status,
-        error: error.map(Diagnostic),
-        at: config::utc_value(clock.now_unix_millis()),
-    };
     let temporary;
     let io = match io {
         Some(io) => io,
@@ -390,12 +360,14 @@ async fn record(
         .record(
             agent,
             (path, cut, version),
-            &admission,
+            (
+                status,
+                error.map(|error| error as &(dyn std::fmt::Display + Sync)),
+            ),
             volumes.maximum_bytes,
             io,
         )
-        .await?;
-    Ok(())
+        .await
 }
 /// The plugin set `plugins.ts` enables, read as the
 /// session starts, recording the home module's admission. Invalid enforcement
@@ -406,7 +378,6 @@ pub(super) async fn plugins(
     feedback: Option<bool>,
     tree: &Tree<'_>,
     agent: AgentId,
-    clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<crate::plugins::Enabled> {
     use crate::plugins::{MANIFEST, load_result};
     let enabler = agent.to_string();
@@ -444,7 +415,6 @@ pub(super) async fn plugins(
         load_result(tree, &layers, &enabler)
             .await?
             .map_err(Refused::evaluated),
-        clock,
     )
     .await
 }
@@ -724,7 +694,7 @@ mod tests {
             decisions: crate::config::SettingsAdmissions::new(
                 harness
                     .agent_stream
-                    .clone()
+                    .as_ref()
                     .ok_or_else(|| Error::Unsupported("settings needs its owner stream".into()))?,
             ),
             files: &harness.files,
@@ -812,7 +782,7 @@ mod tests {
             decisions: crate::config::SettingsAdmissions::new(
                 harness
                     .agent_stream
-                    .clone()
+                    .as_ref()
                     .ok_or_else(|| Error::Unsupported("settings needs its owner stream".into()))?,
             ),
             files: &harness.files,
@@ -837,12 +807,6 @@ mod tests {
                 .decisions
                 .latest(agent, config::AGENT, cut, "original", &work)
                 .await
-        }
-        struct Clock;
-        impl acyclic_stream::UnixMillisClock for Clock {
-            fn now_unix_millis(&self) -> u64 {
-                0
-            }
         }
         let cancel = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
@@ -892,7 +856,6 @@ mod tests {
             harness.root,
             (config::AGENT, "unfunded", "original"),
             (AdmissionStatus::Applied, None),
-            &Clock,
         )
         .await;
         assert!(matches!(
@@ -920,7 +883,6 @@ mod tests {
             harness.root,
             (config::AGENT, "admitted", "original"),
             (AdmissionStatus::Rejected, Some(&reason)),
-            &Clock,
         )
         .await?;
         let outcome = observed(&volumes, harness.root, "admitted")
@@ -930,7 +892,6 @@ mod tests {
         assert_eq!(outcome.error.as_deref(), Some(reason.to_string().as_str()));
         assert_eq!(outcome.path, config::AGENT);
         assert_eq!(outcome.version, "original");
-        assert_eq!(outcome.at, "1970-01-01T00:00:00.000Z");
         assert!(work.receipt().allocation_operations > 0);
         let retained = work.live_allocation_bytes();
         record(
@@ -939,7 +900,6 @@ mod tests {
             harness.root,
             (config::AGENT, "admitted", "original"),
             (AdmissionStatus::Rejected, Some(&reason)),
-            &Clock,
         )
         .await?;
         assert_eq!(
@@ -955,7 +915,6 @@ mod tests {
             harness.root,
             (config::AGENT, "large-error", "original"),
             Err(Refused::Settings(AdmissionStatus::Invalid, reason)),
-            &Clock,
         )
         .await
         .expect_err("invalid settings must preserve their original refusal");
@@ -972,7 +931,6 @@ mod tests {
             harness.root,
             (config::AGENT, "cancelled", "original"),
             (AdmissionStatus::Applied, None),
-            &Clock,
         )
         .await;
         assert!(
@@ -1025,7 +983,7 @@ mod tests {
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
             decisions: crate::config::SettingsAdmissions::new(
-                harness.agent_stream.clone().expect("fixture owner stream"),
+                harness.agent_stream.as_ref().expect("fixture owner stream"),
             ),
 
             maximum_bytes: None,
@@ -1123,7 +1081,7 @@ mod tests {
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
             decisions: crate::config::SettingsAdmissions::new(
-                harness.agent_stream.clone().expect("fixture owner stream"),
+                harness.agent_stream.as_ref().expect("fixture owner stream"),
             ),
 
             maximum_bytes: None,
@@ -1148,8 +1106,7 @@ mod tests {
             replayed.cut()?,
             "replay substituted current home files"
         );
-        let clock = harness.clock.as_ref();
-        let enabled = plugins(false, None, &replayed, harness.root, clock).await?;
+        let enabled = plugins(false, None, &replayed, harness.root).await?;
         assert!(
             !enabled.rules.is_empty(),
             "plugin admission refreshed its pinned home generation"
@@ -1161,7 +1118,6 @@ mod tests {
             Some(Arc::clone(&admitted_model)),
             None,
             None,
-            clock,
         )
         .await?;
         assert!(Arc::ptr_eq(&settings.model, &admitted_model));
@@ -1177,7 +1133,7 @@ mod tests {
             "next step retained the preceding cut"
         );
         assert!(
-            plugins(false, None, &current, harness.root, clock)
+            plugins(false, None, &current, harness.root)
                 .await?
                 .rules
                 .is_empty()
@@ -1188,7 +1144,6 @@ mod tests {
             Some(Arc::clone(&admitted_model)),
             None,
             None,
-            clock,
         )
         .await?;
         assert!(Arc::ptr_eq(&settings.model, &admitted_model));

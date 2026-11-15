@@ -72,7 +72,7 @@ impl StepConfiguration for Steps {
             })?;
             let volumes = Volumes {
                 decisions: crate::config::SettingsAdmissions::new(
-                    local.agent_stream.clone().ok_or_else(|| {
+                    local.agent_stream.as_ref().ok_or_else(|| {
                         Error::Unsupported("settings needs its owner stream".into())
                     })?,
                 ),
@@ -107,7 +107,6 @@ impl StepConfiguration for Steps {
                 Some(Arc::clone(self.template.model_binding())),
                 resolve,
                 None,
-                local.clock.as_ref(),
             )
             .await?;
             let sampling = settings.sampling.and_then(Sampling::model_sampling);
@@ -116,7 +115,6 @@ impl StepConfiguration for Steps {
                 local.feedback_plugin,
                 &tree,
                 self.agent,
-                local.clock.as_ref(),
             )
             .await?
             .into_shared()?;

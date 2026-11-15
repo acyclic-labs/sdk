@@ -49,7 +49,7 @@ impl ToolSource for Programs {
                 .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
             let volumes = agent_settings::Volumes {
                 decisions: crate::config::SettingsAdmissions::new(
-                    local.agent_stream.clone().ok_or_else(|| {
+                    local.agent_stream.as_ref().ok_or_else(|| {
                         Error::Unsupported("settings needs its owner stream".into())
                     })?,
                 ),

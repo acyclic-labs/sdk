@@ -105,11 +105,13 @@ async fn settings_cut(harness: &LocalHarness, path: &str) -> Result<blake3::Hash
     tree.cut()
 }
 
-fn decisions(harness: &LocalHarness) -> Result<crate::config::SettingsAdmissions> {
+fn decisions(
+    harness: &LocalHarness,
+) -> Result<crate::config::SettingsAdmissions<'_, acyclic_stream::LocalStream>> {
     Ok(crate::config::SettingsAdmissions::new(
         harness
             .agent_stream
-            .clone()
+            .as_ref()
             .ok_or_else(|| Error::Unsupported("settings fixture needs its owner stream".into()))?,
     ))
 }
@@ -408,7 +410,7 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
         decisions: crate::config::SettingsAdmissions::new(
             harness
                 .agent_stream
-                .clone()
+                .as_ref()
                 .ok_or_else(|| Error::Unsupported("settings needs its owner stream".into()))?,
         ),
         files: &harness.files,
@@ -429,7 +431,6 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
             .map(|binding| std::sync::Arc::new(crate::model::ResolvedModel::new(binding))),
         None,
         None,
-        harness.clock.as_ref(),
     )
     .await;
     assert!(
@@ -451,32 +452,24 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
     );
     let current = admission(&harness, "agent.ts", &version).await?;
     assert_eq!(current.status, AdmissionStatus::Applied);
-    // The unchanged home file retains its earlier admitted outcome as well.
-    let grant = ContentGrant::verify_directory_read(
-        &harness.verifier,
-        &harness.signed,
-        &harness.journal,
-        "",
-        &mut None,
-    )?;
-    let (_, bytes, _) = harness
-        .files
-        .read_private_path_indexed(
-            &harness.journal,
-            &grant,
-            &format!(
-                "live/agents/{}/admissions/agent.ts/{}/{version}.json",
-                harness.root,
-                original_cut.to_hex()
-            ),
-            None,
-            None,
-            access,
+    // The unchanged home file retains its earlier admitted outcome as well,
+    // under the original cut in the owner's admissions stream.
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let retained = decisions(&harness)?
+        .latest(
+            harness.root,
+            "agent.ts",
+            &original_cut.to_hex(),
+            &version,
+            &work,
         )
         .await?
         .ok_or_else(|| Error::NotFound("original configuration admission".into()))?;
-    let retained: Admission =
-        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(retained, original);
     Ok(())
 }
@@ -1174,7 +1167,6 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
                 .map(|binding| std::sync::Arc::new(crate::model::ResolvedModel::new(binding))),
             None,
             None,
-            harness.clock.as_ref(),
         )
         .await;
         match (reason, result) {
@@ -1326,14 +1318,7 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
     };
     let tree =
         super::super::agent_settings::Tree::new(&volumes, crate::plugins::MANIFEST, None).await?;
-    let reason = match super::super::agent_settings::plugins(
-        false,
-        None,
-        &tree,
-        harness.root,
-        harness.clock.as_ref(),
-    )
-    .await
+    let reason = match super::super::agent_settings::plugins(false, None, &tree, harness.root).await
     {
         Err(error @ Error::Invalid(_)) => error.to_string(),
         Err(error) => return Err(error),
