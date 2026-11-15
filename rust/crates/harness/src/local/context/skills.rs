@@ -80,9 +80,16 @@ impl LocalHarness {
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = crate::filesystem::PreparationIo::from_native_work(&native_work)?;
+            let cut = view
+                .snapshot(&mut acyclic_fs::kernel::KernelAccounting::native(
+                    &native_work,
+                    &cancellation,
+                ))
+                .await?;
             self.authorize_checkout_context(
                 workspace,
                 view.workspace(),
+                &cut,
                 &io,
                 (&binding.verifier, binding.scope),
             )
@@ -91,6 +98,7 @@ impl LocalHarness {
                 .catalog(
                     workspace.source_root.workspace(),
                     view,
+                    &cut,
                     binding.project_root,
                     work,
                 )?
@@ -98,6 +106,7 @@ impl LocalHarness {
             self.authorize_checkout_context(
                 workspace,
                 view.workspace(),
+                &cut,
                 &io,
                 (&binding.verifier, binding.scope),
             )

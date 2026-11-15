@@ -127,9 +127,11 @@ fn require_volume_operations(
     Ok(())
 }
 
-/// Verify complete read access to the selected workspace subtree.
+/// Verify complete read access to the selected workspace subtree at `generation`.
 /// The original signed grant and persisted policy must admit Read and List
 /// throughout `root`. This grants no access outside that canonical source root.
+/// The decision is fenced to `generation`, the cut the caller reads: a head that
+/// moves after capture can neither widen nor narrow what that cut discloses.
 pub async fn require_workspace_subtree_read<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
@@ -137,6 +139,7 @@ pub async fn require_workspace_subtree_read<
     workspace: &acyclic_fs::Workspace<A, O>,
     volume: &VolumeRef,
     root: &str,
+    generation: acyclic_fs::GenerationId,
     verifier: &AuthorityVerifier,
     scope: &Scope,
     io: &PreparationIo,
@@ -162,13 +165,13 @@ pub async fn require_workspace_subtree_read<
     let view = access::access_view(
         workspace,
         scope,
-        None,
+        Some(generation),
         access::capability_payload(label, VolumeOperation::Read, io)?,
         None,
         io,
     )
     .await?;
-    if view.0.generation_sensitive() || view.0.valid_until().is_some() {
+    if view.0.valid_until().is_some() {
         return Err(Error::FilesystemAccessConfiguration(surface));
     }
     if view.0.allows_subtree(

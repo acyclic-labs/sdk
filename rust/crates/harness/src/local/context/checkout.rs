@@ -9,10 +9,13 @@ fn archive_path(name: &str, bytes: &[u8]) -> String {
 }
 
 impl LocalHarness {
+    /// Admits reads of the primary subtree at exactly `cut`, the one snapshot
+    /// every checkout context read uses, whatever the head has become since.
     pub(super) async fn authorize_checkout_context(
         &self,
         physical: &LocalWorkspace,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+        cut: &acyclic_fs::LazySnapshotRef,
         io: &crate::filesystem::PreparationIo,
         authority: (&AuthorityVerifier, &Scope),
     ) -> Result<()> {
@@ -21,6 +24,7 @@ impl LocalHarness {
             workspace,
             &primary.view.volume,
             &primary.view.root,
+            cut.authored_generation,
             authority.0,
             authority.1,
             io,
@@ -87,9 +91,9 @@ impl LocalHarness {
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let mut accounting = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-        self.authorize_checkout_context(workspace, view.workspace(), &io, authority)
-            .await?;
         let cut = view.snapshot(&mut accounting).await?;
+        self.authorize_checkout_context(workspace, view.workspace(), &cut, &io, authority)
+            .await?;
         let mut source = CheckoutInstructions {
             harness: self,
             volume: &workspace.mounts.named(None)?.1.view.volume,
@@ -109,7 +113,7 @@ impl LocalHarness {
             Some(&cut),
         )
         .await?;
-        self.authorize_checkout_context(workspace, view.workspace(), &io, authority)
+        self.authorize_checkout_context(workspace, view.workspace(), &cut, &io, authority)
             .await?;
         let discovery = DiscoveredContext {
             instructions,
@@ -141,14 +145,15 @@ impl LocalHarness {
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let mut accounting = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let cut = view.snapshot(&mut accounting).await?;
         self.authorize_checkout_context(
             workspace,
             view.workspace(),
+            &cut,
             &io,
             (&self.verifier, &self.signed),
         )
         .await?;
-        let cut = view.snapshot(&mut accounting).await?;
         let mut found = Vec::new();
         for (index, path) in paths.iter().enumerate() {
             let source_path = workspace
@@ -175,6 +180,7 @@ impl LocalHarness {
         self.authorize_checkout_context(
             workspace,
             view.workspace(),
+            &cut,
             &io,
             (&self.verifier, &self.signed),
         )
@@ -210,14 +216,15 @@ impl LocalHarness {
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let mut accounting = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let cut = view.snapshot(&mut accounting).await?;
         self.authorize_checkout_context(
             workspace,
             view.workspace(),
+            &cut,
             &io,
             (&self.verifier, &self.signed),
         )
         .await?;
-        let cut = view.snapshot(&mut accounting).await?;
         let mut remaining = self.limits.file_bytes;
         let mut copies = std::collections::BTreeMap::new();
         for (_, _, path) in crate::client::file_mention_paths(text)? {
@@ -254,6 +261,7 @@ impl LocalHarness {
         self.authorize_checkout_context(
             workspace,
             view.workspace(),
+            &cut,
             &io,
             (&self.verifier, &self.signed),
         )
@@ -465,6 +473,13 @@ mod tests {
             )),
             Vec::new(),
         )?;
+        let cut = selected
+            .view()
+            .snapshot(&mut acyclic_fs::kernel::KernelAccounting::native(
+                &work,
+                &cancellation,
+            ))
+            .await?;
         for (root, expected) in [
             ("selected", "inside"),
             ("peer", "peer"),
@@ -474,6 +489,7 @@ mod tests {
                 .catalog(
                     workspace.source_root.workspace(),
                     selected.view(),
+                    &cut,
                     root,
                     &mut Default::default(),
                 )?
@@ -492,6 +508,7 @@ mod tests {
                 .catalog(
                     workspace.source_root.workspace(),
                     selected.view(),
+                    &cut,
                     "../peer",
                     &mut Default::default()
                 )?
@@ -689,6 +706,13 @@ mod tests {
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let cut = workspace
+            .view()
+            .snapshot(&mut acyclic_fs::kernel::KernelAccounting::native(
+                &work,
+                &cancellation,
+            ))
+            .await?;
         let volume = &workspace.mounts.named(None)?.1.view.volume;
         let read = volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
         let write = volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
@@ -725,6 +749,7 @@ mod tests {
                 .authorize_checkout_context(
                     &workspace,
                     workspace.view().workspace(),
+                    &cut,
                     &io,
                     (&verifier, &scope),
                 )
@@ -776,6 +801,204 @@ mod tests {
                 .await,
             Err(Error::FilesystemAccessConfiguration("checkout context"))
         ));
+        Ok(())
+    }
+
+    /// Commits one more authored generation while a checkout context read is
+    /// in flight, so the head moves between capture and the closing check.
+    fn advance_head<'a>(
+        harness: &'a LocalHarness,
+        _: &'a str,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let workspace = harness.workspace.as_ref().expect("fixture workspace");
+            let mut checkout = workspace
+                .view()
+                .workspace()
+                .checkout(
+                    acyclic_fs::model::GenerationSelector::Head,
+                    acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(storage)?
+                .value;
+            let path = acyclic_fs::kernel::NamespacePath::new(
+                vec![
+                    acyclic_fs::kernel::LogicalName::new(
+                        acyclic_fs::kernel::NameEncoding::Utf8,
+                        b"advanced".to_vec(),
+                    )
+                    .map_err(storage)?,
+                ],
+                checkout.volume_config().limits,
+            )
+            .map_err(storage)?;
+            checkout
+                .create(
+                    acyclic_fs::AuthoredMutation::CreateFile {
+                        file_id: None,
+                        path,
+                        bytes: bytes::Bytes::from_static(b"advanced").into(),
+                        metadata: acyclic_fs::kernel::FileMetadata::default(),
+                    },
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(storage)?;
+            checkout
+                .commit(
+                    acyclic_fs::OperationId::new(),
+                    None,
+                    None,
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                    |_| {
+                        std::future::ready(
+                            Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                                acyclic_fs::OperationReceipt {
+                                    value: (),
+                                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                                },
+                            ),
+                        )
+                    },
+                )
+                .await
+                .map_err(storage)?;
+            Ok(())
+        })
+    }
+
+    /// Publication ordinal of `generation` in the fixture workspace.
+    async fn ordinal(
+        workspace: &LocalWorkspace,
+        generation: acyclic_fs::GenerationId,
+    ) -> Result<u64> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let head = workspace
+            .view()
+            .workspace()
+            .checkout(
+                acyclic_fs::model::GenerationSelector::Head,
+                acyclic_fs::model::CheckoutMode::read_only_pinned(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value;
+        Ok(head
+            .generation_position(generation, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .0
+            .get())
+    }
+
+    // A grant pinned to the captured generation admits that cut even after the
+    // head moves past it mid-read; evaluated at the moved head it admits nothing.
+    #[tokio::test]
+    async fn checkout_context_reads_stay_fenced_to_the_captured_generation() -> Result<()> {
+        use acyclic_fs::access::{
+            Action, Capability, GenerationRange, Generations, Grant, ResourcePattern,
+        };
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        std::fs::write(directory.path().join("AGENTS.md"), b"captured instructions")
+            .map_err(storage)?;
+        let mut harness = LocalHarness::open(
+            crate::LocalHarnessConfig::native_host(directory.path())
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .state_directory(state.path().join("runtime")),
+        )
+        .await?;
+        harness.context_read_observer = Some(advance_head);
+        let workspace = harness
+            .workspace
+            .as_ref()
+            .expect("fixture workspace")
+            .clone();
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let captured = workspace
+            .view()
+            .snapshot(&mut acyclic_fs::kernel::KernelAccounting::native(
+                &work,
+                &cancellation,
+            ))
+            .await?
+            .authored_generation;
+        let pinned = ordinal(&workspace, captured).await?;
+        let label = Capability {
+            layers: vec![vec![Grant {
+                actions: [Action::Read, Action::List, Action::ReadHistory].into(),
+                resource: ResourcePattern {
+                    lineage_root: None,
+                    volume: None,
+                    generations: Generations::Range(GenerationRange {
+                        first: pinned,
+                        last: pinned,
+                    }),
+                    path: "**".into(),
+                },
+            }]],
+            expires_at: None,
+        }
+        .to_scope_label()
+        .map_err(storage)?;
+        let issuer = harness.root_authority.as_ref().expect("fixture signer");
+        let scope = issuer.bootstrap_scope(
+            "pinned-context-policy",
+            &Capabilities::new([label]),
+            Some(harness.root),
+            &mut None,
+        )?;
+        let publisher = harness.input_publisher_with_limit(1024)?;
+        let found = harness
+            .checkout_instructions_with_work(
+                &workspace,
+                &["AGENTS.md".into()],
+                publisher.as_ref(),
+                &mut Default::default(),
+                (&harness.verifier, &scope),
+            )
+            .await?;
+        let head = workspace
+            .view()
+            .snapshot(&mut acyclic_fs::kernel::KernelAccounting::native(
+                &work,
+                &cancellation,
+            ))
+            .await?
+            .authored_generation;
+        assert!(
+            ordinal(&workspace, head).await? > pinned,
+            "the head did not move during the read"
+        );
+        let [crate::model::ProjectInstruction::Captured { file, .. }] =
+            found.instructions.as_slice()
+        else {
+            return Err(Error::Invalid("instruction was not captured".into()));
+        };
+        assert_eq!(
+            harness
+                .context_reader()?
+                .read(file, 1024, None, None)?
+                .await?
+                .as_ref(),
+            b"captured instructions"
+        );
         Ok(())
     }
 
