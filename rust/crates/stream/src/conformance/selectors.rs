@@ -149,7 +149,10 @@ pub async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Fail
                     b"selectors-late-0",
                     b"selectors-late-1",
                     b"selectors-late-2",
-                ][index])?,
+                ]
+                .get(index)
+                .copied()
+                .ok_or(violated!())?)?,
                 records: vec![record(&[b"a"])?],
             })
             .await?;

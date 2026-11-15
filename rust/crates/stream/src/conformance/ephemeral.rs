@@ -58,7 +58,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     }
     // Retry identities are account-scoped, not silently scoped to a lease.
     for (target, retry) in [
-        (&source, receipts[0].0.clone()),
+        (&source, receipts.first().ok_or(violated!())?.0.clone()),
         (&forked, key(b"ephemeral/source")?),
     ] {
         if provider

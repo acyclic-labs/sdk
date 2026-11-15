@@ -26,8 +26,10 @@ pub(super) async fn nested<P: StreamProvider + ?Sized>(
     let expected: [(&[u8], &StreamPath); 4] =
         [(b"r0", &root), (b"r1", &root), (b"a0", &a), (b"c0", &c)];
     // Every cut, including each fork point and the empty fork's.
-    for from in 0..4 {
-        let want = &expected[from as usize..];
+    for (from, start) in (0_u64..4).zip(0_usize..4) {
+        let Some(want) = expected.get(start..) else {
+            return history.check("origin_cut", Invariant::RecordOrigin, false);
+        };
         let read = read(history, &c, from).await?;
         history.check(
             "read_origin",

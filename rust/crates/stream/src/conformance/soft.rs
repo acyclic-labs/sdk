@@ -1,5 +1,33 @@
 use super::*;
 
+fn append(path: &StreamPath) -> CommitMutation {
+    CommitMutation::Append {
+        path: path.clone(),
+        records: vec![Bytes::from_static(b"offer").into()],
+    }
+}
+
+fn present(path: &StreamPath) -> CommitCondition {
+    CommitCondition::Present { path: path.clone() }
+}
+
+fn absent_condition(path: &StreamPath) -> CommitCondition {
+    CommitCondition::Absent { path: path.clone() }
+}
+
+fn soft(conditions: Vec<CommitCondition>, mutations: Vec<CommitMutation>) -> CommitEffect {
+    CommitEffect {
+        conditions,
+        mutations,
+        soft: true,
+    }
+}
+
+/// A send to `to`: soft, while `to` exists and its marker does not.
+fn send(to: &StreamPath, marker: &StreamPath, mutations: Vec<CommitMutation>) -> CommitEffect {
+    soft(vec![present(to), absent_condition(marker)], mutations)
+}
+
 /// Commit effects: each effect's mutations apply all or none. A failed soft
 /// effect is skipped and reported by index while the rest of the commit
 /// publishes; a commit that skips every effect still commits and spends its
@@ -24,21 +52,6 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             })
             .await?;
     }
-    let append = |path: &StreamPath| CommitMutation::Append {
-        path: path.clone(),
-        records: vec![Bytes::from_static(b"offer").into()],
-    };
-    let present = |path: &StreamPath| CommitCondition::Present { path: path.clone() };
-    let absent_condition = |path: &StreamPath| CommitCondition::Absent { path: path.clone() };
-    let soft = |conditions, mutations| CommitEffect {
-        conditions,
-        mutations,
-        soft: true,
-    };
-    // A send to `to`: soft, while `to` exists and its marker does not.
-    let send = |to: &StreamPath, marker: &StreamPath, mutations| {
-        soft(vec![present(to), absent_condition(marker)], mutations)
-    };
     let commit_key = key(b"effects-mixed")?;
     let request = CommitRequest {
         deadline_unix_millis: None,
@@ -95,7 +108,12 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     }
     // The same mutations grouped differently are a different request.
     let mut regrouped = request.clone();
-    let split = regrouped.effects[1].mutations.split_off(1);
+    let split = regrouped
+        .effects
+        .get_mut(1)
+        .ok_or(violated!())?
+        .mutations
+        .split_off(1);
     regrouped.effects.push(send(&open, &open_marker, split));
     if crate::request::commit_digest(&mut regrouped.clone())? == binding.digest()
         || provider.commit(regrouped).await != Err(StreamError::IdempotencyMismatch)
@@ -132,7 +150,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     }
     // Negative control: the spent key refuses a different body.
     let mut changed = skipped.clone();
-    changed.effects[0].soft = false;
+    changed.effects.first_mut().ok_or(violated!())?.soft = false;
     if provider.commit(changed).await != Err(StreamError::IdempotencyMismatch) {
         return Err(violated!());
     }
@@ -174,37 +192,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         return Err(violated!());
     }
 
-    // A hard effect without mutations guards the commit: an empty guard is a
-    // no-op, a failed one refuses the soft send it guards, a held one lets it
-    // publish.
-    for (guard, name, committed, tail) in [
-        (Vec::new(), b"effects-guard-empty".as_slice(), true, 4),
-        (
-            vec![absent_condition(&carrier)],
-            b"effects-guard-failed",
-            false,
-            4,
-        ),
-        (vec![present(&carrier)], b"effects-guard-held", true, 5),
-    ] {
-        let outcome = provider
-            .commit(CommitRequest {
-                deadline_unix_millis: None,
-                effects: vec![
-                    CommitEffect::hard(guard, Vec::new()),
-                    send(&open, &open_marker, vec![append(&open)]),
-                ],
-                idempotency_key: key(name)?,
-            })
-            .await?;
-        let shaped = match &outcome {
-            CommitOutcome::Committed(receipt) => committed && receipt.skipped.is_empty(),
-            CommitOutcome::Conflict(_) => !committed,
-        };
-        if !shaped || provider.tail(open.clone()).await? != tail {
-            return Err(violated!());
-        }
-    }
+    guards(provider, &open, &open_marker, &carrier).await?;
 
     // Refusals: no effect, no mutation in the whole commit, a soft effect
     // without mutations, and a path mutated by two effects.
@@ -240,6 +228,46 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     }
     if provider.tail(open).await? != 5 || provider.tail(carrier).await? != 1 {
         return Err(violated!());
+    }
+    Ok(())
+}
+
+/// A hard effect without mutations guards the commit: an empty guard is a
+/// no-op, a failed one refuses the soft send it guards, a held one lets it
+/// publish.
+async fn guards<P: StreamProvider + ?Sized>(
+    provider: &P,
+    open: &StreamPath,
+    open_marker: &StreamPath,
+    carrier: &StreamPath,
+) -> Result<(), Failure> {
+    for (guard, name, committed, tail) in [
+        (Vec::new(), b"effects-guard-empty".as_slice(), true, 4),
+        (
+            vec![absent_condition(carrier)],
+            b"effects-guard-failed",
+            false,
+            4,
+        ),
+        (vec![present(carrier)], b"effects-guard-held", true, 5),
+    ] {
+        let outcome = provider
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                effects: vec![
+                    CommitEffect::hard(guard, Vec::new()),
+                    send(open, open_marker, vec![append(open)]),
+                ],
+                idempotency_key: key(name)?,
+            })
+            .await?;
+        let shaped = match &outcome {
+            CommitOutcome::Committed(receipt) => committed && receipt.skipped.is_empty(),
+            CommitOutcome::Conflict(_) => !committed,
+        };
+        if !shaped || provider.tail(open.clone()).await? != tail {
+            return Err(violated!());
+        }
     }
     Ok(())
 }

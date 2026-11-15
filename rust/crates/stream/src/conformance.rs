@@ -595,7 +595,10 @@ async fn verify_unspent_conflicts(
     {
         return Err(violated!());
     }
-    let Some(CommitCondition::Tail { expected, .. }) = request.effects[0].conditions.first_mut()
+    let Some(CommitCondition::Tail { expected, .. }) = request
+        .effects
+        .first_mut()
+        .and_then(|effect| effect.conditions.first_mut())
     else {
         return Err(violated!());
     };
