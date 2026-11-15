@@ -13,6 +13,9 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
         [
             tool_turn([echo_call("first", json!({"value": "old ".repeat(3_100)}))]),
             tool_turn([echo_call("second", json!({"value": "old ".repeat(3_100)}))]),
+            ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":3,"summary":"retained tool history"}"#.into(),
+            ),
             tool_turn([echo_call("tail", json!({"value": "new"}))]),
             done_turn(),
         ],
@@ -72,12 +75,21 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
         "reentry dispatched a settled step twice"
     );
     assert_eq!(tool.0.load(Ordering::SeqCst), 3);
-    // Four dispatched requests, one base-pressure probe, one mandatory subset
+    // Five dispatched requests, one base-pressure probe, one mandatory subset
     // and one compacted request. Budgeting consumes the probe's validated count.
-    assert_eq!(dispatched, 4);
+    assert_eq!(dispatched, 5);
+    assert_eq!(
+        provider
+            .requests()
+            .iter()
+            .filter(|request| request.summary)
+            .count(),
+        1,
+        "only one manager request replaces the settled prefix"
+    );
     assert_eq!(
         accounting_calls.load(Ordering::SeqCst),
-        7,
+        8,
         "working-base budgeting recounted its already validated source"
     );
     Ok(())
