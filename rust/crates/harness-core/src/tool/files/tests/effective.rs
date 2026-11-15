@@ -7,6 +7,16 @@ use crate::filesystem::MemoryHarnessStorage;
 use crate::resources::GenerationRef;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+impl FileReadSource {
+    fn same_source(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Authored(selected), Self::Content(file))
+            | (Self::Content(file), Self::Authored(selected)) => selected.matches_content(file),
+            _ => self == other,
+        }
+    }
+}
+
 #[tokio::test]
 async fn waiting_reads_cover_media_and_effective_paths_and_can_be_dropped() -> Result<()> {
     use futures::FutureExt as _;

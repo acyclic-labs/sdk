@@ -1,5 +1,76 @@
 use super::*;
 
+impl Cut<'_> {
+    /// Consumes the entire unsent batch on refusal. Its original request,
+    /// filesystem holds and construction quota are dropped together on error.
+    fn contribute<'a, 'b>(
+        &self,
+        mut prepared: (
+            acyclic_fs::FilesystemCommit,
+            crate::wire_codec::CodecQuota<'a, 'b>,
+        ),
+        page_condition: CommitCondition,
+        records: &[OwnedBytes],
+        observation: &OwnedBytes,
+        checkpoint: &OwnedBytes,
+    ) -> Result<(
+        acyclic_fs::FilesystemCommit,
+        crate::wire_codec::CodecQuota<'a, 'b>,
+    )> {
+        let request = prepared.0.request_mut().ok_or_else(|| invalid(None))?;
+        self.append_to(
+            request,
+            &mut prepared.1,
+            page_condition,
+            records,
+            Some((observation, checkpoint)),
+        )?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = prepared
+            .1
+            .work()
+            .as_deref()
+            .and_then(|io| io.original_native_work())
+            .cloned()
+        {
+            let bytes = prepared.1.retained();
+            let mut allocation = prepared.1.observer()?.take_native_custody(bytes)?;
+            prepared.1.transfer();
+            if let Err(error) = prepared.0.retain_native_custody(&mut allocation, &original) {
+                // Refusal leaves both guards intact. Destroy their request
+                // before either construction owner can refund its backing.
+                drop(prepared);
+                drop(allocation);
+                return Err(match error {
+                    acyclic_fs::AuthorityStoreError::NativeOriginal(cause) => cause.into(),
+                    error => acyclic_fs::FsError::from(error).into(),
+                });
+            }
+        }
+        Ok(prepared)
+    }
+
+    /// The original filesystem owner has already authenticated every canonical
+    /// caller member. Confirm this Cut without repeating whole-request validation.
+    fn confirm_composed(
+        &self,
+        prepared: &acyclic_fs::PreparedFilesystemCommit,
+        pages_tail: u64,
+        records: &[OwnedBytes],
+        observation: &OwnedBytes,
+        checkpoint: &OwnedBytes,
+    ) -> Result<Option<acyclic_stream::CommitId>> {
+        self.confirm_members(
+            prepared.outcome(),
+            pages_tail,
+            records,
+            observation,
+            checkpoint,
+            true,
+        )
+    }
+}
+
 #[tokio::test]
 async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positions() -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]

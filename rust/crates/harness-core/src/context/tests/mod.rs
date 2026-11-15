@@ -80,8 +80,6 @@ fn native_call_context(file: &FileRef, results: usize, native_in_result: bool) -
     })
 }
 
-struct RefVerifier;
-
 struct TestPayloadStore {
     volume: VolumeRef,
     files: std::sync::Mutex<BTreeMap<String, (FileRef, Vec<u8>)>>,
@@ -193,19 +191,6 @@ impl ContentResidencyVerifier for TestPayloadStore {
                 ));
             }
             Ok(bytes.clone().into())
-        })
-    }
-}
-
-impl ContentResidencyVerifier for RefVerifier {
-    fn verify<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        _maximum_bytes: u64,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            reference.validate(&mut None)
         })
     }
 }
