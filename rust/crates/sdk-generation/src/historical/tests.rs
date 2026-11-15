@@ -8,7 +8,7 @@ fn registry_owner_source_inner(
     authority: Option<&BTreeSet<String>>,
 ) -> Result<RegistryOwnerSource, String> {
     let (source, _) = registry_source(repository, root, revision, capture)?;
-    discover_owner(root, cargo, source, authority)
+    discover_owner(repository, root, cargo, source, authority)
 }
 
 fn batch_protocol_fixture(
@@ -420,7 +420,8 @@ fn original_release_history_retains_retired_owner_and_rejects_missing_frontier()
     for source in sources {
         let revision = source.revision.clone();
         let export = fixture.path().join(&revision);
-        let captured = discover_owner(&export, &cargo(), source, Some(&authority)).unwrap();
+        let captured =
+            discover_owner(&repository, &export, &cargo(), source, Some(&authority)).unwrap();
         assert_eq!(captured.uses_frontier_authority, revision == before_index);
         assert_eq!(
             captured.owners.contains("retired-owner"),

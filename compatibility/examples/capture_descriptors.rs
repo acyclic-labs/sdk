@@ -1,10 +1,7 @@
 //! Capture current wire identities with the same compiler used by crate builds.
-use std::path::Path;
 
 fn capture() -> Result<(), Box<dyn std::error::Error>> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or("workspace root is missing")?;
+    let root = acyclic_test_support::source_path("");
     let output = root.join("target/compatibility-descriptors");
     std::fs::create_dir_all(&output)
         .map_err(|error| format!("create descriptor output directory: {error}"))?;

@@ -86,6 +86,7 @@ isolated_test(
     name = "acyclic_conformance_test",
     binary = ":acyclic_conformance_test_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_binary(
@@ -494,6 +495,7 @@ isolated_test(
     name = "native_mount_qualify_test",
     binary = ":native_mount_qualify_test_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_binary(
@@ -899,6 +901,7 @@ isolated_test(
     binary = ":graphcoder_backends_cases",
     binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_test(
@@ -961,6 +964,7 @@ isolated_test(
     binary = ":hosted_actors_cases",
     binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_test(
@@ -1028,6 +1032,7 @@ isolated_test(
     binary = ":main_cases",
     binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 filegroup(

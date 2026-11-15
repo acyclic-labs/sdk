@@ -393,6 +393,7 @@ isolated_test(
     binary = ":model_cases",
     binaries = {":access":"access",":decoded_cache":"decoded_cache",":decoder_work":"decoder_work",":encoder_work":"encoder_work",":fuse_reply":"fuse_reply",":git_markers":"git_markers",":git_pending":"git_pending",":merge_directory_resolution":"merge_directory_resolution",":native_ascii_leaf":"native_ascii_leaf",":native_device":"native_device",":paths":"paths",":session_fs":"session_fs",":window_state":"window_state",":workspace_name":"workspace_name"},
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_test(
@@ -447,6 +448,7 @@ isolated_test(
     binary = ":window_state_test_cases",
     binaries = {":access":"access",":decoded_cache":"decoded_cache",":decoder_work":"decoder_work",":encoder_work":"encoder_work",":fuse_reply":"fuse_reply",":git_markers":"git_markers",":git_pending":"git_pending",":merge_directory_resolution":"merge_directory_resolution",":native_ascii_leaf":"native_ascii_leaf",":native_device":"native_device",":paths":"paths",":session_fs":"session_fs",":window_state":"window_state",":workspace_name":"workspace_name"},
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 filegroup(

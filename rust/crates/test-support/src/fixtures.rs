@@ -112,6 +112,26 @@ macro_rules! crate_path {
     };
 }
 
+/// [`crate_path!`](crate::crate_path) as a `&'static str`, for APIs that keep the
+/// path, such as proptest's `FileFailurePersistence::Direct`.
+///
+/// # Panics
+///
+/// If the path is not UTF-8.
+#[macro_export]
+macro_rules! crate_path_str {
+    ($relative:expr) => {{
+        static PATH: ::std::sync::OnceLock<::std::string::String> = ::std::sync::OnceLock::new();
+        PATH.get_or_init(|| {
+            $crate::crate_path!($relative)
+                .into_os_string()
+                .into_string()
+                .expect("source paths are UTF-8")
+        })
+        .as_str()
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

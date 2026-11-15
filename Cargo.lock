@@ -238,6 +238,7 @@ dependencies = [
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
+ "acyclic-test-support",
  "blake3",
  "bytes",
  "ed25519-dalek",
@@ -1587,6 +1588,7 @@ name = "acyclic-stream-typescript-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-stream",
+ "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
  "bytes",
  "libfuzzer-sys",
@@ -1598,6 +1600,7 @@ dependencies = [
 name = "acyclic-stream-typescript-models"
 version = "0.0.0"
 dependencies = [
+ "acyclic-test-support",
  "loom",
  "proptest",
  "serde_json",
@@ -7766,6 +7769,7 @@ name = "sdk-docs"
 version = "0.1.0"
 dependencies = [
  "acyclic-native-runtime",
+ "acyclic-test-support",
  "cargo_metadata",
  "hex",
  "proptest",
@@ -7811,6 +7815,7 @@ dependencies = [
 name = "sdk-generation"
 version = "0.1.0"
 dependencies = [
+ "acyclic-test-support",
  "cargo_metadata",
  "flate2",
  "hex",

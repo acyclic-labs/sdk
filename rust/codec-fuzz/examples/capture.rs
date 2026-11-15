@@ -199,7 +199,7 @@ fn capture_filesystem_records(
 }
 
 fn capture() -> Result<(), Box<dyn Error>> {
-    std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    std::env::set_current_dir(acyclic_test_support::crate_path!(""))?;
     if std::env::args().any(|arg| arg == "--only-filesystem-publications") {
         let seeds = acyclic_fs::kernel::publication_codec_fuzz::seeds()?;
         let names = seeds
@@ -1070,8 +1070,9 @@ fn capture_identity_vectors() -> Result<(), Box<dyn Error>> {
             .ok_or("missing identity field")?;
         Ok(hex::decode(value)?)
     }
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../crates/auth/tests/fixtures/resource-identity-v1.json");
+    let source = acyclic_test_support::source_path(
+        "rust/crates/auth/tests/fixtures/resource-identity-v1.json",
+    );
     let mut vectors: serde_json::Value = serde_json::from_slice(&std::fs::read(source)?)?;
     let rows = vectors
         .get_mut("pairs")
@@ -1202,7 +1203,7 @@ fn main() {
             let escaped = value.replace('\'', if cfg!(windows) { "''" } else { "'\\''" });
             format!("'{escaped}'")
         };
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let manifest = acyclic_test_support::crate_path!("Cargo.toml");
         let features = if cfg!(feature = "storage-schedules") {
             " --features storage-schedules"
         } else {

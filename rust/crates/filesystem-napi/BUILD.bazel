@@ -95,6 +95,7 @@ isolated_test(
     name = "acyclic_fs_napi_test",
     binary = ":acyclic_fs_napi_test_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 filegroup(

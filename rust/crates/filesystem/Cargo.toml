@@ -13,6 +13,10 @@ documentation = "https://docs.rs/acyclic-fs"
 keywords = ["filesystem", "copy-on-write", "versioned", "storage"]
 categories = ["filesystem", "data-structures"]
 
+# Tests that reach the FUSE mounts run outside Bazel's linux-sandbox.
+[package.metadata.bazel]
+mounts-fuse = true
+
 [[test]]
 name = "main"
 path = "tests/main.rs"

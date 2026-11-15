@@ -623,17 +623,26 @@ fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Re
     Ok(())
 }
 
+/// Writes a file that executable search accepts at `path`; its contents are never run.
+pub(super) fn executable_file(path: &Path) {
+    std::fs::write(path, "").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -> Result<()> {
     let root = std::env::current_dir().map_err(Error::process_io)?;
     let executable = std::env::current_exe().map_err(Error::process_io)?;
-    let alternate = tempfile::tempdir_in(executable.parent().expect("executable directory"))
-        .map_err(Error::process_io)?;
+    let alternate = tempfile::tempdir().map_err(Error::process_io)?;
     let other = alternate
         .path()
         .join(executable.file_name().expect("test executable"));
-    std::fs::hard_link(&executable, &other).map_err(Error::process_io)?;
+    executable_file(&other);
     let executable = executable.to_str().expect("test path UTF-8");
     let other = other.to_str().expect("alternate path UTF-8");
     let config = server(

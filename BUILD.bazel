@@ -29,6 +29,7 @@ exports_files([
         "release/cargo-crates.json",
         "rust-toolchain.toml",
         "rust/README.md",
+        "scripts/benchmarks/contracts.py",
         "scripts/graphcoder-e2e/cases/installed-pi-recursive.json",
         "scripts/test-terminal-signals.ps1",
         "typescript/packages/actors/test/grpc-conformance.mjs",

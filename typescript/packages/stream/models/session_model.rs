@@ -3,7 +3,6 @@
 //! the real TypeScript module, including paused transport writes.
 use super::{driver, field};
 use serde_json::json;
-use std::path::Path;
 
 #[path = "queue.rs"]
 mod queue;
@@ -15,7 +14,7 @@ use schedules::traces;
 // browser recovery sequence is qualified in session-latest.test.ts; these
 // remaining models exercise JavaScript provider selection and platform I/O.
 fn follow_selection(fault: &str) -> std::io::Result<()> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    let root = acyclic_test_support::source_path("");
     for trace in traces(&["releaseSelection"], &["abort"])? {
         let mut driver = driver::Driver::configured(&root, "followSelect", fault)?;
         driver.call(&json!({"action":"ready"}))?;
@@ -45,7 +44,7 @@ impl driver::Driver {
     }
 }
 fn repository() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..")
+    acyclic_test_support::source_path("")
 }
 
 /// The owner side of the lifetime test, run in its own process: it parks a model command, reports the
@@ -261,7 +260,7 @@ fn follow_selection_negative_control_omits_the_selection_signal() {
 }
 
 fn rejected_subscription(fault: &str) -> std::io::Result<()> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    let root = acyclic_test_support::source_path("");
     let mut driver = driver::Driver::configured(&root, "rejection", fault)?;
     let state = driver.call(&json!({"action":"ready"}))?;
     assert_eq!(
@@ -292,7 +291,7 @@ fn negative_control_discards_the_io_rejection() {
 }
 
 fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result<()> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    let root = acyclic_test_support::source_path("");
     for trace in traces(&["expire"], events)? {
         let mut driver = driver::Driver::configured(&root, "deadline", fault)?;
         let ready = driver.call(&json!({"action":"ready"}))?;
@@ -416,7 +415,7 @@ fn raw_follow_cleanup_negative_control_drops_timeout_forwarding() {
 }
 
 fn blocked_deadline(scenario: &str, fault: &str) -> std::io::Result<()> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    let root = acyclic_test_support::source_path("");
     // All six orders of expiry, return(), and completion of the parked write.
     let mut orders = traces(&["expire"], &["return", "releaseWrite"])?;
     orders.extend(traces(&["expire"], &["releaseWrite", "return"])?);
@@ -506,7 +505,7 @@ fn blocked_subscription_negative_control_drops_the_platform_write_signal() {
 }
 
 fn queue_cancellation(fault: &str) -> std::io::Result<()> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    let root = acyclic_test_support::source_path("");
     for trace in traces(&["abort"], &["drain"])? {
         let mut driver = driver::Driver::configured(&root, "queue", fault)?;
         driver.call(&json!({"action":"ready"}))?;
@@ -580,7 +579,7 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config {
         cases: 128,
         failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/proptest-regressions.txt")))),
+            acyclic_test_support::crate_path_str!("proptest-regressions.txt")))),
         ..proptest::test_runner::Config::default()
     })]
     // Every decodable untrusted frame must preserve all fields through the

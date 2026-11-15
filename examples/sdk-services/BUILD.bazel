@@ -47,6 +47,7 @@ isolated_test(
     name = "sdk_service_examples_test",
     binary = ":sdk_service_examples_test_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_binary(

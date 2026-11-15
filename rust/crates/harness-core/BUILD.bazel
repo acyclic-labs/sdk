@@ -297,6 +297,7 @@ isolated_test(
     name = "acyclic_harness_core_test",
     binary = ":acyclic_harness_core_test_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_test(
@@ -426,6 +427,7 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_test(
@@ -540,6 +542,7 @@ isolated_test(
     name = "computed_ui_records",
     binary = ":computed_ui_records_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 rust_binary(

@@ -68,6 +68,7 @@ isolated_test(
     name = "acyclic_fs_wasm_test",
     binary = ":acyclic_fs_wasm_test_cases",
     limit_seconds = 10,
+    tags = ["no-sandbox"],
 )
 
 filegroup(

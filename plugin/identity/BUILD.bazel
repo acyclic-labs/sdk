@@ -108,3 +108,9 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+filegroup(
+    name = "tree",
+    srcs = glob(["**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
