@@ -220,7 +220,7 @@ async fn json_heads_refuses_incoherent_cuts_without_another_provider_request()
         let server = Server::new(vec![Reply::ok(response)]).await;
         let actual = server
             .client
-            .request("heads", request.clone())
+            .request("heads", request.clone(), Ok)
             .await
             .map(|response| response["heads"][0].clone());
         let mut wire = original.clone();
@@ -443,11 +443,8 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
     use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
     let response = json!({"ok":false,"code":"tail_conflict","actualTail":"1"});
     let response_bytes = serde_json::to_vec(&response)?.len() as u64;
-    let mut server = Server::new(vec![
-        Reply::ok(response.clone()),
-        Reply::ok(response.clone()),
-    ])
-    .await;
+    let mut server = Server::new(vec![Reply::ok(response.clone()), Reply::ok(response.clone()),
+        Reply::ok(json!({"ok":true,"start":"0","end":"1","tail":"1","commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}))]).await;
     let resolutions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let calls = resolutions.clone();
     server.client.credential = Some(CredentialProvider::new(move || {
@@ -455,11 +452,10 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         futures::future::ready(Ok("original-secret-credential".into()))
     }));
     let trace = Stream::new(Arc::new(MemoryStream::default()), "agents/http/trace")?;
-    // No active owner: no diagnostic publication, even for an actual exchange.
     assert_eq!(
         server
             .client
-            .request_json("append", || Ok("{}".into()))
+            .request_json("append", || Ok("{}".into()), Ok)
             .await?,
         response
     );
@@ -479,22 +475,17 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         root.within(
             server
                 .client
-                .request_json("append", || Err("limit_exceeded"))
+                .request_json("append", || Err("limit_exceeded"), Ok)
         )
         .await
         .is_err()
     );
+    assert_eq!(server.requests().len(), 1);
     assert_eq!(
-        server.requests().len(),
-        1,
-        "encoding refusal must not make a round trip"
-    );
-    assert_eq!(
-        root.within(server.client.request_json("append", || Ok("{}".into())))
+        root.within(server.client.request_json("append", || Ok("{}".into()), Ok))
             .await?,
         response
     );
-    assert_eq!(server.requests().len(), 2);
     let original_credential = server
         .client
         .credential
@@ -502,9 +493,9 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
             futures::future::ready(Err(acyclic_auth::credential::CredentialError::Invalid))
         }));
     let refused = root
-        .within(server.client.request_json("append", || Ok("{}".into())))
+        .within(server.client.request_json("append", || Ok("{}".into()), Ok))
         .await
-        .expect_err("the original credential refusal must stop dispatch");
+        .expect_err("credential refusal must stop dispatch");
     server.client.credential = original_credential;
     assert_eq!(refused.category(), StreamError::AccessDenied);
     assert_eq!(
@@ -512,18 +503,32 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         2,
         "credential refusal made a physical request"
     );
+    let rejected = root
+        .within(server.client.append(AppendRequest {
+            path: path(),
+            records: vec![OwnedBytes::from_static(b"typed-reply").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        }))
+        .await
+        .expect_err("a committed append without revision must be rejected");
+    assert_eq!(rejected.category(), StreamError::Unavailable);
+    assert_eq!(server.requests().len(), 3);
     let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
     let mut query = TraceQuery::new(
         trace.follow(0, Default::default()).await?,
         Default::default(),
     );
-    let mut completed = 0;
-    let mut exchanges = 0;
-    let mut auth_checks = 0;
+    let (
+        mut completed,
+        mut exchanges,
+        mut auth_checks,
+        mut refused_credentials,
+        mut rejected_replies,
+    ) = (0, 0, 0, 0, 0);
     let mut auth_parents = Vec::new();
-    let mut exchange_id = None;
-    let mut refused_credentials = 0;
-    while completed < 7 {
+    let mut exchange_ids = Vec::new();
+    while completed < 12 {
         if let Some(Observation::Completed {
             id,
             start,
@@ -533,19 +538,10 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         }) = query.next().await?
         {
             completed += 1;
-            if start.mechanism != Mechanism::AuthCheck {
-                assert_eq!(result, Outcome::Succeeded);
-            }
             if start.mechanism == Mechanism::AuthCheck {
-                if result == Outcome::Unsettled {
-                    assert_eq!(start.name, "credential.resolve");
-                    assert_eq!(start.parent, Some(parent));
-                    refused_credentials += 1;
-                } else {
-                    assert_eq!(result, Outcome::Succeeded);
-                }
                 auth_checks += 1;
                 auth_parents.push(start.parent);
+                assert_eq!(bytes, None);
                 assert_eq!(
                     start.guarantee.as_deref(),
                     Some(if start.name == "credential.resolve" {
@@ -554,38 +550,58 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
                         "original_credential_lease_valid_at_boundary"
                     })
                 );
-                assert_eq!(bytes, None);
+                if result == Outcome::Unsettled {
+                    assert_eq!(start.name, "credential.resolve");
+                    assert_eq!(start.parent, Some(parent));
+                    refused_credentials += 1;
+                } else {
+                    assert_eq!(result, Outcome::Succeeded);
+                }
             } else if id != parent {
                 exchanges += 1;
-                exchange_id = Some(id);
+                exchange_ids.push(id);
                 assert_eq!(start.parent, Some(parent));
                 assert_eq!(start.name, "stream.http.request");
                 assert_eq!(start.mechanism, Mechanism::RoundTrip);
                 assert_eq!(
                     start.guarantee.as_deref(),
-                    Some("authenticated_bounded_json_response_at_original_route")
+                    Some("authenticated_bounded_json_reply_validated_for_original_call")
                 );
-                assert_eq!(bytes, Some(response_bytes));
+                if result == Outcome::Succeeded {
+                    assert_eq!(bytes, Some(response_bytes));
+                } else {
+                    assert_eq!(result, Outcome::Unsettled);
+                    assert_eq!(bytes, None);
+                    rejected_replies += 1;
+                }
+            } else {
+                assert_eq!(result, Outcome::Succeeded);
             }
         }
     }
-    assert_eq!(exchanges, 1);
-    assert_eq!(auth_checks, 5);
-    assert_eq!(refused_credentials, 1);
+    assert_eq!(
+        (
+            exchanges,
+            auth_checks,
+            refused_credentials,
+            rejected_replies
+        ),
+        (2, 9, 1, 1)
+    );
     assert_eq!(
         auth_parents
             .iter()
             .filter(|value| **value == Some(parent))
             .count(),
-        3
+        5
     );
     assert_eq!(
         auth_parents
             .iter()
-            .filter(|value| **value == exchange_id)
+            .filter(|value| value.is_some_and(|id| exchange_ids.contains(&id)))
             .count(),
-        2
+        4
     );
-    assert_eq!(resolutions.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(resolutions.load(std::sync::atomic::Ordering::SeqCst), 3);
     Ok(())
 }
