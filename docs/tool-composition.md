@@ -107,6 +107,10 @@ The agent runs the input as a model-free step in its ordinary turn context. The
 turn's pinned policy must allow the hook's canonical shell call without
 approval. The workspace hook runner then executes the program under that
 operation. A redelivered or rebuilt step therefore runs it at most once.
+The program's stdin is exactly the event input that its input schema and the
+policy admitted: `{path, sequence}` for a `File` selector and
+`{stream_path, sequence}` for a `Stream` selector. The process starts in the
+hook's workspace.
 
 `hooks::effects::run_once` requires the task's original execution journal.
 Before observing a durable start or outcome, it acquires child-effect ownership

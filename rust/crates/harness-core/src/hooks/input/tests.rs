@@ -56,15 +56,30 @@ proptest! {
         prop_assert_eq!(&decoded["hook_event_name"], event.name());
         prop_assert_eq!(&decoded["cwd"], "workspace");
     }
+
+    // Property: a hook program's stdin is exactly its admitted event input,
+    // so the schema and policy judge every byte the program reads.
+    #[test]
+    fn program_stdin_is_exactly_the_admitted_event_input(
+        path in ".{0,128}", sequence in any::<u64>(), stream in any::<bool>(),
+    ) {
+        let (event, admitted) = if stream {
+            (HookEvent::StreamRecord, json!({"stream_path":path, "sequence":sequence}))
+        } else {
+            (HookEvent::FileChanged, json!({"path":path, "sequence":sequence}))
+        };
+        let bytes = HookInput::Program(&admitted).encode(event, Path::new("workspace"), None)?;
+        let decoded: Value = serde_json::from_slice(&bytes).unwrap();
+        prop_assert_eq!(&decoded, &admitted);
+        prop_assert_eq!(HookInput::Program(&admitted).subject(event), path.as_str());
+    }
 }
 
 #[test]
 fn non_object_fields_are_rejected_before_dispatch() {
     for input in [Value::Null, json!(false), json!(["not fields"]), json!(1)] {
-        assert!(
-            HookInput::Fields(&input)
-                .encode(HookEvent::Stop, Path::new("."), None)
-                .is_err()
-        );
+        for input in [HookInput::Fields(&input), HookInput::Program(&input)] {
+            assert!(input.encode(HookEvent::Stop, Path::new("."), None).is_err());
+        }
     }
 }

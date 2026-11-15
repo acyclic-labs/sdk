@@ -23,7 +23,8 @@ impl StockExecutor {
         let home = task.harness.target(None).map_err(|_| {
             Error::Unsupported("source hook workspace execution is not bound".into())
         })?;
-        let fields = match hook.event {
+        // One event input: admission judges it and the program reads it as stdin.
+        let input = match hook.event {
             HookEvent::FileChanged => {
                 serde_json::json!({"path": hook.path, "sequence": hook.sequence})
             }
@@ -43,7 +44,7 @@ impl StockExecutor {
             device: home.record.name.clone(),
             owner: home.record.owner.clone(),
         };
-        self.admit_source_hook(bound.binding(), hook, &fields, &target)
+        self.admit_source_hook(bound.binding(), hook, &input, &target)
             .await?;
         let context = crate::runtime::ToolContext::new(Arc::clone(task), hook.operation, "hook")?;
         if let Some(output) = home
@@ -51,7 +52,7 @@ impl StockExecutor {
             .run_hooks(
                 (&rules, manifest),
                 hook.event,
-                HookInput::Fields(&fields),
+                HookInput::Program(&input),
                 &self.tools,
                 context,
                 self.reconciliation_only,
@@ -71,7 +72,7 @@ impl StockExecutor {
         &self,
         tool: &crate::tool::Tool,
         hook: &crate::agent::HookTrigger,
-        fields: &Value,
+        input: &Value,
         target: &crate::interaction::ApprovalTarget,
     ) -> Result<()> {
         let policy = self
@@ -82,7 +83,7 @@ impl StockExecutor {
             operation_id: hook.operation,
             call_id: format!("hooks/{}", hook.name),
             name: tool.definition.name.clone(),
-            arguments: fields.clone(),
+            arguments: input.clone(),
         };
         StockExecution::ordinary(self).admit_unattended(tool, &invocation)?;
         let canonical = tool.executor.canonical(&invocation, None)?;
@@ -97,7 +98,7 @@ impl StockExecutor {
                     "the approval rules refuse this source hook".into(),
                 )),
                 None => Err(Error::Unauthorized(
-                    "a source hook runs only when the approval policy's rules allow its command;                      a model, human or parent approver cannot answer a background event"
+                    "a source hook runs only when the approval policy's rules allow its command; a model, human or parent approver cannot answer a background event"
                         .into(),
                 )),
             },

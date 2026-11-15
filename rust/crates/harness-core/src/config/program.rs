@@ -15,7 +15,8 @@ pub struct ProgramManifest {
     pub name: String,
     /// Loaded on demand, rather than included in a name-only listing.
     pub description: String,
-    /// The ordinary tool argument schema, also used for hook event input.
+    /// The ordinary tool argument schema, also used for hook event input. A
+    /// hook's stdin is exactly the event input this schema admitted.
     #[ts(type = "unknown")]
     pub input_schema: Value,
     /// Entry files relative to this program's directory.

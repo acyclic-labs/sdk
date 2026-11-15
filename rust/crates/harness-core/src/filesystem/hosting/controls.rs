@@ -82,9 +82,6 @@ fn codec() -> CodecIdentity {
         version: VERSION.to_string(),
     }
 }
-fn guest(error: impl std::fmt::Display) -> GuestError {
-    GuestError::Handler(error.to_string())
-}
 
 pub(super) struct Controls<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     issuer: RuntimeAuthority,
@@ -644,7 +641,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
         ]
         .contains(&id)
         {
-            super::quiet::key(id, checkpoint).map_err(guest)?
+            super::quiet::key(id, checkpoint).map_err(Error::into_guest)?
         } else {
             match id {
                 PAUSE => Some(Bytes::from_static(b"control/pause")),
@@ -658,7 +655,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
         };
         key.map(acyclic_stream::FollowFilter::exact_key)
             .transpose()
-            .map_err(guest)
+            .map_err(|error| Error::Stream(error).into_guest())
     }
     fn on_record<'a>(
         &'a self,
@@ -666,7 +663,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
         checkpoint: Option<&'a Checkpoint>,
         _: acyclic_actors::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
-        Box::pin(async move { self.transition(delivery, checkpoint).await.map_err(guest) })
+        Box::pin(async move {
+            self.transition(delivery, checkpoint)
+                .await
+                .map_err(Error::into_guest)
+        })
     }
 }
 
