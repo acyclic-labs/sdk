@@ -42,7 +42,7 @@ impl OwnerRequest {
         if pause.as_ref()?.reject != reject {
             return None;
         }
-        let pause = pause.take().unwrap();
+        let pause = pause.take()?;
         Some(Box::pin(async move {
             let _ = pause.entered.send(());
             pause

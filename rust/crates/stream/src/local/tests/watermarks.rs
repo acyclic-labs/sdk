@@ -12,7 +12,11 @@ async fn qualify(
     // Fresh paths have no accepted or durable records. Earlier traces may
     // leave pending frames in the same journal; only an explicit trace flush
     // can make this trace's new records durable. No setup barrier is needed.
-    let paths = ["a", "b", "c"].map(|path| StreamPath::new(format!("{namespace}/{path}")).unwrap());
+    let paths = [
+        StreamPath::new(format!("{namespace}/a"))?,
+        StreamPath::new(format!("{namespace}/b"))?,
+        StreamPath::new(format!("{namespace}/c"))?,
+    ];
     let mut accepted = [0; 3];
     let mut durable = [0; 3];
     let mut frames = *provider.inner.revision.borrow();

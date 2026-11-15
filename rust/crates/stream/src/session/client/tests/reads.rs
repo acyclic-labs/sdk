@@ -674,7 +674,7 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
             }
         });
         let authority = crate::session::testing::authority();
-        let mut slots = crate::session::testing::slots();
+        let mut slots = crate::session::testing::slots()?;
         authority.register(
             &mut slots,
             1,

@@ -14,7 +14,7 @@ fn source(identity: wire::SessionChannel) -> Source {
                     value: vec![sequence.to_le_bytes()[0]].into(),
                     commit_id: crate::CommitId::from_bytes([1; 32]),
                     committed_at_micros: 0,
-                    origin: crate::StreamPath::new("origin").unwrap(),
+                    origin: crate::StreamPath::new("origin")?,
                 }))
             }))
             .map(move |event| (identity, event)),
@@ -197,7 +197,7 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
     let waker = futures::task::noop_waker();
     let mut cx = Context::from_waker(&waker);
     let authority = testing::authority();
-    let slots = testing::slots();
+    let slots = testing::slots()?;
     for (binding, lookahead) in [
         (None, false),
         (

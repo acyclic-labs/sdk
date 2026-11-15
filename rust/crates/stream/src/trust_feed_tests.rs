@@ -491,8 +491,7 @@ async fn a_slow_account_open_never_delays_another_accounts_revocations() {
     let (producer, held) = oneshot::channel();
     source
         .slow
-        .lock()
-        .unwrap()
+        .lock().unwrap_or_else(|poison| poison.into_inner())
         .insert(account_path("test", "slow"), held);
     world.accounts.follow("slow").unwrap();
     let mut run = Box::pin(world.feed.run());

@@ -77,7 +77,7 @@ pub fn credential_with_grants(grants: &[ResourceGrant]) -> Bytes {
     .into()
 }
 #[cfg(all(test, not(loom)))]
-pub(in crate::session) fn slots() -> Slots {
+pub(in crate::session) fn slots() -> Result<Slots, StreamError> {
     let auth = authority();
     let mut slots = Slots::default();
     auth.register(
@@ -85,9 +85,8 @@ pub(in crate::session) fn slots() -> Slots {
         0,
         &credential(),
         super::Limits::default().channels,
-    )
-    .unwrap();
-    slots
+    )?;
+    Ok(slots)
 }
 /// Verifies a deterministic test credential through the real session admission
 /// path. Product-provider tests receive the same unforgeable context as hosts.

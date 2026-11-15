@@ -227,7 +227,7 @@ fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog()
         for old in [true, false] {
             let meter = Arc::new(Meter::default());
             let request = ReadRequest {
-                path: StreamPath::new("native/differential").unwrap(),
+                path: StreamPath::new("native/differential")?,
                 from: 0,
                 limit: u32::try_from(batches).map_err(|_| StreamError::InvalidArgument)?,
                 key: None,
@@ -239,18 +239,14 @@ fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog()
                 } else {
                     provider.native_read(request, meter.original()).await
                 }
-            })
-            .unwrap()
-            .unwrap();
+            })??;
             let opened = (
                 meter.held.load(Ordering::SeqCst),
                 meter.examined.load(Ordering::SeqCst),
                 meter.allocations.load(Ordering::SeqCst),
             );
             let first = futures::executor::block_on(output.value_mut().next())
-                .unwrap()
-                .unwrap()
-                .unwrap();
+                .ok_or("missing first record")??;
             assert_eq!(first.value().sequence, 0);
             assert_eq!(first.value().value.as_ref(), &[0, 0, 255]);
             let first_work = meter.examined.load(Ordering::SeqCst);

@@ -108,9 +108,9 @@ impl transport::Transport for Observed {
                 }) = frame.as_ref().map(Frame::wire)
                     && let (Some(after), Some(Item::Record(record))) = (&data.after, &data.item)
                 {
-                    let commit =
-                        CommitId::from_bytes(record.commit_id.as_ref().try_into().unwrap());
-                    received.observe(*generation, after.next, commit);
+                    if let Ok(bytes) = <[u8; 32]>::try_from(record.commit_id.as_ref()) {
+                        received.observe(*generation, after.next, CommitId::from_bytes(bytes));
+                    }
                 }
                 frame
             })) as Response)
@@ -121,12 +121,12 @@ fn endpoint(
     channel: TransportChannel,
     received: &std::sync::Arc<Received>,
     broken: bool,
-) -> transport::Endpoint {
-    std::sync::Arc::new(Observed {
-        inner: native::endpoint(channel, Some("Bearer fixture".parse().unwrap()), None),
+) -> Result<transport::Endpoint, Box<dyn std::error::Error>> {
+    Ok(std::sync::Arc::new(Observed {
+        inner: native::endpoint(channel, Some("Bearer fixture".parse()?), None),
         received: received.clone(),
         received_anchor_mutant: broken,
-    })
+    }))
 }
 async fn append_one(provider: &MemoryStream, ledger: &mut Vec<CommitId>) -> TestResult {
     let sequence = ledger.len();
@@ -152,16 +152,14 @@ async fn buffered(received: &Received, generation: u64, next: u64, tail: u64) ->
         let changed = received.changed.notified();
         if received
             .last
-            .lock()
-            .unwrap()
+            .lock().unwrap_or_else(|poison| poison.into_inner())
             .is_some_and(|(current, after, _)| current == generation && after >= expected)
         {
             return Ok(());
         }
         if let Some((_, cause)) = received
             .ended
-            .lock()
-            .unwrap()
+            .lock().unwrap_or_else(|poison| poison.into_inner())
             .as_ref()
             .filter(|(attempt, _)| *attempt >= generation)
         {
@@ -182,16 +180,14 @@ async fn assert_resumed(
         let resume = target
             .counts
             .resumes
-            .lock()
-            .unwrap()
+            .lock().unwrap_or_else(|poison| poison.into_inner())
             .iter()
             .find(|(id, current, _)| *id == 1 && *current == generation)
             .copied();
         let guard = target
             .counts
             .guards
-            .lock()
-            .unwrap()
+            .lock().unwrap_or_else(|poison| poison.into_inner())
             .iter()
             .find(|(id, current, _)| *id == 1 && *current == generation)
             .cloned();
@@ -219,8 +215,8 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
     let old = Fixture::open(provider.clone(), "home").await?;
     let new = Fixture::open(provider.clone(), "owner").await?;
     let received = std::sync::Arc::new(Received::default());
-    let home = endpoint(old._channel.clone(), &received, broken);
-    let destination = endpoint(new._channel.clone(), &received, broken);
+    let home = endpoint(old._channel.clone(), &received, broken)?;
+    let destination = endpoint(new._channel.clone(), &received, broken)?;
     let connect = std::sync::Arc::new(move |_| {
         let destination = destination.clone();
         Box::pin(async move { Ok(destination) })
@@ -329,7 +325,7 @@ async fn buffered_observation_ends_when_its_original_response_producer_fails() -
     let fixture = Fixture::open(provider, "home").await?;
     let received = std::sync::Arc::new(Received::default());
     let client = Client::with_transport(
-        endpoint(fixture._channel.clone(), &received, false),
+        endpoint(fixture._channel.clone(), &received, false)?,
         std::sync::Arc::new(|_| Box::pin(async { Err(StreamError::InvalidResponse.into()) })),
         std::sync::Arc::new(PlatformExecutor),
     );

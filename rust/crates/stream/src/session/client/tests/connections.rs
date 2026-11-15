@@ -43,8 +43,7 @@ async fn connection_observers_end_when_the_original_pool_driver_is_dropped() -> 
         drop(cancelled);
         let mut driver = executor
             .0
-            .lock()
-            .unwrap()
+            .lock().unwrap_or_else(|poison| poison.into_inner())
             .take()
             .ok_or("missing pool driver")?;
         if started {
@@ -100,8 +99,7 @@ impl transport::Transport for ReplacedNode {
                 return Err(StreamError::InvalidArgument.into());
             };
             self.destinations
-                .lock()
-                .unwrap()
+                .lock().unwrap_or_else(|poison| poison.into_inner())
                 .push(value.destination_node.clone());
             let node = if self.replacement.load(Ordering::Acquire) == 0 {
                 "old"

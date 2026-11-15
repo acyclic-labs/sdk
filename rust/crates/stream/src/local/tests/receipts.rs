@@ -4,14 +4,14 @@ use crate::NativeStreamProviderExt as _;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-fn path() -> StreamPath {
-    StreamPath::new("receipts").unwrap()
+fn path() -> Result<StreamPath, StreamError> {
+    Ok(StreamPath::new("receipts")?)
 }
 
 async fn append(provider: &LocalStream, record: &'static [u8]) -> Result {
     let outcome = provider
         .append(AppendRequest {
-            path: path(),
+            path: path()?,
             records: vec![Bytes::from_static(record).into()],
             if_tail: None,
             idempotency_key: crate::IdempotencyKey::unique(),
@@ -51,17 +51,17 @@ async fn survives_cut(barrier: bool) -> Result<u64> {
         synced_bytes(&provider).ok_or("required append left frames unsynced")?;
     deferring_durability(async {
         append(&provider, b"approval").await?;
-        let observed = provider.watermarks(path()).await?;
+        let observed = provider.watermarks(path()?).await?;
         assert!(
-            crate::DurableReceipt::covering(path(), &observed, 2).is_none(),
+            crate::DurableReceipt::covering(path()?, &observed, 2).is_none(),
             "a deferred acknowledgement observed as durable"
         );
         if barrier {
             let receipt = provider
-                .durable_receipt(path(), 2)
+                .durable_receipt(path()?, 2)
                 .await?
                 .ok_or("the barrier issued no receipt")?;
-            assert_eq!((receipt.path(), receipt.through()), (&path(), 2));
+            assert_eq!((receipt.path(), receipt.through()), (&path()?, 2));
             durable_bytes =
                 synced_bytes(&provider).ok_or("receipt issued before the device sync")?;
         }
@@ -69,7 +69,7 @@ async fn survives_cut(barrier: bool) -> Result<u64> {
     })
     .await?;
     let provider = power_cut(directory.path(), provider, durable_bytes).await?;
-    Ok(provider.tail(path()).await?)
+    Ok(provider.tail(path()?).await?)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -106,7 +106,7 @@ async fn foreign_provider_survives_cut(scoped: bool) -> Result<u64> {
             foreign_durable = bytes;
         }
         selected
-            .durable_receipt(path(), 2)
+            .durable_receipt(path()?, 2)
             .await?
             .ok_or("selected journal receipt missing")?;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
@@ -133,7 +133,7 @@ async fn foreign_provider_survives_cut(scoped: bool) -> Result<u64> {
     assert!(synced_bytes(&selected).is_some());
     assert!(selected.context().durable_acknowledgement());
     let foreign = power_cut(foreign_directory.path(), foreign, foreign_durable).await?;
-    Ok(foreign.tail(path()).await?)
+    Ok(foreign.tail(path()?).await?)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -157,7 +157,7 @@ async fn native_publication(provider: &LocalStream, entry: u8) -> Result<Arc<Met
         let outcome = provider
             .native_append(
                 AppendRequest {
-                    path: path(),
+                    path: path()?,
                     records,
                     if_tail: Some(1),
                     idempotency_key: crate::IdempotencyKey::unique(),
@@ -175,7 +175,7 @@ async fn native_publication(provider: &LocalStream, entry: u8) -> Result<Arc<Met
             effects: vec![crate::CommitEffect::hard(
                 vec![
                     crate::CommitCondition::Tail {
-                        path: path(),
+                        path: path()?,
                         expected: 1,
                     },
                     crate::CommitCondition::Tail {
@@ -184,7 +184,7 @@ async fn native_publication(provider: &LocalStream, entry: u8) -> Result<Arc<Met
                     },
                 ],
                 vec![crate::CommitMutation::Append {
-                    path: path(),
+                    path: path()?,
                     records,
                 }],
             )],
@@ -268,22 +268,22 @@ async fn native_publication_workers_preserve_provider_scope_and_both_device_pref
                 deferring_durability(publication).await?;
             }
             let foreign = power_cut(foreign_directory.path(), foreign, foreign_bytes).await?;
-            assert_eq!(foreign.tail(path()).await?, if scoped { 2 } else { 1 });
+            assert_eq!(foreign.tail(path()?).await?, if scoped { 2 } else { 1 });
             if scoped {
                 selected
-                    .durable_receipt(path(), 2)
+                    .durable_receipt(path()?, 2)
                     .await?
                     .ok_or("native receipt missing")?;
                 let bytes = synced_bytes(&selected).ok_or("native receipt preceded device sync")?;
                 let selected = power_cut(selected_directory.path(), selected, bytes).await?;
-                assert_eq!(selected.tail(path()).await?, 2);
+                assert_eq!(selected.tail(path()?).await?, 2);
                 append(&selected, b"scope ended").await?;
                 assert!(synced_bytes(&selected).is_some());
             } else {
                 let selected =
                     power_cut(selected_directory.path(), selected, selected_bytes).await?;
                 assert_eq!(
-                    selected.tail(path()).await?,
+                    selected.tail(path()?).await?,
                     1,
                     "accepted native write survived without a receipt"
                 );
@@ -314,11 +314,11 @@ async fn survives_barrier_cut(receipt: bool) -> Result<u64> {
     append(&provider, b"approval").await?;
     assert_eq!(provider.inner.synced.borrow().ordered, 1);
     assert_eq!(provider.inner.synced.borrow().flushed, None);
-    let marks = provider.watermarks(path()).await?;
-    assert!(crate::DurableReceipt::covering(path(), &marks, 2).is_none());
+    let marks = provider.watermarks(path()?).await?;
+    assert!(crate::DurableReceipt::covering(path()?, &marks, 2).is_none());
     if receipt {
         let proof = provider
-            .durable_receipt(path(), 2)
+            .durable_receipt(path()?, 2)
             .await?
             .ok_or("missing full flush")?;
         assert_eq!(proof.through(), 2);
@@ -326,7 +326,7 @@ async fn survives_barrier_cut(receipt: bool) -> Result<u64> {
     }
     Ok(power_cut(directory.path(), provider, flushed_bytes)
         .await?
-        .tail(path())
+        .tail(path()?)
         .await?)
 }
 
@@ -362,7 +362,7 @@ async fn phase_barriers_upgrade_ordered_prefixes_to_device_flushed_proofs() -> R
             .synced
             .send_modify(|progress| progress.flushed = None);
         assert!(synced_bytes(&provider).is_none());
-        assert_eq!(provider.watermarks(path()).await?.durable, 0);
+        assert_eq!(provider.watermarks(path()?).await?.durable, 0);
         let meter = Arc::new(Meter::local());
         match entry {
             0 => provider.durability_barrier().await?,
@@ -378,7 +378,7 @@ async fn phase_barriers_upgrade_ordered_prefixes_to_device_flushed_proofs() -> R
             ),
         }
         *proof =
-            synced_bytes(&provider).is_some() && provider.watermarks(path()).await?.durable == 1;
+            synced_bytes(&provider).is_some() && provider.watermarks(path()?).await?.durable == 1;
         meter.assert_refunded();
     }
     // Collect every adapter before asserting so the actual old implementation

@@ -379,10 +379,10 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
         block
             .certificates
             .as_mut()
-            .unwrap()
+            .ok_or("missing certificates")?
             .keys
             .first_mut()
-            .unwrap()
+            .ok_or("missing root key")?
             .key
             .grants = GrantSet {
             grants: vec![Grant {

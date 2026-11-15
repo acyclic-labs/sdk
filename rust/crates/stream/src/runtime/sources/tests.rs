@@ -217,7 +217,8 @@ fn keyed_readers_keep_independent_wakes_and_share_ready_delivery() {
     });
 }
 
-fn late_cancelled_wakes_cannot_disarm_a_live_source() {
+fn late_cancelled_wakes_cannot_disarm_a_live_source()
+-> Result<(), Box<dyn std::error::Error>> {
     use crate::FollowRequest;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Waker;
@@ -235,16 +236,15 @@ fn late_cancelled_wakes_cannot_disarm_a_live_source() {
     futures::executor::block_on(async {
         for replace in [false, true] {
             let provider = MemoryStream::default();
-            let path = StreamPath::new("ready/cancelled").unwrap();
+            let path = StreamPath::new("ready/cancelled")?;
             provider
                 .append(AppendRequest {
                     path: path.clone(),
                     records: vec![b"initial".as_slice().into()],
                     if_tail: Some(0),
-                    idempotency_key: IdempotencyKey::new(b"initial".to_vec()).unwrap(),
+                    idempotency_key: IdempotencyKey::new(b"initial".to_vec())?,
                 })
-                .await
-                .unwrap();
+                .await?;
             let mut sources = ReadySources::<
                 crate::BoxProviderStream<'static, Result<crate::Record, StreamError>>,
             >::new();
@@ -255,13 +255,17 @@ fn late_cancelled_wakes_cannot_disarm_a_live_source() {
                 },
                 Box::pin(futures::stream::pending()),
             );
-            let cancelled = sources.entries.get(&0).unwrap().wake.clone();
+            let cancelled = sources
+                .entries
+                .get(&0)
+                .ok_or("missing source")?
+                .wake
+                .clone();
             sources.remove(0);
             let mut records = crate::records_only(
                 provider
                     .follow(FollowRequest::new(path.clone(), 1))
-                    .await
-                    .unwrap(),
+                    .await?,
             );
             let mut late = Some(cancelled);
             sources.register(
@@ -289,21 +293,21 @@ fn late_cancelled_wakes_cannot_disarm_a_live_source() {
                     path,
                     records: vec![b"changed".as_slice().into()],
                     if_tail: Some(1),
-                    idempotency_key: IdempotencyKey::new(b"changed".to_vec()).unwrap(),
+                    idempotency_key: IdempotencyKey::new(b"changed".to_vec())?,
                 })
-                .await
-                .unwrap();
+                .await?;
             assert!(
                 parent.0.load(Ordering::SeqCst) > 0,
                 "a late cancelled wake must not disarm the live provider"
             );
             let Poll::Ready(Ok(Some(Ok(record)))) = sources.poll_next(&mut cx) else {
-                panic!("the live provider's committed record must be ready");
+                return Err("the live provider's committed record must be ready".into());
             };
             assert_eq!(record.sequence, 1);
             assert_eq!(record.value.as_slice(), b"changed");
         }
-    });
+        Ok(())
+    })
 }
 
 #[test]
