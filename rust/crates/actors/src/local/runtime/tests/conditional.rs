@@ -300,76 +300,99 @@ async fn explicit_resume_restores_delivery_after_a_competing_pause() -> TestResu
     Ok(())
 }
 
+/// A delivery publication refused by a competing write publishes nothing.
+/// A write by the same placement (metadata or control) is not a new owner:
+/// the delivery re-admits once from the changed cut. A new owner's write
+/// returns Conflict without invoking the handler again.
 #[tokio::test]
-async fn a_lost_delivery_publication_returns_without_reinvoking_the_handler() -> TestResult {
-    let calls = Arc::new(AtomicU64::new(0));
-    let runtime = runtime_with(Arc::new(Invocations {
-        package: Package::new()?,
-        calls: Arc::clone(&calls),
-    }))?;
-    let store = runtime.store();
-    let provider = store.provider();
-    let address = spawn_with(store, "publish-conflict", &[b"emit"]).await?;
-    runtime.host(address.clone())?;
-    assert!(runtime.drain().await.is_empty());
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let cut = store.load(&address).await?;
-    let mut changed = cut.state().ok_or("missing state")?.clone();
-    changed
-        .metadata
-        .insert("foreign".into(), Bytes::from_static(b"committed"));
-    let competing = store
-        .prepare(
-            &cut,
-            changed,
-            Vec::new(),
-            key("competing-checkpoint")?,
-            false,
-        )?
-        .into_request()?;
-    provider
-        .append(AppendRequest {
-            path: StreamPath::new("agents/publish-conflict")?,
-            records: vec![Bytes::from_static(b"emit").into()],
-            if_tail: Some(1),
-            idempotency_key: IdempotencyKey::unique(),
-        })
-        .await?;
-    *provider.inner().before_write.lock().unwrap() = Some(Competing::Publication(competing));
-    runtime.wake(&address);
-    let before = provider.inner().writes.load(Ordering::SeqCst);
-    let failures = runtime.drain().await;
-    assert!(
-        matches!(failures.as_slice(), [(_, Error::Conflict)]),
-        "{failures:?}"
-    );
-    assert_eq!(provider.inner().writes.load(Ordering::SeqCst) - before, 1);
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(runtime.counts(), (0, 0));
-    let refused = store.load(&address).await?;
-    assert_eq!(refused.state().map(State::paused), Some(false));
-    assert_eq!(
-        refused
-            .state()
-            .and_then(|state| state.metadata.get("foreign")),
-        Some(&Bytes::from_static(b"committed"))
-    );
-    assert_eq!(
-        refused.state().and_then(|state| state.cursor("inbox")),
-        Some(1)
-    );
-    assert_eq!(
-        records(&**provider, "out/publish-conflict").await?,
-        vec![Bytes::from_static(b"r0")]
-    );
-    // Place explicitly. The unconsumed record is delivered once;
-    // no effect from the refused handler was committed.
-    runtime.host(address.clone())?;
-    assert!(runtime.drain().await.is_empty());
-    assert_eq!(calls.load(Ordering::SeqCst), 3);
-    assert_eq!(
-        records(&**provider, "out/publish-conflict").await?,
-        vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")]
-    );
+async fn a_lost_delivery_publication_readmits_only_within_its_placement() -> TestResult {
+    for new_owner in [false, true] {
+        let calls = Arc::new(AtomicU64::new(0));
+        let runtime = runtime_with(Arc::new(Invocations {
+            package: Package::new()?,
+            calls: Arc::clone(&calls),
+        }))?;
+        let store = runtime.store();
+        let provider = store.provider();
+        let address = spawn_with(store, "publish-conflict", &[b"emit"]).await?;
+        runtime.host(address.clone())?;
+        assert!(runtime.drain().await.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let cut = store.load(&address).await?;
+        let mut changed = cut.state().ok_or("missing state")?.clone();
+        changed
+            .metadata
+            .insert("foreign".into(), Bytes::from_static(b"committed"));
+        if new_owner {
+            changed.epoch += 1;
+        }
+        let competing = store
+            .prepare(
+                &cut,
+                changed,
+                Vec::new(),
+                key("competing-checkpoint")?,
+                false,
+            )?
+            .into_request()?;
+        provider
+            .append(AppendRequest {
+                path: StreamPath::new("agents/publish-conflict")?,
+                records: vec![Bytes::from_static(b"emit").into()],
+                if_tail: Some(1),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        *provider.inner().before_write.lock().unwrap() = Some(Competing::Publication(competing));
+        runtime.wake(&address);
+        let before = provider.inner().writes.load(Ordering::SeqCst);
+        let failures = runtime.drain().await;
+        let after = store.load(&address).await?;
+        let state = after.state().ok_or("missing state")?;
+        // The competing write is kept in both cases.
+        assert_eq!(
+            state.metadata.get("foreign"),
+            Some(&Bytes::from_static(b"committed"))
+        );
+        assert!(!state.paused());
+        if new_owner {
+            assert!(
+                matches!(failures.as_slice(), [(_, Error::Conflict)]),
+                "{failures:?}"
+            );
+            // One refused attempt; the handler is not invoked again.
+            assert_eq!(provider.inner().writes.load(Ordering::SeqCst) - before, 1);
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert_eq!(state.cursor("inbox"), Some(1));
+            assert_eq!(
+                records(&**provider, "out/publish-conflict").await?,
+                vec![Bytes::from_static(b"r0")],
+                "a refused delivery published its effects"
+            );
+            // A new owner's refusal releases the actor.
+            assert_eq!(runtime.counts(), (0, 0));
+        } else {
+            let out = records(&**provider, "out/publish-conflict").await?;
+            // (a) The refused attempt published nothing: at most the one
+            // re-admitted delivery's output follows the original.
+            assert!(
+                out.iter().filter(|record| record.as_ref() == b"r1").count() <= 1,
+                "the refused attempt published its effects: {out:?}"
+            );
+            // (b) Exactly one re-admission from the changed cut. Its
+            // publication is conditioned on that cut, so it keeps the
+            // competing write and consumes the input once.
+            assert_eq!(calls.load(Ordering::SeqCst), 3, "{failures:?}");
+            assert_eq!(
+                out,
+                vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")]
+            );
+            assert!(failures.is_empty(), "{failures:?}");
+            assert_eq!(provider.inner().writes.load(Ordering::SeqCst) - before, 2);
+            assert_eq!(state.cursor("inbox"), Some(2));
+            // The actor stays placed.
+            assert_eq!(runtime.counts(), (1, 0));
+        }
+    }
     Ok(())
 }
