@@ -148,7 +148,7 @@ impl HostWorkspaceOwner {
                 mechanism: acyclic_stream::trace::Mechanism::Wait,
                 parent: None,
                 guarantee: Some("dispatched_workspace_action"),
-                key: Some(acyclic_stream::trace::Key::Identity(operation.as_bytes())),
+                key: Some(acyclic_stream::trace::Key::Identity(operation.into_bytes())),
             },
             self.dispatch_action(operation, action),
             |_| None,

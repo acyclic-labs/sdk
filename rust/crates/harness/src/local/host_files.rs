@@ -788,7 +788,7 @@ fn request_operation_at(
                 mechanism: acyclic_stream::trace::Mechanism::Wait,
                 parent: None,
                 guarantee: Some("bridged_workspace_reply"),
-                key: Some(acyclic_stream::trace::Key::Identity(operation.as_bytes())),
+                key: Some(acyclic_stream::trace::Key::Identity(operation.into_bytes())),
             },
             || delivery.recv(),
             |reply| {
@@ -1325,7 +1325,7 @@ async fn serve_requests(
             result = &mut shutdown => return result,
             () = notices.changed.notified() => {}
             Some((operation, outcome)) = running.next(), if !running.is_empty() => {
-                files = files.apply(operation.as_bytes(), move |files| {
+                files = files.apply(operation.into_bytes(), move |files| {
                     files.served.answer(&files.status, operation, outcome)
                 }).await?;
             }

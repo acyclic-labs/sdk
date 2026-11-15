@@ -81,7 +81,7 @@ pub(crate) fn traced_future<'a, T: 'a>(
 fn an_operation_wait_key_renders_as_its_operation() {
     let operation = crate::OperationId::new();
     assert_eq!(
-        acyclic_stream::trace::Key::Identity(operation.as_bytes()).to_string(),
+        acyclic_stream::trace::Key::Identity(operation.into_bytes()).to_string(),
         operation.to_string()
     );
 }

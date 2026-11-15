@@ -712,7 +712,7 @@ impl StockExecution<'_> {
                                 parent: None,
                                 guarantee: Some("ordered_provider_event"),
                                 key: Some(acyclic_stream::trace::Key::Identity(
-                                    operation_id.as_bytes(),
+                                    operation_id.into_bytes(),
                                 )),
                             },
                             stream.next(),
@@ -803,7 +803,7 @@ impl StockExecution<'_> {
                         parent: None,
                         guarantee: Some("journaled_model_event"),
                         key: Some(acyclic_stream::trace::Key::Identity(
-                            operation_id.as_bytes(),
+                            operation_id.into_bytes(),
                         )),
                     },
                     super::model_observation::append(

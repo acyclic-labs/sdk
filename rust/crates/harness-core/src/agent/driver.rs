@@ -1606,7 +1606,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             mechanism: acyclic_stream::trace::Mechanism::Wait,
                             parent: None,
                             guarantee: Some("staged_turn_output"),
-                            key: Some(acyclic_stream::trace::Key::Identity(turn.as_bytes())),
+                            key: Some(acyclic_stream::trace::Key::Identity(turn.into_bytes())),
                         },
                         open.outputs.stage(turn, &bytes),
                         |_| None,
