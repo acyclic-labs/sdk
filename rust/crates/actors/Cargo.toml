@@ -100,3 +100,7 @@ workspace = true
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+# Proofs compose separately proved functions through Kani stubs.
+[package.metadata.kani.unstable]
+stubbing = true

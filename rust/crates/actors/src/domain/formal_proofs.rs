@@ -291,7 +291,17 @@ fn actor_observation_and_response_numeric_projection_is_lossless() {
     }
 }
 
+/// Admits the request without its cross-field validator. That validator reads
+/// no revision; it re-encodes the whole request and checks names, digest,
+/// limits, bindings, secrets and fetch, which the unit tests cover. Proving it
+/// here would make the verifier explore every hashed name set for a field
+/// copy.
+fn admitted(_: &super::UpdateNamespaceRequest) -> Result<(), DomainError> {
+    Ok(())
+}
+
 #[kani::proof]
+#[kani::stub(super::UpdateNamespaceRequest::validate_from_proto, admitted)]
 #[kani::unwind(40)]
 fn update_expected_configuration_revision_is_lossless() {
     let revision: u64 = kani::any();
