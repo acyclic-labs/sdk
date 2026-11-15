@@ -1,4 +1,3 @@
-type ForkInstall = Result<ForkReceipt, StreamError>;
 type ForkDecision<F> = Decision<ForkReceipt, F>;
 
 impl MemoryStream {
@@ -7,7 +6,7 @@ impl MemoryStream {
         state: &mut State,
         request: &'a ForkRequest,
     ) -> Result<
-        ForkDecision<impl FnOnce(&mut State, bool, Option<u64>) -> ForkInstall + use<'a>>,
+        ForkDecision<impl Install<'a, ForkReceipt>>,
         StreamError,
     > {
         let digest = fork_digest(request)?;

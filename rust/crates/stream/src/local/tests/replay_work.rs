@@ -69,11 +69,13 @@ proptest! {
         count in 1usize..8, bytes in proptest::collection::vec(any::<u8>(), 0..32),
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-        let ((before, after), (control_before, control_after)) = runtime.block_on(async {
+        let (before, control_before) = runtime.block_on(async {
             futures::join!(replay::<true>(count, bytes.clone()), replay::<false>(count, bytes))
         });
-        unchanged_frames(before?, after?)?;
-        prop_assert!(unchanged_frames(control_before?, control_after?).is_err(), "replay-write control escaped the same bound");
+        let (before, after) = before?;
+        let (control_before, control_after) = control_before?;
+        unchanged_frames(before, after)?;
+        prop_assert!(unchanged_frames(control_before, control_after).is_err(), "replay-write control escaped the same bound");
     }
 }
 
@@ -84,9 +86,9 @@ async fn a_normal_replay_flushes_its_original_deferred_frame()
     let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
     let request = request(b"deferred".to_vec())?;
     let first = deferring_durability(stream.commit(request.clone())).await?;
-    assert_eq!(stream.inner.journal.lock()?.synced, 0);
+    assert_eq!(stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).synced, 0);
     assert_eq!(stream.commit(request).await?, first);
-    let journal = stream.inner.journal.lock()?;
+    let journal = stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
     assert_eq!(journal.appended, 1);
     assert_eq!(journal.synced, 1);
     Ok(())
@@ -102,10 +104,10 @@ async fn append_and_fork_retries_reuse_and_flush_their_original_frames()
     let appended = deferring_durability(stream.append(append.clone())).await?;
     let journal_path = root.path().join(JOURNAL_FILE);
     let append_bytes = std::fs::metadata(&journal_path)?.len();
-    assert_eq!(stream.inner.journal.lock()?.synced, 0);
+    assert_eq!(stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).synced, 0);
     assert_eq!(stream.append(append.clone()).await?, appended);
     assert_eq!(std::fs::metadata(&journal_path)?.len(), append_bytes);
-    assert_eq!(stream.inner.journal.lock()?.synced, 1);
+    assert_eq!(stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).synced, 1);
 
     let fork = ForkRequest {
         exclude: Vec::new(),
@@ -116,10 +118,10 @@ async fn append_and_fork_retries_reuse_and_flush_their_original_frames()
     };
     let forked = deferring_durability(stream.fork(fork.clone())).await?;
     let fork_bytes = std::fs::metadata(&journal_path)?.len();
-    assert_eq!(stream.inner.journal.lock()?.synced, 1);
+    assert_eq!(stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).synced, 1);
     assert_eq!(stream.fork(fork.clone()).await?, forked);
     assert_eq!(std::fs::metadata(&journal_path)?.len(), fork_bytes);
-    assert_eq!(stream.inner.journal.lock()?.synced, 2);
+    assert_eq!(stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).synced, 2);
 
     let mut changed_append = append.clone();
     changed_append

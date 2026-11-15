@@ -1,5 +1,4 @@
 type AppendResult = (AppendOutcome, Allocation);
-type AppendInstall = Result<AppendResult, StreamError>;
 type AppendDecision<F> = Decision<AppendResult, F>;
 
 impl MemoryStream {
@@ -18,7 +17,7 @@ impl MemoryStream {
         state: &mut State,
         request: &'a AppendRequest,
     ) -> Result<
-        AppendDecision<impl FnOnce(&mut State, bool, Option<u64>) -> AppendInstall + use<'a>>,
+        AppendDecision<impl Install<'a, AppendResult>>,
         StreamError,
     > {
         #[cfg(not(target_arch = "wasm32"))]
