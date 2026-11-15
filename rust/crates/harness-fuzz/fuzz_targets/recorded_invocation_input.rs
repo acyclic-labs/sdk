@@ -10,7 +10,7 @@ use acyclic_harness::{
     executor::json::{JsonBounds, JsonValueSchema, json_from_slice_bounded},
     filesystem::PreparationIo,
     model::{ModelContentPart, ToolCall, ToolResultContent},
-    projection::{SelectedModelContext, select_model_context},
+    projection::select_model_context,
     resources::ProviderRef,
     tool::ToolResult,
 };
@@ -154,7 +154,7 @@ pub fn assert_replay(record: Record, limits: Limits) {
     let projected = futures::executor::block_on(select_model_context(
         &conversation,
         4,
-        selection,
+        selection.clone(),
         &files,
         limits,
         8,
@@ -182,20 +182,19 @@ pub fn assert_replay(record: Record, limits: Limits) {
         )
         .with_metadata(record.metadata)
     );
-    let bytes = serde_json::to_vec(&projected).unwrap();
-    let replay: SelectedModelContext = json_from_slice_bounded(
-        PhantomData,
-        &bytes,
-        JsonBounds {
-            maximum_bytes: Some(bytes.len() as u64),
-            maximum_items: None,
-            maximum_depth: 256,
-        },
+    // Replay the original saved records through the production reader. A
+    // transient context adds wrapper nesting; it is not a saved invocation
+    // and must not be subjected to that record's depth bound a second time.
+    let replay = futures::executor::block_on(select_model_context(
+        &conversation,
+        4,
+        selection,
+        &files,
+        limits,
+        8,
         None,
-        Some(JsonValueSchema::Root),
-        &mut |_| Ok(()),
-    )
-    .unwrap();
+    ))
+    .expect("admitted saved record must replay");
     assert_eq!(projected, replay);
 }
 

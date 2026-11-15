@@ -42,12 +42,11 @@ fn valid_record_is_admitted_and_projects_with_exact_metadata() {
 #[test]
 fn complete_depth_and_numeric_bounds_apply_before_recording() {
     let mut deep = json!(0);
-    for _ in 0..140 {
+    for _ in 0..=crate::executor::json::RECORD_MAXIMUM_DEPTH {
         deep = json!([deep]);
     }
     // Arguments use the literal-value decoder's record bound. Metadata uses
     // Value directly, so it also exercises the wider bounded input domain.
-    input::assert_envelope(&record(json!({}), deep.clone()));
     for record in [
         record(json!({}), deep.clone()),
         record(deep, Value::Null),
@@ -65,7 +64,11 @@ fn complete_depth_and_numeric_bounds_apply_before_recording() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(ProptestConfig {
+        cases: 32,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0),
+        ..ProptestConfig::default()
+    })]
     // Property: ordinary/native admission agrees, releases all temporary custody,
     // and every admitted complete record survives actual history projection/replay.
     #[test]
@@ -84,7 +87,6 @@ proptest! {
         let mut record = record(json!({"data":text, "nested":nested}), json!({"signature":signature, "nested":metadata}));
         record.target = target;
         record.filesystem = filesystem;
-        input::assert_envelope(&record);
         if let Some((in_arguments, number_marker, nesting)) = reserved {
             let key = if number_marker { "$serde_json::private::Number" } else { "$serde_json::private::RawValue" };
             let mut marker = json!({"signature":"opaque", key:"null"});
@@ -96,6 +98,7 @@ proptest! {
         let limits = Limits {file_bytes:Some(file_bytes), render_bytes:Some(render_bytes), ..Limits::default()};
         let admitted = record.invocation.validate_recorded(&record.metadata, limits, None).is_ok();
         if reserved.is_some() { prop_assert!(!admitted); }
+        if admitted { input::assert_envelope(&record); }
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(2_000_000, 4*1024*1024),
             &acyclic_fs::CancellationToken::new(),
@@ -108,6 +111,26 @@ proptest! {
         drop(io);
         prop_assert_eq!(before, work.live_allocation_bytes());
         input::assert_replay(record, limits);
+    }
+}
+
+#[test]
+fn record_depth_boundaries_project_and_replay() {
+    let maximum = crate::executor::json::RECORD_MAXIMUM_DEPTH;
+    let mut nested = json!(0);
+    for depth in 0..=maximum + 1 {
+        let record = record(json!({"nested": nested}), Value::Null);
+        let admitted = record
+            .invocation
+            .validate_recorded(&record.metadata, Limits::default(), None)
+            .is_ok();
+        // The leaf is below the record, invocation and arguments objects.
+        assert_eq!(admitted, depth + 3 <= maximum, "payload depth {depth}");
+        if admitted {
+            input::assert_envelope(&record);
+        }
+        input::assert_replay(record, Limits::default());
+        nested = json!([nested]);
     }
 }
 
