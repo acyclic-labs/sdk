@@ -2164,11 +2164,14 @@ fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
         parent_file.read_capability(&mut None)?,
     ];
     let bound = fork.capability(VolumeOperation::Read, &mut None)?;
+    let bound_directory = fork.directory_read_capability("src", &mut None)?;
+    let unbound_directory = parent.directory_read_capability("src", &mut None)?;
     let scope = root.bootstrap_scope(
         "caller",
         &Capabilities::new(
             unbound.iter().cloned().chain([
                 bound.clone(),
+                bound_directory.clone(),
                 "model:generate".to_owned(),
                 crate::contract::capability::HARNESS_HOST.to_owned(),
                 whole
@@ -2186,6 +2189,12 @@ fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
             .await
     })?;
     let granted = &minted.grants;
+    // A directory read survives only on a volume the agent binds.
+    assert!(
+        !granted.contains(&unbound_directory),
+        "unbound directory read inherited"
+    );
+    assert!(granted.contains(&bound_directory));
     for label in &unbound {
         assert!(!granted.contains(label), "unbound grant inherited: {label}");
     }

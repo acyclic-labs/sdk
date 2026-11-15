@@ -29,8 +29,8 @@ pub use view::AccessView;
 mod trie;
 
 pub use capability::{
-    ActionSet, Capability, DIRECTORY_READ_PREFIX, FILE_READ_PREFIX, Grant, SCOPE_PREFIX,
-    VolumeOperation, is_filesystem_capability,
+    ActionSet, Capability, ContentRead, ContentReadLabel, DIRECTORY_READ_PREFIX, FILE_READ_PREFIX,
+    Grant, SCOPE_PREFIX, UnversionedContentRead, VolumeOperation, is_filesystem_capability,
 };
 pub use decision::{Decision, Denial, decide};
 pub use mount::MountMode;

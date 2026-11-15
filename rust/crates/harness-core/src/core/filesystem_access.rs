@@ -75,7 +75,12 @@ pub(crate) fn file_read_grant<'f>(
     file: &'f crate::conversation::FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Option<ReadGrant<'f>>> {
-    if contains_content_grant_with_work(grants, file, acyclic_fs::access::FILE_READ_PREFIX, work)? {
+    if grants
+        .with_prefix(acyclic_fs::access::FILE_READ_PREFIX)
+        .next()
+        .is_some()
+        && grants.contains(&file.read_capability(work)?)
+    {
         return Ok(Some(ReadGrant::Exact));
     }
     directory_read_grant(
@@ -108,6 +113,13 @@ pub(crate) fn directory_read_grant<'p>(
     )? {
         return Ok(Some(ReadGrant::Volume));
     }
+    if grants.with_prefix(DIRECTORY_READ_PREFIX).next().is_none() {
+        return Ok(None);
+    }
+    let digest = volume.identity_digest(
+        crate::store::default_projection_read_limits().maximum_bytes,
+        work,
+    )?;
     for prefix in std::iter::once("")
         .chain(
             path.match_indices('/')
@@ -115,8 +127,7 @@ pub(crate) fn directory_read_grant<'p>(
         )
         .chain((!path.is_empty()).then_some(path))
     {
-        if contains_content_grant_with_work(grants, &(volume, prefix), DIRECTORY_READ_PREFIX, work)?
-        {
+        if grants.contains(&volume.directory_read_label(digest, prefix, work)?) {
             return Ok(Some(ReadGrant::Directory(prefix)));
         }
     }

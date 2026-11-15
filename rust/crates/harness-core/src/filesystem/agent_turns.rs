@@ -262,8 +262,11 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
         external: &[FileRef],
         turn: Option<OperationId>,
     ) -> Result<AgentAuthority<'v>> {
-        let BindingGrants { mut labels, layer } =
-            binding_grants(self.volumes, &self.journal, external)?;
+        let BindingGrants {
+            mut labels,
+            layer,
+            volumes,
+        } = binding_grants(self.volumes, &self.journal, external)?;
         let (grants, scope) = match self.parent {
             Some(parent) => {
                 let ceiling = parent.capabilities();
@@ -276,6 +279,19 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
                     .map(str::to_owned)
                     .collect();
                 granted.extend(labels.into_iter().filter(|label| ceiling.contains(label)));
+                // A directory or exact-file read the admission grants on a
+                // bound volume is kept; its path is still checked at use.
+                granted.extend(
+                    ceiling
+                        .iter()
+                        .filter(|label| {
+                            matches!(
+                                acyclic_fs::access::ContentReadLabel::parse(label),
+                                Ok(Some(read)) if volumes.contains(&read.volume)
+                            )
+                        })
+                        .map(str::to_owned),
+                );
                 if let Some(label) = crate::core::filesystem_scope_label(ceiling, &mut None)? {
                     let narrowed = acyclic_fs::access::Capability::from_scope_label(label)
                         .map_err(|error| Error::Unauthorized(error.to_string()))?
@@ -544,6 +560,8 @@ struct BindingGrants {
     /// The same resources as one structured layer, naming each volume by the
     /// storage reference its workspace is bound with.
     layer: Vec<acyclic_fs::access::Grant>,
+    /// Identity digest of every bound volume: seed, journal and workspaces.
+    volumes: Vec<[u8; 32]>,
 }
 
 fn binding_grants(
@@ -554,6 +572,7 @@ fn binding_grants(
     use acyclic_fs::access::{Action, ActionSet};
     let mut grants = Vec::with_capacity(3 * volumes.len() + 3);
     let mut layer = Vec::with_capacity(volumes.len() + external.len() + 2);
+    let mut bound = Vec::with_capacity(volumes.len() + 2);
     let mut reach = |volume: &VolumeRef, root: &str, actions: &[Action]| -> Result<()> {
         let pinned = acyclic_fs::access::Capability::subtree(
             Some(volume.storage_name(&mut None)?),
@@ -564,6 +583,15 @@ fn binding_grants(
         layer.extend(pinned.layers.into_iter().flatten());
         Ok(())
     };
+    // Only seed, journal and workspace volumes are bound; an external file or
+    // attachment on another volume is reached by its exact path alone.
+    let mut bind = |volume: &VolumeRef| -> Result<()> {
+        bound.push(volume.identity_digest(
+            crate::store::default_projection_read_limits().maximum_bytes,
+            &mut None,
+        )?);
+        Ok(())
+    };
     let seed = volumes
         .iter()
         .find_map(WorkspaceEntry::as_volume)
@@ -572,6 +600,7 @@ fn binding_grants(
     if let Some(seed) = &seed {
         grants.push(seed.capability(VolumeOperation::Read, &mut None)?);
         reach(seed, "", ActionSet::SourceRead.actions())?;
+        bind(seed)?;
     }
     grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
     // The journal read every admitted agent's admission carries. The journal
@@ -580,6 +609,7 @@ fn binding_grants(
     // summaries) is readable, and execution records stay host-private.
     grants.push(journal.capability(VolumeOperation::Read, &mut None)?);
     reach(journal, "", ActionSet::SourceRead.actions())?;
+    bind(journal)?;
     // Every agent may spawn, message and archive within its own subtree.
     grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
     for binding in volumes
@@ -595,6 +625,7 @@ fn binding_grants(
             ActionSet::SourceRead.actions()
         };
         reach(volume, &binding.root, actions)?;
+        bind(volume)?;
         if !binding.root.is_empty() {
             grants.push(volume.directory_read_capability(&binding.root, &mut None)?);
         } else {
@@ -638,6 +669,7 @@ fn binding_grants(
     Ok(BindingGrants {
         labels: grants,
         layer,
+        volumes: bound,
     })
 }
 
