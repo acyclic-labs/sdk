@@ -37,7 +37,8 @@ struct DisplacedRead {
     position: AtomicUsize,
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl acyclic_stream::StreamProvider for DisplacedRead {
     fn context(&self) -> acyclic_stream::ProviderContext<'_> {
         self.inner.context()
@@ -200,7 +201,8 @@ struct HeldInspection {
 
 macro_rules! forward {
     ($($name:ident($($argument:ident: $kind:ty),*) -> $result:ty;)*) => {
-        #[async_trait::async_trait]
+        #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
         impl MachinesProvider for HeldInspection {
             fn assurance(&self) -> ProviderAssurance {
                 self.inner.assurance()

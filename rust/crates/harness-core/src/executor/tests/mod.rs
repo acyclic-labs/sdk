@@ -4,6 +4,7 @@ mod code_mode;
 mod context_review;
 #[cfg(not(target_arch = "wasm32"))]
 mod feedback;
+#[cfg(not(target_arch = "wasm32"))]
 mod host_invocations;
 mod pre_dispatch;
 mod saved_admission;
@@ -822,6 +823,7 @@ mod request_continuation;
 #[cfg(not(target_arch = "wasm32"))]
 mod request_ownership;
 mod summary_authorization;
+#[cfg(not(target_arch = "wasm32"))]
 mod target_replay;
 #[cfg(not(target_arch = "wasm32"))]
 mod tool_metadata;

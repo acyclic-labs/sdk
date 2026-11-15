@@ -26,6 +26,7 @@ use std::sync::Arc;
 #[path = "wired/workspace_announcements.rs"]
 mod workspace_announcements;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "wired/diagnostic.rs"]
 mod diagnostic;
 #[path = "wired/journal_payloads.rs"]
@@ -35,6 +36,7 @@ mod journal_payloads;
 mod input_wait;
 #[path = "wired/preparation.rs"]
 mod preparation;
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) use diagnostic::check_diagnostic_read;
 #[path = "wired/settlement.rs"]
 mod settlement;
@@ -224,15 +226,17 @@ fn executors_with_render_bytes(
     // retrospective request would add a model dispatch after every settled
     // turn, and these tests count dispatches for what they mean. Feedback has
     // its own tests over the seed set.
-    Ok(Arc::new(
-        acyclic_harness_core::filesystem::StockExecutors::new(
-            (selection, model),
-            ToolRegistry::default(),
-            (base, CompactionPolicy::Disabled),
-            Arc::new(Tasks(bindings)),
-        )
-        .with_plugins(Arc::new(acyclic_harness_core::plugins::Enabled::default())),
-    ))
+    let executors = acyclic_harness_core::filesystem::StockExecutors::new(
+        (selection, model),
+        ToolRegistry::default(),
+        (base, CompactionPolicy::Disabled),
+        Arc::new(Tasks(bindings)),
+    );
+    // Plugins bind only on native targets; the wasm executors carry none.
+    #[cfg(not(target_arch = "wasm32"))]
+    let executors =
+        executors.with_plugins(Arc::new(acyclic_harness_core::plugins::Enabled::default()));
+    Ok(Arc::new(executors))
 }
 
 fn requested(id: &str, _child: &AgentPath) -> Wake {

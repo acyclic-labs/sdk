@@ -1357,6 +1357,7 @@ async fn spawn_name_resolver_follows_a_six_deep_chain() -> Result {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(8))]
     #[test]

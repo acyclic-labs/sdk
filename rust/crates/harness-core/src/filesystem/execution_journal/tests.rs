@@ -3,6 +3,7 @@ use super::*;
 use crate::filesystem::*;
 use crate::{AgentId, conversation::VolumeOwner, executor::ModelPurpose, resources::ProviderRef};
 
+#[cfg(not(target_arch = "wasm32"))]
 mod staged_ref;
 
 #[tokio::test]

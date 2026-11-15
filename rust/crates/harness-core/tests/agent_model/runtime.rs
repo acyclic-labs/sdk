@@ -2150,7 +2150,7 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
     }
     assert_eq!(complete, expected.as_bytes());
     assert_eq!(blake3::hash(&complete).as_bytes(), &diagnostic.digest);
-    #[cfg(feature = "test-support")]
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     super::wired::check_diagnostic_read(
         &provider,
         &host.state(&root).await?,

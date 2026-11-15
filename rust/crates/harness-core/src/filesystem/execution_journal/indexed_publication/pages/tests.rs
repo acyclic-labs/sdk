@@ -707,7 +707,7 @@ impl acyclic_stream::StreamProvider for RefusedAcknowledgment {
     fn write(
         &self,
         request: acyclic_stream::WriteRequest,
-    ) -> futures::future::BoxFuture<
+    ) -> acyclic_stream::BoxProviderFuture<
         '_,
         std::result::Result<acyclic_stream::WriteOutcome, StreamError>,
     > {
