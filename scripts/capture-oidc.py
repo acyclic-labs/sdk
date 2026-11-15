@@ -40,7 +40,7 @@ def main():
         with response:
             body = response.read(1_048_577)
             status = response.status
-            (root / f"{name}.headers.txt").write_bytes("".join(f"{key}: {value}\n" for key, value in response.headers.items()).encode())
+            (root / f"{name}.headers.txt").write_bytes("".join(f"{key}: {value}".rstrip() + "\n" for key, value in response.headers.items()).encode())
         if len(body) > 1_048_576 or status != (401 if name == "auth" else 200):
             raise RuntimeError(f"{name} unexpected status/size: {status}/{len(body)}")
         (root / f"{name}.body").write_bytes(body)
