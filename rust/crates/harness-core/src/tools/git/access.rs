@@ -1,20 +1,55 @@
 //! Repository sources are authorized before exposing saved metadata or recovering an intent.
 use super::*;
 
-pub(crate) struct RepositoryAccess<'a, P: ?Sized + 'static, O: 'static, S> {
-    pub access: &'a crate::filesystem::WorkspaceAccess,
-    pub filesystem: &'a acyclic_fs::Fs<acyclic_fs::StreamAuthorityStore<P>, O>,
-    pub store: &'a S,
-    pub current: &'a ManagedWorkspace<P, O>,
-    pub repository: acyclic_fs::WorkspaceId,
+/// Repository authority shared by command preparation and native checkout admission.
+pub struct RepositoryAccess<'a, P: ?Sized + 'static, O: 'static, S> {
+    pub(crate) access: &'a crate::filesystem::WorkspaceAccess,
+    pub(crate) filesystem: &'a acyclic_fs::Fs<acyclic_fs::StreamAuthorityStore<P>, O>,
+    pub(crate) store: &'a S,
+    pub(crate) current: &'a ManagedWorkspace<P, O>,
+    pub(crate) repository: acyclic_fs::WorkspaceId,
 }
 
-impl<P, O, S> RepositoryAccess<'_, P, O, S>
+impl<'a, P, O, S> RepositoryAccess<'a, P, O, S>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
 {
+    /// Binds the original task authority and repository without preparing a tree.
+    pub fn new(
+        access: &'a crate::filesystem::WorkspaceAccess,
+        filesystem: &'a acyclic_fs::Fs<acyclic_fs::StreamAuthorityStore<P>, O>,
+        store: &'a S,
+        current: &'a ManagedWorkspace<P, O>,
+        repository: acyclic_fs::WorkspaceId,
+    ) -> Self {
+        Self {
+            access,
+            filesystem,
+            store,
+            current,
+            repository,
+        }
+    }
+
+    /// Refuses an unauthorized inspection before checkout capture or tree preparation.
+    /// Execution still checks its current catalog and authority after preparation.
+    pub async fn require_inspection_target(&self, args: &[String]) -> crate::Result<()> {
+        let branch = crate::tools::fs_command::agent_diff(args)
+            .map(|(branch, _)| branch)
+            .or_else(|| crate::tools::fs_command::agent_show(args).map(|(branch, _, _)| branch));
+        let Some(branch) = branch else { return Ok(()) };
+        self.access.require(self.current).await?;
+        let state = self.state().await?;
+        if let Some(target) = state.branches.get(branch) {
+            self.workspace(target.workspace_id).await?;
+        }
+        // Recovery may create an absent branch. Its existing path resolves
+        // that catalog before execution authorizes the resulting target.
+        Ok(())
+    }
+
     pub(crate) async fn request_result(
         &self,
         operation: acyclic_fs::OperationId,

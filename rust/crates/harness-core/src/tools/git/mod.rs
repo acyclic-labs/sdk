@@ -71,7 +71,7 @@ fn now_millis() -> u64 {
     acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock)
 }
 mod access;
-pub(crate) use access::RepositoryAccess;
+pub use access::RepositoryAccess;
 mod helpers;
 mod join;
 #[cfg(not(target_arch = "wasm32"))]

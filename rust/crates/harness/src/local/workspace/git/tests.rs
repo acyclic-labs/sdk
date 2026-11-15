@@ -13,6 +13,163 @@ struct PreparedMerge {
     >,
 }
 
+#[tokio::test]
+async fn unrelated_inspection_is_refused_before_capturing_unpublished_edits() -> Result<()> {
+    use acyclic_fs::GitCompatStore as _;
+
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let volume = crate::local::tests::volume(directory.path()).await?;
+    let local = LocalHarness::open(
+        crate::local::tests::volume_config(
+            directory.path(),
+            volume,
+            Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+        )?
+        .without_default_tools(),
+    )
+    .await?;
+    let workspace = local
+        .workspace
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?;
+    let scope = RuntimeScope::new(local.signed.capabilities().clone(), Default::default())?;
+    let configuration = capture::configuration(workspace);
+    let commands = Commands {
+        workspace,
+        signed: &local.signed,
+        verifier: &local.verifier,
+        clock: local.clock.as_ref(),
+        capture_options: &configuration.0,
+        capture_policy: &configuration.1,
+    };
+    let context = || CommandContext {
+        owner: &super::super::owner::AgentOwner,
+        operation: OperationId::new(),
+        scope: &scope,
+        request: None,
+    };
+    commands
+        .invoke(
+            commands.fs_arguments("status", &scope)?,
+            context(),
+            Box::pin(async { Ok(()) }),
+        )
+        .await?;
+    let foreign = workspace
+        .filesystem
+        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+            "unrelated-inspection",
+            acyclic_fs::VolumeInitialization {
+                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+            },
+            acyclic_fs::OperationId::new(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+            None,
+        )
+        .await
+        .map_err(storage)?
+        .value
+        .workspace();
+    acyclic_fs::WorkspaceGraph::new(workspace.store.clone())
+        .register_root(
+            &foreign,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| storage(failure.error))?;
+    let repository = acyclic_fs::GitCompatRepository::new(
+        workspace.view().workspace().id(),
+        workspace.store.clone(),
+    );
+    repository
+        .register_branch_workspace("agents/unrelated".into(), foreign.id(), None, false)
+        .await
+        .map_err(storage)?;
+    let before = head(workspace.view().into()).await?.id();
+    std::fs::write(
+        workspace.path.join("unpublished.txt"),
+        b"original unpublished bytes\n",
+    )
+    .map_err(storage)?;
+    assert_eq!(
+        head(workspace.view().into()).await?.id(),
+        before,
+        "the host edit must still need capture"
+    );
+    for command in [
+        "diff agents/unrelated",
+        "diff --stat agents/unrelated",
+        "show agents/unrelated:document",
+    ] {
+        let result = commands
+            .invoke(
+                commands.fs_arguments(command, &scope)?,
+                context(),
+                Box::pin(async { Ok(()) }),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(ref error) if error.code() == crate::wire::ErrorCode::Unauthorized),
+            "{command}: {result:?}"
+        );
+        assert_eq!(
+            head(workspace.view().into()).await?.id(),
+            before,
+            "denied inspection captured unrelated edits"
+        );
+    }
+    // The original checkout queue is deliberately unavailable. A lineage
+    // refusal must still settle without joining the command holding it.
+    let busy = crate::sync::owned::lock_owned(StateArc::clone(&workspace.state)).await;
+    let denied = commands
+        .invoke(
+            commands.fs_arguments("diff agents/unrelated", &scope)?,
+            context(),
+            Box::pin(async { Ok(()) }),
+        )
+        .await;
+    assert!(
+        matches!(denied, Err(ref error) if error.code() == crate::wire::ErrorCode::Unauthorized)
+    );
+    drop(busy);
+    let mut state = workspace
+        .store
+        .load(workspace.view().workspace().id())
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| Error::NotFound("repository".into()))?;
+    let expected = state.revision;
+    state
+        .branches
+        .get_mut("agents/unrelated")
+        .ok_or_else(|| Error::NotFound("branch".into()))?
+        .workspace_id = workspace.view().workspace().id();
+    state.revision += 1;
+    assert!(
+        workspace
+            .store
+            .compare_and_swap(workspace.view().workspace().id(), expected, state)
+            .await
+            .map_err(storage)?
+    );
+    commands
+        .invoke(
+            commands.fs_arguments("status", &scope)?,
+            context(),
+            Box::pin(async { Ok(()) }),
+        )
+        .await?;
+    assert_ne!(
+        head(workspace.view().into()).await?.id(),
+        before,
+        "the authorized control never captured the same host edit"
+    );
+    Ok(())
+}
+
 impl ViewOwner for PreparedMerge {
     fn verify(&self) -> BoxProviderFuture<'_, Result<()>> {
         Box::pin(async move {

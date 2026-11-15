@@ -213,6 +213,15 @@ where
             switched: None,
         }));
     }
+    RepositoryAccess::new(
+        workspace.access,
+        workspace.filesystem,
+        workspace.store,
+        workspace.view.workspace(),
+        workspace.repository,
+    )
+    .require_inspection_target(args)
+    .await?;
     admit_checkout()?;
     let permit = workspace.lease.as_ref().map_or(
         PublicationPermit::Unrestricted,

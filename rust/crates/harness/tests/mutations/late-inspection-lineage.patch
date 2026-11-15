@@ -1,0 +1,36 @@
+diff --git a/rust/crates/harness/src/local/workspace/git.rs b/rust/crates/harness/src/local/workspace/git.rs
+--- a/rust/crates/harness/src/local/workspace/git.rs
++++ b/rust/crates/harness/src/local/workspace/git.rs
+@@ -70,31 +70,2 @@
+-            let source = self.fs_source(self.workspace, &parsed, context.scope)?;
+-            if crate::tools::child_branch_operand(&parsed.arguments).is_some() {
+-                let view = source.as_ref().map_or_else(
+-                    || self.workspace.view().into(),
+-                    |source| source.workspace.view(),
+-                );
+-                let access = crate::filesystem::WorkspaceAccess::new(
+-                    self.verifier,
+-                    self.signed,
+-                    context.scope.grants(),
+-                    Some(
+-                        &self
+-                            .workspace
+-                            .mounts
+-                            .named(parsed.volume.as_deref())?
+-                            .1
+-                            .view
+-                            .volume,
+-                    ),
+-                )?;
+-                crate::tools::git::RepositoryAccess::new(
+-                    &access,
+-                    &self.workspace.filesystem,
+-                    &self.workspace.store,
+-                    view.workspace(),
+-                    view.workspace().id(),
+-                )
+-                .require_inspection_target(&parsed.arguments)
+-                .await?;
+-            }
++            self.fs_source(self.workspace, &parsed, context.scope)?;
+             let mut state =

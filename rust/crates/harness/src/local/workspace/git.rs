@@ -67,7 +67,36 @@ impl Commands<'_> {
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_fs::GitCommandOutput>> {
         Box::pin(async move {
             context.owner.verify().await?;
-            self.fs_source(self.workspace, &parsed, context.scope)?;
+            let source = self.fs_source(self.workspace, &parsed, context.scope)?;
+            if crate::tools::child_branch_operand(&parsed.arguments).is_some() {
+                let view = source.as_ref().map_or_else(
+                    || self.workspace.view().into(),
+                    |source| source.workspace.view(),
+                );
+                let access = crate::filesystem::WorkspaceAccess::new(
+                    self.verifier,
+                    self.signed,
+                    context.scope.grants(),
+                    Some(
+                        &self
+                            .workspace
+                            .mounts
+                            .named(parsed.volume.as_deref())?
+                            .1
+                            .view
+                            .volume,
+                    ),
+                )?;
+                crate::tools::git::RepositoryAccess::new(
+                    &access,
+                    &self.workspace.filesystem,
+                    &self.workspace.store,
+                    view.workspace(),
+                    view.workspace().id(),
+                )
+                .require_inspection_target(&parsed.arguments)
+                .await?;
+            }
             let mut state =
                 crate::sync::owned::lock_owned(StateArc::clone(&self.workspace.state)).await;
             let selected: acyclic_stream::BoxProviderFuture<'_, _> =
