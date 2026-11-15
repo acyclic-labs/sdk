@@ -272,7 +272,7 @@ mod deadlines {
                 at: 1,
             }))
             .await?;
-        let mut request = super::super::replay_work::request(b"deadline".to_vec());
+        let mut request = super::super::replay_work::request(b"deadline".to_vec())?;
         request.deadline_unix_millis = Some(20);
         assert!(matches!(
             stream.commit(request.clone()).await,

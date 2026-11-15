@@ -426,7 +426,7 @@ mod tests {
         let once = std::mem::size_of_val(&observe(&request("once"), work(), |_| None));
         let twice = std::mem::size_of_val(&observe(
             &request("outer"),
-            observe(request("inner"), work(), |_| None),
+            observe(&request("inner"), work(), |_| None),
             |_| None,
         ));
         let guard = std::mem::size_of_val(&observe_guard(request("guard"), work()));
