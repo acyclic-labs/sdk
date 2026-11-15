@@ -604,14 +604,16 @@ impl Table {
 }
 
 struct Tables {
-    owners: [std::sync::Mutex<Table>; OWNER_SHARDS],
+    owners: Box<[std::sync::Mutex<Table>]>,
     hash: std::collections::hash_map::RandomState,
 }
 
 impl Default for Tables {
     fn default() -> Self {
         Self {
-            owners: std::array::from_fn(|_| std::sync::Mutex::new(Table::default())),
+            owners: (0..OWNER_SHARDS)
+                .map(|_| std::sync::Mutex::new(Table::default()))
+                .collect(),
             hash: std::collections::hash_map::RandomState::new(),
         }
     }

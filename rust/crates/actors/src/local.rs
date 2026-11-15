@@ -40,6 +40,7 @@ use acyclic_stream::{
     CommitRequest, ForkCut, IdempotencyKey, PathHead, Provenance, Record, StreamError, StreamPath,
     StreamProvider,
 };
+use futures::TryFutureExt as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -1520,8 +1521,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
 
     /// Seal and submit once. An unknown acknowledgement returns the whole
     /// publication in [`Error::Unknown`]; retries preserve its bytes and custody.
-    pub async fn submit(&self, prepared: PreparedPublish) -> Result<(), Error> {
-        self.submit_retained(prepared).await.map(|_| ())
+    pub fn submit(
+        &self,
+        prepared: PreparedPublish,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send + '_ {
+        self.submit_retained(prepared).map_ok(drop)
     }
 
     /// An accepted local frame can still be deferred by its caller or ordered
@@ -1567,15 +1571,18 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// Submit once and return the exact authored state confirmed by the original
     /// receipt. Foreign publications return None. No post-write read or decode
     /// is needed. Unknown outcomes retain the entire publication in Error::Unknown.
-    pub async fn submit_retained(
+    pub fn submit_retained(
         &self,
         mut prepared: PreparedPublish,
-    ) -> Result<Option<Snapshot>, Error> {
-        acyclic_observability::async_operation!(
+    ) -> impl std::future::Future<Output = Result<Option<Snapshot>, Error>> + Send + '_ {
+        // Pin the retained publication once at its owner boundary. Forwarding
+        // its large state through async wrappers multiplies stack use in every
+        // caller, including native model coroutines.
+        Box::pin(acyclic_observability::operation_future!(
             "acyclic.actors.submit",
             Error::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
-            async {
+            async move {
                 // Committed custody is durable state: every publication from
                 // its cut, a retry by the same owner included, finishes it
                 // first, and a failure leaves it committed for the next one.
@@ -1719,7 +1726,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 PreparedPublish::settle(&outcome?)?;
                 retained
             }
-        )
+        ))
     }
 
     /// The one constructor of every state write. Committed custody is
