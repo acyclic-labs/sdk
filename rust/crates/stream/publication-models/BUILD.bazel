@@ -87,6 +87,7 @@ filegroup(
 exports_files([
         "change.rs",
         "interest.rs",
+        "probe.rs",
     ], visibility = ["//visibility:public"])
 
 filegroup(
