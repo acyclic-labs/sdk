@@ -25,7 +25,7 @@ use mcp_loom::mcp;
 #[cfg(all(loom, feature = "model-checking"))]
 use sync::{
     Arc,
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 #[cfg(all(loom, feature = "model-checking"))]
 mod skill_materializer_loom;
