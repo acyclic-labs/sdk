@@ -4,7 +4,7 @@
     any(test, not(target_arch = "wasm32"), windows)
 ))]
 pub(crate) fn fresh_uuid() -> uuid::Uuid {
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     {
         let mut bytes = [0; 16];
         if acyclic_native_runtime::testing::fill_seeded(&mut bytes) {
@@ -15,7 +15,7 @@ pub(crate) fn fresh_uuid() -> uuid::Uuid {
 }
 
 pub(crate) fn fresh_time_uuid() -> uuid::Uuid {
-    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
     {
         let mut bytes = [0; 16];
         if let Some(millis) = acyclic_native_runtime::testing::unix_millis()
