@@ -583,7 +583,6 @@ fn exact_grants(file: &FileRef, grants: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
 
-
 fn seed(volumes: &[WorkspaceEntry]) -> Result<Option<VolumeRef>> {
     volumes
         .iter()

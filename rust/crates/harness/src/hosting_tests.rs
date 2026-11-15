@@ -20,7 +20,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Whether a refusal falls in `category`, however the client wraps its cause.
-fn refused_as(error: &(dyn std::error::Error + 'static), category: &acyclic_stream::StreamCategory) -> bool {
+fn refused_as(
+    error: &(dyn std::error::Error + 'static),
+    category: &acyclic_stream::StreamCategory,
+) -> bool {
     error
         .downcast_ref::<StreamError>()
         .is_some_and(|error| error.category() == *category)

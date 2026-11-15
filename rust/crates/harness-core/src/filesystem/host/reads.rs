@@ -251,7 +251,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum: u64,
         retain: bool,
         io: &PreparationIo,
-    ) -> Result<(bounded_io::Charged<acyclic_stream::OwnedBytes>, Generation<A, O>)> {
+    ) -> Result<(
+        bounded_io::Charged<acyclic_stream::OwnedBytes>,
+        Generation<A, O>,
+    )> {
         let cut = self
             .select_private_cut(workspace, Some(expected), io)
             .await?;
