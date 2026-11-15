@@ -13,7 +13,6 @@ impl Observation {
             channel.id = id,
             outcome = Empty,
             error.kind = Empty,
-            registration = "pending",
             generation = Empty
         ))
     }
