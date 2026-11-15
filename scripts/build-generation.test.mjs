@@ -177,3 +177,80 @@ test("a selected generation emits actors N-API declarations only for a native bu
   // Stream's TypeScript imports its declarations as types, so every selection keeps them.
   assert.equal(keepsGenerator(stream, ["stream"], false), true);
 });
+
+test("a memoized generation restores exactly what its run projected and pruned, and only for what it covered", async () => {
+  const { memoizedGeneration } = await import("./generation-cache.mjs");
+  const { recordGeneration, writeChanged } = await import("./generated-bindings.mjs");
+  const root = mkdtempSync(join(tmpdir(), "sdk-memo-root-"));
+  const store = mkdtempSync(join(tmpdir(), "sdk-memo-store-"));
+  const previous = process.env.SDK_GENERATION_CACHE;
+  process.env.SDK_GENERATION_CACHE = store;
+  try {
+    const runs = [];
+    const generate = async () => {
+      runs.push("run");
+      writeChanged(join(root, "a.txt"), "a");
+      writeChanged(join(root, "out/x.txt"), "x");
+      writeChanged(join(root, "out/dropped.txt"), "dropped");
+      recordGeneration("P", join(root, "out"));
+      rmSync(join(root, "out/dropped.txt"));
+    };
+    const actors = { name: "actors", packages: ["core", "auth", "actors"], native: false };
+    await memoizedGeneration(root, actors, generate, { key: "k" });
+    assert.deepEqual(runs, ["run"]);
+    rmSync(join(root, "a.txt"));
+    writeFileSync(join(root, "out/x.txt"), "edited");
+    writeFileSync(join(root, "out/stale.txt"), "stale");
+    // A narrower selection is covered; the hit restores projections and prunes what the run pruned.
+    await memoizedGeneration(root, { name: "auth", packages: ["core", "auth"], native: false }, generate, { key: "k" });
+    assert.deepEqual(runs, ["run"]);
+    assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "a");
+    assert.equal(readFileSync(join(root, "out/x.txt"), "utf8"), "x");
+    assert.throws(() => readFileSync(join(root, "out/stale.txt")), { code: "ENOENT" });
+    assert.throws(() => readFileSync(join(root, "out/dropped.txt")), { code: "ENOENT" });
+    // Native outputs and other inputs are not covered.
+    await memoizedGeneration(root, { ...actors, name: "actors+native", native: true }, generate, { key: "k" });
+    await memoizedGeneration(root, actors, generate, { key: "other" });
+    assert.deepEqual(runs, ["run", "run", "run"]);
+    // A damaged entry is an error, never a hit.
+    writeFileSync(join(store, "other", "actors", "files", "a.txt"), "tampered");
+    await assert.rejects(memoizedGeneration(root, actors, generate, { key: "other" }), /damaged entry/);
+  } finally {
+    if (previous === undefined) delete process.env.SDK_GENERATION_CACHE; else process.env.SDK_GENERATION_CACHE = previous;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test("a generation key covers every crate a generator compiles and names content alone, whatever its Git state", async () => {
+  const { digests, generationInputs } = await import("./generation-cache.mjs");
+  const store = mkdtempSync(join(tmpdir(), "sdk-memo-store-"));
+  const repository = mkdtempSync(join(tmpdir(), "sdk-memo-digests-"));
+  const previous = process.env.SDK_GENERATION_CACHE;
+  process.env.SDK_GENERATION_CACHE = store;
+  try {
+    // N-API declarations compile crates no contract target depends on; their sources are inputs all the same.
+    const inputs = new Set(await generationInputs(process.cwd()));
+    for (const crate of ["actors-napi", "stream-napi", "filesystem-napi", "filesystem"]) {
+      assert.ok(inputs.has(`rust/crates/${crate}/src/lib.rs`), `${crate} sources are generation inputs`);
+    }
+    const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd: repository });
+    git("init", "-q");
+    writeFileSync(join(repository, "kept"), "kept");
+    writeFileSync(join(repository, "edited"), "before");
+    git("add", "."); git("commit", "-q", "-m", "base");
+    writeFileSync(join(repository, "edited"), "after");
+    writeFileSync(join(repository, "added"), "added");
+    rmSync(join(repository, "kept"));
+    const working = digests(repository, ["."]);
+    git("add", "-A");
+    assert.deepEqual(digests(repository, ["."]), working, "staging keeps every identity");
+    git("commit", "-q", "-m", "next");
+    assert.deepEqual(digests(repository, ["."]), working, "committing keeps every identity");
+    assert.deepEqual([...working.keys()].sort(), ["added", "edited"], "a deleted file is absent, as after its deletion commits");
+  } finally {
+    if (previous === undefined) delete process.env.SDK_GENERATION_CACHE; else process.env.SDK_GENERATION_CACHE = previous;
+    rmSync(store, { recursive: true, force: true });
+    rmSync(repository, { recursive: true, force: true });
+  }
+});

@@ -47,4 +47,5 @@ export async function renderTypes(root, family, crates) {
   return { [`typescript/packages/${family}/generated/native/binding.d.ts`]: dts };
 }
 
-export const render = (_, root) => renderTypes(root, "filesystem", ["acyclic-fs", "acyclic-fs-napi"]);
+export const crates = ["acyclic-fs", "acyclic-fs-napi"];
+export const render = (_, root) => renderTypes(root, "filesystem", crates);
