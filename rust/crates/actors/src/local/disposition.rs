@@ -292,10 +292,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         cause: &GuestError,
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
-        if matches!(cause, GuestError::PreconditionChanged) {
+        if matches!(cause.category(), GuestError::PreconditionChanged) {
             return Err(Error::PreconditionChanged(Vec::new()));
         }
-        if matches!(cause, GuestError::Pending(_)) {
+        if matches!(cause.category(), GuestError::Pending(_)) {
             return Err(Error::Handler(cause.clone()));
         }
         let original = super::owned(previous, epoch)?;

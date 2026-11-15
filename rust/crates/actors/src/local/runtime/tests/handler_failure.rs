@@ -49,9 +49,11 @@ impl Handler for RefusedRecord {
 #[tokio::test]
 async fn handler_failure_never_idles_with_its_input() -> TestResult {
     let pending = GuestError::Pending("unknown external acknowledgement".into())
+        .with_source(serde_json::from_slice::<serde_json::Value>(b"{").unwrap_err())
         .with_context("handler delivery");
-    let decided =
-        GuestError::Handler("definitive handler failure".into()).with_context("handler delivery");
+    let decided = GuestError::Handler("definitive handler failure".into())
+        .with_source(serde_json::from_slice::<serde_json::Value>(b"{").unwrap_err())
+        .with_context("handler delivery");
     // (error, refusals, attempts, failure transitions, work steps per batch);
     // a one-step work budget yields between the attempt and its redelivery.
     for (error, refusals, attempts, failures, work) in [
