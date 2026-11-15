@@ -78,6 +78,7 @@ members = [
   "rust/crates/stream/fuzz",
   "rust/crates/stream/models",
   "rust/crates/stream/publication-models",
+  "rust/crates/test-runner",
   "rust/crates/test-support",
   "rust/crates/workers",
   "rust/fuzz",
@@ -145,6 +146,7 @@ default-members = [
   "rust/crates/source-policies",
   "rust/crates/stream",
   "rust/crates/stream-napi",
+  "rust/crates/test-runner",
   "rust/crates/test-support",
   "rust/crates/harness-tui",
   "rust/crates/workers",
@@ -158,13 +160,28 @@ default-members = [
 exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2", "rust/vendor/napi-3.15.0", "rust/vendor/rquickjs-core-0.14.0", "rust/vendor/rquickjs-sys-0.14.0", "rust/vendor/syntect-5.3.0"]
 resolver = "2"
 
+# Members that build with Bazel. scripts/bazel-build-files.mjs generates their BUILD.bazel
+# files from these manifests; the list is closed under first-party dependencies and grows
+# until it names every member.
+[workspace.metadata.bazel]
+members = [
+  "rust/crates/auth-action",
+  "rust/crates/collections",
+  "rust/crates/differential",
+  "rust/crates/filesystem-base",
+  "rust/crates/markdown-work",
+  "rust/crates/model-render",
+  "rust/crates/protobuf-json",
+  "rust/crates/test-runner",
+  "rust/crates/test-support",
+]
+
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
 repository = "https://github.com/acyclic-labs/sdk"
-publish = true
 
 [workspace.dependencies]
 async-trait = "0.1.89"

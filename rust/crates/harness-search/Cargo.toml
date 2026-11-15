@@ -6,7 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish.workspace = true
 description = "Provider-neutral web search behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-search"
 
