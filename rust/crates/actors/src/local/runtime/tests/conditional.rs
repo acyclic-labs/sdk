@@ -6,6 +6,7 @@ use acyclic_stream::{
     IdempotencyObservation, ProviderContext, ReadRequest, WriteOutcome, WriteRequest,
 };
 use std::sync::Mutex;
+use tokio::sync::oneshot;
 
 enum Competing {
     SameProposal,
@@ -17,6 +18,9 @@ struct Interleaved {
     source: MemoryStream,
     writes: AtomicU64,
     before_write: Mutex<Option<Competing>>,
+    /// Parks the next placement head read: reports arrival, then waits for
+    /// release, so a test can commit and wake inside placement's window.
+    before_placement_head: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
 impl Interleaved {
@@ -54,6 +58,17 @@ impl ExplicitStreamProvider for Interleaved {
     }
 
     async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError> {
+        if request
+            .paths
+            .iter()
+            .any(|path| path.as_str().ends_with("/placement"))
+        {
+            let gate = self.before_placement_head.lock().unwrap().take();
+            if let Some((reached, release)) = gate {
+                reached.send(()).map_err(|()| StreamError::Unavailable)?;
+                release.await.map_err(|_| StreamError::Unavailable)?;
+            }
+        }
         let result = self.source.heads(request).await?;
         Ok(result)
     }
@@ -394,5 +409,56 @@ async fn a_lost_delivery_publication_readmits_only_within_its_placement() -> Tes
             assert_eq!(runtime.counts(), (1, 0));
         }
     }
+    Ok(())
+}
+
+/// A wake that lands inside placement survives it. Placement observes the
+/// paused actor, then an external resume commits and its activation wakes the
+/// slot before placement settles. The resume's input must still be delivered:
+/// that activation is the only wake it gets.
+#[tokio::test]
+async fn a_wake_inside_placement_is_delivered_after_it() -> TestResult {
+    let runtime = runtime()?;
+    let store = runtime.store();
+    let provider = store.provider();
+    let address = spawn_with(store, "placement-wake", &[b"emit"]).await?;
+    runtime.place(address.clone(), 1).await?;
+    let placed = store.load(&address).await?;
+    store
+        .set_paused(&placed, 1, true, key("external-pause")?)
+        .await?;
+    assert!(runtime.drain().await.is_empty());
+    assert!(
+        records(&**provider, "out/placement-wake").await?.is_empty(),
+        "a paused actor delivered"
+    );
+    let (reached, observed) = oneshot::channel();
+    let (release, released) = oneshot::channel();
+    *provider.inner().before_placement_head.lock().unwrap() = Some((reached, released));
+    let resume = async {
+        observed.await?;
+        let paused = store.load(&address).await?;
+        let request = store
+            .prepare_paused(&paused, 1, false, key("external-resume")?)?
+            .into_request()?;
+        let outcome = provider.commit(request).await?;
+        let acyclic_stream::CommitOutcome::Committed(receipt) = outcome else {
+            return Err(format!("resume did not commit: {outcome:?}").into());
+        };
+        runtime.wake_committed(&address, &receipt)?;
+        release.send(()).map_err(|()| "placement stopped waiting")?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    // Exact replay of the current command reads the placement head after it
+    // observed the actor; the resume commits and wakes inside that window.
+    let (placed, resumed) = tokio::join!(runtime.place(address.clone(), 1), resume);
+    placed?;
+    resumed?;
+    assert!(runtime.drain().await.is_empty());
+    assert_eq!(
+        records(&**provider, "out/placement-wake").await?,
+        vec![Bytes::from_static(b"r0")],
+        "placement dropped the resume's wake"
+    );
     Ok(())
 }
