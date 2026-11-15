@@ -16,13 +16,13 @@ fn render(value: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
-async fn oversize_records_render_retained_and_history_pages_back()
+async fn oversize_records_render_and_evicted_history_pages_back()
 -> Result<(), Box<dyn std::error::Error>> {
     delivery(false).await
 }
 
 #[tokio::test]
-async fn oversize_latest_values_render_and_stay_retained() -> Result<(), Box<dyn std::error::Error>>
+async fn oversize_latest_values_render_and_evict_by_page() -> Result<(), Box<dyn std::error::Error>>
 {
     delivery(true).await
 }
@@ -49,7 +49,11 @@ async fn delivery(latest: bool) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(wire::session_subscription::Kind::Follow(follow)) = request.kind.as_mut() {
         follow.bootstrap_head = false;
     }
-    let mut session = WireSession::new(pool, DemandPolicy::default());
+    let mut session = WireSession::with_view_policy(
+        pool,
+        DemandPolicy::default(),
+        crate::StreamViewPolicy::new(128)?,
+    );
     session.replace_streams([(path.clone(), request)])?;
     let mut one_charge = 0;
     for delivered in 1usize..=130 {
@@ -88,24 +92,22 @@ async fn delivery(latest: bool) -> Result<(), Box<dyn std::error::Error>> {
             };
             assert_eq!(original.as_ref(), huge.as_slice());
         }
-        // The selected view keeps every delivered row: no former count or
-        // byte ceiling evicts the oversized first one.
         if latest {
-            assert!(view.latest_value(b"key000").is_some());
+            assert_eq!(view.latest_value(b"key000").is_some(), delivered <= 128);
             assert_eq!(view.records().len(), 0);
         } else {
-            assert_eq!(view.records().len(), delivered);
-            assert_eq!(view.first_sequence(), 0);
+            assert_eq!(view.records().len(), delivered.min(128));
+            assert_eq!(
+                view.first_sequence(),
+                u64::try_from(delivered.saturating_sub(128))?
+            );
         }
-        assert_eq!(view.retained_bytes(), delivered * one_charge);
+        assert_eq!(view.retained_bytes(), delivered.min(128) * one_charge);
         if delivered > 128 {
             assert!(view.retained_bytes() > 1024 * 1024);
             assert!(session.retained_bytes() < 128 * 1024);
         }
-        assert!(
-            session.is_following(&path),
-            "oversized retention ended delivery"
-        );
+        assert!(session.is_following(&path), "eviction ended delivery");
     }
     if !latest {
         backfill(memory, &path, &text, &other_text).await?;
@@ -126,7 +128,7 @@ async fn seed(
     huge: &acyclic_stream::OwnedBytes,
     other: &acyclic_stream::OwnedBytes,
 ) -> Result<(), StreamError> {
-    // Fill more than one former default display page, oversized row first.
+    // Fill more than one default display page, with the oversized row first.
     for start in (0..130).step_by(32) {
         append(
             memory,

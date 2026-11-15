@@ -1,5 +1,5 @@
 use crate::reader::backing::BackingPool;
-use crate::{DemandError, DemandPolicy, StreamView, ViewDemand};
+use crate::{DemandError, DemandPolicy, StreamView, StreamViewPolicy, ViewDemand};
 use acyclic_stream::{
     BoxProviderFuture, BoxProviderStream, StreamError, StreamPath,
     runtime::{ReadySources, SourceReader},
@@ -104,6 +104,7 @@ pub struct WireSession {
     resources: BTreeMap<String, u64>,
     ready: ReadySources<Subscription, SourceReader>,
     resource_views: Views<String>,
+    view_policy: StreamViewPolicy,
     revision: u64,
     backings: BackingPool,
 }
@@ -117,6 +118,16 @@ impl WireSession {
     /// Take the platform-created pool; native and WASM use the same owner.
     #[must_use]
     pub fn new(client: Client, policy: DemandPolicy) -> Self {
+        Self::with_view_policy(client, policy, StreamViewPolicy::default())
+    }
+
+    /// Use a caller-selected display page size on the same canonical pool.
+    #[must_use]
+    pub fn with_view_policy(
+        client: Client,
+        policy: DemandPolicy,
+        view_policy: StreamViewPolicy,
+    ) -> Self {
         Self {
             client,
             policy,
@@ -126,6 +137,7 @@ impl WireSession {
             resources: BTreeMap::new(),
             ready: ReadySources::with_readers(),
             resource_views: Views::default(),
+            view_policy,
             revision: 0,
             backings: BackingPool::default(),
         }
@@ -474,7 +486,14 @@ impl WireSession {
         (
             RetainedView {
                 request,
-                view: StreamView::new(from, revision, filtered, followed, self.backings.clone()),
+                view: StreamView::new(
+                    self.view_policy,
+                    from,
+                    revision,
+                    filtered,
+                    followed,
+                    self.backings.clone(),
+                ),
             },
             Subscription {
                 id: revision,

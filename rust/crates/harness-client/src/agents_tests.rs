@@ -142,7 +142,14 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
                 _ => {}
             }
         };
-        let mut view = StreamView::new(0, 0, false, Some(followed.clone()), backings.clone());
+        let mut view = StreamView::new(
+            crate::StreamViewPolicy::default(),
+            0,
+            0,
+            false,
+            Some(followed.clone()),
+            backings.clone(),
+        );
         let Some(wire::session_frame::Body::Data(wire::SessionData {
             item: Some(wire::session_data::Item::Record(original)),
             ..
@@ -196,8 +203,14 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
                 + tiny_key.len()
                 + tiny_attribute.len()
         );
-        let mut wire_only =
-            StreamView::new(0, 0, false, Some(followed.clone()), Default::default());
+        let mut wire_only = StreamView::new(
+            crate::StreamViewPolicy::default(),
+            0,
+            0,
+            false,
+            Some(followed.clone()),
+            Default::default(),
+        );
         let raw = frame.into_wire().into();
         wire_only.apply(&raw, 1)?;
         assert_ne!(
@@ -332,7 +345,14 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
                     .as_ptr(),
                 tiny.as_slice().as_ptr(),
             );
-            let mut tiny_view = StreamView::new(0, 0, latest, Some(path), backings.clone());
+            let mut tiny_view = StreamView::new(
+                crate::StreamViewPolicy::new(1)?,
+                0,
+                0,
+                latest,
+                Some(path),
+                backings.clone(),
+            );
             tiny_view
                 .apply(&frame, 1)
                 .expect("tiny slice failed display retention");
@@ -448,7 +468,14 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
         follow.bootstrap_head = false;
     }
     let mut source = pool.subscribe(request).await?;
-    let mut view = StreamView::new(0, 0, true, Some(indexed.clone()), Default::default());
+    let mut view = StreamView::new(
+        crate::StreamViewPolicy::default(),
+        0,
+        0,
+        true,
+        Some(indexed.clone()),
+        Default::default(),
+    );
     let mut one_charge = 0;
     for delivered in 1..=130 {
         let frame = loop {
@@ -490,13 +517,13 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
         }
         if delivered == 130 {
             assert!(view.latest_value(b"key000").is_some());
-            assert!(view.latest_value(b"key001").is_some());
+            assert!(view.latest_value(b"key001").is_none());
             assert_eq!(
                 view.latest_value(b"key128").unwrap().value.as_ref(),
                 json.as_ref()
             );
             assert_eq!(view.take_latest_probes(), 3);
-            assert_eq!(view.retained_bytes(), 129 * one_charge);
+            assert_eq!(view.retained_bytes(), 128 * one_charge);
             // A replayed cursor must not remove/reorder a retained value
             // or change the aggregate residency before it is rejected.
             let revision = view.revision();
