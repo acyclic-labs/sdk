@@ -8,6 +8,7 @@ FEATURES = [
         "endpoint-presets",
         "fuzzing",
         "local",
+        "model-checking",
         "research",
         "wasm-journal",
     ]
@@ -132,6 +133,7 @@ rust_library(
         "@crates//http-1.5.0",
         "@crates//httpdate-1.0.3",
         "@crates//keyring-3.6.3",
+        "@crates//loom-0.7.3",
         "@crates//reqwest_0_12_28-0.12.28",
         "@crates//serde-1.0.229",
         "@crates//serde_json-1.0.154",
