@@ -453,32 +453,24 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
     );
     let current = admission(&harness, "agent.ts", &version).await?;
     assert_eq!(current.status, AdmissionStatus::Applied);
-    // The unchanged home file retains its earlier admitted outcome as well.
-    let grant = ContentGrant::verify_directory_read(
-        &harness.verifier,
-        &harness.signed,
-        &harness.journal,
-        "",
-        &mut None,
-    )?;
-    let (_, bytes, _) = harness
-        .files
-        .read_private_path_indexed(
-            &harness.journal,
-            &grant,
-            &format!(
-                "live/agents/{}/admissions/agent.ts/{}/{version}.json",
-                harness.root,
-                original_cut.to_hex()
-            ),
-            None,
-            None,
-            access,
+    // The unchanged home file retains its earlier admitted outcome as well,
+    // under the original cut in the owner's admissions stream.
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let retained = decisions(&harness)?
+        .latest(
+            harness.root,
+            "agent.ts",
+            &original_cut.to_hex(),
+            &version,
+            &work,
         )
         .await?
         .ok_or_else(|| Error::NotFound("original configuration admission".into()))?;
-    let retained: Admission =
-        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(retained, original);
     Ok(())
 }
