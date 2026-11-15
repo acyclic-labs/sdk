@@ -3,7 +3,7 @@ use crate::Error;
 use crate::agent::*;
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_machines::SimulatedMachines;
-use acyclic_stream::{MemoryStream, testing::Counted};
+use acyclic_stream::{MemoryStream, StreamError, testing::Counted};
 use tokio::sync::Semaphore;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
