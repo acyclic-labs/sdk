@@ -71,8 +71,13 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
             .source())
         .any(|source| source.is::<std::io::Error>())
     );
+    // A member refusal crosses the close boundary with its original status
+    // message, even while it retains a local source; only a local cause with
+    // no member refusal is rendered there.
+    let member = status.message().to_owned();
     let local = StreamError::Unavailable.with_source(status);
-    for original in [original, local] {
+    let rendered = local.to_string();
+    for (original, expected) in [(original, member), (local, rendered)] {
         for phase in [Phase::Prepare, Phase::Open, Phase::Output, Phase::Input] {
             let client = Client::in_process_with_sockets(
                 Arc::new(MemoryStream::default()),
@@ -139,10 +144,6 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
             return Err("failure was not encoded as a session close".into());
         };
         assert_eq!(closed.code, original.code());
-        let expected = match &original {
-            StreamError::Caused(_) => original.to_string(),
-            _ => tonic::Status::from(&original).message().to_owned(),
-        };
         assert_eq!(closed.message, expected);
         assert_eq!(
             retained,
