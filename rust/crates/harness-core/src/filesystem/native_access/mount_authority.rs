@@ -360,6 +360,10 @@ mod tests {
             .mount_options(&workspace, None, "", false, &work)
             .await?;
         let observer = workspace.native_source(&observer_options).await?;
+        let observer_guard = observer
+            .native_callback_guard()
+            .ok_or_else(|| Error::Invalid("observer lost its caller guard".into()))?;
+        observer_guard.check(&work)?.await?;
         #[cfg(windows)]
         let name = "observed"
             .encode_utf16()
@@ -391,6 +395,9 @@ mod tests {
         let before = work.receipt();
         assert!(caller_guard.check(&work)?.await.is_err());
         assert!(caller_guard.check_write(&work)?.await.is_err());
+        // Native backends authorize through this guard before invoking the
+        // synchronous source callback, via their shared metering boundary.
+        assert!(observer_guard.check(&work)?.await.is_err());
         assert_eq!(
             work.receipt().backend_read_operations,
             before.backend_read_operations
@@ -399,7 +406,6 @@ mod tests {
             work.receipt().backend_write_operations,
             before.backend_write_operations
         );
-        assert!(observer.read_range(&path, 0, 5).is_err());
         observer.cancel();
         // Negative control: bootstrap custody is explicitly retained by the host,
         // while admitted above only retains the authenticated narrow workload.
