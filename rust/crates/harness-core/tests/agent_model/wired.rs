@@ -2847,3 +2847,70 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
     }
     Ok(())
 }
+
+/// A memory agent host whose turns run on filesystem host `files`.
+fn filesystem_agents(stream: &Arc<MemoryStream>, files: &Host) -> Result<AgentHost<MemoryStream>> {
+    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+        stream.clone(),
+        within(),
+        files.clone(),
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
+        TurnAdmission::LocalRoot,
+        executors(Arc::new(ScriptedModelProvider::new([])))?,
+        LIMITS,
+        Default::default(),
+    ));
+    committing(stream, files, driver)
+}
+
+/// Root creation creates the root's journal, so it never adopts one it did
+/// not create: a root over an existing journal, and a second creation of a
+/// created root under another intent, are each refused with the typed
+/// creation conflict, and the first creation stays in place.
+#[tokio::test]
+async fn a_root_creation_over_an_existing_journal_or_root_is_refused() -> Result {
+    use acyclic_harness_core::filesystem::hosting::Prepared;
+    let conflict = |result: std::result::Result<_, acyclic_harness_core::agent::Error>| {
+        matches!(
+            result,
+            Err(acyclic_harness_core::agent::Error::Record(
+                "agent exists with another creation"
+            ))
+        )
+    };
+
+    let path = AgentPath::root(&id(5));
+    let stream = Arc::new(MemoryStream::default());
+    let (files, binding) = private_in(&stream, &path).await?;
+    let agents = filesystem_agents(&stream, &files)?;
+    files.create_volume(&journal_of(binding.volume()?)?).await?;
+    let mut adoption = adopted(id(5));
+    adoption.volumes = vec![binding];
+    let spawn = agents.prepare_root(&intent("over-journal"), adoption, false)?;
+    let prepared = Prepared::prepare(&files, spawn, &[], None, None).await?;
+    assert!(conflict(prepared.submit(&files, &agents).await));
+
+    let path = AgentPath::root(&id(6));
+    let stream = Arc::new(MemoryStream::default());
+    let (files, binding) = private_in(&stream, &path).await?;
+    let agents = filesystem_agents(&stream, &files)?;
+    let mut adoption = adopted(id(6));
+    adoption.volumes = vec![binding];
+    assert_eq!(
+        create_filesystem_root(&agents, &files, &intent("first"), adoption.clone()).await?,
+        path
+    );
+    let before = agents.state(&path).await?;
+    let spawn = agents.prepare_root(&intent("second"), adoption, false)?;
+    let prepared = Prepared::prepare(&files, spawn, &[], None, None).await?;
+    assert!(conflict(prepared.submit(&files, &agents).await));
+    assert_eq!(agents.state(&path).await?, before);
+    Ok(())
+}
