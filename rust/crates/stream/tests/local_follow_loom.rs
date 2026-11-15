@@ -71,6 +71,18 @@ fn negative_control_completion_leaves_the_job_armed() {
 }
 
 #[test]
+fn budget_parked_waiters_complete_after_one_publication() {
+    for drop_parked in [false, true] {
+        acyclic_stream::verification::budget_parked_waiters(drop_parked, false);
+    }
+}
+#[test]
+#[should_panic(expected = "deadlock")]
+fn negative_control_budget_yield_after_acquire_parks_state() {
+    acyclic_stream::verification::budget_parked_waiters(false, true);
+}
+
+#[test]
 fn memory_follow_cannot_park_state() {
     acyclic_stream::verification::memory_follow_parking(false, false);
     acyclic_stream::verification::memory_follow_parking(false, true);
