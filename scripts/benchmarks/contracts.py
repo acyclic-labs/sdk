@@ -36,8 +36,8 @@ class Artifact:
         digest(sha256, 64)
         digest(source_sha, 40)
         binary = Path(path)
-        if binary.name != "acyclic" or binary.is_symlink():
-            raise ValueError("select the regular Linux acyclic build artifact")
+        if binary.is_symlink() or not binary.is_file():
+            raise ValueError(f"expected a regular graphcoder build artifact; received {binary}")
         return cls(binary.read_bytes(), sha256, source_sha)
 
     def install_command(self, destination: str) -> str:

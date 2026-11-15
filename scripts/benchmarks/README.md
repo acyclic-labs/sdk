@@ -39,7 +39,7 @@ Generate a plan with an explicitly supplied, unauthenticated Responses endpoint:
 ```sh
 python3 -m scripts.benchmarks.plan plan \
   --stage tb2-20 --manifest /path/to/tb2-manifest.json \
-  --binary /path/to/acyclic --binary-sha256 FULL_BINARY_SHA256 \
+  --binary /path/to/graphcoder --binary-sha256 FULL_BINARY_SHA256 \
   --source-sha FULL_QUALIFIED_MAIN_COMMIT \
   --model openai/MODEL --base-url http://EXPLICIT_ENDPOINT/v1 \
   --context-tokens MODEL_CONTEXT_CAPACITY --output-tokens MODEL_OUTPUT_CAPACITY \
@@ -68,7 +68,9 @@ establish task success.
 
 The GraphCoder adapter verifies the Linux binary digest and captures those
 exact bytes before any upload, checks the digest again inside the environment,
-then runs the prompt through the task's native working directory. It uses
+and requires the uploaded executable's `--version` to report `graphcoder <version>`.
+The artifact's filename is unrestricted. It then runs the prompt through the
+task's native working directory. It uses
 fixture HOME/CODEX_HOME/settings, clears inherited process environment apart
 from the task PATH, and uploads only the binary and a public provider catalogue.
 It rejects configured agent environment variables and does not resolve a host
