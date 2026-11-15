@@ -334,12 +334,13 @@ impl FileRef {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<String> {
         self.validate(work)?;
-        content_label(
-            acyclic_fs::access::FILE_READ_PREFIX,
-            self.identity_digest(
-                crate::store::default_projection_read_limits().maximum_bytes,
-                work,
-            )?,
+        let maximum = crate::store::default_projection_read_limits().maximum_bytes;
+        let volume = self.volume.identity_digest(maximum, work)?;
+        let target = self.identity_digest(maximum, work)?;
+        super::volumes::content_read_label(
+            acyclic_fs::access::ContentRead::File,
+            volume,
+            target,
             work,
         )
     }
