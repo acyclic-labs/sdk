@@ -73,6 +73,7 @@ fn check_decisions<const CORRUPT_DECISION: bool>(
         config,
         lineage: &input.principal.lineage,
         volume: "project",
+        reference: None,
         generation: 10,
         head: 10,
         path: &input.path,

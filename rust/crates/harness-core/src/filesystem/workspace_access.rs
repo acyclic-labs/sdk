@@ -97,8 +97,19 @@ async fn require_raw_workspace_access<A: AsyncAuthorityStore, O: AsyncObjectStor
         // Both grant sets hold every raw workspace label, checked above.
         None => access::whole_volume_payload(RAW_WORKSPACE_ACTIONS)?,
     };
-    let compiled =
-        access::access_view(workspace, signed, None, payload, Some(ceiling), &io).await?;
+    let reference = volume
+        .map(|volume| volume.storage_name(&mut Some(&mut io.history_io())))
+        .transpose()?;
+    let compiled = access::bound_access_view(
+        workspace,
+        reference.as_deref(),
+        signed,
+        None,
+        payload,
+        Some(ceiling),
+        &io,
+    )
+    .await?;
     if compiled.0.generation_sensitive() || compiled.0.valid_until().is_some() {
         return Err(Error::FilesystemAccessConfiguration(surface));
     }
@@ -168,8 +179,10 @@ pub async fn require_workspace_subtree_read<
     {
         return Err(Error::FilesystemAccessConfiguration(surface));
     }
-    let view = access::access_view(
+    let reference = volume.storage_name(&mut Some(&mut io.history_io()))?;
+    let view = access::bound_access_view(
         workspace,
+        Some(&reference),
         scope,
         Some(generation),
         access::capability_payload(label, VolumeOperation::Read, io)?,

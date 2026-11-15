@@ -2102,6 +2102,210 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
     Ok(())
 }
 
+/// An admitted agent's authority is its own bindings, never more. Its
+/// admission also grants a volume the agent does not bind (its parent's
+/// project, as after a fork); no volume, directory, exact-file or structured
+/// grant of the minted scope reaches it, while the bound fork keeps its grant.
+#[test]
+fn an_admitted_agents_authority_is_its_bindings_never_more() -> Result<()> {
+    use acyclic_fs::access::{self, Action};
+    // A grandchild fork: its parent's and grandparent's journals hold the
+    // conversation it inherits.
+    let path = AgentPath::root(&crate::agent::AgentId::from_bytes([193; 16]))
+        .child(&crate::agent::AgentId::from_bytes([191; 16]))
+        .and_then(|parent| parent.child(&crate::agent::AgentId::from_bytes([194; 16])))
+        .map_err(Error::from)?;
+    let owner = crate::AgentId::from_bytes(path.id().to_bytes());
+    let audience = Authority {
+        kind: AggregateKind::Task,
+        id: "admitted-bindings".into(),
+    };
+    let root = AuthorityRoot::new("admitted-bindings", [195; 32], audience.clone());
+    let issuer = RuntimeAuthority::from(root.clone());
+    let provider = ProviderRef::new(
+        "admitted-bindings".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let volume = |id: &str, class, owner| {
+        VolumeRef::new(provider.clone(), id.into(), class, owner, &mut None)
+    };
+    let private = volume(
+        "private",
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(owner),
+    )?;
+    let fork = volume(
+        "fork",
+        VolumeClass::Project,
+        VolumeOwner::Project("test".into()),
+    )?;
+    let parent = volume(
+        "project",
+        VolumeClass::Project,
+        VolumeOwner::Project("test".into()),
+    )?;
+    let rooted = volume(
+        "rooted",
+        VolumeClass::Project,
+        VolumeOwner::Project("test".into()),
+    )?;
+    let mut rooted_binding = WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::User,
+        "rooted".into(),
+        rooted.clone(),
+    );
+    rooted_binding.root = "src".into();
+    let volumes = [
+        WorkspaceEntry::initial_volume(
+            crate::agent::WorkspaceRole::Private,
+            PRIVATE_VOLUME.into(),
+            private,
+        ),
+        WorkspaceEntry::initial_volume(
+            crate::agent::WorkspaceRole::User,
+            "project".into(),
+            fork.clone(),
+        ),
+        rooted_binding,
+    ];
+    let parent_file = FileRef::new(
+        parent.clone(),
+        "seed.txt".into(),
+        "1".into(),
+        crate::conversation::FileDescriptor::new([3; 32], 6, "text/plain".into())?,
+        "seed.txt".into(),
+        &mut None,
+    )?;
+    let whole = access::Capability::whole_volume(None, &Action::ALL);
+    let unbound = [
+        parent.capability(VolumeOperation::Read, &mut None)?,
+        parent.capability(VolumeOperation::Write, &mut None)?,
+        parent.capability(VolumeOperation::Delete, &mut None)?,
+        parent.directory_read_capability("src", &mut None)?,
+        parent_file.read_capability(&mut None)?,
+    ];
+    let bound = fork.capability(VolumeOperation::Read, &mut None)?;
+    let bound_directory = fork.directory_read_capability("src", &mut None)?;
+    let unbound_directory = parent.directory_read_capability("src", &mut None)?;
+    // A rooted binding keeps its own root read, never an admission's read
+    // elsewhere in the same volume.
+    let rooted_root = rooted.directory_read_capability("src", &mut None)?;
+    let rooted_escape = rooted.directory_read_capability("secrets", &mut None)?;
+    let scope = root.bootstrap_scope(
+        "caller",
+        &Capabilities::new(
+            unbound.iter().cloned().chain([
+                bound.clone(),
+                bound_directory.clone(),
+                rooted_root.clone(),
+                rooted_escape.clone(),
+                "model:generate".to_owned(),
+                crate::contract::capability::HARNESS_HOST.to_owned(),
+                whole
+                    .to_scope_label()
+                    .map_err(|_| Error::Invalid("fixture filesystem ceiling".into()))?,
+            ]),
+        ),
+        None,
+        &mut None,
+    )?;
+    let admission = TurnAdmission::Admitted { audience, scope };
+    let minted = futures::executor::block_on(async {
+        AdmittedAgent::verify(&issuer, &admission, &path, &volumes)?
+            .authority(&[], None)
+            .await
+    })?;
+    let granted = &minted.grants;
+    // A directory read survives only on a volume the agent binds.
+    assert!(
+        !granted.contains(&unbound_directory),
+        "unbound directory read inherited"
+    );
+    assert!(granted.contains(&bound_directory));
+    assert!(granted.contains(&rooted_root));
+    assert!(
+        !granted.contains(&rooted_escape),
+        "a read outside a rooted binding inherited"
+    );
+    for label in &unbound {
+        assert!(!granted.contains(label), "unbound grant inherited: {label}");
+    }
+    assert!(granted.contains(&bound));
+    assert!(granted.contains("model:generate"));
+    assert!(!granted.contains(crate::contract::capability::HARNESS_HOST));
+
+    // The structured ceiling narrows to the bound volumes, by the storage
+    // reference each workspace is bound with; one bound without a reference
+    // is refused, never admitted.
+    let label = crate::core::filesystem_scope_label(granted, &mut None)?
+        .ok_or_else(|| Error::NotFound("minted filesystem ceiling".into()))?;
+    let narrowed = access::Capability::from_scope_label(label)
+        .map_err(|error| Error::Invalid(error.to_string()))?
+        .ok_or_else(|| Error::NotFound("minted filesystem ceiling".into()))?;
+    assert!(narrowed.is_attenuation_of(&whole));
+    let policy: access::Policy = serde_json::from_slice(access::INITIAL_POLICY)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let principal = access::Principal {
+        kind: access::PrincipalKind::Agent,
+        id: owner.to_string(),
+        lineage: Vec::new(),
+        groups: Default::default(),
+        roles: Default::default(),
+        tags: Default::default(),
+        attributes: Default::default(),
+    };
+    let fork_reference = fork.storage_name(&mut None)?;
+    let parent_reference = parent.storage_name(&mut None)?;
+    let journal = |id: u8| {
+        crate::conversation::journal_volume(
+            provider.clone(),
+            &crate::agent::AgentId::from_bytes([id; 16]),
+        )?
+        .storage_name(&mut None)
+    };
+    // 192 is a sibling of the parent 191, under the same grandparent 193.
+    let (grandparent_journal, parent_journal, sibling_journal) =
+        (journal(193)?, journal(191)?, journal(192)?);
+    for (reference, action, allowed) in [
+        (Some(fork_reference.as_str()), Action::Read, true),
+        (Some(fork_reference.as_str()), Action::Write, true),
+        (Some(parent_reference.as_str()), Action::Read, false),
+        (Some(parent_reference.as_str()), Action::Write, false),
+        // Every ancestor's journal is read, never written; a sibling's
+        // journal is not reached.
+        (Some(parent_journal.as_str()), Action::Read, true),
+        (Some(parent_journal.as_str()), Action::Write, false),
+        (Some(grandparent_journal.as_str()), Action::Read, true),
+        (Some(grandparent_journal.as_str()), Action::Write, false),
+        (Some(sibling_journal.as_str()), Action::Read, false),
+        (None, Action::Read, false),
+    ] {
+        let decision = access::decide(
+            &policy,
+            &principal,
+            action,
+            access::Resource {
+                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable),
+                lineage: &[],
+                volume: "00000000-0000-0000-0000-000000000000",
+                reference,
+                generation: 1,
+                head: 1,
+                path: "seed.txt",
+            },
+            access::Context {
+                now: 0,
+                approvals: 0,
+            },
+            &narrowed,
+        );
+        assert_eq!(decision.allowed, allowed, "{reference:?} {action:?}");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_local_agent_reads_what_its_journal_publishes_and_nothing_private() -> Result<()> {
     // A compacted request projects its summary through the turn's own reader.

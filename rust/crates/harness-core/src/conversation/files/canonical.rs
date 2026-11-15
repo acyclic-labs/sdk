@@ -120,7 +120,16 @@ mod tests {
             assert_eq!(current.unwrap()?, previous);
             assert_eq!(
                 file.read_capability(&mut None)?,
-                content_label(acyclic_fs::access::FILE_READ_PREFIX, previous, &mut None)?
+                acyclic_fs::access::ContentReadLabel {
+                    kind: acyclic_fs::access::ContentRead::File,
+                    volume: crate::executor::json::canonical_json_digest(
+                        file.volume(),
+                        None,
+                        &mut None
+                    )?,
+                    target: previous,
+                }
+                .to_label()
             );
             let issuer = crate::core::AuthorityRoot::new(
                 "files",
@@ -160,7 +169,11 @@ mod tests {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         for file in files()? {
             let expected = file.read_capability(&mut None)?;
-            let bytes = crate::contract::canonical_json_bytes(&file)?.len() as u64;
+            // The label names the volume's identity beside the file's, so the
+            // work is exactly both canonical forms, each hashed once.
+            let bytes = (crate::contract::canonical_json_bytes(file.volume())?.len()
+                + crate::contract::canonical_json_bytes(&file)?.len())
+                as u64;
             let cancellation = CancellationToken::new();
             let mut budget = acyclic_fs::performance::work_budget(20_000, 1_048_576);
             budget.bytes_copied = expected.len() as u64;

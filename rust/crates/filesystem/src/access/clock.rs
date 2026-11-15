@@ -42,6 +42,7 @@ mod tests {
             config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
             lineage: &[],
             volume: "fixture",
+            reference: None,
             generation: 1,
             head: 1,
             path: "file",

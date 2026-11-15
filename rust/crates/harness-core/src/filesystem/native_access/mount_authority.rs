@@ -157,6 +157,38 @@ fn intersect_mount_ceiling(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_unversioned_content_read_label_is_refused() -> Result<()> {
+        let audience = crate::core::Authority {
+            kind: crate::core::AggregateKind::Task,
+            id: "mount-port".into(),
+        };
+        let issuer = crate::core::AuthorityRoot::new("mount-port", [63; 32], audience);
+        let port = NativeMountAuthority::new(&issuer, crate::AgentId::from_bytes([4; 16]))?;
+        // A directory read label in the unversioned format names no volume:
+        // the scope carrying it is refused, never mounted.
+        for legacy in [
+            format!("directory:read:{}", "07".repeat(32)),
+            "directory:read:unrelated".to_owned(),
+        ] {
+            let legacy = issuer.bootstrap_scope(
+                "directory-only",
+                &crate::Capabilities::new([legacy]),
+                port.scope.agent(),
+                &mut None,
+            )?;
+            match port.for_scope(&legacy) {
+                Err(Error::Unauthorized(message)) => assert!(
+                    message.ends_with(&acyclic_fs::access::UnversionedContentRead.to_string()),
+                    "{message}"
+                ),
+                Err(error) => panic!("an unversioned directory grant was not refused: {error}"),
+                Ok(_) => panic!("an unversioned directory grant was admitted"),
+            }
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn mount_port_cannot_outlive_runtime_or_revoked_parent() -> Result<()> {
         acyclic_native_runtime::initialize_native_io_services()
@@ -232,19 +264,6 @@ mod tests {
                 .decide(acyclic_fs::access::Action::Write, "private/key", now)
                 .allowed,
             "a writable mount widened the path grant"
-        );
-        let legacy = issuer.bootstrap_scope(
-            "directory-only",
-            &crate::Capabilities::new(["directory:read:unrelated"]),
-            port.scope.agent(),
-            &mut None,
-        )?;
-        assert!(
-            port.for_scope(&legacy)?
-                .mount_options(&workspace, None, "", true, &work)
-                .await
-                .is_err(),
-            "a legacy directory grant became a whole-volume mount"
         );
         {
             let volume = VolumeRef::new(

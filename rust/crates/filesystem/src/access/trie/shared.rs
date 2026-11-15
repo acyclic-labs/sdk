@@ -499,6 +499,7 @@ impl Binding {
         let resource = Resource {
             config: view.config,
             volume: &view.volume,
+            reference: view.reference.as_deref(),
             lineage: &self.lineage,
             generation: self.generation,
             head: self.head,
@@ -758,7 +759,12 @@ impl CompiledPolicy {
             let work =
                 capability.layers.len() + capability.layers.iter().map(Vec::len).sum::<usize>();
             spend(remaining, work * 24 + 1)?;
-            reserve(size_of::<State>() + resource.volume.len() + principal.id.len())?;
+            reserve(
+                size_of::<State>()
+                    + resource.volume.len()
+                    + resource.reference.map_or(0, str::len)
+                    + principal.id.len(),
+            )?;
             let decisions = Action::ALL.map(|action| {
                 let denial = if capability
                     .expires_at
@@ -793,6 +799,7 @@ impl CompiledPolicy {
                 valid_until: capability.expires_at.filter(|expiry| *expiry > context.now),
                 config: resource.config,
                 volume: resource.volume.to_owned(),
+                reference: resource.reference.map(str::to_owned),
                 subject: (principal.kind, principal.id.clone()),
                 capability_binding: super::super::capability::binding(capability)?,
                 policy_revision: None,

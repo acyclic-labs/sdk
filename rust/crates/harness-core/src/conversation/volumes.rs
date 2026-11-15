@@ -278,13 +278,30 @@ impl VolumeRef {
         if !prefix.is_empty() {
             validate_content_path(prefix, work)?;
         }
-        content_label(
-            acyclic_fs::access::DIRECTORY_READ_PREFIX,
-            self.directory_digest(
-                prefix,
-                crate::store::default_projection_read_limits().maximum_bytes,
-                work,
-            )?,
+        let volume = self.identity_digest(
+            crate::store::default_projection_read_limits().maximum_bytes,
+            work,
+        )?;
+        self.directory_read_label(volume, prefix, work)
+    }
+
+    /// The directory read label for `prefix`, given this volume's identity
+    /// digest; a verifier checking several prefixes digests the volume once.
+    pub(crate) fn directory_read_label(
+        &self,
+        volume: [u8; 32],
+        prefix: &str,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<String> {
+        let target = self.directory_digest(
+            prefix,
+            crate::store::default_projection_read_limits().maximum_bytes,
+            work,
+        )?;
+        content_read_label(
+            acyclic_fs::access::ContentRead::Directory,
+            volume,
+            target,
             work,
         )
     }
@@ -314,6 +331,25 @@ fn label_bytes(prefix: &str, digest: [u8; 32]) -> Option<([u8; 80], usize)> {
     prefix_bytes.copy_from_slice(prefix.as_bytes());
     hash_bytes.copy_from_slice(hash.as_bytes());
     Some((label, length))
+}
+
+/// The one constructor of directory and exact-file read labels.
+pub(crate) fn content_read_label(
+    kind: acyclic_fs::access::ContentRead,
+    volume: [u8; 32],
+    target: [u8; 32],
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<String> {
+    let label = acyclic_fs::access::ContentReadLabel {
+        kind,
+        volume,
+        target,
+    }
+    .to_label();
+    match work.as_deref_mut() {
+        Some(io) => io.clone_text(&label),
+        None => Ok(label),
+    }
 }
 
 #[doc(hidden)]

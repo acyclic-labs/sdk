@@ -69,6 +69,7 @@ fn resource<'a>(lineage: &'a [String], path: &'a str, generation: u64) -> Resour
         config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable),
         lineage,
         volume: "project",
+        reference: None,
         generation,
         head: 10,
         path,
@@ -963,6 +964,7 @@ fn unrestricted_projection_accepts_only_universal_decisions() -> Result<(), Inva
         config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
         lineage: &[],
         volume: "project",
+        reference: None,
         generation: 1,
         head: 1,
         path: "",
@@ -998,7 +1000,7 @@ proptest! {
         let principal = principal();
         let context = Context { now: 10, approvals: 0 };
         let mut resource = Resource { config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
-            lineage: &[], volume: "project", generation: 1, head: 1, path: &path };
+            lineage: &[], volume: "project", reference: None, generation: 1, head: 1, path: &path };
         let action = *Action::ALL.get(deny_action).ok_or(InvalidPolicy("missing fixture action"))?;
         let mut policy = policy(vec![rule("all", Effect::Allow, &Action::ALL, "**")]);
         let mut capability = capability();

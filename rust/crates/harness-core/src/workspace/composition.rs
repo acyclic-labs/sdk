@@ -562,12 +562,14 @@ pub fn compose<T>(
         if !view.root.is_empty() {
             crate::conversation::validate_content_path(&view.root, &mut None)?;
         }
+        let reference = view.volume.storage_name(&mut None)?;
         let access = PathTrie::compile(
             &view.policy,
             principal,
             Resource {
                 lineage: &view.lineage,
                 volume: view.volume.id(),
+                reference: Some(&reference),
                 generation: view.generation,
                 head: view.head,
                 path: "",

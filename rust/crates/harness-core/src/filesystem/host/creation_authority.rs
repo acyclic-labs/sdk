@@ -62,9 +62,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let capability = Capability::from_scope_label(label)
             .map_err(|_| denied())?
             .ok_or_else(denied)?;
+        let reference = volume.storage_name(&mut None)?;
         let identity = self
             .filesystem
-            .workspace_id(volume.storage_name(&mut None)?)
+            .workspace_id(&reference)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let identity = uuid::Uuid::from_bytes(identity.volume_id().into_bytes()).to_string();
         let policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)
@@ -88,6 +89,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 config: self.volume_initialization().config,
                 lineage: &[],
                 volume: &identity,
+                reference: Some(&reference),
                 generation: 0,
                 head: 0,
                 path: "",
