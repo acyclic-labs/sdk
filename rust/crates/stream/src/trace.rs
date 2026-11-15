@@ -86,7 +86,7 @@ impl std::fmt::Display for WaitKey {
 fn live<F: std::future::Future>(
     request: &Request,
     work: F,
-) -> impl std::future::Future<Output = F::Output> {
+) -> impl std::future::Future<Output = F::Output> + use<F> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         if request.mechanism == Mechanism::Wait {
