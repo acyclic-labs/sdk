@@ -53,6 +53,14 @@ crate.annotation(
     ],
 )
 
+crate.annotation(
+    crate = "ts-rs",
+    version = "=12.0.1",
+    proc_macro_deps = [
+        "@@//rust/vendor/ts-rs-macros-12.0.1:ts_rs_macros",
+    ],
+)
+
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//:Cargo.lock",
@@ -63,4 +71,10 @@ crate.from_cargo(
         "x86_64-unknown-linux-gnu",
     ],
 )
-use_repo(crate, "crates")
+crate.annotation(
+    crate = "protoc-bin-vendored-linux-x86_64",
+    version = "=3.3.0",
+    additive_build_file_content = "exports_files([\"bin/protoc\",\"include\"])\n",
+)
+
+use_repo(crate, "crates", "crates__protoc-bin-vendored-linux-x86_64-3.3.0")
