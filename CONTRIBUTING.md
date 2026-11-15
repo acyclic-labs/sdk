@@ -139,13 +139,10 @@ packages are workspace members using the root lock. They stay outside
 membership; run sanitizer fuzzing with `cargo +nightly fuzz` from the fuzzer
 directory using the same root lockfile.
 Every declared Kani proof (`#[kani::proof]` or `#[kani::proof_for_contract]`)
-must run and succeed. `python3 scripts/proof_inventory_scan.py kani-units METADATA`
-lists them per unit Kani compiles: a package (with `--tests` when a proof is
-test-only) or a standalone file. `kani-verdict METADATA UNIT` judges that unit's
-Kani output, and a declared proof that is missing, repeated or failed fails it,
-as do an unexpected harness and a unit with no proofs. A negative control is
-`#[kani::should_panic]`, so it verifies only by finding its counterexample.
-Per-package Kani options live in `[package.metadata.kani]`.
+must run exactly once and succeed: `scripts/proof_inventory_scan.py kani-units` lists
+them per unit Kani compiles, and `kani-verdict` fails a unit with a missing,
+repeated, failed or unexpected proof, or with none. Negative controls are
+`#[kani::should_panic]`, and per-package Kani options live in `[package.metadata.kani]`.
 The captured proof-policy workspace under `scripts/tests/fixtures` is test data
 with no root crate dependencies. It and vendored upstream packages retain their
 original dependency inputs.
