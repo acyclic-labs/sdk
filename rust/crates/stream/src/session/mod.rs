@@ -41,6 +41,14 @@ pub use sockets::{
     PreparedSocketOpen, SocketAuthorization, SocketChannel, SocketInbound, SocketProvider,
 };
 mod client;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod fixture {
+    use crate as acyclic_stream;
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/session.rs"
+    ));
+}
 mod read_provider;
 pub use read_provider::ReadProvider;
 mod connection;

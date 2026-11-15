@@ -157,10 +157,10 @@ pub(super) fn serve(
     (server, ended)
 }
 
-pub(super) struct Options {
-    pub(super) tls: bool,
-    pub(super) withhold_welcome: bool,
-    pub(super) confirm_checked: bool,
+pub(crate) struct Options {
+    pub(crate) tls: bool,
+    pub(crate) withhold_welcome: bool,
+    pub(crate) confirm_checked: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -411,7 +411,7 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
         ))
     }
 }
-pub(super) struct Fixture {
+pub(crate) struct Fixture {
     pub(crate) controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
     // Retains the raw transport for consumer-specific RPC fault probes.
     pub(crate) _channel: TransportChannel,
@@ -422,7 +422,7 @@ pub(super) struct Fixture {
     pub(crate) connections: Arc<Connections>,
 }
 impl Fixture {
-    pub(super) async fn with_options<P: StreamProvider>(
+    pub(crate) async fn with_options<P: StreamProvider>(
         provider: Arc<P>,
         node: &str,
         options: Options,

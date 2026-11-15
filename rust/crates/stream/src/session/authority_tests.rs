@@ -147,7 +147,7 @@ async fn alarm_producer_loss_terminates_the_original_authorized_session() {
             }
         }
         assert_eq!((succeeded, unsettled), (1, 1));
-        root.finish_submitted(None, Outcome::Succeeded).unwrap();
+        let _completion = root.finish_submitted(None, Outcome::Succeeded).unwrap();
     }
     for early in [false, true] {
         let state = State::new();
@@ -1195,7 +1195,7 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                 }
             }
             assert_eq!((authorized, unsettled), (1, 1));
-            root.finish_submitted(None, Outcome::Succeeded).unwrap();
+            let _completion = root.finish_submitted(None, Outcome::Succeeded).unwrap();
         }
         for checks in [1, 100, 1000] {
             let authorize = || {

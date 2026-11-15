@@ -377,20 +377,19 @@ async fn original_comparisons(
     ));
     let mut next = Some(first);
     for identical in [true, false] {
-        let recording = match next.take() {
-            Some(first) => first,
-            None => {
-                let recording = recorder
-                    .start(
-                        "model.request",
-                        Mechanism::ProviderCall,
-                        None,
-                        Some("original_request_identity"),
-                    )
-                    .await?;
-                live.next().await?;
-                recording
-            }
+        let recording = if let Some(first) = next.take() {
+            first
+        } else {
+            let recording = recorder
+                .start(
+                    "model.request",
+                    Mechanism::ProviderCall,
+                    None,
+                    Some("original_request_identity"),
+                )
+                .await?;
+            live.next().await?;
+            recording
         };
         let comparison = Comparison {
             kind,
@@ -448,8 +447,11 @@ async fn verify_comparison_query<S>(
         finite,
         serde_json::to_value(live.snapshot(0, 6, Some(6), 0))?
     );
-    assert_eq!(finite[field], 1);
-    let totals = &live.comparisons[&kind];
+    assert_eq!(finite.get(field).ok_or("finite field missing")?, 1);
+    let totals = live
+        .comparisons
+        .get(&kind)
+        .ok_or("comparison totals missing")?;
     assert_eq!((totals.identical, totals.different), (1, 1));
     assert_eq!(
         totals
@@ -475,7 +477,14 @@ async fn verify_comparison_query<S>(
     );
     assert_eq!(suffix.active().len(), 0);
     assert!(suffix.totals().is_empty());
-    assert_eq!(suffix.comparisons[&kind].identical, 1);
+    assert_eq!(
+        suffix
+            .comparisons
+            .get(&kind)
+            .ok_or("suffix comparison totals missing")?
+            .identical,
+        1
+    );
     Ok(())
 }
 
@@ -778,11 +787,12 @@ async fn last_owner_interest_revokes_inherited_producer_during_original_work()
     let registry = Registry::new(provider.clone());
     let owner = crate::StreamPath::new("agents/worker")?;
     let source = crate::StreamPath::new("agents/worker/trace")?;
-    let first = registry.subscribe(owner.clone(), source.clone())?;
-    let last = registry.subscribe(owner, source.clone())?;
+    let first = registry.subscribe(owner.clone(), &source)?;
+    let last = registry.subscribe(owner, &source)?;
+    let other_source = crate::StreamPath::new("agents/other/trace")?;
     let _other = registry.subscribe(
         crate::StreamPath::new("agents/other")?,
-        crate::StreamPath::new("agents/other/trace")?,
+        &other_source,
     )?;
     let recorder: Arc<Recorder<_>> = registry
         .recorder("agents/worker")?

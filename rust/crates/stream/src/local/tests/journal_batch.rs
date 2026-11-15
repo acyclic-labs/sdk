@@ -253,7 +253,7 @@ mod deadlines {
             true
         }
         fn crashed(&self, _: Result<(), CutSimulationError>) {
-            panic!("deadline admission is not a simulated power loss");
+            unreachable!("deadline admission is not a simulated power loss");
         }
     }
 

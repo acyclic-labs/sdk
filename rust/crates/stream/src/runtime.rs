@@ -164,17 +164,19 @@ mod tests {
             acyclic_native_runtime::run_blocking_io(
                 move || {
                     PlatformExecutor.spawn_owned(Box::pin(async move {
-                        let result = acyclic_native_runtime::run_blocking_io(
+                        let result = match acyclic_native_runtime::run_blocking_io(
                             move || {
                                 entered.send(()).map_err(std::io::Error::other)?;
                                 released.recv().map_err(std::io::Error::other)?;
                                 Ok(42)
                             },
                             None,
-                        )
-                        .expect("original native submission")
-                        .await
-                        .and_then(std::convert::identity);
+                        ) {
+                            Ok(completion) => {
+                                completion.await.and_then(std::convert::identity)
+                            }
+                            Err(error) => Err(error),
+                        };
                         let _ = sent.send(result);
                     }));
                 },
@@ -204,7 +206,7 @@ mod tests {
         );
         producer
             .join()
-            .expect("physical completion producer panicked")?;
+            .map_err(|_| "physical completion producer panicked")??;
         Ok((schedule.polls(), schedule.trace()))
     }
 

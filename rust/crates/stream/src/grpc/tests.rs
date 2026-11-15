@@ -1154,16 +1154,15 @@ async fn server_read_custody_settles_only_at_original_body_eof() -> TestResult {
     loop {
         if let Observation::Started { id, .. } =
             query.next().await?.ok_or("missing retained read start")?
+            && id != parent
         {
-            if id != parent {
-                let active = query
-                    .active()
-                    .find_map(|(key, span)| (*key == id).then_some(span))
-                    .ok_or("read settled at headers")?;
-                assert_eq!(active.name, "stream.grpc.serve.read");
-                assert_eq!(active.parent, Some(parent));
-                break;
-            }
+            let active = query
+                .active()
+                .find_map(|(key, span)| (*key == id).then_some(span))
+                .ok_or("read settled at headers")?;
+            assert_eq!(active.name, "stream.grpc.serve.read");
+            assert_eq!(active.parent, Some(parent));
+            break;
         }
     }
     let before = trace.tail().await?;

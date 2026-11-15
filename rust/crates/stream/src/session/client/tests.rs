@@ -39,13 +39,7 @@ fn follow_counts<const N: usize>(
     }
 }
 
-mod fixture {
-    use crate as acyclic_stream;
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/support/session.rs"
-    ));
-}
+use crate::session::fixture;
 use fixture::{Counts, Fixture};
 impl Fixture {
     pub(super) async fn open<P: StreamProvider>(

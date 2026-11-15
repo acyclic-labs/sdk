@@ -5,13 +5,7 @@ use crate::{
     testing::Counted,
 };
 
-mod fixture {
-    use crate as acyclic_stream;
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/support/session.rs"
-    ));
-}
+use crate::session::fixture;
 
 async fn append<P: StreamProvider + ?Sized>(
     provider: &P,
