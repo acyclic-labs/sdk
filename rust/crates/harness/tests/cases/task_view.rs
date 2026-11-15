@@ -660,7 +660,7 @@ proptest! {
             let id = format!("{agent}-project");
             let selected = if agent == "B" { path.to_owned() } else { format!("volume://A/project/{path}") };
             for action in [Action::Read, Action::Write, Action::Create] {
-                let direct = decide(&policy, &caller, action, Resource { lineage: &lineage, volume: &id, generation: 10, head: 10, path, config: volume_config() }, CONTEXT, &capability).allowed;
+                let direct = decide(&policy, &caller, action, Resource { lineage: &lineage, volume: &id, reference: None, generation: 10, head: 10, path, config: volume_config() }, CONTEXT, &capability).allowed;
                 let mounted = table.resolve(Path::new(&selected)).is_ok_and(|(mount, relative)| mount.check(action, &relative, 100).is_ok());
                 prop_assert_eq!(mounted, direct);
             }
