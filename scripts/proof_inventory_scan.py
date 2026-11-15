@@ -207,23 +207,59 @@ def scan_file(path, root):
 LIBRARY_KINDS = {'lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'}
 
 
+def reached_files(crate_root):
+    """Files a crate root reaches through `mod NAME;`, `#[path]` and `include!`, as rustc resolves them.
+
+    Reachability ignores cfg, so it covers every build of the crate.
+    """
+    start = Path(crate_root).resolve()
+    reached, pending = set(), [(start, start.parent)]
+    while pending:
+        file, children = pending.pop()
+        if file in reached or not file.is_file():
+            continue
+        reached.add(file)
+        source = file.read_text(encoding='utf-8-sig')
+        code = mask(source)
+        for m in re.finditer(r'(?<![\w:])(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?(\w+)\s*;', code):
+            attrs, _ = attrs_before(code, source, m.start())
+            explicit = re.search(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]', attrs)
+            if explicit:
+                # A #[path] file is named from this file's directory and holds its children beside it.
+                found = (file.parent / explicit[1]).resolve()
+                pending.append((found, found.parent))
+                continue
+            for found in (children / f'{m[1]}.rs', children / m[1] / 'mod.rs'):
+                if found.is_file():
+                    # NAME.rs holds its children in NAME/; NAME/mod.rs beside it.
+                    pending.append((found.resolve(), found.parent if found.name == 'mod.rs' else found.parent / m[1]))
+                    break
+        for m in re.finditer(r'\binclude!\s*\(', code):
+            literal = re.match(r'\s*"([^"]+)"\s*\)', source[m.end():])
+            if literal:
+                # Included text is spliced into this module, so its children resolve as this file's do.
+                pending.append(((file.parent / literal[1]).resolve(), children))
+    return reached
+
+
 def kani_units(root, metadata, paths):
     """Declared Kani proofs grouped by the unit Kani compiles them in.
 
-    A file belongs to the package whose library source tree holds it, or whose
-    test target it is; any other file is its own crate root (`kani FILE`). A
-    package unit includes its test build when a proof sits in a test target or
-    under cfg(test). A proof attribute that precedes no function is refused.
+    A file belongs to each package whose library or test target reaches it from
+    its crate root, or whose library's source directory holds it (modules can be
+    declared by macros); any other file is its own crate root (`kani FILE`).
+    A package unit includes its test build when a proof is reached only through
+    a test target or sits under cfg(test). A proof attribute that precedes no
+    function is refused.
     """
     root = Path(root).resolve()
     targets = []
     for package in metadata['packages']:
         for target in package['targets']:
-            source = Path(target['src_path']).resolve()
-            if LIBRARY_KINDS & set(target['kind']):
-                targets.append((source.parent, True, package['name'], False))
-            elif 'test' in target['kind']:
-                targets.append((source, False, package['name'], True))
+            library = bool(LIBRARY_KINDS & set(target['kind']))
+            if library or 'test' in target['kind']:
+                held = Path(target['src_path']).resolve().parent if library else None
+                targets.append((package['name'], not library, held, reached_files(target['src_path'])))
     units = {}
     for path in paths:
         proofs = [p for p in scan_file(path, root)['proofs'] if p['kind'] == 'kani']
@@ -233,21 +269,26 @@ def kani_units(root, metadata, paths):
             if proof['name'] is None:
                 raise ValueError(f"{proof['location']}: Kani proof attribute precedes no function")
         file = (root / path).resolve()
-        owners = [t for t in targets if (file.is_relative_to(t[0]) if t[1] else file == t[0])]
-        if owners:
-            directory, _, package, test_target = max(owners, key=lambda t: len(t[0].parts))
-            code = mask((root / path).read_text(encoding='utf-8-sig'))
-            pairs = brace_pairs(code)
-            tested = [(m.start(), pairs[b]) for m in re.finditer(r'#\[\s*cfg\s*\(\s*test\s*\)\s*\]', code)
-                      if (b := code.find('{', m.end())) in pairs]
-            starts = [0] + [m.end() for m in re.finditer('\n', code)]
-            in_test = test_target or any(a <= starts[p['line'] - 1] <= b for p in proofs for a, b in tested)
-            unit = units.setdefault('package:' + package, dict(unit='package:' + package, package=package, tests=False, files=[], proofs=[]))
-            unit['tests'] = unit['tests'] or in_test
-        else:
-            unit = units.setdefault('file:' + path, dict(unit='file:' + path, file=path, files=[], proofs=[]))
-        unit['files'].append(path)
-        unit['proofs'].extend(p['name'] for p in proofs)
+        owners = {}
+        for package, test_target, held, reached in targets:
+            if file in reached or (held is not None and file.is_relative_to(held)):
+                owners.setdefault(package, []).append(test_target)
+        if not owners:
+            owners = {None: []}
+        code = mask(file.read_text(encoding='utf-8-sig'))
+        pairs = brace_pairs(code)
+        tested = [(m.start(), pairs[b]) for m in re.finditer(r'#\[\s*cfg\s*\(\s*test\s*\)\s*\]', code)
+                  if (b := code.find('{', m.end())) in pairs]
+        starts = [0] + [m.end() for m in re.finditer('\n', code)]
+        under_test = any(a <= starts[p['line'] - 1] <= b for p in proofs for a, b in tested)
+        for package, test_targets in owners.items():
+            if package is None:
+                unit = units.setdefault('file:' + path, dict(unit='file:' + path, file=path, files=[], proofs=[]))
+            else:
+                unit = units.setdefault('package:' + package, dict(unit='package:' + package, package=package, tests=False, files=[], proofs=[]))
+                unit['tests'] = unit['tests'] or under_test or all(test_targets)
+            unit['files'].append(path)
+            unit['proofs'].extend(p['name'] for p in proofs)
     return sorted(units.values(), key=lambda unit: unit['unit'])
 
 
@@ -263,7 +304,8 @@ def kani_judgment(proofs, output):
         line = line.strip()
         if checking := re.fullmatch(r'Checking harness (\S+)\.\.\.', line):
             current = checking[1]
-        elif (verdict := re.fullmatch(r'VERIFICATION:- (SUCCESSFUL|FAILED)', line)) and current:
+        # A should_panic proof reports `SUCCESSFUL (encountered one or more panics as expected)`.
+        elif (verdict := re.fullmatch(r'VERIFICATION:- (SUCCESSFUL|FAILED)(?: \([^)]*\))?', line)) and current:
             reported.append((current, verdict[1]))
             current = None
     declared = Counter(proofs)

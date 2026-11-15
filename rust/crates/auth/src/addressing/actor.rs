@@ -154,7 +154,8 @@ pub fn validate_location_hint(value: &str) -> Result<(), IdentityError> {
     }
 }
 
-#[cfg(kani)]
+// The proof frames through `addressing::testing`, which only test-support builds compile.
+#[cfg(all(kani, feature = "test-support"))]
 mod proofs {
     #[kani::proof]
     #[kani::unwind(64)]

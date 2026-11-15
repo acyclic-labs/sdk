@@ -36,3 +36,7 @@ workspace = true
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+# Kani reads these for every run of this package's proofs.
+[package.metadata.kani.flags]
+features = ["research"]

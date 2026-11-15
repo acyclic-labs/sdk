@@ -35,6 +35,9 @@ test("every declared proof runs once and succeeds, or the run fails", () => {
   assert.deepEqual([unexpected.passed, unexpected.outcomes[1]], [false, { harness: "proofs::z", result: "UNEXPECTED" }]);
   // A verdict printed before any harness is checked belongs to no proof.
   assert.equal(judge(["a"], "VERIFICATION:- SUCCESSFUL\n").passed, false);
+  // A should_panic proof verifies by finding its counterexample, and Kani says so after the verdict.
+  const refuted = "Checking harness proofs::a...\nVERIFICATION:- SUCCESSFUL (encountered one or more panics as expected)\n";
+  assert.equal(judge(["a"], refuted).passed, true);
 });
 
 test("declared proofs are grouped by the unit Kani compiles them in", t => {
@@ -44,7 +47,12 @@ test("declared proofs are grouped by the unit Kani compiles them in", t => {
     "lib/src/lib.rs": "#[cfg(kani)]\nmod proofs {\n    #[kani::proof]\n    #[kani::unwind(2)]\n    fn bounded() {}\n    // #[kani::proof]\n    const S: &str = \"#[kani::proof] fn quoted() {}\";\n}\n",
     "unit/src/lib.rs": "#[cfg(test)]\nmod checks {\n    #[kani::proof_for_contract(crate::f)]\n    fn contract() {}\n}\n",
     "both/src/lib.rs": "#[kani::proof]\nfn library() {}\n",
-    "both/tests/target.rs": "#[kani::proof]\n#[kani::should_panic]\nfn refuted() {}\n",
+    // Declared by a macro the scanner cannot expand; the library's source directory holds it.
+    "both/src/generated.rs": "#[kani::proof]\nfn generated() {}\n",
+    "both/tests/target.rs": "mod helper;\n#[path = \"shared/linked.rs\"]\nmod linked;\n#[kani::proof]\n#[kani::should_panic]\nfn refuted() {}\n",
+    "both/tests/helper.rs": "#[kani::proof]\nfn helper() {}\n",
+    "both/tests/shared/linked.rs": "include!(\"spliced.rs\");\n",
+    "both/tests/shared/spliced.rs": "#[kani::proof]\nfn spliced() {}\n",
     "both/tests/formal/standalone.rs": "#[kani::proof]\npub fn standalone() {}\n",
     "both/src/plain.rs": "fn ordinary() {}\n",
   };
@@ -62,7 +70,9 @@ test("declared proofs are grouped by the unit Kani compiles them in", t => {
   assert.equal(units.status, 0, units.stderr);
   assert.deepEqual(JSON.parse(units.stdout), [
     { unit: "file:both/tests/formal/standalone.rs", file: "both/tests/formal/standalone.rs", files: ["both/tests/formal/standalone.rs"], proofs: ["standalone"] },
-    { unit: "package:both", package: "both", tests: true, files: ["both/src/lib.rs", "both/tests/target.rs"], proofs: ["library", "refuted"] },
+    { unit: "package:both", package: "both", tests: true,
+      files: ["both/src/lib.rs", "both/src/generated.rs", "both/tests/target.rs", "both/tests/helper.rs", "both/tests/shared/spliced.rs"],
+      proofs: ["library", "generated", "refuted", "helper", "spliced"] },
     { unit: "package:lib", package: "lib", tests: false, files: ["lib/src/lib.rs"], proofs: ["bounded"] },
     { unit: "package:unit", package: "unit", tests: true, files: ["unit/src/lib.rs"], proofs: ["contract"] },
   ]);

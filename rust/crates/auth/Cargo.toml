@@ -99,3 +99,7 @@ path = "tests/main.rs"
 [[example]]
 name = "issuance_corpus"
 required-features = ["test-support"]
+
+# Kani reads these for every run of this package's proofs.
+[package.metadata.kani.flags]
+features = ["test-support"]
