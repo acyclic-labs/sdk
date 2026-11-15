@@ -71,17 +71,22 @@ def _tokens(path: Path):
     return totals
 
 
-def trials(job: Path, agent: dict) -> dict:
+def trials(job: Path, arm: dict) -> dict:
     """task path -> (solved, tokens). A trial that raised or has no reward of 1 failed.
-    Every trial must have run the planned agent: job names repeat across plans, so a
-    jobs directory from another plan's model, artifact or arm is refused, not relabelled."""
+    Every trial must have run the planned agent on a planned task: job names repeat
+    across plans, so a jobs directory from another plan's model, artifact, arm or
+    dataset revision is refused, not relabelled."""
+    agent, planned = arm["agents"][0], {task["path"]: task for task in arm["tasks"]}
+    planned_keys = lambda planned_value, recorded: {key: recorded.get(key) for key in planned_value}
     result = {}
     for directory in sorted(path for path in job.iterdir() if path.is_dir()):
         record = json.loads((directory / "result.json").read_text())
-        name = record["config"]["task"]["path"]
-        ran = record["config"].get("agent") or {}
-        if {key: ran.get(key) for key in agent} != agent:
+        task = record["config"]["task"]
+        name = task["path"]
+        if planned_keys(agent, record["config"].get("agent") or {}) != agent:
             raise ValueError("trial did not run the planned agent: " + name)
+        if name in planned and planned_keys(planned[name], task) != planned[name]:
+            raise ValueError("trial did not run the planned task revision: " + name)
         if name in result:
             raise ValueError("more than one trial for task: " + name)
         rewards = (record.get("verifier_result") or {}).get("rewards") or {}
@@ -107,7 +112,7 @@ def score(plan: dict, jobs_dir: Path) -> dict:
     for feature in plan["features"]:
         arms = {}
         for side in ("on", "off"):
-            observed = trials(jobs_dir / feature[side]["job_name"], feature[side]["agents"][0])
+            observed = trials(jobs_dir / feature[side]["job_name"], feature[side])
             # Both arms answer for the plan's exact tasks, or nothing is compared.
             if sorted(observed) != sorted(task["path"] for task in feature[side]["tasks"]):
                 raise ValueError(f"{feature['name']} {side} trials are not the plan's tasks")

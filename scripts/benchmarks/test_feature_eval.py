@@ -90,7 +90,7 @@ class FeatureEval(unittest.TestCase):
         self.run_arms(plan, jobs_dir)
         # Trials answer for the task paths the plan wrote, whatever Harbor names them.
         self.assertEqual(sorted(trials(jobs_dir / "r44-context-management-on",
-                                       plan["features"][0]["on"]["agents"][0])),
+                                       plan["features"][0]["on"])),
                          sorted(task["path"] for task in plan["features"][0]["on"]["tasks"]))
         (result,) = score(plan, jobs_dir)["features"]
         tasks = len(plan["task_names"])
@@ -125,6 +125,13 @@ class FeatureEval(unittest.TestCase):
         later["model"] = "openai/later"
         with self.assertRaisesRegex(ValueError, "did not run the planned agent"):
             score(later, jobs_dir)
+        # So are trials of the same task paths at another dataset revision.
+        revised = copy.deepcopy(plan)
+        for side in ("on", "off"):
+            for task in revised["features"][0][side]["tasks"]:
+                task["git_commit_id"] = "c" * 40
+        with self.assertRaisesRegex(ValueError, "did not run the planned task revision"):
+            score(revised, jobs_dir)
         shutil.rmtree(next((jobs_dir / "r44-context-management-on").iterdir()))
         with self.assertRaisesRegex(ValueError, "not the plan's tasks"):
             score(plan, jobs_dir)
