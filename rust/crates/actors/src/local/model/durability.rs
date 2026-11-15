@@ -256,8 +256,14 @@ async fn control_replay_requires_durability(
         creation.join(store.activation(&actor)?)?;
         store.submit(creation).await?;
         let before = store.load(&actor).await?;
-        let schedule = store.scheduling_path(store.scheduling_shard(&actor))?;
-        let activations = provider.inner.tail(schedule.clone()).await?;
+        // The accepted control activates its target: a fork's child is filed
+        // in its own shard's wake log, not its parent's.
+        let schedule = store.scheduling_path(store.scheduling_shard(&target))?;
+        // A fork's child shard may hold no wake log before the fork.
+        let activations = match provider.inner.tail(schedule.clone()).await {
+            Err(error) if error.category() == StreamError::NotFound => 0,
+            tail => tail?,
+        };
         assert!(matches!(
             replay_control(&store, &actor, fork).await,
             Err(Error::Unknown {
