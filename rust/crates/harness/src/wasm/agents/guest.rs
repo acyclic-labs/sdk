@@ -276,7 +276,7 @@ mod tests {
                 })
             });
         let callback_function = callback.as_ref().unchecked_ref::<Function>().clone();
-        let mut pending = interrupt(callback_function)(Vec::new());
+        let mut pending = interrupt(callback_function)(RequestId::new(1), Vec::new());
         assert!(futures::poll!(pending.as_mut()).is_pending());
         starting.await.unwrap();
         drop(pending);
