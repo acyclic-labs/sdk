@@ -120,7 +120,16 @@ mod tests {
             assert_eq!(current.unwrap()?, previous);
             assert_eq!(
                 file.read_capability(&mut None)?,
-                content_label(acyclic_fs::access::FILE_READ_PREFIX, previous, &mut None)?
+                acyclic_fs::access::ContentReadLabel {
+                    kind: acyclic_fs::access::ContentRead::File,
+                    volume: crate::executor::json::canonical_json_digest(
+                        file.volume(),
+                        None,
+                        &mut None
+                    )?,
+                    target: previous,
+                }
+                .to_label()
             );
             let issuer = crate::core::AuthorityRoot::new(
                 "files",
