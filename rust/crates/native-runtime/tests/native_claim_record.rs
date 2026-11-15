@@ -1,6 +1,6 @@
 //! Replay the retained production claim corpus through the shared fuzz oracle.
 #[path = "claim_codec/oracle.rs"]
-mod native_claim_record;
+mod oracle;
 
 #[test]
 fn retained_claim_corpus_satisfies_the_shared_oracle() {
@@ -10,11 +10,11 @@ fn retained_claim_corpus_satisfies_the_shared_oracle() {
         include_bytes!("claim_codec/corpus/at-bound").as_slice(),
         include_bytes!("claim_codec/corpus/past-bound").as_slice(),
     ];
-    let produced = native_claim_record::seeds();
+    let produced = oracle::seeds();
     assert_eq!(produced.len(), corpus.len());
     for ((name, encoded), bytes) in produced.into_iter().zip(corpus) {
         assert_eq!(encoded, bytes, "original writer corpus changed: {name}");
-        native_claim_record::check(bytes);
-        native_claim_record::check_prefixes(bytes);
+        oracle::check(bytes);
+        oracle::check_prefixes(bytes);
     }
 }

@@ -109,6 +109,8 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
 
 struct Node<V, A, const N: usize, C, K>(Option<Arc<Body<V, A, N, C, K>>>);
 
+type VisibleBody<'a, V, A, const N: usize, C, K, E> = Result<Option<&'a Body<V, A, N, C, K>>, E>;
+
 struct Body<V, A, const N: usize, C, K> {
     minimum: [u8; N],
     depth: usize,
@@ -303,7 +305,7 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
     fn visible_body<W: IndexReadWork>(
         &self,
         work: &mut W,
-    ) -> Result<Option<&Body<V, A, N, C, K>>, W::Error> {
+    ) -> VisibleBody<'_, V, A, N, C, K, W::Error> {
         if self.root.is_none() {
             return Ok(None);
         }
