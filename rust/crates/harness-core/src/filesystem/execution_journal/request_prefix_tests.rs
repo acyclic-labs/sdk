@@ -89,8 +89,9 @@ fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> Result
         .block_on(async {
             tokio::time::pause();
             let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(seed);
-            let appended = schedule.scope(first_step_appends_only_new_content());
-            tokio::pin!(appended);
+            // The turn's state machine is large; it lives on the heap, as a
+            // `#[tokio::test]` body does, not on the test thread's stack.
+            let mut appended = Box::pin(schedule.scope(first_step_appends_only_new_content()));
             loop {
                 tokio::select! {
                     result = &mut appended => return result,
