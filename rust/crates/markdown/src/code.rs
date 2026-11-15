@@ -82,6 +82,9 @@ fn tone(stack: &ScopeStack) -> Style {
 #[derive(Clone)]
 pub struct CodeLine(Arc<Node>);
 
+/// Disjoint source-byte style runs, shared by every clone of a line.
+type StyleRuns = Arc<[(Range<usize>, Style)]>;
+
 struct Node {
     fingerprint: u64,
     cache: Weak<Mutex<HashMap<u64, Weak<Node>>>>,
@@ -89,7 +92,7 @@ struct Node {
     previous: Option<Arc<Node>>,
     text: Arc<str>,
     parsed: OnceLock<Parsed>,
-    styles: Mutex<BTreeMap<(usize, usize), Arc<[(Range<usize>, Style)]>>>,
+    styles: Mutex<BTreeMap<(usize, usize), StyleRuns>>,
 }
 struct Parsed {
     state: ParseState,
@@ -219,13 +222,13 @@ impl CodeLine {
 
     /// Disjoint code-byte styles. The result is cached in the immutable line,
     /// independent of theme and viewport, with no global cache or eviction scan.
-    pub fn styles(&self) -> Arc<[(Range<usize>, Style)]> {
+    pub fn styles(&self) -> StyleRuns {
         self.styles_for(0..self.text().len())
     }
 
     /// Resolve a visible source-byte window, including a wrapped portion of a
     /// very long line. Only that window gets styles; grammar state is shared.
-    pub fn styles_for(&self, visible: Range<usize>) -> Arc<[(Range<usize>, Style)]> {
+    pub fn styles_for(&self, visible: Range<usize>) -> StyleRuns {
         let start = visible.start.min(self.text().len());
         let end = visible.end.min(self.text().len()).max(start);
         let mut cache = self
