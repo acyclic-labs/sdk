@@ -19,6 +19,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// Whether a refusal is an access denial, however the client wraps its cause.
+fn access_denied(error: &(dyn std::error::Error + 'static)) -> bool {
+    error
+        .downcast_ref::<StreamError>()
+        .is_some_and(|error| error.category() == StreamError::AccessDenied)
+}
+
 #[path = "hosting_tests/merge.rs"]
 mod merge;
 
@@ -569,13 +576,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         )
         .await
         .expect_err("content disclosed after owner revocation");
-        assert!(
-            matches!(
-                refused.downcast_ref::<StreamError>(),
-                Some(StreamError::AccessDenied)
-            ),
-            "{read}: {refused:?}"
-        );
+        assert!(access_denied(&*refused), "{read}: {refused:?}");
         owner.denied.store(false, Ordering::SeqCst);
     }
     // A journal file outside the tool output prefix is never tool output.
@@ -878,10 +879,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     let refused = revoked_events
         .await
         .expect_err("events disclosed after revocation");
-    assert!(matches!(
-        refused.downcast_ref::<StreamError>(),
-        Some(StreamError::AccessDenied)
-    ));
+    assert!(access_denied(&*refused), "{refused:?}");
     owner.denied.store(false, Ordering::SeqCst);
     // A journal position is scoped to an original turn. Neither a consumed
     // control-only input nor the not-yet-created next input can own it.
@@ -943,10 +941,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     let refused = query
         .await
         .expect_err("a suspended query disclosed after revocation");
-    assert!(matches!(
-        refused.downcast_ref::<StreamError>(),
-        Some(StreamError::AccessDenied)
-    ));
+    assert!(access_denied(&*refused), "{refused:?}");
     owner.denied.store(false, Ordering::SeqCst);
     // A lost source owner ends the same waiter with a typed refusal, rather
     // than leaving its original admitted channel pending forever.
@@ -986,10 +981,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     let refused = query
         .await
         .expect_err("a revoked query disclosed its source error");
-    assert!(matches!(
-        refused.downcast_ref::<StreamError>(),
-        Some(StreamError::AccessDenied)
-    ));
+    assert!(access_denied(&*refused), "{refused:?}");
     owner.denied.store(false, Ordering::SeqCst);
     let children = AgentCommand::Children {
         agent: root.clone(),
@@ -1017,10 +1009,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         let refused = call(&client, "agents", &query)
             .await
             .expect_err("session page disclosed after owner revocation");
-        assert!(matches!(
-            refused.downcast_ref::<StreamError>(),
-            Some(StreamError::AccessDenied)
-        ));
+        assert!(access_denied(&*refused), "{refused:?}");
         owner.denied.store(false, Ordering::SeqCst);
     }
     for query in [
@@ -1137,10 +1126,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     let refused = query
         .await
         .expect_err("a suspended child query disclosed after revocation");
-    assert!(matches!(
-        refused.downcast_ref::<StreamError>(),
-        Some(StreamError::AccessDenied)
-    ));
+    assert!(access_denied(&*refused), "{refused:?}");
     owner.denied.store(false, Ordering::SeqCst);
 
     // Dropping the admission producer must end the original query, too.
@@ -1239,10 +1225,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     )
     .await
     .expect_err("a foreign tree needs its own original credential");
-    assert!(matches!(
-        refused.downcast_ref::<StreamError>(),
-        Some(StreamError::AccessDenied)
-    ));
+    assert!(access_denied(&*refused), "{refused:?}");
     assert_eq!(stream.requests().since(before), Default::default());
     // Another namespace never reaches dispatch, and owner denial is final.
     assert!(
