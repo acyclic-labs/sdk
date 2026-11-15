@@ -717,6 +717,31 @@ struct NativeEventDelivery {
     fenced: Arc<Condvar>,
 }
 
+#[cfg(any(target_os = "linux", windows))]
+impl NativeEventDelivery {
+    /// Queues the observed half of a rename whose other end is outside the
+    /// watched tree as that path's departure. Its caller already charged it.
+    fn depart_locked(&self, state: &mut SharedState) {
+        let Some(pending) = state.pending_rename.take() else {
+            return;
+        };
+        if state.invalidation.is_some() {
+            return;
+        }
+        match self.sender.try_send(QueuedWatchChange {
+            change: WatchChange::Removed(pending.from),
+            allocations: [pending.allocation, None],
+        }) {
+            Ok(()) => {
+                self.queued.fetch_add(1, Ordering::Release);
+            }
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl crate::source_watch::NativeEventSink for NativeEventDelivery {
     fn batch_started(&self) {
@@ -730,6 +755,8 @@ impl crate::source_watch::NativeEventSink for NativeEventDelivery {
         let _delivery = self.shared.delivery();
         if let Ok(mut state) = self.shared.state.lock() {
             state.delivering = false;
+            // The drain ended without the arriving half: a move out of the tree.
+            self.depart_locked(&mut state);
             if state.has_changes(self.queued.load(Ordering::Acquire)) {
                 self.fenced.notify_all();
             }
@@ -863,34 +890,37 @@ impl NativeEventDelivery {
         let bytes = payload.1;
         let result = (|| {
             let payload = payload;
-            if mask & libc::IN_MOVED_FROM != 0 {
-                if cookie == 0 || state.pending_rename.is_some() {
-                    state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
-                } else {
-                    state.pending_rename = Some(PendingRename {
-                        tracker: cookie,
-                        from: payload.0,
-                        to: None,
-                        allocation: payload.2,
-                    });
-                }
+            let renamed = mask & (libc::IN_MOVED_FROM | libc::IN_MOVED_TO) != 0;
+            let paired = mask & libc::IN_MOVED_TO != 0
+                && cookie != 0
+                && state
+                    .pending_rename
+                    .as_ref()
+                    .is_some_and(|pending| pending.tracker == cookie);
+            // One drain holds both halves of a rename inside the tree. A half
+            // whose partner is not next moved across the tree's boundary, so
+            // it is exact on its own: a departure or an arrival.
+            if renamed && !paired {
+                self.depart_locked(&mut state);
+            }
+            if !paired {
+                work.started_io(WorkCounters {
+                    items_returned: 1,
+                    ..WorkCounters::default()
+                })?;
+            }
+            if mask & libc::IN_MOVED_FROM != 0 && cookie != 0 {
+                // Charged now, so the departure at the drain's end needs no
+                // ledger and a paired rename is still one returned item.
+                state.pending_rename = Some(PendingRename {
+                    tracker: cookie,
+                    from: payload.0,
+                    to: None,
+                    allocation: payload.2,
+                });
                 return Ok(());
             }
-            if mask & libc::IN_MOVED_TO != 0
-                && (cookie == 0
-                    || !state
-                        .pending_rename
-                        .as_ref()
-                        .is_some_and(|pending| pending.tracker == cookie))
-            {
-                state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
-                return Ok(());
-            }
-            work.started_io(WorkCounters {
-                items_returned: 1,
-                ..WorkCounters::default()
-            })?;
-            let change = if mask & libc::IN_MOVED_TO != 0 {
+            let change = if paired {
                 let pending = state
                     .pending_rename
                     .take()
@@ -903,7 +933,11 @@ impl NativeEventDelivery {
                     allocations: [pending.allocation, payload.2],
                 }
             } else {
-                let change = if mask & libc::IN_CREATE != 0 {
+                let change = if mask & libc::IN_MOVED_TO != 0 {
+                    WatchChange::Arrived(payload.0)
+                } else if mask & libc::IN_MOVED_FROM != 0 {
+                    WatchChange::Removed(payload.0)
+                } else if mask & libc::IN_CREATE != 0 {
                     WatchChange::Created(payload.0)
                 } else if mask & libc::IN_DELETE != 0 {
                     WatchChange::Removed(payload.0)
@@ -1300,7 +1334,13 @@ impl WindowsRootSink {
                                     .as_ref()
                                     .is_some_and(|pending| pending.tracker == file)
                             {
-                                self.depart_locked(&mut state, work)?;
+                                if state.invalidation.is_none() {
+                                    work.started_io(WorkCounters {
+                                        items_returned: 1,
+                                        ..WorkCounters::default()
+                                    })?;
+                                }
+                                self.delivery.depart_locked(&mut state);
                             }
                             continue;
                         }
@@ -1326,37 +1366,6 @@ impl WindowsRootSink {
         }
         if state.has_changes(self.delivery.queued.load(Ordering::Acquire)) {
             self.delivery.fenced.notify_all();
-        }
-        Ok(())
-    }
-
-    /// Queues the observed half of a rename whose destination is unobserved.
-    fn depart_locked<W: crate::demand::SourceDemandReadWork>(
-        &self,
-        state: &mut SharedState,
-        work: &mut W,
-    ) -> Result<(), crate::demand::DemandError> {
-        let Some(pending) = state.pending_rename.take() else {
-            return Ok(());
-        };
-        if state.invalidation.is_some() {
-            return Ok(());
-        }
-        work.started_io(WorkCounters {
-            items_returned: 1,
-            ..WorkCounters::default()
-        })?;
-        // The pending half already counted against the queue bound.
-        match self.delivery.sender.try_send(QueuedWatchChange {
-            change: WatchChange::Removed(pending.from),
-            allocations: [pending.allocation, None],
-        }) {
-            Ok(()) => {
-                self.delivery.queued.fetch_add(1, Ordering::Release);
-            }
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-            }
         }
         Ok(())
     }
@@ -4450,28 +4459,45 @@ fn accept_native_event(
                 if path.is_root() {
                     return Err(WatchInvalidationReason::RootChanged);
                 }
-                match mode {
-                    RenameMode::From if state.pending_rename.is_none() => {
-                        state.pending_rename = Some(PendingRename {
-                            tracker,
-                            from: path,
-                            to: None,
-                            allocation: None,
-                        });
-                    }
-                    RenameMode::To => {
-                        let pending = state
-                            .pending_rename
-                            .as_mut()
-                            .ok_or(WatchInvalidationReason::AmbiguousRename)?;
-                        if pending.tracker != tracker || pending.to.is_some() {
-                            return Err(WatchInvalidationReason::AmbiguousRename);
-                        }
+                let paired = mode == RenameMode::To
+                    && state
+                        .pending_rename
+                        .as_ref()
+                        .is_some_and(|pending| pending.tracker == tracker && pending.to.is_none());
+                if paired {
+                    if let Some(pending) = state.pending_rename.as_mut() {
                         pending.to = Some(path);
                     }
-                    _ => return Err(WatchInvalidationReason::AmbiguousRename),
+                    return Ok(Vec::new());
                 }
-                return Ok(Vec::new());
+                // A paired rename still owes its combined event.
+                if state
+                    .pending_rename
+                    .as_ref()
+                    .is_some_and(|pending| pending.to.is_some())
+                {
+                    return Err(WatchInvalidationReason::AmbiguousRename);
+                }
+                // A half whose partner is not next crossed the tree's boundary,
+                // so it is exact on its own: a departure or an arrival.
+                let mut changes = Vec::new();
+                changes
+                    .try_reserve_exact(2)
+                    .map_err(|_| WatchInvalidationReason::QueueOverflow)?;
+                if let Some(pending) = state.pending_rename.take() {
+                    changes.push(WatchChange::Removed(pending.from));
+                }
+                if mode == RenameMode::From {
+                    state.pending_rename = Some(PendingRename {
+                        tracker,
+                        from: path,
+                        to: None,
+                        allocation: None,
+                    });
+                } else {
+                    changes.push(WatchChange::Arrived(path));
+                }
+                return Ok(changes);
             }
             if mode == RenameMode::Both {
                 let changes = map_event(event, &context.root, context.profile, context.limits)?;
@@ -4582,7 +4608,7 @@ fn map_event(
                 from: from.clone(),
                 to: to.clone(),
             }]),
-            // inotify pairs both halves by cookie before they reach here (see `accept_native_event`), so a lone half on Linux means the other half was lost.
+            // `accept_native_event` resolves every cookie-tracked inotify half first. A half here has no cookie, so which end it is stays unknown.
             #[cfg(target_os = "linux")]
             _ => Err(WatchInvalidationReason::AmbiguousRename),
             // Windows identifies arrival and departure halves, so unpaired renames retain exact direction.

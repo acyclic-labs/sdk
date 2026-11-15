@@ -176,8 +176,8 @@ fn paired_rename_is_exact_and_an_unpaired_half_is_platform_defined()
             FilesystemProfile::Portable,
             VolumeLimits::default(),
         );
-        // inotify pairs halves by cookie before `map_event`, so a lone half
-        // there is a lost half. `ReadDirectoryChangesW` never pairs but says
+        // `accept_native_event` resolves cookie-tracked inotify halves before
+        // `map_event`, so a lone half there carries no direction. `ReadDirectoryChangesW` never pairs but says
         // which end each half is: a name arrived or went away. FSEvents says
         // neither, so a lone half is an ordinary "this path changed" hint.
         if cfg!(target_os = "linux") {
@@ -284,7 +284,7 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
 
 #[cfg(target_os = "linux")]
 #[test]
-fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+fn linux_untracked_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from("/root");
     let from = root.join("from");
     let to = root.join("to");
@@ -299,7 +299,8 @@ fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std:
         limits: VolumeLimits::default(),
     };
     let scenarios = [
-        vec![tracked_rename(RenameMode::To, vec![to.clone()], 7)],
+        // The adapter has no drain boundary, so a trailing departure stays
+        // unresolved until a rescan proves the tree.
         vec![tracked_rename(RenameMode::From, vec![from.clone()], 7)],
         vec![event(
             EventKind::Modify(ModifyKind::Name(RenameMode::From)),
@@ -314,14 +315,6 @@ fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std:
             vec![from.clone(), to.clone()],
             7,
         )],
-        vec![
-            tracked_rename(RenameMode::From, vec![from.clone()], 7),
-            tracked_rename(RenameMode::From, vec![from.clone()], 8),
-        ],
-        vec![
-            tracked_rename(RenameMode::From, vec![from.clone()], 7),
-            tracked_rename(RenameMode::To, vec![to.clone()], 8),
-        ],
         vec![
             tracked_rename(RenameMode::From, vec![from.clone()], 7),
             tracked_rename(RenameMode::To, vec![to.clone()], 7),
@@ -355,6 +348,135 @@ fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std:
         );
         assert!(receiver.try_recv().is_err());
     }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_adapter_rename_halves_across_the_tree_are_exact_arrivals_and_departures()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = PathBuf::from("/root");
+    let path = |name: &str| {
+        relative_namespace_path(
+            &root,
+            &root.join(name),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )
+    };
+    let context = NativeEventContext {
+        _root_allocation: None,
+        root: root.clone(),
+        root_identity: NativeRootIdentity {
+            device: 0,
+            object: 0,
+        },
+        profile: FilesystemProfile::Portable,
+        limits: VolumeLimits::default(),
+    };
+    let scenarios = [
+        (
+            vec![tracked_rename(RenameMode::To, vec![root.join("to")], 7)],
+            vec![WatchChange::Arrived(path("to")?)],
+        ),
+        (
+            vec![
+                tracked_rename(RenameMode::From, vec![root.join("from")], 7),
+                tracked_rename(RenameMode::To, vec![root.join("to")], 8),
+            ],
+            vec![
+                WatchChange::Removed(path("from")?),
+                WatchChange::Arrived(path("to")?),
+            ],
+        ),
+        (
+            vec![
+                tracked_rename(RenameMode::From, vec![root.join("first")], 7),
+                tracked_rename(RenameMode::From, vec![root.join("second")], 8),
+                tracked_rename(RenameMode::To, vec![root.join("to")], 8),
+                tracked_rename(
+                    RenameMode::Both,
+                    vec![root.join("second"), root.join("to")],
+                    8,
+                ),
+            ],
+            vec![
+                WatchChange::Removed(path("first")?),
+                WatchChange::Renamed {
+                    from: path("second")?,
+                    to: path("to")?,
+                },
+            ],
+        ),
+    ];
+    for (events, expected) in scenarios {
+        let (sender, receiver) = crate::watch_queue::channel(None);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let shared = Arc::new(WatchState::new(SharedState::new(None)));
+        for event in events {
+            accept_native_event(&Ok(event), &context, &sender, &shared, &queued);
+        }
+        assert_eq!(
+            shared
+                .state
+                .lock()
+                .map_err(|_| "poisoned")?
+                .seal_invalidation(),
+            None
+        );
+        let mut delivered = Vec::new();
+        while let Ok(queued) = receiver.try_recv() {
+            delivered.push(queued.change);
+        }
+        assert_eq!(delivered, expected);
+        assert_eq!(queued.load(Ordering::Acquire), expected.len());
+    }
+    Ok(())
+}
+
+/// A file staged outside the checkout and renamed into it, as every file
+/// publication does, is one arrival. It must not cost a rescan of the tree.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_a_move_across_the_watched_tree_is_an_exact_arrival_or_departure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let outside = tempfile::tempdir()?;
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("leaving"), b"leaving")?;
+    let mut options = NativeWatchOptions::new(VolumeLimits::default());
+    options.recursive = false;
+    let mut watch = NativeWatch::open(root.path(), options)?;
+    watch.accept_lazy_baseline()?;
+
+    std::fs::write(outside.path().join("staged"), b"arriving")?;
+    std::fs::rename(outside.path().join("staged"), root.path().join("arrived"))?;
+    std::fs::rename(root.path().join("leaving"), outside.path().join("left"))?;
+    watch.fence()?;
+    let observed = watch
+        .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+        .value;
+    let name = |name: &str| {
+        relative_namespace_path(
+            root.path(),
+            &root.path().join(name),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )
+    };
+    let (arrived, left) = (name("arrived")?, name("leaving")?);
+    let WatchBatch::Changes { changes, .. } = &observed else {
+        return Err(
+            format!("a move across the watched tree required a rescan: {observed:?}").into(),
+        );
+    };
+    assert!(
+        changes.contains(&WatchChange::Arrived(arrived)),
+        "{observed:?}"
+    );
+    assert!(
+        changes.contains(&WatchChange::Removed(left)),
+        "{observed:?}"
+    );
     Ok(())
 }
 

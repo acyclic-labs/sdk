@@ -33,6 +33,8 @@ impl Cursor {
         optional_before_images: bool,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, WatchBatch>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
+            #[cfg(all(test, not(loom)))]
+            super::BASELINE_SCANS.set(super::BASELINE_SCANS.get() + 1);
             let rescan = self.watcher.begin_rescan().map_err(storage)?;
             // The scan owns the continuity state it replaced, so a retry cannot
             // erase a required recovery while importing display before-images.

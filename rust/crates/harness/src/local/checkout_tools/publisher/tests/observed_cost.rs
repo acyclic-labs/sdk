@@ -16,6 +16,36 @@ async fn concurrent_publications_preserve_each_volume_payload() -> Result<()> {
     Ok(())
 }
 
+/// Every file publication stages outside the checkout and renames into it.
+/// Each such write is one arrival: concurrent writers over a populated
+/// checkout must never fall back to scanning the whole tree.
+#[tokio::test]
+async fn concurrent_checkout_writes_never_rescan_the_tree() -> Result<()> {
+    let (_directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
+    publisher.tools.publish_baseline().await?;
+    // The first capture may still establish the cursor's baseline.
+    let (_, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "warm.txt",
+            b"warm
+",
+            "text/plain",
+            "warm.txt",
+            Default::default(),
+        )?
+        .await?;
+    let before = crate::local::checkout_tools::capture::BASELINE_SCANS.get();
+    measure_writer_batch(&[&publisher; 8], "rescan").await?;
+    assert_eq!(
+        crate::local::checkout_tools::capture::BASELINE_SCANS.get(),
+        before,
+        "a checkout write rescanned the whole tree"
+    );
+    harness.disconnect().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn independent_agent_views_preserve_concurrent_project_and_home_writes() -> Result<()> {
     acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;

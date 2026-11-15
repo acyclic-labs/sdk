@@ -246,6 +246,8 @@ std::thread_local! {
     /// Negative control: finishing a debt captures without publishing the
     /// owed write, as before the debt named the write.
     pub(in crate::local) static OWED_WRITE_UNAPPLIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Full scans of the checkout this thread's captures performed.
+    pub(in crate::local) static BASELINE_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Publishes the staged generation's transition from its unique parent into
