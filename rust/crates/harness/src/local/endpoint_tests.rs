@@ -613,6 +613,43 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         .await
         .map_err(storage)?;
     assert!(page.children.is_empty());
+    // A selected view lists only its own subtree: neither a directory-selected
+    // root nor a selected child reaches another tree's or its parent's children.
+    let children_of = |parent: &AgentPath| -> Result<acyclic_stream::ChildrenPageRequest> {
+        Ok(acyclic_stream::ChildrenPageRequest {
+            offset: 0,
+            parent: Some(parent.children().map_err(storage)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 16,
+            tail_stream: None,
+        })
+    };
+    let child_view = connection.select(child.clone()).await?;
+    child_view
+        .session
+        .read_provider()
+        .children_page(children_of(&child)?)
+        .await
+        .map_err(storage)?;
+    for (view, foreign) in [
+        (&session, &connection.root),
+        (&child_view, &connection.root),
+        (&child_view, &session.root),
+    ] {
+        assert_eq!(
+            view.session
+                .read_provider()
+                .children_page(children_of(foreign)?)
+                .await
+                .err()
+                .map(|error| error.category()),
+            Some(StreamError::AccessDenied),
+            "{} listed {}'s children",
+            view.root.as_str(),
+            foreign.as_str()
+        );
+    }
     assert_eq!(
         reader.head(session.root.status().map_err(storage)?).await,
         Err(StreamError::AccessDenied)
