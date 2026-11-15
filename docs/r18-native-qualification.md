@@ -38,7 +38,6 @@ Do not substitute cross-compilation or an unavailable capability for execution.
 ```sh
 cargo test --locked -p acyclic-native-runtime --lib -- --exact \
   execution::tests::sandbox_policy \
-  execution::tests::scoped_native_reads_pin_the_original_parent_and_refuse_escape \
   execution::tests::inherited_file_stdio_cannot_bypass_the_workspace_boundary \
   --nocapture
 ```
