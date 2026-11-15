@@ -1007,6 +1007,14 @@ impl Error {
                     | crate::wire::ErrorCode::Cancelled))
     }
 
+    /// A failure that settles its turn as failed rather than retrying it: a
+    /// provider outcome, or any other definitive error. Only an uncertain one
+    /// retries the step; an owner's control decision is no failure.
+    pub(crate) fn settles_turn(&self) -> bool {
+        !matches!(self, Self::ExecutionControlled(_))
+            && (self.is_model_failure() || !self.uncertain())
+    }
+
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
     pub(crate) fn leaves_effect_uncertain(&self) -> bool {
         if let Self::Caused(failure) = self {

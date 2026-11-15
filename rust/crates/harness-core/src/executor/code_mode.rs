@@ -376,6 +376,7 @@ impl StockExecution<'_> {
                                 return Ok(ExecutionProgress::Pending(operation));
                             }
                             ExecutionProgress::PreDispatchFailed(failure) => return Ok(ExecutionProgress::PreDispatchFailed(failure)),
+                            ExecutionProgress::Ended(ended) => return Err(ended.0),
                         };
                         let ok = result.is_ok();
                         let (value, _result_hold, _failure_hold) = match result {
@@ -627,6 +628,7 @@ impl StockExecution<'_> {
             ExecutionProgress::PreDispatchFailed(failure) => {
                 return Ok(ExecutionProgress::PreDispatchFailed(failure));
             }
+            ExecutionProgress::Ended(ended) => return Err(ended.0),
         };
         if let Some(ModelMessage {
             content:

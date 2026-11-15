@@ -945,9 +945,21 @@ async fn stage_text(
     turn: OperationId,
     text: String,
 ) -> Result<FileRef, Error> {
-    let output = TurnOutput::new(text, serde_json::Value::Null, 0);
+    stage_output(
+        outputs,
+        turn,
+        &TurnOutput::new(text, serde_json::Value::Null, 0),
+    )
+    .await
+}
+
+async fn stage_output(
+    outputs: &dyn TurnOutputs,
+    turn: OperationId,
+    output: &TurnOutput,
+) -> Result<FileRef, Error> {
     let bytes =
-        crate::contract::canonical_json_bytes(&output).map_err(|error| host_error(error.into()))?;
+        crate::contract::canonical_json_bytes(output).map_err(|error| host_error(error.into()))?;
     outputs.stage(turn, &bytes).await.map_err(host_error)
 }
 
@@ -1093,9 +1105,38 @@ fn announced(open: &OpenTurn) -> Vec<super::AnnouncedDocument> {
     open.announcements.clone()
 }
 
-/// A turn stopped before its executor finished, settled as `outcome`: its
-/// prompt, the answer it streamed so far and the steering its requests
-/// admitted.
+/// How a turn stopped before its executor finished: its outcome, and the
+/// output of the steps that settled every call, whose transcript the next
+/// turn replays.
+struct Stopped {
+    outcome: TurnOutcome,
+    settled: TurnOutput,
+}
+
+impl Stopped {
+    /// A turn no settled step of which the executor reported.
+    fn without_steps(outcome: TurnOutcome) -> Self {
+        Self {
+            outcome,
+            settled: TurnOutput::new(String::new(), serde_json::Value::Null, 0),
+        }
+    }
+
+    /// A definitive failure, truncated to [`super::MAX_MESSAGE_BYTES`].
+    fn failed(mut message: String) -> Self {
+        let mut end = message.len().min(super::MAX_MESSAGE_BYTES);
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        message.truncate(end);
+        Self::without_steps(TurnOutcome::Failed { message })
+    }
+}
+
+/// A turn stopped before its executor finished, settled as its outcome: its
+/// prompt, the answer it streamed so far, the transcript of its settled
+/// steps, so each effect they applied stays visible to the next turn, and
+/// the steering its requests admitted.
 async fn interrupted(
     agent: &AgentState,
     open: &OpenTurn,
@@ -1103,15 +1144,19 @@ async fn interrupted(
     inbox: u64,
     input: TurnInput,
     notices: Option<super::NoticeSelection>,
-    outcome: TurnOutcome,
+    stopped: Stopped,
 ) -> Result<ConversationEntry, Error> {
-    let partial = open.outputs.partial(turn).await.map_err(host_error)?;
+    let Stopped {
+        outcome,
+        mut settled,
+    } = stopped;
+    settled.text = open.outputs.partial(turn).await.map_err(host_error)?;
     Ok(ConversationEntry {
         observed_through: 0,
         inbox,
         goal: super::goal::continuing(&agent.path, &input),
         input,
-        output: stage_text(&*open.outputs, turn, partial).await?,
+        output: stage_output(&*open.outputs, turn, &settled).await?,
         outcome,
         announcements: announced(open),
         tool_results: open.outputs.tool_results(turn),
@@ -1135,9 +1180,8 @@ async fn interrupted(
 }
 
 /// A definitive model, executor, tool or preparation failure settles the
-/// turn, never the agent: its entry records the failure, truncated to
-/// [`super::MAX_MESSAGE_BYTES`], with its recorded effects, and the agent
-/// waits for its next input.
+/// turn, never the agent: its entry records the failure with its recorded
+/// effects and settled steps, and the agent waits for its next input.
 async fn failed(
     agent: &AgentState,
     open: &OpenTurn,
@@ -1145,15 +1189,9 @@ async fn failed(
     inbox: u64,
     input: TurnInput,
     notices: Option<super::NoticeSelection>,
-    mut message: String,
+    stopped: Stopped,
 ) -> Result<TurnStep, Error> {
-    let mut end = message.len().min(super::MAX_MESSAGE_BYTES);
-    while !message.is_char_boundary(end) {
-        end -= 1;
-    }
-    message.truncate(end);
-    let outcome = TurnOutcome::Failed { message };
-    let entry = interrupted(agent, open, turn, inbox, input, notices, outcome).await?;
+    let entry = interrupted(agent, open, turn, inbox, input, notices, stopped).await?;
     let step = TurnStep {
         checkpoint: None,
         outs: settled(agent, &entry)?,
@@ -1404,7 +1442,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     inbox,
                     input,
                     notices,
-                    TurnOutcome::Cancelled,
+                    Stopped::without_steps(TurnOutcome::Cancelled),
                 )
                 .await?;
                 return settle_effects(
@@ -1426,10 +1464,10 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 // executor failure is as final. The failed turn settles through
                 // the normal agent commit; parents observe it by `wait`. Only an
                 // undecided failure retries the step.
-                Err(error) if error.is_model_failure() || !error.uncertain() => {
+                Err(error) if error.settles_turn() => {
                     self.host.settle(agent, turn).await.map_err(host_error)?;
-                    return failed(agent, &open, turn, inbox, input, notices, error.to_string())
-                        .await;
+                    let stopped = Stopped::failed(error.to_string());
+                    return failed(agent, &open, turn, inbox, input, notices, stopped).await;
                 }
                 Err(error) => return Err(host_error(error)),
             };
@@ -1670,8 +1708,18 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 }
                 ExecutionProgress::PreDispatchFailed(failure) => {
                     self.host.settle(agent, turn).await.map_err(host_error)?;
-                    let message = failure.message().to_owned();
-                    return failed(agent, &open, turn, inbox, input, notices, message).await;
+                    let stopped = Stopped::failed(failure.message().to_owned());
+                    return failed(agent, &open, turn, inbox, input, notices, stopped).await;
+                }
+                // The failure keeps the steps that settled before it.
+                ExecutionProgress::Ended(ended) => {
+                    self.host.settle(agent, turn).await.map_err(host_error)?;
+                    let (error, settled) = *ended;
+                    let stopped = Stopped {
+                        settled,
+                        ..Stopped::failed(error.to_string())
+                    };
+                    return failed(agent, &open, turn, inbox, input, notices, stopped).await;
                 }
             };
             settle_effects(agent, &open, step).await

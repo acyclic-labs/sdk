@@ -222,6 +222,7 @@ impl<'io> StockExecution<'io> {
                 Ok(ExecutionProgress::PreDispatchFailed(failure)) => {
                     return Err(failure.into_error());
                 }
+                Ok(ExecutionProgress::Ended(ended)) => return Err(ended.0),
                 Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
                     return self
                         .interrupted(journal, identity, &invocation.call_id, error)
