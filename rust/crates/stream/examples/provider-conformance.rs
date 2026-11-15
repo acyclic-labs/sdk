@@ -32,7 +32,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn postgres(scale: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let database = std::env::var("STORAGE_POSTGRES_URL")?;
+    let database = std::env::var("STORAGE_POSTGRES_URL").map_err(|error| {
+        format!("--postgres requires STORAGE_POSTGRES_URL ({error}); recovery: run bash scripts/backends/storage-conformance.sh")
+    })?;
     if scale {
         postgres_scale::verify(&database).await
     } else {
