@@ -411,17 +411,14 @@ impl<'v, 'p> AdmittedAgent<'v, 'p> {
         {
             return Ok(parent.clone());
         }
-        let grants = match parent {
-            Some(parent) => parent.capabilities().clone(),
-            None => journal_grants(journal, content)?,
+        // A delegated ceiling keeps its own acting agent: delegation never
+        // attests another, so an agent-free host ceiling stays agent-free.
+        let (grants, agent) = match parent {
+            Some(parent) => (parent.capabilities().clone(), parent.agent()),
+            None => (journal_grants(journal, content)?, Some(*owner)),
         };
         self.issuer
-            .issue(
-                parent,
-                "host-journal",
-                &grants,
-                parent.and_then(Scope::agent).or(Some(*owner)),
-            )
+            .issue(parent, "host-journal", &grants, agent)
             .await
     }
 
