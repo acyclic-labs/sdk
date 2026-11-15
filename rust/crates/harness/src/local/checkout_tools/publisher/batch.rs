@@ -158,7 +158,13 @@ impl CheckoutPublisher {
                                     let paths =
                                         changes.iter().map(ContentChange::path).collect::<Vec<_>>();
                                     self.tools
-                                        .capture_paths((&physical, view), &paths, operation, 0)?
+                                        .capture_paths(
+                                            (&physical, view),
+                                            watcher,
+                                            &paths,
+                                            operation,
+                                            0,
+                                        )?
                                         .await?;
                                 }
                             }

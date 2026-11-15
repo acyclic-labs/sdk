@@ -181,6 +181,38 @@ async fn independent_agent_views_preserve_concurrent_project_and_home_writes() -
     measure_publications(&publishers, "agent_views").await
 }
 
+/// A native move the watch has not delivered still binds the moved file's
+/// identity at its old name, and a linked file's other names are unknown, so
+/// a write to either cannot be captured by its paths alone. It takes the
+/// ordinary capture and still publishes exactly.
+#[tokio::test]
+async fn writes_over_unobserved_moves_and_links_publish() -> Result<()> {
+    let (directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
+    publisher.tools.publish_baseline().await?;
+    let root = directory.path();
+    std::fs::rename(root.join("source-1.txt"), root.join("moved.txt")).map_err(storage)?;
+    std::fs::hard_link(root.join("source-2.txt"), root.join("linked.txt")).map_err(storage)?;
+    for path in ["moved.txt", "source-2.txt"] {
+        let bytes = format!("{path} written\n");
+        publisher
+            .stage_once(
+                OperationId::new(),
+                path,
+                bytes.as_bytes(),
+                "text/plain",
+                path,
+                Default::default(),
+            )?
+            .await?;
+        assert_eq!(
+            std::fs::read(root.join(path)).map_err(storage)?,
+            bytes.as_bytes()
+        );
+    }
+    harness.disconnect().await?;
+    Ok(())
+}
+
 async fn measure_publications(publishers: &[&CheckoutPublisher], layout: &str) -> Result<()> {
     measure_writer_batch(&publishers[..1], layout).await?;
     measure_writer_batch(publishers, layout).await

@@ -283,11 +283,11 @@ impl CheckoutPublisher {
                     if let Some(mounted) = &physical.mounted {
                         mounted.sync().await.map_err(storage)?;
                     } else {
-                        // Completed native edits to the destination and its
-                        // ancestors enter the transaction cut before the writer
-                        // decides destination type/existence. Other hints stay
-                        // queued for the command that owns them.
-                        self.tools.capture_paths((&physical, view), &[&*relative], write_capture(operation, &relative), 0)?.await?;
+                        // Completed native edits to the destination enter the
+                        // transaction cut before the writer decides its type and
+                        // existence. Other hints stay queued for the command
+                        // that owns them.
+                        self.tools.capture_paths((&physical, view), watcher, &[&*relative], write_capture(operation, &relative), 0)?.await?;
                     }
                 }
             }

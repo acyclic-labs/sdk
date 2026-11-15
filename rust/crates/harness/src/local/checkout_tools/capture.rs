@@ -144,25 +144,34 @@ impl CheckoutTools {
 
     /// Captures the current native state of `paths` before a writer decides
     /// their type and existence, without reading or consuming watch hints.
+    /// Paths whose state cannot be captured on their own take the ordinary
+    /// capture instead.
     #[inline(never)]
     pub(in crate::local) fn capture_paths<'a>(
         &'a self,
         selected: (&'a LocalWorkspace, &'a workspace::View),
+        slot: &'a mut Option<Cursor>,
         paths: &'a [&'a str],
         operation: OperationId,
         phase: u8,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
-            record_paths(
-                (&self.capture_options, &self.capture_policy),
+            let configuration = (&self.capture_options, &self.capture_policy);
+            let permit = PublicationPermit::Unrestricted;
+            let captured = record_paths(
+                configuration,
                 selected,
                 paths,
                 (operation, phase),
-                PublicationPermit::Unrestricted,
+                permit,
                 &|| async { Ok(()) },
                 None,
             )
-            .await
+            .await?;
+            if captured {
+                return Ok(());
+            }
+            capture(configuration, selected, slot, (operation, phase), permit).await
         })
     }
 
@@ -296,7 +305,7 @@ where
         }
         let capture = (OperationId::from_bytes(operation.into_bytes()), 1);
         let settlement = Some(staged.generation.digest());
-        match touched {
+        let captured = match touched {
             Some(paths) => {
                 record_paths(
                     configuration,
@@ -307,20 +316,21 @@ where
                     before_effect,
                     settlement,
                 )
-                .await?;
+                .await?
             }
-            None => {
-                record_changes(
-                    configuration,
-                    selected,
-                    slot,
-                    capture,
-                    permit,
-                    before_effect,
-                    settlement,
-                )
-                .await?;
-            }
+            None => false,
+        };
+        if !captured {
+            record_changes(
+                configuration,
+                selected,
+                slot,
+                capture,
+                permit,
+                before_effect,
+                settlement,
+            )
+            .await?;
         }
     }
     before_effect().await?;
@@ -507,11 +517,17 @@ where
     Ok(())
 }
 
-/// Captures exactly `paths` and their ancestors, at their current native
-/// state, into one commit on the head. It reads no watch hints and leaves
-/// them queued, so it never rescans, never waits on watch continuity and
-/// never claims another command's native effects. Its cost is bounded by
-/// the paths, never by the size of the checkout.
+/// Captures exactly `paths`, at their current native state, into one commit
+/// on the head; capture hydrates any ancestor the head lacks. It reads no
+/// watch hints and leaves them queued, so it never rescans, never waits on
+/// watch continuity and never claims another command's native effects. Its
+/// cost is bounded by the paths, never by the size of the checkout.
+///
+/// Returns `false`, committing nothing, when the paths cannot be captured on
+/// their own: a native move the watch has not yet delivered still binds the
+/// file's identity elsewhere, and a linked file's other names are unknown.
+/// The caller then takes the ordinary capture, which is exact by
+/// construction.
 pub(in crate::local) async fn record_paths<F, Fut>(
     (options, policy): (&CaptureOptions, &CapturePolicy),
     selected: (&LocalWorkspace, &workspace::View),
@@ -520,7 +536,7 @@ pub(in crate::local) async fn record_paths<F, Fut>(
     permit: PublicationPermit,
     before_effect: &F,
     settlement: Option<acyclic_fs::Digest>,
-) -> Result<()>
+) -> Result<bool>
 where
     F: Fn() -> Fut + Send + Sync,
     Fut: std::future::Future<Output = Result<()>> + Send,
@@ -532,36 +548,25 @@ where
     let config = workspace.volume_config();
     let mut changes: Vec<acyclic_fs::WatchChange> = Vec::new();
     for path in paths {
-        // Ancestors first, so a parent replaced natively is observed before
-        // the entry beneath it.
-        let mut end = 0;
-        loop {
-            let next = path[end..].find('/').map(|at| end + at);
-            let prefix = next.map_or(*path, |at| &path[..at]);
-            if !prefix.is_empty() {
-                let portable =
-                    acyclic_fs::path::PortablePath::parse(&format!("/{prefix}"), config.limits)
-                        .map_err(storage)?;
-                let name = acyclic_fs::kernel::NamespacePath::from_portable_in_profile(
-                    &portable,
-                    config.profile,
-                    config.limits,
-                )
-                .map_err(storage)?;
-                let known = changes.iter().any(|change| {
-                    matches!(change, acyclic_fs::WatchChange::Modified(known) if *known == name)
-                });
-                if !known {
-                    changes
-                        .try_reserve(1)
-                        .map_err(|_| Error::Storage("capture path allocation failed".into()))?;
-                    changes.push(acyclic_fs::WatchChange::Modified(name));
-                }
-            }
-            match next {
-                Some(at) => end = at + 1,
-                None => break,
-            }
+        // Only the written paths: a hinted directory is walked on hosts whose
+        // hints do not name changed children, so an ancestor hint would walk
+        // unrelated files.
+        let portable = acyclic_fs::path::PortablePath::parse(&format!("/{path}"), config.limits)
+            .map_err(storage)?;
+        let name = acyclic_fs::kernel::NamespacePath::from_portable_in_profile(
+            &portable,
+            config.profile,
+            config.limits,
+        )
+        .map_err(storage)?;
+        let known = changes.iter().any(
+            |change| matches!(change, acyclic_fs::WatchChange::Modified(known) if *known == name),
+        );
+        if !known {
+            changes
+                .try_reserve(1)
+                .map_err(|_| Error::Storage("capture path allocation failed".into()))?;
+            changes.push(acyclic_fs::WatchChange::Modified(name));
         }
     }
     let mut checkout = workspace
@@ -574,9 +579,7 @@ where
         .await
         .map_err(storage)?
         .value;
-    #[cfg(all(test, not(loom)))]
-    PATH_CAPTURES.set(PATH_CAPTURES.get() + 1);
-    capture_watch_batch(
+    let captured = capture_watch_batch(
         &mut checkout,
         WatchBatch::Changes {
             epoch: 0,
@@ -590,10 +593,16 @@ where
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .await
-    .map_err(storage)?;
+    .await;
+    // Any refusal discards this candidate: the ordinary capture either
+    // records the state exactly or fails with its own cause.
+    if captured.is_err() {
+        return Ok(false);
+    }
+    #[cfg(all(test, not(loom)))]
+    PATH_CAPTURES.set(PATH_CAPTURES.get() + 1);
     if !checkout.has_pending_mutations() && settlement.is_none() {
-        return Ok(());
+        return Ok(true);
     }
     let committed = checkout
         .commit(
@@ -626,7 +635,7 @@ where
             "checkout capture publication raced with another writer".into(),
         ));
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(super) fn needs_baseline(slot: &Option<Cursor>, physical: &LocalWorkspace) -> bool {
