@@ -1,21 +1,60 @@
 use crate::reader::backing::BackingPool;
 use acyclic_stream::{StreamError, StreamPath, StreamWatermarks, wire};
 use bytes::Bytes;
-use std::{collections::BTreeMap, mem::size_of};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    mem::size_of,
+};
 
 struct LatestEntry {
     value: wire::SessionLatestValue,
     charge: usize,
+    next: u64,
     payload: usize,
+}
+
+struct RecordEntry {
+    record: wire::Record,
+    charge: usize,
+    payload: usize,
+}
+
+/// Record-count page window for one selected stream. Eviction only releases
+/// display residency: Streams retains history for paged backfill. A delivered
+/// record or latest value is never refused for its size.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamViewPolicy {
+    records: usize,
+}
+
+impl StreamViewPolicy {
+    /// Select a nonzero page size without reserving storage for unseen records.
+    pub fn new(records: usize) -> Result<Self, StreamError> {
+        if records == 0 {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(Self { records })
+    }
+}
+
+impl Default for StreamViewPolicy {
+    fn default() -> Self {
+        Self { records: 128 }
+    }
 }
 
 /// Canonical records selected by one visible or subscribed view, shared by
 /// native and WASM. Records arrive through the provider's lazy pages and follow
-/// credit; retained history has no preset count or byte ceiling. Deselecting
-/// the view releases its rows; latest delivery replaces only the selected key.
+/// credit; the view retains one page window and pages older history back on
+/// demand. Deselecting the view releases its rows; latest delivery replaces
+/// only the selected key.
 pub struct StreamView {
-    records: Vec<wire::Record>,
+    policy: StreamViewPolicy,
+    records: VecDeque<RecordEntry>,
     latest: BTreeMap<Bytes, LatestEntry>,
+    /// Delivery cursors are strictly increasing, so they also order eviction.
+    /// Keys share their one compact allocation with the corresponding value.
+    latest_order: BTreeMap<u64, Bytes>,
     #[cfg(test)]
     latest_probes: std::sync::atomic::AtomicUsize,
     // Per-entry charges can count the same shared allocation many times,
@@ -36,6 +75,7 @@ impl StreamView {
     /// selection: records and watermarks may then move the cursor forward
     /// past skipped sequences, but never backward.
     pub(crate) fn new(
+        policy: StreamViewPolicy,
         next: u64,
         revision: u64,
         filtered: bool,
@@ -43,8 +83,10 @@ impl StreamView {
         backings: BackingPool,
     ) -> Self {
         Self {
-            records: Vec::new(),
+            policy,
+            records: VecDeque::new(),
             latest: BTreeMap::new(),
+            latest_order: BTreeMap::new(),
             #[cfg(test)]
             latest_probes: std::sync::atomic::AtomicUsize::new(0),
             bytes: 0,
@@ -63,7 +105,7 @@ impl StreamView {
 
     /// Borrows only the retained visible records; no joined history allocation.
     pub fn records(&self) -> impl ExactSizeIterator<Item = &wire::Record> {
-        self.records.iter()
+        self.records.iter().map(|entry| &entry.record)
     }
 
     /// Last delivered opaque value for a subscribed key.
@@ -83,7 +125,7 @@ impl StreamView {
     /// Borrows one displayed record without copying its siblings.
     #[must_use]
     pub fn record(&self, index: usize) -> Option<&wire::Record> {
-        self.records.get(index)
+        self.records.get(index).map(|entry| &entry.record)
     }
 
     /// Exclusive end of this disposable fold, not a new recovery ledger.
@@ -92,12 +134,12 @@ impl StreamView {
         self.next
     }
 
-    /// First delivered sequence retained by this view.
+    /// First retained sequence, advancing when the display page evicts a record.
     #[must_use]
     pub fn first_sequence(&self) -> u64 {
         self.records
-            .first()
-            .map_or(self.next, |record| record.sequence)
+            .front()
+            .map_or(self.next, |entry| entry.record.sequence)
     }
 
     /// Session-wide revision, including replacement views, so a deselect/reselect
@@ -158,7 +200,9 @@ impl StreamView {
                     {
                         return Err(StreamError::InvalidResponse);
                     }
-                    let metadata = size_of::<(Bytes, LatestEntry)>() + value.key.len();
+                    let metadata = size_of::<(Bytes, LatestEntry)>()
+                        + size_of::<(u64, Bytes)>()
+                        + value.key.len();
                     let payload = frame.original_record().map_or_else(
                         || acyclic_stream::OwnedBytes::from(value.value.clone()),
                         |record| record.value.clone(),
@@ -170,10 +214,24 @@ impl StreamView {
                     self.latest_probes
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if let Some(old) = self.latest.remove(value.key.as_ref()) {
+                        self.latest_order.remove(&old.next);
+                        self.bytes -= old.charge as u128;
+                        self.payload_bytes -= old.payload as u128;
+                    }
+                    while self.latest.len() >= self.policy.records {
+                        let (_, key) = self
+                            .latest_order
+                            .pop_first()
+                            .ok_or(StreamError::InvalidResponse)?;
+                        let old = self
+                            .latest
+                            .remove(key.as_ref())
+                            .ok_or(StreamError::InvalidResponse)?;
                         self.bytes -= old.charge as u128;
                         self.payload_bytes -= old.payload as u128;
                     }
                     let key = Bytes::copy_from_slice(&value.key);
+                    self.latest_order.insert(after.next, key.clone());
                     self.latest.insert(
                         key.clone(),
                         LatestEntry {
@@ -183,6 +241,7 @@ impl StreamView {
                                 attention: value.attention,
                             },
                             charge,
+                            next: after.next,
                             payload: capacity,
                         },
                     );
@@ -222,7 +281,17 @@ impl StreamView {
                 let capacity = payload.backing().capacity();
                 let charge = metadata + capacity;
                 owned.value = Bytes::from_owner(payload);
-                self.records.push(owned);
+                while self.records.len() >= self.policy.records {
+                    if let Some(old) = self.records.pop_front() {
+                        self.bytes -= old.charge as u128;
+                        self.payload_bytes -= old.payload as u128;
+                    }
+                }
+                self.records.push_back(RecordEntry {
+                    record: owned,
+                    charge,
+                    payload: capacity,
+                });
                 self.bytes += charge as u128;
                 self.payload_bytes += capacity as u128;
                 self.next = next;
@@ -252,7 +321,7 @@ fn retain_metadata(
     record: &wire::Record,
     original: Option<&acyclic_stream::Record>,
 ) -> (wire::Record, usize) {
-    let mut bytes = size_of::<wire::Record>();
+    let mut bytes = size_of::<RecordEntry>();
     let mut keys = Vec::with_capacity(record.keys.len());
     let mut attributes = Vec::with_capacity(record.attributes.len());
     bytes += std::mem::size_of_val(keys.spare_capacity_mut());

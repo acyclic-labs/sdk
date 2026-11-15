@@ -15,17 +15,38 @@ pub(super) fn visit_metadata() {
 }
 
 fn view(path: &StreamPath) -> StreamView {
-    StreamView::new(0, 0, false, Some(path.clone()), BackingPool::default())
+    StreamView::new(
+        StreamViewPolicy::default(),
+        0,
+        0,
+        false,
+        Some(path.clone()),
+        BackingPool::default(),
+    )
 }
 
 #[tokio::test]
-async fn subscribed_rows_and_latest_keys_outlive_former_count_and_byte_ceilings()
+async fn large_selection_retains_all_delivered_rows_and_releases_backings()
 -> Result<(), Box<dyn std::error::Error>> {
     let memory = MemoryStream::default();
     let path = StreamPath::new("view/unbounded-selection")?;
     let backings = BackingPool::default();
-    let mut records = StreamView::new(0, 0, false, Some(path.clone()), backings.clone());
-    let mut latest = StreamView::new(0, 0, true, Some(path.clone()), backings.clone());
+    let mut records = StreamView::new(
+        StreamViewPolicy::new(4096)?,
+        0,
+        0,
+        false,
+        Some(path.clone()),
+        backings.clone(),
+    );
+    let mut latest = StreamView::new(
+        StreamViewPolicy::new(4096)?,
+        0,
+        0,
+        true,
+        Some(path.clone()),
+        backings.clone(),
+    );
     assert_eq!(backings.bytes(), 0, "selection eagerly reserved history");
     let count = 2_176_u64;
     let page = 32_u32;
@@ -270,7 +291,7 @@ async fn metadata_retention_counts_one_pass_and_compacts_unrelated_backing()
         );
         let output = retained.record(0).ok_or(StreamError::Unavailable)?;
         assert_eq!(output, record);
-        let expected = size_of::<wire::Record>()
+        let expected = size_of::<RecordEntry>()
             + output.value.len()
             + output.commit_id.len()
             + output.origin.capacity()

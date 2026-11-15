@@ -86,11 +86,12 @@ failed path does not remain in the polling rotation. Its final selected view
 remains available. When no live follow remains, reads return a typed closure
 instead of waiting for a stream that can no longer wake them.
 
-Selected views retain the records and latest keys they subscribe to, without
-preset record or byte ceilings. Delivery uses the provider's lazy pages and
-transport credit. Removing a selection releases its rows; an explicitly cloned
-row retains only its own payload. Latest delivery replaces its selected key
-without evicting another subscribed key.
+Selected views retain one page window of the records and latest keys they
+subscribe to, without a byte ceiling. Delivery uses the provider's lazy pages
+and transport credit; older rows are evicted from the window and paged back on
+demand. Removing a selection releases its rows; an explicitly cloned row
+retains only its own payload. Latest delivery replaces its selected key and
+evicts the oldest key only when the window is full.
 
 `Reply` correlates a message's identity and accepted inbox sequence with its
 committed result. An ordinary prompt returns its own conversation entry. If
