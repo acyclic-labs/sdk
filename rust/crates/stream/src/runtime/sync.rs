@@ -5,9 +5,6 @@ use std::sync;
 
 pub(crate) use crate::query_sync::SyncMutex as Mutex;
 
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(host_runtime)]
 pub(crate) use sync::Arc;
 pub(crate) use sync::atomic::{AtomicU64, Ordering};

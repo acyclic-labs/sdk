@@ -47,10 +47,7 @@ pub mod pull;
 pub mod request;
 pub mod runtime;
 pub mod search;
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(host_runtime)]
 pub mod session;
 pub mod testing;
 pub mod trace;
@@ -67,18 +64,17 @@ mod journal_provider;
 #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
 pub use journal_provider::{JournalStream, JournalStreamLimits};
 mod change;
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(host_runtime)]
 mod http_codec;
 mod http_validation;
 mod interest;
+#[cfg(journal_codec)]
 mod journal;
 #[cfg(not(target_arch = "wasm32"))]
 mod local;
 mod memory;
 mod operation_claim;
+#[cfg(replica_host)]
 mod replicated;
 pub use operation_claim::{
     OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,

@@ -43,6 +43,7 @@ pub enum AcceptedCommitOutcome {
 }
 
 impl WriteOutcome {
+    #[cfg(host_runtime)]
     pub(crate) fn commit_receipt(&self) -> Option<&CommitReceipt> {
         match self {
             Self::Commit(CommitOutcome::Committed(receipt))

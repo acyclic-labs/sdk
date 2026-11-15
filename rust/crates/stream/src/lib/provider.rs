@@ -215,7 +215,7 @@ impl EphemeralLease {
         let Some(release) = take_release(&mut self.release) else {
             return Ok(());
         };
-        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        #[cfg(host_runtime)]
         {
             let (send, receive) = futures::channel::oneshot::channel();
             crate::runtime::PlatformExecutor.spawn_owned(futures::FutureExt::map(
@@ -249,7 +249,7 @@ impl std::fmt::Debug for EphemeralLease {
 
 impl Drop for EphemeralLease {
     fn drop(&mut self) {
-        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        #[cfg(host_runtime)]
         if let Some(release) = take_release(&mut self.release) {
             crate::runtime::PlatformExecutor
                 .spawn_owned(futures::FutureExt::map(release, |_released| ()));

@@ -40,7 +40,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
     /// Submits one canonical commit across this provider's paths. The returned
     /// owned handle outlives this Stream and any waiter; cancellation cannot
     /// withdraw a submitted publication. Its exact identity is recoverable.
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     pub fn submit(&self, request: CommitRequest) -> crate::Pending {
         crate::Pending::submit(
             Arc::clone(&self.provider),
@@ -50,7 +50,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
     }
 
     /// Transfer one original append to the shared owned-publication mechanism.
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     pub fn submit_append(&self, request: AppendRequest) -> crate::AppendPending {
         crate::AppendPending::submit_append(
             Arc::clone(&self.provider),
@@ -417,10 +417,7 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
 }
 
 /// Transport callers keep this allocation instead of copying a domain wrapper.
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(host_runtime)]
 fn new_identity_bytes() -> bytes::Bytes {
     bytes::Bytes::copy_from_slice(&new_identity())
 }

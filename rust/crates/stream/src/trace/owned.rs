@@ -1,14 +1,14 @@
 //! Object-safe custody of the original provider-bound recording.
-#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+#[cfg(host_runtime)]
 use super::{Comparison, Outcome};
 use super::{Recording, SpanId};
 use crate::StreamError;
 use crate::{ProviderPlatform, StreamProvider};
 
 trait Terminal: ProviderPlatform {
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     fn available(&self) -> bool;
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     fn submit(
         self: Box<Self>,
         bytes: Option<u64>,
@@ -18,12 +18,12 @@ trait Terminal: ProviderPlatform {
 }
 
 impl<P: StreamProvider + ?Sized> Terminal for Recording<P> {
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     fn available(&self) -> bool {
         self.recorder.terminal_available()
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     fn submit(
         self: Box<Self>,
         bytes: Option<u64>,
@@ -34,14 +34,14 @@ impl<P: StreamProvider + ?Sized> Terminal for Recording<P> {
     }
 }
 
-#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+#[cfg(host_runtime)]
 #[derive(Debug, thiserror::Error)]
 #[error("owned trace terminal was already transferred")]
 struct TerminalTransferred;
 struct TerminalGuard(Option<Box<dyn Terminal>>);
 
 impl TerminalGuard {
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     fn submit(
         mut self,
         bytes: Option<u64>,
@@ -60,7 +60,7 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         #[cfg(all(target_arch = "wasm32", not(feature = "wasm")))]
         let _ = self.0.take();
-        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        #[cfg(host_runtime)]
         if let Some(terminal) = self.0.take()
             && terminal.available()
         {
@@ -136,7 +136,7 @@ impl OwnedRecording {
     }
 
     /// Transfer the original terminal append without suspending the caller.
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     pub fn finish_submitted(
         self,
         bytes: Option<u64>,
@@ -145,7 +145,7 @@ impl OwnedRecording {
         self.finish_compared(bytes, result, None)
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     pub(super) fn finish_compared(
         self,
         bytes: Option<u64>,
@@ -168,7 +168,7 @@ impl<P: StreamProvider + ?Sized> super::context::Producer for super::Recorder<P>
         self: std::sync::Arc<Self>,
         request: super::Request,
     ) -> crate::BoxProviderFuture<'static, Result<OwnedRecording, crate::StreamError>> {
-        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        #[cfg(host_runtime)]
         {
             let recording = self.submit_start(request).map(Recording::into_owned);
             Box::pin(std::future::ready(recording))

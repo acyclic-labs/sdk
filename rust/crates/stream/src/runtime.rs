@@ -42,7 +42,7 @@ pub trait Executor: ProviderPlatform {
 #[derive(Default)]
 pub struct PlatformExecutor;
 
-#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+#[cfg(host_runtime)]
 impl PlatformExecutor {
     /// Submits an owned future without inserting an additional caller box.
     /// Custody fields outside an inner future box therefore outlive that box.

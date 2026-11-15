@@ -1,5 +1,5 @@
 //! Original stream custody: EOF settles; cancellation and errors remain unfinished.
-#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+#[cfg(host_runtime)]
 use super::Outcome;
 use super::OwnedRecording;
 use futures::Stream;
@@ -57,7 +57,7 @@ where
         match &next {
             Poll::Ready(None) => {
                 state.close();
-                #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+                #[cfg(host_runtime)]
                 if let Some(recording) = state.recording.take() {
                     let _completion = recording.finish_submitted(None, Outcome::Succeeded);
                 }

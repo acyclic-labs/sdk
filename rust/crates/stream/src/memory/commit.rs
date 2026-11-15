@@ -645,6 +645,7 @@ impl MemoryStream {
             };
             return Ok(Decision::Returned {
                 result: (result, output_claim),
+                #[cfg(replica_host)]
                 ephemeral: false,
             });
         }
@@ -708,6 +709,7 @@ impl MemoryStream {
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
         Ok(Decision::Accepted {
+            #[cfg(replica_host)]
             ephemeral: matches!(scope, Scope::Ephemeral(_)),
             bytes,
             install: move |state: &mut State, durable: bool, at_millis| {

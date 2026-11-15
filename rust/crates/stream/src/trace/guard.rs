@@ -1,5 +1,5 @@
 //! Trace custody for an original guard, including acquisition and ownership.
-#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+#[cfg(host_runtime)]
 use super::Outcome;
 use super::{OwnedRecording, Request};
 use std::{
@@ -39,7 +39,7 @@ impl Drop for GuardRecording {
             return;
         }
         let recording = self.0.take();
-        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        #[cfg(host_runtime)]
         if let Some(recording) = recording {
             let _completion = recording.finish_submitted(Some(0), Outcome::Succeeded);
         }

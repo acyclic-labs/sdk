@@ -62,7 +62,7 @@ enum RecorderFailure {
     IdentityExhausted,
     #[error("trace publication credit is occupied; coverage is incomplete")]
     PublicationCredit,
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     #[error("trace publication has no original executor")]
     ExecutorUnavailable,
     #[error("trace producer monotonic timestamp exceeds its representation")]
@@ -93,7 +93,7 @@ impl<P: ?Sized> Recorder<P> {
         self.publications = Some(Arc::new(tokio::sync::Semaphore::new(credit.get())));
         Ok(self)
     }
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     fn reserve_publication(
         &self,
     ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, StreamError> {
@@ -349,7 +349,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         ))
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     pub(super) fn submit_start(
         self: &Arc<Self>,
         request: Request,
@@ -372,7 +372,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         })
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     fn publish_submitted(
         &self,
         event: SpanEvent,
@@ -443,14 +443,14 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
 
 enum Admission {
     Retained(RetainedRecord),
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     Submitted(
         crate::AppendPending,
         Option<tokio::sync::OwnedSemaphorePermit>,
     ),
 }
 
-#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+#[cfg(host_runtime)]
 async fn retained_append(pending: &crate::AppendPending) -> Result<RetainedRecord, StreamError> {
     match pending.result().await? {
         Ok(AppendOutcome::Committed(receipt)) => Ok(RetainedRecord {
@@ -483,7 +483,7 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
     pub async fn start(&self) -> Result<RetainedRecord, StreamError> {
         match &self.start {
             Admission::Retained(start) => Ok(start.clone()),
-            #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+            #[cfg(host_runtime)]
             Admission::Submitted(pending, _) => retained_append(pending).await,
         }
     }
@@ -522,7 +522,7 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
     /// Submit the terminal without a suspension point after irreversible work.
     /// The shared append producer retains the exact bytes and retry identity
     /// independently of this recording or any completion observer.
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     pub fn finish_submitted(
         self,
         bytes: Option<u64>,
@@ -531,7 +531,7 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
         self.finish_compared(bytes, result, None)
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     pub(super) fn finish_compared(
         self,
         bytes: Option<u64>,

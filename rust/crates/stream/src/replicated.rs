@@ -44,13 +44,6 @@ pub(crate) struct JournalFrame<'a> {
     pub(crate) command: &'a WriteRequest,
     /// Trusted proposal clock. A journal that owns the acceptance clock may
     /// replace it; installation binds that returned stamp to the original plan.
-    #[cfg(any(
-        not(target_arch = "wasm32"),
-        all(
-            any(feature = "wasm", feature = "wasm-journal"),
-            target_arch = "wasm32"
-        )
-    ))]
     pub(crate) at_millis: u64,
     pub(crate) deadline: Option<u64>,
     #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
@@ -463,13 +456,6 @@ impl<J: CommandJournal> Replicated<J> {
             let mut attempt = Attempt::new(&mut self.failed, &self.provider.revisions);
             let frame = JournalFrame {
                 command,
-                #[cfg(any(
-                    not(target_arch = "wasm32"),
-                    all(
-                        any(feature = "wasm", feature = "wasm-journal"),
-                        target_arch = "wasm32"
-                    )
-                ))]
                 at_millis: self.clock.now_unix_millis(),
                 deadline,
                 #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]

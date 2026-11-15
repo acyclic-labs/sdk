@@ -3,7 +3,9 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::OwnedBytes as Bytes;
 use crate::wire_codec;
-use crate::{MemoryStream, StreamError, StreamProvider, WriteOutcome, WriteRequest};
+#[cfg(replica_host)]
+use crate::{MemoryStream, StreamProvider, WriteOutcome};
+use crate::{StreamError, WriteRequest};
 use prost::Message;
 
 /// Version 2: commits carry ordered effects. Version 1 journals are refused
@@ -15,6 +17,7 @@ pub(crate) struct CanonicalCommand {
     pub(crate) digest: Option<[u8; 32]>,
 }
 
+#[cfg(replica_host)]
 pub(crate) async fn replay(
     provider: &MemoryStream,
     mut command: WriteRequest,

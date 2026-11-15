@@ -218,6 +218,7 @@ fn condition_len(condition: &CommitCondition) -> usize {
         }
     })
 }
+#[cfg(any(test, journal_codec))]
 fn mutation_len(mutation: &CommitMutation) -> usize {
     mutation_len_with(mutation, &append_record_len)
 }
@@ -291,20 +292,24 @@ pub(crate) fn prepared_commit_command_len(
     block_len(commit_len_with(request, &|_| record))
 }
 
+#[cfg(any(test, journal_codec))]
 pub(crate) fn header(out: &mut Vec<u8>, tag: u32, length: usize) {
     prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
     prost::encoding::encode_varint(length as u64, out);
 }
+#[cfg(any(test, journal_codec))]
 fn bytes(out: &mut Vec<u8>, tag: u32, value: &[u8]) {
     header(out, tag, value.len());
     out.extend_from_slice(value);
 }
+#[cfg(any(test, journal_codec))]
 fn uint(out: &mut Vec<u8>, tag: u32, value: Option<u64>) {
     if let Some(value) = value {
         prost::encoding::encode_key(tag, prost::encoding::WireType::Varint, out);
         prost::encoding::encode_varint(value, out);
     }
 }
+#[cfg(any(test, journal_codec))]
 fn records(out: &mut Vec<u8>, tag: u32, records: &[AppendRecord]) {
     for record in records {
         header(out, tag, append_record_len(record));
@@ -324,12 +329,14 @@ fn records(out: &mut Vec<u8>, tag: u32, records: &[AppendRecord]) {
     }
 }
 
+#[cfg(any(test, journal_codec))]
 pub(crate) fn append(out: &mut Vec<u8>, request: &AppendRequest) {
     bytes(out, 1, request.path.as_str().as_bytes());
     records(out, 2, &request.records);
     uint(out, 3, request.if_tail);
     bytes(out, 4, request.idempotency_key.as_bytes());
 }
+#[cfg(any(test, journal_codec))]
 pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
     for path in &request.exclude {
         bytes(out, 5, path.as_str().as_bytes());
@@ -339,6 +346,7 @@ pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
     uint(out, 3, request.at_tail);
     bytes(out, 4, request.idempotency_key.as_bytes());
 }
+#[cfg(any(test, journal_codec))]
 pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
     // Generated protobuf writes fields in tag order: `effects` (6) follows
     // the key (3) and deadline (4).
@@ -350,6 +358,7 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
     }
 }
 
+#[cfg(any(test, journal_codec))]
 fn commit_effect(out: &mut Vec<u8>, effect: &CommitEffect) {
     for condition in &effect.conditions {
         header(out, 1, condition_len(condition));
@@ -631,10 +640,7 @@ mod tests {
 // Each mutation adds at most three u64 fields and two growing delimiters (45
 // bytes); the envelope adds its commit id, timestamp and enclosing delimiter.
 // Count vector lengths, never records, payload bytes or unrelated retained history.
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(host_runtime)]
 pub(crate) fn accepted_response_limit(
     input: &crate::wire::CommitRequest,
 ) -> Result<usize, crate::StreamError> {

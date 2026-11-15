@@ -3,10 +3,12 @@
 enum Decision<T, F> {
     Returned {
         result: T,
+        #[cfg(replica_host)]
         ephemeral: bool,
     },
     Accepted {
         bytes: usize,
+        #[cfg(replica_host)]
         ephemeral: bool,
         install: F,
     },
@@ -14,6 +16,7 @@ enum Decision<T, F> {
 
 impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Decision<T, F> {
     /// The planner owns this classification through durability and installation.
+    #[cfg(replica_host)]
     fn ephemeral(&self) -> bool {
         match self {
             Self::Returned { ephemeral, .. } | Self::Accepted { ephemeral, .. } => *ephemeral,
@@ -48,6 +51,7 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
 
     /// Persists then installs a durable decision. An ephemeral one installs
     /// at once and never reaches `persist`: no frame, no fsync.
+    #[cfg(replica_host)]
     fn durable(
         self,
         core: &MemoryStream,
@@ -83,6 +87,7 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
     }
 }
 
+#[cfg(replica_host)]
 impl MemoryStream {
     pub(crate) fn canonicalize(
         &self,

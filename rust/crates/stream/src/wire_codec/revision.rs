@@ -63,10 +63,7 @@ pub fn selection_from_opened(
     ))
 }
 
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(host_runtime)]
 /// Admits the original selection before data or its revision can be observed.
 /// Sessions and injected provider ports use the same request/receipt contract.
 pub(crate) fn selection_for_follow(

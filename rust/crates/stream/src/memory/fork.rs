@@ -15,6 +15,7 @@ impl MemoryStream {
         if let Some(result) = self.replay_fork(state, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned {
                 result: result,
+                #[cfg(replica_host)]
                 ephemeral: matches!(scope, Scope::Ephemeral(_)),
             });
         }
@@ -76,6 +77,7 @@ impl MemoryStream {
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
         Ok(Decision::Accepted {
+            #[cfg(replica_host)]
             ephemeral: matches!(scope, Scope::Ephemeral(_)),
             bytes: 0,
             install: move |state: &mut State, _durable, at_millis| {

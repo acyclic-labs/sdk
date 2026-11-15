@@ -1,7 +1,4 @@
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(host_runtime)]
 use super::sync::Arc;
 use super::sync::Mutex;
 use crate::StreamError;
@@ -17,18 +14,12 @@ pub(crate) struct Signal<T> {
 }
 
 /// The original release observation follows the backing's final owner.
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(host_runtime)]
 pub(crate) struct Guard<T> {
     sender: Arc<Signal<T>>,
     value: Option<T>,
 }
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(host_runtime)]
 impl<T> Guard<T> {
     pub(crate) fn new(sender: Arc<Signal<T>>, value: T) -> Self {
         Self {
@@ -37,10 +28,7 @@ impl<T> Guard<T> {
         }
     }
 }
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(host_runtime)]
 impl<T> Drop for Guard<T> {
     fn drop(&mut self) {
         if let Some(value) = self.value.take() {
@@ -101,10 +89,7 @@ impl<T> Signal<T> {
     }
 }
 
-#[cfg(any(
-    not(target_arch = "wasm32"),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(host_runtime)]
 impl<T> Signal<T> {
     pub(crate) fn poll(&self, cx: &mut Context<'_>) -> std::task::Poll<Result<T, StreamError>> {
         use std::task::Poll;

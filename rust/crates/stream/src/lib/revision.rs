@@ -234,11 +234,7 @@ impl RevisionTracker {
         )
     }
 
-    #[cfg(any(
-        test,
-        not(target_arch = "wasm32"),
-        all(feature = "wasm", target_arch = "wasm32")
-    ))]
+    #[cfg(any(test, host_runtime))]
     fn participants(
         &self,
         mut visit: impl FnMut(Revision) -> Result<(), StreamError>,
@@ -391,11 +387,7 @@ impl RevisionTracker {
     /// `served` does not already cover. A node that already served a revision
     /// has applied it, so a follow on its session sends nothing extra and
     /// allocates nothing; a resume on another node carries the whole floor.
-    #[cfg(any(
-        test,
-        not(target_arch = "wasm32"),
-        all(feature = "wasm", target_arch = "wasm32")
-    ))]
+    #[cfg(any(test, host_runtime))]
     pub(crate) fn raise_uncovered(
         &self,
         at_least: &mut Vec<crate::wire::Revision>,

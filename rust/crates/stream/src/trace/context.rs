@@ -159,7 +159,7 @@ pub fn observe_value<T>(
 ) -> impl Future<Output = T> {
     use futures::FutureExt as _;
     OwnedRecording::child(request, work).map(move |(result, _recording)| {
-        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        #[cfg(host_runtime)]
         if let Some(recording) = _recording
             && let Some((bytes, outcome)) = _outcome(&result)
         {
@@ -195,7 +195,7 @@ pub(crate) fn records(records: crate::RecordStream) -> crate::RecordStream {
                     })
                 });
                 let (next, recording) = OwnedRecording::accompany(admission, cursor.next()).await;
-                #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+                #[cfg(host_runtime)]
                 if let Some(recording) = recording {
                     let bytes = match &next {
                         Some(Ok(record)) => u64::try_from(record.value.len()).ok(),
@@ -262,7 +262,7 @@ pub fn observe_sync<T>(
     work: impl FnOnce() -> T,
     _outcome: impl FnOnce(&T) -> Option<(Option<u64>, super::Outcome, Option<super::Comparison>)>,
 ) -> T {
-    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[cfg(host_runtime)]
     {
         let (result, recording) = accompany_sync(request, work);
         let Some(recording) = recording else {

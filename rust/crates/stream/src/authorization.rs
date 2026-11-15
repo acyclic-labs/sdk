@@ -27,9 +27,12 @@ pub(crate) const RESOURCE_FOLLOW_ACTION: Action = Action::Fs(FsAction::List);
 
 // A Session observation stores one action in its retained authorization. A
 // contract adding another action must change that representation at compile time.
+#[cfg(host_runtime)]
 pub(crate) const HEAD_ACTION: Action = observation_action(StreamMethod::Head);
+#[cfg(host_runtime)]
 pub(crate) const CHILDREN_ACTION: Action = observation_action(StreamMethod::ChildrenPage);
 
+#[cfg(host_runtime)]
 const fn observation_action(method: StreamMethod) -> Action {
     let admitted = method.authorization().admitted;
     assert!(

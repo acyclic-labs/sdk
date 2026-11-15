@@ -4,7 +4,7 @@ use futures::TryStreamExt as _;
 use std::sync::Arc;
 
 #[tokio::test]
-#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+#[cfg(host_runtime)]
 async fn owned_executor_preserves_parent_after_submission_scope_returns()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::trace::{Recorder, Request, observe_guard};
@@ -90,7 +90,7 @@ async fn owned_executor_preserves_parent_after_submission_scope_returns()
 }
 
 #[tokio::test]
-#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+#[cfg(host_runtime)]
 async fn original_guard_unlock_precedes_its_trace_settlement()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::trace::{Recorder, Request, observe_guard};
@@ -195,7 +195,7 @@ async fn original_guard_unlock_precedes_its_trace_settlement()
 }
 
 #[tokio::test]
-#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+#[cfg(host_runtime)]
 async fn concurrent_original_publications_have_no_default_credit_ceiling()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::trace::{Recorder, Request};
