@@ -180,7 +180,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let directory = tempfile::tempdir_in(std::env::current_dir()?)?;
+        let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let path = StreamPath::new("accepted-events")?;
         for n in 0..2 {

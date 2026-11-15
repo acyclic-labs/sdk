@@ -5,7 +5,8 @@
 //!   a source file is found through `acyclic_test_support::crate_path!` or
 //!   `source_path`. The spelling is allowed only as the argument of an
 //!   `include!`, `include_str!` or `include_bytes!`, which read at compile time.
-//! - A temporary directory is never created beside the running executable.
+//! - A temporary directory is never created beside the running executable or in the
+//!   working directory, which a runner may set to a read-only checkout.
 use std::collections::BTreeMap;
 
 /// The compile-time manifest directory, assembled so that this file never spells it.
@@ -129,13 +130,37 @@ fn manifest_uses(text: &str) -> usize {
         .count()
 }
 
-/// `tempdir_in` calls whose argument names the running executable.
-fn executable_tempdirs(text: &str) -> usize {
+/// A relative path literal, bare or as `Path::new`/`PathBuf::from`: it resolves against the
+/// working directory, which a test runner may set to the checkout.
+fn relative_literal(argument: &str) -> bool {
+    let argument = argument.strip_prefix('&').unwrap_or(argument);
+    let inner = [
+        "std::path::Path::new(",
+        "Path::new(",
+        "std::path::PathBuf::from(",
+        "PathBuf::from(",
+    ]
+    .iter()
+    .find_map(|call| argument.strip_prefix(call)?.strip_suffix(')'))
+    .unwrap_or(argument);
+    inner
+        .strip_prefix('"')
+        .and_then(|literal| literal.strip_suffix('"'))
+        .is_some_and(|path| !path.contains('"') && !path.starts_with('/'))
+}
+
+/// Temporary directories created inside the build or checkout tree: a `tempdir_in` or
+/// `TempDir::new_in` whose argument names the running executable or the working
+/// directory, or is a relative path literal.
+fn tree_tempdirs(text: &str) -> usize {
     let text = squeeze(text);
     let word = |c: char| c.is_alphanumeric() || c == '_';
-    // Names bound to the running executable's path, as in `let name = ...current_exe()`.
-    let mut names = vec!["current_exe".to_owned()];
-    for (at, _) in text.match_indices("current_exe()") {
+    // Names bound to either path, as in `let name = ...current_exe()`.
+    let mut names = vec!["current_exe".to_owned(), "current_dir".to_owned()];
+    for (at, _) in text
+        .match_indices("current_exe()")
+        .chain(text.match_indices("current_dir()"))
+    {
         let statement = &text[text[..at].rfind([';', '{', '}']).map_or(0, |end| end + 1)..at];
         // Attributes may precede the `let`; comments are already gone.
         let binding = statement
@@ -151,6 +176,7 @@ fn executable_tempdirs(text: &str) -> usize {
         }
     }
     text.match_indices("tempdir_in(")
+        .chain(text.match_indices("TempDir::new_in("))
         .filter(|(at, open)| {
             let mut depth = 1;
             let argument: String = text[at + open.len()..]
@@ -164,12 +190,13 @@ fn executable_tempdirs(text: &str) -> usize {
                     depth > 0
                 })
                 .collect();
-            names.iter().any(|name| {
-                argument.match_indices(name.as_str()).any(|(start, _)| {
-                    !argument[..start].ends_with(word)
-                        && !argument[start + name.len()..].starts_with(word)
+            relative_literal(&argument)
+                || names.iter().any(|name| {
+                    argument.match_indices(name.as_str()).any(|(start, _)| {
+                        !argument[..start].ends_with(word)
+                            && !argument[start + name.len()..].starts_with(word)
+                    })
                 })
-            })
         })
         .count()
 }
@@ -183,10 +210,10 @@ fn violations<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<St
         if count > 0 {
             found.insert(path, count);
         }
-        let count = executable_tempdirs(text);
+        let count = tree_tempdirs(text);
         if count > 0 {
             violations.push(format!(
-                "{path}: temporary directory beside the executable x{count}"
+                "{path}: temporary directory in the build or checkout tree x{count}"
             ));
         }
     }
@@ -280,11 +307,17 @@ fn planted_build_location_paths_fail_the_scan() {
         "let quote = '\"'; let raw = r#\"\" // \"#; let executable = std::env::current_exe()?;
 tempfile::tempdir_in(executable.parent().unwrap())",
         "let url = \"https://x\"; let executable = std::env::current_exe()?;\ntempfile::tempdir_in(executable.parent().unwrap())",
+        // The working directory may be the read-only checkout.
+        "let root = tempfile::tempdir_in(\".\").map_err(storage)?;",
+        "let d = tempfile::tempdir_in(std::env::current_dir()?)?;",
+        "let cwd = std::env::current_dir()?; tempfile::TempDir::new_in(&cwd)",
+        "Builder::new().tempdir_in(Path::new(\"target/tmp\"))",
+        "tempfile::tempdir_in(&PathBuf::from(\"scratch\"))",
     ] {
         assert_eq!(
             scan(target, plant),
             [format!(
-                "{target}: temporary directory beside the executable x1"
+                "{target}: temporary directory in the build or checkout tree x1"
             )],
             "{plant}"
         );
@@ -292,6 +325,10 @@ tempfile::tempdir_in(executable.parent().unwrap())",
     for plant in [
         "let executable = std::env::current_exe()?; let d = tempfile::tempdir_in(base)?;",
         "let executable_dir = x; tempfile::tempdir_in(executable_dir)",
+        // An absolute or computed root is outside the tree.
+        "tempfile::tempdir_in(\"/dev/shm\")",
+        "tempfile::tempdir_in(format!(\"{}/x\", root))",
+        "let current_directory = x; tempfile::tempdir_in(current_directory)",
         // A commented-out use is no use.
         "// tempfile::tempdir_in(std::env::current_exe()?.parent().unwrap())",
     ] {
