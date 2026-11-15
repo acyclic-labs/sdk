@@ -321,7 +321,7 @@ impl Cursor {
                 break;
             };
             if frame.tail.is_none() {
-                let observed = observe(&access, cursor.at.clone(), Some(frame.path.clone()), None)
+                let observed = observe(access, cursor.at.clone(), Some(frame.path.clone()), None)
                     .await
                     .map_err(failure)?;
                 cursor.at = Some(observed.value.snapshot.clone());

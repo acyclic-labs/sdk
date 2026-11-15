@@ -527,9 +527,9 @@ impl Pool {
                     Ok(applied) => {
                         let conflict = applied.and_then(|applied| {
                             let link = self.links.get_mut(node)?;
-                            match link.served.observe(&applied) {
+                            match link.served.observe(applied) {
                                 Ok(applied) => {
-                                    route.revisions.observe(&applied);
+                                    route.revisions.observe(applied);
                                     None
                                 }
                                 Err(error) => Some(error),

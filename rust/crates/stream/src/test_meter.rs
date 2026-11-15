@@ -486,7 +486,7 @@ impl NativeReadMeter for Meter {
     }
     fn release(&self, bytes: u64) {
         if let Some(observe) = self.release_observer {
-            observe(&bytes);
+            observe(bytes);
         }
         trace::record("release", bytes, 0, 0);
         assert!(self.held.fetch_sub(bytes, Ordering::SeqCst) >= bytes);

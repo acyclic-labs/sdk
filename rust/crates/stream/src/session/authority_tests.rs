@@ -317,7 +317,7 @@ fn declared_method_credentials_match_session_admission() {
                 actions,
             }]
         };
-        testing::credential_with_grants(grants)
+        testing::credential_with_grants(&grants)
     };
 
     // Dispatch through the actual Session admission each public method sends.

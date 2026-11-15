@@ -131,7 +131,7 @@ impl StreamProvider for Client {
             }
             // A recovered write floors later reads exactly like its lost reply would have.
             if let Some(revision) = observation.as_ref().and_then(|o| o.revision.as_ref()) {
-                self.revisions.observe(&revision);
+                self.revisions.observe(revision);
             }
             Ok(observation)
         })

@@ -182,7 +182,7 @@ impl<T: ReplayObserver + ?Sized> ReplayObserver for &mut T {
         command: &'a WriteRequest,
         after: bool,
     ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a {
-        (**self).observe(&provider, command, after)
+        (**self).observe(provider, command, after)
     }
 }
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]

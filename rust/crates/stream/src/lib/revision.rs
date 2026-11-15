@@ -286,7 +286,7 @@ impl RevisionTracker {
 
     /// Records a revision a peer issued or served.
     pub fn observe(&self, revision: &Revision) {
-        self.with_authority(&revision.scope, |authority| authority.observe(&revision));
+        self.with_authority(&revision.scope, |authority| authority.observe(revision));
     }
 
     fn with_authority<T>(
@@ -316,7 +316,7 @@ impl RevisionTracker {
         }
         if let Some(applied) = applied {
             self.with_authority(&applied.scope, |authority| {
-                authority.observe(&applied);
+                authority.observe(applied);
                 authority.revision().map(|_| ())
             })?;
         }
@@ -682,7 +682,7 @@ mod tests {
                 proptest::prop_assert_eq!(crate::wire_codec::cut_from_wire(revisions.iter().map(crate::wire_codec::revision_to_wire).collect()).map_err(|error| error.category()), Err(StreamCategory::RevisionForeign));
             }
             let mut cut = RevisionCut::of(first.clone());
-            proptest::prop_assert_eq!(cut.observe(&reset).map_err(|error| error.category()), Err(StreamCategory::RevisionForeign));
+            proptest::prop_assert_eq!(cut.observe(reset).map_err(|error| error.category()), Err(StreamCategory::RevisionForeign));
             proptest::prop_assert_eq!(&cut, &RevisionCut::of(first.clone()));
 
             // Same-authority duplicates retain their maximum in either order;
@@ -699,7 +699,7 @@ mod tests {
                 proptest::prop_assert!(cut.covers(&first) && cut.covers(&next) && cut.covers(&other));
                 proptest::prop_assert_eq!(crate::wire_codec::cut_from_wire(crate::wire_codec::cut_to_wire(&cut)).unwrap(), cut);
             }
-            proptest::prop_assert!(cut.observe(&next.clone()).is_ok());
+            proptest::prop_assert!(cut.observe(next.clone()).is_ok());
             proptest::prop_assert!(cut.covers(&first) && cut.covers(&next));
 
             // Compare the streaming floor merge with independent canonical
@@ -708,7 +708,7 @@ mod tests {
             for observed in [vec![], vec![first.clone()], vec![other.clone()], vec![first.clone(), other.clone()]] {
                 let tracker = RevisionTracker::default();
                 for revision in &observed {
-                    tracker.observe(&revision);
+                    tracker.observe(revision);
                 }
                 for minimum in [RevisionCut::default(), RevisionCut::of(next.clone()), RevisionCut::of(other.clone()), RevisionCut::new([next.clone(), other.clone()]).unwrap()] {
                     let expected = RevisionCut::new(observed.iter().cloned().chain(minimum.iter().cloned()));

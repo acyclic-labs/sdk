@@ -41,10 +41,10 @@ async fn custody(broken: bool) -> Result {
             pool.command(commands.recv().await.ok_or("renewal producer lost")?)?;
         }
         let withdrawal = commands.recv().await.ok_or("withdrawal producer lost")?;
-        assert!(pool.credential_slots.owned(slot));
+        assert!(pool.credential_slots.owned(slot)?);
         if broken {
             // Reintroduce clear-before-physical-withdrawal on the real slot.
-            pool.credential_slots.release(slot);
+            pool.credential_slots.release(slot)?;
             drop(withdrawal);
         } else {
             pool.command(withdrawal)?;
@@ -52,7 +52,7 @@ async fn custody(broken: bool) -> Result {
         if pool.credentials.contains_key(&slot) {
             return Err("withdrawal must precede slot reuse".into());
         }
-        assert!(!pool.credential_slots.owned(slot));
+        assert!(!pool.credential_slots.owned(slot)?);
         assert_eq!(pool.credentials.len(), 1);
     }
     // Losing the named reply producer ends admission, without a readiness timer.

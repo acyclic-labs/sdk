@@ -611,8 +611,9 @@ mod wait_tests {
         };
         let expected = vec![("test.wait".to_owned(), "7".to_owned())];
 
+        let wait = request(Mechanism::Wait);
         let mut pending = Box::pin(observe_value(
-            &request(Mechanism::Wait),
+            &wait,
             std::future::pending::<()>(),
             |()| None,
         ));
@@ -625,8 +626,9 @@ mod wait_tests {
         assert_eq!(within, expected);
         assert!(reported().is_empty(), "a returned wait retires its report");
 
+        let io_request = request(Mechanism::Io);
         let mut io = Box::pin(observe_value(
-            &request(Mechanism::Io),
+            &io_request,
             std::future::pending::<()>(),
             |()| None,
         ));

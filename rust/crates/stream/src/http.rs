@@ -299,7 +299,7 @@ impl HttpStream {
         };
         // A recovered write floors later reads exactly like its lost reply would have.
         if let Some(revision) = &revision {
-            self.revisions()?.observe(&revision);
+            self.revisions()?.observe(revision);
         }
         Ok(Some(IdempotencyObservation {
             idempotency_key: observed,

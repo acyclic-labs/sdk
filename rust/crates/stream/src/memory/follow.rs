@@ -87,7 +87,7 @@ impl MemoryStream {
     ) -> Result<Option<Record>, StreamError> {
         if cursor.end.is_none() {
             let state = self.state.read().await;
-            let snapshot = cursor.observe(&|| state.paths.get(path).cloned())?;
+            let snapshot = cursor.observe(|| state.paths.get(path).cloned())?;
             drop(state);
             let path = snapshot.as_ref();
             if !cursor.observe_creation(path, *anchor).await? {

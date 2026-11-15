@@ -294,11 +294,8 @@ impl Client {
                 ))
             })
         });
-        Self::tracking(
-            home,
-            connect,
-            &std::sync::Arc::new(crate::runtime::PlatformExecutor),
-            revisions,
-        )
+        let executor: std::sync::Arc<dyn crate::runtime::Executor> =
+            std::sync::Arc::new(crate::runtime::PlatformExecutor);
+        Self::tracking(home, connect, &executor, revisions)
     }
 }

@@ -659,17 +659,17 @@ struct MutationView<'a, A> {
     _allocation: Option<A>,
 }
 
-enum MutationPaths<'a> {
-    Single(std::slice::Iter<'a, CommitMutation>),
-    Indexed(std::slice::Iter<'a, MutationIndex<'a>>),
+enum MutationPaths<'a, 'b> {
+    Single(std::slice::Iter<'b, CommitMutation>),
+    Indexed(std::slice::Iter<'b, MutationIndex<'a>>),
 }
 
-impl<'a> Iterator for MutationPaths<'a> {
-    type Item = &'a str;
+impl<'a, 'b> Iterator for MutationPaths<'a, 'b> {
+    type Item = &'b str;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Single(paths) => paths.next().map(CommitMutation::path),
+            Self::Single(paths) => paths.next().map(|mutation| CommitMutation::path(mutation).as_str()),
             Self::Indexed(paths) => paths.next().map(|index| index.path),
         }
     }
@@ -700,7 +700,7 @@ impl<'a, A> MutationView<'a, A> {
                     .mutations
                     .iter()
                     .map(|mutation| MutationIndex {
-                        path: CommitMutation::path(mutation),
+                        path: CommitMutation::path(mutation).as_str(),
                     }),
             );
         }
@@ -728,7 +728,7 @@ impl<'a, A> MutationView<'a, A> {
         match self.single {
             Some(mutations) => mutations
                 .get(position)
-                .map(CommitMutation::path)
+                .map(|mutation| CommitMutation::path(mutation).as_str())
                 .ok_or(StreamError::InvalidArgument),
             None => self
                 .index
@@ -738,7 +738,7 @@ impl<'a, A> MutationView<'a, A> {
         }
     }
 
-    fn paths_from(&self, low: usize) -> Result<MutationPaths<'a>, StreamError> {
+    fn paths_from<'b>(&'b self, low: usize) -> Result<MutationPaths<'a, 'b>, StreamError> {
         match self.single {
             Some(mutations) => Ok(MutationPaths::Single(
                 mutations

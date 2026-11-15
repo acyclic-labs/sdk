@@ -142,7 +142,7 @@ async fn dropped_consumers_leave_no_queued_publication_reservation()
         } else {
             crate::snapshot::Cut::Retired
         };
-        let (pending, settled) = crate::snapshot::observe(&cut, || {
+        let (pending, settled) = crate::snapshot::observe(cut, || {
             follow
                 .as_mut()
                 .poll_next(&mut Context::from_waker(Waker::noop()))

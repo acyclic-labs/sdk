@@ -106,7 +106,7 @@ impl State {
         let (selected, _) = radix::select(self.commit_cursor(), id.as_bytes(), None, &mut observe)?;
         let durable = match selected.link {
             Some(RetainedIndexLink::Leaf(index)) => {
-                observe(&32)?;
+                observe(32)?;
                 let fact = &*self.replay_entry(index).fact;
                 fact.envelope()
                     .filter(|envelope| envelope.commit_id == *id)
@@ -146,7 +146,7 @@ impl State {
         let Some(RetainedIndexLink::Leaf(other)) = selected.link else {
             unreachable!("selection returns a retained commit leaf")
         };
-        observe(&32).unwrap_or_else(|never| match never {});
+        observe(32).unwrap_or_else(|never| match never {});
         let bit = BranchBit::difference(key.as_bytes(), self.commit_identity(other).as_bytes())
             .unwrap_or_else(|| unreachable!("duplicate retained commit identity"));
         let (selected, _) = match radix::select(

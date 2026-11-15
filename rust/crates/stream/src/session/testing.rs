@@ -41,7 +41,7 @@ pub fn authority() -> Arc<Authority> {
 
 /// Signed workload credential for the deterministic qualification account.
 pub fn credential() -> Bytes {
-    credential_with_grants(vec![ResourceGrant {
+    credential_with_grants(&[ResourceGrant {
         resource: ResourcePattern {
             name: "streams:/".into(),
             prefix: true,

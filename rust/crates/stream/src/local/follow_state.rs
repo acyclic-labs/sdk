@@ -47,14 +47,15 @@ impl FollowState {
         let unavailable = LocalInner::unavailable(&mut self.failed);
         let publication = core::pin::pin!(publication);
         let unavailable = core::pin::pin!(unavailable);
+        let request = crate::trace::Request {
+            name: "stream.local_follow_wait",
+            mechanism: crate::trace::Mechanism::Wait,
+            parent: None,
+            guarantee: Some("local_publication_or_unavailability"),
+            key: u64::try_from(key).ok().map(crate::trace::Key::Sequence),
+        };
         let ready = crate::trace::observe_value(
-            &crate::trace::Request {
-                name: "stream.local_follow_wait",
-                mechanism: crate::trace::Mechanism::Wait,
-                parent: None,
-                guarantee: Some("local_publication_or_unavailability"),
-                key: u64::try_from(key).ok().map(crate::trace::Key::Sequence),
-            },
+            &request,
             futures::future::select(unavailable, publication),
             |ready| match ready {
                 futures::future::Either::Right((Ok(_), _)) => {

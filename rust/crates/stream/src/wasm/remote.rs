@@ -127,7 +127,7 @@ impl StreamProvider for Remote {
         }
         // A recovered write floors later reads exactly like its lost reply would have.
         if let Some(revision) = observed.as_ref().and_then(|o| o.revision.as_ref()) {
-            self.sessions.revisions().observe(&revision);
+            self.sessions.revisions().observe(revision);
         }
         Ok(observed)
     }
