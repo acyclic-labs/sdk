@@ -19,11 +19,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// Whether a refusal is an access denial, however the client wraps its cause.
-fn access_denied(error: &(dyn std::error::Error + 'static)) -> bool {
+/// Whether a refusal falls in `category`, however the client wraps its cause.
+fn refused_as(error: &(dyn std::error::Error + 'static), category: &StreamError) -> bool {
     error
         .downcast_ref::<StreamError>()
-        .is_some_and(|error| error.category() == StreamError::AccessDenied)
+        .is_some_and(|error| error.category() == *category)
+}
+
+fn access_denied(error: &(dyn std::error::Error + 'static)) -> bool {
+    refused_as(error, &StreamError::AccessDenied)
 }
 
 #[path = "hosting_tests/merge.rs"]
@@ -1143,10 +1147,10 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     let refused = call(&client, "agents", &children)
         .await
         .expect_err("a child query survived its admission producer");
-    assert!(matches!(
-        refused.downcast_ref::<StreamError>(),
-        Some(StreamError::Unavailable)
-    ));
+    assert!(
+        refused_as(&*refused, &StreamError::Unavailable),
+        "{refused:?}"
+    );
     waiting.await?;
     // Nothing waits on an approval, so none is listed and none can be decided.
     assert!(matches!(
