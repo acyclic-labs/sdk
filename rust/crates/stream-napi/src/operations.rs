@@ -1,11 +1,16 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 
 // Keep the call expression inside the admitted future: constructing a provider
 // future can allocate or start work even before its first poll.
 macro_rules! run_operation {
     ($operation:expr, $cancellation:expr $(, $project:expr)?) => {
         run_with_cancellation(
-            async { ($operation).await$(.map($project))?.map_err(|error| stream_error(&error)) },
+            async {
+                ($operation)
+                    .await$(.map($project))?
+                    .map_err(|error| OperationError::from(stream_error(&error)))
+            },
             cancellation_state($cancellation),
         )
     };
@@ -15,7 +20,7 @@ pub(super) async fn inspect_idempotency(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+) -> std::result::Result<Buffer, OperationError> {
     let request = decode::<wire::InspectIdempotencyRequest>(&request, "inspect_idempotency")?;
     let key = acyclic_stream::IdempotencyKey::new(request.idempotency_key)
         .map_err(|error| stream_error(&error))?;
@@ -32,7 +37,7 @@ pub(super) async fn heads(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+) -> std::result::Result<Buffer, OperationError> {
     let request = wire_codec::heads_from_wire(decode::<wire::HeadsRequest>(&request, "heads")?)
         .map_err(|error| stream_error(&error))?;
     let view = run_operation!(client.heads(request), cancellation).await?;
@@ -44,7 +49,7 @@ pub(super) async fn head(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+) -> std::result::Result<Buffer, OperationError> {
     let request = decode::<wire::HeadRequest>(&request, "head")?;
     let value = run_operation!(
         {
@@ -61,7 +66,7 @@ pub(super) async fn tail(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+) -> std::result::Result<Buffer, OperationError> {
     let request = decode::<wire::TailRequest>(&request, "tail")?;
     let value = run_operation!(wire_codec::tail_response(&**client, request), cancellation).await?;
     encode(&value, "tail")
@@ -71,7 +76,7 @@ pub(super) async fn append(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+) -> std::result::Result<Buffer, OperationError> {
     let request = wire_codec::append_from_wire(decode::<wire::AppendRequest>(&request, "append")?)
         .map_err(|error| stream_error(&error))?;
     let value = run_operation!(client.append(request), cancellation).await?;
@@ -82,7 +87,7 @@ pub(super) async fn fork(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+) -> std::result::Result<Buffer, OperationError> {
     let request = wire_codec::fork_from_wire(decode::<wire::ForkRequest>(&request, "fork")?)
         .map_err(|error| stream_error(&error))?;
     let value = run_operation!(client.fork(request), cancellation).await?;
@@ -93,7 +98,7 @@ pub(super) async fn read(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<(NativeStreamFollow, Buffer), NativeStreamErrorMetadata> {
+) -> std::result::Result<(NativeStreamFollow, Buffer), OperationError> {
     let request = wire_codec::read_from_wire(decode::<wire::ReadRequest>(&request, "read")?)
         .map_err(|error| stream_error(&error))?;
     let path = request.path.clone();
@@ -105,11 +110,11 @@ pub(super) async fn open_follow(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<(NativeStreamFollow, Buffer), NativeStreamErrorMetadata> {
+) -> std::result::Result<(NativeStreamFollow, Buffer), OperationError> {
     let request = wire_codec::follow_from_wire(decode::<wire::FollowRequest>(&request, "follow")?)
         .map_err(|error| stream_error(&error))?;
     if request.progress {
-        return Err(stream_error(&StreamError::InvalidArgument));
+        return Err(stream_error(&StreamError::InvalidArgument).into());
     }
     let path = request.path.clone();
     let records = run_operation!(
@@ -154,7 +159,7 @@ pub(super) async fn children_page(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+) -> std::result::Result<Buffer, OperationError> {
     let request = wire_codec::children_page_from_wire(decode::<wire::ChildrenPageRequest>(
         &request,
         "children_page",
@@ -168,7 +173,7 @@ pub(super) async fn commit(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+) -> std::result::Result<Buffer, OperationError> {
     let request = decode::<wire::CommitRequest>(&request, "commit")?;
     let request = wire_codec::commit_from_wire(request).map_err(|error| stream_error(&error))?;
     let value = run_operation!(client.commit(request), cancellation).await?;
@@ -179,7 +184,7 @@ pub(super) async fn read_commit(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+) -> std::result::Result<Buffer, OperationError> {
     let request = decode::<wire::ReadCommitRequest>(&request, "read_commit")?;
     let commit_id =
         wire_codec::commit_id(&request.commit_id).map_err(|error| stream_error(&error))?;
@@ -253,4 +258,3 @@ mod tests {
         assert_eq!(polls.get(), 1);
     }
 }
-use acyclic_stream::StreamProviderExt as _;

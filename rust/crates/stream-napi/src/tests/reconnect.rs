@@ -407,7 +407,7 @@ impl Fixture {
         )
         .await
         .map(|(follow, _)| follow)
-        .map_err(|error| error.message.into())
+        .map_err(|error| NativeStreamErrorMetadata::from(error).message.into())
     }
     async fn outage(&self, cursor: &NativeStreamFollow) -> TestResult {
         self.outage.disconnect()?;

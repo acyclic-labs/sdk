@@ -183,6 +183,30 @@ fn connect_error(error: &grpc::ConnectError) -> NativeStreamErrorMetadata {
     }
 }
 
+/// Boxed diagnostic used inside the bridge. The public envelopes keep the
+/// unboxed metadata; private fallible steps stay small at their `Result`.
+struct OperationError(Box<NativeStreamErrorMetadata>);
+
+impl From<NativeStreamErrorMetadata> for OperationError {
+    fn from(error: NativeStreamErrorMetadata) -> Self {
+        Self(Box::new(error))
+    }
+}
+
+impl From<OperationError> for NativeStreamErrorMetadata {
+    fn from(error: OperationError) -> Self {
+        *error.0
+    }
+}
+
+impl std::ops::Deref for OperationError {
+    type Target = NativeStreamErrorMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 fn napi_error(error: &NativeStreamErrorMetadata) -> Error {
     let reason = match serde_json::to_string(&error) {
         Ok(reason) => reason,
@@ -196,25 +220,29 @@ fn napi_error(error: &NativeStreamErrorMetadata) -> Error {
 fn decode<T: Message + Default>(
     request: &Buffer,
     operation: &str,
-) -> std::result::Result<T, NativeStreamErrorMetadata> {
-    T::decode(request.as_ref()).map_err(|error| NativeStreamErrorMetadata {
-        code: "invalid_argument".to_owned(),
-        message: format!("{operation} request is not valid Stream protobuf: {error}"),
-        ..Default::default()
+) -> std::result::Result<T, OperationError> {
+    T::decode(request.as_ref()).map_err(|error| {
+        OperationError::from(NativeStreamErrorMetadata {
+            code: "invalid_argument".to_owned(),
+            message: format!("{operation} request is not valid Stream protobuf: {error}"),
+            ..Default::default()
+        })
     })
 }
 
 fn encode<T: Message>(
     value: &T,
     operation: &str,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+) -> std::result::Result<Buffer, OperationError> {
     let mut bytes = Vec::with_capacity(value.encoded_len());
     value
         .encode(&mut bytes)
-        .map_err(|error| NativeStreamErrorMetadata {
-            code: "unavailable".to_owned(),
-            message: format!("{operation} response could not be encoded: {error}"),
-            ..Default::default()
+        .map_err(|error| {
+            OperationError::from(NativeStreamErrorMetadata {
+                code: "unavailable".to_owned(),
+                message: format!("{operation} response could not be encoded: {error}"),
+                ..Default::default()
+            })
         })?;
     Ok(Buffer::from(bytes))
 }
@@ -226,38 +254,38 @@ fn cancellation_state(value: Option<&NativeStreamCancellation>) -> Option<Cancel
 async fn run_with_cancellation<T, F>(
     operation: F,
     cancellation: Option<CancellationToken>,
-) -> std::result::Result<T, NativeStreamErrorMetadata>
+) -> std::result::Result<T, OperationError>
 where
-    F: Future<Output = std::result::Result<T, NativeStreamErrorMetadata>>,
+    F: Future<Output = std::result::Result<T, OperationError>>,
 {
     let Some(cancellation) = cancellation else {
         return operation.await;
     };
     if cancellation.is_cancelled() {
-        return Err(NativeStreamErrorMetadata {
+        return Err(OperationError::from(NativeStreamErrorMetadata {
             code: "cancelled".to_owned(),
             message: "Stream operation cancelled".to_owned(),
             ..Default::default()
-        });
+        }));
     }
     tokio::select! {
         biased;
-        _ = cancellation.cancelled() => Err(NativeStreamErrorMetadata {
+        _ = cancellation.cancelled() => Err(OperationError::from(NativeStreamErrorMetadata {
             code: "cancelled".to_owned(),
             message: "Stream operation cancelled".to_owned(),
             ..Default::default()
-        }),
+        })),
         result = operation => result,
     }
 }
 
 async fn operation_result<F>(operation: F) -> Result<NativeStreamOperationResult>
 where
-    F: Future<Output = std::result::Result<Buffer, NativeStreamErrorMetadata>>,
+    F: Future<Output = std::result::Result<Buffer, OperationError>>,
 {
     Ok(match operation.await {
         Ok(value) => NativeStreamOperationResult::success(value),
-        Err(error) => NativeStreamOperationResult::failure(error),
+        Err(error) => NativeStreamOperationResult::failure(error.into()),
     })
 }
 
@@ -362,7 +390,7 @@ impl NativeStreamFollow {
                 if self.state.token.is_cancelled() {
                     records.take();
                 }
-                Ok(NativeStreamNextResult::failure(error))
+                Ok(NativeStreamNextResult::failure(error.into()))
             }
         }
     }
@@ -399,7 +427,7 @@ async fn connect_native(
     token: String,
     ca_certificate_pem: Option<Vec<u8>>,
     cancellation: Option<CancellationToken>,
-) -> std::result::Result<grpc::Client, NativeStreamErrorMetadata> {
+) -> std::result::Result<grpc::Client, OperationError> {
     run_with_cancellation(
         async move {
             match ca_certificate_pem {
@@ -413,7 +441,7 @@ async fn connect_native(
                 }
                 None => grpc::Client::connect_eager(&endpoint, &token).await,
             }
-            .map_err(|error| connect_error(&error))
+            .map_err(|error| OperationError::from(connect_error(&error)))
         },
         cancellation,
     )
@@ -468,14 +496,14 @@ impl NativeStreamClient {
                     certificate.as_deref(),
                 )
                 .await
-                .map_err(|error| connect_error(&error))
+                .map_err(|error| OperationError::from(connect_error(&error)))
             },
             cancellation_state(cancellation),
         )
         .await;
         Ok(match result {
             Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
-            Err(error) => NativeStreamConnectResult::failure(error),
+            Err(error) => NativeStreamConnectResult::failure(error.into()),
         })
     }
 
@@ -522,7 +550,7 @@ impl NativeStreamClient {
         let result = connect_native(endpoint, token, None, cancellation_state(cancellation)).await;
         Ok(match result {
             Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
-            Err(error) => NativeStreamConnectResult::failure(error),
+            Err(error) => NativeStreamConnectResult::failure(error.into()),
         })
     }
 
@@ -562,7 +590,7 @@ impl NativeStreamClient {
         .await;
         Ok(match result {
             Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
-            Err(error) => NativeStreamConnectResult::failure(error),
+            Err(error) => NativeStreamConnectResult::failure(error.into()),
         })
     }
 
@@ -647,7 +675,7 @@ impl NativeStreamClient {
     ) -> Result<NativeStreamFollowResult> {
         Ok(match read(&self.provider, request, cancellation).await {
             Ok(cursor) => NativeStreamFollowResult::success(cursor),
-            Err(error) => NativeStreamFollowResult::failure(error),
+            Err(error) => NativeStreamFollowResult::failure(error.into()),
         })
     }
 
@@ -667,7 +695,7 @@ impl NativeStreamClient {
             Ok(
                 match open_follow(&client, request, cancellation.as_ref()).await {
                     Ok(follow) => NativeStreamFollowResult::success(follow),
-                    Err(error) => NativeStreamFollowResult::failure(error),
+                    Err(error) => NativeStreamFollowResult::failure(error.into()),
                 },
             )
         };
