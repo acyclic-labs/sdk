@@ -217,7 +217,7 @@ test("fs Session qualification instruments real provider and Session locks and r
 
 test("hook qualification requires every retained projection model", () => {
   /** @type {Array<[typeof qualifyHookLifecycleLoom, string, number]>} */
-  const hooks = [[qualifyHookLifecycleLoom, "acyclic_harness", 6]];
+  const hooks = [[qualifyHookLifecycleLoom, "acyclic_harness", 3]];
   for (const [qualify, target, count] of hooks) {
     for (const missing of [null, ...Array.from({ length: count }, (_, i) => i + 1)]) {
       let models = 0;
@@ -326,4 +326,17 @@ test("registry gate instruments real native locks and rejects either omitted pro
     else assert.throws(() => qualifyNativeRegistryLoom(run), /requires a nonzero/);
   }
   assertGateStep(["--native-registry"]);
+});
+
+// A selection naming a deleted test lists nothing; mocked listings above cannot see that.
+test("every named model test exists in the Rust tree", () => {
+  const root = new URL("..", import.meta.url);
+  const source = readFileSync(new URL("scripts/qualify-mcp-loom.mjs", root), "utf8");
+  const names = [...source.matchAll(/"((?:[a-z0-9_]+::)*[a-z][a-z0-9]*(?:_[a-z0-9]+){3,})"/g)].map(match => match[1]);
+  const listed = spawnSync("git", ["grep", "-h", "-o", "-E", "fn [a-z0-9_]+", "--", "rust"],
+    { cwd: root, encoding: "utf8", maxBuffer: 1 << 30 });
+  assert.equal(listed.status, 0, listed.stderr);
+  const functions = new Set(listed.stdout.split("\n").map(line => line.slice(3)));
+  assert.ok(names.length > 50, `only ${names.length} test names found`);
+  assert.deepEqual(names.filter(name => !functions.has(name.split("::").at(-1))), []);
 });

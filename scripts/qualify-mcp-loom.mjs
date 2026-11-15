@@ -102,23 +102,12 @@ export function qualifyProjectionMutationsLoom(run = runCommand) {
   const recovery = "node scripts/qualify-mcp-loom.mjs --projection-mutations";
   return qualifyProjectionSourceMutations([
     ["if slot.is_none() {", "if true {", "projection initialized twice", "first_native_users_share_one_initialization"],
-    ["== 0;", ">= 0;", "projection retired under a running command", "the_last_execution_scope_alone_retires_the_projection"],
-    ["publish(&mut slot, retire).await", "if retire { publish(&mut slot, retire).await } else { Ok(()) }", "successful command skipped publication", "every_completed_command_publishes_before_its_acknowledgement"],
   ], recovery, run);
 }
 
 export function qualifyProjectionCustodyMutationsLoom(run = runCommand) {
   const recovery = "node scripts/qualify-mcp-loom.mjs --projection-custody-mutations";
   return qualifyProjectionSourceMutations([[
-    `    let mut slot = lock_owned(StateArc::clone(slot)).await;
-    // Keep the completed worker's claim until its publication owns the slot.
-    // Another completing command must not retire this projection first.
-    drop(entered);`,
-    `    drop(entered);
-    let mut slot = lock_owned(StateArc::clone(slot)).await;`,
-    "completion lost its unpublished projection",
-    "every_completing_worker_retains_its_projection_until_publication",
-  ], [
     `    let mut slot = lock_owned(StateArc::clone(slot)).await;
     if slot.is_none() {
         *slot = Some(create().await?);
@@ -132,26 +121,6 @@ export function qualifyProjectionCustodyMutationsLoom(run = runCommand) {
     "initialization did not wake its registered successor",
     "failed_or_cancelled_initialization_wakes_waiters_without_partial_state",
   ]], recovery, run);
-}
-
-export function qualifyNativeScopeMutations(run = runCommand) {
-  return qualifyNativeSourceMutation({
-    name: "NativeScope", selector: "--native-scope-mutations",
-    source: "workspace/volumes", model: "workspace/volumes/publication_tests",
-    test: "local::workspace::volumes::publication_tests::failed_scope_entry_retires_the_projections_it_entered",
-    mutation: ["let _ = leave_all(std::mem::take(&mut claims.entries)).await;", "claims.entries.clear();",
-      "failed later entry stranded the earlier projection"],
-  }, run);
-}
-
-export function qualifyNativeCancellationMutations(run = runCommand) {
-  return qualifyNativeSourceMutation({
-    name: "NativeScope", selector: "--native-cancellation-mutations",
-    source: "workspace/volumes", model: "workspace/volumes/publication_tests",
-    test: "local::workspace::volumes::publication_tests::cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head",
-    mutation: ["claim.source.abandon(claim.entered).await", "{ drop(claim.entered); Ok::<(), Error>(()) }",
-      "cancelled command exposed unverified physical bytes"],
-  }, run);
 }
 
 export function qualifyNativePublicationMutations(run = runCommand) {
@@ -171,11 +140,11 @@ export function qualifyNativeRetirementMutations(run = runCommand) {
   return qualifyNativeSourceMutation({
     name: "NativeRetirement", selector: "--native-retirement-mutations",
     source: "workspace/volumes", model: "workspace/volumes/publication_tests",
-    test: "local::workspace::volumes::publication_tests::retirement_continues_past_a_volume_a_worker_still_owns",
+    test: "local::workspace::volumes::publication_tests::retirement_continues_past_a_volume_a_session_still_uses",
     mutation: [
-      "keep_first(&mut retired, Box::pin(source.retire()).await);",
-      "Box::pin(source.retire()).await?;",
-      "a conflict stranded a later projection",
+      "    for result in futures::future::join_all(retirements).await {\n        keep_first(&mut retired, result);\n    }",
+      "    for retirement in retirements {\n        keep_first(&mut retired, retirement.await);\n    }",
+      "a busy session stranded a later projection",
     ],
   }, run);
 }
@@ -270,9 +239,6 @@ export function qualifyHookLifecycleLoom(features = ["--features", "test-support
       "local::workspace::projection::tests::first_native_users_share_one_initialization",
       "local::workspace::projection::tests::failed_or_cancelled_initialization_wakes_waiters_without_partial_state",
       "local::workspace::projection::tests::checkout_then_projection_order_cannot_deadlock",
-      "local::workspace::projection::tests::the_last_execution_scope_alone_retires_the_projection",
-      "local::workspace::projection::tests::every_completed_command_publishes_before_its_acknowledgement",
-      "local::workspace::projection::tests::every_completing_worker_retains_its_projection_until_publication",
     ],
     env: loomEnvironment(),
   });
@@ -692,8 +658,6 @@ const fixedModels = {
   "--skill-materializer-mutations": qualifySkillMaterializerMutationsLoom,
   "--projection-mutations": qualifyProjectionMutationsLoom,
   "--projection-custody-mutations": qualifyProjectionCustodyMutationsLoom,
-  "--native-scope-mutations": qualifyNativeScopeMutations,
-  "--native-cancellation-mutations": qualifyNativeCancellationMutations,
   "--native-publication-mutations": qualifyNativePublicationMutations,
   "--native-retirement-mutations": qualifyNativeRetirementMutations,
   "--capture-cursor-mutations": qualifyCaptureCursorMutations,
