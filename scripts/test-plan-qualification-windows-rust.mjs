@@ -30,8 +30,8 @@ test("Windows Rust tests run independently without changing workspace or ignored
   assert.doesNotMatch(body, /fork_join/);
   const fork = matrix.find(lane => lane.lane === "windows-fork-join") ?? assert.fail("missing fork/join lane");
   const forkBody = script.split("    'windows-fork-join' {")[1]?.split("    'windows-napi' {")[0] ?? assert.fail("missing fork/join dispatch");
-  assert.ok(forkBody.includes("cargo test -p acyclic-harness --all-features --locked --lib"));
-  assert.ok(forkBody.includes("local::host_workspace::tests:: -- --test-threads=4"));
+  assert.ok(forkBody.includes("cargo nextest run -p acyclic-harness --all-features --locked --lib"));
+  assert.ok(forkBody.includes("local::host_workspace::tests:: --test-threads 4"));
   assert.doesNotMatch(forkBody, /--ignored|--skip|--no-run|--test fork_join/);
   assert.ok(body.includes("Remove-Item Env:RUSTC_WRAPPER"));
   assert.ok(body.includes("finally"));

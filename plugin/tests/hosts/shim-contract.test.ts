@@ -43,7 +43,7 @@ test("Pi registration delegates execution and exposes only native coordination",
 test("qualification calls shared native lifecycle instead of the deleted Pi operator", () => {
   const commands = ["bun run --cwd plugin/tests/hosts test:shim",
     "cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4",
-    "cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4"];
+    "cargo nextest run --locked -p acyclic-harness --all-features --lib local::host_owner:: --test-threads 4"];
   const verify = (source: string) => {
     for (const command of commands) assert(source.includes(command), command);
     assert.doesNotMatch(source, /test:pi-(context|bootstrap|session|service|native-recursive|builtin-paths)/);
