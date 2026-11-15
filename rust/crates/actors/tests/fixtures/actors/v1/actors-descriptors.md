@@ -177,3 +177,11 @@ Only the Rust output is copied to `compatibility/descriptors/actors-v1.bin`
 and `actors-v1.bin` here. Only the independent canonical Buf image is copied
 to `actors-buf-v1.bin`; its file metadata and unknown options are retained.
 The comparison controls continue to qualify these outputs independently.
+
+The 2026-11-15 capture at `d2149f2826b` records `ERROR_CODE_FAILED = 11` in
+`ErrorCode`, added by `ff88d9f5bd2f`. The Rust descriptor SHA-256 is
+`bcbcb88dfc9370cb091e2bdd6bff838015a284969b25b72355e43ea253c49b2b`;
+the independent Buf 1.75.0 output is
+`680c9a279e769dcd25ba970356536e70533bfe48b49cffaf2876d6887d541dbf`.
+Both were regenerated with the commands above, and
+`scripts/check-compatibility-digests.mjs write` recorded the descriptor digest.
