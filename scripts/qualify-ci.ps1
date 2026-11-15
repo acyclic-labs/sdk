@@ -107,8 +107,8 @@ switch ($Lane) {
         }
 
         # The shared harness owns native-host fork, capture and merge on ProjFS.
-        cargo test -p acyclic-harness --all-features --locked --lib `
-            local::host_workspace::tests:: -- --test-threads=4
+        cargo nextest run -p acyclic-harness --all-features --locked --lib `
+            local::host_workspace::tests:: --test-threads 4
 
         return
     }
@@ -232,4 +232,4 @@ foreach ($case in @('pty-conversation', 'pty-markdown', 'pty-slash', 'pty-cancel
 npm ci --prefix plugin/tests/hosts --no-audit --no-fund
 bun run --cwd plugin/tests/hosts test:shim
 cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4
-cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4
+cargo nextest run --locked -p acyclic-harness --all-features --lib local::host_owner:: --test-threads 4
