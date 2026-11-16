@@ -1145,7 +1145,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                     condemned: fence,
                     ..envelope
                 };
-                return match self.medium.replace(observed, stamped.encode()?.into()).await {
+                return match self
+                    .medium
+                    .replace(observed, stamped.encode()?.into())
+                    .await
+                {
                     Ok(_) | Err(MediumError::Ambiguous(_)) => Ok((Delete::Referenced, Vec::new())),
                     Err(error) => Err(medium(error)),
                 };

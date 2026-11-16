@@ -84,7 +84,10 @@ async fn verify_restored(
     medium: &Shared,
     account: &crate::Account<Shared>,
     repair: Repair,
-) -> Result<(OwnedBytes, String, crate::Availability, crate::Availability), Box<dyn std::error::Error>> {
+) -> Result<
+    (OwnedBytes, String, crate::Availability, crate::Availability),
+    Box<dyn std::error::Error>,
+> {
     let Repair {
         body,
         key,
@@ -164,7 +167,9 @@ struct BoundedRepair {
     retry_observation: crate::Availability,
 }
 
-async fn bounded_fixture(poison_refusal: bool) -> Result<BoundedRepair, Box<dyn std::error::Error>> {
+async fn bounded_fixture(
+    poison_refusal: bool,
+) -> Result<BoundedRepair, Box<dyn std::error::Error>> {
     let selected = OwnedBytes::from(vec![7; 128]);
     let filler = OwnedBytes::from(vec![9; 1024]);
     let refused = OwnedBytes::from(vec![11; 512]);

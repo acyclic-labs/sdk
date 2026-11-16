@@ -172,9 +172,7 @@ mod tests {
                             },
                             None,
                         ) {
-                            Ok(completion) => {
-                                completion.await.and_then(std::convert::identity)
-                            }
+                            Ok(completion) => completion.await.and_then(std::convert::identity),
                             Err(error) => Err(error),
                         };
                         let _ = sent.send(result);

@@ -86,10 +86,10 @@ impl<P: StreamProvider + ?Sized> FileView<P> for TraceFiles<P> {
         stream: &StreamPath,
     ) -> Result<Option<Box<dyn acyclic_stream::ProviderPlatform>>> {
         if *stream == source(agent)? {
-            Ok(Some(Box::new(self.registry.subscribe(
-                StreamPath::new(agent.as_str())?,
-                stream,
-            )?)))
+            Ok(Some(Box::new(
+                self.registry
+                    .subscribe(StreamPath::new(agent.as_str())?, stream)?,
+            )))
         } else {
             Ok(None)
         }

@@ -372,7 +372,11 @@ async fn verify_batches_and_manifest(
         .get(900..)
         .ok_or_else(|| fail(case, "left is shorter than 900 bytes"))?
         .to_vec();
-    expected.extend_from_slice(right.get(..100).ok_or_else(|| fail(case, "right is shorter than 100 bytes"))?);
+    expected.extend_from_slice(
+        right
+            .get(..100)
+            .ok_or_else(|| fail(case, "right is shorter than 100 bytes"))?,
+    );
     expect!(
         "manifest-ranges-select-intersecting-parts",
         matches!(&spanning, Ok(object) if object.body()[..] == expected[..] && object.head().kind == Kind::Manifest),
@@ -492,14 +496,7 @@ async fn verify_delete_and_collection(
         let pass = first.collect().await;
         expect!("collection-keeps-retained-closures", pass.is_ok(), pass);
     }
-    for live in [
-        rooted,
-        verified,
-        left_digest,
-        right_digest,
-        parent,
-        digest,
-    ] {
+    for live in [rooted, verified, left_digest, right_digest, parent, digest] {
         let head = first.head(live).await;
         expect!(
             "collection-keeps-retained-closures",
@@ -563,7 +560,10 @@ async fn verify_list_and_usage(first: &dyn Blobs, primary: &Primary) -> Result<(
         expect!(
             "list-after-never-duplicates-or-skips",
             page.digests.len() <= 2
-                && page.digests.windows(2).all(|pair| matches!(pair, [a, b] if a < b))
+                && page
+                    .digests
+                    .windows(2)
+                    .all(|pair| matches!(pair, [a, b] if a < b))
                 && page
                     .digests
                     .first()

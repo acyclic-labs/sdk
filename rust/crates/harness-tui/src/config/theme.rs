@@ -261,8 +261,8 @@ pub(super) fn resolve(value: &Value, profile: &Capabilities) -> ThemeStyles {
     let muted = tokens["muted"].as_str().and_then(rgb).unwrap_or(background);
     let mut band = [0u8; 3];
     for ((slot, background), muted) in band.iter_mut().zip(background).zip(muted) {
-        *slot = u8::try_from((7 * u16::from(background) + u16::from(muted)) / 8)
-            .unwrap_or(background);
+        *slot =
+            u8::try_from((7 * u16::from(background) + u16::from(muted)) / 8).unwrap_or(background);
     }
     let [red, green, blue] = band;
     let code = match profile.colour {

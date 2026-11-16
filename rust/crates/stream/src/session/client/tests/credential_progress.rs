@@ -38,7 +38,10 @@ struct OwnerRequest {
 }
 impl OwnerRequest {
     fn wait(&self, reject: bool) -> Option<CredentialPending<()>> {
-        let mut pause = self.pause.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut pause = self
+            .pause
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         if pause.as_ref()?.reject != reject {
             return None;
         }

@@ -345,8 +345,20 @@ mod tests {
             Some(Ok(()))
         ));
         drop(followed);
-        assert!(index.lock().unwrap_or_else(|poison| poison.into_inner()).entries.is_empty());
-        assert!(index.lock().unwrap_or_else(|poison| poison.into_inner()).ranges.is_none());
+        assert!(
+            index
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .entries
+                .is_empty()
+        );
+        assert!(
+            index
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .ranges
+                .is_none()
+        );
     }
     #[test]
     fn interval_index_stays_balanced_and_matches_a_reference_after_removal() {

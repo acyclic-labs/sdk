@@ -5,12 +5,12 @@
 #[path = "../input/args.rs"]
 mod args;
 
-#[path = "../input/input.rs"]
-mod prompt;
 #[path = "../input/keys.rs"]
 mod keys;
 #[path = "../input/native.rs"]
 mod native;
+#[path = "../input/input.rs"]
+mod prompt;
 #[path = "../input/properties.rs"]
 mod properties;
 #[path = "../input/render.rs"]

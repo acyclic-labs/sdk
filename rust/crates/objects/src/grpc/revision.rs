@@ -233,7 +233,10 @@ pub fn check_revision_metadata(bytes: &[u8]) -> bool {
                 header: issued(header),
             };
             if admission
-                .finish(&super::status(&Error::from(wire::ErrorCode::NotFound)), trailer)
+                .finish(
+                    &super::status(&Error::from(wire::ErrorCode::NotFound)),
+                    trailer,
+                )
                 .is_err()
             {
                 return false;

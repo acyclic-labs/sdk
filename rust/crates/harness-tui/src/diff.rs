@@ -211,9 +211,7 @@ fn changed_words(old: &str, new: &str) -> (Range<usize>, Range<usize>) {
         .take_while(|(a, b)| a == b)
         .map(|(a, _)| a.len())
         .sum();
-    let suffix = suffix
-        .min(old.len() - prefix)
-        .min(new.len() - prefix);
+    let suffix = suffix.min(old.len() - prefix).min(new.len() - prefix);
     (prefix..old.len() - suffix, prefix..new.len() - suffix)
 }
 

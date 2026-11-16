@@ -67,10 +67,19 @@ async fn verify_width(
     let retained = rows(client, &namespace).await?;
     assert_eq!(retained.len(), commands.len());
     assert_eq!(
-        retained.last().ok_or("retained rows missing")?.get::<_, i64>(0),
+        retained
+            .last()
+            .ok_or("retained rows missing")?
+            .get::<_, i64>(0),
         head
     );
-    assert!(retained.first().ok_or("retained rows missing")?.get::<_, i64>(0) > 1);
+    assert!(
+        retained
+            .first()
+            .ok_or("retained rows missing")?
+            .get::<_, i64>(0)
+            > 1
+    );
     for (i, row) in retained.iter().enumerate() {
         assert_eq!(row.get::<_, i64>(1), accepted_millis);
         assert_eq!(

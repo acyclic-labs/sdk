@@ -169,7 +169,10 @@ impl Meter {
         std::io::Error::other(NativeDenial(reason))
     }
     pub(crate) fn withheld_codec(&self) -> NativeCodecWork {
-        *self.pending_codec.lock().unwrap_or_else(|poison| poison.into_inner())
+        *self
+            .pending_codec
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
     pub(crate) fn assert_refunded(&self) {
         assert_eq!(self.withheld_codec(), NativeCodecWork::default());
@@ -382,7 +385,10 @@ impl NativeReadMeter for Meter {
         Ok(())
     }
     fn cancel_reserved_codec(&self, unused: NativeCodecWork) {
-        let mut pending = self.pending_codec.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut pending = self
+            .pending_codec
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         pending.encoded = pending.encoded.checked_sub(unused.encoded).unwrap();
         pending.copied = pending.copied.checked_sub(unused.copied).unwrap();
         pending.hashed = pending.hashed.checked_sub(unused.hashed).unwrap();

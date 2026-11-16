@@ -521,7 +521,6 @@ async fn credential_refresh_keeps_the_original_deadline_and_cancellation() -> Te
     Ok(())
 }
 
-
 #[tokio::test]
 async fn a_refused_wait_keeps_its_own_failure() -> TestResult {
     let replica = Replica::new().await?;

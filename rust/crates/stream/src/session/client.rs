@@ -942,28 +942,28 @@ impl Cursor {
         if let Ok(received) = self.receiver.try_recv() {
             Some(received)
         } else {
-                let work = self.receiver.recv();
-                {
-                    let progress = &self.progress;
-                    crate::trace::observe_value(
-                        &crate::trace::Request {
-                            name: "stream.session_delivery_wait",
-                            mechanism: crate::trace::Mechanism::Wait,
-                            parent: None,
-                            guarantee: Some("queued_delivery_or_confirmed_session_end"),
-                            key: Some(crate::trace::Key::Sequence(self.id)),
-                        },
-                        work,
-                        |result| match result {
-                            Some(Ok(_)) => Some((Some(0), crate::trace::Outcome::Succeeded)),
-                            None if progress.ended() => {
-                                Some((Some(0), crate::trace::Outcome::Succeeded))
-                            }
-                            _ => None,
-                        },
-                    )
-                    .await
-                }
+            let work = self.receiver.recv();
+            {
+                let progress = &self.progress;
+                crate::trace::observe_value(
+                    &crate::trace::Request {
+                        name: "stream.session_delivery_wait",
+                        mechanism: crate::trace::Mechanism::Wait,
+                        parent: None,
+                        guarantee: Some("queued_delivery_or_confirmed_session_end"),
+                        key: Some(crate::trace::Key::Sequence(self.id)),
+                    },
+                    work,
+                    |result| match result {
+                        Some(Ok(_)) => Some((Some(0), crate::trace::Outcome::Succeeded)),
+                        None if progress.ended() => {
+                            Some((Some(0), crate::trace::Outcome::Succeeded))
+                        }
+                        _ => None,
+                    },
+                )
+                .await
+            }
         }
     }
     async fn receive(&mut self) -> Result<Option<Delivery>, StreamError> {

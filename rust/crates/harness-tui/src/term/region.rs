@@ -86,11 +86,7 @@ impl RegionScroll {
             band.rotate_right(checked.moved);
             0..checked.moved
         };
-        for cell in band
-            .iter_mut()
-            .skip(exposed.start)
-            .take(exposed.len())
-        {
+        for cell in band.iter_mut().skip(exposed.start).take(exposed.len()) {
             cell.reset();
         }
         // DECSTBM bounds the scroll to the band, SU/SD scroll it, and the

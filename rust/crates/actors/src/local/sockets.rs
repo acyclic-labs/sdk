@@ -539,9 +539,9 @@ impl Entry {
         }
         let (completed, completion) = oneshot::channel();
         let completion: BoxProviderFuture<'static, Result<(), Arc<Error>>> = Box::pin(async move {
-            completion
-                .await
-                .unwrap_or_else(|_| Err(Arc::new(Error::Stream(Box::new(StreamError::Unavailable)))))
+            completion.await.unwrap_or_else(|_| {
+                Err(Arc::new(Error::Stream(Box::new(StreamError::Unavailable))))
+            })
         });
         let completion = completion.shared();
         self.completed = Some(completed);

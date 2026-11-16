@@ -225,7 +225,11 @@ mod tests {
                 self.state.inner.try_lock().is_ok(),
                 "event wake retained its registration lock"
             );
-            let victim = self.victim.lock().unwrap_or_else(|poison| poison.into_inner()).take();
+            let victim = self
+                .victim
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take();
             drop(victim);
             self.wakes.fetch_add(1, Ordering::SeqCst);
         }

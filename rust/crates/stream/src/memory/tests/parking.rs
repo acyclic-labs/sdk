@@ -33,7 +33,12 @@ async fn snapshot_callbacks_retire_outside_the_original_job_mutex() {
         }
         fn wake_by_ref(self: &Arc<Self>) {
             self.observe();
-            if let Some(published) = self.published.lock().unwrap_or_else(|poison| poison.into_inner()).take() {
+            if let Some(published) = self
+                .published
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take()
+            {
                 let _ = published.send(());
             }
         }

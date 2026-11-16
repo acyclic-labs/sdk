@@ -14,10 +14,7 @@ use crate::MAX_RECORD_BYTES;
 use crate::OwnedBytes as Bytes;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::native::Work;
-trait Install<'a, R>:
-    FnOnce(&mut State, bool, Option<u64>) -> Result<R, StreamError> + 'a
-{
-}
+trait Install<'a, R>: FnOnce(&mut State, bool, Option<u64>) -> Result<R, StreamError> + 'a {}
 impl<'a, R, F> Install<'a, R> for F where
     F: FnOnce(&mut State, bool, Option<u64>) -> Result<R, StreamError> + 'a
 {

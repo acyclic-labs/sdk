@@ -140,7 +140,12 @@ fn assert_overlap(capture: &Capture) -> TestResult {
         "A must close while B remains active"
     );
     assert_eq!(capture.closed("second.request"), 0);
-    let history = capture.0.lock().unwrap_or_else(|poison| poison.into_inner()).spans.clone();
+    let history = capture
+        .0
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .spans
+        .clone();
     let sessions = history
         .iter()
         .filter(|span| span.name == "stream.session")
@@ -204,7 +209,10 @@ fn overlapping(fault: u8) -> TestResult {
         append(&memory, "events", 1).await?;
         assert_eq!(next(&mut b).await?.sequence, 1);
         if fault >= 2 {
-            let mut history = capture.0.lock().unwrap_or_else(|poison| poison.into_inner());
+            let mut history = capture
+                .0
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
             let caller = history
                 .spans
                 .iter()
@@ -535,7 +543,10 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
         let started = std::sync::Arc::new(tokio::sync::Notify::new());
         let ready = started.clone();
         let credential = grpc::CredentialProvider::new(move || {
-            let held = held.lock().unwrap_or_else(|poison| poison.into_inner()).take();
+            let held = held
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take();
             ready.notify_one();
             async move {
                 held.ok_or(grpc::CredentialError::Invalid)?
@@ -635,8 +646,18 @@ fn overlapping_subscribers_cannot_alias_equal_channel_span_ids() -> TestResult {
                     .map_ok(crate::records_only),
             )
             .await?;
-        let a_history = first.0.lock().unwrap_or_else(|poison| poison.into_inner()).spans.clone();
-        let b_history = second.0.lock().unwrap_or_else(|poison| poison.into_inner()).spans.clone();
+        let a_history = first
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .spans
+            .clone();
+        let b_history = second
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .spans
+            .clone();
         let a_channel = a_history
             .iter()
             .find(|span| span.name == "stream.session.channel")

@@ -135,7 +135,11 @@ async fn negative_control_physical_write_under_metadata_prevents_cut_observation
     // Execute the former physical path on a real journal. Its metadata cannot
     // be observed until the file operation and publication have both ended.
     {
-        let mut journal = provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut journal = provider
+            .inner
+            .journal
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let file = journal.file.lease()?;
         let offset = journal.begin_append(true)?;
         file.write(|file| {

@@ -75,7 +75,10 @@ fn record_json(value: &wire::Record) -> Value {
     let mut record = serde_json::Map::new();
     record.insert("sequence".into(), Value::from(value.sequence.to_string()));
     record.insert("value".into(), Value::from(STANDARD.encode(&value.value)));
-    record.insert("commitId".into(), Value::from(STANDARD.encode(&value.commit_id)));
+    record.insert(
+        "commitId".into(),
+        Value::from(STANDARD.encode(&value.commit_id)),
+    );
     record.insert(
         "committedAtMicros".into(),
         Value::from(value.committed_at_micros.to_string()),

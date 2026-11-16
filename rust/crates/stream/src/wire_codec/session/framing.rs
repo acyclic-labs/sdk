@@ -86,11 +86,11 @@ impl<T> FrameDecoder<T> {
             self.prefix_len += 1;
             let length = if self.grpc {
                 let Some(flag) = self.prefix.first() else {
-                    return Err(StreamError::InvalidResponse.with_source(
-                        FramingFailure::Prefix {
+                    return Err(
+                        StreamError::InvalidResponse.with_source(FramingFailure::Prefix {
                             bytes: self.prefix_len,
-                        },
-                    ));
+                        }),
+                    );
                 };
                 if *flag != 0 {
                     return Err((if *flag == 1 {
@@ -104,11 +104,11 @@ impl<T> FrameDecoder<T> {
                     continue;
                 }
                 let Some(bytes) = self.prefix.get(1..5) else {
-                    return Err(StreamError::InvalidResponse.with_source(
-                        FramingFailure::Prefix {
+                    return Err(
+                        StreamError::InvalidResponse.with_source(FramingFailure::Prefix {
                             bytes: self.prefix_len,
-                        },
-                    ));
+                        }),
+                    );
                 };
                 u32::from_be_bytes(
                     bytes
@@ -127,11 +127,11 @@ impl<T> FrameDecoder<T> {
                     continue;
                 }
                 let Some(prefix) = self.prefix.get(..self.prefix_len) else {
-                    return Err(StreamError::InvalidResponse.with_source(
-                        FramingFailure::Prefix {
+                    return Err(
+                        StreamError::InvalidResponse.with_source(FramingFailure::Prefix {
                             bytes: self.prefix_len,
-                        },
-                    ));
+                        }),
+                    );
                 };
                 let length = prost::decode_length_delimiter(prefix)
                     .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
