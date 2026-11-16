@@ -29,15 +29,28 @@ impl<'a> VolumeInitialization<'a> {
     }
 }
 
+/// One named attribute written beside a creation's file in its initial generation.
+#[derive(Clone, Debug)]
+pub struct CreationAttribute {
+    /// The creation file the attribute belongs to, spelled as in the creation.
+    pub path: String,
+    /// The exact canonical attribute name.
+    pub name: AttributeName,
+    /// The attribute value.
+    pub value: acyclic_stream::OwnedBytes,
+}
+
 /// One creation of a volume: the operation a retry repeats, and the files its
 /// creation commit publishes in the initial generation. Files belong to a
 /// named creation, so only a creation with an operation can hold them.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CreationOperation<'a> {
     /// The creation's operation identity.
     pub operation_id: OperationId,
     /// Files the creation commit publishes, each a child of the root.
     pub files: &'a [(&'a str, acyclic_stream::OwnedBytes)],
+    /// Named attributes written with those files in the same generation.
+    pub attributes: Vec<CreationAttribute>,
 }
 
 impl<'a> CreationOperation<'a> {
@@ -46,9 +59,19 @@ impl<'a> CreationOperation<'a> {
         operation_id: OperationId,
         files: &'a [(&'a str, acyclic_stream::OwnedBytes)],
     ) -> Self {
+        Self::populated_with_attributes(operation_id, files, Vec::new())
+    }
+
+    /// A creation whose initial generation holds exactly `files` and their attributes.
+    pub const fn populated_with_attributes(
+        operation_id: OperationId,
+        files: &'a [(&'a str, acyclic_stream::OwnedBytes)],
+        attributes: Vec<CreationAttribute>,
+    ) -> Self {
         Self {
             operation_id,
             files,
+            attributes,
         }
     }
 }
@@ -449,6 +472,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         config: VolumeConfig,
         generation_root: ObjectId,
         files: &[(&str, acyclic_stream::OwnedBytes)],
+        attributes: &[CreationAttribute],
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<bool, FsError> {
@@ -464,9 +488,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         // refuse the second, so a retry naming one twice is rejected here.
         let mut paths =
             crate::kernel::Owned::<Vec<NamespacePath>>::allocate(files.len(), accounting)?;
-        for (path, bytes) in files {
+        for (name, bytes) in files {
             let (path, mut allocation) = NamespacePath::parse_in_profile(
-                path,
+                name,
                 config.profile,
                 config.limits,
                 accounting,
@@ -519,6 +543,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 offset += length;
             }
+            for attribute in attributes
+                .iter()
+                .filter(|attribute| attribute.path == *name)
+            {
+                let actual = checkout
+                    .read_named_attribute_with_accounting(
+                        &path,
+                        &attribute.name,
+                        None,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                if actual.map(|chunk| chunk.bytes).as_deref() != Some(attribute.value.as_ref()) {
+                    return Ok(false);
+                }
+            }
             accounting.charge(WorkCounters {
                 bytes_copied: std::mem::size_of::<NamespacePath>() as u64,
                 ..WorkCounters::UNCHARGED
@@ -551,12 +592,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let CreationOperation {
             operation_id,
             files,
+            attributes,
         } = creation;
         let volume = Volume {
             fs: self.clone(),
             id: volume_id,
             config,
         };
+        for attribute in &attributes {
+            if !files.iter().any(|(path, _)| *path == attribute.path) {
+                return Err(FsError::CreationRejected);
+            }
+        }
         let mut checkout = volume
             .unpublished_checkout(empty, accounting, cancellation)
             .await?;
@@ -567,14 +614,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             bytes_copied: std::mem::size_of::<AuthoredMutation>() as u64,
             ..WorkCounters::UNCHARGED
         };
-        for (path, bytes) in files {
+        for (name, bytes) in files {
             let (path, mut allocation) = NamespacePath::parse_in_profile(
-                path,
+                name,
                 config.profile,
                 config.limits,
                 accounting,
                 cancellation,
             )?;
+            let mut metadata = FileMetadata::default();
+            for attribute in attributes.iter().filter(|attribute| attribute.path == *name) {
+                metadata = super::attributes::change_attribute(
+                    &volume,
+                    metadata,
+                    &attribute.name,
+                    Some((
+                        attribute.value.as_ref(),
+                        NamedAttributeWriteMode::Create,
+                    )),
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            }
             let retained = path.retained_bytes();
             accounting.admit(moved)?;
             operations.allocation.absorb(&mut allocation)?;
@@ -586,7 +648,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 file_id: None,
                 path,
                 bytes: bytes.clone(),
-                metadata: FileMetadata::default(),
+                metadata,
             });
             accounting.record_completed(moved)?;
         }
