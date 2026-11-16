@@ -150,17 +150,19 @@ The captured proof-policy workspace under `scripts/tests/fixtures` is test data
 with no root crate dependencies. It and vendored upstream packages retain their
 original dependency inputs.
 
-The TypeScript Stream models run the packaged TypeScript and WASM implementation
-through Bun. After `bun install --frozen-lockfile`, nextest prepares their
-generated bindings once when selecting `acyclic-stream-typescript-models`:
+The TypeScript Stream models run the TypeScript sources and the WASM
+implementation through Bun. After `bun install --frozen-lockfile`, nextest
+prepares their generated WASM bindings once when selecting
+`acyclic-stream-typescript-models`:
 
 ```sh
 cargo nextest run --locked -p acyclic-stream-typescript-models
 ```
 
 For `cargo test` or fuzzing, first run
-`bun run --filter '@acyclic-labs/stream' build` to prepare the same artifacts,
-including compiled dependency exports. The model drivers never generate substitutes.
+`bun run --filter '@acyclic-labs/stream' build:wasm` to prepare the same
+artifacts. The model drivers import the sources directly and never generate
+substitutes.
 
 Rust-only workspace tests also need the ignored Actors authoring contracts.
 Generate them with the existing locked Rust producer before running Cargo tests;

@@ -121,7 +121,9 @@ async function buildWasm() {
     if (family) {
       const { createNativeProducer } = await import("./build-native-family.mjs");
       producer = createNativeProducer(family);
-      producer.assertCurrentNativeFamily();
+      // The non-grouped path just ran the memoized generation, which already
+      // produced and checked this family's committed provenance.
+      if (grouped) producer.assertCurrentNativeFamily();
       revision = capture("git", ["rev-parse", "HEAD"]);
       const status = capture("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", ...family.sourceRoots]);
       if (!/^[0-9a-f]{40,64}$/u.test(revision ?? "") || status !== "") throw new Error("WASM requires a clean source closure");
