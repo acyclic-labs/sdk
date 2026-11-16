@@ -32,6 +32,10 @@ protoc-bin-vendored-win32 = "=3.3.0"
 PROTOC = "protoc-bin-vendored-linux-x86_64/bin/protoc"
 PROTOC_INCLUDE = "protoc-bin-vendored-linux-x86_64/include"
 
+[package.metadata.bazel.build-script-env.macos-aarch64]
+PROTOC = "protoc-bin-vendored-macos-aarch_64/bin/protoc"
+PROTOC_INCLUDE = "protoc-bin-vendored-macos-aarch_64/include"
+
 [lints]
 workspace = true
 

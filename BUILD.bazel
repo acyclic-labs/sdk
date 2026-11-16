@@ -17,6 +17,15 @@ config_setting(
     ],
 )
 
+
+config_setting(
+    name = "macos-aarch64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:aarch64",
+    ],
+)
+
 platform(
     name = "windows",
     constraint_values = [
