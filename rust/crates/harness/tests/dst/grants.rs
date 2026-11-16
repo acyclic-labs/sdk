@@ -79,8 +79,6 @@ fn variants(seed: u64) -> Vec<Variant> {
 
 struct Subjects {
     volumes: Vec<(&'static str, VolumeRef, &'static str, AgentId)>,
-    child: AgentPath,
-    grandchild: AgentPath,
 }
 
 fn provider() -> Result<ProviderRef> {
@@ -156,8 +154,6 @@ fn subjects(provider: &ProviderRef) -> Result<Subjects> {
                 root,
             ),
         ],
-        child: child_path,
-        grandchild: grandchild_path,
     })
 }
 

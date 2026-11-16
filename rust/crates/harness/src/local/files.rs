@@ -228,6 +228,7 @@ impl LocalHarness {
     }
 
     /// Publisher of this harness's prompt inputs on its private journal volume.
+    #[cfg(test)]
     pub(super) fn input_publisher_with_limit(
         &self,
         maximum_bytes: impl Into<Option<u64>>,

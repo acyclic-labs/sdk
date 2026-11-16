@@ -9,8 +9,12 @@ pub(super) struct Window<'io> {
 }
 
 enum WindowHold<'io> {
-    Authored(Option<crate::conversation::ContentHold<'io>>),
-    Content(acyclic_fs::NativeCustody),
+    Authored {
+        _hold: Option<crate::conversation::ContentHold<'io>>,
+    },
+    Content {
+        _hold: acyclic_fs::NativeCustody,
+    },
 }
 
 pub(super) fn custody(
@@ -42,7 +46,9 @@ impl<'io> Window<'io> {
                 return Ok(Self {
                     source: FileReadSource::Content(file),
                     bytes,
-                    _hold: WindowHold::Content(original.custody),
+                    _hold: WindowHold::Content {
+                        _hold: original.custody,
+                    },
                 });
             }
             source => super::source::ReadSource {
@@ -71,7 +77,7 @@ impl<'io> Window<'io> {
         Ok(Self {
             source: FileReadSource::Authored(source),
             bytes,
-            _hold: WindowHold::Authored(hold),
+            _hold: WindowHold::Authored { _hold: hold },
         })
     }
 
