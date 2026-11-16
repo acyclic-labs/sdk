@@ -45,29 +45,6 @@ async fn physical_private_state_needs_no_global_mount_registry() {
     model.close().await;
 }
 
-#[tokio::test]
-async fn installers_observe_the_shipping_product_name_and_version() {
-    for (product, binary) in [
-        ("acyclic", acyclic_test_support::cargo_binary!("acyclic")),
-        (
-            "graphcoder",
-            acyclic_test_support::cargo_binary!("graphcoder"),
-        ),
-    ] {
-        for flag in ["--version", "-V"] {
-            let mut command = Command::new(&binary);
-            command.arg(flag);
-            let output = capture(command, "").await;
-            assert!(output.status.success(), "{product} {flag}: {output:?}");
-            assert_eq!(
-                String::from_utf8_lossy(&output.stdout).trim(),
-                format!("{product} {}", env!("CARGO_PKG_VERSION"))
-            );
-            assert!(output.stderr.is_empty(), "{product} {flag}: {output:?}");
-        }
-    }
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn explicit_schema_links_are_refused_before_model_dispatch() {

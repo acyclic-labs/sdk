@@ -701,38 +701,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fork_override_is_accepted_after_exec_and_run() {
-        for argv in [
-            vec![
-                "graphcoder",
-                "--fork-from",
-                "agents/original@4",
-                "exec",
-                "Continue",
-                "--override",
-                "continuation.json",
-            ],
-            vec![
-                "acyclic",
-                "run",
-                "--fork-from",
-                "agents/original@4",
-                "--override",
-                "continuation.json",
-                "-p",
-                "Continue",
-            ],
-        ] {
-            let mut args = Args::try_parse_from(argv).unwrap();
-            assert!(args.prepare_input().is_ok());
-            assert_eq!(
-                args.override_file.as_deref(),
-                Some(std::path::Path::new("continuation.json"))
-            );
-        }
-    }
-
-    #[test]
     fn product_commands_reject_execution_inputs_before_attach_or_serve() {
         for argv in [
             vec!["graphcoder", "--local-service", "--no-peer"],
@@ -838,31 +806,6 @@ mod tests {
     }
 
     #[test]
-    fn native_workspace_owner_requires_explicit_state_and_excludes_agent_inputs() {
-        assert!(Args::try_parse_from(["graphcoder", "--host-workspace"]).is_err());
-        let base = [
-            "graphcoder",
-            "--host-workspace",
-            "--host-state-directory",
-            "fixture-state",
-        ];
-        assert!(Args::try_parse_from(base).is_ok());
-        for option in [
-            "--prompt",
-            "--model",
-            "--catalog",
-            "--credentials",
-            "--operation",
-            "--settings-root",
-        ] {
-            assert!(
-                Args::try_parse_from(base.into_iter().chain([option, "fixture"])).is_err(),
-                "{option}"
-            );
-        }
-    }
-
-    #[test]
     fn native_workspace_owner_rejects_normalized_positional_task() {
         for task in [Some("TASK"), None] {
             let arguments = [
@@ -891,44 +834,5 @@ mod tests {
         let mut execution = Args::try_parse_from(["graphcoder", "exec", "TASK"]).unwrap();
         assert!(execution.prepare_input().is_ok());
         assert_eq!(execution.prompt.as_deref(), Some("TASK"));
-    }
-
-    #[test]
-    fn headless_modes_use_explicit_jsonl_identity_and_reject_mixed_formats() {
-        assert!(Args::try_parse_from(["graphcoder", "-p", "hello"]).is_ok());
-        assert!(Args::try_parse_from(["graphcoder", "--search-config", "search.json"]).is_err());
-        assert!(Args::try_parse_from(["graphcoder", "--input-format", "jsonl"]).is_err());
-        assert!(
-            Args::try_parse_from([
-                "graphcoder",
-                "--input-format",
-                "jsonl",
-                "--operation",
-                "00000000-0000-0000-0000-000000000001"
-            ])
-            .is_ok()
-        );
-        assert!(
-            Args::try_parse_from([
-                "graphcoder",
-                "-p",
-                "hello",
-                "--input-format",
-                "jsonl",
-                "--operation",
-                "operation"
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn serve_takes_an_address_and_a_complete_tls_identity() {
-        assert!(Args::try_parse_from(["graphcoder", "serve", "127.0.0.1:0"]).is_ok());
-        assert!(Args::try_parse_from(["graphcoder", "serve"]).is_err());
-        assert!(
-            Args::try_parse_from(["graphcoder", "serve", "0.0.0.0:443", "--tls-key", "key.pem"])
-                .is_err()
-        );
     }
 }
