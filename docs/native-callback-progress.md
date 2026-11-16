@@ -39,10 +39,8 @@ item and its completion closure indefinitely; it now destroys both. The
 ordinary callback path retains its original allocation and request counts.
 These are source counts, not latency measurements.
 
-`acyclic-napi-progress-test` is an on-demand native addon. Build it with
-`cargo build --locked -p acyclic-napi-progress-test`, copy the resulting
-platform library to a `.node` filename, then run
-`node scripts/qualify-napi-progress.mjs /absolute/path/to/fixture.node`.
+`acyclic-napi-progress-test` is an on-demand native addon, built by
+`bazel build //rust/crates/napi-progress-test:acyclic_napi_progress_test`.
 Both callback layouts use actual Node Workers and actual queue admission.
 The native task owns a socket that reports its typed completion; EOF without
 that result fails. Ordinary Worker shutdown can attempt callback delivery and
@@ -52,6 +50,3 @@ deadline fails an absent completion;
 it does not retry or complete the operation. Rebuilding the same addon with
 the original early return is the progress negative control. Native execution
 and that omission control must be recorded separately from source review.
-On Linux, `python scripts/qualify-napi-disposal.py` builds and runs both layouts
-through both shutdown paths, then rebuilds the exact original dependency and
-requires the unchanged queue-disposal assertion to fail.
