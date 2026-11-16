@@ -130,21 +130,26 @@ fn length_variants(seed: u64) -> Vec<Variant> {
 }
 
 fn request_tag<'a>(request: &ModelRequest, tags: &[&'a str]) -> Option<&'a str> {
-    let message = request
+    for message in request
         .messages
         .iter()
         .rev()
-        .find(|message| message.role == ModelRole::User)?;
-    let body = serde_json::to_string(&message.content).unwrap_or_default();
-    tags.iter().copied().find(|candidate| {
-        let text = tag(candidate);
-        let digest: [u8; 32] = sha2::Sha256::digest(text.as_bytes()).into();
-        body.contains(&text)
-            || body.contains(&format!(
-                "\"sha256\":{}",
-                serde_json::to_string(&digest).unwrap_or_default()
-            ))
-    })
+        .filter(|message| message.role == ModelRole::User)
+    {
+        let body = serde_json::to_string(&message.content).unwrap_or_default();
+        if let Some(found) = tags.iter().copied().find(|candidate| {
+            let text = tag(candidate);
+            let digest: [u8; 32] = sha2::Sha256::digest(text.as_bytes()).into();
+            body.contains(&text)
+                || body.contains(&format!(
+                    "\"sha256\":{}",
+                    serde_json::to_string(&digest).unwrap_or_default()
+                ))
+        }) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn assistant_since_prompt(request: &ModelRequest) -> usize {
@@ -422,13 +427,18 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 stable(previous, request)?;
                 return Ok(true);
             }
-            let prompt = if transition == "compaction_applied" || transition == "background_summary"
+            let prompt = tag("d3-parent");
+            let prompts = if transition == "compaction_applied"
+                || transition == "background_summary"
             {
-                format!("{} large context {}", tag("d3-parent"), "x".repeat(200_000))
-            } else {
-                tag("d3-parent")
-            };
-            let prompts = if transition == "context_review" {
+                vec![
+                    vec![(
+                        "d3-warm",
+                        format!("{} large context {}", tag("d3-warm"), "x".repeat(120_000)),
+                    )],
+                    vec![("d3-parent", prompt)],
+                ]
+            } else if transition == "context_review" {
                 vec![
                     vec![("d3-warm", tag("d3-warm"))],
                     vec![("d3-parent", prompt)],
@@ -596,13 +606,13 @@ fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvide
 fn d4_capacity(capacity: &str) -> acyclic_harness::context::ModelContextCapacity {
     match capacity {
         "output_eq_context" => acyclic_harness::context::ModelContextCapacity {
-            context_tokens: 32_768,
-            output_tokens: Some(32_768),
+            context_tokens: 131_072,
+            output_tokens: Some(131_072),
             output_shares_context: true,
         },
         _ => acyclic_harness::context::ModelContextCapacity {
-            context_tokens: 65_536,
-            output_tokens: Some(16_384),
+            context_tokens: 131_072,
+            output_tokens: Some(32_768),
             output_shares_context: false,
         },
     }
@@ -629,12 +639,21 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     d4_service(call, content).with_context_capacity(d4_capacity(capacity));
                 let mut world =
                     World::new(seed, &files, service).map_err(oracle::failed)?;
-                let prompt = if call == "summary" {
-                    format!("d4-content:{content} {} {}", tag("d4"), "x".repeat(200_000))
-                } else {
-                    format!("d4-content:{content} {}", tag("d4"))
-                };
-                let groups = if call == "context_review" {
+                let prompt = format!("d4-content:{content} {}", tag("d4"));
+                let groups = if call == "summary" {
+                    let warm = if capacity == "output_eq_context" {
+                        120_000
+                    } else {
+                        90_000
+                    };
+                    vec![
+                        vec![(
+                            "d4-warm",
+                            format!("{} large context {}", tag("d4-warm"), "x".repeat(warm)),
+                        )],
+                        vec![("d4", prompt.clone())],
+                    ]
+                } else if call == "context_review" {
                     vec![
                         vec![("d4-warm", tag("d4-warm"))],
                         vec![("d4", prompt.clone())],
