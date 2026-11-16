@@ -183,7 +183,11 @@ fn parent_plan(tag: &'static str) -> Plan {
         tag,
         steps: vec![
             vec![spawn_call(&format!("{tag}-spawn"), "settler", SETTLER_TAG)],
-            vec![call(&format!("{tag}-work"), "read", json!({"path": "missing.txt"}))],
+            vec![call(
+                &format!("{tag}-work"),
+                "read",
+                json!({"path": "missing.txt"}),
+            )],
             vec![wait_call(&format!("{tag}-wait"), "settler")],
         ],
         fail_once: None,
@@ -308,7 +312,9 @@ fn checked(
     if location == "root" && origin != "child_settles_during_turn" {
         faulted(origin, outcomes.first().copied())?;
     } else if outcomes.first() != Some(&&Prompted::Settled(done(ROOT_TAG))) {
-        return Err(format!("{origin} at {location} reached the owner: {outcomes:?}"));
+        return Err(format!(
+            "{origin} at {location} reached the owner: {outcomes:?}"
+        ));
     }
     if outcomes.last() != Some(&&Prompted::Settled(done(CHECK_TAG))) {
         return Err(format!(
@@ -375,12 +381,9 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
     let location = location(seed);
     oracle::simulate(seed, move || {
         entry(async move {
-            let mut world = World::new(seed, &[], service(plans(origin, location)))
-                .map_err(oracle::failed)?;
-            let prompts = [
-                vec![("f1", tag(ROOT_TAG))],
-                vec![("next", tag(CHECK_TAG))],
-            ];
+            let mut world =
+                World::new(seed, &[], service(plans(origin, location))).map_err(oracle::failed)?;
+            let prompts = [vec![("f1", tag(ROOT_TAG))], vec![("next", tag(CHECK_TAG))]];
             let incarnation = world
                 .incarnation(None, &prompts)
                 .await
