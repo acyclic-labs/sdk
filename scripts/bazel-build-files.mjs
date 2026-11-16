@@ -548,7 +548,8 @@ function moduleFile() {
     ...specs(),
     rule("crate.from_cargo", [
       ["name", q("crates")],
-      ["cargo_lockfile", q("//:Cargo.lock")],
+      // A copy crate_universe may write (cargo_lock.bzl); Cargo.lock itself is never rewritten.
+      ["cargo_lockfile", q("@cargo_lock//:Cargo.lock")],
       ["manifests", list(["//:Cargo.toml"])],
       ["supported_platform_triples", list(TRIPLES)],
     ]),
