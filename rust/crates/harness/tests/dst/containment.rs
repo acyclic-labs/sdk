@@ -14,7 +14,6 @@ const MID_TAG: &str = "f1-mid";
 const TARGET_TAG: &str = "f1-target";
 const SETTLER_TAG: &str = "f1-settler";
 const CHECK_TAG: &str = "f1-check";
-const FILE_BYTES: u64 = 64 * 1024;
 
 /// One world per (origin, location).
 pub(super) const GENERATOR: Generator = Generator {
@@ -75,7 +74,7 @@ fn variants(seed: u64) -> Vec<Variant> {
 fn tool_level(origin: &str) -> bool {
     matches!(
         origin,
-        "tool_error" | "protective_bound" | "custody_conflict" | "malformed_output"
+        "tool_error" | "custody_conflict" | "malformed_output"
     )
 }
 
@@ -87,6 +86,9 @@ fn model_fault(origin: &str) -> Option<ScriptedEvent> {
         }),
         "transport" => Some(ScriptedEvent::Interrupted {
             error: "connection reset".into(),
+        }),
+        "protective_bound" => Some(ScriptedEvent::Error {
+            error: "protective bound exceeded".into(),
         }),
         "internal_error" => Some(ScriptedEvent::Error {
             error: "provider internal error".into(),
@@ -116,18 +118,6 @@ fn fault_plan(origin: &str, tag: &'static str) -> Plan {
                 call(&format!("{tag}-unknown"), "no_such_tool", json!({})),
                 call(&format!("{tag}-invalid"), "write", json!({"bogus": 1})),
             ]],
-            None,
-        ),
-        "protective_bound" => (
-            vec![vec![call(
-                &format!("{tag}-bound"),
-                "write",
-                json!({
-                    "path": "bound.txt",
-                    "content": "x".repeat(128 * 1024),
-                    "ifVersion": "absent",
-                }),
-            )]],
             None,
         ),
         "custody_conflict" => (
@@ -260,6 +250,7 @@ fn faulted(origin: &str, outcome: Option<&Prompted>) -> std::result::Result<(), 
     let cause = match origin {
         "rate_limit" => "rate limited",
         "transport" => "connection reset",
+        "protective_bound" => "protective bound exceeded",
         "internal_error" => "provider internal error",
         "subscription_end" => "stream unavailable",
         "interaction_cancelled" => "interaction cancelled",
@@ -410,12 +401,6 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
         entry(async move {
             let mut world = World::new(seed, &[], service(plans(origin, location)))
                 .map_err(oracle::failed)?;
-            if origin == "protective_bound" {
-                world = world.with_limits(acyclic_harness::conversation::Limits {
-                    file_bytes: Some(FILE_BYTES),
-                    ..Default::default()
-                });
-            }
             let prompts = [
                 vec![("f1", tag(ROOT_TAG))],
                 vec![("next", tag(CHECK_TAG))],
