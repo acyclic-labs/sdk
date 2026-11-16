@@ -688,8 +688,11 @@ function moduleFile() {
     `xwin = use_repo_rule("//:xwin_repo.bzl", "xwin_repository")\n`,
     `xwin(name = "xwin")\n\n`,
     // The musl toolchain is registered before the hub so it wins over the gnu toolchain, which
-    // rules_rust also considers compatible with the musl platform.
-    `register_toolchains("//:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__${LINUX_MUSL_TRIPLE}__${channelName}", "@rust_toolchains//:all")\n\n`,
+    // rules_rust also considers compatible with the musl platform. Every registration is the root
+    // module's own: rules_rust keeps only the root module's toolchains and repository sets, and the
+    // Windows C toolchain runs from the LLVM repository only the root creates. A module that depends
+    // on this one registers its own toolchains.
+    `register_toolchains("//${WINDOWS_TOOLCHAIN_PACKAGE}:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__${LINUX_MUSL_TRIPLE}__${channelName}", "@rust_toolchains//:all", dev_dependency = True)\n\n`,
     `crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")\n\n`,
     ...thirdParty.map(([name, opt]) => `${rule("crate.annotation", [["crate", q(name)], ["rustc_flags", list([`-Copt-level=${opt}`])]])}
 `),
@@ -737,6 +740,7 @@ for (const id of members) {
   const missing = [...expected].filter(t => !have.has(t)), extra = [...have].filter(t => !expected.has(t));
   if (missing.length || extra.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} renders a different target set than cargo test --all-features (missing: ${missing.join(", ") || "none"}; extra: ${extra.join(", ") || "none"})`);
 }
+const WINDOWS_TOOLCHAIN_PACKAGE = "toolchains/windows";
 const windowsLoads = `load("@rules_cc//cc:defs.bzl", "cc_toolchain")\nload("@rules_cc//cc/private/toolchain:windows_cc_toolchain_config.bzl", "cc_toolchain_config")\nload("//:windows_paths.bzl", "WINDOWS_LLVM", "WINDOWS_XWIN")\n`;
 const windowsPlatform = rule("platform", [["name", q("windows")], ["constraint_values", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])]]);
 const libcConstraints = `
@@ -750,8 +754,12 @@ ${rule("platform", [["name", q("linux_musl")], ["constraint_values", list(["@pla
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
   ["BUILD.bazel", `${HEADER}
-${windowsLoads}exports_files(${list(["Cargo.lock", "Cargo.toml", ...(fs.existsSync(path.join(root, "clippy.toml")) ? ["clippy.toml"] : [])])})
-${libcConstraints}${platformRules}${windowsPlatform}${linuxMusl}${windowsToolchain()}${sourcesRule}${exportsRule("")}`],
+exports_files(${list(["Cargo.lock", "Cargo.toml", ...(fs.existsSync(path.join(root, "clippy.toml")) ? ["clippy.toml"] : [])])})
+${libcConstraints}${platformRules}${windowsPlatform}${linuxMusl}${sourcesRule}${exportsRule("")}`],
+  // The Windows C toolchain runs from repositories only the root module creates, so it is its own
+  // package: a module that depends on this one loads the root package without ever loading this one.
+  [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}
+${windowsLoads}${windowsToolchain()}`],
 ]);
 for (const [owner, body] of bodies) files.set(`${owner}/BUILD.bazel`, body + exportsRule(owner));
 // Every file ends in exactly one newline, cut once here; check then fails on any other ending.
