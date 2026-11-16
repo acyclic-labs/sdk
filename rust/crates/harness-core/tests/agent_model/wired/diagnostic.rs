@@ -134,7 +134,7 @@ pub(crate) async fn check_diagnostic_read(
     diagnostic: &Diagnostic,
     expected: &str,
 ) -> Result {
-    let (filesystem, private) = private_in(stream, &parent.path).await?;
+    let (filesystem, private) = with_journal(private_in(stream, &parent.path).await?).await?;
     let mut parent = parent.clone();
     parent.volumes = vec![private];
     let model = Arc::new(ScriptedModelProvider::new([
