@@ -560,9 +560,9 @@ where
             None,
             io,
             move |receipt| {
-                Ok(Some(clock.as_deref().map_or(receipt.committed_at_micros, |clock| {
-                    acyclic_stream::UnixMillisClock::now_unix_millis(clock).saturating_mul(1000)
-                })))
+                Ok(clock.as_deref().map_or(receipt.committed_at_micros, |clock| {
+                    Some(acyclic_stream::UnixMillisClock::now_unix_millis(clock).saturating_mul(1000))
+                }))
             },
         )
     }
