@@ -31,6 +31,19 @@ test("check accepts the generated files and fails on a stale BUILD file", () => 
     execFileSync("git", ["add", "-A"], { cwd: root });
     const clean = run("check");
     assert.equal(clean.status, 0, clean.stderr);
+    // The musl platform carries its libc constraint, and its toolchain is registered before the
+    // hub so it wins over the gnu toolchain that rules_rust also considers compatible.
+    const buildFile = readFileSync(join(root, "BUILD.bazel"), "utf8");
+    const platformStart = buildFile.indexOf('platform(\n    name = "linux_musl",');
+    assert.notEqual(platformStart, -1, "linux_musl platform is generated");
+    const platformBlock = buildFile.slice(platformStart, buildFile.indexOf("\n)\n", platformStart) + 3);
+    assert.match(platformBlock, /":libc_musl"/, "linux_musl platform carries libc_musl");
+    const moduleFile = readFileSync(join(root, "cargo.MODULE.bazel"), "utf8");
+    const muslToolchain = moduleFile.indexOf("@rust_toolchains//:rust_linux_musl__x86_64-unknown-linux-musl__stable");
+    const toolchainHub = moduleFile.indexOf("@rust_toolchains//:all");
+    assert.notEqual(muslToolchain, -1, "musl toolchain is registered");
+    assert.notEqual(toolchainHub, -1, "toolchain hub is registered");
+    assert.ok(muslToolchain < toolchainHub, "musl toolchain is registered before the toolchain hub");
     // Negative control: a BUILD file that no longer matches the manifests fails and names itself.
     const build = join(root, "member/BUILD.bazel");
     writeFileSync(build, readFileSync(build, "utf8").replace('"src/lib.rs"', '"src/lib.rs",\n        "src/removed.rs"'));
