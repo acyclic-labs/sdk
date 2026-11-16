@@ -48,7 +48,7 @@ pub fn grpc_status_error(code: i32, message: &str, metadata: Vec<String>) -> JsV
 /// Complete Rust-owned code inventory; adapters must not maintain another list.
 #[wasm_bindgen(js_name = streamErrorCodes)]
 pub fn stream_error_codes() -> Vec<String> {
-    StreamCategory::ALL
+    crate::StreamCategory::ALL
         .iter()
         .map(|category| category.code().to_owned())
         .collect()
@@ -62,11 +62,11 @@ pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
         "destination_exists" => "destination_exists",
         "capacity_exhausted" => "capacity_exhausted",
         "commit_not_found" => "commit_not_found",
-        _ => match StreamCategory::from_code(raw)? {
-            StreamCategory::NotFound if route == "commits/read" => "commit_not_found",
-            StreamCategory::NotFound => "stream_not_found",
-            StreamCategory::AlreadyExists => "destination_exists",
-            StreamCategory::Capacity => "capacity_exhausted",
+        _ => match crate::StreamCategory::from_code(raw)? {
+            crate::StreamCategory::NotFound if route == "commits/read" => "commit_not_found",
+            crate::StreamCategory::NotFound => "stream_not_found",
+            crate::StreamCategory::AlreadyExists => "destination_exists",
+            crate::StreamCategory::Capacity => "capacity_exhausted",
             other => other.code(),
         },
     };
