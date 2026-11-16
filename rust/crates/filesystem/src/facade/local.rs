@@ -3,7 +3,7 @@ use super::*;
 
 /// Self-contained local backend options.
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct LocalOptions {
     /// Durable root containing canonical Stream and Objects provider state.
     pub root: PathBuf,
@@ -17,7 +17,41 @@ pub struct LocalOptions {
     pub maximum_object_bytes: Option<u64>,
     /// Bounded disposable immutable-object accelerator shared by every handle.
     pub object_cache: crate::cache::ObjectCacheOptions,
+    /// The host clock shared by the provider's commit deadlines.
+    clock: Option<std::sync::Arc<dyn acyclic_stream::UnixMillisClock>>,
 }
+
+#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+impl std::fmt::Debug for LocalOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LocalOptions")
+            .field("root", &self.root)
+            .field("stream", &self.stream)
+            .field("maximum_object_bytes", &self.maximum_object_bytes)
+            .field("object_cache", &self.object_cache)
+            .field("clock", &self.clock.as_ref().map(|_| "configured"))
+            .finish()
+    }
+}
+
+#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+impl PartialEq for LocalOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root
+            && self.stream == other.stream
+            && self.maximum_object_bytes == other.maximum_object_bytes
+            && self.object_cache == other.object_cache
+            && match (&self.clock, &other.clock) {
+                (None, None) => true,
+                (Some(left), Some(right)) => std::sync::Arc::ptr_eq(left, right),
+                _ => false,
+            }
+    }
+}
+
+#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+impl Eq for LocalOptions {}
 
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 impl LocalOptions {
@@ -29,7 +63,15 @@ impl LocalOptions {
             stream: acyclic_stream::LocalStreamLimits::default(),
             maximum_object_bytes: None,
             object_cache: crate::cache::ObjectCacheOptions::default(),
+            clock: None,
         }
+    }
+
+    /// Uses `clock` for the provider's own commit deadlines.
+    #[must_use]
+    pub fn clock(mut self, clock: std::sync::Arc<dyn acyclic_stream::UnixMillisClock>) -> Self {
+        self.clock = Some(clock);
+        self
     }
 }
 
@@ -287,21 +329,28 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             stream,
             maximum_object_bytes,
             object_cache,
+            clock,
         } = options;
+        let clock = clock
+            .unwrap_or_else(|| std::sync::Arc::new(acyclic_stream::SystemUnixMillisClock));
         let objects = acyclic_objects::local::LocalObjectsLimits {
             durability: publication_object_durability(&root, lifecycle.clone()).await?,
         };
         let open_stream = async {
             Ok::<_, FsError>(std::sync::Arc::new(match &lifecycle {
                 Some(ownership) => {
-                    acyclic_stream::LocalStream::open_with_ownership_anchor(
+                    acyclic_stream::LocalStream::open_with_clock_and_anchor(
                         root.join("stream"),
                         stream,
-                        ownership.clone(),
+                        clock.clone(),
+                        Some(ownership.clone()),
                     )
                     .await?
                 }
-                None => acyclic_stream::LocalStream::open(root.join("stream"), stream).await?,
+                None => {
+                    acyclic_stream::LocalStream::open_with_clock(root.join("stream"), stream, clock)
+                        .await?
+                }
             }))
         };
         let open_objects = async {
