@@ -219,6 +219,7 @@ pub(super) struct World {
     pub service: ScriptedModelProvider,
     pub seed: u64,
     incarnations: u64,
+    compaction: Option<crate::context::CompactionPolicy>,
 }
 
 impl World {
@@ -241,7 +242,14 @@ impl World {
             service,
             seed,
             incarnations: 0,
+            compaction: None,
         })
+    }
+
+    /// Selects this world's compaction policy.
+    pub fn compaction(mut self, policy: crate::context::CompactionPolicy) -> Self {
+        self.compaction = Some(policy);
+        self
     }
 
     /// Opens a host on the world's files and sends each group of prompts,
@@ -276,13 +284,16 @@ impl World {
                 let results = Arc::clone(&results);
                 entry(async move {
                     let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
-                    let config = local_harness_config(
+                    let mut config = local_harness_config(
                         directory.join("checkout"),
                         (model, provider.clone()),
                     )?
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
                     .state_directory(directory.join("state"));
+                    if let Some(policy) = &self.compaction {
+                        config = config.compaction(policy.clone());
+                    }
                     let harness = Arc::new(entry(LocalHarness::open(config)).await?);
                     for group in prompts {
                         let outcomes =

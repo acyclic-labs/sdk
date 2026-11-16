@@ -33,6 +33,8 @@ pub(super) const GENERATORS: &[&Generator] = &[
     &super::refusal::GENERATOR,
     &super::configuration::GENERATOR,
     &super::records::GENERATOR,
+    &super::liveness::WAIT_WITHOUT_EVENT,
+    &super::liveness::SETTLEMENT_LATENCY,
 ];
 
 impl Generator {
