@@ -124,6 +124,9 @@ test("release lanes cover the Rust workspace, docs crate, and TypeScript workspa
   const policy = script.match(/^  policy\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1] ?? assert.fail("missing policy lane");
   assert.match(policy, /^    sdk_workspace cargo clippy --all-targets --all-features --locked -- -D warnings$/m);
   assert.doesNotMatch(policy, /full_qualification|exit 0/);
+  const staticJob = YAML.parse(readFileSync(".github/workflows/static.yml", "utf8")).jobs.static;
+  const bazel = staticJob.steps.find(step => step.name === "Check that the Bazel files match the Cargo manifests") ?? assert.fail("missing static Bazel check");
+  assert.ok(policy.split("\n").includes(`    ${bazel.run}`), "policy lane must run the static Bazel freshness check");
   const linux = script.match(/^  linux\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1];
   assert.ok(linux, "missing Linux package lane");
   const testCommand = linux.search(/^ +bun run test$/m);
