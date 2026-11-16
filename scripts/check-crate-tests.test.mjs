@@ -5,7 +5,27 @@ import { dirname, join, resolve, sep } from "node:path";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
 import test from "node:test";
-import { checkCrateTests, workspacePackages } from "./check-crate-tests.mjs";
+import { checkCrateTests, wasmPackages, workspacePackages } from "./check-crate-tests.mjs";
+
+test("checks every wasm-feature member, and only those, on wasm32", async () => {
+  const metadata = JSON.parse(execFileSync("cargo",
+    ["metadata", "--locked", "--no-deps", "--format-version", "1"],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
+  const selected = wasmPackages(metadata);
+  for (const name of ["acyclic-harness", "acyclic-harness-client", "acyclic-harness-core", "acyclic-stream"]) {
+    assert.ok(selected.includes(name), `${name} has a wasm feature and must be checked`);
+  }
+  assert.deepEqual(wasmPackages({ workspace_members: ["a", "b"], packages: [
+    { id: "a", name: "with", features: { wasm: [] } },
+    { id: "b", name: "without", features: { default: [] } },
+    { id: "c", name: "outside", features: { wasm: [] } },
+  ] }), ["with"]);
+  const commands = [];
+  const selection = ["--target", "wasm32-unknown-unknown", "--features", "wasm"];
+  assert.deepEqual(await checkCrateTests(["with"], 1, "/t", async args => { commands.push(args); return 0; }, selection), []);
+  assert.deepEqual(commands, [["check", "--locked", ...selection, "-p", "with",
+    "--target-dir", resolve("/t", "crate-test-checks", "0")]]);
+});
 
 test("checks original default members alone in bounded worker targets", async () => {
   // Capture the real workspace; fabricated metadata cannot establish Kani routing.
