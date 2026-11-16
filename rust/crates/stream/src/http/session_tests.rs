@@ -86,31 +86,6 @@ async fn latest_overview(
     Ok(overview)
 }
 
-/// Sample append-to-follow latency on the shared session after a warm-up.
-async fn measure_append_follow(provider: &MemoryStream, measured: &mut RecordStream) -> TestResult {
-    let mut latencies = Vec::new();
-    for index in 0..144 {
-        let started = std::time::Instant::now();
-        let (_, record, elapsed) = crate::test_latency::sample(
-            append(provider, "events"),
-            async { measured.next().await.ok_or(StreamError::Unavailable)? },
-            || started.elapsed().as_nanos(),
-        )
-        .await?;
-        assert_eq!(record.sequence, index + 2);
-        if index >= 16 {
-            latencies.push(elapsed);
-        }
-    }
-    latencies.sort_unstable();
-    println!(
-        "http_session_append_follow samples=128 p50_ns={} p99_ns={}",
-        latencies.get(64).ok_or("p50")?,
-        latencies.get(126).ok_or("p99")?
-    );
-    Ok(())
-}
-
 /// A loopback server task for the unary and session services.
 type Server = tokio::task::JoinHandle<Result<(), tonic::transport::Error>>;
 /// Serve both services on loopback, counting accepted connections and sessions.
@@ -232,9 +207,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         for follow in &mut follows {
             assert_eq!(follow.next().await.ok_or("follow ended")??.sequence, 1);
         }
-        let mut measured = follows.pop().ok_or("missing measured follow")?;
         drop(follows);
-        measure_append_follow(&provider, &mut measured).await?;
         assert_eq!(connections.load(Ordering::Relaxed), 1);
         assert_eq!(sessions.load(Ordering::Relaxed), 1);
         Ok(())

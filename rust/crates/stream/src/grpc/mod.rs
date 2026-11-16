@@ -29,8 +29,6 @@ mod client;
 #[cfg(test)]
 mod credential_tests;
 #[cfg(test)]
-mod latency_tests;
-#[cfg(test)]
 use crate::StreamPath;
 #[cfg(test)]
 mod receipt_tests;

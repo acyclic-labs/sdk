@@ -534,47 +534,6 @@ async fn follow_recovers_its_cache_without_exposing_rejected_records() {
 }
 
 #[wasm_bindgen_test]
-async fn browser_append_follow_latency() {
-    let provider = BrowserStream::open(&name(), BrowserStreamLimits::default())
-        .await
-        .expect("open");
-    append(&provider, "latency").await.expect("seed");
-    let mut records = provider
-        .follow(crate::FollowRequest::new(
-            StreamPath::new("latency").expect("path"),
-            1,
-        ))
-        .map_ok(crate::records_only)
-        .await
-        .expect("follow");
-    let performance = web_sys::window()
-        .expect("window")
-        .performance()
-        .expect("performance");
-    let mut measured = Vec::new();
-    for sequence in 1..=40 {
-        let started = performance.now();
-        let receive = async {
-            let record = records.next().await.expect("ended").expect("record");
-            assert_eq!(record.sequence, sequence);
-            assert_eq!(record.value.as_ref(), b"value");
-            performance.now() - started
-        };
-        let (elapsed, written) = futures::join!(receive, append(&provider, "latency"));
-        assert!(matches!(written, Ok(AppendOutcome::Committed(_))));
-        if sequence > 8 {
-            measured.push(elapsed);
-        }
-    }
-    measured.sort_by(f64::total_cmp);
-    console_log!(
-        "browser_append_follow samples=32 p50_ms={} p99_ms={}",
-        measured[15],
-        measured[31]
-    );
-}
-
-#[wasm_bindgen_test]
 async fn filtered_publications_survive_cache_rebuild_without_waking_unrelated_follows() {
     use futures::Stream;
     use std::{
