@@ -29,4 +29,4 @@ pub mod server;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
-pub use local::*;
+pub use local::{LocalHarness, LocalHarnessConfig};
