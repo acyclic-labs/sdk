@@ -27,7 +27,7 @@ async fn remote_headless_run_and_json_supervisor_share_file_controls() {
         .arg(&model.catalog)
         .arg("--home-file")
         .arg(&plugins)
-        .args(["--model", "graphcoder-qual/tiny", "serve", "127.0.0.1:0"])
+        .args(["--model", "fixture/tiny", "serve", "127.0.0.1:0"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
@@ -70,7 +70,7 @@ async fn remote_headless_run_and_json_supervisor_share_file_controls() {
             "--endpoint",
             url,
             "--model",
-            "graphcoder-qual/drifted",
+            "fixture/drifted",
             "run",
             "--goal",
         ])
@@ -544,7 +544,12 @@ async fn headless_configured_morph_chat_preserves_usage_and_process_credentials(
         }).await;
         let mut catalog: Value =
             serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
-        catalog["morph"]["authentication"] = json!("api_key");
+        let mut configured = catalog["fixture"].clone();
+        configured["authentication"] = json!("api_key");
+        configured["models"] = json!({
+            "morph-kimik31": catalog["fixture"]["models"]["tiny"].clone()
+        });
+        catalog["morph"] = configured;
         std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
         let plugins = task_plugins(&fixture);
         let goal = fixture._directory.path().join("morph-goal.md");
@@ -890,7 +895,7 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
     let root_selection = acyclic_harness::templates::root()
         .unwrap()
         .model
-        .unwrap_or_else(|| "graphcoder-qual/tiny".into());
+        .unwrap_or_else(|| "fixture/tiny".into());
     let (root_provider, root_model) = root_selection.split_once('/').unwrap();
     let root_environment = format!(
         "{}_API_KEY",
@@ -951,16 +956,16 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
     .await;
     let mut catalog: Value =
         serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
-    catalog[root_provider] = catalog["graphcoder-qual"].clone();
+    catalog[root_provider] = catalog["fixture"].clone();
     catalog[root_provider]["authentication"] = json!("api_key");
     catalog[root_provider]["models"][root_model] =
-        catalog["graphcoder-qual"]["models"]["tiny"].clone();
-    catalog["alternate"] = catalog["graphcoder-qual"].clone();
+        catalog["fixture"]["models"]["tiny"].clone();
+    catalog["alternate"] = catalog["fixture"].clone();
     catalog["alternate"]["authentication"] = json!("api_key");
     std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
     std::fs::write(
         fixture.settings.join(".codex/config.toml"),
-        "model = 'tiny'\nmodel_provider = 'graphcoder-qual'\n",
+        "model = 'tiny'\nmodel_provider = 'fixture'\n",
     )
     .unwrap();
     let goal = fixture._directory.path().join("goal.md");
