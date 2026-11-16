@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
 mod clocks;
+mod compaction;
 mod containment;
 mod coverage;
 mod digest;

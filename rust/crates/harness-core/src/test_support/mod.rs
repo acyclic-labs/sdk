@@ -114,3 +114,22 @@ pub(crate) fn fresh_key() -> Result<acyclic_stream::IdempotencyKey, acyclic_stre
 mod workspace_policy;
 #[cfg(test)]
 pub(crate) use workspace_policy::replace_policy;
+
+/// Applies the production compaction projection to a context, for DST worlds.
+#[doc(hidden)]
+pub fn compact_projection_for_test(
+    context: &crate::context::Context,
+    max_messages: usize,
+    summary: Option<crate::context::ContextSummary>,
+) -> crate::Result<(crate::context::Context, crate::context::CompactionReference)> {
+    crate::context::compact_projection(context, max_messages, summary, None)
+}
+
+/// The digest a summary of a context prefix binds, for DST worlds.
+#[doc(hidden)]
+pub fn prefix_digest_for_test(
+    context: &crate::context::Context,
+    through: usize,
+) -> crate::Result<[u8; 32]> {
+    crate::context::prefix_digest(context, through, None)
+}
