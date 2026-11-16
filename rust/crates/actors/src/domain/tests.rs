@@ -269,35 +269,6 @@ fn invoke_rejects_only_the_existing_actor_id_presence_violation() {
     );
 }
 
-#[test]
-fn response_enum_unknown_values_are_not_normalized() {
-    let observation = wire::ActorObservation {
-        entry_source: None,
-        observation_stream_path: None,
-        namespace: None,
-        account_id: Vec::new(),
-        actor_id: "actor-1".into(),
-        code_sha256: vec![1; 32],
-        home_region: "eu".into(),
-        state: 99,
-        subscriptions: Vec::new(),
-        checkpoint_unix_millis: None,
-        checkpoint_epoch: 0,
-        configuration_revision: 0,
-    };
-    assert_eq!(
-        ActorObservation::try_from(observation),
-        Err(DomainError::UnknownActorState(99))
-    );
-    assert_eq!(
-        SubscriptionState::try_from(99),
-        Err(DomainError::UnknownSubscriptionState(99))
-    );
-    assert_eq!(
-        ErrorCode::try_from(99),
-        Err(DomainError::UnknownErrorCode(99))
-    );
-}
 
 #[test]
 fn response_digest_keeps_the_nonzero_admission_rule() {

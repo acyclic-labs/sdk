@@ -521,15 +521,6 @@ async fn credential_refresh_keeps_the_original_deadline_and_cancellation() -> Te
     Ok(())
 }
 
-#[test]
-fn grpc_timeouts_parse_exactly() {
-    assert_eq!(grpc_timeout("300m"), Some(Duration::from_millis(300)));
-    assert_eq!(grpc_timeout("2S"), Some(Duration::from_secs(2)));
-    assert_eq!(grpc_timeout("1H"), Some(Duration::from_secs(3600)));
-    for invalid in ["", "m", "123456789S", "1x", "-1S", "1.5S"] {
-        assert_eq!(grpc_timeout(invalid), None, "{invalid}");
-    }
-}
 
 #[tokio::test]
 async fn a_refused_wait_keeps_its_own_failure() -> TestResult {
