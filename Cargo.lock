@@ -1504,7 +1504,7 @@ dependencies = [
  "tonic-prost",
  "tonic-web",
  "tower",
- "tower-http 0.7.1",
+ "tower-http 0.6.11",
  "tracing",
  "tracing-subscriber",
  "tsify",
@@ -1612,7 +1612,7 @@ dependencies = [
 name = "acyclic-syntect"
 version = "0.2.0"
 dependencies = [
- "fancy-regex 0.16.2",
+ "fancy-regex 0.20.2",
  "flate2",
  "fnv",
  "once_cell",
@@ -3595,17 +3595,6 @@ name = "fallible-streaming-iterator"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
-
-[[package]]
-name = "fancy-regex"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
-dependencies = [
- "bit-set 0.8.0",
- "regex-automata",
- "regex-syntax",
-]
 
 [[package]]
 name = "fancy-regex"
@@ -9055,21 +9044,6 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "url",
-]
-
-[[package]]
-name = "tower-http"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08a05a66a4fdd61cbbe0a1d755ffe0ca6aba159dd4820936a0ff8a8278245b9c"
-dependencies = [
- "bitflags 2.13.2",
- "bytes",
- "http",
- "percent-encoding",
- "pin-project-lite",
- "tower-layer",
- "tower-service",
 ]
 
 [[package]]
