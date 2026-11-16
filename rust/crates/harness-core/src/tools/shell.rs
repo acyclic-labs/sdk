@@ -83,7 +83,8 @@ pub fn bounded_result(
     super::bounds::result(PLATFORM.name, result, maximum)
 }
 
-pub(crate) struct ShellProjection;
+/// The `shell` tool's bounded model projection.
+pub struct ShellProjection;
 
 impl crate::tool::ToolProjection for ShellProjection {
     fn project(
@@ -238,7 +239,8 @@ impl ShellInput {
         Ok(())
     }
 
-    pub(crate) fn timeout_ms(&self) -> Result<Option<u32>> {
+    /// The admitted timeout, refusing a zero duration.
+    pub fn timeout_ms(&self) -> Result<Option<u32>> {
         if self.timeout_ms == Some(0) {
             return Err(Error::Invalid("timeout_ms: supply a positive duration in milliseconds or omit timeout_ms for an unbounded command".into()));
         }

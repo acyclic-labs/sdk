@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Attached devices: a user's machine runs the `shell` commands that agents,
 //! wherever they run, dispatch to it.
 //!
@@ -10,7 +11,7 @@
 //! A `shell` call naming the device is one [`acyclic_actors::call`]: its
 //! request is one [`Run`] record on the device's queue, appended in the same
 //! commit as the agent's journal entry that claims the call
-//! ([`crate::tool::ToolExecutor::dispatch`]): a claimed call was queued
+//! ([`acyclic_harness_core::tool::ToolExecutor::dispatch`]): a claimed call was queued
 //! exactly once, an unclaimed one never. Everything after lives in the
 //! agent's own call journal ([`call`]). The actor reads the queue in order
 //! with the socket's events. A run for the open session is accepted, fenced

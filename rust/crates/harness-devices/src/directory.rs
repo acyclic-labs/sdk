@@ -1,9 +1,10 @@
 //! The agent's side: the roster of attached devices and the executor that
 //! queues a `shell` call on one and waits for its outcome.
-use super::records::{
+use crate::records::{
     Executor, RECORD_VERSION, Run, RunCommand, TargetPaths, TargetStatus, decode, encode,
 };
-use crate::{
+use acyclic_actors::call::{CallPath, Entry, Journal, Outcome};
+use acyclic_harness_core::{
     Capabilities, Error, Result,
     agent::{Refused, Roster, TargetState},
     core::{AuthorityIssuer, AuthorityVerifier, Scope},
@@ -11,7 +12,6 @@ use crate::{
     tool::{Dispatch, ToolExecutor, ToolInvocation, ToolResult},
     tools::ShellInput,
 };
-use acyclic_actors::call::{CallPath, Entry, Journal, Outcome};
 use acyclic_stream::{
     BoxProviderFuture, FollowRequest, FollowUpdate, IdempotencyKey, StreamProvider,
     StreamProviderExt as _, WhenAbsent,
@@ -52,7 +52,7 @@ impl Devices {
 
     fn changed_roster(
         &self,
-        home: &crate::agent::TargetRecord,
+        home: &acyclic_harness_core::agent::TargetRecord,
         status: &TargetStatus,
     ) -> Result<Option<(Arc<Roster>, Arc<Roster>)>> {
         if self
@@ -114,10 +114,10 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
     /// The owner remains host-side; it is never serialized into a device run.
     pub fn lifecycle(
         &self,
-        owner: crate::core::AuthorityRoot,
-        resources: Option<Arc<dyn crate::agent::AgentLifecycle>>,
-    ) -> Result<super::DeviceLifecycle> {
-        super::DeviceLifecycle::new(Arc::clone(&self.grant), owner, resources)
+        owner: acyclic_harness_core::core::AuthorityRoot,
+        resources: Option<Arc<dyn acyclic_harness_core::agent::AgentLifecycle>>,
+    ) -> Result<crate::DeviceLifecycle> {
+        crate::DeviceLifecycle::new(Arc::clone(&self.grant), owner, resources)
     }
 
     /// The tree whose home is `home` and whose devices live under `paths`.
@@ -131,7 +131,7 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
         home: Target,
         grant: DeviceGrant,
     ) -> Result<Self> {
-        crate::agent::AgentRecord::check(&home.record).map_err(Error::from)?;
+        acyclic_harness_core::agent::AgentRecord::check(&home.record).map_err(Error::from)?;
         let roster = Arc::new(
             Roster::new(&home.record.name, vec![home.record.clone()]).map_err(Error::from)?,
         );
@@ -204,7 +204,7 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
                 continue;
             };
             let status: TargetStatus = decode(&record.value)?;
-            crate::agent::AgentRecord::check(&status.target).map_err(Error::from)?;
+            acyclic_harness_core::agent::AgentRecord::check(&status.target).map_err(Error::from)?;
             if (status.target.state == TargetState::Online) != status.session.is_some()
                 || status.session.is_some() != status.socket.is_some()
             {
@@ -236,10 +236,10 @@ impl<P: StreamProvider + ?Sized + 'static> TargetResolver for TargetDirectory<P>
     fn read_path<'a>(
         &'a self,
         path: &'a str,
-        kind: crate::tool::ReadPathKind,
+        kind: acyclic_harness_core::tool::ReadPathKind,
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(
-        &'a crate::conversation::VolumeRef,
+        &'a acyclic_harness_core::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,
     )> {
         self.home.executor.read_path(path, kind, work)
@@ -272,7 +272,7 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
             (true, Some(name)) => name,
             (false, Some(name))
                 if name != self.home.record.name
-                    && !name.starts_with(crate::agent::USER_PREFIX) =>
+                    && !name.starts_with(acyclic_harness_core::agent::USER_PREFIX) =>
             {
                 name
             }
@@ -362,8 +362,8 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         &self,
         context: Option<&'a ToolContext>,
     ) -> Result<(
-        &'a crate::agent::AgentPath,
-        &'a [crate::agent::WorkspaceEntry],
+        &'a acyclic_harness_core::agent::AgentPath,
+        &'a [acyclic_harness_core::agent::WorkspaceEntry],
     )> {
         let (agent, volumes) = context.and_then(|context| context.agent()).ok_or_else(|| {
             Error::Unauthorized("device call has no original agent binding".into())
@@ -390,7 +390,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
             .map_err(|error| Error::Invalid(format!("shell input decode failed: {error}")))?;
         input.validate()?;
         let (agent, _) = self.agent(Some(context))?;
-        let call = super::records::call(agent, invocation.operation_id)?;
+        let call = crate::records::call(agent, invocation.operation_id)?;
         let mut request = FollowRequest::new(call.log().clone(), 0);
         if !reconcile {
             request.when_absent = WhenAbsent::Wait;
@@ -427,7 +427,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
             }
         };
         let mut ended: Option<acyclic_stream::FollowStream> = None;
-        let mut output = super::output::Output::new(context);
+        let mut output = crate::output::Output::new(context);
         let mut journal = Journal::new(call.log());
         loop {
             if closed_at.is_some_and(|tail| journal.next() >= tail) {
@@ -524,7 +524,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
                     }
                 }
                 Entry::Chunk(chunk) => {
-                    let (stderr, data) = super::records::chunk_output(&chunk)?;
+                    let (stderr, data) = crate::records::chunk_output(&chunk)?;
                     output
                         .append(context, record.sequence, stderr, data)
                         .await?;
@@ -540,7 +540,11 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         }
     }
 
-    async fn accepted_tail(&self, call: &CallPath, operation: crate::OperationId) -> Result<u64> {
+    async fn accepted_tail(
+        &self,
+        call: &CallPath,
+        operation: acyclic_harness_core::OperationId,
+    ) -> Result<u64> {
         match self.provider.head(call.log().clone()).await {
             Ok(head) => Ok(head.tail),
             Err(error) if error.category() == acyclic_stream::StreamCategory::NotFound => Ok(0),
@@ -556,7 +560,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
             }),
             Outcome::Error(reason) => Err(self.refusal(Refused::Declined(reason))),
             Outcome::Cancelled(_) => Err(Error::InteractionRejected(
-                crate::InteractionRejection::Cancelled,
+                acyclic_harness_core::InteractionRejection::Cancelled,
             )),
             Outcome::Indeterminate(_) => Err(Error::Indeterminate(invocation.operation_id)),
         }
@@ -573,7 +577,7 @@ fn protocol(error: acyclic_actors::call::Error) -> Error {
 async fn cancel_call<P: StreamProvider + ?Sized>(
     provider: &P,
     call: &CallPath,
-    operation: crate::OperationId,
+    operation: acyclic_harness_core::OperationId,
     reason: &str,
 ) -> Result<()> {
     let mut identity = blake3::Hasher::new();
@@ -585,7 +589,7 @@ async fn cancel_call<P: StreamProvider + ?Sized>(
     let request = call.cancel(reason).map_err(protocol)?.request(key);
     // Conflict means the original terminal already won. Uncertain publication
     // stays indeterminate; the original request identity is reused on recovery.
-    crate::executor::phase::claim(async {
+    acyclic_stream::requiring_durability(async {
         provider.commit(request).await.map_err(|error| {
             if error.uncertain() {
                 Error::Indeterminate(operation)
@@ -607,7 +611,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
     ) -> Result<Option<BoxProviderFuture<'static, Result<()>>>> {
         self.authorize(None, context, invocation, work)?;
         let (agent, _) = self.agent(context)?;
-        let call = super::records::call(agent, invocation.operation_id)?;
+        let call = crate::records::call(agent, invocation.operation_id)?;
         let provider = Arc::clone(&self.provider);
         let operation = invocation.operation_id;
         Ok(Some(Box::pin(async move {
@@ -624,7 +628,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
     ) -> Result<()> {
         if work.is_some() {
             return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
+                code: acyclic_harness_core::wire::ErrorCode::Unsupported,
                 reason: "device commands require ordinary task execution",
             });
         }
@@ -632,13 +636,12 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         let context = context.ok_or_else(|| {
             Error::Unauthorized("device shell has no task; bind its original tool context".into())
         })?;
-        if invocation.name != crate::tools::shell::PLATFORM.name
+        if invocation.name != acyclic_harness_core::tools::shell::PLATFORM.name
             || context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
-            || !context
-                .effective_scope()
-                .grants()
-                .contains(&crate::contract::capability::tool_call("shell"))
+            || !context.effective_scope().grants().contains(
+                &acyclic_harness_core::contract::capability::tool_call("shell"),
+            )
         {
             return Err(Error::Unauthorized(
                 "device shell differs from its task authority".into(),
@@ -647,7 +650,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         context.authorize_content_publication(
             &format!(
                 "{}/00000000000000000001-00000000000000000000-stdout.bin",
-                super::output::directory(invocation.operation_id)
+                crate::output::directory(invocation.operation_id)
             ),
             None,
             context.effective_scope(),
@@ -694,7 +697,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             return Err(self.refusal(Refused::Offline));
         };
         let (agent, volumes) = self.agent(Some(context))?;
-        let volume = crate::agent::WorkspaceTable::primary_in(volumes)
+        let volume = acyclic_harness_core::agent::WorkspaceTable::primary_in(volumes)
             .ok_or_else(|| {
                 Error::Unauthorized("device dispatch has no original project volume".into())
             })?
@@ -723,7 +726,9 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             .issue(
                 &self.grant.scope,
                 command.grant_id()?,
-                &Capabilities::new([crate::contract::capability::tool_call("shell")]),
+                &Capabilities::new([acyclic_harness_core::contract::capability::tool_call(
+                    "shell",
+                )]),
             )?
             .seal(&self.grant.verifier)?;
         let record = encode(&Run {
@@ -731,7 +736,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             command,
             grant,
         })?;
-        if super::records::handover_frame_len(record.len())? > acyclic_stream::MAX_RECORD_BYTES {
+        if crate::records::handover_frame_len(record.len())? > acyclic_stream::MAX_RECORD_BYTES {
             return Err(Error::Invalid(
                 "the command does not fit one device handover frame".into(),
             ));

@@ -256,7 +256,8 @@ impl MachinesWorkspace {
         })
     }
 
-    pub(crate) fn stop_result(stop: acyclic_machines::ExecStop) -> serde_json::Value {
+    /// The execution stop as the `stop` member of a `shell` result.
+    pub fn stop_result(stop: acyclic_machines::ExecStop) -> serde_json::Value {
         use acyclic_machines::ExecStopKind;
         let kind = match stop.kind {
             ExecStopKind::Timeout => "timeout",
@@ -270,7 +271,8 @@ impl MachinesWorkspace {
         })
     }
 
-    pub(crate) async fn shell_until(
+    /// Run a shell command under an optional output bound and task deadline.
+    pub async fn shell_until(
         &self,
         input: ShellInput,
         maximum_output: Option<u64>,

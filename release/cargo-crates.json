@@ -28,6 +28,7 @@
   "acyclic-model-render",
   "acyclic-mcp",
   "acyclic-harness-core",
+  "acyclic-harness-devices",
   "acyclic-harness-client",
   "acyclic-harness-metrics",
   "acyclic-harness-search",

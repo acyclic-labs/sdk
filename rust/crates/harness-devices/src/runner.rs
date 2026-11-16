@@ -1,21 +1,21 @@
 //! The device's side: one socket to its actor, over which it is handed the
 //! runs it executes and reports how each ended.
-use super::actor::target_actor;
-use super::records::{
+use crate::actor::target_actor;
+use crate::records::{
     DeviceMessage, HandoverRecord, MessageRecord, RECORD_VERSION, Run, RunCommand, TargetPaths,
     decode, encode,
 };
-use crate::{
+use acyclic_actors::{
+    guest::SocketPayload,
+    sockets::{SocketFrame, SocketOpen},
+};
+use acyclic_harness_core::{
     Error, OperationId, Result,
     agent::{AgentPath, TargetRecord},
     approvals::{ApprovalPolicy, ApprovalRule, Approver, RuleVerdict},
     core::AuthorityVerifier,
     interaction::ApprovalTarget,
     tools::ShellInput,
-};
-use acyclic_actors::{
-    guest::SocketPayload,
-    sockets::{SocketFrame, SocketOpen},
 };
 use acyclic_stream::{BoxProviderFuture, ProviderPlatform};
 use futures::{StreamExt as _, stream::FuturesUnordered};
@@ -50,7 +50,7 @@ impl DeviceLink for acyclic_stream::session::ActorSocket {
 /// local `shell` call uses.
 pub trait DeviceShell: ProviderPlatform {
     /// The exact selected volume retained by the original Machine admission.
-    fn selected_volume(&self) -> &crate::conversation::VolumeRef;
+    fn selected_volume(&self) -> &acyclic_harness_core::conversation::VolumeRef;
 
     /// Opens the original Machine output stream. Polling follows output credit;
     /// dropping it retains the Machine provider's cancellation and cleanup owner.
@@ -61,8 +61,8 @@ pub trait DeviceShell: ProviderPlatform {
     ) -> BoxProviderFuture<'_, Result<acyclic_machines::ExecStream>>;
 }
 
-impl DeviceShell for crate::machines::MachinesWorkspace {
-    fn selected_volume(&self) -> &crate::conversation::VolumeRef {
+impl DeviceShell for acyclic_harness_core::machines::MachinesWorkspace {
+    fn selected_volume(&self) -> &acyclic_harness_core::conversation::VolumeRef {
         Self::selected_volume(self)
     }
 
@@ -386,7 +386,7 @@ impl DeviceRunner {
                 Ok(ExecOutput::Stopped(stop)) if stop.cleanup_completed => {
                     return Ok(Some(DeviceMessage::Exit {
                         op,
-                        result: serde_json::json!({"success": false, "exit_code": null, "stop": crate::machines::MachinesWorkspace::stop_result(stop)}),
+                        result: serde_json::json!({"success": false, "exit_code": null, "stop": acyclic_harness_core::machines::MachinesWorkspace::stop_result(stop)}),
                     }));
                 }
                 Ok(ExecOutput::Stopped(stop)) => {
@@ -439,10 +439,9 @@ impl DeviceRunner {
             .expiry(&run.grant)
             .map_err(|error| format!("its grant did not verify: {error}"))?;
         if run.grant.id() != id
-            || !run
-                .grant
-                .capabilities()
-                .contains(&crate::contract::capability::tool_call("shell"))
+            || !run.grant.capabilities().contains(
+                &acyclic_harness_core::contract::capability::tool_call("shell"),
+            )
         {
             return Err("its grant does not authorize this command".into());
         }
@@ -465,7 +464,10 @@ impl DeviceRunner {
                 } => match ApprovalRule::evaluate_target(
                     rules,
                     *fallback,
-                    (crate::tools::shell::PLATFORM.name, &command.arguments),
+                    (
+                        acyclic_harness_core::tools::shell::PLATFORM.name,
+                        &command.arguments,
+                    ),
                     Some(&target),
                 ) {
                     RuleVerdict::Allow => return Ok(()),
@@ -498,7 +500,7 @@ async fn report_output(
     stderr: bool,
     data: &[u8],
 ) -> Result<()> {
-    for chunk in data.chunks(super::records::OUTPUT_CHUNK_BYTES) {
+    for chunk in data.chunks(crate::records::OUTPUT_CHUNK_BYTES) {
         reports
             .send((
                 agent.clone(),

@@ -1,12 +1,12 @@
 //! The v1 records of attached devices: presence, queued runs, and the
 //! executor and output chunks of their call journals.
-use crate::{
+use acyclic_actors::{addressing::ActorReference, call::CallPath};
+use acyclic_harness_core::{
     Error, OperationId, Result,
     agent::{AgentPath, TargetRecord},
     core::Scope,
     tools::ShellInput,
 };
-use acyclic_actors::{addressing::ActorReference, call::CallPath};
 use acyclic_stream::StreamPath;
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +16,7 @@ pub const RECORD_VERSION: u32 = 1;
 /// A JSON byte consumes at most four bytes, including its separator. Half the
 /// record remains available for report, socket and committed-event metadata.
 /// This partitions output; it never limits the command's total output.
-pub(super) const OUTPUT_CHUNK_BYTES: usize = acyclic_stream::MAX_RECORD_BYTES / 8;
+pub(crate) const OUTPUT_CHUNK_BYTES: usize = acyclic_stream::MAX_RECORD_BYTES / 8;
 
 /// Where the devices under one root keep their streams.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,7 +138,7 @@ pub struct RunCommand {
     /// Original agent whose grant admitted this call.
     pub agent: AgentPath,
     /// Original project selection, including a child's retained fork identity.
-    pub volume: crate::conversation::VolumeRef,
+    pub volume: acyclic_harness_core::conversation::VolumeRef,
     /// Digest of the original account/tree/device Actor reference.
     pub actor: [u8; 32],
     /// The device's name.
@@ -172,7 +172,7 @@ impl RunCommand {
     /// # Errors
     /// When the command does not encode.
     pub fn grant_id(&self) -> Result<String> {
-        let bytes = crate::contract::canonical_json_bytes(self)?;
+        let bytes = acyclic_harness_core::contract::canonical_json_bytes(self)?;
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.devices.run.v1");
         hasher.update(&bytes);
         Ok(format!("run:{}", hasher.finalize().to_hex()))
@@ -196,16 +196,16 @@ pub struct Run {
 /// the original Stream sequence, not a second device delivery counter.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct HandoverRecord<T = Run> {
-    pub(super) v: u32,
-    pub(super) sequence: u64,
-    pub(super) run: T,
+pub(crate) struct HandoverRecord<T = Run> {
+    pub(crate) v: u32,
+    pub(crate) sequence: u64,
+    pub(crate) run: T,
 }
 
 /// Admit the complete wire handover before publishing its Run. Its eventual
 /// queue sequence can use every decimal digit of u64. Serialize only the fixed
 /// envelope here; the already encoded Run is embedded unchanged by serde.
-pub(super) fn handover_frame_len(run_bytes: usize) -> Result<usize> {
+pub(crate) fn handover_frame_len(run_bytes: usize) -> Result<usize> {
     struct Length(usize);
     impl std::io::Write for Length {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -242,19 +242,19 @@ pub(super) fn handover_frame_len(run_bytes: usize) -> Result<usize> {
 /// executor of a device call (v1). Its fence is the session's end marker.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Executor {
-    pub(super) v: u32,
+pub(crate) struct Executor {
+    pub(crate) v: u32,
     /// The session it runs in.
-    pub(super) session: String,
+    pub(crate) session: String,
     /// The original host socket retained before physical handover.
-    pub(super) socket: String,
+    pub(crate) socket: String,
     /// Original Actor connection generation.
-    pub(super) generation: u64,
+    pub(crate) generation: u64,
 }
 
 /// One output chunk of a device call: the channel byte (`1` stdout, `2`
 /// stderr), then the exact channel bytes.
-pub(super) fn output_chunk(stderr: bool, data: &[u8]) -> acyclic_stream::OwnedBytes {
+pub(crate) fn output_chunk(stderr: bool, data: &[u8]) -> acyclic_stream::OwnedBytes {
     std::iter::once(if stderr { 2 } else { 1 })
         .chain(data.iter().copied())
         .collect()
@@ -313,19 +313,19 @@ pub enum DeviceMessage {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct MessageRecord {
-    pub(super) v: u32,
+pub(crate) struct MessageRecord {
+    pub(crate) v: u32,
     /// The agent whose call the report is about: the caller owning its journal.
-    pub(super) agent: AgentPath,
-    pub(super) message: DeviceMessage,
+    pub(crate) agent: AgentPath,
+    pub(crate) message: DeviceMessage,
 }
 
-pub(super) fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+pub(crate) fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
 /// Decodes a v1 record; any other version is refused whole.
-pub(super) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     #[derive(Deserialize)]
     struct Version {
         v: u32,
@@ -370,7 +370,7 @@ mod tests {
         assert!(handover_frame_len(usize::MAX).is_err());
 
         let op = OperationId::from_bytes([255; 16]);
-        let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16]));
+        let agent = AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([255; 16]));
         for stderr in [false, true] {
             let text = String::from_utf8(encode(&MessageRecord {
                 v: RECORD_VERSION,

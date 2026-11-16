@@ -8,13 +8,9 @@
 //! and never sent. Every acceptance is fenced by its session's end marker,
 //! committed with the offline presence, so one marker settles every
 //! unfinished run `indeterminate`; disconnect never enumerates them.
-use super::records::{
+use crate::records::{
     DeviceMessage, Executor, HandoverRecord, MessageRecord, RECORD_VERSION, Run, TargetPaths,
     TargetStatus, decode, encode,
-};
-use crate::{
-    Error, OperationId, Result,
-    agent::{AgentPath, TargetRecord, TargetState},
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -28,6 +24,10 @@ use acyclic_actors::{
     local::{Creation, PreparedPublish, Store, Subscription},
     sockets::socket_reply,
 };
+use acyclic_harness_core::{
+    Error, OperationId, Result,
+    agent::{AgentPath, TargetRecord, TargetState},
+};
 use acyclic_stream::{
     AppendRecord, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
     Record, StreamCategory, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
@@ -40,7 +40,7 @@ const INBOX: &str = "inbox";
 const QUEUE: &str = "queue";
 const HANDOVER: &str = "acyclic.harness.device.handover.v1";
 /// Longest session a device may open with.
-pub(super) const MAX_SESSION_BYTES: usize = 128;
+pub(crate) const MAX_SESSION_BYTES: usize = 128;
 
 fn codec() -> CodecIdentity {
     CodecIdentity {
@@ -167,7 +167,7 @@ impl State {
         let Ok(run) = decode::<Run>(&record.value) else {
             return Ok(());
         };
-        let call = super::records::call(&run.command.agent, run.command.op)?;
+        let call = crate::records::call(&run.command.agent, run.command.op)?;
         // Cancellation or an earlier delivery already decided a nonempty
         // journal. The acceptance guards also fence cancellation after this read.
         match provider.head(call.log().clone()).await {
@@ -214,12 +214,12 @@ impl State {
         }
         let (op, step) = match message {
             DeviceMessage::Output { op, stderr, data } => {
-                if data.is_empty() || data.len() > super::records::OUTPUT_CHUNK_BYTES {
+                if data.is_empty() || data.len() > crate::records::OUTPUT_CHUNK_BYTES {
                     return Err(Error::Invalid(
                         "device output exceeds its protective chunk".into(),
                     ));
                 }
-                (op, Ok(super::records::output_chunk(stderr, &data)))
+                (op, Ok(crate::records::output_chunk(stderr, &data)))
             }
             DeviceMessage::Lost { op, reason } => (op, Err(Outcome::Indeterminate(reason))),
             DeviceMessage::Exit { op, result } => (
@@ -255,7 +255,7 @@ impl State {
         agent: &AgentPath,
         op: OperationId,
     ) -> Result<Option<CallPath>> {
-        let call = super::records::call(agent, op)?;
+        let call = crate::records::call(agent, op)?;
         let last = match provider.head(call.log().clone()).await {
             Ok(head) => head.last,
             Err(error) if error.category() == StreamCategory::NotFound => return Ok(None),
@@ -484,7 +484,7 @@ impl Composer for TargetComposer {
                 })
                 .map(|run| {
                     let call =
-                        super::records::call(&run.command.agent, run.command.op).map_err(guest)?;
+                        crate::records::call(&run.command.agent, run.command.op).map_err(guest)?;
                     let acceptance = next.acceptance(&call).map_err(guest)?;
                     let text = String::from_utf8(
                         encode(&HandoverRecord {
@@ -618,7 +618,8 @@ pub async fn attach<P: StreamProvider + ?Sized>(
     paths: &TargetPaths,
     mut target: TargetRecord,
 ) -> Result<ActorReference> {
-    crate::agent::AgentRecord::check(&target).map_err(|error| Error::Invalid(error.to_string()))?;
+    acyclic_harness_core::agent::AgentRecord::check(&target)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     target.state = TargetState::Offline;
     let actor = target_actor(paths, &target.name)?;
     let state = State {

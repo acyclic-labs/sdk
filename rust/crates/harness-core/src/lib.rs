@@ -44,8 +44,6 @@ pub mod context;
 pub mod contract;
 pub mod conversation;
 pub mod core;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod devices;
 pub mod distributed;
 mod effects;
 pub mod evals;

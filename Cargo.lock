@@ -544,6 +544,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-harness-devices",
  "acyclic-harness-search",
  "acyclic-harness-tui",
  "acyclic-host-platform",
@@ -682,6 +683,7 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
+ "acyclic-harness-devices",
  "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-mcp",
@@ -762,6 +764,25 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "zeroize",
+]
+
+[[package]]
+name = "acyclic-harness-devices"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-harness-core",
+ "acyclic-machines",
+ "acyclic-stream",
+ "blake3",
+ "bytes",
+ "futures",
+ "hex",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

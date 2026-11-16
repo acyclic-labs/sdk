@@ -1154,7 +1154,7 @@ impl Error {
     }
 
     /// Preserve undecided or backpressured host work across the guest boundary.
-    pub(crate) fn guest(error: impl Into<Self>) -> acyclic_actors::guest::GuestError {
+    pub fn guest(error: impl Into<Self>) -> acyclic_actors::guest::GuestError {
         let error = error.into();
         let guest = if error.retains_guest_input() {
             acyclic_actors::guest::GuestError::Pending(error.to_string())

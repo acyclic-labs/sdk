@@ -129,6 +129,7 @@ rust_test(
         "//rust/crates/harness-client:tree",
         "//rust/crates/harness-conformance:tree",
         "//rust/crates/harness-core:tree",
+        "//rust/crates/harness-devices:tree",
         "//rust/crates/harness-fuzz:tree",
         "//rust/crates/harness-metrics:tree",
         "//rust/crates/harness-mock-model:tree",

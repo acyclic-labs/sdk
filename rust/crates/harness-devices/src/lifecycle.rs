@@ -1,6 +1,6 @@
 //! Archive releases the original grant, through the agent's closing participant.
-use super::DeviceGrant;
-use crate::{
+use crate::DeviceGrant;
+use acyclic_harness_core::{
     Error, Result,
     agent::{AgentLifecycle, AgentPath},
     core::AuthorityRoot,
@@ -9,7 +9,7 @@ use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
 
 /// One agent's original device grant and its existing resource lifecycle.
-/// Pass this same binding to [`crate::agent::AgentComposer`]. Closing revokes
+/// Pass this same binding to [`acyclic_harness_core::agent::AgentComposer`]. Closing revokes
 /// the parent grant of every queued or active device command before releasing
 /// Machines; pausing keeps the grant and delegates only resource suspension.
 pub struct DeviceLifecycle {
@@ -19,7 +19,7 @@ pub struct DeviceLifecycle {
 }
 
 impl DeviceLifecycle {
-    pub(super) fn new(
+    pub(crate) fn new(
         grant: Arc<DeviceGrant>,
         owner: AuthorityRoot,
         resources: Option<Arc<dyn AgentLifecycle>>,
@@ -37,11 +37,14 @@ impl DeviceLifecycle {
         })
     }
 
-    fn check(&self, agent: &AgentPath) -> std::result::Result<(), crate::agent::Error> {
+    fn check(
+        &self,
+        agent: &AgentPath,
+    ) -> std::result::Result<(), acyclic_harness_core::agent::Error> {
         if self.grant.scope.agent().map(|id| id.into_bytes()) != Some(agent.id_bytes()) {
-            return Err(crate::agent::Error::Turn(Box::new(Error::Unauthorized(
-                "device lifecycle belongs to another agent".into(),
-            ))));
+            return Err(acyclic_harness_core::agent::Error::Turn(Box::new(
+                Error::Unauthorized("device lifecycle belongs to another agent".into()),
+            )));
         }
         Ok(())
     }
@@ -51,7 +54,7 @@ impl AgentLifecycle for DeviceLifecycle {
     fn pause<'a>(
         &'a self,
         agent: &'a AgentPath,
-    ) -> BoxProviderFuture<'a, std::result::Result<(), crate::agent::Error>> {
+    ) -> BoxProviderFuture<'a, std::result::Result<(), acyclic_harness_core::agent::Error>> {
         Box::pin(async move {
             self.check(agent)?;
             if let Some(resources) = &self.resources {
@@ -64,12 +67,12 @@ impl AgentLifecycle for DeviceLifecycle {
     fn close<'a>(
         &'a self,
         agent: &'a AgentPath,
-    ) -> BoxProviderFuture<'a, std::result::Result<(), crate::agent::Error>> {
+    ) -> BoxProviderFuture<'a, std::result::Result<(), acyclic_harness_core::agent::Error>> {
         Box::pin(async move {
             self.check(agent)?;
             self.owner
                 .revoke_workload(&self.grant.scope)
-                .map_err(|error| crate::agent::Error::Turn(Box::new(error)))?;
+                .map_err(|error| acyclic_harness_core::agent::Error::Turn(Box::new(error)))?;
             if let Some(resources) = &self.resources {
                 resources.close(agent).await?;
             }

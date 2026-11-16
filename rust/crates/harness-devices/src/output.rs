@@ -1,15 +1,15 @@
 //! Exact output pages are ordinary immutable files in the caller's volume.
-use crate::{
+use acyclic_harness_core::{
     Error, OperationId, Result, conversation::VolumeRef, runtime::ToolContext, tool::ToolResult,
 };
 
-pub(super) fn directory(operation: OperationId) -> String {
+pub(crate) fn directory(operation: OperationId) -> String {
     format!("tools/{operation}/device")
 }
 
 /// A model preview is bounded by the original render allowance. The complete
 /// byte stream is retained in separately named files, never in this collector.
-pub(super) struct Output {
+pub(crate) struct Output {
     operation: OperationId,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
@@ -19,7 +19,7 @@ pub(super) struct Output {
 }
 
 impl Output {
-    pub(super) fn new(context: &ToolContext) -> Self {
+    pub(crate) fn new(context: &ToolContext) -> Self {
         Self {
             operation: context.operation_id(),
             stdout: Vec::new(),
@@ -30,14 +30,14 @@ impl Output {
         }
     }
 
-    pub(super) async fn append(
+    pub(crate) async fn append(
         &mut self,
         context: &ToolContext,
         sequence: u64,
         stderr: bool,
         data: &[u8],
     ) -> Result<()> {
-        if data.is_empty() || data.len() > super::records::OUTPUT_CHUNK_BYTES {
+        if data.is_empty() || data.len() > crate::records::OUTPUT_CHUNK_BYTES {
             return Err(Error::Invalid(
                 "device output exceeds its protective chunk".into(),
             ));
@@ -102,7 +102,7 @@ impl Output {
         Ok(())
     }
 
-    pub(super) fn finish(self, mut result: ToolResult) -> Result<ToolResult> {
+    pub(crate) fn finish(self, mut result: ToolResult) -> Result<ToolResult> {
         let fields = result
             .value
             .as_object_mut()
@@ -130,7 +130,7 @@ fn preview(bytes: Vec<u8>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
+    use acyclic_harness_core::{
         AgentId, Capabilities,
         conversation::{ContentAccess, Limits},
         filesystem::MemoryHarnessStorage,
@@ -214,21 +214,24 @@ mod tests {
         for (maximum, preview) in [(2048, "out".to_owned()), (1024, "o".repeat(4096))] {
             let mut candidate = result.clone();
             candidate.value["stdout"] = preview.clone().into();
-            let bounded = crate::tools::shell::bounded_result(candidate, maximum)?;
+            let bounded = acyclic_harness_core::tools::shell::bounded_result(candidate, maximum)?;
             let removed = preview.len() - bounded.value["stdout"].as_str().expect("stdout").len()
                 + 1
                 - bounded.value["stderr"].as_str().expect("stderr").len();
             assert_eq!(bounded.value["omitted_bytes"], (2 + removed) as u64);
             assert_eq!(bounded.value["truncated"], true);
-            let invocation = crate::tool::ToolInvocation {
+            let invocation = acyclic_harness_core::tool::ToolInvocation {
                 operation_id: operation,
                 call_id: "original-call".into(),
                 name: "shell".into(),
                 arguments: serde_json::json!({"command":"echo"}),
             };
-            use crate::tool::ToolProjection as _;
-            let (projected, _) =
-                crate::tools::shell::ShellProjection.project(&invocation, &bounded, None)?;
+            use acyclic_harness_core::tool::ToolProjection as _;
+            let (projected, _) = acyclic_harness_core::tools::shell::ShellProjection.project(
+                &invocation,
+                &bounded,
+                None,
+            )?;
             let encoded = serde_json::to_string(&projected)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             assert!(encoded.len() as u64 <= maximum);

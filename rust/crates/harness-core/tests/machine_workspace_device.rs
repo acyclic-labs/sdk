@@ -9,11 +9,11 @@ use acyclic_harness_core::{
     Capabilities, OperationId,
     agent::{AgentId, AgentLifecycle, AgentPath, TargetState},
     approvals::ApprovalPolicy,
-    devices::{
-        DeviceAuthority, DeviceGrant, DeviceRunner, Run, RunCommand, TargetActor, TargetComposer,
-        TargetPaths, TargetStatus, attach,
-    },
     runtime::{InProcessTargets, Target},
+};
+use acyclic_harness_devices::{
+    DeviceAuthority, DeviceGrant, DeviceRunner, Run, RunCommand, TargetActor, TargetComposer,
+    TargetPaths, TargetStatus, attach,
 };
 use acyclic_stream::{
     AppendRecord, CommitEffect, CommitMutation, CommitRequest, FollowRequest, FollowUpdate,
@@ -99,7 +99,7 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
         Arc::new(SystemClock),
     )
     .await?;
-    let directory = Arc::new(acyclic_harness_core::devices::TargetDirectory::new(
+    let directory = Arc::new(acyclic_harness_devices::TargetDirectory::new(
         Store::new(provider, StreamPath::new("harness/actors")?),
         Arc::new(sockets),
         TargetPaths::new(
@@ -262,9 +262,7 @@ async fn status(
 
 /// The call journal of device run `op` dispatched by `agent`.
 fn log(agent: &AgentPath, op: OperationId) -> Result<StreamPath> {
-    Ok(acyclic_harness_core::devices::call(agent, op)?
-        .log()
-        .clone())
+    Ok(acyclic_harness_devices::call(agent, op)?.log().clone())
 }
 
 /// One call journal record in the device run's event shape.
@@ -276,7 +274,7 @@ fn journal_event(record: &acyclic_stream::Record) -> Result<serde_json::Value> {
         }
         Entry::Accepted(_) => serde_json::json!({"started": {}}),
         Entry::Chunk(chunk) => {
-            let (stderr, data) = acyclic_harness_core::devices::chunk_output(&chunk)?;
+            let (stderr, data) = acyclic_harness_devices::chunk_output(&chunk)?;
             serde_json::json!({"output": {"stderr": stderr, "data": data}})
         }
         Entry::Terminal(Outcome::Ok(result)) => serde_json::json!({
@@ -396,7 +394,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             .await;
         let _sent = runtime_failures.send(format!("original Actor runtime ended: {outcome:?}"));
     }));
-    let directory = Arc::new(acyclic_harness_core::devices::TargetDirectory::new(
+    let directory = Arc::new(acyclic_harness_devices::TargetDirectory::new(
         Store::new(provider.clone(), StreamPath::new("harness/actors")?),
         Arc::new(sockets.clone()),
         paths.clone(),
@@ -825,7 +823,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                     break record;
                 }
             };
-            let call = acyclic_harness_core::devices::call(&run.agent, op)?;
+            let call = acyclic_harness_devices::call(&run.agent, op)?;
             let mut accepted = provider
                 .follow(FollowRequest::new(call.log().clone(), 0))
                 .await?;
@@ -943,7 +941,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             // accepting it or starting another process.
             let mut cancelled = run.clone();
             cancelled.op = OperationId::new();
-            let cancelled_call = acyclic_harness_core::devices::call(&run.agent, cancelled.op)?;
+            let cancelled_call = acyclic_harness_devices::call(&run.agent, cancelled.op)?;
             let invocation = acyclic_harness_core::tool::ToolInvocation {
                 operation_id: cancelled.op,
                 call_id: cancelled.call_id.clone(),
@@ -990,7 +988,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                 format!("exec 3<>/dev/tcp/127.0.0.1/{port}; printf out; IFS= read -r permit <&3; exit 0")
             }.into();
             let cancelled_after_acceptance =
-                acyclic_harness_core::devices::call(&run.agent, active_cancel.op)?;
+                acyclic_harness_devices::call(&run.agent, active_cancel.op)?;
             let invocation = acyclic_harness_core::tool::ToolInvocation {
                 operation_id: active_cancel.op,
                 call_id: active_cancel.call_id.clone(),
@@ -1290,7 +1288,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                 assert!(
                     matches!(recovered, Err(acyclic_harness_core::Error::Indeterminate(id)) if id == operation)
                 );
-                let call = acyclic_harness_core::devices::call(&run.agent, operation)?;
+                let call = acyclic_harness_devices::call(&run.agent, operation)?;
                 let head = provider.head(call.log().clone()).await?;
                 let terminal = head.last.ok_or("accepted loss has no durable terminal")?;
                 assert!(matches!(
