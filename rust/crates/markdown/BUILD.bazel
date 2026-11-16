@@ -106,77 +106,22 @@ isolated_test(
 )
 
 rust_test(
-    name = "streaming_cases",
-    crate_root = "tests/streaming.rs",
+    name = "main_cases",
+    crate_root = "tests/main.rs",
     srcs = [
+        "tests/main.rs",
         "tests/streaming.rs",
+        "tests/streaming_properties.rs",
+        "tests/support/streaming_input.rs",
     ],
     compile_data = [
+        "//rust/crates/markdown/fuzz:corpus/streaming/control-delimiter-context",
         "tests/fixtures/grammar.md",
         "tests/fixtures/grammar.txt",
         "tests/fixtures/literals.md",
         "tests/fixtures/literals.txt",
         "tests/fixtures/selection.md",
         "tests/fixtures/selection.txt",
-    ],
-    edition = "2024",
-    version = "0.2.0",
-    crate_features = FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values())",
-        "--check-cfg=cfg(fuzzing)",
-        "--check-cfg=cfg(loom)",
-        "--check-cfg=cfg(kani)",
-        "--check-cfg=cfg(tokio_unstable)",
-    ],
-    lint_config = ":lints",
-    deps = [
-        ":acyclic_markdown",
-    ] + [
-        "//rust/crates/markdown-work:acyclic_markdown_work",
-        "//rust/crates/test-support:acyclic_test_support",
-        "//rust/vendor/syntect-5.3.0:syntect",
-        "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//pulldown-cmark-0.13.6",
-        "@sdk_crates//unicase-2.10.0",
-        "@sdk_crates//unicode-segmentation-1.13.3",
-        "@sdk_crates//unicode-width-0.2.2",
-    ],
-    data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
-)
-
-isolated_test(
-    name = "streaming",
-    binary = ":streaming_cases",
-    id = "acyclic-markdown::streaming",
-    exclude = ["::full_cloud::"],
-    limit_seconds = 10,
-)
-
-isolated_test(
-    name = "streaming_full-cloud",
-    binary = ":streaming_cases",
-    binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-markdown::streaming",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual"],
-)
-
-rust_test(
-    name = "streaming_properties_cases",
-    crate_root = "tests/streaming_properties.rs",
-    srcs = [
-        "tests/streaming_properties.rs",
-        "tests/support/streaming_input.rs",
-    ],
-    compile_data = [
-        "//rust/crates/markdown/fuzz:corpus/streaming/control-delimiter-context",
     ],
     edition = "2024",
     version = "0.2.0",
@@ -211,18 +156,18 @@ rust_test(
 )
 
 isolated_test(
-    name = "streaming_properties",
-    binary = ":streaming_properties_cases",
-    id = "acyclic-markdown::streaming_properties",
+    name = "main",
+    binary = ":main_cases",
+    id = "acyclic-markdown::main",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
 )
 
 isolated_test(
-    name = "streaming_properties_full-cloud",
-    binary = ":streaming_properties_cases",
+    name = "main_full-cloud",
+    binary = ":main_cases",
     binaries = {"@nodejs//:node":"node"},
-    id = "acyclic-markdown::streaming_properties",
+    id = "acyclic-markdown::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],

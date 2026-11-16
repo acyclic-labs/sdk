@@ -456,6 +456,7 @@ mod status_flags;
 #[cfg(unix)]
 #[test]
 fn controlling_tty_probe_and_os_state_restore() -> Result<(), Box<dyn std::error::Error>> {
+    let _terminal = crate::terminal_owner();
     use rustix::fs::OFlags;
     use rustix::termios::{LocalModes, tcgetattr};
     use status_flags::settable_status_flags;

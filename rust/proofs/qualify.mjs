@@ -271,9 +271,9 @@ const claims = {
   ],
   "terminal-drain-stop": [
     "rust/crates/harness-tui/tests/terminal_frames.rs", "acyclic-harness-tui",
-    "terminal_drain_cancellation_does_not_require_slave_closure",
+    "terminal_frames::terminal_drain_cancellation_does_not_require_slave_closure",
     "a retained PTY slave must not keep a cancelled drainer waiting", [],
-    { target: ["--test", "terminal_frames"] },
+    { target: ["--test", "main"] },
   ],
   "native-usage-counters": [
     "rust/crates/harness-core/src/executor/model_usage.rs", "acyclic-harness-core",

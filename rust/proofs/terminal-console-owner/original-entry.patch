@@ -1,11 +1,11 @@
-diff --git b/rust/crates/harness-tui/tests/terminal_frames.rs a/rust/crates/harness-tui/tests/terminal_frames.rs
-index cc002eb8260..113508d142d 100644
---- b/rust/crates/harness-tui/tests/terminal_frames.rs
-+++ a/rust/crates/harness-tui/tests/terminal_frames.rs
-@@ -454,41 +454,6 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
+diff --git a/rust/crates/harness-tui/tests/terminal_frames.rs b/rust/crates/harness-tui/tests/terminal_frames.rs
+--- a/rust/crates/harness-tui/tests/terminal_frames.rs
++++ b/rust/crates/harness-tui/tests/terminal_frames.rs
+@@ -531,52 +531,6 @@
  fn real_terminal_frame_cost() -> io::Result<()> {
+     let _terminal = crate::terminal_owner();
      use std::fmt::Write as _;
- 
+-
 -    #[cfg(windows)]
 -    if std::env::var_os("ACYCLIC_TERMINAL_REGION_REPORT").is_none() {
 -        // Ordinary test processes have no console. The existing host owns the
@@ -19,8 +19,19 @@ index cc002eb8260..113508d142d 100644
 -                &script,
 -                include_str!("../../../../scripts/test-terminal-signals.ps1"),
 -            )?;
--            let status = std::process::Command::new("pwsh")
--                .args(["-NoProfile", "-File"])
+-            // Windows ships this host; PowerShell 7 is an optional install.
+-            // Resolve the inbox executable independently of the caller's PATH.
+-            let system = std::env::var_os("SystemRoot").ok_or(io::ErrorKind::NotFound)?;
+-            let powershell = std::path::Path::new(&system)
+-                .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+-            let status = std::process::Command::new(powershell)
+-                .args([
+-                    "-NoProfile",
+-                    "-NonInteractive",
+-                    "-ExecutionPolicy",
+-                    "Bypass",
+-                    "-File",
+-                ])
 -                .arg(script)
 -                .arg("-Binary")
 -                .arg(std::env::current_exe()?)
@@ -35,12 +46,11 @@ index cc002eb8260..113508d142d 100644
 -            io::Error::new(
 -                error.kind(),
 -                format!(
--                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --features tui --test terminal_frames -E 'test(=real_terminal_frame_cost)'"
+-                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --test main -E 'test(=terminal_frames::real_terminal_frame_cost)'"
 -                ),
 -            )
 -        });
 -    }
--
+ 
      const FRAMES: usize = 2;
      let mut report = String::new();
-     let (mut output, _guard) = real_terminal()?;
