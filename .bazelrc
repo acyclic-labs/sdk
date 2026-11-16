@@ -33,3 +33,7 @@ build:check --aspects=@rules_rust//rust:defs.bzl%rust_check_aspect --output_grou
 # ("Operation not permitted"). Tests on macOS therefore run outside it, as under Cargo.
 common --enable_platform_specific_config
 test:macos --strategy=TestRunner=local
+# `--config=fmt` checks every crate's Rust sources with the toolchain's pinned rustfmt. The aspect
+# passes each crate's own edition, so a crate formats as `cargo fmt` would, and Bazel caches each
+# crate's check until one of its sources changes.
+build:fmt --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect --output_groups=+rustfmt_checks
