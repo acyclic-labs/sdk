@@ -57,7 +57,9 @@ export async function bundleHarnessActor(configFile, outputDirectory) {
     const env = Object.fromEntries(Object.values(HARNESS_BINDINGS).filter(name => name !== HARNESS_BINDINGS.authority)
       .map(name => [name, {}]));
     const refused = await guest.manifest({ env }).then(() => null, error => error);
-    if (refused?.code !== "failed_precondition" || refused.subject !== HARNESS_BINDINGS.authority) {
+    // An absent binding is the typed guest failure the host commits as
+    // DependencyUnavailable, naming the binding (#4096).
+    if (refused?.type !== "dependencyUnavailable" || refused.detail?.dependency !== HARNESS_BINDINGS.authority) {
       throw new Error(`STEP conformance failed: ${refused?.stack ?? "manifest admitted an unbound environment"}; recovery: bun scripts/build-harness-actor.mjs`);
     }
   } finally {
