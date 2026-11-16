@@ -3,7 +3,7 @@
 //! real turn, then checks the TUI, inspect, JSON and recovery readers.
 use super::*;
 use acyclic_harness::{
-    agent::{AgentRecord as _, Phase, StatusRecord},
+    agent::{AgentRecord as _, StatusRecord},
     executor::{ContextUsage, ModelUsageTotals, TurnOutput},
     local::agent_conversation::Conversation,
     model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent},
@@ -80,19 +80,20 @@ struct Emitted {
 
 fn json_round_trip<T>(value: &T) -> std::result::Result<(), String>
 where
-    T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
+    T: Serialize + DeserializeOwned,
 {
     let bytes = serde_json::to_vec(value).map_err(oracle::failed)?;
     let restored: T = serde_json::from_slice(&bytes).map_err(oracle::failed)?;
-    if restored != *value {
-        return Err(format!("JSON codec lost {value:?}"));
+    let again = serde_json::to_vec(&restored).map_err(oracle::failed)?;
+    if again != bytes {
+        return Err("JSON codec did not round-trip its writer's value".into());
     }
     Ok(())
 }
 
 fn recovery_round_trip<T>(value: &T) -> std::result::Result<(), String>
 where
-    T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
+    T: Serialize + DeserializeOwned,
 {
     // The durable record path is the same canonical JSON codec the journal
     // stages; a reader that reopens the record must see the writer's value.
