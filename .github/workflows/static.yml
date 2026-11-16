@@ -31,6 +31,10 @@ jobs:
           RUSTUP_TOOLCHAIN: stable
       - name: Check that the Bazel files match the Cargo manifests
         run: node scripts/bazel-build-files.mjs check
+      # --locked admits a lockfile Cargo would still rewrite, and any unlocked
+      # resolution (the WASM build's cargo clean) then edits the source tree.
+      - name: Check that Cargo.lock is in Cargo's own form
+        run: cargo metadata --format-version 1 >/dev/null && git diff --exit-code -- Cargo.lock
       # Vendored crates keep their upstream bytes.
       - name: Check that the whole tree has no whitespace errors
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents' ':!rust/vendor'
