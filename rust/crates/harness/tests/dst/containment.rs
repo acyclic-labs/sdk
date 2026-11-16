@@ -60,17 +60,26 @@ fn run(seed: u64) -> std::result::Result<(), String> {
 }
 
 fn origin(seed: u64) -> &'static str {
-    ORIGINS
-        .get(usize::try_from(seed % ORIGINS.len() as u64).unwrap_or(0))
-        .copied()
-        .unwrap_or("tool_error")
+    match seed % 10 {
+        0 => "tool_error",
+        1 => "rate_limit",
+        2 => "transport",
+        3 => "protective_bound",
+        4 => "internal_error",
+        5 => "custody_conflict",
+        6 => "malformed_output",
+        7 => "subscription_end",
+        8 => "child_settles_during_turn",
+        _ => "interaction_cancelled",
+    }
 }
 
 fn location(seed: u64) -> &'static str {
-    LOCATIONS
-        .get(usize::try_from((seed / ORIGINS.len() as u64) % LOCATIONS.len() as u64).unwrap_or(0))
-        .copied()
-        .unwrap_or("root")
+    match (seed / 10) % 3 {
+        0 => "root",
+        1 => "child",
+        _ => "grandchild",
+    }
 }
 
 fn variants(seed: u64) -> Vec<Variant> {
@@ -132,7 +141,7 @@ fn fault_plan(origin: &str, tag: &'static str) -> Plan {
                 "write",
                 json!({
                     "path": "bound.txt",
-                    "content": "x".repeat((FILE_BYTES as usize) * 2),
+                    "content": "x".repeat(128 * 1024),
                     "ifVersion": "absent",
                 }),
             )]],
