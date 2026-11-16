@@ -136,6 +136,10 @@ fn every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations() -> Te
             mutations: Vec::new(),
         };
         let mut probes = 0;
+        state
+            .retained
+            .reserve_unfunded()
+            .ok_or(StreamError::Capacity)?;
         retain(
             &mut state,
             &mut |items| probes += items,

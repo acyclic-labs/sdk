@@ -422,92 +422,62 @@ impl MemoryStream {
         })
     }
 
+    /// Funds every segment the next ordinal of each pending reservation needs.
+    /// Pending segments are shared, so concurrent reservations fund each once.
     fn reserve_retained_growth(
         &self,
         state: &State,
-    ) -> Result<Option<RetainedGrowthReservation>, StreamError> {
+    ) -> Result<Option<Arc<RetainedGrowth>>, StreamError> {
         let needed = state
             .retained
             .len()
             .checked_add(reserved(state).0)
             .and_then(|len| len.checked_add(1))
             .ok_or(StreamError::Capacity)?;
-        if needed > state.retained.capacity() {
-            let capacity = needed
-                .checked_next_power_of_two()
-                .ok_or(StreamError::Capacity)?;
-            let pending = state
+        if needed <= state.retained.capacity() {
+            return Ok(None);
+        }
+        let (top, _) = retained_slot(needed - 1);
+        let pending = state
+            .retained_growth
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .upgrade();
+        if let Some(pending) = pending.as_ref().filter(|pending| pending.segment >= top) {
+            return Ok(Some(Arc::clone(pending)));
+        }
+        let first = pending
+            .as_ref()
+            .map_or(0, |pending| pending.segment + 1)
+            .max(state.retained.next_segment());
+        let mut below = pending;
+        for segment in first..=top {
+            let (entries, allocation) = self.vector(1 << segment)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let header =
+                self.allocate(acyclic_native_runtime::arc_allocation_bytes::<RetainedGrowth>())?;
+            #[cfg(target_arch = "wasm32")]
+            let header = None;
+            below = Some(Arc::new(RetainedGrowth {
+                segment,
+                buffer: crate::query_sync::SyncMutex::new(Some(RetainedSegment {
+                    entries,
+                    _allocation: allocation,
+                })),
+                below,
+                pool: Arc::downgrade(&state.retained_growth),
+                _allocation: header,
+            }));
+        }
+        if let Some(growth) = &below {
+            *state
                 .retained_growth
                 .0
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .upgrade();
-            let growth = match pending {
-                Some(pending)
-                    if pending
-                        .buffer
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .as_ref()
-                        .is_some_and(|(buffer, _)| buffer.capacity() >= capacity) =>
-                {
-                    pending
-                }
-                _ => {
-                    let (buffer, allocation) = self.vector(capacity)?;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let header = self.allocate(acyclic_native_runtime::arc_allocation_bytes::<
-                        RetainedGrowth,
-                    >())?;
-                    #[cfg(target_arch = "wasm32")]
-                    let header = None;
-                    let growth = Arc::new(RetainedGrowth {
-                        buffer: crate::query_sync::SyncMutex::new(Some((buffer, allocation))),
-                        pool: Arc::downgrade(&state.retained_growth),
-                        _allocation: header,
-                    });
-                    *state
-                        .retained_growth
-                        .0
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Arc::downgrade(&growth);
-                    growth
-                }
-            };
-            #[cfg(not(target_arch = "wasm32"))]
-            let copied = growth
-                .buffer
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .ok_or(StreamError::Capacity)?
-                .0
-                .capacity()
-                .checked_sub(1)
-                .and_then(|count| count.checked_mul(std::mem::size_of::<Retained>()))
-                .ok_or(StreamError::Capacity)? as u64;
-            #[cfg(not(target_arch = "wasm32"))]
-            let codec = self
-                .work
-                .as_ref()
-                .map(|work| {
-                    work.record(acyclic_native_runtime::NativeCodecReservation::new(
-                        Arc::clone(&work.meter),
-                        acyclic_native_runtime::NativeCodecWork {
-                            copied,
-                            ..Default::default()
-                        },
-                    ))
-                })
-                .transpose()?;
-            return Ok(Some(RetainedGrowthReservation {
-                growth,
-                #[cfg(not(target_arch = "wasm32"))]
-                codec,
-            }));
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::downgrade(growth);
         }
-        Ok(None)
+        Ok(below)
     }
 
     /// Plans the `applied` mutations of a settled commit, in canonical order.
@@ -613,6 +583,10 @@ impl MemoryStream {
             #[cfg(all(loom, not(target_arch = "wasm32")))]
             if crate::verification::fault_is(crate::verification::Fault::RetainConflictKey) {
                 admit_replay(state, self.limits)?;
+                state
+                    .retained
+                    .reserve_unfunded()
+                    .ok_or(StreamError::Capacity)?;
                 retain(
                     state,
                     &mut |items| self.record_replay_probe(&mut probes, items),

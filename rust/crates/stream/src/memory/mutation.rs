@@ -136,8 +136,7 @@ fn retain(
         }
         let keyed = entry.replay.is_some();
         let committed = entry.envelope().is_some();
-        let index = state.retained.len();
-        state.retained.push(entry);
+        let index = state.retained.push(entry);
         if committed {
             state.insert_commit(index, probe);
         }

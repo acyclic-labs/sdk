@@ -315,7 +315,7 @@ fn reconstruct(
     let inventory = std::mem::take(&mut state.retained);
     state.decision = 0;
     let builder = MemoryStream::default();
-    for retained in &inventory {
+    for retained in inventory.iter() {
         let Some(envelope) = retained.envelope() else {
             retained
                 .namespace
@@ -471,6 +471,7 @@ fn restore_retained(
     if envelope.is_some() || matches!(result, crate::IdempotencyOutcome::Commit(_)) {
         state.decision = state.decision.checked_add(1)?;
     }
+    state.retained.reserve_unfunded()?;
     retain(
         state,
         &mut |_| {},
