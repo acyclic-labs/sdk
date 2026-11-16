@@ -271,7 +271,7 @@ async fn waits_resume_on_the_original_platform_clock(mode: Mode) -> Result<()> {
     let start = acyclic_stream::UnixMillisClock::now_unix_millis(
         &acyclic_stream::SystemUnixMillisClock,
     )
-    .saturating_add(60_000);
+    .saturating_add(1_000);
     let (clock, mut control) = acyclic_actors::local::ControlledClock::new(start);
     let provider = Arc::new(
         ScriptedModelProvider::new([
