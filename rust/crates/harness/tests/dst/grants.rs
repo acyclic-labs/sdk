@@ -539,9 +539,8 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 _ => {
                     let custody_dir = directory.path().join("signing");
                     let signing = SigningCustody::PrivateFile(&custody_dir);
-                    let reference = SigningKeyReference::create(signing)
-                        .map_err(oracle::failed)?
-                        .reference();
+                    let provisional = SigningKeyReference::create(signing).map_err(oracle::failed)?;
+                    let reference = provisional.reference();
                     let seed_key = reference
                         .with_seed(signing, |seed| *seed)
                         .map_err(oracle::failed)?;
