@@ -486,16 +486,11 @@ impl LocalHarness {
                     return Err(Error::Unauthorized("this admission serves one tree".into()));
                 }
                 bound
-                    .session_credential(
-                        selected,
-                        server.resource(),
-                        &server.session_resource(),
-                        Arc::clone(&self.clock),
-                    )
+                    .session_credential(selected, server.resource(), &server.session_resource())
                     .await
             } else {
                 bound
-                    .client_credential(server.root(), server.resource(), Arc::clone(&self.clock))
+                    .client_credential(server.root(), server.resource())
                     .await
             }
             .map_err(storage)?;

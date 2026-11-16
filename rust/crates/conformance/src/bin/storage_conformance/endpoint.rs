@@ -222,13 +222,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
         };
         let runtime = Runtime::start(server.clone());
         let completion = runtime.completion();
-        let host = Hosted::new(
-            server,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
-            runtime,
-            None,
-        )
-        .with_completion(completion);
+        let host = Hosted::new(server, runtime, None).with_completion(completion);
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         let (advertise, advertised) = tokio::sync::oneshot::channel();
         let (stop, stopped) = tokio::sync::oneshot::channel();
