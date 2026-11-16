@@ -141,11 +141,16 @@ fn plans(class: &'static str) -> Vec<Plan> {
     }]
 }
 
+struct Replay {
+    digest: blake3::Hash,
+    trace: serde_json::Value,
+}
+
 async fn trace(
     seed: u64,
     class: &'static str,
     erase_entropy: bool,
-) -> std::result::Result<blake3::Hash, String> {
+) -> std::result::Result<Replay, String> {
     let mut world = if erase_entropy {
         World::without_entropy(seed, &FILES, service(plans(class)))
     } else {
@@ -157,13 +162,62 @@ async fn trace(
         .incarnation(None, &prompts)
         .await
         .map_err(failed)?;
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(format!("{:?}", incarnation.prompts).as_bytes());
-    serde_json::to_writer(&mut bytes, &incarnation.requests).map_err(failed)?;
-    serde_json::to_writer(&mut bytes, &incarnation.dispatched_at).map_err(failed)?;
-    serde_json::to_writer(&mut bytes, &incarnation.durable).map_err(failed)?;
-    bytes.extend_from_slice(format!("{:?}", incarnation.crashed).as_bytes());
-    Ok(blake3::hash(&bytes))
+    // Every replayed input stays in the digest. The explicit record tree only
+    // makes the first differing field nameable when two runs disagree.
+    let trace = serde_json::json!({
+        "prompts": format!("{:?}", incarnation.prompts),
+        "requests": serde_json::to_value(&incarnation.requests).map_err(failed)?,
+        "dispatched_at": incarnation.dispatched_at,
+        "durable": incarnation.durable,
+        "crashed": format!("{:?}", incarnation.crashed),
+    });
+    let digest = blake3::hash(&serde_json::to_vec(&trace).map_err(failed)?);
+    Ok(Replay { digest, trace })
+}
+
+fn short(value: &serde_json::Value) -> String {
+    let text = value.to_string();
+    let mut shown: String = text.chars().take(240).collect();
+    if shown.len() < text.len() {
+        shown.push('…');
+    }
+    shown
+}
+
+fn first_difference(left: &serde_json::Value, right: &serde_json::Value) -> String {
+    fn walk(path: &str, left: &serde_json::Value, right: &serde_json::Value) -> String {
+        match (left, right) {
+            (serde_json::Value::Object(left), serde_json::Value::Object(right)) => {
+                let keys = left.keys().chain(right.keys()).collect::<std::collections::BTreeSet<_>>();
+                for key in keys {
+                    let path = format!("{path}.{key}");
+                    match (left.get(key), right.get(key)) {
+                        (Some(left), Some(right)) if left != right => {
+                            return walk(&path, left, right);
+                        }
+                        (Some(left), None) => {
+                            return format!("{path}: {} != <missing>", short(left));
+                        }
+                        (None, Some(right)) => {
+                            return format!("{path}: <missing> != {}", short(right));
+                        }
+                        _ => {}
+                    }
+                }
+                format!("{path}: objects differ")
+            }
+            (serde_json::Value::Array(left), serde_json::Value::Array(right)) => {
+                for (index, (left, right)) in left.iter().zip(right).enumerate() {
+                    if left != right {
+                        return walk(&format!("{path}[{index}]"), left, right);
+                    }
+                }
+                format!("{path}.len: {} != {}", left.len(), right.len())
+            }
+            _ => format!("{path}: {} != {}", short(left), short(right)),
+        }
+    }
+    walk("trace", left, right)
 }
 
 fn world(seed: u64) -> std::result::Result<bool, String> {
@@ -175,18 +229,21 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
         entry(async move {
             let first = trace(seed, class, false).await?;
             let second = trace(seed, class, false).await?;
-            if first != second {
+            if first.digest != second.digest {
                 return Err(format!(
-                    "X1 {class} seed {seed} diverged in-process: {first} != {second}"
+                    "X1 {class} seed {seed} diverged in-process at {}: {} != {}",
+                    first_difference(&first.trace, &second.trace),
+                    first.digest,
+                    second.digest,
                 ));
             }
             let erased = trace(seed, class, true).await?;
-            if first == erased {
+            if first.digest == erased.digest {
                 return Err(format!(
                     "X1 {class} seed {seed} entropy erasure did not change the trace"
                 ));
             }
-            println!("DST_X1_DIGEST={class} {first}");
+            println!("DST_X1_DIGEST={class} {}", first.digest);
             Ok(true)
         })
     })
