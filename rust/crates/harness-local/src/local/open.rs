@@ -538,6 +538,11 @@ impl Opening {
             native_mounts: self.native_mounts(),
             mounting: self.config.workspace_mounting,
             native_mount_probe: &self.config.native_mount_probe,
+            source_entropy: self
+                .config
+                .source_entropy
+                .clone()
+                .unwrap_or_else(acyclic_fs::demand::native::os_source_entropy),
             authority: Some((issuer, owner.agent)),
         };
         let workspace = match &self.config.project {

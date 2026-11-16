@@ -365,6 +365,14 @@ impl World {
             });
             let schedule = driver.schedule.clone();
             let counter = schedule.clone();
+            let source_entropy = {
+                let schedule = schedule.clone();
+                Arc::new(move || {
+                    let mut bytes = [0; 16];
+                    schedule.fill_entropy(&mut bytes);
+                    bytes
+                })
+            };
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));
             let observed = Arc::clone(&dispatched_at);
             let provider = Arc::new(self.service.reopened().with_dispatch_observer(move |_| {
@@ -387,6 +395,7 @@ impl World {
                     )?
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
+                    .source_entropy(source_entropy)
                     .state_directory(directory.join("state"));
                     let harness = Arc::new(entry(LocalHarness::open(config)).await?);
                     for group in prompts {
