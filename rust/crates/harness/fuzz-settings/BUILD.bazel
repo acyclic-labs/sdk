@@ -15,7 +15,11 @@ extract_cargo_lints(
 rust_binary(
     name = "workspace_key",
     crate_root = "fuzz_targets/workspace_key.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "//rust/crates/harness-native-settings:src/tests.rs",
+        "//rust/crates/harness-native-settings:src/workspace.rs",
+        "//rust/crates/harness-native-settings:src/workspace/tests.rs",
+    ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
     version = "0.0.0",
