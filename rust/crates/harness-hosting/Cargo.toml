@@ -17,6 +17,9 @@ acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+async-stream = "=0.3.6"
+base64 = "=0.23.1"
+blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
 prost.workspace = true

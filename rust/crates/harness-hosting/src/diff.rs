@@ -7,4 +7,4 @@ pub use acyclic_harness_client::DIFF_FILE_BYTES;
 
 mod source;
 pub use source::DiffSource;
-pub(in crate::) use source::frame;
+pub(crate) use source::frame;

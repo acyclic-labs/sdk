@@ -141,7 +141,7 @@ fn json_frame(
     Ok(body.into())
 }
 
-pub(in crate::) fn frame(
+pub(crate) fn frame(
     kind: u8,
     mut body: Vec<u8>,
     page: &AgentPageRequest,
