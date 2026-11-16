@@ -505,7 +505,7 @@ fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
                 }
                 recovered
             } else {
-                let mut incarnation = world
+                let incarnation = world
                     .incarnation(None, &[vec![root.clone()]])
                     .await
                     .map_err(oracle::failed)?;

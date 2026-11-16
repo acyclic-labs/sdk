@@ -279,6 +279,7 @@ impl World {
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
             let directory = self.directory.path();
+            let compaction = self.compaction.clone();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
@@ -291,7 +292,7 @@ impl World {
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
                     .state_directory(directory.join("state"));
-                    if let Some(policy) = &self.compaction {
+                    if let Some(policy) = &compaction {
                         config = config.compaction(policy.clone());
                     }
                     let harness = Arc::new(entry(LocalHarness::open(config)).await?);
