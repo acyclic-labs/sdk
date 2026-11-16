@@ -52,7 +52,9 @@ rust_library(
         ":build_script",
     ] + [
         "//rust/crates/differential:acyclic_differential",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//tokio-1.54.1",
+        "@crates//tracing-0.1.44",
+        "@crates//tracing-subscriber-0.3.23",
     ],
     visibility = ["//visibility:public"],
 )
@@ -69,9 +71,9 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
-        "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//tempfile-3.27.0",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//proptest-1.12.0",
+        "@crates//tempfile-3.27.0",
+        "@crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -81,19 +83,7 @@ isolated_test(
     name = "acyclic_test_support_test",
     binary = ":acyclic_test_support_test_cases",
     id = "acyclic-test-support",
-    exclude = ["::full_cloud::"],
     limit_seconds = 10,
-)
-
-isolated_test(
-    name = "acyclic_test_support_test_full-cloud",
-    binary = ":acyclic_test_support_test_cases",
-    id = "acyclic-test-support",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual"],
 )
 
 rust_test(
@@ -115,9 +105,11 @@ rust_test(
         ":build_script",
     ] + [
         "//rust/crates/differential:acyclic_differential",
-        "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//tempfile-3.27.0",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//proptest-1.12.0",
+        "@crates//tempfile-3.27.0",
+        "@crates//tokio-1.54.1",
+        "@crates//tracing-0.1.44",
+        "@crates//tracing-subscriber-0.3.23",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -127,19 +119,7 @@ isolated_test(
     name = "uninstalled",
     binary = ":uninstalled_cases",
     id = "acyclic-test-support::uninstalled",
-    exclude = ["::full_cloud::"],
     limit_seconds = 10,
-)
-
-isolated_test(
-    name = "uninstalled_full-cloud",
-    binary = ":uninstalled_cases",
-    id = "acyclic-test-support::uninstalled",
-    only = "::full_cloud::",
-    wrapper = "//:scripts/full-cloud-test.sh",
-    wrapper_data = ["//:scripts/local-cloud.mjs"],
-    limit_seconds = 10,
-    tags = ["manual"],
 )
 
 filegroup(
