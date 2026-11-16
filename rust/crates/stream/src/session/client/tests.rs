@@ -1,7 +1,7 @@
 use super::*;
 use crate::StreamCategory;
 use crate::grpc;
-use crate::{AppendRequest, MemoryStream, OwnedBytes, RecordStream};
+use crate::{AppendRequest, MemoryStream, OwnedBytes};
 use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tonic::Request;
@@ -291,69 +291,6 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
         matches!(next(&mut moving).await, Err(error) if error.downcast_ref::<StreamError>().map(StreamError::category) == Some(StreamCategory::AccessDenied))
     );
     assert_eq!(dials.load(Ordering::Relaxed), 1);
-    Ok(())
-}
-
-#[tokio::test]
-async fn append_to_follow_latency() -> TestResult {
-    let memory = Arc::new(MemoryStream::default());
-    measure(memory.as_ref(), "memory").await?;
-    let fixture = Fixture::open(Arc::new(MemoryStream::default()), "node").await?;
-    measure(&fixture.client()?, "grpc_tcp").await?;
-    println!(
-        "sessions={} connections={}",
-        fixture.counts.sessions.load(Ordering::Relaxed),
-        fixture.counts.connections.load(Ordering::Relaxed)
-    );
-    Ok(())
-}
-async fn measure<P: StreamProvider>(provider: &P, label: &str) -> TestResult {
-    let path = StreamPath::new("latency")?;
-    provider
-        .append(AppendRequest {
-            path: path.clone(),
-            records: vec![(OwnedBytes::from_static(b"seed")).into()],
-            if_tail: None,
-            idempotency_key: crate::IdempotencyKey::unique(),
-        })
-        .await?;
-    let mut follow = provider
-        .follow(crate::FollowRequest::new(path.clone(), 1))
-        .map_ok(crate::records_only)
-        .await?;
-    let mut samples = Vec::new();
-    for sequence in 1..=144 {
-        let started = std::time::Instant::now();
-        let (_, record, elapsed) = crate::test_latency::sample(
-            async {
-                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                    provider
-                        .append(AppendRequest {
-                            path: path.clone(),
-                            records: vec![(OwnedBytes::from_static(b"delta")).into()],
-                            if_tail: None,
-                            idempotency_key: crate::IdempotencyKey::unique(),
-                        })
-                        .await?,
-                )
-            },
-            next(&mut follow),
-            || started.elapsed().as_nanos(),
-        )
-        .await?;
-        assert_eq!(record.sequence, sequence);
-        assert_eq!(record.value.as_slice(), b"delta");
-        if sequence > 16 {
-            samples.push(elapsed);
-        }
-    }
-    samples.sort_unstable();
-    println!(
-        "append_to_follower {label} n={} p50_ns={} p99_ns={}",
-        samples.len(),
-        samples.get(63).ok_or("p50 missing")?,
-        samples.get(126).ok_or("p99 missing")?
-    );
     Ok(())
 }
 

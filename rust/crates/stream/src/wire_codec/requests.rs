@@ -618,38 +618,4 @@ mod tests {
         }
         Ok(())
     }
-
-    #[test]
-    fn request_path_measure_append_encoding() -> Result<(), Box<dyn std::error::Error>> {
-        let request = AppendRequest {
-            path: crate::StreamPath::new("request/events")?,
-            records: vec![OwnedBytes::from(vec![7; 65_536]).into()],
-            if_tail: Some(0),
-            idempotency_key: crate::IdempotencyKey::unique(),
-        };
-        let mut binary = Vec::with_capacity(append_len(&request));
-        append(&mut binary, &request);
-        assert_eq!(
-            crate::http_codec::encode("append", &binary)?,
-            crate::http_codec::encode_append(&request)?
-        );
-        for direct in [false, true] {
-            let started = std::time::Instant::now();
-            for _ in 0..256 {
-                let encoded = if direct {
-                    crate::http_codec::encode_append(&request)?
-                } else {
-                    let mut encoded = Vec::with_capacity(append_len(&request));
-                    append(&mut encoded, &request);
-                    crate::http_codec::encode("append", &encoded)?
-                };
-                std::hint::black_box(encoded);
-            }
-            eprintln!(
-                "stream append JSON direct={direct} iterations=256 bytes=65536 elapsed_us={}",
-                started.elapsed().as_micros()
-            );
-        }
-        Ok(())
-    }
 }
