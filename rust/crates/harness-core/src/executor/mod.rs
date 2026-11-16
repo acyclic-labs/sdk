@@ -592,17 +592,22 @@ impl ToolFailureKind {
 #[doc(hidden)]
 pub use crate::filesystem::PreparationIo;
 
+fn history_io<'a>(
+    observer: &'a mut Option<&PreparationIo>,
+) -> Option<&'a mut dyn crate::store::history::HistoryIo> {
+    observer
+        .as_mut()
+        .map(|work| work as &mut dyn crate::store::history::HistoryIo)
+}
+
 #[doc(hidden)]
 pub fn with_history_io<T>(
     io: Option<&PreparationIo>,
     run: impl FnOnce(&mut Option<&mut dyn crate::store::history::HistoryIo>) -> T,
 ) -> T {
-    {
-        let mut observer = io.map(PreparationIo::history_io);
-        run(&mut observer
-            .as_mut()
-            .map(|work| work as &mut dyn crate::store::history::HistoryIo))
-    }
+    let mut observer = io.map(PreparationIo::history_io);
+    let mut history = history_io(&mut observer);
+    run(&mut history)
 }
 
 /// Incremental replay validation retaining only a cursor and retry digests.
