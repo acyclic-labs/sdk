@@ -25,7 +25,7 @@ pub struct MemoryStream {
     custody: Option<WriteCustody>,
     /// The store's own ledger for everything it keeps, shared by every clone.
     #[cfg(not(target_arch = "wasm32"))]
-    capacity: Arc<acyclic_native_runtime::NativeCapacity>,
+    pub(crate) capacity: Arc<acyclic_native_runtime::NativeCapacity>,
     #[cfg(loom)]
     pub(crate) retain_pending_read: bool,
 }

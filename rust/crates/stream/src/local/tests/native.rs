@@ -140,9 +140,10 @@ async fn native_lease_receipts_preserve_exact_keys_and_retire_their_original_cus
             };
             receipts.push((key, receipt.commit_id));
         }
-        assert!(
-            writer.held.load(Ordering::SeqCst) > 0,
-            "live facts retained no original custody"
+        assert_eq!(
+            writer.held.load(Ordering::SeqCst),
+            0,
+            "landed facts belong to the store, not to their writer"
         );
         for (key, id) in &receipts {
             let lookup = Arc::new(Meter::local());

@@ -165,10 +165,10 @@ async fn releasing_a_keyed_pin_returns_superseded_index_funding() -> TestResult<
             .as_ref(),
         b"first"
     );
-    let held = meter.held.load(Ordering::SeqCst);
+    let held = provider.capacity.held();
     drop(pinned);
     assert!(
-        meter.held.load(Ordering::SeqCst) < held,
+        provider.capacity.held() < held,
         "record ancestry retained a superseded key index after its last pin"
     );
     // A write refused at any allocation, or planned in full and then
@@ -279,10 +279,10 @@ async fn releasing_a_history_pin_returns_superseded_range_funding() -> TestResul
             .as_ref(),
         b"a"
     );
-    let held = meter.held.load(Ordering::SeqCst);
+    let held = provider.capacity.held();
     drop(pinned);
     assert!(
-        meter.held.load(Ordering::SeqCst) < held,
+        provider.capacity.held() < held,
         "record ancestry retained a superseded range index after its last pin"
     );
     let expected = values.map(Bytes::from_static);

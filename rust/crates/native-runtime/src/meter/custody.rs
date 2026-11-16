@@ -261,29 +261,30 @@ impl NativeReadMeter for NativeCustody {
     }
     fn reserve_allocation(&self, bytes: u64) -> io::Result<()> {
         let mut custody = self.lock();
-        let Holder::Invocation { meter, .. } = &custody.holder else {
-            return Err(io::ErrorKind::Unsupported.into());
-        };
         if custody.sealed {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        meter.reserve_allocation(bytes)?;
+        match &custody.holder {
+            Holder::Invocation { meter, .. } => meter.reserve_allocation(bytes)?,
+            Holder::Store(capacity) => capacity.charge(bytes)?,
+        }
         custody.withheld += bytes;
         Ok(())
     }
     fn cancel_reserved_allocation(&self, bytes: u64) {
         let mut custody = self.lock();
         custody.withheld -= bytes;
-        if let Holder::Invocation { meter, .. } = &custody.holder {
-            meter.cancel_reserved_allocation(bytes);
+        match &custody.holder {
+            Holder::Invocation { meter, .. } => meter.cancel_reserved_allocation(bytes),
+            Holder::Store(capacity) => capacity.release(bytes),
         }
     }
     fn record_reserved_allocation(&self, bytes: u64) -> io::Result<()> {
         let mut custody = self.lock();
-        let Holder::Invocation { meter, .. } = &custody.holder else {
-            return Err(io::ErrorKind::InvalidInput.into());
+        let result = match &custody.holder {
+            Holder::Invocation { meter, .. } => meter.record_reserved_allocation(bytes),
+            Holder::Store(_) => Ok(()),
         };
-        let result = meter.record_reserved_allocation(bytes);
         custody.withheld -= bytes;
         custody.outstanding += bytes;
         result
@@ -349,5 +350,47 @@ impl NativeReadMeter for NativeCustody {
     }
     fn admit_durability(&self) -> io::Result<()> {
         self.invocation()?.admit_durability()
+    }
+    fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> io::Result<()> {
+        self.invocation()?.admit_codec(encoded, copied, hashed)
+    }
+    fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> io::Result<()> {
+        self.invocation()?.record_codec(encoded, copied, hashed)
+    }
+    fn reserve_codec(&self, maximum: NativeCodecWork) -> io::Result<()> {
+        self.invocation()?.reserve_codec(maximum)
+    }
+    fn cancel_reserved_codec(&self, unused: NativeCodecWork) {
+        if let Ok(meter) = self.invocation() {
+            meter.cancel_reserved_codec(unused);
+        }
+    }
+    fn record_reserved_codec(&self, actual: NativeCodecWork) -> io::Result<()> {
+        self.invocation()?.record_reserved_codec(actual)
+    }
+    fn reserve_examination(&self, items: u64) -> io::Result<()> {
+        self.invocation()?.reserve_examination(items)
+    }
+    fn cancel_reserved_examination(&self, items: u64) {
+        if let Ok(meter) = self.invocation() {
+            meter.cancel_reserved_examination(items);
+        }
+    }
+    fn record_reserved_examination(&self, items: u64) -> io::Result<()> {
+        self.invocation()?.record_reserved_examination(items)
+    }
+    fn finish_read(&self, requested: usize, completed: usize) -> io::Result<()> {
+        self.invocation()?.finish_read(requested, completed)
+    }
+    fn reserve_cleanup_write(&self) -> io::Result<u64> {
+        self.invocation()?.reserve_cleanup_write()
+    }
+    fn cancel_cleanup_write(&self, reservation: u64) {
+        if let Ok(meter) = self.invocation() {
+            meter.cancel_cleanup_write(reservation);
+        }
+    }
+    fn record_cleanup_write(&self, reservation: u64) -> io::Result<()> {
+        self.invocation()?.record_cleanup_write(reservation)
     }
 }
