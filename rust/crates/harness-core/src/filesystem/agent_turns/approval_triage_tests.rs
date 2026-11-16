@@ -512,11 +512,15 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
     Ok(())
 }
 
-#[tokio::test]
-async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestResult {
-    let (bound, parent, children, reviewer) = family(["allow", "deny"]).await?;
+/// Each child asks `parent`, whose review of that page saves both decisions
+/// and is then lost before its checkpoint or wakes commit.
+async fn decided_without_wakes(
+    bound: &Binding,
+    parent: &AgentPath,
+    children: &[AgentState],
+) -> TestResult<(AgentState, Vec<u64>, Vec<u64>, crate::agent::IntentId)> {
     let turns = bound.turns();
-    let parent_before = bound.agents().state(&parent).await?;
+    let parent_before = bound.agents().state(parent).await?;
     let id = crate::InteractionId::from_bytes([81; 16]);
     let request_id = crate::agent::IntentId::try_from(crate::approvals::agent_request_id(id))?;
     let mut delivered = Vec::new();
@@ -546,7 +550,7 @@ async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestR
         let Delivered::Committed { inbox } = bound
             .agents()
             .send(
-                &parent,
+                parent,
                 &Sender::Agent {
                     path: child.path.clone(),
                 },
@@ -571,19 +575,28 @@ async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestR
         .await?;
     assert!(prepared.summary.is_none());
     assert_eq!(prepared.outs.len(), 2);
-    assert_eq!(reviewer.request_count(), 2);
     // Durable approval files survived, but the actor checkpoint/wakes did not commit.
     drop(prepared);
     assert!(
         !bound
             .agents()
-            .input_progress(&parent, delivered[0])
+            .input_progress(parent, delivered[0])
             .await?
             .settled
     );
     for (child, original) in children.iter().zip(&child_tails) {
         assert_eq!(turns.stream.tail(child.path.inbox()?).await?, *original);
     }
+    Ok((parent_before, delivered, child_tails, request_id))
+}
+
+#[tokio::test]
+async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestResult {
+    let (bound, parent, children, reviewer) = family(["allow", "deny"]).await?;
+    let turns = bound.turns();
+    let (parent_before, delivered, child_tails, request_id) =
+        decided_without_wakes(&bound, &parent, &children).await?;
+    assert_eq!(reviewer.request_count(), 2);
     let reopen = || -> TestResult<_> {
         let handler = crate::agent::AgentHandler::new(
             crate::agent::actor_store(&turns.stream)?,
@@ -639,6 +652,85 @@ async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestR
     );
     for (child, original) in children.iter().zip(&child_tails) {
         assert_eq!(turns.stream.tail(child.path.inbox()?).await?, original + 1);
+    }
+    Ok(())
+}
+
+/// An archive lands after a page's decisions are saved and before its wakes
+/// are published. The archived parent keeps each saved answer, refusing none
+/// of them anew, and the page finishes by publishing every original wake.
+#[tokio::test]
+async fn an_archive_between_saved_decisions_and_their_wakes_keeps_the_answers() -> TestResult {
+    let (bound, parent, children, reviewer) = family(["allow", "deny"]).await?;
+    let turns = bound.turns();
+    let (_, delivered, child_tails, request_id) =
+        decided_without_wakes(&bound, &parent, &children).await?;
+    let sender = Sender::User {
+        principal: "human".into(),
+    };
+    let crate::agent::Submitted::Committed(_) = crate::agent::submit(
+        &*turns.stream,
+        crate::agent::archive(
+            &parent,
+            &sender,
+            &crate::agent::IntentId::try_from("close")?,
+            bound.agents().activation(&parent)?,
+        )?,
+    )
+    .await?
+    else {
+        return Err("the parent's archive did not commit".into());
+    };
+    let handler = crate::agent::AgentHandler::new(
+        crate::agent::actor_store(&turns.stream)?,
+        crate::agent::ExecutorDriver::new(turns.clone()),
+        acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+    )?
+    .with_close();
+    let reopened = bound.agents().rehosted(
+        acyclic_actors::guest::Requests::default(),
+        Arc::new(handler),
+        Arc::new(acyclic_actors::local::SystemClock),
+        Some(bound.composer()),
+    )?;
+    reopened.drain(&parent).await?;
+    let archived = reopened.state(&parent).await?;
+    assert!(archived.closed);
+    assert!(
+        archived.approval_control.is_none(),
+        "the interrupted page never finished"
+    );
+    for inbox in delivered {
+        assert!(reopened.input_progress(&parent, inbox).await?.settled);
+    }
+    assert_eq!(
+        reviewer.request_count(),
+        2,
+        "the saved answers were reviewed again"
+    );
+    for (child, original) in children.iter().zip(&child_tails) {
+        let tail = turns.stream.tail(child.path.inbox()?).await?;
+        let mut records = turns
+            .stream
+            .read(ReadRequest {
+                key: None,
+                path: child.path.inbox()?,
+                from: *original,
+                limit: u32::try_from(tail - original)?,
+                at_least: Default::default(),
+            })
+            .await?;
+        let mut wakes = 0;
+        while let Some(record) = records.try_next().await? {
+            if InboxRecord::decode(&record.value)?
+                == InboxRecord::Approval(Approval {
+                    id: request_id.clone(),
+                })
+            {
+                wakes += 1;
+            }
+        }
+        assert_eq!(wakes, 1, "the saved answer's wake was not published once");
     }
     Ok(())
 }

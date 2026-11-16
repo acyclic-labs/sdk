@@ -32,8 +32,9 @@ pub enum NextStage<'a> {
 ///
 /// `owner_parent` is the parent of the agent that owns the request, or `None`
 /// when that agent is a root. A root has no parent stage: it is absent, and the
-/// traversal advances to the next approver. Only an exhausted chain denies
-/// implicitly.
+/// traversal advances to the next approver. An explicit parent ask from a root
+/// is refused as `approval parent is unavailable`; otherwise only an exhausted
+/// chain denies implicitly.
 pub async fn next_stage<'a>(
     policy: &'a ApprovalPolicy,
     digest: [u8; 32],
@@ -111,6 +112,18 @@ pub async fn next_stage<'a>(
             | Approver::Human { principal } => principal.clone(),
             Approver::Parent => match &parent {
                 Some(parent) => parent.to_owned(),
+                // An explicit parent ask names its one approver, so a root
+                // refuses it as a model ask without a model does.
+                None if route == ApprovalRoute::Parent => {
+                    return Ok(NextStage::Decided(ApprovalReviewFile {
+                        principal: "policy:exhausted".into(),
+                        request_sha256: hash,
+                        policy_digest: digest,
+                        stage,
+                        verdict: RuleVerdict::Deny,
+                        reason: Some("approval parent is unavailable".into()),
+                    }));
+                }
                 None => continue,
             },
         };
@@ -176,7 +189,7 @@ pub enum ApprovalResponder<'a> {
     Rules(&'a str),
     /// Independent model owner identity.
     Llm(&'a str),
-    /// Internal refusal of an exhausted chain.
+    /// Internal exhaustion or parent-unavailable refusal.
     Policy,
 }
 

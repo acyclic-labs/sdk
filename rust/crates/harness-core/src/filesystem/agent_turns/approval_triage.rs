@@ -100,6 +100,8 @@ where
                 at_least: Default::default(),
             })
             .await?;
+        let parent = agent.path.id();
+        let principal = format!("parent:{parent}");
         let mut outs = Vec::new();
         let mut summary = Vec::new();
         let mut next = selection.range.start;
@@ -126,6 +128,20 @@ where
             let child = crate::agent::observe_state(&self.stream, &self.within, &request.child)
                 .await
                 .map_err(Error::from)?;
+            // A page interrupted after this answer was saved, before its wake
+            // was published, keeps that answer and only repairs the wake: a
+            // second review, or an ended parent's refusal, would contradict it.
+            if self
+                .decided_approval(&child, &request.id, &principal)
+                .await?
+                .is_some()
+            {
+                outs.push(Out::Send {
+                    to: request.child,
+                    record: InboxRecord::Approval(Approval { id: request.id }),
+                });
+                continue;
+            }
             let (verdict, reason, action) = match (&review, policy) {
                 (Some((journal, _, _)), Some(policy)) => {
                     self.review_child_action(agent, &child, &request.id, journal, policy)
@@ -142,7 +158,7 @@ where
                 self.decide(
                     &child,
                     request.id.as_str(),
-                    ApprovalResponder::Parent(&agent.path.id()),
+                    ApprovalResponder::Parent(&parent),
                     decision,
                     reason,
                 )
