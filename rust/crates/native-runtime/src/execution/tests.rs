@@ -27,7 +27,10 @@ fn sandbox_policy() {
     #[cfg(windows)]
     std::os::windows::fs::symlink_file(&outside, workspace.join("escape")).unwrap();
     #[cfg(target_os = "linux")]
-    outside_attributes(&outside, false, true);
+    {
+        linux_boundary_probes(&outside, false, true);
+        std::fs::copy("/bin/true", workspace.join("copied-true")).unwrap();
+    }
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let executable = std::env::current_exe().unwrap();
@@ -161,7 +164,7 @@ fn sandbox_policy_probe() {
     };
     allowed(std::fs::read(&outside).map(|_| ()), !confined);
     #[cfg(target_os = "linux")]
-    outside_attributes(Path::new(&outside), confined, false);
+    linux_boundary_probes(Path::new(&outside), confined, false);
     allowed(std::fs::write(&outside, b"escaped"), !confined);
     // The same grant must survive pathname traversal and an ordinary child
     // launch: a command cannot shed the kernel boundary by spawning itself.
@@ -234,6 +237,22 @@ fn sandbox_policy_probe() {
                 .lines()
                 .any(|line| line == "readable")
         );
+        let numbered = shell("cat -n readable");
+        assert!(numbered.status.success(), "cat -n failed: {numbered:?}");
+        let sorted = shell("printf 'b\\na\\n' | sort");
+        assert!(sorted.status.success(), "sort failed: {sorted:?}");
+        assert_eq!(sorted.stdout, b"a\nb\n");
+        let copied = std::process::Command::new("./copied-true").status().unwrap();
+        assert!(copied.success(), "copied executable failed: {copied:?}");
+        let login = std::process::Command::new(std::env::var_os("ACYCLIC_POLICY_SHELL").unwrap())
+            .args(["-lc", "true"])
+            .output()
+            .unwrap();
+        assert!(login.status.success(), "login shell failed: {login:?}");
+        assert!(
+            !String::from_utf8_lossy(&login.stderr).contains("Permission denied"),
+            "login shell profile was denied: {login:?}"
+        );
     }
     allowed(std::fs::write("inside", b"inside"), primary_write);
     allowed(
@@ -257,7 +276,7 @@ fn sandbox_policy_probe() {
     unsafe_code,
     reason = "real host xattr fixture and native boundary probes"
 )]
-fn outside_attributes(path: &Path, confined: bool, seed: bool) {
+fn linux_boundary_probes(path: &Path, confined: bool, seed: bool) {
     use std::os::unix::ffi::OsStrExt;
     let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
     let name = c"user.acyclic-private";
@@ -276,42 +295,79 @@ fn outside_attributes(path: &Path, confined: bool, seed: bool) {
             },
             0
         );
-        return;
-    }
-    for call in [libc::SYS_getxattr, libc::SYS_lgetxattr] {
-        // SAFETY: null destination with size zero requests only the value size.
-        let result = unsafe {
-            libc::syscall(
-                call,
-                path.as_ptr(),
-                name.as_ptr(),
-                std::ptr::null_mut::<u8>(),
-                0,
-            )
-        };
-        if confined {
-            assert_eq!(result, -1);
-            assert_eq!(
-                io::Error::last_os_error().raw_os_error(),
-                Some(libc::EOPNOTSUPP)
-            );
-        } else {
-            assert_eq!(Ok(result), libc::c_long::try_from(secret.len()));
+    } else {
+        for call in [libc::SYS_getxattr, libc::SYS_lgetxattr] {
+            // SAFETY: null destination with size zero requests only the value size.
+            let result = unsafe {
+                libc::syscall(
+                    call,
+                    path.as_ptr(),
+                    name.as_ptr(),
+                    std::ptr::null_mut::<u8>(),
+                    0,
+                )
+            };
+            if confined {
+                assert_eq!(result, -1);
+                assert_eq!(
+                    io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EOPNOTSUPP)
+                );
+            } else {
+                assert_eq!(Ok(result), libc::c_long::try_from(secret.len()));
+            }
+        }
+        for call in [libc::SYS_listxattr, libc::SYS_llistxattr] {
+            // SAFETY: null destination with size zero requests only the list size.
+            let result =
+                unsafe { libc::syscall(call, path.as_ptr(), std::ptr::null_mut::<u8>(), 0) };
+            if confined {
+                assert_eq!(result, -1);
+                assert_eq!(
+                    io::Error::last_os_error().raw_os_error(),
+                    Some(libc::EOPNOTSUPP)
+                );
+            } else {
+                assert!(result > 0);
+            }
         }
     }
-    for call in [libc::SYS_listxattr, libc::SYS_llistxattr] {
-        // SAFETY: null destination with size zero requests only the list size.
-        let result = unsafe { libc::syscall(call, path.as_ptr(), std::ptr::null_mut::<u8>(), 0) };
-        if confined {
-            assert_eq!(result, -1);
-            assert_eq!(
-                io::Error::last_os_error().raw_os_error(),
-                Some(libc::EOPNOTSUPP)
-            );
-        } else {
-            assert!(result > 0);
-        }
-    }
+    // SAFETY: gettid has no pointer arguments and returns this live thread's ID.
+    let thread = libc::pid_t::try_from(unsafe { libc::syscall(libc::SYS_gettid) }).unwrap();
+    let mut parameters = libc::sched_param { sched_priority: 0 };
+    // SAFETY: the current thread exists and the output parameter is writable.
+    assert_eq!(unsafe { libc::sched_getparam(thread, &mut parameters) }, 0);
+    // SAFETY: querying this live thread needs no borrowed storage.
+    let policy = unsafe { libc::sched_getscheduler(thread) };
+    assert!(
+        policy >= 0,
+        "scheduler query: {}",
+        io::Error::last_os_error()
+    );
+    let mut pthread_policy = -1;
+    let mut pthread_parameters = libc::sched_param { sched_priority: -1 };
+    // SAFETY: pthread_self is a live pthread handle; both outputs are writable.
+    let result = unsafe {
+        libc::pthread_getschedparam(
+            libc::pthread_self(),
+            &mut pthread_policy,
+            &mut pthread_parameters,
+        )
+    };
+    assert_eq!(result, 0, "pthread scheduler query failed: {result}");
+    assert_eq!(pthread_policy, policy);
+    assert_eq!(pthread_parameters.sched_priority, parameters.sched_priority);
+    // A negative PID cannot change any thread. The unconfined control reaches
+    // the kernel's EINVAL; confinement must still reject the mutation with EPERM.
+    // SAFETY: parameters is valid; the deliberately invalid PID names no process.
+    assert_eq!(
+        unsafe { libc::sched_setscheduler(-1, policy, &parameters) },
+        -1
+    );
+    assert_eq!(
+        io::Error::last_os_error().raw_os_error(),
+        Some(if confined { libc::EPERM } else { libc::EINVAL })
+    );
 }
 
 #[cfg(target_os = "macos")]
