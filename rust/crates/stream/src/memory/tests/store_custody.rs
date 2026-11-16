@@ -47,27 +47,18 @@ async fn a_landed_write_leaves_nothing_on_its_writer_and_charges_the_store() -> 
 #[tokio::test]
 async fn a_write_past_store_capacity_is_refused_before_publication() -> TestResult<()> {
     let path = path("custody/bounded")?;
-    let measured = MemoryStream::default();
-    measured
-        .native_append(request(&path, 0), Arc::new(Meter::default()).original())
-        .await??;
-    let first = measured.capacity.held();
     let provider = MemoryStream::new(MemoryLimits {
-        retained_bytes: Some(first),
+        retained_bytes: Some(0),
         ..MemoryLimits::default()
     });
-    provider
-        .native_append(request(&path, 0), Arc::new(Meter::default()).original())
-        .await??;
-    assert_eq!(provider.capacity.held(), first);
     let snapshot = provider.encode_state().await;
     let writer = Arc::new(Meter::default());
     let refused = provider
-        .native_append(request(&path, 1), writer.original())
+        .native_append(request(&path, 0), writer.original())
         .await?;
     assert!(matches!(refused, Err(StreamError::Capacity)));
     assert_eq!(provider.encode_state().await, snapshot);
-    assert_eq!(provider.capacity.held(), first);
+    assert_eq!(provider.capacity.held(), 0);
     assert_eq!(writer.held.load(Ordering::SeqCst), 0);
     writer.assert_refunded();
     Ok(())

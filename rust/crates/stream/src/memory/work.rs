@@ -335,7 +335,7 @@ impl MemoryStream {
         if let Some(work) = &self.work {
             let output = work.record(crate::native::clone_envelope(
                 value,
-                &work.meter,
+                self.allocation_meter(work),
                 acyclic_native_runtime::NativeOperationKind::Write,
             ))?;
             let (value, allocation) = output.into_parts();
