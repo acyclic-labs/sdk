@@ -27,29 +27,18 @@ esac
 repository="$(git rev-parse --show-toplevel)"
 artifact_dir="${SDK_ARTIFACT_DIR:-${RUNNER_TEMP:-/tmp}/acyclic-native-mount}"
 mkdir -p "$artifact_dir"
-if [[ -n "${ACYCLIC_RELEASE_EXECUTABLE:-}" ]]; then
-  release_executable="$ACYCLIC_RELEASE_EXECUTABLE"
-else
-  cargo build --locked -p acyclic-plugin --release
-  release_executable="${CARGO_TARGET_DIR:-$repository/target}/release/acyclic"
-fi
+release_executable="${ACYCLIC_RELEASE_EXECUTABLE:?ACYCLIC_RELEASE_EXECUTABLE is required}"
 [[ -x "$release_executable" ]] || {
   echo "release executable is unavailable or not executable: $release_executable" >&2
   exit 2
 }
-arguments=(
-  --require-kind "$platform"
-  --release-executable "$release_executable"
-  --checkout-root "$repository"
+qualifier_executable="${ACYCLIC_QUALIFIER_EXECUTABLE:?ACYCLIC_QUALIFIER_EXECUTABLE is required}"
+[[ -x "$qualifier_executable" ]] || {
+  echo "qualification executable is unavailable or not executable: $qualifier_executable" >&2
+  exit 2
+}
+"$qualifier_executable" \
+  --require-kind "$platform" \
+  --release-executable "$release_executable" \
+  --checkout-root "$repository" \
   --output "$artifact_dir/$platform.json"
-)
-if [[ -n "${ACYCLIC_QUALIFIER_EXECUTABLE:-}" ]]; then
-  [[ -x "$ACYCLIC_QUALIFIER_EXECUTABLE" ]] || {
-    echo "qualification executable is unavailable or not executable: $ACYCLIC_QUALIFIER_EXECUTABLE" >&2
-    exit 2
-  }
-  "$ACYCLIC_QUALIFIER_EXECUTABLE" "${arguments[@]}"
-else
-  cargo run --locked -p acyclic-conformance --features local-runner \
-    --bin native-mount-qualify -- "${arguments[@]}"
-fi

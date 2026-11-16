@@ -35,15 +35,9 @@ jobs:
       # builds the other shapes Cargo accepts (no [workspace.package], for one).
       - name: Test the Bazel file generator
         run: node --test scripts/bazel-build-files.test.mjs
-      # --locked admits a lockfile Cargo would still rewrite, and any unlocked
-      # resolution (the WASM build's cargo clean) then edits the source tree.
-      - name: Check that Cargo.lock is in Cargo's own form
-        run: cargo metadata --format-version 1 >/dev/null && git diff --exit-code -- Cargo.lock
       # Vendored crates keep their upstream bytes.
       - name: Check that the whole tree has no whitespace errors
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents' ':!rust/vendor'
-      - name: Check that no tracked file disables incremental compilation
-        run: node scripts/check-incremental.mjs
       # Formatting differs between rustfmt releases (macro bodies among
       # them), so it is checked with the pinned toolchain the gate uses.
       - name: Install the pinned rustfmt

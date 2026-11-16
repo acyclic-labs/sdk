@@ -30,7 +30,7 @@ test("real nextest selects the cloud capability and refuses an absent producer b
 `);
     writeFileSync(path.join(root, ".config/nextest.toml"), config);
     symlinkSync(source, path.join(root, "scripts/full-cloud-test.sh"));
-    const env = { ...process.env, CARGO_TARGET_DIR: path.join(root, "target"), CARGO_BUILD_RUSTC_WRAPPER: "", RUSTC_WRAPPER: "" };
+    const env = { ...process.env, CARGO_TARGET_DIR: path.join(root, "target") };
     delete env.CLOUD_SOURCE;
     delete env.CLOUD_BINARIES;
     const cargo = (command, ...args) => spawnSync("cargo", ["nextest", command, "-p", "cloud-profile-control", ...args], { cwd: root, env, encoding: "utf8" });

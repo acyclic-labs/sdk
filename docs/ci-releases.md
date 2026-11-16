@@ -12,9 +12,10 @@ the same required check. Superseded static runs are cancelled.
 
 Formatting, whitespace, JSON and JavaScript syntax, pinned Actions, runner policy,
 compatibility digests, builds, tests, generator checks, and native integrations
-run only through **SDK Release**. Whitespace checks cover changes since the previous
-`acyclic-v*` release tag, or the tracked tree for the first release. Tags and GitHub
-Release events start no workflows.
+run in Foreman on Bazel. SDK Release builds and assembles the deploy artifacts.
+Whitespace checks cover changes since the previous `acyclic-v*` release tag, or
+the tracked tree for the first release. Tags and GitHub Release events start no
+workflows.
 
 Workflow validation requires actionlint 1.7.7 and an executable ShellCheck on
 PATH. Use the same wrapper as release policy qualification locally:
@@ -47,10 +48,10 @@ release, dispatch with `publish=true`. The dispatch freezes main's SHA. Every
 checkout, qualification receipt, plugin archive, and publisher uses that source;
 later main commits cannot change the release.
 
-The graph runs full SDK qualification once, supported plugin platform builds,
-native mount and host integration, and generator checks. It assembles and attests
-the universal plugin and passes explicit retained artifact references to the npm
-and Cargo publishers. The registry jobs retain their `npmjs` and `crates-io`
+The graph builds the supported plugin platforms with Bazel, runs native mount
+qualification and generator checks, and assembles and attests the universal
+plugin. Package qualification and publication inputs come from the Foreman
+Bazel graph; Cargo is not a build path. The registry jobs retain their `npmjs` and `crates-io`
 environments. Both registries must trust the calling workflow `release.yml`:
 reusable publisher filenames do not preserve their former caller identities.
 Configure that workflow for every publishable package and crate before enabling
@@ -93,66 +94,15 @@ the command above. This runs qualification, native mounts, agent hosts, and
 generator checks through the release graph without publishing. Those reusable
 workflows have no independent manual triggers.
 
-## Release build reuse
+## Release build caches
 
-`build-product.mjs` and the release workflow's qualifier and Cargo-install
-commands use `scripts/release-build.mjs`. Each invocation emits a terminal
-`RELEASE_BUILD_RESULT` JSON line containing its action, PASS/FAIL and wall
-seconds, including failures and cache hits. Architecture/runtime ABI checks,
-installed executable checks, native mounts and assembly still run after the
-builds. A restored executable is build evidence; it is not a native-mount pass.
-
-A host can opt into the shared artifact cache by setting
-`SDK_RELEASE_BUILD_CONTEXT` to an admitted `artifact-build-context.v2` file.
-The adapter loads the absolute module named by `SDK_ARTIFACT_BUILD_MODULE`. Missing or invalid admitted infrastructure fails
-explicitly. Without a context, the original compiler command runs.
-
-The context declares a builder digest for OS, dependency sources and external
-configuration, a measured `toolchain` declaration, the entire compiler process
-environment's allowed names, and every mutable/generated input outside the
-clean Git tree. The shared runner executes with only that environment and keys
-the action on the tree, builder, actual environment values, command/arguments,
-output path, adapter bytes and additional input contents. Its builder digest
-does not substitute for toolchain measurement. The shared runner resolves the
-selected rustc (including rustup), hashes its bytes and `-vV`, host and target
-sysroot rlibs, compiler driver libraries, and the target specification. It hashes
-the declared cc/linker drivers and executables selected by their dry runs,
-including the backend linker. The declared drivers are pinned through `RUSTC`,
-`CC` and Cargo target linker environment variables. Wrapper dependencies outside
-those probes must be enumerated in `toolchain.executables`.
-
-`toolchain` contains absolute `rustc`, `cc` and `linker` paths, a `target` triple
-or JSON specification path, and optional additional `executables`. File hashes
-are retained by resolved path, device, inode, size, nanosecond mtime/ctime and mode;
-an unchanged file costs a stat rather than reading its bytes again. Driver probes
-and target specifications are measured each time. Measurement repeats before
-publication; toolchain installation must share the producer lease to exclude
-writes during lookup and execution. The host must decline caching when it cannot establish
-that closure. Only successful builds publish artifacts through the existing
-shared action cache; failed builds never publish a PASS.
-
-The host retains one leased checkout and compatible target directory for each
-platform/profile/flag closure. Release and artifact requests use the shared
-`release-dist` pool family, with a distinct dist compatibility identity. The
-canonical profile environment clears inherited Cargo profile and Rust flag
-overrides before execution; profiles and linker flags stay in repository config.
-The shared artifact runner partitions compiled units within that target by the
-measured toolchain key: Cargo only fingerprints compiler version output, which
-cannot detect every in-place binary or sysroot update. It maps declared target
-paths in the command to that partition and returns the executable at the recipe
-output path. Existing pool locks and content maps retain targets and restore source clocks
-across jobs. Source updates preserve unchanged file mtimes;
-Cargo then rebuilds only affected units on a cache miss. Product builds honor
-`CARGO_TARGET_DIR`; qualifier and install builds retain their separate target
-directories. The installation destination is stable within that lease, so its
-temporary name does not change the action key on every request.
-
-The artifact declaration conservatively uses the complete source tree. It can
-reuse a retry or another request for identical inputs; unrelated source edits
-still enter Cargo's incremental dependency check. A narrower artifact closure
-requires evidence of every build-script and generated input before adoption.
-Builder admission and persistent target provisioning belong to shared host
-infrastructure and require their own installed configuration.
+`release-acyclic.yml` builds every release target with Bazel. GitHub runners have
+no cloud cache identity, so the Bazel disk cache (`~/.cache/bazel-disk`) and
+repository cache (`~/.cache/bazel-repository-cache`) persist through
+`actions/cache`. Only main saves them. The caches are content-addressed compiler,
+action and external-repository results: a changed input is rebuilt rather than
+served stale. Architecture/runtime ABI checks, installed executable checks,
+native mounts and assembly still run after the builds.
 
 ## Dependency preservation
 

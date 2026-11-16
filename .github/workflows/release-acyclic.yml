@@ -32,186 +32,99 @@ jobs:
       matrix:
         include:
           - target: linux-x64-gnu
-            cache_size: 1024M
             backend: linux-fuse
             qualifier: native-mount-qualify
             rust_target: x86_64-unknown-linux-gnu
             runner: kaizen-linux
             executable: acyclic
           - target: linux-x64-musl
-            cache_size: 384M
             rust_target: x86_64-unknown-linux-musl
             runner: kaizen-linux
+            platform: //:linux_musl
             executable: acyclic
           - target: linux-arm64-gnu
-            cache_size: 384M
             rust_target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
             executable: acyclic
           - target: linux-arm64-musl
-            cache_size: 384M
             rust_target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
             executable: acyclic
           - target: darwin-x64
-            cache_size: 320M
             rust_target: x86_64-apple-darwin
             runner: macos-15
             executable: acyclic
           - target: darwin-arm64
-            cache_size: 640M
             backend: macos-nfs
             qualifier: native-mount-qualify
             rust_target: aarch64-apple-darwin
             runner: macos-15
             executable: acyclic
           - target: win32-x64
-            cache_size: 1216M
             backend: windows-projfs
             qualifier: native-mount-qualify.exe
             rust_target: x86_64-pc-windows-msvc
             runner: windows-2025
+            platform: //:windows
             executable: acyclic.exe
           - target: win32-arm64
-            cache_size: 2048M
             rust_target: aarch64-pc-windows-msvc
             runner: windows-2025
+            platform: //:windows
             executable: acyclic.exe
     runs-on: ${{ matrix.runner }}
-    env:
-      # Long uncached links outlast the daemon's default idle timeout and
-      # otherwise leave post-job statistics reporting a fresh, empty server.
-      SCCACHE_IDLE_TIMEOUT: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha }}
-      - uses: ./.github/actions/rust-toolchain
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          targets: ${{ matrix.rust_target }}
-      - name: Restore Rust build cache
-        id: rust-cache
-        uses: ./.github/actions/rust-build-cache
-        with:
-          scope: release-${{ matrix.rust_target }}
-          cache_size: ${{ matrix.cache_size }}
-      - name: Install Windows ARM64 compiler
-        if: matrix.rust_target == 'aarch64-pc-windows-msvc'
-        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
-        with:
-          version: 20.1.8
-          directory: ${{ runner.temp }}/llvm
-          env: false
-      - name: Install musl linker
-        if: endsWith(matrix.rust_target, '-musl')
+          node-version: 24.15.0
+      - name: Install Bazelisk
         shell: bash
-        run: sudo apt-get update && sudo apt-get install --yes musl-tools
-      # The product, the native qualification executable, and the Cargo
-      # installation check are independent builds with different flags, so they
-      # run side by side in separate target directories.
-      - name: Build the unified executable
+        run: npm install --global @bazel/bazelisk@1.26.0
+      - name: Restore Bazel caches
+        id: bazel-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/bazel-disk
+            ~/.cache/bazel-repository-cache
+          key: bazel-${{ matrix.target }}-${{ inputs.source_sha }}
+          restore-keys: |
+            bazel-${{ matrix.target }}-
+      - name: Build release targets with Bazel
         shell: bash
         env:
-          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
-          CC_aarch64_unknown_linux_musl: ${{ matrix.rust_target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.rust_target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
-          CC_aarch64_pc_windows_msvc: ${{ matrix.rust_target == 'aarch64-pc-windows-msvc' && format('{0}/llvm/bin/clang.exe', runner.temp) || '' }}
-          BUILD_QUALIFIER: ${{ matrix.target == 'linux-x64-gnu' || matrix.target == 'darwin-arm64' || matrix.target == 'win32-x64' }}
-          VERIFY_CARGO_INSTALL: ${{ matrix.target == 'linux-x64-gnu' }}
+          PLATFORM: ${{ matrix.platform }}
+          RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           set -euo pipefail
-          build_started=$(date +%s)
-          # Capture the live daemon before the runner closes this step's processes.
-          trap '
-            status=$?
-            trap - EXIT
-            set +e
-            build_finished=$(date +%s)
-            mkdir -p "$RUNNER_TEMP/native-build-timings"
-            sccache --show-stats --stats-format=json >"$RUNNER_TEMP/native-build-timings/sccache.json"
-            printf "%s\tNative builds\0%s\tCache snapshot and summary\0" "$build_started" "$build_finished" \
-              >"$RUNNER_TEMP/native-build-timings/steps.tsv"
-            node scripts/ci-summary.mjs "$RUNNER_TEMP/native-build-timings" "$CARGO_BUILD_TARGET native build"
-            exit "$status"
-          ' EXIT
-          # Complete rust-toolchain.toml components once, before parallel builds
-          # race to install them.
-          cargo --version
-          # Start outside the Node/Cargo child processes so their exit cannot
-          # leave the final snapshot querying an absent daemon.
-          printf 'Native compiler wrapper: %s (%s)\n' "$RUSTC_WRAPPER" "$(command -v "$RUSTC_WRAPPER")"
-          sccache --start-server
-          pids=()
-          names=()
-          if [[ "$BUILD_QUALIFIER" == true ]]; then
-            node scripts/release-build.mjs qualifier "$RUNNER_TEMP/target-qualifier/$CARGO_BUILD_TARGET/release/${{ matrix.qualifier }}" -- \
-              cargo build --timings --locked --release --target "$CARGO_BUILD_TARGET" -p acyclic-conformance \
-              --features local-runner --bin native-mount-qualify --target-dir "$RUNNER_TEMP/target-qualifier" \
-              >"$RUNNER_TEMP/qualifier.log" 2>&1 &
-            pids+=("$!")
-            names+=(qualifier)
-          fi
-          if [[ "$VERIFY_CARGO_INSTALL" == true ]]; then
-            (
-              install_root="$RUNNER_TEMP/cargo-install-root"
-              env -u CARGO_BUILD_TARGET node scripts/release-build.mjs cargo-install "$install_root/bin/acyclic" -- \
-                cargo install --timings --locked --path plugin --root "$install_root" \
-                --target-dir "$RUNNER_TEMP/cargo-install-target"
-              expected=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acyclic-plugin") | "acyclic \(.version)"')
-              test "$("$install_root/bin/acyclic" --version)" = "$expected"
-              "$install_root/bin/acyclic" --help
-            ) >"$RUNNER_TEMP/install.log" 2>&1 &
-            pids+=("$!")
-            names+=(install)
-          fi
-          # Report every concurrent build even when the product build fails.
-          status=0
-          node scripts/build-product.mjs || status=$?
-          node scripts/build-product.mjs graphcoder || status=$?
-          for index in "${!pids[@]}"; do
-            if ! wait "${pids[$index]}"; then
-              status=1
-              echo "::error::${names[$index]} build failed"
-            fi
-            echo "::group::${names[$index]}"
-            cat "$RUNNER_TEMP/${names[$index]}.log"
-            echo "::endgroup::"
+          flags=(-c opt --disk_cache="$HOME/.cache/bazel-disk" --repository_cache="$HOME/.cache/bazel-repository-cache")
+          if [[ -n "$PLATFORM" ]]; then flags+=(--platforms="$PLATFORM"); fi
+          labels=(//plugin:acyclic //plugin:graphcoder //rust/crates/conformance:native-mount-qualify)
+          bazelisk build "${flags[@]}" "${labels[@]}"
+          # cquery names outputs relative to the execution root; the workspace keeps no bazel-out link.
+          execroot="$(bazelisk info "${flags[@]}" execution_root)"
+          output="$RUNNER_TEMP/target/$RUST_TARGET/dist"
+          mkdir -p "$output"
+          bazelisk cquery "${flags[@]}" --output=files "${labels[@]}" | while IFS= read -r file; do
+            cp "$execroot/$file" "$output/$(basename "$file")"
           done
-          exit "$status"
-      - name: Summarize native Cargo unit timings
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        shell: bash
-        env:
-          SDK_SOURCE_SHA: ${{ inputs.source_sha }}
-        run: |
-          node scripts/cargo-timings-summary.mjs "$RUNNER_TEMP/native-build-timings" \
-            "product=$GITHUB_WORKSPACE/target" \
-            "qualifier=$RUNNER_TEMP/target-qualifier" \
-            "install=$RUNNER_TEMP/cargo-install-target"
-      - name: Retain native compiler-cache evidence
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          retention-days: ${{ contains(github.workflow, 'Release') && 30 || 3 }}
-          name: native-build-timings-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/native-build-timings
-          if-no-files-found: ignore
       - name: Verify release architecture and runtime ABI
         shell: bash
         run: |
-          node scripts/verify-release-binary.mjs '${{ matrix.target }}' 'target/${{ matrix.rust_target }}/dist/${{ matrix.executable }}'
-          node scripts/verify-release-binary.mjs '${{ matrix.target }}' 'target/${{ matrix.rust_target }}/dist/graphcoder${{ endsWith(matrix.executable, '.exe') && '.exe' || '' }}'
+          node scripts/verify-release-binary.mjs '${{ matrix.target }}' "$RUNNER_TEMP/target/${{ matrix.rust_target }}/dist/${{ matrix.executable }}"
+          node scripts/verify-release-binary.mjs '${{ matrix.target }}' "$RUNNER_TEMP/target/${{ matrix.rust_target }}/dist/graphcoder${{ endsWith(matrix.executable, '.exe') && '.exe' || '' }}"
       - name: Stage normalized executable
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/release/${{ matrix.target }}"
-          cp "target/${{ matrix.rust_target }}/dist/${{ matrix.executable }}" "$RUNNER_TEMP/release/${{ matrix.target }}/${{ matrix.executable }}"
-          cp 'target/${{ matrix.rust_target }}/dist/graphcoder${{ endsWith(matrix.executable, '.exe') && '.exe' || '' }}' "$RUNNER_TEMP/release/${{ matrix.target }}/graphcoder${{ endsWith(matrix.executable, '.exe') && '.exe' || '' }}"
+          cp "$RUNNER_TEMP/target/${{ matrix.rust_target }}/dist/${{ matrix.executable }}" "$RUNNER_TEMP/release/${{ matrix.target }}/${{ matrix.executable }}"
+          cp "$RUNNER_TEMP/target/${{ matrix.rust_target }}/dist/graphcoder${{ endsWith(matrix.executable, '.exe') && '.exe' || '' }}" "$RUNNER_TEMP/release/${{ matrix.target }}/graphcoder${{ endsWith(matrix.executable, '.exe') && '.exe' || '' }}"
           case "${{ matrix.target }}" in
-            linux-x64-gnu|darwin-arm64) cp "$RUNNER_TEMP/target-qualifier/${{ matrix.rust_target }}/release/native-mount-qualify" "$RUNNER_TEMP/release/${{ matrix.target }}/native-mount-qualify" ;;
-            win32-x64) cp "$RUNNER_TEMP/target-qualifier/${{ matrix.rust_target }}/release/native-mount-qualify.exe" "$RUNNER_TEMP/release/${{ matrix.target }}/native-mount-qualify.exe" ;;
+            linux-x64-gnu|darwin-arm64) cp "$RUNNER_TEMP/target/${{ matrix.rust_target }}/dist/native-mount-qualify" "$RUNNER_TEMP/release/${{ matrix.target }}/native-mount-qualify" ;;
+            win32-x64) cp "$RUNNER_TEMP/target/${{ matrix.rust_target }}/dist/native-mount-qualify.exe" "$RUNNER_TEMP/release/${{ matrix.target }}/native-mount-qualify.exe" ;;
           esac
       - name: Install Linux native-mount prerequisites
         if: matrix.backend == 'linux-fuse'
@@ -234,7 +147,6 @@ jobs:
         env:
           ACYCLIC_RELEASE_EXECUTABLE: ${{ runner.temp }}/release/${{ matrix.target }}/${{ matrix.executable }}
           ACYCLIC_QUALIFIER_EXECUTABLE: ${{ runner.temp }}/release/${{ matrix.target }}/${{ matrix.qualifier }}
-          CARGO_TARGET_DIR: ${{ runner.temp }}/native-mount-target
           SDK_ARTIFACT_DIR: ${{ runner.temp }}/native-mount-artifacts
         run: bash scripts/qualify-native-mount.sh '${{ matrix.backend }}'
       - name: Qualify Windows native mount
@@ -244,8 +156,7 @@ jobs:
         env:
           ACYCLIC_RELEASE_EXECUTABLE: ${{ runner.temp }}/release/${{ matrix.target }}/${{ matrix.executable }}
           ACYCLIC_QUALIFIER_EXECUTABLE: ${{ runner.temp }}/release/${{ matrix.target }}/${{ matrix.qualifier }}
-          CARGO_TARGET_DIR: ${{ runner.temp }}\native-mount-target
-          SDK_ARTIFACT_DIR: ${{ runner.temp }}\native-mount-artifacts
+          SDK_ARTIFACT_DIR: ${{ runner.temp }}/native-mount-artifacts
         run: .\scripts\qualify-native-mount.ps1 -Backend '${{ matrix.backend }}'
       - name: Retain native-mount qualification
         if: matrix.backend
@@ -272,44 +183,14 @@ jobs:
           GRAPHCODER_TEST_BINARY: ${{ runner.temp }}/release/${{ matrix.target }}/graphcoder${{ endsWith(matrix.executable, '.exe') && '.exe' || '' }}
         run: node scripts/test-install-release-asset.mjs
 
-      - name: Decide native compiler cache save
-        id: compiler-cache
-        shell: bash
-        env:
-          PRIMARY_CACHE_KEY: ${{ steps.rust-cache.outputs.compiler-key }}
-          MATCHED_CACHE_KEY: ${{ steps.rust-cache.outputs.compiler-matched-key }}
-        run: node scripts/cache-save-decision.mjs "$PRIMARY_CACHE_KEY" "$MATCHED_CACHE_KEY" "$RUNNER_TEMP/native-build-timings/sccache.json"
-      - name: Save native compiler output
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.rust-cache.outputs.compiler-key != '' && steps.compiler-cache.outputs.save == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/sccache
-          key: ${{ steps.rust-cache.outputs.compiler-key }}
-      - name: Save native Cargo downloads
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.rust-cache.outputs.downloads-key != '' && steps.rust-cache.outputs.downloads-hit != 'true'
+      - name: Save Bazel caches
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.bazel-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ steps.rust-cache.outputs.downloads-key }}
-
-  sdk-qualification:
-    name: Full SDK qualification
-    uses: ./.github/workflows/qualification.yml
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: read
-    with:
-      source_ref: ${{ inputs.source_sha }}
-
-  agent-host-qualification:
-    name: Agent host qualification
-    uses: ./.github/workflows/agent-host-qualification.yml
-    with:
-      source_ref: ${{ inputs.source_sha }}
+            ~/.cache/bazel-disk
+            ~/.cache/bazel-repository-cache
+          key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
 
   installer-recovery:
     name: Transactional installer recovery
@@ -349,7 +230,7 @@ jobs:
 
   assemble:
     name: Validate and assemble
-    needs: [ build, sdk-qualification, agent-host-qualification, installer-recovery ]
+    needs: [ build, installer-recovery ]
     runs-on: kaizen-linux
     permissions:
       actions: read
@@ -367,11 +248,6 @@ jobs:
         with:
           node-version: 24.15.0
           registry-url: https://registry.npmjs.org
-      - id: qualification
-        name: Freeze qualified lane artifacts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/release-qualification-artifacts.mjs
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: acyclic-*
@@ -499,4 +375,4 @@ jobs:
         run: echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
     outputs:
       attempt: ${{ steps.identity.outputs.attempt }}
-      artifacts: ${{ steps.qualification.outputs.artifacts }}
+      artifacts: '{}'

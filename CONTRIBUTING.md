@@ -285,27 +285,18 @@ manifest consistency without compiling. Heavy checks run only through
 **SDK Release** on main; [CI and releases](docs/ci-releases.md) documents
 its dispatch and recovery steps.
 
-`.github/workflows/qualification.yml` executes every lane in
-`.github/qualification-lanes.json` at the frozen release source. The graph
-includes Rust, docs/generation, policy, TypeScript/package, native, musl and
-browser checks. There is no fingerprinting or prior-run lane reuse. Runner and
-worker counts in the registry control compilation and test parallelism.
-
-Dependency/tool caches and sccache reuse compiler objects without skipping
-qualification; only main saves compiler caches. Windows Rust caches dependency
-build artifacts in its workspace target directory, keyed by the toolchain,
-manifests and lockfiles. Other lanes use sccache without caching Cargo targets.
-Job summaries report command/test timings and cache hit rates.
-Timing artifacts expire after three days, or thirty for release runs; coverage
-uploads expire after one. Windows qualification enables and exercises ProjFS.
+Qualification runs in the Foreman build system on Bazel. The repository's GitHub
+Actions are deploy and the single SDK Static job; there are no Cargo
+qualification lanes. Bazel's disk and repository caches reuse compiler and
+dependency work without skipping qualification.
 
 Linux retains tested Rust and TypeScript archives with exact-source receipts
 and SHA-256 inventories. Native binding producers retain their host-qualified
 ABI-tested companions; cross-target checks do not produce those artifacts.
-SDK Release requires all qualification and native builds before assembly,
-which verifies native receipts, installation and evidence. Publication is
-explicit and consumes that run's admitted bytes without rebuilding. Retry failed
-jobs in the same run to preserve source and artifact identity.
+SDK Release builds its release targets with Bazel before assembly, which
+verifies native receipts, installation and evidence. Publication is explicit
+and consumes that run's admitted bytes without rebuilding. Retry failed jobs in
+the same run to preserve source and artifact identity.
 
 Public contracts originate here. A service implementation may validate a
 candidate commit, but it must not maintain a competing customer schema.

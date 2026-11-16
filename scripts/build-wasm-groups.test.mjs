@@ -136,13 +136,13 @@ test("failed generation starts no WASM group", async () => {
   }
 });
 
-for (const wrapper of ["", "sccache"]) for (const failure of [undefined, "stream", "spawn", "multiple", "root-multiple"]) {
-  test(`WASM groups join every child: ${failure ?? "success"}, wrapper=${wrapper || "disabled"}`, async () => {
+for (const failure of [undefined, "stream", "spawn", "multiple", "root-multiple"]) {
+  test(`WASM groups join every child: ${failure ?? "success"}`, async () => {
     const calls = [];
     const completed = [];
     const paths = new Set();
     let live = 0, budget = 0, maximum = 0, generations = 0;
-    const state = { execPath: "fixture-node", env: { RUSTC_WRAPPER: wrapper, CARGO_BUILD_JOBS: "16" }, exitCode: 0 };
+    const state = { execPath: "fixture-node", env: { CARGO_BUILD_JOBS: "16" }, exitCode: 0 };
     const errors = [];
     const runCommand = (executable, args, options) => {
       assert.equal(executable, state.execPath);
@@ -155,7 +155,6 @@ for (const wrapper of ["", "sccache"]) for (const failure of [undefined, "stream
       assert.equal(generations, 1, "shared generation must finish once before any group starts");
       assert.equal(options.env.ACYCLIC_WASM_GROUPS_PREPARED, "1");
       assert.equal(args[0], "scripts/build-wasm.mjs");
-      assert.equal(options.env.RUSTC_WRAPPER, wrapper);
       const name = args[1];
       const directory = name === "harness" ? "harness-wasm"
         : ["actors", "stream"].includes(name)
@@ -197,18 +196,6 @@ for (const wrapper of ["", "sccache"]) for (const failure of [undefined, "stream
     assert.equal(state.env.CARGO_BUILD_JOBS, "16");
   });
 }
-
-test("Windows retains all check commands after grouped WASM builds with the wrapper disabled", () => {
-  const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
-  const block = script.slice(script.indexOf("$rustcWrapper = $env:RUSTC_WRAPPER", script.indexOf("$wasmBindgenRoot")), script.indexOf("$StreamNativeRoot"));
-  const commands = ["Remove-Item Env:RUSTC_WRAPPER", "node scripts/build-wasm-groups.mjs", "bun x tsc -b --force --pretty false", "bun x tsc -p scripts --pretty false", "bun run check:docs", "} finally {"];
-  let previous = -1;
-  for (const command of commands) {
-    const index = block.indexOf(command);
-    assert.ok(index > previous, command); previous = index;
-  }
-  assert.ok(block.includes("$env:RUSTC_WRAPPER = $rustcWrapper"));
-});
 
 test("WASM builds reject manual JS byte copies outside the snapshot boundary", () => {
   checkByteSnapshotBoundary("rust/crates/harness/src/wasm");

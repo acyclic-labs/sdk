@@ -179,10 +179,7 @@ pub fn execute_examples(
                 directory.join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
             );
         }
-        command
-            .env_remove("RUSTC_WRAPPER")
-            .env_remove("RUSTC_WORKSPACE_WRAPPER")
-            .env_remove("ACYCLIC_LOOM");
+        command.env_remove("ACYCLIC_LOOM");
         let output = command.run_output().map_err(|e| e.to_string())?;
         if !output.status.success() {
             return Err(format!(

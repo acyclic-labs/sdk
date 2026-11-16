@@ -104,11 +104,6 @@ JSON.parse = (text, ...args) => {
     assert.notEqual(run().status, 0);
     assert.equal(receipt().status, "failed");
     assert.equal(receipt().phase, "imports");
-    const summary = spawnSync(process.execPath, [fileURLToPath(new URL("ci-summary.mjs", import.meta.url)), join(root, "diagnostics/observability")], {
-      encoding: "utf8", env: { ...process.env, GITHUB_RUN_ID: "another-run", CI_HEAD_SHA: sourceSha },
-    });
-    assert.notEqual(summary.status, 0);
-    assert.match(summary.stderr, /timings belong to another run\/source/);
     put("scripts/generate-inference-defaults.mjs", 'export const render = () => ({});');
     put("candidate.txt", "current\n");
     assert.equal(run().status, 0);
@@ -169,23 +164,6 @@ JSON.parse = (text, ...args) => {
     assert.equal(receipt().status, "incomplete", "abrupt termination must not reuse the previous success");
     assert.equal(receipt().phase, "metadata");
     assert.equal(receipt().source_commit, sourceSha);
-    const incompleteSummary = spawnSync(process.execPath, [fileURLToPath(new URL("ci-summary.mjs", import.meta.url)), join(root, "diagnostics/observability")], { env, encoding: "utf8" });
-    assert.equal(incompleteSummary.status, 0, incompleteSummary.stderr);
-    assert.match(incompleteSummary.stdout, /incomplete/);
-    assert.match(incompleteSummary.stdout, /metadata/);
-    assert.match(incompleteSummary.stdout, new RegExp(sourceSha));
-    for (const replacement of [
-      { status: "success", source_commit: null },
-      { source_commit: "another-source" },
-      { run_id: "another-run" },
-    ]) {
-      const incomplete = receipt();
-      put("diagnostics/observability/generated-contracts.json", JSON.stringify({ ...incomplete, ...replacement }));
-      const rejected = spawnSync(process.execPath, [fileURLToPath(new URL("ci-summary.mjs", import.meta.url)), join(root, "diagnostics/observability")], { env, encoding: "utf8" });
-      assert.notEqual(rejected.status, 0);
-      assert.match(rejected.stderr, /timings belong to another run\/source/);
-      put("diagnostics/observability/generated-contracts.json", JSON.stringify(incomplete));
-    }
     assert.equal(readFileSync(join(root, "contract.txt"), "utf8"), "current\n");
     put("metadata", metadataReplay);
     // Two renderers share the exact Cargo artifact and execute it once. Both
