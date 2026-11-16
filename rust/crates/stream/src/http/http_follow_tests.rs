@@ -644,10 +644,7 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         (2, 9, 1, 1)
     );
     assert_eq!((auth_root, auth_exchange, auth_append), (3, 4, 2));
-    assert_eq!(
-        completed.iter().filter(|(id, ..)| *id == parent).count(),
-        1
-    );
+    assert_eq!(completed.iter().filter(|(id, ..)| *id == parent).count(), 1);
     assert_eq!(resolutions.load(std::sync::atomic::Ordering::SeqCst), 3);
     Ok(())
 }

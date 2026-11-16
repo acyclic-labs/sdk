@@ -685,10 +685,7 @@ async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_
                 ),
                 (1, 1)
             );
-            assert_eq!(
-                completed.iter().filter(|(id, ..)| *id == parent).count(),
-                1
-            );
+            assert_eq!(completed.iter().filter(|(id, ..)| *id == parent).count(), 1);
             assert_eq!(
                 completed
                     .iter()
