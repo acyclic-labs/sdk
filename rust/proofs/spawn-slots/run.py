@@ -115,7 +115,7 @@ try:
     (args.evidence / "inputs.json").write_text(json.dumps(inputs, sort_keys=True))
     run("toolchain", ["rustc", "--version", "--verbose"])
     env = os.environ.copy()
-    env.update(PROPTEST_RNG_SEED="1697", CARGO_INCREMENTAL="0",
+    env.update(PROPTEST_RNG_SEED="1697",
                CARGO_PROFILE_TEST_DEBUG="0", CARGO_PROFILE_DEV_DEBUG="0")
     os.environ.update(env)
     if args.mode == "check":

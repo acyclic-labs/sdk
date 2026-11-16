@@ -34,7 +34,6 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 20
     env:
-      CARGO_INCREMENTAL: 0
       SCCACHE_IDLE_TIMEOUT: '0'
       SCCACHE_CACHE_SIZE: ${{ matrix.platform.cache_size }}
       RUSTC_WRAPPER: sccache

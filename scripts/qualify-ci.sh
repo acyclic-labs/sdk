@@ -435,6 +435,8 @@ case "$lane" in
     # leaves a BUILD.bazel stale fails qualification before it can land.
     node scripts/bazel-build-files.mjs check
     cargo metadata --format-version 1 >/dev/null && git diff --exit-code -- Cargo.lock
+    node --test scripts/check-incremental.test.mjs
+    node scripts/check-incremental.mjs
     node --test scripts/test-publish-cargo-crates.mjs
     node --test scripts/test-publish-npm-packages.mjs
     node --experimental-vm-modules --test scripts/static-policy.test.mjs scripts/static-ci.test.mjs scripts/javascript-syntax.test.mjs scripts/check-boundaries.test.mjs

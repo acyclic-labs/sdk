@@ -41,8 +41,8 @@ export function validBuildInputs(family = "stream") {
     },
     profile: {
       name: "release",
-      cargo_incremental: "0",
-      release_incremental: "false",
+      cargo_incremental: null,
+      release_incremental: null,
       manifest_sha256: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       config_sha256: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     },

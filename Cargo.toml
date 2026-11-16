@@ -349,7 +349,6 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 strip = true
-incremental = false
 
 [profile.wasm-release]
 inherits = "release"

@@ -2,8 +2,12 @@ import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import {pinnedActions} from './static-policy.mjs';
 import {checkJavaScript, requireSyntaxRuntime} from './javascript-syntax.mjs';
+import {checkIncremental} from './check-incremental.mjs';
 
 requireSyntaxRuntime();
+
+const incremental=checkIncremental();
+if(incremental.length)throw new Error(incremental.join('\n'));
 
 const all=execFileSync('git',['ls-files','-z','--','.',':!managed-agents'],{ maxBuffer: Infinity,encoding:'utf8'}).split('\0').filter(file=>file && fs.existsSync(file));
 const git=(...args)=>execFileSync('git',args,{ maxBuffer: Infinity,encoding:'utf8'}).trim();
