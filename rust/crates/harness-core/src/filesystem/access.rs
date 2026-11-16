@@ -105,7 +105,11 @@ pub(in crate::filesystem) fn whole_volume_payload(
 }
 
 pub(crate) fn access_now() -> Result<u64> {
-    acyclic_fs::access::unix_seconds(acyclic_stream::SystemUnixMillisClock.now_unix_millis())
+    access_now_at(acyclic_stream::SystemUnixMillisClock.now_unix_millis())
+}
+
+pub(crate) fn access_now_at(unix_millis: u64) -> Result<u64> {
+    acyclic_fs::access::unix_seconds(unix_millis)
         .map_err(|_| Error::FilesystemAccessConfiguration("access clock is unavailable"))
 }
 
@@ -114,7 +118,16 @@ pub(crate) fn require_unrestricted(
     actions: &[Action],
     surface: &'static str,
 ) -> Result<()> {
-    if view.allows_every_path(actions, access_now()?) {
+    require_unrestricted_at(view, actions, surface, access_now()?)
+}
+
+pub(crate) fn require_unrestricted_at(
+    view: &PathTrie,
+    actions: &[Action],
+    surface: &'static str,
+    now: u64,
+) -> Result<()> {
+    if view.allows_every_path(actions, now) {
         Ok(())
     } else {
         Err(Error::FilesystemAccessConfiguration(surface))
@@ -127,7 +140,17 @@ pub(in crate::filesystem) fn require(
     path: &str,
     io: &PreparationIo,
 ) -> Result<()> {
-    if view.decide(action, path, access_now()?).allowed {
+    require_at(view, action, path, io, access_now()?)
+}
+
+pub(in crate::filesystem) fn require_at(
+    view: &PathTrie,
+    action: Action,
+    path: &str,
+    io: &PreparationIo,
+    now: u64,
+) -> Result<()> {
+    if view.decide(action, path, now).allowed {
         Ok(())
     } else {
         Err(stock_boundary(

@@ -185,7 +185,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         guard().await?;
-        super::super::access::require(&view.0, Action::List, request.path, io)?;
+        super::super::access::require_at(&view.0, Action::List, request.path, io, self.access_now()?)?;
         let data_access = super::super::access::selected_data_access(
             &workspace,
             generation,
@@ -195,7 +195,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         if let Some((_, view)) = &data_access {
-            super::super::access::require(&view.0, Action::List, request.path, io)?;
+            super::super::access::require_at(&view.0, Action::List, request.path, io, self.access_now()?)?;
         }
         Ok(DirectorySelection {
             workspace,
@@ -276,7 +276,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 items_examined: incoming.0.entries.len() as u64,
                 ..Default::default()
             })?;
-            let now = super::super::access::access_now()?;
+            let now = self.access_now()?;
             let removed = filter_page(&mut incoming.0, parent, data_parent, now);
             incoming.1.substitute(incoming.1.bytes() - removed)?;
             if incoming.0.entries.is_empty()
