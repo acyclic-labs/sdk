@@ -83,13 +83,20 @@ async fn family(
 async fn family_with(
     executors: Arc<dyn TurnExecutors>,
 ) -> TestResult<(Binding, AgentPath, Vec<AgentState>)> {
-    let (bound, parent) = crate::filesystem::hosting::binding_with(
+    family_under(
         executors,
         ApprovalPolicy {
             approvers: vec![Approver::Parent],
         },
     )
-    .await?;
+    .await
+}
+
+async fn family_under(
+    executors: Arc<dyn TurnExecutors>,
+    policy: ApprovalPolicy,
+) -> TestResult<(Binding, AgentPath, Vec<AgentState>)> {
+    let (bound, parent) = crate::filesystem::hosting::binding_with(executors, policy).await?;
     let sender = Sender::User {
         principal: "human".into(),
     };
@@ -505,11 +512,15 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
     Ok(())
 }
 
-#[tokio::test]
-async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestResult {
-    let (bound, parent, children, reviewer) = family(["allow", "deny"]).await?;
+/// Each child asks `parent`, whose review of that page saves both decisions
+/// and is then lost before its checkpoint or wakes commit.
+async fn decided_without_wakes(
+    bound: &Binding,
+    parent: &AgentPath,
+    children: &[AgentState],
+) -> TestResult<(AgentState, Vec<u64>, Vec<u64>, crate::agent::IntentId)> {
     let turns = bound.turns();
-    let parent_before = bound.agents().state(&parent).await?;
+    let parent_before = bound.agents().state(parent).await?;
     let id = crate::InteractionId::from_bytes([81; 16]);
     let request_id = crate::agent::IntentId::try_from(crate::approvals::agent_request_id(id))?;
     let mut delivered = Vec::new();
@@ -539,7 +550,7 @@ async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestR
         let Delivered::Committed { inbox } = bound
             .agents()
             .send(
-                &parent,
+                parent,
                 &Sender::Agent {
                     path: child.path.clone(),
                 },
@@ -564,19 +575,28 @@ async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestR
         .await?;
     assert!(prepared.summary.is_none());
     assert_eq!(prepared.outs.len(), 2);
-    assert_eq!(reviewer.request_count(), 2);
     // Durable approval files survived, but the actor checkpoint/wakes did not commit.
     drop(prepared);
     assert!(
         !bound
             .agents()
-            .input_progress(&parent, delivered[0])
+            .input_progress(parent, delivered[0])
             .await?
             .settled
     );
     for (child, original) in children.iter().zip(&child_tails) {
         assert_eq!(turns.stream.tail(child.path.inbox()?).await?, *original);
     }
+    Ok((parent_before, delivered, child_tails, request_id))
+}
+
+#[tokio::test]
+async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestResult {
+    let (bound, parent, children, reviewer) = family(["allow", "deny"]).await?;
+    let turns = bound.turns();
+    let (parent_before, delivered, child_tails, request_id) =
+        decided_without_wakes(&bound, &parent, &children).await?;
+    assert_eq!(reviewer.request_count(), 2);
     let reopen = || -> TestResult<_> {
         let handler = crate::agent::AgentHandler::new(
             crate::agent::actor_store(&turns.stream)?,
@@ -632,6 +652,85 @@ async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestR
     );
     for (child, original) in children.iter().zip(&child_tails) {
         assert_eq!(turns.stream.tail(child.path.inbox()?).await?, original + 1);
+    }
+    Ok(())
+}
+
+/// An archive lands after a page's decisions are saved and before its wakes
+/// are published. The archived parent keeps each saved answer, refusing none
+/// of them anew, and the page finishes by publishing every original wake.
+#[tokio::test]
+async fn an_archive_between_saved_decisions_and_their_wakes_keeps_the_answers() -> TestResult {
+    let (bound, parent, children, reviewer) = family(["allow", "deny"]).await?;
+    let turns = bound.turns();
+    let (_, delivered, child_tails, request_id) =
+        decided_without_wakes(&bound, &parent, &children).await?;
+    let sender = Sender::User {
+        principal: "human".into(),
+    };
+    let crate::agent::Submitted::Committed(_) = crate::agent::submit(
+        &*turns.stream,
+        crate::agent::archive(
+            &parent,
+            &sender,
+            &crate::agent::IntentId::try_from("close")?,
+            bound.agents().activation(&parent)?,
+        )?,
+    )
+    .await?
+    else {
+        return Err("the parent's archive did not commit".into());
+    };
+    let handler = crate::agent::AgentHandler::new(
+        crate::agent::actor_store(&turns.stream)?,
+        crate::agent::ExecutorDriver::new(turns.clone()),
+        acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+    )?
+    .with_close();
+    let reopened = bound.agents().rehosted(
+        acyclic_actors::guest::Requests::default(),
+        Arc::new(handler),
+        Arc::new(acyclic_actors::local::SystemClock),
+        Some(bound.composer()),
+    )?;
+    reopened.drain(&parent).await?;
+    let archived = reopened.state(&parent).await?;
+    assert!(archived.closed);
+    assert!(
+        archived.approval_control.is_none(),
+        "the interrupted page never finished"
+    );
+    for inbox in delivered {
+        assert!(reopened.input_progress(&parent, inbox).await?.settled);
+    }
+    assert_eq!(
+        reviewer.request_count(),
+        2,
+        "the saved answers were reviewed again"
+    );
+    for (child, original) in children.iter().zip(&child_tails) {
+        let tail = turns.stream.tail(child.path.inbox()?).await?;
+        let mut records = turns
+            .stream
+            .read(ReadRequest {
+                key: None,
+                path: child.path.inbox()?,
+                from: *original,
+                limit: u32::try_from(tail - original)?,
+                at_least: Default::default(),
+            })
+            .await?;
+        let mut wakes = 0;
+        while let Some(record) = records.try_next().await? {
+            if InboxRecord::decode(&record.value)?
+                == InboxRecord::Approval(Approval {
+                    id: request_id.clone(),
+                })
+            {
+                wakes += 1;
+            }
+        }
+        assert_eq!(wakes, 1, "the saved answer's wake was not published once");
     }
     Ok(())
 }
@@ -883,4 +982,193 @@ async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_r
         "settled replay repeated model work"
     );
     Ok(())
+}
+
+/// A child asks a parent that can no longer run a turn. The parent's own
+/// review step refuses as that parent, with no model call and no volume read,
+/// and wakes the child: no ask is accepted and then dropped.
+async fn ended_parent_refuses(archived: bool) -> TestResult {
+    use crate::{
+        agent::{IntentId, Phase},
+        filesystem::Grants,
+        model::{ModelEvent, ToolCall},
+        test_support::ScriptedEvent,
+    };
+    struct ChildContext(Grants);
+    impl TurnContext for ChildContext {
+        fn prepare<'a>(
+            &'a self,
+            composed: (crate::executor::StockExecutor, Limits),
+            agent: &'a AgentState,
+            turn: OperationId,
+            input: &'a ModelContent,
+            authority: &'a TurnAuthority,
+        ) -> BoxFuture<'a, crate::Result<crate::executor::StockExecutor>> {
+            if agent.parent.is_none() {
+                // The parent's one turn fails for good, so the parent settles Done.
+                return Box::pin(async { Err(Error::Invalid("the parent completes".into())) });
+            }
+            self.0.prepare(composed, agent, turn, input, authority)
+        }
+    }
+    let model = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                    "write-result".into(),
+                    "write".into(),
+                    serde_json::json!({
+                        "path": "result.txt",
+                        "content": "refused source bytes",
+                        "ifVersion": "absent",
+                    }),
+                ))),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: serde_json::Value::Null,
+                }),
+            ]),
+            ScriptedTurn::Text("refused action settled".into()),
+            ScriptedTurn::Text("none".into()),
+        ])
+        .reading_content(),
+    );
+    let executors = StockExecutors::new(
+        (
+            Model::new("test".into(), "worker".into(), "1".into())?,
+            model.clone(),
+        ),
+        crate::tools::registry(&["write".into()], |_| true, Vec::new())?,
+        (
+            Limits::default(),
+            crate::context::CompactionPolicy::Disabled,
+        ),
+        Arc::new(ChildContext(Grants(vec![
+            crate::contract::capability::tool_call("write"),
+        ]))),
+    )
+    .with_models(original_models(model.clone()));
+    // A later human could approve every child action, so a refusal shows the
+    // ended parent decided it, not an exhausted chain.
+    let (bound, parent, children) = family_under(
+        Arc::new(executors),
+        ApprovalPolicy {
+            approvers: vec![
+                Approver::Parent,
+                Approver::Human {
+                    principal: "human".into(),
+                },
+            ],
+        },
+    )
+    .await?;
+    let child = &children[0];
+    let turns = bound.turns();
+    let sender = Sender::User {
+        principal: "human".into(),
+    };
+    let message = |id: &'static str, text: &'static str, to: AgentPath| {
+        let bound = &bound;
+        let sender = sender.clone();
+        async move {
+            let id = IntentId::try_from(id)?;
+            let body = bound
+                .stage_text(&to, "message", &sender, &id, (id.as_str(), text))
+                .await?;
+            bound
+                .agents()
+                .send(
+                    &to,
+                    &sender,
+                    &InboxRecord::Message(crate::agent::Message {
+                        from: sender.clone(),
+                        id,
+                        body: Box::new(body),
+                        re: None,
+                        attachments: None,
+                    }),
+                )
+                .await?;
+            TestResult::Ok(())
+        }
+    };
+    if archived {
+        // Only the parent's inbox closes; its child stays open until the
+        // parent's own closing step archives it, so the child can still ask.
+        let id = IntentId::try_from("close")?;
+        let crate::agent::Submitted::Committed(_) = crate::agent::submit(
+            &*turns.stream,
+            crate::agent::archive(&parent, &sender, &id, bound.agents().activation(&parent)?)?,
+        )
+        .await?
+        else {
+            return Err("the parent's archive did not commit".into());
+        };
+    } else {
+        message("finish", "finish", parent.clone()).await?;
+        bound.agents().drain(&parent).await?;
+        assert!(
+            matches!(
+                bound.agents().state(&parent).await?.phase,
+                Phase::Done { .. }
+            ),
+            "the parent did not complete"
+        );
+    }
+    message("work", "write the result file", child.path.clone()).await?;
+    bound.agents().drain(&child.path).await?;
+    let paused = bound.agents().state(&child.path).await?;
+    let Phase::WaitingApproval { id, .. } = &paused.phase else {
+        return Err("the child did not ask its parent".into());
+    };
+    let asked = model.request_count();
+    bound.agents().drain(&parent).await?;
+    assert_eq!(
+        model.request_count(),
+        asked,
+        "an ended parent dispatched a review"
+    );
+    assert!(
+        turns
+            .decided_approval(&paused, id, &format!("parent:{}", parent.id()))
+            .await?
+            .is_some(),
+        "the ended parent left its child's ask unanswered"
+    );
+    bound.agents().drain(&child.path).await?;
+    let settled = bound.agents().state(&child.path).await?;
+    // A gone parent refuses the action even if a later human could approve it.
+    assert!(
+        settled.turn.is_none(),
+        "the child still waits on its parent"
+    );
+    if archived {
+        // The parent's closing step archived the child before it admitted the
+        // ask, so the child's archive precedes the refusal in its inbox: its
+        // turn ends by that archive, never by an unanswered wait.
+        assert!(settled.closed);
+    } else {
+        // Refusal is a tool failure: the waiting call fails as denied and the
+        // model continues the same turn to its settled answer.
+        assert!(matches!(settled.phase, Phase::Idle));
+        let requests = model.requests();
+        let [first, resumed, ..] = requests.as_slice() else {
+            return Err("the refused turn did not continue".into());
+        };
+        assert!(!format!("{first:?}").contains("denied"));
+        assert!(
+            format!("{resumed:?}").contains("denied"),
+            "the refused call did not fail as denied"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_ask_to_a_completed_parent_is_refused_as_a_tool_failure() -> TestResult {
+    ended_parent_refuses(false).await
+}
+
+#[tokio::test]
+async fn an_ask_in_flight_to_an_archived_parent_is_refused() -> TestResult {
+    ended_parent_refuses(true).await
 }
