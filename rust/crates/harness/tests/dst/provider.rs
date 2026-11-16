@@ -1,6 +1,7 @@
 //! Provider requests: the canonical history only grows, except when a context
 //! rewrite is applied, and a length stop continues the turn instead of
-//! settling it.
+//! settling it. The dialect dimension names the provider projection that
+//! consumes this shared canonical request.
 use super::*;
 use acyclic_harness::{
     model::{
