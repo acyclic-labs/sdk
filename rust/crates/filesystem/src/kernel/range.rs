@@ -407,9 +407,13 @@ impl<T, P: Fn(ExtentSlice) -> T> RangeMachine<T, P> {
                                 }
                                 let kind = clip_kind(extent.kind.clone(), start - extent.offset)
                                     .map_err(range_failure)?;
+                                // Growth never reserves past the admitted span
+                                // count; an absent maximum grows without one.
                                 self.spans_capacity.ensure_for_push_with_accounting(
                                     &mut self.spans,
-                                    usize::MAX,
+                                    self.input
+                                        .maximum_spans
+                                        .map_or(usize::MAX, |maximum| maximum as usize),
                                     &mut self.spans_custody,
                                     accounting,
                                 )?;
