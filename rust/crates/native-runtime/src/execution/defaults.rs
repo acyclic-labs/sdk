@@ -15,6 +15,8 @@ pub(super) fn runtime_read_roots() -> io::Result<Vec<PathBuf>> {
         "/lib",
         "/lib64",
         "/etc/ld.so.cache",
+        // Login shells read the system profile before running any command.
+        "/etc/profile",
         // Crypto runtimes read their public configuration during startup.
         // Grant the files, never the adjacent private-key directories.
         "/etc/ssl/openssl.cnf",
