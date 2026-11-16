@@ -1,5 +1,5 @@
 //! A price-selected estimate over the original committed usage, never an invoice.
-use super::{ModelTokenUsage, ModelUsageRecord};
+use super::{ModelAbandonedOutput, ModelTokenUsage, ModelUsageRecord};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, collections::BTreeMap};
 
