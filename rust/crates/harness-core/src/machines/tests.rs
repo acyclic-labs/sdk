@@ -467,3 +467,118 @@ async fn create_requires_explicit_network_policy_and_provider_ownership() -> Res
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn one_heap_scope_admits_each_actors_machine_on_its_own_private_volume() -> Result<()> {
+    use crate::{
+        agent::AgentId,
+        contract::capability::{HARNESS_HOST, tool_call},
+        conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef, private_volume},
+        core::{AggregateKind, Authority, AuthorityRoot, RuntimeAuthority, Scope},
+    };
+    let root = AuthorityRoot::new(
+        "guest-heap",
+        [107; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "guest-heap".into(),
+        },
+    );
+    let issuer = RuntimeAuthority::from(root.clone());
+    let shell = tool_call("shell");
+    // The reference host's heap grant: no actor's volume, a whole-volume ceiling.
+    let heap = root.bootstrap_scope(
+        "heap",
+        &crate::Capabilities::new([
+            HARNESS_HOST.to_owned(),
+            acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
+                .to_scope_label()
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            shell.clone(),
+        ]),
+        None,
+        &mut None,
+    )?;
+    let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
+    let a = private_volume(provider.clone(), &AgentId::hosted_root("a"))?;
+    let b = private_volume(provider.clone(), &AgentId::hosted_root("b"))?;
+    let provider_ref =
+        ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
+    let host = MachinesHost::new(Arc::new(SimulatedMachines::default()), provider_ref.clone())?;
+    let machine = |seed: u8, volume: &VolumeRef| -> Result<(SandboxRef, MachineObservation)> {
+        let sandbox = SandboxRef::new(provider_ref.clone(), vec![seed; 16], None)?;
+        Ok((
+            sandbox.clone(),
+            MachineObservation {
+                id: host.machine_id(&sandbox)?,
+                state: acyclic_machines::MachineState::Running,
+                contract: acyclic_machines::MachineContract {
+                    image: Image::custom([1; 32]).map_err(Error::Machines)?,
+                    selected_volume_ref: Some(volume.into()),
+                    capabilities: Default::default(),
+                    compatibility: acyclic_machines::CompatibilityPolicy::BestEffort,
+                    compatibility_revision: [1; 32],
+                    suspension: acyclic_machines::SuspensionPolicy::Manual,
+                    expiration: acyclic_machines::ExpirationPolicy::Never,
+                    network_policy_digest: [2; 32],
+                    budgets: Default::default(),
+                    platform: acyclic_machines::SIMULATED_PLATFORM,
+                    lifecycle: acyclic_machines::LifecycleClass::Provisioned,
+                },
+                endpoints: Vec::new(),
+                last_checkpoint: None,
+                created_at_unix_ms: 1,
+                changed_at_unix_ms: 1,
+            },
+        ))
+    };
+    let open = |seed: u8, volume: &VolumeRef, scope: &Scope| -> Result<MachinesWorkspace> {
+        let (sandbox, admitted) = machine(seed, volume)?;
+        MachinesWorkspace::new(
+            host.clone(),
+            sandbox,
+            admitted,
+            volume,
+            scope.copy(&mut None)?,
+            root.verifier(&mut None)?,
+        )
+    };
+    // The heap scope alone names neither actor's volume.
+    assert!(matches!(open(1, &a, &heap), Err(Error::Unauthorized(_))));
+    for (seed, own, other) in [(1, &a, &b), (2, &b, &a)] {
+        let child = agent_workspace_scope(&issuer, &heap, own).await?;
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            assert!(
+                child
+                    .capabilities()
+                    .contains(&own.capability(operation, &mut None)?)
+            );
+            assert!(
+                !child
+                    .capabilities()
+                    .contains(&other.capability(operation, &mut None)?)
+            );
+        }
+        assert!(child.capabilities().contains(&shell));
+        assert!(!child.capabilities().contains(HARNESS_HOST));
+        assert_eq!(open(seed, own, &child)?.selected_volume().id(), own.id());
+        // One actor's workload never opens another actor's Machine.
+        assert!(matches!(
+            open(seed, other, &child),
+            Err(Error::Unauthorized(_))
+        ));
+    }
+    // A selection that is no agent's private volume derives nothing.
+    let project = VolumeRef::new(
+        provider,
+        "project".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("project".into()),
+        &mut None,
+    )?;
+    assert!(matches!(
+        agent_workspace_scope(&issuer, &heap, &project).await,
+        Err(Error::Unauthorized(_))
+    ));
+    Ok(())
+}

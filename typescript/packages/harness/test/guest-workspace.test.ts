@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { BinaryWriter, WireType } from "@bufbuild/protobuf/wire";
 import { loadWasmModule } from "../../actors/src/client.js";
 import { initializeClientQueries } from "../src/client-query.js";
@@ -10,25 +9,29 @@ import { initializeFixtureAuthority } from "../../../../rust/crates/conformance/
 import { hostFixtureWorkspaceGrants } from "../../../../rust/crates/conformance/cloudflare/generated/acyclic_cloudflare_conformance.js";
 
 const LD = WireType.LengthDelimited, V = WireType.Varint;
-const volume = new Uint8Array(readFileSync(new URL("../../../../rust/codec-fuzz/corpus/protobuf/acyclic.harness.v2.VolumeRef-project", import.meta.url))).subarray(8);
+// Each actor's Machine selects its own agent's private volume.
+const privateVolume = (machine: number) => new BinaryWriter()
+  .tag(1, LD).fork().tag(1, LD).string("acyclic").tag(2, LD).string("filesystem").tag(3, LD).string("1").join()
+  .tag(2, LD).string("private").tag(3, V).int32(2)
+  .tag(4, LD).fork().tag(2, LD).string(machine.toString(16).padStart(32, "0")).join().finish();
 const provider = new BinaryWriter().tag(1, LD).string("acyclic").tag(2, LD).string("machines").tag(3, LD).string("1").finish();
 function observation(machine: number) {
   const contract = new BinaryWriter()
     .tag(1, LD).fork().tag(1, V).int32(2).tag(3, LD).bytes(new Uint8Array(32).fill(1)).join()
     .tag(3, LD).fork().tag(1, V).int32(1).join().tag(4, LD).bytes(new Uint8Array(32).fill(1))
     .tag(6, LD).fork().tag(1, V).bool(true).join().tag(7, LD).fork().tag(1, V).int32(1).join()
-    .tag(8, LD).bytes(new Uint8Array(32).fill(2)).tag(9, LD).fork().join().tag(10, LD).bytes(volume)
+    .tag(8, LD).bytes(new Uint8Array(32).fill(2)).tag(9, LD).fork().join().tag(10, LD).bytes(privateVolume(machine))
     .tag(11, LD).fork().tag(1, V).int32(1).tag(2, V).int32(1).tag(3, V).int32(1).tag(4, V).int32(1).tag(5, V).int32(1).join()
     .tag(12, V).int32(1).finish();
   return new BinaryWriter().tag(1, LD).fork().tag(1, LD).bytes(new Uint8Array(16).fill(machine)).join()
     .tag(2, V).int32(2).tag(3, LD).bytes(contract).tag(6, V).uint64(1n).tag(7, V).uint64(1n).finish();
 }
 
-test("one guest heap admits distinct Machines for two actors and re-admits every delivery attempt", async () => {
+test("one guest heap admits two actors' Machines on their own volumes and re-admits every delivery attempt", async () => {
   await initializeFixtureAuthority();
   const fixture = await agentsFixture("00112233-4455-6677-8899-aabbccddeeff", async function* () {
     yield { kind: "content", delta: "completed on admitted workspace" };
-  }, initializeClientQueries, hostFixtureWorkspaceGrants(volume));
+  }, initializeClientQueries, hostFixtureWorkspaceGrants());
   // Root agents select the seeded orchestrator model; script that selection.
   fixture.configure({ provider: "morph", name: "morph-kimik31", revision: "1" });
   const { authority, credential } = await localSessionAuthority([{ name: "actors:/agents", prefix: false, actions: ["actors/invoke"] }]);

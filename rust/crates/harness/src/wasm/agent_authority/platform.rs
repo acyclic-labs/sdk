@@ -289,7 +289,8 @@ export type WasmAuthorityReply<T> = { kind: "ok"; value: T }
 export type WasmScopeDerivation =
     | { kind: "narrow"; capabilities: string[]; agent: string | null }
     | { kind: "private_file_read"; file: WasmFileRefWire; reader: string }
-    | { kind: "private_directory_read"; volume: WasmVolumeRefWire; prefix: string; reader: string };
+    | { kind: "private_directory_read"; volume: WasmVolumeRefWire; prefix: string; reader: string }
+    | { kind: "workload"; journal: WasmVolumeRefWire; volumes: unknown[]; external: WasmFileRefWire[] };
 export interface WasmAuthorityDerivation {
     operation: string;
     deadline_unix_millis: bigint;

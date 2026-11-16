@@ -149,8 +149,13 @@ impl WasmMachinesWorkspace {
                 })?;
             VolumeRef::try_from(selected).map_err(super::js_error)?
         };
+        // The heap's admitted scope serves every actor; this actor's Machine
+        // is checked against its own workload, derived for the selected volume.
+        let signed = crate::machines::agent_workspace_scope(&owner.issuer, scope, &volume)
+            .await
+            .map_err(super::js_error)?;
         let workspace = MachinesHost::new(provider, provider_ref)
-            .and_then(|host| host.workspace(observation, &volume, scope.clone(), verifier))
+            .and_then(|host| host.workspace(observation, &volume, signed, verifier))
             .map_err(super::js_error)?;
         let workspace = providers
             .providers

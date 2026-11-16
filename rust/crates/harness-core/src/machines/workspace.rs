@@ -10,6 +10,57 @@ use crate::{
 use acyclic_machines::{ExecCommand, capture_exec};
 use acyclic_stream::BoxProviderFuture;
 
+/// The scope an Actor-hosted agent's Machine workspace is checked against.
+///
+/// One admitted guest heap serves every actor of its namespace, so its scope
+/// names no single actor's volume: it holds the host's whole-volume
+/// `filesystem:` ceiling. This derives the selected volume's owner's workload
+/// from it ([`ScopeDerivation::Workload`]): read and write on exactly that
+/// agent's private volume, plus the parent's tools (`shell` among them),
+/// without host journal custody. The platform authorises the derivation
+/// against the parent's ceiling; a selection that is not an agent's private
+/// volume is refused before any request.
+///
+/// [`ScopeDerivation::Workload`]: crate::core::ScopeDerivation::Workload
+pub async fn agent_workspace_scope(
+    issuer: &crate::core::RuntimeAuthority,
+    parent: &Scope,
+    volume: &VolumeRef,
+) -> Result<Scope> {
+    use crate::agent::{WorkspaceEntry, WorkspaceRole};
+    use crate::conversation::{PRIVATE_VOLUME, VolumeOwner, journal_volume, private_volume};
+    let refused = || {
+        Error::Unauthorized(
+            "a Machine workspace selects no agent's private volume; recovery: select the actor's private volume at Machine admission"
+                .into(),
+        )
+    };
+    let VolumeOwner::Agent(owner) = volume.owner() else {
+        return Err(refused());
+    };
+    let agent = crate::agent::AgentId::from_bytes(owner.into_bytes());
+    if *volume != private_volume(volume.provider().clone(), &agent)? {
+        return Err(refused());
+    }
+    let journal = journal_volume(volume.provider().clone(), &agent)?;
+    let volumes = [WorkspaceEntry::initial_volume(
+        WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        volume.clone(),
+    )];
+    issuer
+        .delegate(
+            parent,
+            "machine-workspace",
+            crate::core::ScopeDerivation::Workload {
+                journal: &journal,
+                volumes: &volumes,
+                external: &[],
+            },
+        )
+        .await
+}
+
 /// Shell executor for one explicitly admitted machine and volume.
 /// File tools retain the task's existing authenticated content bindings.
 pub struct MachinesWorkspace {
