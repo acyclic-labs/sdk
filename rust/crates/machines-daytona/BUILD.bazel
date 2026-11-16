@@ -34,6 +34,7 @@ rust_library(
     deps = [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/harness-core:acyclic_harness_core",
+        "//rust/crates/harness-http:acyclic_harness_http",
         "//rust/crates/machines:acyclic_machines",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//bytes-1.12.1",
@@ -119,6 +120,7 @@ rust_test(
     ] + [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/harness-core:acyclic_harness_core",
+        "//rust/crates/harness-http:acyclic_harness_http",
         "//rust/crates/harness-providers:acyclic_harness_providers",
         "//rust/crates/machines:acyclic_machines",
         "//rust/crates/stream:acyclic_stream",

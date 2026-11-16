@@ -300,6 +300,7 @@ rust_test(
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-devices:acyclic_harness_devices",
         "//rust/crates/harness-mcp:acyclic_harness_mcp",
+        "//rust/crates/harness-native-settings:acyclic_harness_native_settings",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
@@ -387,6 +388,7 @@ rust_test(
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-devices:acyclic_harness_devices",
         "//rust/crates/harness-mcp:acyclic_harness_mcp",
+        "//rust/crates/harness-native-settings:acyclic_harness_native_settings",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/machines:acyclic_machines",
         "//rust/crates/model-render:acyclic_model_render",
@@ -525,6 +527,7 @@ rust_test(
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-devices:acyclic_harness_devices",
         "//rust/crates/harness-mcp:acyclic_harness_mcp",
+        "//rust/crates/harness-native-settings:acyclic_harness_native_settings",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/machines:acyclic_machines",
         "//rust/crates/model-render:acyclic_model_render",
@@ -664,6 +667,7 @@ rust_binary(
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-devices:acyclic_harness_devices",
         "//rust/crates/harness-mcp:acyclic_harness_mcp",
+        "//rust/crates/harness-native-settings:acyclic_harness_native_settings",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/machines:acyclic_machines",
         "//rust/crates/model-render:acyclic_model_render",
@@ -774,6 +778,7 @@ rust_binary(
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-devices:acyclic_harness_devices",
         "//rust/crates/harness-mcp:acyclic_harness_mcp",
+        "//rust/crates/harness-native-settings:acyclic_harness_native_settings",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/machines:acyclic_machines",
         "//rust/crates/model-render:acyclic_model_render",
@@ -884,6 +889,7 @@ rust_binary(
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-devices:acyclic_harness_devices",
         "//rust/crates/harness-mcp:acyclic_harness_mcp",
+        "//rust/crates/harness-native-settings:acyclic_harness_native_settings",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/machines:acyclic_machines",
         "//rust/crates/model-render:acyclic_model_render",
@@ -994,6 +1000,7 @@ rust_binary(
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-devices:acyclic_harness_devices",
         "//rust/crates/harness-mcp:acyclic_harness_mcp",
+        "//rust/crates/harness-native-settings:acyclic_harness_native_settings",
         "//rust/crates/host-platform:acyclic_host_platform",
         "//rust/crates/machines:acyclic_machines",
         "//rust/crates/model-render:acyclic_model_render",
@@ -1082,7 +1089,21 @@ filegroup(
 )
 
 
-exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
+exports_files([
+        "proto/harness/v2/harness.proto",
+        "proto/protocol/v1/protocol.proto",
+        "src/conversation/epochs/kernel.rs",
+        "src/conversation/epochs/protocol.rs",
+        "src/filesystem/agent_publication.rs",
+        "src/filesystem/workspace_policy.rs",
+        "src/filesystem/workspace_publication.rs",
+        "src/native_environment.rs",
+        "src/native_environment/checkout.rs",
+        "src/sync/owned.rs",
+        "src/tools/git/materialize.rs",
+        "src/tools/git/path.rs",
+        "tests/fixtures/notebook-output.png",
+    ], visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",
