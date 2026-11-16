@@ -31,9 +31,6 @@ runs:
       env:
         CACHE_SIZE: ${{ inputs.cache_size }}
       run: |
-        # Ephemeral target directories cannot reuse incremental state, and
-        # incremental Rust invocations bypass sccache.
-        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
         echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
         echo "SCCACHE_CACHE_SIZE=$CACHE_SIZE" >> "$GITHUB_ENV"
 

@@ -359,7 +359,7 @@ test("native qualification rejects build input identity mutations", () => {
     ["linker target", value => { value.linker.actual.target = "x86_64-unknown-linux-gnu"; }, /linker invocation target differs from build input target/],
     ["environment", value => { value.environment.RUSTFLAGS = "-C opt-level=3"; }, /build input attestation differs/],
     ["profile", value => { value.profile.name = "dev"; }, /native build profile is not release/],
-    ["incremental policy", value => { Object.assign(value.profile, { cargo_incremental: null }); }, /incremental policy is not pinned to zero/],
+    ["incremental policy", value => { Object.assign(value.profile, { cargo_incremental: "0" }); }, /native build disables incremental compilation/],
     ["generator cargo options", value => { value.generator.options.cargo_options = ["--offline"]; }, /generator cargo options are invalid/],
     ["cache", value => { Object.assign(value.cache, { wrapper: 42 }); }, /native build input cache\.wrapper is invalid/],
   ];
@@ -529,8 +529,8 @@ test("native qualification restores Rustflags when setup fails", async () => {
       const encodedRustflags = process.env.CARGO_ENCODED_RUSTFLAGS;
       assert.ok(encodedRustflags);
       assert.match(encodedRustflags, /__acyclic_stream_source/u);
-      assert.equal(process.env.CARGO_INCREMENTAL, "0");
-      assert.equal(process.env.CARGO_PROFILE_RELEASE_INCREMENTAL, "false");
+      assert.equal(process.env.CARGO_INCREMENTAL, "1");
+      assert.equal(process.env.CARGO_PROFILE_RELEASE_INCREMENTAL, "1");
       throw new Error("capture setup failed");
     }),
     /capture setup failed/,

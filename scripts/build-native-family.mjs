@@ -343,12 +343,8 @@ function configureDarwinAppleLd(target, { sdkRoot: suppliedSdkRoot, driver: supp
 async function withDeterministicRustflags(sourceRoot, targetDir, target, operation) {
   const priorRustflags = envValue("RUSTFLAGS");
   const priorEncodedRustflags = envValue("CARGO_ENCODED_RUSTFLAGS");
-  const priorCargoIncremental = envValue("CARGO_INCREMENTAL");
-  const priorReleaseIncremental = envValue("CARGO_PROFILE_RELEASE_INCREMENTAL");
   const restoreDarwinAppleLd = configureDarwinAppleLd(target);
   try {
-    process.env.CARGO_INCREMENTAL = "0";
-    process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = "false";
     process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(sourceRoot, targetDir, target, { plain: priorRustflags, encoded: priorEncodedRustflags, darwinLinker: restoreDarwinAppleLd.linkerPath ?? null });
     delete process.env.RUSTFLAGS;
     return await operation();
@@ -357,10 +353,6 @@ async function withDeterministicRustflags(sourceRoot, targetDir, target, operati
     else process.env.RUSTFLAGS = priorRustflags;
     if (priorEncodedRustflags === null) delete process.env.CARGO_ENCODED_RUSTFLAGS;
     else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncodedRustflags;
-    if (priorCargoIncremental === null) delete process.env.CARGO_INCREMENTAL;
-    else process.env.CARGO_INCREMENTAL = priorCargoIncremental;
-    if (priorReleaseIncremental === null) delete process.env.CARGO_PROFILE_RELEASE_INCREMENTAL;
-    else process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = priorReleaseIncremental;
     restoreDarwinAppleLd();
   }
 }
@@ -822,7 +814,7 @@ function assertBuildInputs(value, { qualificationDev = false } = {}) {
   if (value.profile.name !== policy.profile) throw new Error(`native build profile is not ${policy.profile}`);
   for (const field of ["manifest_sha256", "config_sha256"]) assertDigest(profile[field], `profile.${field}`);
   assertNullableStringFields(profile, ["cargo_incremental", "release_incremental"], "profile");
-  if (profile.cargo_incremental !== "0" || profile.release_incremental !== "false") throw new Error("native build incremental policy is not pinned to zero");
+  if (profile.cargo_incremental === "0" || profile.release_incremental === "false") throw new Error("native build disables incremental compilation");
   assertNullableStringFields(value.environment, ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_TARGET_DIR"], "environment");
   const cache = assertNullableStringFields(value.cache, ["wrapper", "directory", "size"], "cache");
   if (cache.wrapper_version !== null) assertStringFields(cache.wrapper_version, ["output"], "cache.wrapper_version");

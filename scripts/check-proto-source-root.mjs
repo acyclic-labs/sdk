@@ -14,7 +14,6 @@ const parent = resolve(process.env.SDK_TEMP_DIR ?? tmpdir());
 const temporary = mkdtempSync(join(parent, "sdk-proto-source-"));
 const environment = {
   ...process.env,
-  CARGO_INCREMENTAL: "0",
   CARGO_TARGET_DIR: resolve(process.env.CARGO_TARGET_DIR ?? join(root, "target")),
 };
 delete environment.ACYCLIC_BUILD_SOURCE_ROOT;
