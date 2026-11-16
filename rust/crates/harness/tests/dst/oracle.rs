@@ -212,10 +212,82 @@ pub(super) struct Incarnation {
     pub crashed: Option<InjectedStorageFault>,
 }
 
+thread_local! {
+    /// Live world slots on this test thread, keyed by case and seed. Reusing
+    /// the first free slot makes a repeated world use the same absolute path.
+    static WORLD_SLOTS: std::cell::RefCell<
+        std::collections::BTreeMap<(String, u64), Vec<bool>>,
+    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// A world directory whose absolute path is a function of its case, seed and
+/// slot, never of the host's random temporary name. Model requests announce
+/// that path, so a random name would make an otherwise identical replay differ.
+struct WorldDirectory {
+    path: std::path::PathBuf,
+    key: (String, u64),
+    slot: usize,
+}
+
+impl WorldDirectory {
+    fn new(seed: u64) -> std::io::Result<Self> {
+        let key = (
+            std::thread::current()
+                .name()
+                .unwrap_or("dst")
+                .to_owned(),
+            seed,
+        );
+        let slot = WORLD_SLOTS.with(|slots| {
+            let mut slots = slots.borrow_mut();
+            let used = slots.entry(key.clone()).or_default();
+            match used.iter().position(|used| !used) {
+                Some(slot) => {
+                    used[slot] = true;
+                    slot
+                }
+                None => {
+                    used.push(true);
+                    used.len() - 1
+                }
+            }
+        });
+        let digest = blake3::hash(format!("{}:{}:{slot}", key.0, key.1).as_bytes());
+        let root = if Path::new("/dev/shm").is_dir() {
+            std::path::PathBuf::from("/dev/shm")
+        } else {
+            std::env::temp_dir()
+        };
+        let path = root.join(format!("acyclic-dst-{}", &digest.to_hex()[..16]));
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        std::fs::create_dir(&path)?;
+        Ok(Self { path, key, slot })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for WorldDirectory {
+    fn drop(&mut self) {
+        WORLD_SLOTS.with(|slots| {
+            if let Some(used) = slots.borrow_mut().get_mut(&self.key) {
+                if let Some(used) = used.get_mut(self.slot) {
+                    *used = false;
+                }
+            }
+        });
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// A seeded world on disk. Incarnations share only its files and the model
 /// service, never a host object.
 pub(super) struct World {
-    directory: tempfile::TempDir,
+    directory: WorldDirectory,
     pub service: ScriptedModelProvider,
     pub seed: u64,
     incarnations: u64,
@@ -243,7 +315,7 @@ impl World {
         service: ScriptedModelProvider,
         entropy: bool,
     ) -> Result<Self> {
-        let directory = temporary_directory().map_err(storage)?;
+        let directory = WorldDirectory::new(seed).map_err(storage)?;
         let checkout = directory.path().join("checkout");
         std::fs::create_dir(&checkout).map_err(storage)?;
         for (path, body) in files {
