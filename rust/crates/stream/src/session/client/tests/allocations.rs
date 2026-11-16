@@ -225,9 +225,8 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     let after_anchor = after_client
         .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 1))
         .await?;
-    let events = StreamPath::new("events")?;
     let path_copy = acyclic_test_support::measure(|| {
-        drop(black_box(events.clone()));
+        drop(black_box(StreamPath::new("events")));
     });
     assert!(path_copy.count_total > 0);
     let mut before = Allocations::default();

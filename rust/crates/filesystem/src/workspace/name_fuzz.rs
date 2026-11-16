@@ -117,6 +117,7 @@ fn check_effects(
         0 | 1 => examined += 1,
         2 => copied += bytes,
         4 => copied += value,
+        5 => copied += bytes,
         _ => (),
     };
     if validate {

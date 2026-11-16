@@ -103,7 +103,7 @@ pub(super) fn decode(
             let end = length
                 .checked_add(character.len_utf8())
                 .ok_or(crate::WorkError::Overflow)?;
-            let slot = output.slot(length, end, accounting)?;
+            let slot = output.slot(length, end, accounting, probe)?;
             let copied = copy_work(character.len_utf8() as u64);
             if !borrowed {
                 accounting.admit(copied)?;
