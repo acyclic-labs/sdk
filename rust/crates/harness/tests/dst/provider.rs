@@ -4,8 +4,8 @@
 use super::*;
 use acyclic_harness::{
     model::{
-        Model, ModelContentPart, ModelEvent, ModelRequest, ModelRole, ReasoningBlock,
-        ReasoningKind, ReasoningOrigin, ReasoningOutcome,
+        ModelContentPart, ModelEvent, ModelRequest, ModelRole, ReasoningBlock, ReasoningKind,
+        ReasoningOrigin, ReasoningOutcome,
     },
     test_support::{ScriptedEvent, ScriptedTurn},
 };
@@ -293,9 +293,12 @@ fn d3_service(transition: &'static str, dialect: &'static str) -> ScriptedModelP
                 _ => ScriptedTurn::Text("unexpected summary request".into()),
             });
         }
-        let Some(found_tag) = request_tag(request, &["d3-parent", "d3-child"]) else {
+        let Some(found_tag) = request_tag(request, &["d3-parent", "d3-child", "d3-warm"]) else {
             return Ok(ScriptedTurn::Text("untagged request".into()));
         };
+        if found_tag == "d3-warm" {
+            return Ok(ScriptedTurn::Text(done(found_tag)));
+        }
         let step = assistant_since_prompt(request);
         let answer = match transition {
             "tool_result" => {
@@ -365,7 +368,7 @@ fn d3_service(transition: &'static str, dialect: &'static str) -> ScriptedModelP
             },
             "length_continuation" => {
                 if step == 0 {
-                    length_stop("reasoning_only", dialect)
+                    length_stop("reasoning_only", "dst")
                 } else {
                     ScriptedTurn::Text(done(found_tag))
                 }
@@ -389,25 +392,14 @@ fn d3_service(transition: &'static str, dialect: &'static str) -> ScriptedModelP
     ScriptedModelProvider::responding(responder)
 }
 
-fn provider(model: &str) -> Model {
-    Model::new(
-        model.into(),
-        format!("dst-{model}"),
-        "1".into(),
-    )
-    .expect("valid dst model")
-}
-
 fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
     let transition = transition(seed);
     let dialect = dialect(seed);
     oracle::simulate(seed, move || {
         entry(async move {
             let service = d3_service(transition, dialect);
-            let model = provider(dialect);
             let files = [("a.txt", "alpha\n"), ("b.txt", "beta\n")];
-            let mut world =
-                World::new_with_model(seed, &files, service, model).map_err(oracle::failed)?;
+            let mut world = World::new(seed, &files, service).map_err(oracle::failed)?;
             if transition == "reopen" {
                 let first = vec![vec![("d3-parent", tag("d3-parent"))]];
                 let opener = world
@@ -431,11 +423,18 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
             }
             let prompt = if transition == "compaction_applied" || transition == "background_summary"
             {
-                format!("{} large context {}", tag("d3-parent"), "x".repeat(12_000))
+                format!("{} large context {}", tag("d3-parent"), "x".repeat(200_000))
             } else {
                 tag("d3-parent")
             };
-            let prompts = vec![vec![("d3-parent", prompt)]];
+            let prompts = if transition == "context_review" {
+                vec![
+                    vec![("d3-warm", tag("d3-warm"))],
+                    vec![("d3-parent", prompt)],
+                ]
+            } else {
+                vec![vec![("d3-parent", prompt)]]
+            };
             let incarnation = world
                 .incarnation(None, &prompts)
                 .await
@@ -514,7 +513,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                         .filter(|request| !request.summary)
                         .last()
                         .ok_or("length continuation sent no request")?;
-                    assert_reasoning(continued, dialect)?;
+                    assert_reasoning(continued, "dst")?;
                 }
                 "retry_after" => {
                     let requests = history(&incarnation.requests, "d3-parent");
@@ -538,6 +537,9 @@ fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvide
     let responder = move |request: &ModelRequest| {
         if request.summary {
             return Ok(length_stop(content, "dst"));
+        }
+        if request_tag(request, &["d4-warm"]) == Some("d4-warm") {
+            return Ok(ScriptedTurn::Text(done("d4-warm")));
         }
         let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let answer = match call {
@@ -593,13 +595,13 @@ fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvide
 fn d4_capacity(capacity: &str) -> acyclic_harness::context::ModelContextCapacity {
     match capacity {
         "output_eq_context" => acyclic_harness::context::ModelContextCapacity {
-            context_tokens: 4096,
-            output_tokens: Some(4096),
+            context_tokens: 32_768,
+            output_tokens: Some(32_768),
             output_shares_context: true,
         },
         _ => acyclic_harness::context::ModelContextCapacity {
-            context_tokens: 8192,
-            output_tokens: Some(2048),
+            context_tokens: 65_536,
+            output_tokens: Some(16_384),
             output_shares_context: false,
         },
     }
@@ -627,11 +629,18 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                 let mut world =
                     World::new(seed, &files, service).map_err(oracle::failed)?;
                 let prompt = if call == "summary" {
-                    format!("d4-content:{content} {} {}", tag("d4"), "x".repeat(12_000))
+                    format!("d4-content:{content} {} {}", tag("d4"), "x".repeat(200_000))
                 } else {
                     format!("d4-content:{content} {}", tag("d4"))
                 };
-                let groups = vec![vec![("d4", prompt.clone())]];
+                let groups = if call == "context_review" {
+                    vec![
+                        vec![("d4-warm", tag("d4-warm"))],
+                        vec![("d4", prompt.clone())],
+                    ]
+                } else {
+                    vec![vec![("d4", prompt.clone())]]
+                };
                 let incarnation = world
                     .incarnation(None, &groups)
                     .await

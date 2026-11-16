@@ -334,7 +334,6 @@ pub(super) struct World {
     directory: WorldDirectory,
     pub service: ScriptedModelProvider,
     pub seed: u64,
-    model: Model,
     incarnations: u64,
     entropy: bool,
 }
@@ -411,7 +410,6 @@ impl World {
             directory,
             service,
             seed,
-            model,
             incarnations: 0,
             entropy,
         })
@@ -472,11 +470,11 @@ impl World {
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
             let directory = self.directory.path();
-            let model = self.model.clone();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
                 entry(async move {
+                    let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
                     acyclic_harness::test_support::inject_checkout_identity(
                         checkout_identity.0,
                         checkout_identity.1,
