@@ -374,11 +374,12 @@ impl Client {
 
     /// Select an already registered slot without another registration or
     /// transport. The server continues to verify its original capability.
+    /// Consumes this view so its credential ownership moves to the selected
+    /// view and the cursors opened from it, rather than lingering in a clone.
     #[must_use]
-    pub fn select_credential(&self, credential: u32) -> Self {
-        let mut selected = self.clone();
-        selected.credential = credential;
-        selected
+    pub fn select_credential(mut self, credential: u32) -> Self {
+        self.credential = credential;
+        self
     }
 
     /// Selects one implicit authority while sharing this pool, credentials,
