@@ -84,6 +84,21 @@ mod queue_model;
 tokio::task_local! { static CURRENT: Option<Context>; }
 tokio::task_local! { static BLOCKING_CONTEXT: Option<Context>; }
 
+/// The worker count a seeded world needs: its driver polls one future at a
+/// time, so spawning the host's full CPU count would only add contention.
+#[cfg(feature = "test-support")]
+pub(crate) fn seeded_parallelism() -> Option<usize> {
+    CURRENT
+        .try_with(|current| {
+            current
+                .as_ref()
+                .is_some_and(|context| context.schedule.0.entropy.is_some())
+                .then_some(1)
+        })
+        .ok()
+        .flatten()
+}
+
 /// Builds the single-threaded runtime for an independently replayable world.
 ///
 /// The seed controls Tokio's randomized `select!` order, including dependencies.
