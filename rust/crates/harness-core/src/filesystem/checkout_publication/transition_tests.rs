@@ -62,6 +62,11 @@ proptest! {
         if change == 1 { actual_root[0] ^= 1; }
         let result = completed(&journal, NativeRootIdentity::from_bytes(actual_root), if change == 2 { mutate(from) } else { from }, if change == 3 { mutate(to) } else { to });
         prop_assert_eq!(result.is_ok(), change == 0);
+        if let Err(error) = &result {
+            // A publication refusal is model feedback, never a handler
+            // failure that ends the owner.
+            prop_assert!(error.is_tool_failure());
+        }
         if let Ok(applied) = result { prop_assert_eq!(applied, phase == 3); }
         // Negative control: checking the phase alone acknowledges a foreign root
         // or transition. The production binding check must reject that shape.
