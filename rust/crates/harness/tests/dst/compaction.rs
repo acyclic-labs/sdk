@@ -358,7 +358,6 @@ fn check(
                 Err(error) => {
                     if pending && error.contains("splits a tool exchange") {
                         // The only safe rewrite is the one already in hand.
-                        paired(&source)?;
                         return Ok(());
                     }
                     Err(format!(
