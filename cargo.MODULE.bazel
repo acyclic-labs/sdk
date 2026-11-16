@@ -12,12 +12,37 @@ rust.toolchain(
     extra_rustc_flags_triples = {"x86_64-unknown-linux-gnu":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off"],"aarch64-apple-darwin":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off"],"x86_64-pc-windows-msvc":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off","-Ctarget-feature=+crt-static","-Clink-arg=-nodefaultlib:ucrt","-Clink-arg=-defaultlib:libucrt"]},
     extra_exec_rustc_flags_triples = {"x86_64-unknown-linux-gnu":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off"],"aarch64-apple-darwin":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off"],"x86_64-pc-windows-msvc":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off"]},
 )
+rust.repository_set(
+    name = "rust_linux_musl",
+    versions = [
+        "1.98.1",
+    ],
+    exec_triple = "x86_64-unknown-linux-gnu",
+    target_triple = "x86_64-unknown-linux-musl",
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+        "//:libc_musl",
+    ],
+    extra_rustc_flags = [
+        "--cfg",
+        "tokio_unstable",
+        "-Ccodegen-units=64",
+        "-Clto=off",
+    ],
+    extra_exec_rustc_flags = [
+        "--cfg",
+        "tokio_unstable",
+        "-Ccodegen-units=64",
+        "-Clto=off",
+    ],
+)
 use_repo(rust, "rust_toolchains")
 
 xwin = use_repo_rule("//:xwin_repo.bzl", "xwin_repository")
 xwin(name = "xwin")
 
-register_toolchains("//:windows_cc_toolchain_registration", "@rust_toolchains//:all")
+register_toolchains("//:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__x86_64-unknown-linux-musl__stable", "@rust_toolchains//:all")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 
