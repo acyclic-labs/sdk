@@ -1,5 +1,6 @@
 import {test} from 'bun:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import {mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -99,5 +100,89 @@ if (!module.ready()) throw new Error('declared WASM did not initialize');`],
     assert.notEqual(readdirSync(cache).length, 0, 'transpiler cache was not exercised');
     const replayed = load(join(root, 'second'));
     assert.equal(replayed.exitCode, 0, replayed.stderr.toString());
+  } finally {rmSync(root, {recursive:true, force:true});}
+});
+
+test('hosted artifact loads through a symlinked parent directory and rejects undeclared assets', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hosted-symlink-'));
+  try {
+    const realDir = join(root, 'real');
+    const symlinkDir = join(root, 'link');
+    mkdirSync(realDir, {recursive:true});
+    const generated = join(realDir, 'auth/generated/wasm');
+    mkdirSync(generated, {recursive:true});
+    const wasm = Buffer.from([0,97,115,109,1,0,0,0]);
+    writeFileSync(join(generated, 'acyclic_auth_wasm_bg.wasm'), wasm);
+    writeFileSync(join(generated, 'acyclic_auth_wasm.js'), `
+let instance;
+export function initSync({module}) { instance = new WebAssembly.Instance(module); }
+export function ready() { return instance instanceof WebAssembly.Instance; }
+export default async function initialize() { throw new Error(String(new URL('./acyclic_auth_wasm_bg.wasm', import.meta.url))); }`);
+    const entry = join(realDir, 'entry.mjs');
+    writeFileSync(entry, "export {ready} from './auth/generated/wasm/acyclic_auth_wasm.js';");
+    const closure = wasmAssetClosure('retain original artifact');
+    const built = await Bun.build({entrypoints:[entry], target:'browser', format:'esm', plugins:[closure.plugin]});
+    assert.equal(built.success, true, built.logs.join('\n'));
+    const realArtifact = join(realDir, 'actor.mjs');
+    writeFileSync(realArtifact, closure.rewrite(await built.outputs[0].text()));
+    for (const [path, bytes] of closure.files) writeFileSync(join(realDir, path), bytes);
+    const assets = [...closure.assets.values()];
+    const {symlinkSync} = await import('node:fs');
+    symlinkSync(realDir, symlinkDir, 'dir');
+    const symlinkedArtifact = join(symlinkDir, 'actor.mjs');
+
+    writeFileSync(join(realDir, 'other.wasm'), wasm);
+    writeFileSync(join(realDir, 'undeclared.mjs'), "import module from './other.wasm'; export default module;");
+
+    const loader = fileURLToPath(new URL('./artifact-assets.mjs', import.meta.url));
+    const evidence = join(root, 'assets.json');
+    writeFileSync(evidence, JSON.stringify({assets, files:[...closure.files].map(([path, bytes]) => [path, Buffer.from(bytes).toString('base64')])}));
+
+    const run = Bun.spawnSync([process.execPath, '-e', `
+const {loadHostedArtifact} = await import(${JSON.stringify(loader)});
+const {assets, files} = JSON.parse(require('node:fs').readFileSync(${JSON.stringify(evidence)}, 'utf8'));
+const fileMap = new Map(files.map(([path, bytes]) => [path, Buffer.from(bytes, 'base64')]));
+const module = await loadHostedArtifact(${JSON.stringify(symlinkedArtifact)}, assets, fileMap);
+if (!module.ready()) throw new Error('declared WASM did not initialize through symlink');
+const undeclared = ${JSON.stringify(join(symlinkDir, 'undeclared.mjs'))};
+try {
+  await loadHostedArtifact(undeclared, assets, fileMap);
+  throw new Error('undeclared asset was admitted');
+} catch (error) {
+  if (!/HostedWasmAssetUndeclared/.test(error.message)) throw error;
+}
+`], {stderr:'pipe', stdout:'pipe'});
+    assert.equal(run.exitCode, 0, run.stderr.toString());
+  } finally {rmSync(root, {recursive:true, force:true});}
+});
+
+test('multiple hosted artifacts in the same directory preserve all declared WASM assets', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hosted-multi-'));
+  try {
+    const wasmA = Buffer.from([0,97,115,109,1,0,0,0]);
+    const wasmB = Buffer.from([0,97,115,109,1,0,0,0,0,2,1,97]);
+    const shaA = crypto.createHash('sha256').update(wasmA).digest('hex');
+    const shaB = crypto.createHash('sha256').update(wasmB).digest('hex');
+
+    writeFileSync(join(root, 'a.wasm'), wasmA);
+    writeFileSync(join(root, 'b.wasm'), wasmB);
+    writeFileSync(join(root, 'mod_a.mjs'), "export async function run() { const mod = await import('./a.wasm'); return mod.default instanceof WebAssembly.Module; }");
+    writeFileSync(join(root, 'mod_b.mjs'), "export async function run() { const mod = await import('./b.wasm'); return mod.default instanceof WebAssembly.Module; }");
+
+    const loader = fileURLToPath(new URL('./artifact-assets.mjs', import.meta.url));
+    const run = Bun.spawnSync([process.execPath, '-e', `
+const {loadHostedArtifact} = await import(${JSON.stringify(loader)});
+const assetsA = [{path:'a.wasm', sha256:${JSON.stringify(shaA)}}];
+const filesA = new Map([['a.wasm', Buffer.from(${JSON.stringify(wasmA.toString('base64'))}, 'base64')]]);
+const assetsB = [{path:'b.wasm', sha256:${JSON.stringify(shaB)}}];
+const filesB = new Map([['b.wasm', Buffer.from(${JSON.stringify(wasmB.toString('base64'))}, 'base64')]]);
+
+const modA = await loadHostedArtifact(${JSON.stringify(join(root, 'mod_a.mjs'))}, assetsA, filesA);
+const modB = await loadHostedArtifact(${JSON.stringify(join(root, 'mod_b.mjs'))}, assetsB, filesB);
+
+if (!await modA.run()) throw new Error('modA WASM failed to check');
+if (!await modB.run()) throw new Error('modB WASM failed to check');
+`], {stderr:'pipe', stdout:'pipe'});
+    assert.equal(run.exitCode, 0, run.stderr.toString());
   } finally {rmSync(root, {recursive:true, force:true});}
 });

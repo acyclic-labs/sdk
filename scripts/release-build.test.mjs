@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -13,7 +13,7 @@ const product = fileURLToPath(new URL("./build-product.mjs", import.meta.url));
 const fixture = fileURLToPath(new URL("./tests/fixtures/release-build/artifact-build.mjs", import.meta.url));
 
 function workspace(t) {
-  const base = resolve(tmpdir());
+  const base = resolve(realpathSync(tmpdir()));
   const dir = mkdtempSync(join(base, "release-build-test-"));
   t.after(() => {
     assert.equal(dirname(resolve(dir)), base);

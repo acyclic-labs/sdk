@@ -54,7 +54,7 @@ test("publication verifies all companion archives and retained attestations befo
     }
     await json(join(companion, "package.json"), { name: companionName, version: "0.2.0", private: false, main: addon, os: entry.os, cpu: entry.cpu });
     await json(join(parent, "package.json"), { name: "@acyclic-labs/stream", version: "0.2.0", private: false, optionalDependencies: { [companionName]: "0.2.0" } });
-    const pack = (source, asset) => execFileSync("tar", ["-czf", join(output, asset), "-C", source, "package"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
+    const pack = (source, asset) => execFileSync("tar", ["--format=ustar", "-czf", join(output, asset), "-C", source, "package"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
     pack(join(directory, "companion"), entry.asset);
     entry.sha256 = bytesHash(await readFile(join(output, entry.asset)));
     const index = { schema: "acyclic.stream.native-package-assembly.v2", source_commit: revision, source_sha256: sha, targets: [target], companions: [entry], wasm_receipt_sha256: wasmReceiptSha256 };
@@ -152,7 +152,7 @@ test("real maintained companions for every Rust target pack as public and pass p
   const sourceManifest = JSON.parse(await readFile(new URL("../typescript/packages/stream/package.json", import.meta.url), "utf8"));
   const bytesHash = value => createHash("sha256").update(value).digest("hex");
   const json = (path, value) => writeFile(path, JSON.stringify(value));
-  const pack = (source, asset) => execFileSync("tar", ["-czf", join(output, asset), "-C", source, "package"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
+  const pack = (source, asset) => execFileSync("tar", ["--format=ustar", "-czf", join(output, asset), "-C", source, "package"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
   try {
     await mkdir(join(parent, "generated/native"), { recursive: true });
     await mkdir(join(output, "native"), { recursive: true });

@@ -74,16 +74,18 @@ const hosted = {modules:new Map(), directories:new Map(), registered:false};
  * location-bound one would name another process's deleted directory. */
 export async function loadHostedArtifact(entry, assets, files) {
   const {plugin} = await import('bun');
-  const declared = new Map();
+  const target = fs.existsSync(entry) ? fs.realpathSync(entry) : resolve(entry);
+  const dirKey = dirname(target).endsWith(sep) ? dirname(target) : dirname(target) + sep;
+  const declared = hosted.directories.get(dirKey) ?? new Map();
   for (const asset of assets) {
     const bytes = files.get(asset.path);
     if (bytes === undefined || crypto.createHash('sha256').update(bytes).digest('hex') !== asset.sha256) {
       throw Error(`HostedWasmAssetUnverified: ${asset.path}`);
     }
     hosted.modules.set(asset.sha256, bytes);
-    declared.set(join(dirname(entry), asset.path), asset.sha256);
+    declared.set(join(dirname(target), asset.path), asset.sha256);
   }
-  hosted.directories.set(dirname(entry)+sep, declared);
+  hosted.directories.set(dirKey, declared);
   if (!hosted.registered) {
     hosted.registered = true;
     plugin({name:'hosted-artifact-modules', setup(build) {
@@ -102,5 +104,5 @@ export async function loadHostedArtifact(entry, assets, files) {
       });
     }});
   }
-  return import(pathToFileURL(entry).href);
+  return import(pathToFileURL(target).href);
 }

@@ -97,7 +97,7 @@ test("archive verification binds parent, companion, original source and actual a
   const target = "fixture-target", version = "0.2.0", name = "@acyclic-labs/actors-fixture", main = "index.fixture.node";
   const hash = bytes => createHash("sha256").update(bytes).digest("hex");
   const json = async (path, value) => writeFile(path, JSON.stringify(value));
-  const pack = (kind, asset) => execFileSync("tar", ["-czf", join(output, asset), "-C", join(directory, kind), "package"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
+  const pack = (kind, asset) => execFileSync("tar", ["--format=ustar", "-czf", join(output, asset), "-C", join(directory, kind), "package"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
   try {
     await mkdir(join(output, "actors-native"), { recursive: true });
     await mkdir(join(parent, "generated/native/attestations", target), { recursive: true });
