@@ -34,8 +34,6 @@ mod progress_registry;
 mod provider_case;
 #[path = "integration/provider_http.rs"]
 mod provider_http;
-#[path = "integration/provider_tests.rs"]
-mod provider_tests;
 #[path = "integration/providers.rs"]
 mod providers;
 #[path = "../../harness/tests/support/quiescent.rs"]

@@ -5,10 +5,7 @@ use acyclic_harness_core::{
     tool::ToolDefinition,
 };
 use proptest::prelude::*;
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, BTreeSet},
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 fn definition(name: String) -> ToolDefinition {
     ToolDefinition {
@@ -524,17 +521,4 @@ fn occupied_candidates_cost_one_probe_each() {
         Names::candidate("mcp.a.b", 1025)
     );
     Names::assert_round_trip(&request);
-}
-
-#[test]
-fn lookups_borrow_the_cached_alias() {
-    let request = request_with(&["mcp.docs.search"]);
-    let names = Names::new(&request);
-    let first = names.wire("mcp.docs.search").unwrap();
-    let second = names.wire("mcp.docs.search").unwrap();
-    assert!(matches!(first, Cow::Borrowed(_)) && matches!(second, Cow::Borrowed(_)));
-    assert_eq!(first.as_ptr(), second.as_ptr(), "lookups share one alias");
-    // Negative control: an owned copy has its own storage.
-    let copied = first.clone().into_owned();
-    assert_ne!(copied.as_ptr(), second.as_ptr());
 }

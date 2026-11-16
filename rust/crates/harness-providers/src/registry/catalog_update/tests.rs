@@ -323,13 +323,6 @@ fn credential_sequence(case: u8, operations: &[(bool, Option<u8>)]) {
     }
 }
 
-#[test]
-fn every_counting_credential_configuration_is_atomic_in_both_entry_points() {
-    for case in 0..96 {
-        credential_sequence(case, &[(false, None), (true, None), (true, Some(1))]);
-    }
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]

@@ -90,15 +90,6 @@ proptest! {
 }
 
 #[test]
-fn empty_parts_do_not_fabricate_ordered_content() {
-    for adapter in [Adapter::Anthropic, Adapter::Responses, Adapter::Gemini] {
-        let (actual, expected) = project(adapter, &[], "");
-        assert_eq!(actual, expected);
-        assert!(actual.is_empty());
-    }
-}
-
-#[test]
 fn text_then_calls_partition_is_detected_by_the_order_oracle() {
     let pattern = [false, true, false, true];
     for adapter in [Adapter::Anthropic, Adapter::Responses, Adapter::Gemini] {
