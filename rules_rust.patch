@@ -79,6 +79,20 @@ diff -ruN a/rust/defs.bzl b/rust/defs.bzl
  # See @rules_rust//rust/private:clippy.bzl for a complete description.
  
  rust_clippy = _rust_clippy
+diff -ruN a/rust/extensions.bzl b/rust/extensions.bzl
+--- a/rust/extensions.bzl
++++ b/rust/extensions.bzl
+@@ -77,7 +77,9 @@
+                 "global_allocator_library": str(repository_set.global_allocator_library) if repository_set.global_allocator_library else None,
+                 "name": repository_set.name,
+                 "netrc": repository_set.netrc if repository_set.netrc else None,
+-                "opt_level": {repository_set.target_triple: repository_set.opt_level} if repository_set.opt_level else None,
++                # A repository set also registers a toolchain targeting its exec triple; without the set's opt_level,
++                # that toolchain compiles at rustc's default and can win resolution over rust.toolchain's.
++                "opt_level": {triple: repository_set.opt_level for triple in [repository_set.exec_triple, repository_set.target_triple]} if repository_set.opt_level else None,
+                 "rustfmt_version": repository_set.rustfmt_version,
+                 "sha256s": repository_set.sha256s,
+                 "strip_level": {repository_set.target_triple: repository_set.strip_level} if repository_set.strip_level else None,
 diff -ruN a/rust/private/check.bzl b/rust/private/check.bzl
 --- a/rust/private/check.bzl
 +++ b/rust/private/check.bzl
@@ -197,7 +211,19 @@ diff -ruN a/rust/private/check.bzl b/rust/private/check.bzl
 diff -ruN a/rust/private/rustc.bzl b/rust/private/rustc.bzl
 --- a/rust/private/rustc.bzl
 +++ b/rust/private/rustc.bzl
-@@ -1387,6 +1387,7 @@
+@@ -1336,6 +1336,11 @@
+     compilation_mode = get_compilation_mode_opts(ctx, toolchain)
+     rustc_flags.add(compilation_mode.opt_level, format = "--codegen=opt-level=%s")
+     rustc_flags.add(compilation_mode.debug_info, format = "--codegen=debuginfo=%s")
++    # Cargo's dev and test profiles keep debug assertions and overflow checks at every opt-level, and its release
++    # profile drops both; rustc alone ties them to opt-level 0. fastbuild and dbg are the dev profile, opt release.
++    if ctx.var["COMPILATION_MODE"] != "opt":
++        rustc_flags.add("--codegen=debug-assertions=on")
++        rustc_flags.add("--codegen=overflow-checks=on")
+     rustc_flags.add(compilation_mode.strip_level, format = "--codegen=strip=%s")
+ 
+     # For determinism to help with build distribution and such
+@@ -1387,6 +1392,7 @@
      add_edition_flags(rustc_flags, crate_info)
      _add_lto_flags(ctx, toolchain, rustc_flags, crate_info)
      _add_codegen_units_flags(toolchain, emit, rustc_flags)
@@ -205,7 +231,7 @@ diff -ruN a/rust/private/rustc.bzl b/rust/private/rustc.bzl
  
      # Use linker_type to determine whether to use direct or indirect linker invocation
      # If linker_type is not explicitly set, infer from which linker is actually being used
-@@ -2450,6 +2451,31 @@
+@@ -2450,6 +2456,31 @@
      lto_args = construct_lto_arguments(ctx, toolchain, crate)
      args.add_all(lto_args)
  

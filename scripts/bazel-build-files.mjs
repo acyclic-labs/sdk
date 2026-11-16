@@ -279,6 +279,25 @@ const exportsRule = owner => (exported.has(owner) ? `\nexports_files(${list([...
 
 const cargo = toml("Cargo.toml");
 const dev = cargo.profile?.dev ?? {};
+// rules_rust (patched) builds fastbuild and dbg as Cargo's dev profile, with debug assertions and overflow checks
+// on at every opt-level, and opt as its release profile, with both off: Cargo's defaults. A profile that changes
+// either default, at the profile or in any of its package or build-override tables, has no Bazel rendering, so it
+// refuses rather than build differently from Cargo.
+for (const [profile, expected] of [["dev", true], ["test", true], ["release", false], ["bench", false]]) {
+  const settings = cargo.profile?.[profile] ?? {};
+  const tables = [
+    [`profile.${profile}`, settings],
+    [`profile.${profile}.build-override`, settings["build-override"] ?? {}],
+    ...Object.entries(settings.package ?? {}).map(([name, table]) => [`profile.${profile}.package.${JSON.stringify(name)}`, table]),
+  ];
+  for (const [table, values] of tables) {
+    for (const key of ["debug-assertions", "overflow-checks"]) {
+      const value = values[key];
+      if (value !== undefined && value !== expected) throw new Error(`STEP_FAILED bazel-build-files: [${table}] ${key} = ${value} has no Bazel rendering; Bazel builds Cargo's default (${expected})`);
+    }
+  }
+}
+const optLevels = { dbg: "0", fastbuild: String(dev["opt-level"] ?? 0), opt: "3" };
 const packageOpt = name => dev.package?.[name]?.["opt-level"];
 
 // One value per triple, rendered once when every triple agrees.
@@ -626,7 +645,7 @@ function moduleFile() {
       ["extra_target_triples", list([WINDOWS_TRIPLE])],
       // [workspace.package] is optional; every target carries its own package's edition.
       ["edition", cargo.workspace?.package?.edition === undefined ? undefined : q(cargo.workspace.package.edition)],
-      ["opt_level", q({ dbg: "0", fastbuild: String(dev["opt-level"] ?? 0), opt: "3" })],
+      ["opt_level", q(optLevels)],
       ["extra_rustc_flags_triples", q(Object.fromEntries(TRIPLES.map(t => [t, t === WINDOWS_TRIPLE ? [...flags, ...WINDOWS_RUSTC_FLAGS] : flags])))],
       ["extra_exec_rustc_flags_triples", q(Object.fromEntries(TRIPLES.map(t => [t, flags])))],
     ]),
@@ -638,6 +657,9 @@ function moduleFile() {
       ["exec_triple", q(LINUX_GNU_TRIPLE)],
       ["target_triple", q(LINUX_MUSL_TRIPLE)],
       ["target_compatible_with", list(["@platforms//os:linux", "@platforms//cpu:x86_64", "//:libc_musl"])],
+      // A repository set takes no opt_level from rust.toolchain. Without its own, its musl toolchain and the one it
+      // registers for its exec triple (which resolution prefers for gnu targets) compile fastbuild at opt-level 0.
+      ["opt_level", q(optLevels)],
       ["extra_rustc_flags", list(flags)],
       ["extra_exec_rustc_flags", list(flags)],
     ]),

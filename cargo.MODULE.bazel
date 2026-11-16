@@ -24,6 +24,7 @@ rust.repository_set(
         "@platforms//cpu:x86_64",
         "//:libc_musl",
     ],
+    opt_level = {"dbg":"0","fastbuild":"1","opt":"3"},
     extra_rustc_flags = [
         "--cfg",
         "tokio_unstable",
