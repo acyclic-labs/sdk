@@ -134,7 +134,7 @@ fn subjects(provider: &ProviderRef) -> Result<Subjects> {
     let child_path = AgentPath::root(&root_path).child(&child_id)?;
     let child_home = acyclic_harness::filesystem::spawned_binding(&child_path, &home_binding)?;
     let child_binding =
-        WorkspaceEntry::initial_volume(WorkspaceRole::Home, "home".into(), child_home);
+        WorkspaceEntry::initial_volume(WorkspaceRole::Home, "home".into(), child_home.clone());
     let grandchild_path = child_path.child(&grandchild_id)?;
     let grandchild_home =
         acyclic_harness::filesystem::spawned_binding(&grandchild_path, &child_binding)?;
@@ -321,7 +321,7 @@ where
                     "text/plain",
                     path,
                     Some(64),
-                    &IdempotencyKey::new(format!("check:{label}"))?,
+                    &IdempotencyKey::new(format!("check:{label}")).map_err(|error| format!("{label}: key: {error}"))?,
                     None,
                     ContentAccess::default(),
                 )
@@ -382,7 +382,7 @@ where
                 "text/plain",
                 path,
                 Some(64),
-                &IdempotencyKey::new(format!("check:{label}"))?,
+                &IdempotencyKey::new(format!("check:{label}")).map_err(|error| format!("{label}: key: {error}"))?,
                 None,
                 ContentAccess::default(),
             )
