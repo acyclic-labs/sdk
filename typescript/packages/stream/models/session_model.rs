@@ -297,7 +297,6 @@ fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result
         let ready = driver.call(&json!({"action":"ready"}))?;
         assert_eq!(*field(&ready, "active")?, 2);
         let mut terminal = None;
-        let mut reconnected = false;
         for action in trace {
             let state = driver.call(&json!({"action":action}))?;
             if action == "expire" || action == "cleanup" {
@@ -321,28 +320,19 @@ fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result
                     "no delivery may cross the terminal boundary"
                 );
             }
-            if action == "reconnect" {
-                if terminal.is_none() {
-                    reconnected = true;
-                    assert_eq!(
-                        *field(&state, "connecting")?,
-                        true,
-                        "the model must pause the real reconnection await"
-                    );
-                } else {
-                    assert_eq!(
-                        *field(&state, "connecting")?,
-                        false,
-                        "a settled follow must not reconnect"
-                    );
-                }
+            if action == "reconnect" && terminal.is_none() {
+                assert_eq!(
+                    *field(&state, "connecting")?,
+                    true,
+                    "the model must pause the real reconnection await"
+                );
             }
         }
         let state = driver.call(&json!({"action":"finish"}))?;
         assert_eq!(*field(&state, "settled")?, true);
         assert_eq!(
             *field(&state, "connections")?,
-            if reconnected { 2 } else { 1 },
+            if events.contains(&"reconnect") { 2 } else { 1 },
             "a logical deadline must not close the shared connection"
         );
         assert_eq!(

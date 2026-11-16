@@ -166,7 +166,8 @@ async function command(action: string): Promise<unknown> {
     case "finish":
       peer.beforeConnect = undefined;
       releaseReconnect?.();
-      await checkpoint();
+      // A reconnect for the surviving sibling must establish before its record.
+      await peer.until(() => peer.active > 0);
       peer.append("healthy");
       await checkpoint();
       break;
