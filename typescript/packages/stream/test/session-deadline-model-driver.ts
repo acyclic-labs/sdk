@@ -157,6 +157,7 @@ async function command(action: string): Promise<unknown> {
     case "reconnect":
       peer.beforeConnect = async () => {
         connecting = true;
+        for (const notify of peer.changed) notify();
         await new Promise<void>(resolve => { releaseReconnect = resolve; });
       };
       peer.disconnect();
