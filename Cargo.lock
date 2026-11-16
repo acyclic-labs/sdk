@@ -229,6 +229,7 @@ dependencies = [
  "acyclic-fs-wire",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-harness-mcp",
  "acyclic-inference",
  "acyclic-machines",
  "acyclic-mcp",
