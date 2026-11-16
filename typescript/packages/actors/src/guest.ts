@@ -90,12 +90,15 @@ export function dependencyBinding<T extends object>(name: string, value: T): T {
     try { result = Reflect.apply(member, self, args); } catch (error) { return fail(error); }
     return thenable(result) ? Promise.resolve(result).catch(fail) : result;
   };
-  return new Proxy(value, {
-    apply: (target, self, args) => call(target as (...args: unknown[]) => unknown, self, args),
-    get(target, key) {
-      const member: unknown = Reflect.get(target, key, target);
+  // The Proxy shadows a fresh shell, never `value`: a frozen binding's
+  // non-configurable members would forbid the get trap returning wrapped ones.
+  const shell = (typeof value === "function" ? () => undefined : {}) as T;
+  return new Proxy(shell, {
+    apply: (_shell, self, args) => call(value as unknown as (...args: unknown[]) => unknown, self, args),
+    get(_shell, key) {
+      const member: unknown = Reflect.get(value, key, value);
       return typeof member === "function"
-        ? (...args: unknown[]) => call(member as (...args: unknown[]) => unknown, target, args)
+        ? (...args: unknown[]) => call(member as (...args: unknown[]) => unknown, value, args)
         : member;
     },
   });
