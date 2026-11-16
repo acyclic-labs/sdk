@@ -6,7 +6,7 @@ use sys::{Errno, Fd, Pid};
 
 /// Descriptors one request carries: custody directory, reply, the owner's
 /// working directory, up to three streams and one boundary or activity handle.
-pub(super) const DESCRIPTORS: usize = 8;
+pub(super) const DESCRIPTORS: usize = 7;
 /// Stream slots in a request.
 const NULL: u8 = 0;
 const SENT: u8 = 1;
@@ -120,7 +120,6 @@ pub(super) struct Spec {
     pub(super) argv: *const *const c_char,
     pub(super) envp: *const *const c_char,
     pub(super) boundary: Option<Boundary>,
-    pub(super) completion_report: Fd,
     pub(super) activity: Option<Fd>,
 }
 
@@ -211,12 +210,11 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
         (None, FIXED)
     };
     let activity = if flags & ON_RELEASE != 0 {
-        Some(descriptor(next + 2 * usize::from(policy.is_some()))?)
+        Some(descriptor(next + usize::from(policy.is_some()))?)
     } else {
         None
     };
-    if received.count != next + 2 * usize::from(policy.is_some()) + usize::from(activity.is_some())
-    {
+    if received.count != next + usize::from(policy.is_some()) + usize::from(activity.is_some()) {
         return Err(invalid);
     }
     // Every argument and environment entry needs at least its NUL byte.
@@ -289,11 +287,6 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     }
     Ok(Spec {
         reply: descriptor(1)?,
-        completion_report: if policy.is_some() {
-            descriptor(next + 1)?
-        } else {
-            -1
-        },
         directory: if flags & UNRECORDED != 0 {
             -1
         } else {

@@ -20,7 +20,6 @@ pub(super) fn enter(
     directory: Fd,
     owner: Pid,
     #[cfg(target_os = "linux")] home: Pid,
-    #[cfg(target_os = "linux")] report: Fd,
 ) -> Result<(), Errno> {
     // An inherited host handler must not run in the warden.
     sys::set_signal(sys::SIGCHLD, false);
@@ -76,10 +75,7 @@ pub(super) fn enter(
             sys::close(watch);
             sys::close(admit);
             #[cfg(target_os = "linux")]
-            {
-                sys::close(report);
-                sys::close(control);
-            }
+            sys::close(control);
             admitted_by_warden(admission)?;
             return Ok(());
         }
@@ -111,8 +107,6 @@ pub(super) fn enter(
         name,
         #[cfg(target_os = "linux")]
         control,
-        #[cfg(target_os = "linux")]
-        report,
     )
 }
 
@@ -315,7 +309,6 @@ fn supervise(
     program: Pid,
     name: &CStr,
     #[cfg(target_os = "linux")] control: Fd,
-    #[cfg(target_os = "linux")] report: Fd,
 ) -> ! {
     // Graceful requests to the group reach the program; the warden reports
     // the program's own outcome.
@@ -327,7 +320,7 @@ fn supervise(
     // Inherited descriptors, including the reply pipe and the program's
     // standard streams, close here.
     #[cfg(target_os = "linux")]
-    close_except([directory, record, watch, control, report], warden);
+    close_except([directory, record, watch, control], warden);
     #[cfg(target_vendor = "apple")]
     close_except([directory, record, watch], warden);
     let status = await_exit(
@@ -339,14 +332,7 @@ fn supervise(
         #[cfg(target_os = "linux")]
         warden,
     );
-    let status = drain(
-        watch,
-        warden,
-        program,
-        status,
-        #[cfg(target_os = "linux")]
-        report,
-    );
+    let status = drain(watch, warden, program, status);
     if directory >= 0 {
         let _ = sys::unlinkat(directory, name);
     }
@@ -432,19 +418,11 @@ fn reap(program: Pid) -> Option<i32> {
 /// orphaned descendant becomes this warden's child, so an empty wait means
 /// the whole tree is gone.
 #[cfg(target_os = "linux")]
-fn drain(
-    _watch: Fd,
-    warden: Pid,
-    program: Pid,
-    mut status: Option<i32>,
-    report: Fd,
-) -> Option<i32> {
+fn drain(_watch: Fd, warden: Pid, program: Pid, mut status: Option<i32>) -> Option<i32> {
     let mut path = [0_u8; 64];
     let Some(children) = children_path(warden, &mut path) else {
         return status;
     };
-    let completed = status.is_some();
-    let mut reported = false;
     loop {
         // Reap completed children before doing any termination work. An empty
         // wait proves there is no tree left: no group kill or proc scan is needed.
@@ -452,20 +430,12 @@ fn drain(
             Ok((reaped, raw)) if reaped > 0 => {
                 if reaped == program {
                     status = status.or(Some(raw));
-                } else if raw != 0 && completed && !reported && report >= 0 {
-                    let _ = write_full(report, &[3]);
-                    reported = true;
                 }
                 continue;
             }
             Ok(_) => {}
             Err(Errno(sys::EINTR)) => continue,
             Err(_) => return status,
-        }
-        // Never report successful completion of an unfinished command tree.
-        if completed && !reported && report >= 0 {
-            let _ = write_full(report, &[3]);
-            reported = true;
         }
         // The warden left this group, and its live PID keeps the group's ID
         // from naming any other group: this reaches only the tree.
