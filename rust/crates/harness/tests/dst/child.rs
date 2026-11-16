@@ -132,7 +132,7 @@ fn batch_names() -> Vec<String> {
     (0..BATCH).map(|index| format!("b{index}")).collect()
 }
 
-fn root_plan(fault: &str) -> Plan {
+fn root_plan(_fault: &str) -> Plan {
     let mut spawns = vec![
         spawn("c4-spawn-start", "leaf-start", "c4-start"),
         spawn("c4-spawn-tool", "leaf-tool", "c4-tool"),
@@ -147,7 +147,8 @@ fn root_plan(fault: &str) -> Plan {
         &["leaf-start", "leaf-tool", "leaf-fail"],
     )];
     waits.push(wait("c4-wait-mid", &["mid"]));
-    let batch: Vec<&str> = batch_names().iter().map(String::as_str).collect();
+    let batch_names = batch_names();
+    let batch: Vec<&str> = batch_names.iter().map(String::as_str).collect();
     waits.push(wait("c4-wait-batch", &batch));
     Plan {
         tag: "c4-root",
@@ -180,7 +181,7 @@ fn check_plan() -> Plan {
     names.extend(batch.iter().map(String::as_str));
     Plan {
         tag: "c4-check",
-        steps: vec![wait("c4-check-wait", &names)],
+        steps: vec![vec![wait("c4-check-wait", &names)]],
         fail_once: None,
     }
 }
