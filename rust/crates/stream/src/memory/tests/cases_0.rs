@@ -411,6 +411,7 @@ async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
         payload_bytes: Some(3),
         commits: Some(1),
         idempotency_results: Some(1),
+        retained_bytes: None,
     });
     let request = AppendRequest {
         path: path("a/b")?,

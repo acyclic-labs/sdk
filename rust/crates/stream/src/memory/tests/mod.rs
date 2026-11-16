@@ -26,6 +26,9 @@ mod commit_index;
 mod inventory;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod store_custody;
+
+#[cfg(not(target_arch = "wasm32"))]
 mod replay_index;
 
 mod head;
