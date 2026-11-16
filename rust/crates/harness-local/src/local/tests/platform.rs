@@ -266,7 +266,10 @@ impl Platform {
 
 async fn waits_resume_on_the_original_platform_clock(mode: Mode) -> Result<()> {
     use crate::test_support::ScriptedEvent;
-    let (clock, mut control) = acyclic_actors::local::ControlledClock::new(100);
+    let start = acyclic_stream::UnixMillisClock::now_unix_millis(
+        &acyclic_stream::SystemUnixMillisClock,
+    );
+    let (clock, mut control) = acyclic_actors::local::ControlledClock::new(start);
     let provider = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![
@@ -319,11 +322,17 @@ async fn waits_resume_on_the_original_platform_clock(mode: Mode) -> Result<()> {
             _ => {}
         }
     };
-    assert_eq!(deadline, Some(120), "wait used a different platform clock");
+    assert_eq!(
+        deadline,
+        Some(start + 20),
+        "wait used a different platform clock"
+    );
     assert_eq!(provider.request_count(), 1);
     let mut settlement = Box::pin(observed.settled_at(input));
     assert!(futures::poll!(settlement.as_mut()).is_pending());
-    control.advance_to(120).map_err(super::super::storage)?;
+    control
+        .advance_to(start + 20)
+        .map_err(super::super::storage)?;
     let (sequence, entry) = settlement.await?;
     assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
     assert_eq!(
