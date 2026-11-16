@@ -466,22 +466,11 @@ async fn omitted_event_capacity_reaches_protocol_admission() -> Result<()> {
 }
 
 #[test]
-fn configured_seed_role_models_resolve_in_the_shipped_catalog() -> Result<()> {
+fn shipped_role_models_resolve_in_the_shipped_catalog() -> Result<()> {
     let (_, transport) = provider(Adapter::Chat, 200);
-    let registry = Registry::with_transport(
-        Credentials::explicit(BTreeMap::from([("morph".into(), "fixture".into())])),
-        transport,
-    );
-    for role in ["orchestrator", "worker", "advisor", "reviewer"] {
-        let path = format!("templates/{role}/AGENT.md");
-        let bytes =
-            acyclic_harness_core::seed::file(&path).ok_or_else(|| invalid("role absent"))?;
-        let source = std::str::from_utf8(bytes).map_err(|error| invalid(error.to_string()))?;
-        let selected = source
-            .lines()
-            .find_map(|line| line.strip_prefix("model: "))
-            .ok_or_else(|| invalid("role model absent"))?;
-        registry.resolve(selected)?;
+    let registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    for selection in acyclic_harness_core::templates::role_models()? {
+        registry.resolve(&selection)?;
     }
     Ok(())
 }
