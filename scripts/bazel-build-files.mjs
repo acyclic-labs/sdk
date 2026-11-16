@@ -87,9 +87,9 @@ const nodes = runs.map(run => new Map(run.resolve.nodes.map(node => [node.id, no
 // with every feature: a host-only feature such as tokio/net must never enter a wasm32 graph.
 // One resolution carries the union of those selections, so every workspace dependency has a
 // wasm variant with the features the wasm roots actually enable.
-const { wasmPackages, wasmSelection, wasmTestPackages } = await import("./wasm-packages.mjs");
+const { wasmPackages, wasmSelection, wasmTestPackages, wasmTestConsumers } = await import("./wasm-packages.mjs");
 const wasmSelections = Object.keys(wasmPackages).map(name => {
-  const { selection } = wasmSelection(name);
+  const { selection, artifact, outName, outputPackage, wasmPackage } = wasmSelection(name);
   const packageName = selection[selection.indexOf("-p") + 1];
   const features = [];
   let noDefault = false;
@@ -97,9 +97,9 @@ const wasmSelections = Object.keys(wasmPackages).map(name => {
     if (selection[index] === "--no-default-features") noDefault = true;
     if (selection[index] === "--features") features.push(...selection[index + 1].split(","));
   }
-  return { name, packageName, features, noDefault };
+  return { name, packageName, features, noDefault, artifact, outName, outputPackage, wasmPackage };
 }).filter(selection => base.packages.some(p => p.name === selection.packageName));
-const wasmArtifacts = new Map(wasmSelections.map(selection => [selection.packageName, selection.artifact]));
+const wasmArtifacts = new Map(wasmSelections.map(selection => [selection.packageName, selection.outName ?? selection.artifact]));
 const wasmRoots = new Set(wasmSelections.map(selection => base.packages.find(p => p.name === selection.packageName).id));
 // The wasm-only crates (a browser transport, say) are not in the host all-features metadata.
 const wasmMetadataFeatures = wasmSelections.flatMap(selection => selection.features.map(feature => `${selection.packageName}/${feature}`));
@@ -155,6 +155,37 @@ for (const p of base.packages) if (p.source === null) members.add(p.id);
 const label = p => `//${dir(p)}`;
 const libOf = p => p.targets.find(t => t.kind.some(k => k === "lib" || k === "rlib" || k === "proc-macro"));
 const crateName = target => target.name.replaceAll("-", "_");
+// The generated wasm-bindgen output of each wasm package, placed where its TypeScript package imports it.
+const wasmGenerated = wasmSelections.map(selection => {
+  const p = base.packages.find(p => p.name === selection.packageName);
+  const lib = libOf(p);
+  return {
+    name: `wasm_${selection.name}_generated`,
+    bindgen: `${label(p)}:${crateName(lib)}_wasm_bindgen`,
+    outDir: `typescript/packages/${selection.outputPackage ?? selection.name}/generated/wasm`,
+    packageName: selection.wasmPackage,
+    entry: wasmArtifacts.get(selection.packageName),
+  };
+});
+const wasmGeneratedTarget = name => `//:wasm_${name}_generated`;
+const wasmNodeModulesTarget = name => `//:wasm_${name}_node_modules`;
+const workspaceTargetName = name => `workspace_${name.replaceAll("@", "").replaceAll("/", "_").replaceAll("-", "_")}`;
+const starlarkDict = entries => `{\n${entries.map(([key, value]) => `        ${q(key)}: ${q(value)},\n`).join("")}    }`;
+// Workspace TypeScript packages by npm name, from their package.json files.
+const workspacePackages = new Map();
+for (const file of execFileSync("git", ["ls-files", "typescript/packages/*/package.json", "typescript/packages/@acyclic/*/package.json"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean)) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
+  if (pkg.name) workspacePackages.set(pkg.name, path.dirname(file).replaceAll("\\", "/"));
+}
+// The workspace packages a wasm package's TypeScript package depends on.
+const wasmNodeModules = new Map();
+for (const selection of wasmSelections) {
+  if (!selection.wasmPackage) continue;
+  const manifest = path.join(root, `typescript/packages/${selection.outputPackage ?? selection.name}`, "package.json");
+  if (!fs.existsSync(manifest)) continue;
+  const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"));
+  wasmNodeModules.set(selection.name, Object.keys(pkg.dependencies ?? {}).filter(name => workspacePackages.has(name)).map(name => ({ name, dir: workspacePackages.get(name) })));
+}
 
 // Every tracked file belongs to the innermost member directory, or to the root package, as in Bazel.
 const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 }).split("\0").filter(Boolean);
@@ -682,7 +713,10 @@ function buildFile(p) {
     const binaries = target.kind.includes("test") || target.kind.includes("bench")
       ? Object.fromEntries(p.targets.filter(t => t.kind.includes("bin")).map(bin => [`:${bin.name}`, bin.name]))
       : {};
-    test(target.name, separate(target), runtimeData(target), binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`);
+    const reads = runtimeData(target);
+    const consumer = wasmTestConsumers[p.name];
+    if (consumer) reads.push(wasmNodeModulesTarget(consumer));
+    test(target.name, separate(target), reads, binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`);
   }
   for (const example of p.targets.filter(t => t.kind.includes("example") && !t.test)) {
     let name = `${example.name}_example`;
@@ -770,7 +804,7 @@ function buildFile(p) {
       ["target", q("web")],
       ["out_name", q(wasmArtifacts.get(p.name) ?? crateName(lib))],
       ["bindgen_flags", list(["--remove-name-section", "--remove-producers-section"])],
-      ["target_compatible_with", list(["@platforms//cpu:wasm32", "@platforms//os:none"])],
+      ["visibility", q(["//visibility:public"])],
     ]]);
   }
   const loads = Map.groupBy([...new Set(rules.map(([kind]) => kind))].sort(), kind => LOADS[kind]);
@@ -1057,7 +1091,7 @@ for (const id of members) {
 }
 const WINDOWS_TOOLCHAIN_PACKAGE = "toolchains/windows";
 const windowsLoads = `load("@rules_cc//cc/private/toolchain:windows_cc_toolchain_config.bzl", "cc_toolchain_config")\nload("//:windows_paths.bzl", "WINDOWS_LLVM", "WINDOWS_XWIN")\n`;
-const wasmLoads = `load("@rules_rust_wasm_bindgen//:defs.bzl", "rust_wasm_bindgen_toolchain")\n`;
+const wasmLoads = `load("@rules_rust_wasm_bindgen//:defs.bzl", "rust_wasm_bindgen_toolchain")\nload("//:node_modules.bzl", "node_modules")\nload("//:wasm_package.bzl", "wasm_package")\n`;
 const windowsPlatform = rule("platform", [["name", q("windows")], ["constraint_values", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])]]);
 const macosPlatform = rule("platform", [["name", q("macos_aarch64")], ["constraint_values", list(["@platforms//os:macos", "@platforms//cpu:aarch64"])]]);
 const libcConstraints = `
@@ -1085,11 +1119,37 @@ ${rule("toolchain", [["name", q("wasm_bindgen_toolchain_registration")], ["toolc
 ${rule("filegroup", [["name", q("wasm_clang")], ["srcs", q(["@llvm_toolchain_llvm//:bin/clang"])], ["visibility", q(["//visibility:public"])]])}
 ${rule("filegroup", [["name", q("wasm_ar")], ["srcs", q(["@llvm_toolchain_llvm//:bin/llvm-ar"])], ["visibility", q(["//visibility:public"])]])}
 ` : "";
+const wasmGeneratedRules = wasmGenerated.map(g => rule("wasm_package", [
+  ["name", q(g.name)],
+  ["bindgen", q(g.bindgen)],
+  ["out_dir", q(g.outDir)],
+  ["package_name", g.packageName ? q(g.packageName) : undefined],
+  ["entry", g.entry ? q(g.entry) : undefined],
+  ["visibility", q(["//visibility:public"])],
+])).join("\n");
+const wasmNodeModulesRules = wasmSelections.filter(selection => selection.wasmPackage).map(selection => {
+  const generated = wasmGenerated.find(g => g.name === `wasm_${selection.name}_generated`);
+  const deps = wasmNodeModules.get(selection.name) ?? [];
+  const filegroups = deps.map(dep => rule("filegroup", [
+    ["name", q(workspaceTargetName(dep.name))],
+    ["srcs", `glob(${q([`${dep.dir}/**`])})`],
+    ["visibility", q(["//visibility:public"])],
+  ])).join("\n");
+  const packages = [
+    ...deps.map(dep => [`:${workspaceTargetName(dep.name)}`, `${dep.name}=${dep.dir}`]),
+    [`:${generated.name}`, `${selection.wasmPackage}=${generated.outDir}`],
+  ];
+  return `${filegroups}\n${rule("node_modules", [
+    ["name", q(`wasm_${selection.name}_node_modules`)],
+    ["packages", starlarkDict(packages)],
+    ["visibility", q(["//visibility:public"])],
+  ])}`;
+}).join("\n");
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
-${wasmLoads}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${linuxMusl}${windowsCcToolchain()}${wasmTools}${sourcesRule}${exportsRule("")}`],
+${wasmLoads}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${linuxMusl}${windowsCcToolchain()}${wasmTools}${wasmGeneratedRules}${wasmNodeModulesRules}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}

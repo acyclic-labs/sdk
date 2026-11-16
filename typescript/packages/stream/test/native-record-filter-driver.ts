@@ -38,7 +38,7 @@ let registered = false;
 // headers and selected cut. Replaying its last frame is the hostile-wire input.
 const { ensureStreamWasm } = await import("../src/contract.js");
 await ensureStreamWasm();
-const { WasmStream, WasmOpened } = await import("../generated/wasm/acyclic_stream_wasm.js");
+const { WasmStream, WasmOpened } = await import("@acyclic/stream-wasm");
 const backing = new WasmStream();
 await backing.dispatch("append", toBinary(wire.AppendRequestSchema, create(wire.AppendRequestSchema, {
   path: "scoped", idempotencyKey: new Uint8Array(16).fill(6),
