@@ -30,15 +30,51 @@ export class DependencyUnavailableError extends Error {
   }
 }
 
+/** Every readiness step an SDK guest runtime names that consumes no binding.
+ * A closed set: a host admits a step only from this list (its own copy, kept
+ * equal by its conformance), so a step name is never guest prose. */
+export const GUEST_STEPS = Object.freeze([
+  "harness.hosting", "harness.model", "harness.providers", "harness.open", "harness.manifest",
+] as const);
+export type GuestStep = (typeof GUEST_STEPS)[number];
+
+/** A guest runtime's own readiness step failed, named only by its
+ * {@link GUEST_STEPS} entry. The message and `cause` stay in the guest. */
+export class GuestStepError extends Error {
+  readonly type = "guestStep" as const;
+  readonly detail: { readonly step: GuestStep };
+  constructor(step: GuestStep, options?: { readonly cause?: unknown }) {
+    super("guest readiness step failed", options);
+    if (!(GUEST_STEPS as readonly string[]).includes(step)) throw new TypeError("a guest step is a declared GUEST_STEPS entry");
+    this.name = "GuestStepError";
+    this.detail = Object.freeze({ step });
+  }
+}
+
+const typed = (error: unknown) => error instanceof DependencyUnavailableError || error instanceof GuestStepError ||
+  typeof error === "object" && error !== null && ["AbortError", "TimeoutError"].includes((error as { name?: unknown }).name as string);
+
+/** A promise of any realm, or any other object or function with a callable `then`. */
+const thenable = (value: unknown): value is PromiseLike<unknown> =>
+  (typeof value === "object" || typeof value === "function") && value !== null &&
+  typeof (value as PromiseLike<unknown>).then === "function";
+
+/** `run()`'s result, or its throw or rejection raised as `fail(cause)`: the
+ * typed failure of the one readiness step it is. Cancellation and an already
+ * typed failure pass unchanged, so the innermost step names the failure. */
+export function readinessStep<T>(fail: (cause: unknown) => Error, run: () => T): T {
+  const raise = (error: unknown): never => { throw typed(error) ? error : fail(error); };
+  let result: T;
+  try { result = run(); } catch (error) { return raise(error); }
+  return thenable(result) ? Promise.resolve(result).catch(raise) as T : result;
+}
+
 /** The binding `name` of `env`, or a {@link DependencyUnavailableError} naming it. */
 export function requireBinding<T>(env: object, name: string): NonNullable<T> {
   const value: unknown = (env as Record<string, unknown>)[name];
   if (value === undefined || value === null) throw new DependencyUnavailableError(name);
   return value as NonNullable<T>;
 }
-
-const passes = (error: unknown) => error instanceof DependencyUnavailableError ||
-  typeof error === "object" && error !== null && ["AbortError", "TimeoutError"].includes((error as { name?: unknown }).name as string);
 
 /** `value` whose own calls, and its methods' calls, raise every synchronous throw
  * or rejection as a {@link DependencyUnavailableError} naming `name`, with the
@@ -47,13 +83,12 @@ const passes = (error: unknown) => error instanceof DependencyUnavailableError |
 export function dependencyBinding<T extends object>(name: string, value: T): T {
   dependencyName(name);
   const fail = (error: unknown): never => {
-    throw passes(error) ? error : new DependencyUnavailableError(name, { cause: error });
+    throw typed(error) ? error : new DependencyUnavailableError(name, { cause: error });
   };
   const call = (member: (...args: unknown[]) => unknown, self: unknown, args: unknown[]): unknown => {
     let result: unknown;
     try { result = Reflect.apply(member, self, args); } catch (error) { return fail(error); }
-    return result !== null && typeof result === "object" && typeof (result as PromiseLike<unknown>).then === "function"
-      ? Promise.resolve(result).catch(fail) : result;
+    return thenable(result) ? Promise.resolve(result).catch(fail) : result;
   };
   return new Proxy(value, {
     apply: (target, self, args) => call(target as (...args: unknown[]) => unknown, self, args),
