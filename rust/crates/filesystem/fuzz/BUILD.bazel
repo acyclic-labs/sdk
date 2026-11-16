@@ -39,7 +39,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -52,6 +53,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -66,7 +92,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -79,6 +106,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -93,7 +145,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -106,6 +159,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -120,7 +198,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -133,6 +212,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -149,7 +253,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -162,6 +267,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -179,7 +309,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -192,6 +323,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -206,7 +362,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -219,6 +376,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -233,7 +415,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -246,6 +429,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -260,7 +468,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -273,6 +482,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -287,7 +521,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -300,6 +535,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -316,7 +576,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -329,6 +590,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -343,7 +629,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -356,6 +643,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -370,7 +682,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -383,6 +696,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -397,7 +735,8 @@ rust_binary(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -410,6 +749,31 @@ rust_binary(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -430,7 +794,8 @@ rust_test(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -445,6 +810,35 @@ rust_test(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//futures-0.3.34",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//proptest-1.12.0",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//futures-0.3.34",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//proptest-1.12.0",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
 )
@@ -487,7 +881,8 @@ rust_test(
     rustc_env = PACKAGE_ENV,
     deps = [
         ":build_script",
-    ] + [
+    ] + select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
         "//rust/crates/filesystem:acyclic_fs",
@@ -502,6 +897,35 @@ rust_test(
         "@crates//serde_json-1.0.154",
         "@crates//tempfile-3.27.0",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//futures-0.3.34",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//proptest-1.12.0",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "//rust/crates/auth:acyclic_auth",
+        "//rust/crates/filesystem/proofs/lease-path:acyclic_fs_lease_path_proof",
+        "//rust/crates/filesystem:acyclic_fs",
+        "//rust/crates/stream:acyclic_stream",
+        "@crates//futures-0.3.34",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//loom-0.7.3",
+        "@crates//proptest-1.12.0",
+        "@crates//prost-0.14.4",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
+        "@crates//tempfile-3.27.0",
+    ],
+    }),
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
 )

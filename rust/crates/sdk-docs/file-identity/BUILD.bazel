@@ -15,9 +15,18 @@ rust_library(
     version = "0.0.0",
     crate_features = FEATURES,
     rustc_env = PACKAGE_ENV,
-    deps = [
+    deps = select({
+        "@rules_rust//rust/platform:x86_64-unknown-linux-gnu": [
         "@crates//serde-1.0.229",
     ],
+        "@rules_rust//rust/platform:aarch64-apple-darwin": [
+        "@crates//serde-1.0.229",
+    ],
+        "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
+        "@crates//serde-1.0.229",
+        "@crates//windows_sys_0_61_2-0.61.2",
+    ],
+    }),
     visibility = ["//visibility:public"],
 )
 

@@ -6,6 +6,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output"));
     let compiler = std::env::var_os("RUSTC").expect("Cargo compiler");
+    // The build's own target: a cross build's compiler need not have the host's standard library.
+    let target = std::env::var_os("TARGET").expect("Cargo target");
     let mut reached = Vec::new();
     for (index, (declaration, child, leaf)) in module_cases::CASES.into_iter().enumerate() {
         let root = output.join("module-oracle").join(index.to_string());
@@ -36,6 +38,8 @@ fn main() {
                 "--cfg",
                 "feature=\"test-support\"",
             ])
+            .arg("--target")
+            .arg(&target)
             .arg(root.join("lib.rs"))
             .arg("-o")
             .arg(root.join("proof.rmeta"))
