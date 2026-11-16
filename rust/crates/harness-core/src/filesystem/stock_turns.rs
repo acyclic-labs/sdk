@@ -453,6 +453,7 @@ impl TurnExecutors for StockExecutors {
                     writer,
                     self.limits.file_bytes,
                     (&agent_tools, authority.templates.clone()),
+                    Some(Arc::clone(&binding.1)),
                 )?;
             }
             let executor = StockExecutor::from_binding(binding, ContextPipeline::default(), tools)

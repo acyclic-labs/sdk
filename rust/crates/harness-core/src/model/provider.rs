@@ -417,6 +417,11 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
             "selected provider cannot admit a profile; recovery: select a provider with epoch profile admission".into(),
         ))
     }
+    /// How long this selection's provider withholds admission now, if it does.
+    /// A host consults it before multiplying work onto a saturated provider.
+    fn provider_saturation(&self) -> Option<std::time::Duration> {
+        None
+    }
     /// Binds the composition's authenticated reader and optional file projection credit.
     /// `None` leaves projection size unbounded; native work admission still applies.
     /// Providers that consume canonical file references directly need no rebinding.

@@ -86,11 +86,15 @@ fn script(timer: Timer) -> (Arc<Script>, oneshot::Sender<Result<HttpResponse>>) 
 }
 
 fn request() -> HttpRequest {
+    request_with_body(0)
+}
+
+fn request_with_body(bytes: usize) -> HttpRequest {
     HttpRequest {
         method: http::Method::POST,
         url: "http://127.0.0.1:1/v1".into(),
         headers: Default::default(),
-        body: Bytes::new(),
+        body: Bytes::from(vec![b'x'; bytes]),
     }
 }
 
@@ -134,7 +138,7 @@ proptest! {
     ) {
         runtime().block_on(async {
             let (script, headers) = script(Timer::Clock);
-            let transport = Bounded::new(script.clone(), TimeoutSpec { total_ms: Some(total) });
+            let transport = Bounded::new(script.clone(), TimeoutSpec { total_ms: Some(total), first_byte_ms: None });
             let (chunks, body) = mpsc::unbounded();
             let mut send = pin!(transport.send(request()));
             if total == 0 {
@@ -184,7 +188,7 @@ proptest! {
     fn expiry_precedes_ready_bytes_and_eof(eof in any::<bool>(), partial in any::<bool>(), late in 0..1_000u64) {
         runtime().block_on(async {
             let (script, headers) = script(Timer::Starved);
-            let transport = Bounded::new(script, TimeoutSpec { total_ms: Some(100) });
+            let transport = Bounded::new(script, TimeoutSpec { total_ms: Some(100), first_byte_ms: None });
             let (chunks, body) = mpsc::unbounded();
             assert!(headers.send(Ok(response(Box::pin(body)))).is_ok());
             let mut body = transport.send(request()).await.unwrap().body;
@@ -204,10 +208,94 @@ proptest! {
 }
 
 #[test]
+fn first_byte_deadline_bounds_a_stalled_small_request() {
+    runtime().block_on(async {
+        let (script, _headers) = script(Timer::Clock);
+        let transport = Bounded::new(
+            script.clone(),
+            TimeoutSpec {
+                total_ms: None,
+                first_byte_ms: Some(30_000),
+            },
+        );
+        let mut send = pin!(transport.send(request()));
+        assert!(send.as_mut().now_or_never().is_none());
+        tokio::time::advance(Duration::from_millis(29_999)).await;
+        assert!(send.as_mut().now_or_never().is_none());
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let error = send.await.expect_err("stalled headers must expire");
+        assert_eq!(cause(&error), "no response headers within 30000 ms");
+        assert_eq!(script.arms.load(Ordering::SeqCst), 1);
+    });
+}
+
+#[test]
+fn first_byte_deadline_scales_with_the_request_input() {
+    runtime().block_on(async {
+        // 800_000 bytes is about 200_000 input tokens: 30 s + 200 s.
+        let (script, headers) = script(Timer::Clock);
+        let transport = Bounded::new(
+            script.clone(),
+            TimeoutSpec {
+                total_ms: None,
+                first_byte_ms: Some(30_000),
+            },
+        );
+        let (chunks, body) = mpsc::unbounded();
+        let mut send = pin!(transport.send(request_with_body(800_000)));
+        assert!(send.as_mut().now_or_never().is_none());
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert!(
+            send.as_mut().now_or_never().is_none(),
+            "a large prefill must not be cut at the small-request base"
+        );
+        assert!(headers.send(Ok(response(Box::pin(body)))).is_ok());
+        let mut body = send.await.expect("headers before the scaled deadline").body;
+        chunks
+            .unbounded_send(Ok(Bytes::from_static(b"released")))
+            .unwrap();
+        assert_eq!(
+            body.next().await.unwrap().unwrap(),
+            Bytes::from_static(b"released")
+        );
+        drop(chunks);
+        assert!(body.next().await.is_none());
+        assert_eq!(script.arms.load(Ordering::SeqCst), 1);
+    });
+}
+
+#[test]
+fn first_byte_deadline_expires_a_large_request_at_its_scaled_instant() {
+    runtime().block_on(async {
+        let (script, _headers) = script(Timer::Clock);
+        let transport = Bounded::new(
+            script,
+            TimeoutSpec {
+                total_ms: None,
+                first_byte_ms: Some(30_000),
+            },
+        );
+        let mut send = pin!(transport.send(request_with_body(800_000)));
+        assert!(send.as_mut().now_or_never().is_none());
+        tokio::time::advance(Duration::from_millis(229_999)).await;
+        assert!(send.as_mut().now_or_never().is_none());
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let error = send.await.expect_err("scaled headers deadline");
+        assert_eq!(cause(&error), "no response headers within 230000 ms");
+    });
+}
+
+#[test]
 fn unbounded_request_waits_only_on_its_producers() {
     runtime().block_on(async {
         let (script, headers) = script(Timer::Early);
-        let transport = Bounded::new(script.clone(), TimeoutSpec::DEFAULT);
+        let transport = Bounded::new(
+            script.clone(),
+            TimeoutSpec {
+                total_ms: None,
+                first_byte_ms: None,
+            },
+        );
         let (chunks, body) = mpsc::unbounded();
         let mut send = pin!(transport.send(request()));
         assert!(send.as_mut().now_or_never().is_none());
@@ -231,7 +319,13 @@ fn unbounded_request_waits_only_on_its_producers() {
 
         // Losing a producer terminates the unbounded wait with its typed error.
         let (script, headers) = self::script(Timer::Early);
-        let transport = Bounded::new(script, TimeoutSpec::DEFAULT);
+        let transport = Bounded::new(
+            script,
+            TimeoutSpec {
+                total_ms: None,
+                first_byte_ms: None,
+            },
+        );
         drop(headers);
         assert!(matches!(
             transport.send(request()).await,
@@ -252,6 +346,7 @@ fn a_failed_or_early_timer_is_terminal_instead_of_rearmed() {
                 script.clone(),
                 TimeoutSpec {
                     total_ms: Some(100),
+                    first_byte_ms: None,
                 },
             );
             let (chunks, body) = mpsc::unbounded();
@@ -269,7 +364,7 @@ fn a_failed_or_early_timer_is_terminal_instead_of_rearmed() {
 fn native_timeout_does_not_allocate_a_discarded_diagnostic() {
     let allocated = acyclic_test_support::measure(|| {
         assert!(
-            matches!(timeout(true, 100), Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty())
+            matches!(timeout(true, 100, false), Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty())
         );
     });
     assert_eq!(allocated.count_total, 0);

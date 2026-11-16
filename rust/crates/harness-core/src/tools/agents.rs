@@ -131,6 +131,8 @@ struct Turn {
     /// This agent's creation snapshot and the host's template reader; spawn refuses
     /// when either is absent.
     templates: Option<(CreationConfig, Arc<dyn SpawnTemplates>)>,
+    /// The selected model's provider, consulted before a spawn multiplies load.
+    saturation: Option<Arc<dyn crate::model::ModelProvider>>,
     volumes: Vec<crate::agent::WorkspaceEntry>,
     /// Only the original deferred invocation consumes its named release event.
     released: Option<crate::agent::WaitResume>,
@@ -376,6 +378,18 @@ impl AgentTool {
                         "name must be short printable ASCII without spaces",
                     ));
                 };
+                if let Some(wait) = turn
+                    .saturation
+                    .as_ref()
+                    .and_then(|provider| provider.provider_saturation())
+                {
+                    return Ok(ToolResult {
+                        value: json!({"error": format!(
+                            "provider admission is closed for {} ms; recovery: wait for the provider's cooldown before spawning more work",
+                            wait.as_millis()
+                        )}),
+                    });
+                }
                 let Some((parent, templates)) = &turn.templates else {
                     return Ok(super::rejected_input(Error::Unsupported(
                         "this agent has no creation template to spawn from".into(),
@@ -1187,6 +1201,7 @@ pub fn bind_agent_tools(
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: Option<u64>,
     (names, templates): (&[String], Option<Arc<dyn SpawnTemplates>>),
+    saturation: Option<Arc<dyn crate::model::ModelProvider>>,
 ) -> Result<()> {
     let turn = Arc::new(Turn {
         spawned_children: agent.spawned_children.len() as u64,
@@ -1199,6 +1214,7 @@ pub fn bind_agent_tools(
         writer,
         maximum_bytes,
         templates: agent.profile.clone().zip(templates),
+        saturation,
         volumes: agent.volumes.clone(),
         released: agent.wait_resume.clone(),
     });

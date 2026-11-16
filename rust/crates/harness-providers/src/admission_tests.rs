@@ -1,7 +1,7 @@
 //! Shared model cooldowns, driven through real requests on a paused clock.
 use super::*;
 use crate::Adapter;
-use acyclic_harness_core::model::ModelProvider as _;
+use acyclic_harness_core::model::{ModelEvent, ModelProvider as _};
 use acyclic_stream::BoxProviderFuture;
 
 #[path = "admission_observation_tests.rs"]
@@ -10,6 +10,25 @@ mod observations;
 const CAPACITY: usize = 4;
 const SERVICE: Duration = Duration::from_secs(10);
 const RETRY_AFTER: Duration = Duration::from_secs(3);
+
+fn received_headers(events: &mut acyclic_harness_core::model::ModelStream<'_>) {
+    use acyclic_stream::trace::{Outcome, SpanEvent, TraceRecord};
+    let Some(Some(Ok(ModelEvent::Trace {
+        record: TraceRecord::V1(SpanEvent::Started {
+            id, at_ns: started, ..
+        }),
+    }))) = events.next().now_or_never()
+    else {
+        panic!("missing headers start")
+    };
+    assert!(
+        matches!(events.next().now_or_never(), Some(Some(Ok(ModelEvent::Trace {
+        record: TraceRecord::V1(SpanEvent::Finished {
+            id: finished, at_ns, result: Outcome::Succeeded, ..
+        })
+    }))) if finished == id && at_ns >= started)
+    );
+}
 
 struct Capacity {
     origin: tokio::time::Instant,
@@ -135,8 +154,9 @@ impl HttpTransport for RateRefusal {
 }
 
 #[test]
-fn rate_refusal_resumes_every_request_at_retry_after_with_responses_still_open() -> Result<()> {
+fn rate_refusal_paces_its_waiters_across_the_provider_window() -> Result<()> {
     use acyclic_harness_core::model::ModelEvent;
+    const WAITERS: u32 = 10;
     for accepted in [0, 3] {
         paused().block_on(async {
             let transport = Arc::new(RateRefusal {
@@ -154,14 +174,16 @@ fn rate_refusal_resumes_every_request_at_retry_after_with_responses_still_open()
                 .map(|_| provider.generate(&request, dispatch))
                 .collect();
             for response in &mut active {
+                received_headers(response);
                 assert!(response.next().now_or_never().is_none());
             }
             let mut refused = provider.generate(&request, dispatch);
+            received_headers(&mut refused);
             assert!(matches!(
                 refused.next().now_or_never(),
                 Some(Some(Ok(ModelEvent::Wait(ModelWait::Started { .. }))))
             ));
-            let mut queued: Vec<_> = (0..10)
+            let mut queued: Vec<_> = (0..WAITERS)
                 .map(|_| provider.generate(&request, dispatch))
                 .collect();
             for response in &mut queued {
@@ -177,22 +199,32 @@ fn rate_refusal_resumes_every_request_at_retry_after_with_responses_still_open()
                 assert!(response.next().now_or_never().is_none());
             }
             assert_eq!(transport.log.lock().unwrap().len(), accepted + 1);
-            tokio::time::advance(Duration::from_nanos(1)).await;
-            for response in &mut queued {
-                assert!(matches!(response.next().now_or_never(), Some(Some(Ok(
-                    ModelEvent::Wait(ModelWait::AdmissionFinished { waited_for, .. })
-                ))) if waited_for == RETRY_AFTER));
-                assert!(response.next().now_or_never().is_none());
+            let interval = RETRY_AFTER / WAITERS;
+            for index in 0..WAITERS {
+                if index > 0 {
+                    tokio::time::advance(interval).await;
+                }
+                for (position, response) in queued.iter_mut().enumerate() {
+                    if position < index as usize {
+                        continue;
+                    }
+                    if position == index as usize {
+                        let waited_for = RETRY_AFTER + interval * index;
+                        assert!(matches!(response.next().now_or_never(), Some(Some(Ok(
+                            ModelEvent::Wait(ModelWait::AdmissionFinished { waited_for: actual, .. })
+                        ))) if actual == waited_for));
+                        received_headers(response);
+                        assert!(response.next().now_or_never().is_none());
+                    } else {
+                        assert!(response.next().now_or_never().is_none());
+                    }
+                }
             }
             let log = transport.log.lock().unwrap();
-            assert_eq!(log.len(), accepted + 11);
-            assert!(
-                log[accepted + 1..]
-                    .iter()
-                    .all(|row| *row == (RETRY_AFTER, 200))
-            );
-            // The former accepted-at-429 credit admits only max(accepted, 1)
-            // requests here while their response bodies remain open.
+            assert_eq!(log.len(), accepted + 1 + WAITERS as usize);
+            for (index, row) in log[accepted + 1..].iter().enumerate() {
+                assert_eq!(*row, (RETRY_AFTER + interval * index as u32, 200));
+            }
             Ok::<_, acyclic_harness_core::Error>(())
         })?;
     }
@@ -256,6 +288,7 @@ fn one_models_retry_after_does_not_gate_another_models_http() -> Result<()> {
         *transport.active.lock().unwrap() = CAPACITY;
         let (request, dispatch) = crate::tests::request(&limited)?;
         let mut refused = limited.generate(&request, dispatch);
+        received_headers(&mut refused);
         assert!(matches!(
             refused.next().now_or_never(),
             Some(Some(Ok(ModelEvent::Wait(ModelWait::Started { .. }))))
@@ -273,6 +306,7 @@ fn one_models_retry_after_does_not_gate_another_models_http() -> Result<()> {
         assert!(queued.next().now_or_never().is_none());
         let (other_request, other_dispatch) = crate::tests::request(&independent)?;
         let mut other = independent.generate(&other_request, other_dispatch);
+        received_headers(&mut other);
         assert!(other.next().now_or_never().is_none());
         // The other model reached HTTP immediately; only its body is pending.
         // Omitting the model from the key instead yields AdmissionStarted here.
