@@ -73,7 +73,7 @@ async fn history(schedule: &Schedule) -> TestResult {
         pending_records: vec![0],
         ..Expected::default()
     });
-    let mut now = SystemClock.now_unix_ms();
+    let mut now = SystemClock.now_unix_millis();
     for step in 0..48 {
         let mut choices = [0; 4];
         assert!(fill_seeded(&mut choices));
