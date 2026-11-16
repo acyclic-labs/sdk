@@ -1,15 +1,25 @@
 //! Run records carry the effective prompt, timed tool spans and model usage.
 use super::*;
 use acyclic_harness::executor::ExecutionEvent;
-
-pub(super) const SEEDS: &[u64] = &[0];
+use family::{Generator, Variant};
 
 pub(super) const GENERATOR: Generator = Generator {
     class: "O1",
-    seeds: SEEDS,
+    seeds: one_tool_span_carries_prompt_timing_and_usage::VALUES,
     variants,
     world,
 };
+
+acyclic_test_support::cases! {
+    module = one_tool_span_carries_prompt_timing_and_usage,
+    values: u64,
+    runner = super::run,
+    cases = [seed_0 => 0],
+}
+
+fn run(seed: u64) -> std::result::Result<(), String> {
+    GENERATOR.run(seed)
+}
 
 fn variants(_: u64) -> Vec<Variant> {
     vec![BTreeMap::from([
