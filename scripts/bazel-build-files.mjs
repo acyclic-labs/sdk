@@ -648,7 +648,8 @@ function moduleFile() {
       ["exec_triple", q(LINUX_GNU_TRIPLE)],
       ["target_triple", q(LINUX_MUSL_TRIPLE)],
       ["target_compatible_with", list(["@platforms//os:linux", "@platforms//cpu:x86_64", "//:libc_musl"])],
-      // A repository set takes no opt_level from rust.toolchain; without its own, musl fastbuild is opt-level 0.
+      // A repository set takes no opt_level from rust.toolchain. Without its own, its musl toolchain and the one it
+      // registers for its exec triple (which resolution prefers for gnu targets) compile fastbuild at opt-level 0.
       ["opt_level", q(optLevels)],
       ["extra_rustc_flags", list(flags)],
       ["extra_exec_rustc_flags", list(flags)],

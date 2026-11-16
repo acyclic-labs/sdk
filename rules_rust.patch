@@ -79,6 +79,20 @@ diff -ruN a/rust/defs.bzl b/rust/defs.bzl
  # See @rules_rust//rust/private:clippy.bzl for a complete description.
  
  rust_clippy = _rust_clippy
+diff -ruN a/rust/extensions.bzl b/rust/extensions.bzl
+--- a/rust/extensions.bzl
++++ b/rust/extensions.bzl
+@@ -77,7 +77,9 @@
+                 "global_allocator_library": str(repository_set.global_allocator_library) if repository_set.global_allocator_library else None,
+                 "name": repository_set.name,
+                 "netrc": repository_set.netrc if repository_set.netrc else None,
+-                "opt_level": {repository_set.target_triple: repository_set.opt_level} if repository_set.opt_level else None,
++                # A repository set also registers a toolchain targeting its exec triple; without the set's opt_level,
++                # that toolchain compiles at rustc's default and can win resolution over rust.toolchain's.
++                "opt_level": {triple: repository_set.opt_level for triple in [repository_set.exec_triple, repository_set.target_triple]} if repository_set.opt_level else None,
+                 "rustfmt_version": repository_set.rustfmt_version,
+                 "sha256s": repository_set.sha256s,
+                 "strip_level": {repository_set.target_triple: repository_set.strip_level} if repository_set.strip_level else None,
 diff -ruN a/rust/private/check.bzl b/rust/private/check.bzl
 --- a/rust/private/check.bzl
 +++ b/rust/private/check.bzl
