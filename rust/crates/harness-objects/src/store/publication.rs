@@ -49,18 +49,18 @@ impl ContentPublisher for ObjectContentStore {
         bytes: &'a [u8],
         media_type: &'a str,
         display_name: &'a str,
-        access: crate::conversation::ContentAccess<'a, 'a>,
+        access: acyclic_harness_core::conversation::ContentAccess<'a, 'a>,
     ) -> Result<
-        crate::conversation::BoundedContentFuture<
+        acyclic_harness_core::conversation::BoundedContentFuture<
             'a,
-            (FileRef, Option<crate::conversation::ContentHold<'a>>),
+            (FileRef, Option<acyclic_harness_core::conversation::ContentHold<'a>>),
         >,
     > {
-        let crate::conversation::ContentAccess { ceiling, io } = access;
+        let acyclic_harness_core::conversation::ContentAccess { ceiling, io } = access;
 
         self.supports_stage(io)?;
         self.require_publication_ceiling(ceiling, io)?;
-        crate::conversation::BoundedContentFuture::new(io, || async move {
+        acyclic_harness_core::conversation::BoundedContentFuture::new(io, || async move {
             let grant = self.writer.as_ref().ok_or_else(|| {
                 Error::Unauthorized("Objects writer is not bound to the original owner".into())
             })?;
@@ -125,22 +125,22 @@ impl ContentPublisher for ObjectContentStore {
 impl ObjectContentStore {
     fn require_publication_ceiling(
         &self,
-        ceiling: Option<&crate::Capabilities>,
-        io: Option<&crate::conversation::ContentIo>,
+        ceiling: Option<&acyclic_harness_core::Capabilities>,
+        io: Option<&acyclic_harness_core::conversation::ContentIo>,
     ) -> Result<()> {
         if let Some(grants) = ceiling
-            && !crate::executor::with_history_io(io, |work| {
-                crate::core::volume_operation_granted_with_work(
+            && !acyclic_harness_core::executor::with_history_io(io, |work| {
+                acyclic_harness_core::core::volume_operation_granted_with_work(
                     grants,
                     &self.volume,
-                    crate::conversation::VolumeOperation::Write,
+                    acyclic_harness_core::conversation::VolumeOperation::Write,
                     work,
                 )
             })?
         {
-            return Err(crate::conversation::content_error(
+            return Err(acyclic_harness_core::conversation::content_error(
                 io,
-                crate::wire::ErrorCode::Unauthorized,
+                acyclic_harness_core::wire::ErrorCode::Unauthorized,
                 "content caller lacks a volume write grant",
             ));
         }

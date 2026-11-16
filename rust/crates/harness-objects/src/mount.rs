@@ -24,7 +24,7 @@ impl ObjectContentMountResolver {
     }
 }
 
-impl crate::conversation::ContentMountResolver for ObjectContentMountResolver {
+impl acyclic_harness_core::conversation::ContentMountResolver for ObjectContentMountResolver {
     fn mount<'a>(
         &'a self,
         reference: &'a FileRef,

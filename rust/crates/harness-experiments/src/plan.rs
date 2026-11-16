@@ -37,7 +37,7 @@ impl<'de> Deserialize<'de> for PairAssignment {
             population: [u8; 32],
             replicate: u64,
         }
-        let file: File = crate::executor::json::deserialize_object(decoder)?;
+        let file: File = acyclic_harness_core::executor::json::deserialize_object(decoder)?;
         if file.version != 1 {
             return Err(serde::de::Error::custom("assignment version must be 1"));
         }

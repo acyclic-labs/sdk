@@ -5,7 +5,7 @@ mod claims;
 mod http;
 mod keys;
 
-use crate::{
+use acyclic_harness_core::{
     Error, Result,
     core::{Authority, AuthorityRoot, Scope},
     filesystem::TurnAdmission,

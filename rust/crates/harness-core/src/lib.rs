@@ -48,7 +48,6 @@ pub mod distributed;
 mod effects;
 pub mod evals;
 pub mod executor;
-pub mod experiments;
 pub mod extension;
 pub mod filesystem;
 pub mod goal;
@@ -56,8 +55,6 @@ pub mod goal;
 pub mod hooks;
 #[doc(hidden)]
 pub mod identity;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod input_watch;
 pub mod interaction;
 #[cfg(not(target_arch = "wasm32"))]
 mod javascript_allocator;
@@ -73,10 +70,8 @@ pub mod native_environment;
 pub mod native_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_settings;
-pub mod objects;
 mod obs;
 /// Cached OIDC verification and admission through the existing workload authority.
-pub mod oidc;
 pub mod plugins;
 pub mod preset;
 /// Pure resolution of versioned model and role files at epoch admission.

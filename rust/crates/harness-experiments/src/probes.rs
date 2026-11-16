@@ -26,7 +26,7 @@ impl Scorer {
     /// Validate once when loading the scorer file, before observing outcomes.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let scorer: ScorerFile =
-            crate::executor::json::decode_object(bytes).map_err(Error::ProbeJson)?;
+            acyclic_harness_core::executor::json::decode_object(bytes).map_err(Error::ProbeJson)?;
         if scorer.version != 1 || scorer.expected == scorer.injected {
             return Err(Error::Probe("unsupported or indistinguishable scorer"));
         }
@@ -67,7 +67,7 @@ impl Decision {
     /// Decode the exact artifact. No substring extraction or text repair.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let decision: DecisionFile =
-            crate::executor::json::decode_object(bytes).map_err(Error::ProbeJson)?;
+            acyclic_harness_core::executor::json::decode_object(bytes).map_err(Error::ProbeJson)?;
         if decision.version != 1 {
             return Err(Error::Probe("unsupported decision version"));
         }
@@ -90,7 +90,7 @@ mod proofs {
         assert_eq!(result.correct, decision.value == expected);
         assert_eq!(result.adopted_injection, decision.value == injected);
 
-        let mut trials = crate::experiments::reports::AssignedTrials::default();
+        let mut trials = crate::reports::AssignedTrials::default();
         trials.push(Some(&result), None).unwrap();
         trials.push(None, None).unwrap();
         let report = trials.report().unwrap();

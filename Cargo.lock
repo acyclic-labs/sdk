@@ -545,7 +545,11 @@ dependencies = [
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-harness-devices",
+ "acyclic-harness-experiments",
+ "acyclic-harness-input-watch",
  "acyclic-harness-mcp",
+ "acyclic-harness-objects",
+ "acyclic-harness-oidc",
  "acyclic-harness-search",
  "acyclic-harness-tui",
  "acyclic-host-platform",
@@ -787,6 +791,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-harness-experiments"
+version = "0.2.0"
+dependencies = [
+ "acyclic-harness-core",
+ "acyclic-test-support",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "acyclic-harness-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -794,6 +809,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-harness-experiments",
  "acyclic-harness-mcp",
  "acyclic-mcp",
  "acyclic-native-runtime",
@@ -827,6 +843,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-harness-input-watch"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-harness-core",
+ "acyclic-native-runtime",
+ "notify",
+ "tokio",
+]
+
+[[package]]
 name = "acyclic-harness-mcp"
 version = "0.2.0"
 dependencies = [
@@ -849,6 +877,38 @@ dependencies = [
  "tokio-util",
  "tsify",
  "uuid",
+]
+
+[[package]]
+name = "acyclic-harness-objects"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-harness-core",
+ "acyclic-native-runtime",
+ "acyclic-objects",
+ "acyclic-stream",
+ "bytes",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "acyclic-harness-oidc"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-harness-core",
+ "acyclic-stream",
+ "base64 0.23.1",
+ "bytes",
+ "futures",
+ "http",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -888,6 +948,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-core",
+ "acyclic-harness-input-watch",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",

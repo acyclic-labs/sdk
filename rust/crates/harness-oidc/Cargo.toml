@@ -1,0 +1,24 @@
+[package]
+include = ["clippy.toml", "Cargo.toml", "src/**"]
+name = "acyclic-harness-oidc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cached OIDC verification behind the acyclic-harness facade"
+documentation = "https://docs.rs/acyclic-harness-oidc"
+
+[dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+base64 = "=0.23.1"
+bytes.workspace = true
+futures.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+
+[lints]
+workspace = true

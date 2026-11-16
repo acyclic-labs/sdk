@@ -142,7 +142,7 @@ fn admit_cost(cost: Option<f64>) -> Result<(), Error> {
 
 impl<'de> Deserialize<'de> for Observation {
     fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
-        let row = crate::executor::json::deserialize_object(decoder)?;
+        let row = acyclic_harness_core::executor::json::deserialize_object(decoder)?;
         Self::admit(row).map_err(serde::de::Error::custom)
     }
 }

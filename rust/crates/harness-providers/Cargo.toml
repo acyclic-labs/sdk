@@ -38,6 +38,7 @@ zeroize.workspace = true
 url = "2.5.7"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-harness-input-watch = { path = "../harness-input-watch", version = "=0.2.0" }
 loom = { version = "0.7.3", optional = true }
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, optional = true }
 acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0" }

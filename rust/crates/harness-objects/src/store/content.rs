@@ -132,7 +132,7 @@ impl ObjectContentStore {
     clippy::needless_pass_by_value,
     reason = "maps the owned provider error at async boundaries"
 )]
-pub(in crate::objects) fn storage(error: acyclic_objects::Error) -> Error {
+pub(in crate) fn storage(error: acyclic_objects::Error) -> Error {
     Error::Storage(error.to_string())
 }
 
@@ -141,14 +141,14 @@ impl ContentResidencyVerifier for ObjectContentStore {
         &'a self,
         file: &'a FileRef,
         range: acyclic_fs::ByteRange,
-        _ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a crate::conversation::ContentIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
+        _ceiling: Option<&'a acyclic_harness_core::Capabilities>,
+        io: Option<&'a acyclic_harness_core::conversation::ContentIo>,
+    ) -> Result<acyclic_harness_core::conversation::BoundedContentFuture<'a, acyclic_harness_core::conversation::Custody>> {
         self.supports_read(file.volume(), io)?;
-        crate::conversation::BoundedContentFuture::new(io, || async move {
+        acyclic_harness_core::conversation::BoundedContentFuture::new(io, || async move {
             self.read_interval(file, range)
                 .await
-                .map(crate::conversation::Custody::Unmetered)
+                .map(acyclic_harness_core::conversation::Custody::Unmetered)
         })
     }
 
@@ -156,11 +156,11 @@ impl ContentResidencyVerifier for ObjectContentStore {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
-        _ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a crate::conversation::ContentIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
+        _ceiling: Option<&'a acyclic_harness_core::Capabilities>,
+        io: Option<&'a acyclic_harness_core::conversation::ContentIo>,
+    ) -> Result<acyclic_harness_core::conversation::BoundedContentFuture<'a, acyclic_harness_core::conversation::Custody>> {
         self.supports_read(reference.volume(), io)?;
-        crate::conversation::BoundedContentFuture::new(io, || async move {
+        acyclic_harness_core::conversation::BoundedContentFuture::new(io, || async move {
             if reference.descriptor().byte_length() > maximum_bytes {
                 return Err(Error::Invalid(
                     "content exceeds selected byte allowance".into(),
@@ -168,7 +168,7 @@ impl ContentResidencyVerifier for ObjectContentStore {
             }
             self.read_exact(reference, maximum_bytes)
                 .await
-                .map(crate::conversation::Custody::Unmetered)
+                .map(acyclic_harness_core::conversation::Custody::Unmetered)
         })
     }
 }

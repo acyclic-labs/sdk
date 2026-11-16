@@ -1,5 +1,5 @@
 use super::{store::storage, *};
-use crate::{
+use acyclic_harness_core::{
     AgentId, Capabilities,
     conversation::{ContentMountResolver, VolumeClass, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityRoot},
@@ -177,7 +177,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
                         body,
                         "text/plain",
                         "one.txt",
-                        crate::conversation::ContentAccess::default(),
+                        acyclic_harness_core::conversation::ContentAccess::default(),
                     )
                 };
                 assert_eq!(retry(expected)?.await?.0, file);
@@ -287,7 +287,7 @@ async fn upload_contract(
             bytes,
             "text/plain",
             "one.txt",
-            crate::conversation::ContentAccess::default(),
+            acyclic_harness_core::conversation::ContentAccess::default(),
         )
     };
     #[cfg(feature = "conformance")]
@@ -498,7 +498,7 @@ async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Resu
             b"bucket a",
             "text/plain",
             "a.txt",
-            crate::conversation::ContentAccess::default(),
+            acyclic_harness_core::conversation::ContentAccess::default(),
         )?
         .await?
         .0;
@@ -509,7 +509,7 @@ async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Resu
             b"bucket b",
             "text/plain",
             "b.txt",
-            crate::conversation::ContentAccess::default(),
+            acyclic_harness_core::conversation::ContentAccess::default(),
         )?
         .await?
         .0;

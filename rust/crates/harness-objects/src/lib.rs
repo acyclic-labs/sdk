@@ -1,6 +1,6 @@
 #![doc = include_str!("../../docs/objects.md")]
 
-use crate::{
+use acyclic_harness_core::{
     Error, OperationId, Result,
     conversation::{
         ContentGrant, ContentPublisher, ContentResidencyVerifier, FileDescriptor, FileRef,

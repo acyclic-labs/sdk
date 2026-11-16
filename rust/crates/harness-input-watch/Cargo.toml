@@ -1,0 +1,21 @@
+[package]
+include = ["clippy.toml", "Cargo.toml", "src/**"]
+name = "acyclic-harness-input-watch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Host input invalidation behind the acyclic-harness facade"
+documentation = "https://docs.rs/acyclic-harness-input-watch"
+
+[dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+notify.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
+
+[lints]
+workspace = true
