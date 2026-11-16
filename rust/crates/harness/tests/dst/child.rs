@@ -3,7 +3,7 @@
 //! stuck child is visible to its parent.
 use super::*;
 use acyclic_harness::{
-    model::{ModelRequest, ModelRole, ToolResultContent},
+    model::{ModelRequest, ToolResultContent},
     test_support::ScriptedEvent,
 };
 use family::{Generator, Variant};
@@ -207,23 +207,9 @@ fn plans(fault: &str) -> Vec<Plan> {
     ]
 }
 
-/// Whether `request` carries `brief` as its newest user input.
-fn briefed(request: &ModelRequest, brief: &'static str) -> bool {
-    let needles = oracle::appears(&tag(brief));
-    request
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.role == ModelRole::User)
-        .and_then(|message| serde_json::to_string(&message.content).ok())
-        .is_some_and(|body| needles.iter().any(|needle| body.contains(needle)))
-}
-
-fn reached(requests: &[ModelRequest], brief: &'static str) -> bool {
-    requests.iter().any(|request| briefed(request, brief))
-}
-
-fn wait_results(requests: &[ModelRequest]) -> std::result::Result<Vec<(String, serde_json::Value)>, String> {
+fn wait_results(
+    requests: &[ModelRequest],
+) -> std::result::Result<Vec<(String, serde_json::Value)>, String> {
     let mut results = Vec::new();
     for request in requests {
         for settled in settlements(request)? {
@@ -239,20 +225,39 @@ fn wait_results(requests: &[ModelRequest]) -> std::result::Result<Vec<(String, s
     Ok(results)
 }
 
+fn settled_names(results: &[(String, serde_json::Value)]) -> Vec<String> {
+    results
+        .iter()
+        .flat_map(|(_, value)| {
+            value
+                .get("settled")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|entry| entry.get("name").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect()
+}
+
 fn checked(fault: &str, requests: &[ModelRequest]) -> std::result::Result<(), String> {
-    // Every spawned child starts: its brief reaches a model request.
-    for brief in [
-        "c4-start",
-        "c4-tool",
-        "c4-fail",
-        "c4-mid",
-        "c4-batch",
-        "c4-g-start",
-        "c4-g-tool",
-        "c4-g-fail",
-    ] {
-        if !reached(requests, brief) {
-            return Err(format!("{fault}: child {brief} never started"));
+    let results = wait_results(requests)?;
+    let names = settled_names(&results);
+    // Every spawned child starts and settles: the parent's wait names it.
+    let mut expected = vec![
+        "leaf-start".to_owned(),
+        "leaf-tool".to_owned(),
+        "leaf-fail".to_owned(),
+        "g-start".to_owned(),
+        "g-tool".to_owned(),
+        "g-fail".to_owned(),
+    ];
+    expected.extend(batch_names());
+    for name in expected {
+        if !names.iter().any(|found| found == &name) {
+            return Err(format!(
+                "{fault}: child {name} never started; settled {names:?}"
+            ));
         }
     }
     // A child with prepared context issues its request; a background summary
@@ -261,15 +266,15 @@ fn checked(fault: &str, requests: &[ModelRequest]) -> std::result::Result<(), St
         return Err(format!("{fault}: no background summary request was issued"));
     }
     // The first tool ran and its result reached the child's model.
-    let tool_result = requests.iter().flat_map(|request| {
-        settlements(request).unwrap_or_default()
-    }).any(|settled| settled.call.name == "read" && settled.succeeded());
+    let tool_result = requests
+        .iter()
+        .flat_map(|request| settlements(request).unwrap_or_default())
+        .any(|settled| settled.call.name == "read" && settled.succeeded());
     if !tool_result {
         return Err(format!("{fault}: the first tool never settled"));
     }
     // A failed child is visible to its parent: either the turn failed and the
     // wait reports it, or the tool error reached the child's model.
-    let results = wait_results(requests)?;
     let failed_visible = results.iter().any(|(_, value)| {
         value
             .get("settled")
@@ -281,12 +286,15 @@ fn checked(fault: &str, requests: &[ModelRequest]) -> std::result::Result<(), St
                 })
             })
     });
-    let tool_error = requests.iter().flat_map(|request| {
-        settlements(request).unwrap_or_default()
-    }).any(|settled| settled.call.name == "read" && !settled.succeeded());
+    let tool_error = requests
+        .iter()
+        .flat_map(|request| settlements(request).unwrap_or_default())
+        .any(|settled| settled.call.name == "read" && !settled.succeeded());
     if fault == "undecided_failure" {
         if !failed_visible {
-            return Err(format!("{fault}: the parent never saw the failed child: {results:?}"));
+            return Err(format!(
+                "{fault}: the parent never saw the failed child: {results:?}"
+            ));
         }
     } else if !tool_error {
         return Err(format!("{fault}: the child's failure never reached its model"));

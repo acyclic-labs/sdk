@@ -311,7 +311,11 @@ fn result<'a>(results: &'a [(String, Value)], id: &str) -> std::result::Result<&
 }
 
 fn reason(value: &Value) -> &str {
-    value.get("reason").and_then(Value::as_str).unwrap_or("")
+    match value.get("reason") {
+        Some(Value::String(reason)) => reason,
+        Some(reason) => reason.get("kind").and_then(Value::as_str).unwrap_or(""),
+        None => "",
+    }
 }
 
 fn settled_entry<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
@@ -345,7 +349,9 @@ fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), Str
             return Err(format!("wait {id} returned no reason: {value}"));
         }
     }
-    // Settled children are reported as terminal, with their answer.
+    // Settled children are reported as terminal, with their answer. The
+    // no-agent form names no child, so it has no entries to compare.
+    if form != "no_agents" {
     for (id, name) in [
         ("c3-root-ok", "ok"),
         ("c3-root-bad", "bad"),
@@ -378,7 +384,9 @@ fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), Str
             return Err(format!("wait {id} reported {name} failed: {entry}"));
         }
     }
+    }
     // A running child is reported unsettled, never as done.
+    if form != "no_agents" {
     for (id, name) in [("c3-root-run", "run"), ("c3-mid-run", "run")] {
         let value = result(&results, id)?;
         let entry = unsettled_entry(value, name)
@@ -402,17 +410,20 @@ fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), Str
             return Err(format!("wait {id} did not report spawning: {entry}"));
         }
     }
-    // A quorum returns once one of two named children settles.
-    let quorum = result(&results, "c3-root-quorum")?;
-    if reason(quorum) != "need_met" {
-        return Err(format!("quorum wait returned {}: {quorum}", reason(quorum)));
     }
-    let settled = quorum
-        .get("settled")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    if settled < 1 {
-        return Err(format!("quorum wait returned no settled child: {quorum}"));
+    // A quorum returns once one of two named children settles.
+    if form != "no_agents" {
+        let quorum = result(&results, "c3-root-quorum")?;
+        if reason(quorum) != "need_met" {
+            return Err(format!("quorum wait returned {}: {quorum}", reason(quorum)));
+        }
+        let settled = quorum
+            .get("settled")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        if settled < 1 {
+            return Err(format!("quorum wait returned no settled child: {quorum}"));
+        }
     }
     // The no-agent form reports no child, only its reason.
     if form == "no_agents" {
