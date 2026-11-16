@@ -18,10 +18,6 @@ name = "agent-record-corpus"
 path = "examples/agent-record-corpus.rs"
 
 [[example]]
-name = "experiment-analysis"
-path = "examples/experiment-analysis.rs"
-
-[[example]]
 name = "history-codec-corpus"
 path = "examples/history-codec-corpus.rs"
 required-features = ["test-support"]

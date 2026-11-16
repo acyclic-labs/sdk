@@ -1,5 +1,5 @@
 [package]
-include = ["clippy.toml", "Cargo.toml", "src/**"]
+include = ["clippy.toml", "Cargo.toml", "examples/**", "src/**"]
 name = "acyclic-harness-experiments"
 version.workspace = true
 edition.workspace = true

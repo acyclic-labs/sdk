@@ -13,7 +13,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!(
-                "analyze experiment file: {error}; recovery: run cargo run --locked -p acyclic-harness-core --example experiment-analysis -- --help, then correct the failed input or IO step and repeat the invocation"
+                "analyze experiment file: {error}; recovery: run cargo run --locked -p acyclic-harness-experiments --example experiment-analysis -- --help, then correct the failed input or IO step and repeat the invocation"
             );
             ExitCode::FAILURE
         }
