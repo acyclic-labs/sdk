@@ -1329,6 +1329,9 @@ impl PageCredit {
         Ok(true)
     }
 
+    pub fn items(&self) -> usize {
+        self.items
+    }
     pub fn accept_boundary(&self, next_bytes: Option<u64>) -> Result<bool, AgentError> {
         let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
         let accepted = crate::encoded_agent_reply_size(self.bytes + envelope)

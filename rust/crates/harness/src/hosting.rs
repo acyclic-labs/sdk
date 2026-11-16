@@ -984,9 +984,9 @@ where
                         break;
                     }
                 }
-                let next = if credit.items < items.len() {
+                let next = if credit.items() < items.len() {
                     Some(
-                        items[credit.items - 1]
+                        items[credit.items() - 1]
                             .status
                             .checked_add(1)
                             .ok_or(Error::Record("completion status overflow"))?
@@ -995,7 +995,7 @@ where
                 } else {
                     None
                 };
-                items.truncate(credit.items);
+                items.truncate(credit.items());
                 Ok(AgentReply::ChildWakes { items, next })
             }
             AgentCommand::Directory {
@@ -1369,7 +1369,7 @@ where
                     }
                     before = cursor.before;
                 }
-                items.truncate(credit.items);
+                items.truncate(credit.items());
                 cursor.before = before;
                 let next = history_cursor(&cursor)?;
                 Ok(AgentReply::History { items, next })
@@ -1608,9 +1608,9 @@ where
                         break;
                     }
                 }
-                let all_fit = credit.items == items.len();
+                let all_fit = credit.items() == items.len();
                 let continued = !all_fit || listed.next_after.is_some();
-                items.truncate(credit.items);
+                items.truncate(credit.items());
                 let next = if continued {
                     let last = if all_fit {
                         last_scanned.as_ref().ok_or(Error::Record(

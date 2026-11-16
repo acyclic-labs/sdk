@@ -61,7 +61,8 @@ impl DiffView {
     }
 }
 
-fn credit_error(error: AgentError) -> crate::Error {
+#[doc(hidden)]
+pub fn credit_error(error: AgentError) -> crate::Error {
     match error {
         AgentError::Stream(error) => error.into(),
         error => crate::Error::Invalid(error.to_string()),

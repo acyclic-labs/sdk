@@ -397,4 +397,4 @@ async fn read(
     }
 }
 mod agent_page;
-pub use agent_page::DIFF_FILE_BYTES;
+pub use agent_page::{DIFF_FILE_BYTES, credit_error};
