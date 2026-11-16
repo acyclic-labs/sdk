@@ -79,12 +79,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             .find(|volume| volume.role == crate::agent::WorkspaceRole::Home)
             .cloned()
             .ok_or(Error::Record("hook source has no home"))?;
+        // The home's own follow selects the stream. A forked home shares its
+        // source's changes, so a record's appender may be an ancestor volume.
         let source = self.source(home.volume()?).map_err(turn)?;
-        if record.origin != source
-            || delivery
-                .subscriptions
-                .get(HOOKS)
-                .is_none_or(|cut| cut.path != source)
+        if delivery
+            .subscriptions
+            .get(HOOKS)
+            .is_none_or(|cut| cut.path != source)
         {
             return Err(Error::Record("hook publication volume differs"));
         }
@@ -102,12 +103,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         if names.is_empty() {
             return state.transition(Vec::new(), false);
         }
-        let context = acyclic_stream::changes_context(&record.value, &record.headers)
-            .map_err(Error::Stream)?;
-        let publication = acyclic_fs::PublicationContext::from_bytes(
-            context.ok_or(Error::Record("hook source is not a publication"))?,
-        )
-        .map_err(Error::Stream)?;
+        let publication =
+            acyclic_fs::session::appended_publication(&self.volumes.filesystem, record)
+                .map_err(Error::Stream)?;
         let generation = self
             .volumes
             .generation_ref_id(publication.generation, None)

@@ -31,7 +31,7 @@ pub(super) fn project(
     let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
     let context = crate::PublicationContext::from_bytes(&changes.context)?;
     if !acyclic_stream::is_changes(&record.headers)
-        || !appended_by_context(&record, &context, scope)
+        || !crate::session::appended_by_context(&record, &context, scope)
         || changes.entries.len() != record.headers.keys().len()
         || changes
             .entries
@@ -148,19 +148,6 @@ pub(super) fn project(
     record.value = projected.value;
     record.headers = projected.headers;
     Ok(FollowUpdate::Record(record))
-}
-
-/// A record's context names the volume whose changes stream appended it.
-/// That is this volume's, or for a forked volume an ancestor's whose changes
-/// it shares; Streams, not the record, names the appending stream.
-fn appended_by_context(
-    record: &Record,
-    context: &crate::PublicationContext,
-    scope: [u8; 16],
-) -> bool {
-    let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
-    crate::publication_changes::changes_path_text(scope, context.volume, &mut text)
-        .is_some_and(|path| path == record.origin.as_str())
 }
 
 #[cfg(all(test, not(loom)))]
