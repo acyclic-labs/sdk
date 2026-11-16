@@ -3,6 +3,7 @@
 //! custody mode. The exhaustive matrix is a model check; each world runs the
 //! real signing, grant and filesystem paths.
 use super::*;
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey,
     agent::{AgentId as PathId, AgentPath, WorkspaceEntry, WorkspaceRole},
@@ -12,7 +13,6 @@ use acyclic_harness::{
     core::{AggregateKind, Authority, AuthorityRoot, AuthorityVerifier},
     filesystem::{DirectoryOptions, FilesystemHost},
 };
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
 use acyclic_native_runtime::signing_key::{SigningCustody, SigningKeyReference};
 use family::{Generator, Variant};
 
@@ -118,19 +118,16 @@ fn subjects(provider: &ProviderRef) -> Result<Subjects> {
         session.clone(),
     )?;
     let project_volume = volume(provider, "project", VolumeClass::Project, project.clone())?;
-    let findings = volume(
+    let findings = volume(provider, "findings", VolumeClass::Project, project)?;
+    let skill = volume(
         provider,
-        "findings",
-        VolumeClass::Project,
-        project,
+        "seed",
+        VolumeClass::SessionShared,
+        session.clone(),
     )?;
-    let skill = volume(provider, "seed", VolumeClass::SessionShared, session.clone())?;
     let feedback = volume(provider, "feedback", VolumeClass::SessionShared, session)?;
-    let home_binding = WorkspaceEntry::initial_volume(
-        WorkspaceRole::Home,
-        "home".into(),
-        own_home.clone(),
-    );
+    let home_binding =
+        WorkspaceEntry::initial_volume(WorkspaceRole::Home, "home".into(), own_home.clone());
     let child_path = AgentPath::root(&root_path).child(&child_id)?;
     let child_home = acyclic_harness::filesystem::spawned_binding(&child_path, &home_binding)?;
     let child_binding =
@@ -144,7 +141,12 @@ fn subjects(provider: &ProviderRef) -> Result<Subjects> {
             ("shared_volume", shared, "shared.txt", root),
             ("project", project_volume, "project.txt", root),
             ("child_volume", child_home, "child.txt", child),
-            ("grandchild_volume", grandchild_home, "grandchild.txt", grandchild),
+            (
+                "grandchild_volume",
+                grandchild_home,
+                "grandchild.txt",
+                grandchild,
+            ),
             ("findings_dir", findings, "findings/001.md", root),
             ("skill_path", skill, "skills/swarm-topology/SKILL.md", root),
             (
@@ -189,19 +191,8 @@ where
         volume.capability(VolumeOperation::Write, &mut None)?,
         volume.directory_read_capability("", &mut None)?,
     ]);
-    let scope = root.bootstrap_scope(
-        "populate",
-        &capabilities,
-        Some(agent),
-        &mut None,
-    )?;
-    let write = ContentGrant::verify(
-        verifier,
-        &scope,
-        volume,
-        VolumeOperation::Write,
-        &mut None,
-    )?;
+    let scope = root.bootstrap_scope("populate", &capabilities, Some(agent), &mut None)?;
+    let write = ContentGrant::verify(verifier, &scope, volume, VolumeOperation::Write, &mut None)?;
     host.put_content(
         volume,
         &write,
@@ -266,13 +257,9 @@ where
         .map_err(|error| format!("{label}: signed payload did not verify: {error}"))?;
     let grant = match op {
         "list" => ContentGrant::verify_directory_read(verifier, &scope, volume, "", &mut None),
-        "write" => ContentGrant::verify(
-            verifier,
-            &scope,
-            volume,
-            VolumeOperation::Write,
-            &mut None,
-        ),
+        "write" => {
+            ContentGrant::verify(verifier, &scope, volume, VolumeOperation::Write, &mut None)
+        }
         _ => ContentGrant::verify_directory_read(verifier, &scope, volume, "", &mut None),
     };
     if !declared {
@@ -289,8 +276,8 @@ where
     if !exists {
         // The grant is valid, but the selected volume has not been created.
         let outcome = match op {
-            "read" => {
-                host.read_private_path(
+            "read" => host
+                .read_private_path(
                     volume,
                     &grant,
                     path,
@@ -299,10 +286,9 @@ where
                     ContentAccess::default(),
                 )
                 .await
-                .map(drop)
-            }
-            "list" => {
-                host.list_private_directory(
+                .map(drop),
+            "list" => host
+                .list_private_directory(
                     volume,
                     &grant,
                     directory(path),
@@ -314,10 +300,9 @@ where
                     },
                 )
                 .await
-                .map(drop)
-            }
-            _ => {
-                host.put_content(
+                .map(drop),
+            _ => host
+                .put_content(
                     volume,
                     &grant,
                     path,
@@ -325,13 +310,13 @@ where
                     "text/plain",
                     display_name(path),
                     Some(64),
-                    &IdempotencyKey::new(format!("check:{label}")).map_err(|error| format!("{label}: key: {error}"))?,
+                    &IdempotencyKey::new(format!("check:{label}"))
+                        .map_err(|error| format!("{label}: key: {error}"))?,
                     None,
                     ContentAccess::default(),
                 )
                 .await
-                .map(drop)
-            }
+                .map(drop),
         };
         return match outcome {
             Err(Error::Unauthorized(message)) => Err(format!(
@@ -386,7 +371,8 @@ where
                 "text/plain",
                 display_name(path),
                 Some(64),
-                &IdempotencyKey::new(format!("check:{label}")).map_err(|error| format!("{label}: key: {error}"))?,
+                &IdempotencyKey::new(format!("check:{label}"))
+                    .map_err(|error| format!("{label}: key: {error}"))?,
                 None,
                 ContentAccess::default(),
             )
@@ -414,16 +400,7 @@ where
         let exists = !matches!(*subject, "child_volume" | "grandchild_volume");
         for op in OPS {
             check(
-                host,
-                verifier,
-                root,
-                subject,
-                volume,
-                path,
-                *agent,
-                "start",
-                op,
-                exists,
+                host, verifier, root, subject, volume, path, *agent, "start", op, exists,
             )
             .await?;
         }
@@ -440,16 +417,7 @@ where
         }
         for op in OPS {
             check(
-                host,
-                verifier,
-                root,
-                subject,
-                volume,
-                path,
-                *agent,
-                "mid_run",
-                op,
-                true,
+                host, verifier, root, subject, volume, path, *agent, "mid_run", op, true,
             )
             .await?;
         }
@@ -479,9 +447,9 @@ where
         ("grandchild_volume", subjects.volumes[4].2),
     ] {
         let (_, volume, _, _) = &subjects.volumes[if subject == "child_volume" { 3 } else { 4 }];
-        let capabilities =
-            Capabilities::new([volume.capability(VolumeOperation::Read, &mut None)
-                .map_err(|error| format!("{subject}: read capability: {error}"))?]);
+        let capabilities = Capabilities::new([volume
+            .capability(VolumeOperation::Read, &mut None)
+            .map_err(|error| format!("{subject}: read capability: {error}"))?]);
         let scope = root
             .bootstrap_scope("parent-read", &capabilities, Some(root_agent), &mut None)
             .map_err(|error| format!("{subject}: parent scope: {error}"))?;
@@ -516,8 +484,10 @@ where
     let provider = provider().map_err(|error| format!("{custody}: provider: {error}"))?;
     let subjects = subjects(&provider).map_err(|error| format!("{custody}: subjects: {error}"))?;
     for (_, volume, _, _) in &subjects.volumes {
-        if matches!(volume.id(), "own-home" | "shared" | "project" | "findings" | "seed" | "feedback")
-        {
+        if matches!(
+            volume.id(),
+            "own-home" | "shared" | "project" | "findings" | "seed" | "feedback"
+        ) {
             host.create_volume(volume)
                 .await
                 .map_err(|error| format!("{custody}: create {}: {error}", volume.id()))?;
@@ -552,8 +522,12 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             let directory = tempfile::tempdir().map_err(oracle::failed)?;
             match custody {
                 "logical" => {
-                    let host = FilesystemHost::new(Fs::memory(), &provider().map_err(oracle::failed)?, None)
-                        .map_err(oracle::failed)?;
+                    let host = FilesystemHost::new(
+                        Fs::memory(),
+                        &provider().map_err(oracle::failed)?,
+                        None,
+                    )
+                    .map_err(oracle::failed)?;
                     let root = AuthorityRoot::new("grants", key(seed, custody), audience);
                     world_for_custody(custody, host, root).await
                 }
@@ -588,4 +562,3 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
         })
     })
 }
-
