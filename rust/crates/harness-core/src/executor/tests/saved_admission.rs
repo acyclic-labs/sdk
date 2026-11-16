@@ -41,12 +41,33 @@ async fn save_unaccounted_request(
             None,
         )?
         .await?;
+    save_admission(&execution, journal, input, false).await
+}
+
+/// Saves step 0's admitted context, with its captured accounting when
+/// `accounted`, as an owner that stops before dispatch leaves it.
+async fn save_admission(
+    execution: &StockExecution<'_>,
+    journal: &Journal,
+    input: &TurnInput,
+    accounted: bool,
+) -> Result<crate::model::PreparedModelRequest> {
+    let executor = execution.stock;
     let context_input = ContextInput::copy_for_turn(input, 0, &[], None)?;
     let base = ContextPipeline::base_context(&context_input, executor.limits, None)?;
     let (mut context, prepared) = execution
         .prepare_transformed_request(&context_input, base)
         .await?;
     context.messages = prepared.request().messages.clone();
+    let accounting = if accounted {
+        Some(
+            execution
+                .response_accounting(&prepared, journal, (input.operation_id, 0))
+                .await?,
+        )
+    } else {
+        None
+    };
     let projection = transcript::stage_projection(
         journal,
         input.operation_id,
@@ -58,7 +79,7 @@ async fn save_unaccounted_request(
                 canonical: None,
                 checkpoint: None,
                 working: None,
-                accounting: None,
+                accounting,
             },
             &prepared,
         ),
@@ -109,7 +130,7 @@ async fn disabled_compaction_dispatches_fresh_and_saved_requests_without_account
                 selected_context: None,
             };
             if saved {
-                save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v11")
+                save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v12")
                     .await?;
             }
             let result = executor.execute(input.clone(), &journal).await?;
@@ -161,7 +182,7 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
         selected_context: None,
     };
     let prepared =
-        save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v11").await?;
+        save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v12").await?;
     let reference = transcript::stage_request(
         &journal,
         input.operation_id,
@@ -224,7 +245,7 @@ async fn saved_single_inference_keeps_its_capacity_binding() -> Result<()> {
         input: ModelContent::Text("input".into()),
         selected_context: None,
     };
-    save_unaccounted_request(&executor, &journal, &input, true, "acyclic.stock.v11").await?;
+    save_unaccounted_request(&executor, &journal, &input, true, "acyclic.stock.v12").await?;
     for _ in 0..2 {
         assert_eq!(
             executor.infer(&journal, &input, None).await?.text(),
@@ -242,7 +263,12 @@ async fn saved_single_inference_keeps_its_capacity_binding() -> Result<()> {
 
 #[tokio::test]
 async fn obsolete_request_encoding_is_refused_before_dispatch() -> Result<()> {
-    for binding in ["acyclic.stock.v8", "acyclic.stock.v9", "acyclic.stock.v10"] {
+    for binding in [
+        "acyclic.stock.v8",
+        "acyclic.stock.v9",
+        "acyclic.stock.v10",
+        "acyclic.stock.v11",
+    ] {
         let journal = Journal::default();
         let provider = Arc::new(ScriptedModelProvider::new([done_turn()]));
         let executor = uncompacted_executor(
@@ -322,9 +348,9 @@ async fn independent_nonzero_model_step_stages_a_new_prefix_and_replays() -> Res
 }
 
 #[tokio::test]
-async fn resumed_turn_keeps_its_identity_when_provider_capacity_changes() -> Result<()> {
+async fn admitted_turn_resumes_with_its_capacity_when_provider_capacity_changes() -> Result<()> {
     let journal = Journal::default();
-    let (original, _) = counted_model(4_096, None, [ScriptedTurn::Text("done".into())], []);
+    let (original, _) = counted_model(4_096, None, [], []);
     let executor = uncompacted_executor(
         Model::new("test".into(), "capacity".into(), "1".into())?,
         original,
@@ -337,19 +363,22 @@ async fn resumed_turn_keeps_its_identity_when_provider_capacity_changes() -> Res
         input: ModelContent::Text("input".into()),
         selected_context: None,
     };
-    StockExecution {
+    let execution = StockExecution {
         single_request: true,
         ..StockExecution::ordinary(&executor)
-    }
-    .ensure_started(&journal, &input)
-    .await?;
-    let (reopened, _) = counted_model(8_192, None, [ScriptedTurn::Text("done".into())], []);
+    };
+    execution.ensure_started(&journal, &input).await?;
+    save_admission(&execution, &journal, &input, true).await?;
+    let (reopened, counts) = counted_model(8_192, None, [ScriptedTurn::Text("done".into())], []);
     let executor = uncompacted_executor(
         Model::new("test".into(), "capacity".into(), "1".into())?,
-        reopened,
+        reopened.clone(),
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
     assert_eq!(executor.infer(&journal, &input, None).await?.text(), "done");
+    // The reopened owner dispatches the saved admission without recounting.
+    assert_eq!(counts.load(Ordering::SeqCst), 0);
+    assert_eq!(reopened.requests().len(), 1);
     Ok(())
 }
