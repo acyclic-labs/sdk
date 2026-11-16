@@ -15,6 +15,8 @@ pub(super) fn runtime_read_roots() -> io::Result<Vec<PathBuf>> {
         "/lib",
         "/lib64",
         "/etc/ld.so.cache",
+        // Login shells read the system profile before running any command.
+        "/etc/profile",
         // Crypto runtimes read their public configuration during startup.
         // Grant the files, never the adjacent private-key directories.
         "/etc/ssl/openssl.cnf",
@@ -82,4 +84,20 @@ pub(super) fn runtime_read_roots() -> io::Result<Vec<PathBuf>> {
             Err(error) => Some(Err(error)),
         })
         .collect()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    #[test]
+    fn login_shell_profile_is_a_runtime_dependency() {
+        let profile = std::path::Path::new("/etc/profile");
+        if !profile.try_exists().unwrap() {
+            return;
+        }
+        let roots = super::runtime_read_roots().unwrap();
+        assert!(
+            roots.iter().any(|root| root == profile),
+            "login shell profile is not granted: {roots:?}"
+        );
+    }
 }

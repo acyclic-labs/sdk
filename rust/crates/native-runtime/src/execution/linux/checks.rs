@@ -174,6 +174,41 @@ fn evaluate_work(
 }
 
 #[test]
+fn scheduler_queries_are_read_only() -> Result<(), TestCaseError> {
+    let code =
+        filter(&ExecutionNetwork::On).map_err(|error| TestCaseError::fail(error.to_string()))?;
+    for call in [libc::SYS_sched_getparam, libc::SYS_sched_getscheduler] {
+        assert_eq!(
+            evaluate(
+                code,
+                ARCH,
+                u32::try_from(call)
+                    .map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?,
+                [0; 6],
+            )?,
+            ALLOW
+        );
+    }
+    for call in [
+        libc::SYS_sched_setparam,
+        libc::SYS_sched_setscheduler,
+        libc::SYS_sched_setattr,
+    ] {
+        assert_eq!(
+            evaluate(
+                code,
+                ARCH,
+                u32::try_from(call)
+                    .map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?,
+                [0; 6],
+            )?,
+            DENY
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn syscall_dispatch_preserves_classification_with_bounded_work() -> Result<(), TestCaseError> {
     const fn dispatch<const N: usize>() -> Filter<N> {
         let mut code = Filter::new();
@@ -235,7 +270,8 @@ proptest! {
         syscall in any::<u32>(),
         arguments in any::<[u64; 6]>(),
     ) {
-        let code = filter(&ExecutionNetwork::On).unwrap();
+        let code = filter(&ExecutionNetwork::On)
+        .map_err(|error| TestCaseError::fail(error.to_string()))?;
         let attributes = [libc::SYS_getxattr, libc::SYS_lgetxattr, libc::SYS_fgetxattr,
             libc::SYS_listxattr, libc::SYS_llistxattr, libc::SYS_flistxattr];
         if !ALLOWED_SYSCALLS.iter().any(|call| *call == i64::from(syscall))
@@ -254,6 +290,7 @@ proptest! {
             libc::SYS_semget, libc::SYS_semop, libc::SYS_semctl,
             libc::SYS_mq_open, libc::SYS_mq_unlink, libc::SYS_process_vm_writev,
             libc::SYS_process_madvise, libc::SYS_process_mrelease,
+            libc::SYS_sched_setparam, libc::SYS_sched_setscheduler, libc::SYS_sched_setattr,
             libc::SYS_capset] {
             prop_assert_eq!(evaluate(code, ARCH, u32::try_from(call).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, DENY);
         }
