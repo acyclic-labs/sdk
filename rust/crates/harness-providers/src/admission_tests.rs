@@ -1,7 +1,7 @@
 //! Shared model cooldowns, driven through real requests on a paused clock.
 use super::*;
 use crate::Adapter;
-use acyclic_harness_core::model::{ModelEvent, ModelProvider as _};
+use acyclic_harness_core::model::ModelProvider as _;
 use acyclic_stream::BoxProviderFuture;
 
 #[path = "admission_observation_tests.rs"]
