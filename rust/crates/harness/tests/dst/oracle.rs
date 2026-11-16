@@ -218,27 +218,11 @@ pub(super) struct World {
     directory: tempfile::TempDir,
     pub service: ScriptedModelProvider,
     pub seed: u64,
-    model: Model,
     incarnations: u64,
 }
 
 impl World {
     pub fn new(seed: u64, files: &[(&str, &str)], service: ScriptedModelProvider) -> Result<Self> {
-        Self::new_with_model(
-            seed,
-            files,
-            service,
-            Model::new("scripted".into(), "dst".into(), "1".into())?,
-        )
-    }
-
-    /// A world whose provider selection names the protocol dialect under test.
-    pub fn new_with_model(
-        seed: u64,
-        files: &[(&str, &str)],
-        service: ScriptedModelProvider,
-        model: Model,
-    ) -> Result<Self> {
         let directory = tempfile::Builder::new()
             .prefix("sdk-dst-world-")
             .tempdir()
@@ -256,7 +240,6 @@ impl World {
             directory,
             service,
             seed,
-            model,
             incarnations: 0,
         })
     }
@@ -288,11 +271,11 @@ impl World {
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
             let directory = self.directory.path();
-            let model = self.model.clone();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
                 entry(async move {
+                    let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
                     let config = local_harness_config(
                         directory.join("checkout"),
                         (model, provider.clone()),
