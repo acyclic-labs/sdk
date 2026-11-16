@@ -3,12 +3,7 @@
 /// codes are refused rather than replaced with another cause.
 /// With `grpc`, servers must use `tonic::Status::from(error)` (owned or borrowed)
 /// for the canonical mapping, which preserves retained member refusal diagnostics.
-///
-/// Equality is the public classification ([`Self::code`]): a retained cause or
-/// member diagnostic travels with the failure but never changes which failure
-/// it is, so `error == StreamError::NotFound` holds wherever it was wrapped.
-/// Read retained detail through [`std::error::Error::source`].
-#[derive(Clone, Debug, Error)]
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StreamError {
     /// Peer violated the response contract; retrying the connection cannot repair it.
     #[error("invalid stream response")]
@@ -70,16 +65,10 @@ pub enum StreamError {
     Failed,
 }
 
-impl PartialEq for StreamError {
-    fn eq(&self, other: &Self) -> bool {
-        self.code() == other.code()
-    }
-}
-impl Eq for StreamError {}
-
 /// The typed category of a [`StreamError`], independent of any retained
-/// diagnostic or original cause. Comparisons use the same public
-/// classification, so a wrapped failure equals its bare category.
+/// diagnostic or original cause. Failures are matched and compared only
+/// through [`StreamError::category`]: a failure carrying a cause is never
+/// equal to its bare variant, but always has the same category.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum StreamCategory {
     /// The category of [`StreamError::InvalidResponse`].
