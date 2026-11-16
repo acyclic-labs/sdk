@@ -1005,7 +1005,7 @@ async fn ended_parent_refuses(archived: bool) -> TestResult {
         let id = IntentId::try_from("close")?;
         let crate::agent::Submitted::Committed(_) = crate::agent::submit(
             &*turns.stream,
-            crate::agent::archive(&parent, &sender, &id)?,
+            crate::agent::archive(&parent, &sender, &id, bound.agents().activation(&parent)?)?,
         )
         .await?
         else {

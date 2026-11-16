@@ -905,7 +905,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     }
 
     /// The wake entry of `agent`'s actor, joined to each commit carrying its input.
-    fn activation(&self, agent: &AgentPath) -> Result<acyclic_stream::CommitEffect, Error> {
+    pub(crate) fn activation(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<acyclic_stream::CommitEffect, Error> {
         self.runtime
             .store()
             .activation(&self.actor(agent)?)
