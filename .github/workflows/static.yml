@@ -33,6 +33,9 @@ jobs:
           RUSTUP_TOOLCHAIN: stable
       - name: Check that the Bazel files match the Cargo manifests
         run: node scripts/bazel-build-files.mjs check
+      # Module resolution is committed. A stale lockfile makes this fail instead of being rewritten.
+      - name: Check that the Bazel module lockfile is current
+        run: bazel mod deps --lockfile_mode=error
       # The repository's own manifests exercise one shape; the generator's test
       # builds the other shapes Cargo accepts (no [workspace.package], for one).
       - name: Test the Bazel file generator

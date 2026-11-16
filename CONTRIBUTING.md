@@ -288,7 +288,11 @@ its dispatch and recovery steps.
 Qualification runs in the Foreman build system on Bazel. The repository's GitHub
 Actions are deploy and the single SDK Static job; there are no Cargo
 qualification lanes. Bazel's disk and repository caches reuse compiler and
-dependency work without skipping qualification.
+dependency work without skipping qualification. `MODULE.bazel.lock` is
+committed: after changing `MODULE.bazel` or `cargo.MODULE.bazel`, run
+`bazel mod deps --lockfile_mode=update` and commit the lockfile. Every other
+Bazel command runs with `--lockfile_mode=error`, so a stale lockfile fails
+instead of being rewritten.
 
 Linux retains tested Rust and TypeScript archives with exact-source receipts
 and SHA-256 inventories. Native binding producers retain their host-qualified
