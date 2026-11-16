@@ -1,12 +1,11 @@
 use super::*;
-use super::McpConfigInstall as _;
+use crate::{
+    McpToolTransport,
+    config::{Dialect, ImportedServer},
+};
 use acyclic_harness_core::{
     OperationId,
     conversation::Limits,
-    mcp::{
-        McpToolTransport,
-        config::{Dialect, ImportedServer},
-    },
     runtime::{RuntimeScope, ToolContext},
     tool::{Tool, ToolDefinition, ToolInvocation},
 };

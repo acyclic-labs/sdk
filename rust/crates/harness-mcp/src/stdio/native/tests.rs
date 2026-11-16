@@ -2,9 +2,9 @@ use super::*;
 mod fixture;
 #[cfg(target_os = "linux")]
 mod granted;
-use acyclic_harness_core::{
-    mcp::{McpCatalog, McpDiscoveryPolicy, McpSchemaExposure},
-    tool::{JsonToolProjection, ToolInvocation, ToolProjection, ToolRegistry},
+use crate::{McpCatalog, McpDiscoveryPolicy, McpSchemaExposure};
+use acyclic_harness_core::tool::{
+    JsonToolProjection, ToolInvocation, ToolProjection, ToolRegistry,
 };
 use bytes::BytesMut;
 use std::sync::Arc;

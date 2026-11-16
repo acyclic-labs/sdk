@@ -1028,7 +1028,8 @@ impl Error {
     }
 
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
-    pub(crate) fn leaves_effect_uncertain(&self) -> bool {
+    /// Whether the failure leaves the effect outcome uncertain.
+    pub fn leaves_effect_uncertain(&self) -> bool {
         if let Self::Caused(failure) = self {
             return failure.classification().leaves_effect_uncertain();
         }

@@ -148,7 +148,7 @@ impl ToolSource for LiveCatalog {
     fn capability(&self) -> Option<&str> {
         Some(&self.capability)
     }
-    fn recover(
+    pub(crate) fn recover(
         &self,
         definition: &acyclic_harness_core::tool::ToolDefinition,
         io: Option<&acyclic_harness_core::executor::PreparationIo>,

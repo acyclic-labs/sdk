@@ -171,7 +171,7 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
         .bind()?;
     if compose {
         tools.register((code, None), &mut None, None)?;
-        grants.0.insert("tool:call:code".into());
+        grants.insert("tool:call:code".into());
     }
     let original = tools
         .definitions(None)?
@@ -613,7 +613,7 @@ async fn role_ceiling_case(compose: bool, configured: bool, allowed: bool) -> Re
             .expect("code")
             .bind()?;
         tools.register((code, None), &mut None, None)?;
-        grants.0.insert("tool:call:code".into());
+        grants.insert("tool:call:code".into());
     }
     let call = |name: &str| {
         ScriptedTurn::Events(vec![

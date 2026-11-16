@@ -173,7 +173,8 @@ impl TaskContext {
     }
 
     /// Narrows this context's grants and limits for one bound execution.
-    pub(crate) fn scoped(&self, grants: Capabilities, limits: Limits) -> Result<Self> {
+    /// Returns a scoped view with the supplied grants and limits.
+    pub fn scoped(&self, grants: Capabilities, limits: Limits) -> Result<Self> {
         Ok(Self {
             scope: self.scope.narrow(grants, limits)?,
             ..self.clone()

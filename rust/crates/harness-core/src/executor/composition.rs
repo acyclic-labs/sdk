@@ -318,7 +318,8 @@ impl StockExecutor {
 
     /// Intersect an immutable role ceiling with both model and executable
     /// authority. A missing grant is never supplied by a template's prose.
-    pub(crate) fn with_tool_ceiling(mut self, allowed: &[String]) -> Result<Self> {
+    /// Restricts the executor to the supplied tool names.
+    pub fn with_tool_ceiling(mut self, allowed: &[String]) -> Result<Self> {
         self.tools.restrict_sources(allowed);
         self.tool_scope.grants.0.retain(|grant| {
             grant

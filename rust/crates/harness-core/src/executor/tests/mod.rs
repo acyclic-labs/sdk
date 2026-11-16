@@ -327,7 +327,7 @@ impl crate::tool::ToolProjection for Projection {
 }
 
 #[derive(Default)]
-pub(crate) struct Journal(
+pub struct Journal(
     Mutex<Vec<ExecutionRecord>>,
     Mutex<HashMap<String, (FileRef, acyclic_stream::OwnedBytes)>>,
     Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
