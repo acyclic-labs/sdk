@@ -1003,6 +1003,7 @@ dependencies = [
 name = "acyclic-harness-providers"
 version = "0.2.0"
 dependencies = [
+ "acyclic-machines-daytona",
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-fs",
@@ -1252,7 +1253,6 @@ dependencies = [
  "acyclic-auth",
  "acyclic-harness-core",
  "acyclic-harness-http",
- "acyclic-harness-providers",
  "acyclic-machines",
  "acyclic-stream",
  "async-trait",
@@ -1503,7 +1503,6 @@ dependencies = [
 name = "acyclic-observability"
 version = "0.2.0"
 dependencies = [
- "acyclic-native-runtime",
  "acyclic-test-support",
  "futures",
  "serde",

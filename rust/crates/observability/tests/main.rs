@@ -6,5 +6,3 @@
 acyclic_test_support::counting_allocator!();
 
 mod intervals;
-mod operations;
-mod output;

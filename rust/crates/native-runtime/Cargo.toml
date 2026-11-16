@@ -119,6 +119,10 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "observability"
+path = "tests/observability.rs"
+
+[[test]]
 name = "wake_loom"
 path = "tests/wake_loom.rs"
 required-features = ["model-checking"]
