@@ -1264,11 +1264,12 @@ mod tests {
     }
 }
 
+use acyclic_harness_core::agent::Error as AgentError;
 use acyclic_stream::StreamError;
 
-pub fn page_json_bytes(value: &impl serde::Serialize) -> Result<u64, Error> {
+pub fn page_json_bytes(value: &impl serde::Serialize) -> Result<u64, AgentError> {
     crate::executor::json::json_byte_length(value, None, &mut None)
-        .map_err(|_| Error::Record("agent page encoding failed"))
+        .map_err(|_| AgentError::Record("agent page encoding failed"))
 }
 
 /// Count each bounded row once, then reserve its actual canonical wire envelope.
@@ -1285,7 +1286,7 @@ impl PageCredit {
     pub fn new(
         page: &AgentPageRequest,
         empty: impl Fn(Option<String>) -> AgentReply,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, AgentError> {
         Self::from_envelopes(page, &empty(None), &empty(Some(String::new())))
     }
 
@@ -1293,13 +1294,13 @@ impl PageCredit {
         page: &AgentPageRequest<C>,
         end: &impl serde::Serialize,
         next: &impl serde::Serialize,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, AgentError> {
         let end_envelope = page_json_bytes(end)?;
         let maximum = u64::from(page.bytes());
         if !crate::encoded_agent_reply_size(end_envelope)
             .is_ok_and(|encoded| encoded <= maximum)
         {
-            return Err(Error::Stream(StreamError::Capacity));
+            return Err(AgentError::Stream(StreamError::Capacity));
         }
         Ok(Self {
             end_envelope,
@@ -1314,10 +1315,10 @@ impl PageCredit {
         &mut self,
         item: &impl serde::Serialize,
         next_bytes: Option<u64>,
-    ) -> Result<bool, Error> {
+    ) -> Result<bool, AgentError> {
         let Some(bytes) = self.admits(item, next_bytes)? else {
             return if self.items == 0 {
-                Err(Error::Stream(StreamError::Capacity))
+                Err(AgentError::Stream(StreamError::Capacity))
             } else {
                 Ok(false)
             };
@@ -1327,12 +1328,12 @@ impl PageCredit {
         Ok(true)
     }
 
-    pub fn accept_boundary(&self, next_bytes: Option<u64>) -> Result<bool, Error> {
+    pub fn accept_boundary(&self, next_bytes: Option<u64>) -> Result<bool, AgentError> {
         let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
         let accepted = crate::encoded_agent_reply_size(self.bytes + envelope)
             .is_ok_and(|encoded| encoded <= self.maximum);
         if !accepted && self.items == 0 {
-            return Err(Error::Stream(StreamError::Capacity));
+            return Err(AgentError::Stream(StreamError::Capacity));
         }
         Ok(accepted)
     }
@@ -1342,7 +1343,7 @@ impl PageCredit {
         &self,
         item: &impl serde::Serialize,
         next_bytes: Option<u64>,
-    ) -> Result<Option<u64>, Error> {
+    ) -> Result<Option<u64>, AgentError> {
         let bytes = self.bytes + page_json_bytes(item)? + u64::from(self.items != 0);
         let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
         Ok(

@@ -1,6 +1,7 @@
 //! Bounded paging of one authorized file projection.
 use super::{DiffCursor, DiffFilePage, DiffView};
-use crate::{AgentPageRequest, AgentReply, Error, PageCredit, Result};
+use crate::{AgentPageRequest, AgentReply, PageCredit, Result};
+use acyclic_harness_core::agent::Error as AgentError;
 use acyclic_stream::StreamError;
 
 /// Endpoint bytes admitted for one file comparison; larger files are explicit omissions.
@@ -35,7 +36,7 @@ impl DiffView {
                 // Keep the accepted prefix and its continuation. Shrinking another
                 // fragment must never discard rows already funded by this page.
                 Ok(false) => break,
-                Err(Error::Stream(StreamError::Capacity))
+                Err(AgentError::Stream(StreamError::Capacity))
                     if scalar_bytes != 0 && scalar_bytes < fragment.patch.len() =>
                 {
                     // The smallest retry must still contain the next scalar. A
@@ -60,10 +61,10 @@ impl DiffView {
     }
 }
 
-fn credit_error(error: Error) -> Error {
+fn credit_error(error: AgentError) -> crate::Error {
     match error {
-        Error::Stream(error) => error.into(),
-        error => Error::Invalid(error.to_string()),
+        AgentError::Stream(error) => error.into(),
+        error => crate::Error::Invalid(error.to_string()),
     }
 }
 
