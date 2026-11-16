@@ -154,7 +154,7 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
                 input: ModelContent::Text("direct".into()),
                 selected_context: None,
             },
-            &acyclic_harness_core::executor::tests::Journal::default(),
+            &acyclic_harness_core::executor::test_support::Journal::default(),
         )
         .await?;
     let direct_requests = direct_model.requests();
@@ -224,7 +224,7 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
         RuntimeScope::new(grants.clone(), acyclic_harness_core::conversation::Limits::default())?,
         Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
     )?;
-    let journal = Arc::new(acyclic_harness_core::executor::tests::Journal::default());
+    let journal = Arc::new(acyclic_harness_core::executor::test_support::Journal::default());
     let manifest = acyclic_harness_core::context::ContextManifest {
         tools: tools.definitions(None)?,
         ..Default::default()
@@ -481,7 +481,7 @@ async fn changed_schema_case(granted: bool) -> Result<()> {
         )?,
         Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
     )?;
-    let journal = acyclic_harness_core::executor::tests::Journal::default();
+    let journal = acyclic_harness_core::executor::test_support::Journal::default();
     let input = TurnInput {
         max_steps: None,
         operation_id: acyclic_harness_core::OperationId::new(),
@@ -662,7 +662,7 @@ async fn role_ceiling_case(compose: bool, configured: bool, allowed: bool) -> Re
         "mcp.watched.old".into(),
         "mcp.watched.new".into(),
     ])?;
-    let journal = acyclic_harness_core::executor::tests::Journal::default();
+    let journal = acyclic_harness_core::executor::test_support::Journal::default();
     for _ in 0..2 {
         let input = TurnInput {
             max_steps: None,
