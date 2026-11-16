@@ -57,6 +57,7 @@ impl StockExecution<'_> {
             operation_id,
             step,
             material,
+            &[],
             phase,
             ModelPurpose::Summary,
         )
@@ -132,6 +133,7 @@ impl StockExecution<'_> {
         operation_id: OperationId,
         step: u32,
         material: (crate::context::Context, ModelContent),
+        prefix: &[ModelMessage],
         phase: &mut DispatchPhase,
         purpose: ModelPurpose,
     ) -> Result<(crate::context::ContextSummary, String)> {
@@ -141,7 +143,7 @@ impl StockExecution<'_> {
             operation_id,
             step,
             material,
-            &[],
+            prefix,
             phase,
             purpose,
         )
