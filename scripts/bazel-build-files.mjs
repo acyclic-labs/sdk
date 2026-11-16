@@ -609,7 +609,7 @@ function rustcFlags() {
 function moduleFile() {
   const flags = rustcFlags();
   const channel = toml("rust-toolchain.toml").toolchain.channel;
-  const channelName = channel.startsWith(("beta", "nightly")) ? channel.split("/")[0] : "stable";
+  const channelName = /^(beta|nightly)/.test(channel) ? channel.split("/")[0] : "stable";
   const thirdParty = Object.keys(dev.package ?? {}).flatMap(name =>
     ![...members].some(id => packages.get(id).name === name) && packageOpt(name) !== undefined ? [[name, packageOpt(name)]] : []);
   return [
@@ -694,7 +694,6 @@ const windowsLoads = `load("@rules_cc//cc:defs.bzl", "cc_toolchain")\nload("@rul
 const windowsPlatform = rule("platform", [["name", q("windows")], ["constraint_values", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])]]);
 const libcConstraints = `
 ${rule("constraint_setting", [["name", q("libc")], ["visibility", q(["//visibility:public"])]])}
-${rule("constraint_value", [["name", q("libc_gnu")], ["constraint_setting", q(":libc")], ["visibility", q(["//visibility:public"])]])}
 ${rule("constraint_value", [["name", q("libc_musl")], ["constraint_setting", q(":libc")], ["visibility", q(["//visibility:public"])]])}
 `;
 const linuxMusl = `
