@@ -1161,10 +1161,22 @@ fn queued_stdin_rejects_early_closure_that_optional_literal_capture_accepts() {
         let result = loop {
             match tree.pump_stdin() {
                 Ok(false) => {
-                    tree.stdin_readiness()
-                        .expect("arm stdin")
-                        .0
-                        .block()
+                    // The child's exit is already observed, so wait on the
+                    // pipe alone: it wakes when its last reader closes.
+                    #[cfg(unix)]
+                    let wait = {
+                        use std::os::fd::AsFd as _;
+                        let stdin = tree
+                            .child
+                            .as_ref()
+                            .and_then(|child| child.stdin.as_ref())
+                            .expect("queued stdin pipe");
+                        super::events::arm(&[super::events::Source::Writable(stdin.as_fd())], None)
+                            .expect("arm stdin")
+                    };
+                    #[cfg(windows)]
+                    let wait = tree.stdin_readiness().expect("arm stdin").0;
+                    wait.block()
                         .into_result()
                         .expect("original native event succeeded");
                 }
