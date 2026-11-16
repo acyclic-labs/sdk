@@ -219,7 +219,7 @@ pub(super) struct World {
     pub service: ScriptedModelProvider,
     pub seed: u64,
     incarnations: u64,
-    compaction: Option<crate::context::CompactionPolicy>,
+    compaction: Option<acyclic_harness::context::CompactionPolicy>,
 }
 
 impl World {
@@ -247,7 +247,7 @@ impl World {
     }
 
     /// Selects this world's compaction policy.
-    pub fn compaction(mut self, policy: crate::context::CompactionPolicy) -> Self {
+    pub fn compaction(mut self, policy: acyclic_harness::context::CompactionPolicy) -> Self {
         self.compaction = Some(policy);
         self
     }

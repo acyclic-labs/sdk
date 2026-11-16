@@ -415,7 +415,7 @@ fn request_tag(request: &acyclic_harness::model::ModelRequest) -> Option<&'stati
     request.messages.iter().rev().find_map(|message| {
         let body = serde_json::to_string(&message.content).unwrap_or_default();
         tags.into_iter()
-            .find(|tag| body.contains(&tag(tag)))
+            .find(|name| body.contains(&tag(name)))
     })
 }
 
