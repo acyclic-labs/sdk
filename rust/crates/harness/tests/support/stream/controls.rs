@@ -5,7 +5,6 @@ pub(super) const COORDINATOR_PATH: &str = "harness/v3/coordinator/events";
 #[repr(u8)]
 pub enum ExecutionFaultMode {
     Before = 1,
-    AfterVisible = 2,
     AfterHidden = 3,
 }
 #[derive(Default)]
@@ -19,19 +18,6 @@ pub struct StreamIo {
     pub commit_reads: std::sync::atomic::AtomicU64,
     pub receipt_bytes: std::sync::atomic::AtomicU64,
     pub other_calls: std::sync::atomic::AtomicU64,
-}
-#[derive(Debug)]
-pub struct StreamIoSnapshot {
-    pub reads: u64,
-    pub tails: usize,
-    pub read_bytes: u64,
-    pub writes: u64,
-    pub records: u64,
-    pub write_bytes: u64,
-    pub inspections: u64,
-    pub commit_reads: u64,
-    pub receipt_bytes: u64,
-    pub other_calls: u64,
 }
 #[derive(Default)]
 pub struct LostSessionAck<P = MemoryStream> {
@@ -85,21 +71,6 @@ impl<P> LostSessionAck<P> {
         self.observation_bytes.store(0, Ordering::SeqCst);
         self.observation_tails.store(0, Ordering::SeqCst);
     }
-    pub fn io_snapshot(&self) -> StreamIoSnapshot {
-        use std::sync::atomic::Ordering;
-        StreamIoSnapshot {
-            reads: self.io.reads.load(Ordering::SeqCst),
-            tails: self.observation_tails.load(Ordering::SeqCst),
-            read_bytes: self.observation_bytes.load(Ordering::SeqCst),
-            writes: self.io.writes.load(Ordering::SeqCst),
-            records: self.io.records.load(Ordering::SeqCst),
-            write_bytes: self.io.write_bytes.load(Ordering::SeqCst),
-            inspections: self.io.inspections.load(Ordering::SeqCst),
-            commit_reads: self.io.commit_reads.load(Ordering::SeqCst),
-            receipt_bytes: self.io.receipt_bytes.load(Ordering::SeqCst),
-            other_calls: self.io.other_calls.load(Ordering::SeqCst),
-        }
-    }
     pub(super) fn measure_received(&self, envelope: &acyclic_stream::CommittedEnvelope) {
         let bytes = envelope
             .mutations
@@ -131,46 +102,5 @@ impl<P> LostSessionAck<P> {
                 .sum(),
             Ordering::SeqCst,
         );
-    }
-
-    pub fn new(inner: P) -> Self {
-        Self {
-            inner,
-            io: Default::default(),
-            native_only: Default::default(),
-            lose_ack: Default::default(),
-            append_receipt_fault: Default::default(),
-            hide_receipt: Default::default(),
-            location_fault: Default::default(),
-            hide_location_read: Default::default(),
-            forbid_writes: Default::default(),
-            observation_reads: Default::default(),
-            observation_bytes: Default::default(),
-            observation_tails: Default::default(),
-            observation_maximum: Default::default(),
-            observation_writes: Default::default(),
-            execution_race: Default::default(),
-            commit_lose_ack: Default::default(),
-            execution_fault: Default::default(),
-            execution_tail: Default::default(),
-            execution_faults: Default::default(),
-            hide_effect_node_read: Default::default(),
-            hide_effect_transition_position: Default::default(),
-            history_read_fault: Default::default(),
-            history_cancel_after_tail: Default::default(),
-            message_head_race: Default::default(),
-            aggregate_commit_fault: Default::default(),
-            aggregate_commits: Default::default(),
-            stale_projection_head_tail: Default::default(),
-            hide_aggregate_read: Default::default(),
-            owned_commit_pause: Default::default(),
-        }
-    }
-
-    pub fn arm_execution(&self, tail: u64, mode: ExecutionFaultMode) {
-        self.execution_tail
-            .store(tail, std::sync::atomic::Ordering::SeqCst);
-        self.execution_fault
-            .store(mode as u8, std::sync::atomic::Ordering::SeqCst);
     }
 }

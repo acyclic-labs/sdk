@@ -2771,7 +2771,6 @@ async fn a_tree_admission_never_extends_to_another_agents_private_volumes() -> R
     use crate::conversation::VolumeOperation;
     let path = AgentPath::root(&crate::agent::AgentId::from_bytes([234; 16]));
     let source = AgentPath::root(&crate::agent::AgentId::from_bytes([235; 16]));
-    let owner = crate::AgentId::from_bytes(path.id_bytes());
     let provider = ProviderRef::new("tree".into(), "filesystem".into(), "1".into(), &mut None)?;
     let private = private_volume(provider.clone(), &path.id())?;
     let journal = crate::conversation::journal_volume(provider.clone(), &path.id())?;
