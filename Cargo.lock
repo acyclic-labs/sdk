@@ -955,6 +955,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-native-runtime",
  "futures",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
