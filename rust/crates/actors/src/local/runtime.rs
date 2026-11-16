@@ -1789,13 +1789,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             self.subscriptions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .bind(
-                    self.store.provider(),
-                    self.handler.manifest(),
-                    actor,
-                    state,
-                    &tails,
-                )?;
+                .bind(self.store.provider(), actor, selections, &tails)?;
             let now = self.clock.now_unix_millis();
             let due = slot.registration.observe_delivery(state.alarm(), now)?;
             let (trigger, record, subscription) = match state.alarm().pending() {
