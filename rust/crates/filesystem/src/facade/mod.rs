@@ -288,7 +288,7 @@ use transactions::mutation_path_owned_bytes;
 
 use tree::list_directory_to_file_root_with_accounting;
 use volume_creation::CREATION_FINGERPRINT_DOMAIN;
-pub use volume_creation::CreationOperation;
+pub use volume_creation::{CreationAttribute, CreationOperation};
 pub use volume_creation::VolumeInitialization;
 use volume_creation::creation_commit;
 use volume_creation::creation_fingerprint;

@@ -56,6 +56,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let crate::CreationOperation {
             operation_id,
             files,
+            attributes,
         } = creation;
         let mut accounting = budget.accounting(cancellation);
         let result = async {
@@ -113,6 +114,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         config,
                         creation.initial_generation_root,
                         files,
+                        &attributes,
                         &mut accounting,
                         cancellation,
                     )
