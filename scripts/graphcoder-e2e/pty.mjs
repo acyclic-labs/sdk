@@ -48,6 +48,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     screen.onData(data => running.child.stdin.write(data));
     const raw = new OutputWatch(rawNeedles(input.actions));
     let index = 0, failure, errors, detaching = false;
+    const interrupted = new AbortController();
     // Model requests this case made, the newest one's arrival, and the count
     // when a prompt was sent: a delta's latency runs from its turn's request
     // reaching the mock, which then streams the chunks, to their paint.
@@ -57,6 +58,15 @@ export async function pty(processes, binary, fixture, input, capture) {
       if (process.env.E2E_PTY_FRAMES === "1") process.stderr.write(`pty-frame: ${JSON.stringify({
         case: fixture.id, ms: performance.now(), action: index, ...event,
       })}\n`);
+    }
+    function missingAction() {
+      const action = input.actions[index];
+      return new Error(`step=await terminal action ${index}: PTY completed ${index}/${input.actions.length} actions; expected interaction ${JSON.stringify(action?.when ?? {})} never happened; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
+    }
+    function fail(error) {
+      failure ??= error;
+      running?.killExecutable();
+      interrupted.abort(error);
     }
     function frame(settled = false) {
       if (failure) return;
@@ -140,10 +150,10 @@ export async function pty(processes, binary, fixture, input, capture) {
           fetch(`${fixture.url}/ack`, { method: "POST", headers: { "content-type": "application/json" },
             body: JSON.stringify({ chunk: action.acknowledge }) })
             .then(reply => { if (!reply.ok) throw new Error(`chunk acknowledgment refused: ${reply.status}`); })
-            .catch(error => { failure = error; running.killExecutable(); });
+            .catch(fail);
         }
         if (action.kill) running.killExecutable();
-      } catch (error) { failure = error; running.killExecutable(); }
+      } catch (error) { fail(error); }
     }
     unsubscribeSignals = fixture.onSignal?.(() => frame());
     unsubscribe = fixture.onRequest(event => {
@@ -167,11 +177,22 @@ export async function pty(processes, binary, fixture, input, capture) {
     // join the original exit so cancellation cannot replace its status.
     // A missing interaction is a failed case, never an indefinitely live PTY.
     // This is only a protective bound; every successful action waits on frames.
-    const signal = AbortSignal.any([AbortSignal.timeout(120_000),
+    const signal = AbortSignal.any([AbortSignal.timeout(120_000), interrupted.signal,
       ...((input.exit ?? 0) === 0 && running.failure ? [running.failure] : []), ...(fixture.signal ? [fixture.signal] : [])]);
-    try { result = await withCancellation(running, signal); }
+    // The child's exit is the event that no further interaction can arrive.
+    // Join the original completion after that event, or report the action
+    // whose expected interaction never happened.
+    const completion = running.exited.then(() => {
+      if (index < input.actions.length) throw missingAction();
+      return running.closed;
+    });
+    try { result = await withCancellation(running, signal, completion); }
     catch (error) {
-      (errors ??= []).push(error);
+      (errors ??= []).push(error?.name === "TimeoutError" && index < input.actions.length ? missingAction() : error);
+      // Every failed interaction retires the driver-owned tree before joining
+      // its original completion.
+      try { await running[Symbol.asyncDispose](); }
+      catch (retirement) { errors.push(retirement); }
       try { result = await running.closed; }
       catch (error) { errors.push(error); }
     }
@@ -190,7 +211,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     }
     if (failure) {
       if (!errors) throw failure;
-      errors.unshift(failure);
+      if (!errors.includes(failure)) errors.unshift(failure);
     }
     if (errors) {
       if (errors.length === 1) throw errors[0];

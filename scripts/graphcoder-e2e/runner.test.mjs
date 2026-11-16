@@ -193,6 +193,25 @@ test("terminal completion admits the final frame after its last input action", a
   } finally { rmSync(root, { recursive: true }); }
 });
 
+test("a missing terminal interaction names its action and retires the tree on child exit", {
+  timeout: 5000,
+}, async () => {
+  const root = mkdtempSync(join(tmpdir(), "terminal-missing-action-")), processes = new Processes();
+  try {
+    await assert.rejects(pty(processes, process.execPath, {
+      id: "missing-terminal-action", workspace: root,
+      args: ["-e", "process.stdout.write('ready');process.stdin.once('data',()=>process.exit(0));process.stdin.resume()"],
+      onRequest() { return () => {}; },
+    }, { actions: [{ when: { contains: ["ready"] }, send: "go\n" },
+      { when: { contains: ["NEVER_PAINTED"] }, send: "x" }] }, () => {}), error => {
+      assert.match(error.message, /step=await terminal action 1/);
+      assert.match(error.message, /NEVER_PAINTED/);
+      return true;
+    });
+    assert.equal(processes.children.size, 0, "the driver-owned tree must be gone when the case returns");
+  } finally { await processes.close(); rmSync(root, { recursive: true }); }
+});
+
 test("shipping terminal refusals survive coalesced and fragmented redraws", async () => {
   for (const schedule of [[], [0], [63], [255, 0, 7, 1]]) await fuzzTerminalFrames(Buffer.from(schedule));
 });
