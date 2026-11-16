@@ -72,7 +72,8 @@ pub struct SettingsConfig {
 impl SettingsConfig {
     /// Host files contributing MCP configuration, under the same trust policy.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn mcp_paths(&self) -> Vec<PathBuf> {
+    /// Every native MCP declaration file in precedence order.
+    pub fn mcp_paths(&self) -> Vec<PathBuf> {
         let mut paths = vec![
             self.home.join(".claude.json"),
             self.codex_home.join("config.toml"),
