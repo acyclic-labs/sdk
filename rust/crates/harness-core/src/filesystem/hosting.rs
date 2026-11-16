@@ -340,6 +340,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Bound<P, O> {
     pub const fn volumes(&self) -> &Arc<Host<P, O>> {
         &self.volumes
     }
+
+    /// The original clock shared by actor deadlines and session authorization.
+    #[must_use]
+    pub const fn clock(&self) -> &Arc<dyn Clock> {
+        &self.clock
+    }
 }
 
 impl<P, O> Bound<P, O>
@@ -643,6 +649,7 @@ where
     /// authority admitting it.
     /// Independent roots also receive read-only peer discovery; child enrollment
     /// never inherits that resource or session-directory authority.
+    /// Enrollment and authorization use this binding's original actor clock.
     ///
     /// # Errors
     /// When `root` is absent or its scope does not cover its observation.
@@ -651,34 +658,32 @@ where
         &self,
         root: &AgentPath,
         calls: &str,
-        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<super::AgentObservation, Error> {
-        self.client_observation(root, calls, clock, None).await
+        self.client_observation(root, calls, None).await
     }
 
     /// Explicit owner enrollment for the root directory of this placement.
     /// This is a platform operation, never callable by a session request.
+    /// The credential retains this binding's original clock.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn session_credential(
         &self,
         root: &AgentPath,
         calls: &str,
         directory: &str,
-        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<super::AgentObservation, Error> {
         self.admit_sessions()?;
-        self.client_observation(root, calls, clock, Some(directory))
-            .await
+        self.client_observation(root, calls, Some(directory)).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Session admission for this endpoint's root uses the same audience as
     /// its client enrollment. Local roots have a conversation audience;
     /// admitted workloads retain their original host-selected audience.
+    /// Deadline evaluation uses the same clock as this binding's actor alarms.
     pub fn client_authority(
         &self,
         root: &AgentPath,
-        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<acyclic_stream::session::Authority, Error> {
         self.admit_path(root)?;
         let issuer = self.admission.verify(&self.issuer, root).map_err(turn)?;
@@ -686,7 +691,7 @@ where
             issuer
                 .native()
                 .ok_or(Error::Record("client admission requires native custody"))?,
-            clock,
+            self.clock.clone(),
         )
         .map_err(turn)
     }
@@ -704,7 +709,6 @@ where
         &self,
         root: &AgentPath,
         calls: &str,
-        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         directory: Option<&str>,
     ) -> Result<super::AgentObservation, Error> {
         self.admit_path(root)?;
@@ -723,7 +727,7 @@ where
                 (&authority, self.observation_parent(&authority.scope)),
                 &state.path,
                 &journal,
-                clock,
+                self.clock.clone(),
                 calls,
                 directory.zip(directory_source.as_ref()),
             )
@@ -797,14 +801,13 @@ where
                 .map_err(turn)?;
             let state = self.agents.state(agent).await?;
             let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
-            let clock = ObservationClock(self.clock.clone());
             let (resource, credential, _) = self
                 .volumes
                 .observation_credential(
                     (&authority, self.observation_parent(&authority.scope)),
                     &state.path,
                     &journal,
-                    &clock,
+                    self.clock.as_ref(),
                     &[],
                     None,
                     audience,
@@ -1652,16 +1655,6 @@ where
     ) -> Result<RootSubmission, Error> {
         self.submit_root(self.prepare_root(intent, request).await?)
             .await
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct ObservationClock(Arc<dyn Clock>);
-
-#[cfg(not(target_arch = "wasm32"))]
-impl acyclic_stream::UnixMillisClock for ObservationClock {
-    fn now_unix_millis(&self) -> u64 {
-        self.0.now_unix_ms()
     }
 }
 

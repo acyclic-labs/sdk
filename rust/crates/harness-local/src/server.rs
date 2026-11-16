@@ -104,7 +104,6 @@ impl<C> ServerConfig<C> {
 /// the same endpoint as the default local composition.
 pub struct Hosted<P: AuthorityProvider + 'static, O: 'static, L> {
     server: Arc<crate::hosting::Server<P, O>>,
-    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     resources: Option<Arc<dyn acyclic_stream::session::ResourceProvider>>,
     pub(crate) completion: Option<BoxProviderFuture<'static, Result<()>>>,
     pub(crate) shutdown: Option<Box<dyn FnOnce() -> Result<()> + Send + Sync>>,
@@ -123,13 +122,11 @@ where
     #[must_use]
     pub fn new(
         server: Arc<crate::hosting::Server<P, O>>,
-        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         owner: L,
         resources: Option<Arc<dyn acyclic_stream::session::ResourceProvider>>,
     ) -> Self {
         Self {
             server,
-            clock,
             resources,
             completion: None,
             shutdown: None,
@@ -222,11 +219,7 @@ pub async fn serve<C: Composition>(
     let bound = server.bound();
     // Every client's credential is the capability envelope its issuer
     // signs, verified against the issuer's trust.
-    let authority = Arc::new(
-        bound
-            .client_authority(server.root(), host.clock.clone())
-            .map_err(failed)?,
-    );
+    let authority = Arc::new(bound.client_authority(server.root()).map_err(failed)?);
     let (lifetime, ended) = tokio::sync::watch::channel(());
     let completion = host.completion.take();
     let shutdown_result = host.shutdown.take();
@@ -262,16 +255,11 @@ pub async fn serve<C: Composition>(
     let observation = config.verifier.observation(RootCredential(Box::pin(async {
         let minted = if server.serves_sessions() {
             bound
-                .session_credential(
-                    server.root(),
-                    server.resource(),
-                    &server.session_resource(),
-                    host.clock.clone(),
-                )
+                .session_credential(server.root(), server.resource(), &server.session_resource())
                 .await
         } else {
             bound
-                .client_credential(server.root(), server.resource(), host.clock.clone())
+                .client_credential(server.root(), server.resource())
                 .await
         }
         .map_err(failed)?;

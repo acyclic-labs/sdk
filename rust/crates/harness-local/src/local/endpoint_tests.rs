@@ -47,12 +47,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
     let server = Arc::clone(hosted.server());
     let directory_credential = server
         .bound()
-        .session_credential(
-            server.root(),
-            server.resource(),
-            &server.session_resource(),
-            local.clock.clone(),
-        )
+        .session_credential(server.root(), server.resource(), &server.session_resource())
         .await
         .map_err(|error| {
             Error::exchange(crate::ExchangeStep::Step("endpoint test operation"), error)
@@ -61,18 +56,13 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         acyclic_auth::credential::capability_text(&directory_credential.credential);
     let credential = server
         .bound()
-        .client_credential(server.root(), server.resource(), local.clock.clone())
+        .client_credential(server.root(), server.resource())
         .await
         .map_err(storage)?;
     let credential = acyclic_auth::credential::capability_text(&credential.credential);
     let changes = server.bound().changes().map_err(storage)?;
-    let composition = crate::server::Hosted::new(
-        server,
-        local.clock.clone(),
-        local.clone(),
-        Some(Arc::new(changes)),
-    )
-    .with_completion(hosted.runtime.completion());
+    let composition = crate::server::Hosted::new(server, local.clone(), Some(Arc::new(changes)))
+        .with_completion(hosted.runtime.completion());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(storage)?;
@@ -1065,7 +1055,6 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
     })?;
     let composition = Hosted::new(
         hosted.server().clone(),
-        harness.clock.clone(),
         harness.clone(),
         Some(Arc::new(changes)),
     )

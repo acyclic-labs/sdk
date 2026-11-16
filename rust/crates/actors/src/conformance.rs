@@ -365,7 +365,7 @@ async fn observe<P: StreamProvider + ?Sized>(
     count: usize,
     budget_ms: u64,
 ) -> Result<Vec<String>, Failure> {
-    let mut deadline = clock.sleep_until(clock.now_unix_ms().saturating_add(budget_ms));
+    let mut deadline = clock.sleep_until(clock.now_unix_millis().saturating_add(budget_ms));
     request.when_absent = acyclic_stream::WhenAbsent::Wait;
     let mut follow = provider
         .follow(request)
@@ -516,9 +516,9 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
         fired: &[&str],
     ) -> Result<(), Failure> {
         let clock = self.target.clock();
-        let due = clock.now_unix_ms() >= deadline;
+        let due = clock.now_unix_millis() >= deadline;
         let observed = self.outbox(pending.len().max(fired.len())).await?;
-        let before = clock.now_unix_ms() < deadline;
+        let before = clock.now_unix_millis() < deadline;
         if (observed == pending && !due) || (observed == fired && !before) {
             return Ok(());
         }
@@ -1829,7 +1829,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
         Bytes::from_static(b"admitted-owner-proof"),
     )
     .map_err(Error::from)?;
-    let deadline = target.clock().now_unix_ms().saturating_add(BUDGET_MS);
+    let deadline = target.clock().now_unix_millis().saturating_add(BUDGET_MS);
     let first_id = Bytes::from_static(b"first");
     let first = pool
         .reserve(2, first_id.clone(), owner.clone(), deadline)
@@ -1951,7 +1951,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
             2,
             Bytes::from_static(b"third"),
             owner.clone(),
-            target.clock().now_unix_ms().saturating_add(BUDGET_MS),
+            target.clock().now_unix_millis().saturating_add(BUDGET_MS),
         )
         .await?;
     let Decision::Granted(third_grant) = third.decision() else {

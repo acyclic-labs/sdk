@@ -190,7 +190,14 @@ impl Commands<'_> {
         let Ok(mut state) = StateArc::clone(&self.workspace.state).try_lock_owned() else {
             return Ok(());
         };
-        self.settle_publications(context, &mut state).await
+        // The durable enqueue above is the handback. Draining it now is an
+        // optimization for an idle checkout; a failure leaves the publication
+        // debt set, so the parent's next command retries it. The child's
+        // report must not depend on this optional drain.
+        if let Err(error) = self.settle_publications(context, &mut state).await {
+            tracing::warn!(%error, "deferred workspace handback will retry");
+        }
+        Ok(())
     }
 
     /// Publishes every deferred handback before the guard's holder reads the
