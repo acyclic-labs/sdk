@@ -393,8 +393,7 @@ pub fn children_page_from_response(
             .collect::<Result<_, StreamError>>()?,
         next_after: value.next_after.map(path).transpose()?,
     };
-    if page.scanned
-        > u32::try_from(crate::MAX_ITEMS).map_err(|_| StreamError::Capacity)?
+    if page.scanned > u32::try_from(crate::MAX_ITEMS).map_err(|_| StreamError::Capacity)?
         || page.children.len() > page.scanned as usize
         || (page.next_after.is_some() && page.scanned == 0)
     {

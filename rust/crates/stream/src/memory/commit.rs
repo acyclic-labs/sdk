@@ -559,10 +559,7 @@ impl MemoryStream {
         digest: [u8; 32],
         deadline: Option<u64>,
         accepted: bool,
-    ) -> Result<
-        CommitDecision<impl Install<'a, CommitResult>>,
-        StreamError,
-    > {
+    ) -> Result<CommitDecision<impl Install<'a, CommitResult>>, StreamError> {
         if let Some((replayed, result, index, ephemeral)) =
             self.replay_in(state, request.idempotency_key.as_bytes())?
         {
@@ -711,19 +708,18 @@ impl MemoryStream {
                 if let Some(envelope) = &mut envelope {
                     bind_envelope(envelope, commit_id, time);
                 }
-                let retained = match retained {
-                    Some(retained) => {
-                        PublicationRetention::Durable(self.install_retained(state, retained)?)
-                    }
-                    None => PublicationRetention::Ephemeral(
-                        self,
-                        Box::new(
-                            ephemeral.unwrap_or_else(|| {
+                let retained =
+                    match retained {
+                        Some(retained) => {
+                            PublicationRetention::Durable(self.install_retained(state, retained)?)
+                        }
+                        None => PublicationRetention::Ephemeral(
+                            self,
+                            Box::new(ephemeral.unwrap_or_else(|| {
                                 unreachable!("leased write reserves its indexes")
-                            }),
+                            })),
                         ),
-                    ),
-                };
+                    };
                 let (outcome, allocation) = publication.publish(
                     state,
                     &mut |items| self.record_replay_probe(&mut probes, items),

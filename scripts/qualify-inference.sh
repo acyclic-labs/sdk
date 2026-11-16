@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 trap 'rc=$?; echo "STEP_FAILED inference-verify line=$LINENO rc=$rc; recovery: bash scripts/qualify-inference.sh" >&2' ERR
-cargo fmt --all -- --check
+node scripts/qualify-rustfmt.mjs
 cargo test -p acyclic-conformance -p acyclic-harness-providers \
     --features acyclic-conformance/inference --no-run
 provider_test_status=0

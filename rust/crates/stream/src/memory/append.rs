@@ -16,10 +16,7 @@ impl MemoryStream {
         &'a self,
         state: &mut State,
         request: &'a AppendRequest,
-    ) -> Result<
-        AppendDecision<impl Install<'a, AppendResult>>,
-        StreamError,
-    > {
+    ) -> Result<AppendDecision<impl Install<'a, AppendResult>>, StreamError> {
         #[cfg(not(target_arch = "wasm32"))]
         let _input = self.append_claim(request)?;
         let bytes = request

@@ -75,7 +75,10 @@ impl LocalStream {
                             anchor,
                             when_absent,
                             filter.clone(),
-                            crate::memory::FollowWindow { bootstrap_head, until },
+                            crate::memory::FollowWindow {
+                                bootstrap_head,
+                                until,
+                            },
                         )
                     })
                     .await

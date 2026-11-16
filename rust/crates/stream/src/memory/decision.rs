@@ -54,30 +54,29 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
         mut state: impl std::ops::DerefMut<Target = State>,
         mut persist: std::pin::Pin<&mut impl Future<Output = Result<Option<u64>, StreamError>>>,
     ) -> Result<T, StreamError> {
-            let ephemeral = self.ephemeral();
-            if ephemeral || matches!(&self, Self::Returned { .. }) {
-                return self.install(core, &mut state, !ephemeral);
-            }
-            // An immediate acknowledgement needs no second state acquisition.
-            if let std::task::Poll::Ready(result) = futures::poll!(persist.as_mut()) {
-                return self.install_at(core, &mut state, true, result?);
-            }
-            // The publication owner excludes competing state transitions.
-            // Readers can keep using the last accepted state during I/O.
-            #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
-            drop(state);
-            #[cfg(all(loom, not(target_arch = "wasm32")))]
-            let state = crate::verification::fault_is(
-                crate::verification::Fault::HoldStateDuringDurability,
-            )
-            .then_some(state);
-            // Failure or cancellation drops the uninstalled plan. There is
-            // no visible mutation or notification before this succeeds.
-            let at_millis = persist.await?;
-            #[cfg(all(loom, not(target_arch = "wasm32")))]
-            drop(state);
-            let mut state = core.state.write().await;
-            self.install_at(core, &mut state, true, at_millis)
+        let ephemeral = self.ephemeral();
+        if ephemeral || matches!(&self, Self::Returned { .. }) {
+            return self.install(core, &mut state, !ephemeral);
+        }
+        // An immediate acknowledgement needs no second state acquisition.
+        if let std::task::Poll::Ready(result) = futures::poll!(persist.as_mut()) {
+            return self.install_at(core, &mut state, true, result?);
+        }
+        // The publication owner excludes competing state transitions.
+        // Readers can keep using the last accepted state during I/O.
+        #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
+        drop(state);
+        #[cfg(all(loom, not(target_arch = "wasm32")))]
+        let state =
+            crate::verification::fault_is(crate::verification::Fault::HoldStateDuringDurability)
+                .then_some(state);
+        // Failure or cancellation drops the uninstalled plan. There is
+        // no visible mutation or notification before this succeeds.
+        let at_millis = persist.await?;
+        #[cfg(all(loom, not(target_arch = "wasm32")))]
+        drop(state);
+        let mut state = core.state.write().await;
+        self.install_at(core, &mut state, true, at_millis)
     }
 }
 
@@ -95,65 +94,64 @@ impl MemoryStream {
         deadline: Option<u64>,
         mut persist: std::pin::Pin<&mut impl Future<Output = Result<Option<u64>, StreamError>>>,
     ) -> Result<crate::replicated::Execution, StreamError> {
-            use crate::replicated::Execution;
-            use crate::{WriteOutcome, WriteRequest};
-            let _publication = self.publication.lock().await;
-            #[cfg(all(loom, not(target_arch = "wasm32")))]
-            let _publication = (!crate::verification::fault_is(
-                crate::verification::Fault::ReleasePendingPublication,
-            ))
-            .then_some(_publication);
-            let mut state = self.state.write().await;
-            match &canonical.command {
-                WriteRequest::Append(request) => {
-                    let plan = self.plan_append_locked(&mut state, request)?;
-                    // Only the native local provider leases ephemeral subtrees.
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let ephemeral = plan.ephemeral();
-                    plan.durable(self, state, persist.as_mut())
-                        .await
-                        .map(|(result, allocation)| Execution {
-                            outcome: WriteOutcome::Append(result),
-                            _allocation: allocation,
-                            #[cfg(not(target_arch = "wasm32"))]
-                            ephemeral,
-                        })
-                }
-                WriteRequest::Fork(request) => {
-                    let plan = self.plan_fork_locked(&mut state, request)?;
-                    // Only the native local provider leases ephemeral subtrees.
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let ephemeral = plan.ephemeral();
-                    plan.durable(self, state, persist.as_mut())
-                        .await
-                        .map(|result| Execution {
-                            outcome: WriteOutcome::Fork(result),
-                            _allocation: None,
-                            #[cfg(not(target_arch = "wasm32"))]
-                            ephemeral,
-                        })
-                }
-                WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
-                    let digest = canonical.digest.ok_or(StreamError::InvalidResponse)?;
-                    let plan = self.plan_commit_locked(
-                        &mut state,
-                        request,
-                        digest,
-                        deadline,
-                        matches!(&canonical.command, WriteRequest::CommitAccepted(_)),
-                    )?;
-                    // Only the native local provider leases ephemeral subtrees.
-                    #[cfg(not(target_arch = "wasm32"))]
-                    let ephemeral = plan.ephemeral();
-                    plan.durable(self, state, persist.as_mut())
-                        .await
-                        .map(|(result, allocation)| Execution {
-                            outcome: result,
-                            _allocation: allocation,
-                            #[cfg(not(target_arch = "wasm32"))]
-                            ephemeral,
-                        })
-                }
+        use crate::replicated::Execution;
+        use crate::{WriteOutcome, WriteRequest};
+        let _publication = self.publication.lock().await;
+        #[cfg(all(loom, not(target_arch = "wasm32")))]
+        let _publication =
+            (!crate::verification::fault_is(crate::verification::Fault::ReleasePendingPublication))
+                .then_some(_publication);
+        let mut state = self.state.write().await;
+        match &canonical.command {
+            WriteRequest::Append(request) => {
+                let plan = self.plan_append_locked(&mut state, request)?;
+                // Only the native local provider leases ephemeral subtrees.
+                #[cfg(not(target_arch = "wasm32"))]
+                let ephemeral = plan.ephemeral();
+                plan.durable(self, state, persist.as_mut())
+                    .await
+                    .map(|(result, allocation)| Execution {
+                        outcome: WriteOutcome::Append(result),
+                        _allocation: allocation,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        ephemeral,
+                    })
             }
+            WriteRequest::Fork(request) => {
+                let plan = self.plan_fork_locked(&mut state, request)?;
+                // Only the native local provider leases ephemeral subtrees.
+                #[cfg(not(target_arch = "wasm32"))]
+                let ephemeral = plan.ephemeral();
+                plan.durable(self, state, persist.as_mut())
+                    .await
+                    .map(|result| Execution {
+                        outcome: WriteOutcome::Fork(result),
+                        _allocation: None,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        ephemeral,
+                    })
+            }
+            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
+                let digest = canonical.digest.ok_or(StreamError::InvalidResponse)?;
+                let plan = self.plan_commit_locked(
+                    &mut state,
+                    request,
+                    digest,
+                    deadline,
+                    matches!(&canonical.command, WriteRequest::CommitAccepted(_)),
+                )?;
+                // Only the native local provider leases ephemeral subtrees.
+                #[cfg(not(target_arch = "wasm32"))]
+                let ephemeral = plan.ephemeral();
+                plan.durable(self, state, persist.as_mut())
+                    .await
+                    .map(|(result, allocation)| Execution {
+                        outcome: result,
+                        _allocation: allocation,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        ephemeral,
+                    })
+            }
+        }
     }
 }

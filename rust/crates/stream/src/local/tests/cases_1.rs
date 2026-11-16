@@ -82,7 +82,10 @@ async fn local_append_emits_its_span() -> Result<(), Box<dyn std::error::Error>>
             .ok_or("missing span field")?,
         "ok"
     );
-    let evidence = captured.0.lock().unwrap_or_else(|poison| poison.into_inner());
+    let evidence = captured
+        .0
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     assert!(evidence.events.iter().any(|(_, fields)| {
         fields
             .iter()

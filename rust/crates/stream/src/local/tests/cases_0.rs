@@ -339,7 +339,15 @@ fn mutations_on_other_paths_write_while_a_flush_is_under_way()
         };
         assert_eq!(accepted.sequence, 0);
         assert_eq!(accepted.value.as_slice(), b"second-0");
-        assert_eq!(provider.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).appended, 2);
+        assert_eq!(
+            provider
+                .inner
+                .journal
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .appended,
+            2
+        );
         assert!(!first.is_finished() && !second.is_finished());
         release_tx.send(())?;
         for (outcome, path) in [(first.await??, "first"), (second.await??, "second")] {
@@ -350,13 +358,19 @@ fn mutations_on_other_paths_write_while_a_flush_is_under_way()
         // must end the same start wait even while the hook retains its sender.
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (_release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
-        *JOURNAL_PERSIST_BLOCKER.lock().unwrap_or_else(|poison| poison.into_inner()) = Some((journal_identity, started_tx, release_rx));
+        *JOURNAL_PERSIST_BLOCKER
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) =
+            Some((journal_identity, started_tx, release_rx));
         let mut refused = {
             let provider = provider.clone();
             tokio::spawn(async move { provider.commit(keyed_commit("second", 9)?).await })
         };
         let terminal = journal_started(started_rx, &mut refused).await;
-        JOURNAL_PERSIST_BLOCKER.lock().unwrap_or_else(|poison| poison.into_inner()).take();
+        JOURNAL_PERSIST_BLOCKER
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
         assert_eq!(
             terminal.unwrap_err().kind(),
             std::io::ErrorKind::UnexpectedEof

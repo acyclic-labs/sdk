@@ -15,16 +15,12 @@ fn observe_release(bytes: u64) {
     let Some(observed) = acyclic_test_support::current_allocations() else {
         return;
     };
-    if observed.bytes_total.cast_signed() - observed.bytes_current
-        < released.cast_signed()
-    {
+    if observed.bytes_total.cast_signed() - observed.bytes_current < released.cast_signed() {
         EARLY_RELEASE.set(true);
     }
 }
 
-fn release_order<const RAW_DROP: bool>(
-    length: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn release_order<const RAW_DROP: bool>(length: usize) -> Result<(), Box<dyn std::error::Error>> {
     let meter = Arc::new(crate::test_meter::Meter {
         release_observer: Some(observe_release),
         ..Default::default()
@@ -36,47 +32,47 @@ fn release_order<const RAW_DROP: bool>(
     let mut outcome: Result<(), Box<dyn std::error::Error>> = Ok(());
     let measured = acyclic_test_support::measure(|| {
         outcome = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let mut root: Option<RetainedFactRef> = None;
-        let mut first = None;
-        for index in 0..length {
-            let charge = ReadAllocation::new(&original, header)?;
-            let mut fact = RetainedFact::reserved(Some(charge));
-            let data = fact.get_mut().ok_or("exclusive reservation")?;
-            data.previous = root.take();
-            let charge = if data.previous.is_some() {
-                data._header.take()
-            } else {
-                None
-            };
-            if let Some(previous) = &fact.previous {
-                previous
-                    .next
-                    .set(RetainedLink {
-                        _fact: fact.downgrade(),
-                        _allocation: charge,
-                    })
-                    .unwrap_or_else(|_| unreachable!("one successor"));
+            let mut root: Option<RetainedFactRef> = None;
+            let mut first = None;
+            for index in 0..length {
+                let charge = ReadAllocation::new(&original, header)?;
+                let mut fact = RetainedFact::reserved(Some(charge));
+                let data = fact.get_mut().ok_or("exclusive reservation")?;
+                data.previous = root.take();
+                let charge = if data.previous.is_some() {
+                    data._header.take()
+                } else {
+                    None
+                };
+                if let Some(previous) = &fact.previous {
+                    previous
+                        .next
+                        .set(RetainedLink {
+                            _fact: fact.downgrade(),
+                            _allocation: charge,
+                        })
+                        .unwrap_or_else(|_| unreachable!("one successor"));
+                }
+                if index == 0 && !RAW_DROP {
+                    first = Some(fact.clone());
+                }
+                root = Some(fact);
             }
-            if index == 0 && !RAW_DROP {
-                first = Some(fact.clone());
+            // Exercise the encoder's weak-upgrade ownership after the tail and
+            // first snapshot owners disappear, without another allocation.
+            let upgraded = first
+                .as_ref()
+                .and_then(|first| first.next.get())
+                .and_then(|link| link._fact.upgrade());
+            if RAW_DROP {
+                // The former ordinary Arc destructor releases the inline charge
+                // before its implicit weak reference retires the allocation.
+                drop(root.take().ok_or("one fact")?.0.take());
             }
-            root = Some(fact);
-        }
-        // Exercise the encoder's weak-upgrade ownership after the tail and
-        // first snapshot owners disappear, without another allocation.
-        let upgraded = first
-            .as_ref()
-            .and_then(|first| first.next.get())
-            .and_then(|link| link._fact.upgrade());
-        if RAW_DROP {
-            // The former ordinary Arc destructor releases the inline charge
-            // before its implicit weak reference retires the allocation.
-            drop(root.take().ok_or("one fact")?.0.take());
-        }
-        drop(root);
-        drop(first);
-        drop(upgraded);
-        Ok(())
+            drop(root);
+            drop(first);
+            drop(upgraded);
+            Ok(())
         })();
     });
     outcome?;

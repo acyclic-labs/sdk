@@ -240,10 +240,11 @@ not need these adapters.
 
 ## Before opening a PR
 
-Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features
+Run `node scripts/qualify-rustfmt.mjs`, `cargo clippy --workspace --all-targets --all-features
 --locked -- -D warnings`, and `cargo test --workspace --all-features --locked`
 locally for the affected crates; full release qualification enforces the broader
-suites. Every PR should get review and approval from a
+suites. Write formatting with `node scripts/qualify-rustfmt.mjs --write`, the
+same mechanism the check uses. Every PR should get review and approval from a
 code owner (`.github/CODEOWNERS`) before it merges; branch protection does not yet
 require this, so treat it as a norm until it's enforced (not yet tracked in a
 dedicated issue). An automated Greptile review already runs on every PR.
