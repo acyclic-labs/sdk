@@ -27,6 +27,7 @@ pub(super) const GENERATORS: &[&Generator] = &[
     &super::compaction::GENERATOR,
     &super::redelivery::GENERATOR,
     &super::containment::GENERATOR,
+    &super::grants::GENERATOR,
 ];
 
 impl Generator {
