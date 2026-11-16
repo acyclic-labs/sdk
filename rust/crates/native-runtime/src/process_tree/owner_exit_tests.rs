@@ -18,9 +18,10 @@ fn owner_exit_helper() {
     };
     if mode == "member" {
         println!(
-            "\nACYCLIC_MEMBER={} {}",
+            "\nACYCLIC_MEMBER={} {} {}",
             std::process::id(),
-            super::within_warded_tree()
+            super::within_warded_tree(),
+            start_service()
         );
         loop {
             thread::park();
@@ -62,6 +63,30 @@ fn owner_exit_helper() {
     }
 }
 
+/// Starts a real service the way a member's tools do and returns its PID.
+/// The service records its PID, then signals readiness and stays running.
+fn start_service() -> libc::pid_t {
+    let record =
+        std::env::temp_dir().join(format!("acyclic-owner-exit-service-{}", std::process::id()));
+    let readiness = crate::service::spawn_service_process(
+        std::path::Path::new("/bin/sh"),
+        &[
+            "-c".into(),
+            // $0 is the record path; the ready argument follows as $1.
+            r#"echo $$ > "$0"; echo; exec sleep 1000000"#.into(),
+            record.clone().into(),
+        ],
+    )
+    .expect("spawn service");
+    assert_eq!(
+        readiness.wait().expect("service readiness"),
+        crate::service::ServiceStartOutcome::Ready
+    );
+    let pid = std::fs::read_to_string(&record).expect("service PID record");
+    std::fs::remove_file(&record).expect("remove service PID record");
+    pid.trim().parse().expect("numeric service PID")
+}
+
 /// The member's publication line, forwarded unchanged by its owner.
 fn member_line(output: impl std::io::Read) -> String {
     BufReader::new(output)
@@ -71,9 +96,10 @@ fn member_line(output: impl std::io::Read) -> String {
         .expect("member published before exit")
 }
 
-/// Starts an owner, kills it with SIGKILL once its member runs, and returns
-/// a watch on that member and whether the member saw itself in a tree.
-fn kill_owner(mode: &str) -> (Watch, bool) {
+/// Starts an owner, kills it with SIGKILL once its member and the member's
+/// service run, and returns watches on both and whether the member saw
+/// itself in a tree.
+fn kill_owner(mode: &str) -> (Watch, Watch, bool) {
     let mut owner = Command::new(std::env::current_exe().expect("test executable"))
         .args(["--exact", HELPER, "--nocapture"])
         .env(MODE, mode)
@@ -83,35 +109,43 @@ fn kill_owner(mode: &str) -> (Watch, bool) {
         .spawn()
         .expect("owner");
     let line = member_line(owner.stdout.take().expect("owner output"));
-    let (pid, warded) = line
+    let [member, warded, service] = line
         .trim_start_matches("ACYCLIC_MEMBER=")
-        .split_once(' ')
-        .expect("pid and containment");
-    let watch = Watch::new(pid.parse().expect("numeric pid")).expect("running member");
+        .split(' ')
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("malformed publication {line}");
+    };
+    let watch = |pid: &str| Watch::new(pid.parse().expect("numeric PID")).expect("running process");
+    let (member, warded, service) = (watch(member), warded == "true", watch(service));
     owner.kill().expect("kill owner");
     owner.wait().expect("reap owner");
-    (watch, warded == "true")
+    (member, service, warded)
 }
 
 #[test]
 fn a_tree_and_its_services_die_with_a_killed_owner() {
-    let (member, warded) = kill_owner("tree-owner");
-    assert!(
-        warded,
-        "a tree member would start its services outside the tree"
-    );
-    // Returns only once the member is gone: its warden saw the owner exit.
+    let (member, service, warded) = kill_owner("tree-owner");
+    assert!(warded, "a tree member did not see its tree");
+    // Each returns only once that process is gone: its warden saw the owner
+    // exit and drained the whole tree, the member's service included.
     member.wait();
+    service.wait();
 }
 
 /// Negative control: the same member leading its own group outside a tree
-/// survives the same kill and would start its services detached.
+/// survives the same kill, and so does the service it started detached.
 #[test]
 fn a_plain_child_outlives_its_killed_owner() {
-    let (member, warded) = kill_owner("plain-owner");
-    let survived = !member.exited();
+    let (member, service, warded) = kill_owner("plain-owner");
+    let survived = (!member.exited(), !service.exited());
     member.kill();
-    assert!(survived, "the oracle cannot observe a surviving member");
+    service.kill();
+    assert_eq!(
+        survived,
+        (true, true),
+        "the oracle cannot observe a surviving member and service"
+    );
     assert!(!warded, "a plain child claimed tree membership");
 }
 
