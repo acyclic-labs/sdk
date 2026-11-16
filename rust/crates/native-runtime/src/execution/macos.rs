@@ -22,6 +22,11 @@ unsafe extern "C" {
     ) -> libc::c_int;
 }
 
+// libnotify, part of libSystem; any lookup creates its process globals.
+unsafe extern "C" {
+    fn notify_is_valid_token(token: libc::c_int) -> bool;
+}
+
 #[repr(C)]
 struct NativeProfile {
     builtin: *mut libc::c_char,
@@ -278,6 +283,12 @@ impl SealedExec {
         environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
     ) -> io::Result<Self> {
         use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        // libSystem's fork child handler reads libnotify's once-created
+        // globals. A fork that copies another thread's creation in progress
+        // aborts the child before exec. Creating them here, before the fork,
+        // leaves every later fork a completed once.
+        // SAFETY: a lookup with no registration only reads libnotify state.
+        unsafe { notify_is_valid_token(0) };
         let cstring = |text: &std::ffi::OsStr| CString::new(text.as_bytes()).map_err(refused);
         let program = cstring(command.get_program())?;
         let arguments = std::iter::once(arg0.unwrap_or_else(|| command.get_program()))

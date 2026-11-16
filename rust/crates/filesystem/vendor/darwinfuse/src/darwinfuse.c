@@ -23,9 +23,12 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <spawn.h>
 #include <sys/mount.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+
+extern char **environ;
 
 /* ---- Diagnostics ---- */
 
@@ -176,26 +179,41 @@ static int do_mount_nfs(const char *socket_path, const char *mount_point,
         return -1;
     }
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        DFUSE_ERR("fork failed: %s", strerror(errno));
+    /* posix_spawn, not fork: libSystem's fork child handlers can abort a
+     * child whose fork copied another thread's libnotify setup. mount_nfs
+     * inherits only its standard streams, its stderr our pipe. */
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attributes;
+    int spawned = posix_spawn_file_actions_init(&actions);
+    if (spawned == 0) {
+        spawned = posix_spawnattr_init(&attributes);
+        if (spawned != 0)
+            posix_spawn_file_actions_destroy(&actions);
+    }
+    /* Use the same built-in utility admitted by NativeMountProbe.
+     * Embedders need not include system administration tools in PATH. */
+    char *const argv[] = { "mount_nfs", "-o", opts, server,
+                           (char *)mount_point, NULL };
+    pid_t pid;
+    if (spawned == 0) {
+        if ((spawned = posix_spawnattr_setflags(&attributes,
+                                                POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0
+            && (spawned = posix_spawn_file_actions_addinherit_np(&actions,
+                                                                 STDIN_FILENO)) == 0
+            && (spawned = posix_spawn_file_actions_addinherit_np(&actions,
+                                                                 STDOUT_FILENO)) == 0
+            && (spawned = posix_spawn_file_actions_adddup2(&actions, err_pipe[1],
+                                                           STDERR_FILENO)) == 0)
+            spawned = posix_spawn(&pid, "/sbin/mount_nfs", &actions,
+                                  &attributes, argv, environ);
+        posix_spawnattr_destroy(&attributes);
+        posix_spawn_file_actions_destroy(&actions);
+    }
+    if (spawned != 0) {
+        DFUSE_ERR("posix_spawn mount_nfs failed: %s", strerror(spawned));
         close(err_pipe[0]);
         close(err_pipe[1]);
         return -1;
-    }
-
-    if (pid == 0) {
-        close(err_pipe[0]);
-        dup2(err_pipe[1], STDERR_FILENO);
-        close(err_pipe[1]);
-        /* Use the same built-in utility admitted by NativeMountProbe.
-         * Embedders need not include system administration tools in PATH. */
-        execl("/sbin/mount_nfs", "mount_nfs",
-               "-o", opts,
-               server,
-               mount_point,
-               NULL);
-        _exit(127);
     }
 
     close(err_pipe[1]);
