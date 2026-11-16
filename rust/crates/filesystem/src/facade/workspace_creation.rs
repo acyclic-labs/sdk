@@ -52,8 +52,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         G::Error: Into<E>,
         E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
     {
-        let creation = creation.into();
-        let operation_id = creation.operation_id;
+        let requested = creation.into();
+        let operation_id = requested.operation_id;
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             let config = initialization.config;
@@ -63,7 +63,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .read_creation(id.volume_id(), &mut accounting, cancellation)
                 .await
                 .map_err(WorkspaceError::from);
-            let ((creation, operation), recovered) = match observed {
+            let ((recorded, operation), recovered) = match observed {
                 Ok(record) => (record, true),
                 Err(WorkspaceError::Filesystem(FsError::Authority(
                     AuthorityStoreError::Missing,
@@ -72,7 +72,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         .create_volume_operation(
                             id.volume_id(),
                             initialization,
-                            Some(creation.clone()),
+                            Some(requested.clone()),
                             &mut accounting,
                             cancellation,
                             guard,
@@ -93,7 +93,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 Err(error) => return Err(error.into()),
             };
             authenticate_named_creation(
-                &creation,
+                &recorded,
                 operation,
                 id.volume_id(),
                 config,
@@ -108,9 +108,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     .initial_generation_matches(
                         id.volume_id(),
                         config,
-                        creation.initial_generation_root,
-                        creation.files,
-                        &creation.attributes,
+                        recorded.initial_generation_root,
+                        requested.files,
+                        &requested.attributes,
                         &mut accounting,
                         cancellation,
                     )
