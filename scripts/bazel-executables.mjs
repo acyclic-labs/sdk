@@ -56,7 +56,9 @@ export function bazelExecutables(root, labels, capture = defaultCapture(root)) {
   if (requested.length !== labels.length) throw new Error(`STEP_FAILED bazel-label: duplicate label in ${labels.join(", ")}`);
   if (requested.length === 0) return [];
   const bazel = bazelCommand();
-  capture("build", bazel, ["build", ...FLAGS, ...requested]);
+  // The caller runs each executable from the output tree, so a build without the bytes (a remote cache's
+  // --remote_download_minimal) must still materialise the requested targets and their runfiles.
+  capture("build", bazel, ["build", ...FLAGS, "--remote_download_outputs=toplevel", ...requested]);
   const executionRoot = capture("info", bazel, ["info", ...FLAGS, "execution_root"]).trim();
   const answers = capture("cquery", bazel, ["cquery", ...FLAGS, "--output=starlark", `--starlark:expr=${EXPRESSION}`, `set(${requested.join(" ")})`]);
   return executablesFromCquery(requested, answers, executionRoot);
