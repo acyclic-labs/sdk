@@ -112,7 +112,9 @@ impl ClockWorld {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(oracle::failed)?
             .as_millis();
-        let base = u64::try_from(base).map_err(|_| "host clock overflow".to_owned())?;
+        let base = u64::try_from(base)
+            .map_err(|_| "host clock overflow".to_owned())?
+            .saturating_add(60_000);
         let (clock, control) = ControlledClock::new(base);
         Ok(Self {
             _directory: directory,
