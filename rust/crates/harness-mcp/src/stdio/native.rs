@@ -1,5 +1,6 @@
 use acyclic_harness_core::sync::Arc;
-use acyclic_harness_core::{Error, OperationId, Result, mcp::McpToolTransport, runtime::ToolContext};
+use crate::McpToolTransport;
+use acyclic_harness_core::{Error, OperationId, Result, runtime::ToolContext};
 use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree, run_blocking_io};
 use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;

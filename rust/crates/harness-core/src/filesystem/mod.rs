@@ -79,7 +79,7 @@ pub(crate) use bounded_io::PreparationScope;
 pub use bounded_io::UploadRecord;
 use bounded_io::decode_record;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use bounded_io::native_decoded;
+pub use bounded_io::native_decoded;
 pub use bounded_io::{Charged, PreparationCustody, PreparationIo};
 pub(crate) use bounded_io::{DecodeReservation, retain_decoded};
 #[cfg(not(target_arch = "wasm32"))]

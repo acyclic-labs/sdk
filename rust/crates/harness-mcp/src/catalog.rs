@@ -145,8 +145,8 @@ impl McpCatalog {
         check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
         check()?;
-        acyclic_harness_core::registry::validate_component_label(&self.server, "MCP server")?;
-        acyclic_harness_core::registry::validate_component_label(&self.revision, "MCP revision")?;
+        acyclic_harness_core::contract::validate_component_label(&self.server, "MCP server")?;
+        acyclic_harness_core::contract::validate_component_label(&self.revision, "MCP revision")?;
         if self.server.contains('.') {
             return Err(Error::Invalid(
                 "MCP server namespace cannot contain a dot".into(),
@@ -204,7 +204,7 @@ impl McpCatalog {
     }
 
     fn definition(&self, remote: &McpToolDefinition) -> Result<ToolDefinition> {
-        acyclic_harness_core::registry::validate_component_label(&remote.name, "MCP tool")?;
+        acyclic_harness_core::contract::validate_component_label(&remote.name, "MCP tool")?;
         let mut output = serde_json::Map::from_iter([
             ("type".into(), json!("object")),
             ("required".into(), json!(["content", "isError"])),

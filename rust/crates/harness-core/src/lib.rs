@@ -62,6 +62,8 @@ pub mod interaction;
 #[cfg(not(target_arch = "wasm32"))]
 mod javascript_allocator;
 mod json_literal;
+#[cfg(not(target_arch = "wasm32"))]
+mod mcp_layouts;
 pub mod layers;
 pub mod live;
 pub mod machines;

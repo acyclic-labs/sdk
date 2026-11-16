@@ -90,7 +90,7 @@ pub(crate) use admission::json_owned_value_shape_bounded;
 #[cfg(test)]
 pub(crate) use admission::layout_reservation;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use admission::lexical_json_diagnostic_bytes;
+pub use admission::lexical_json_diagnostic_bytes;
 pub use records::json_value_logical_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
 pub(crate) use records::{json_object_insert, json_value_retained_owned_bytes, object_slot_bytes};

@@ -9,7 +9,6 @@ mod deadline;
 pub use config::{McpConfig, McpServer, McpTransport};
 #[cfg(not(target_arch = "wasm32"))]
 mod install;
-mod layouts;
 mod paging;
 #[cfg(not(target_arch = "wasm32"))]
 pub use install::{McpClientLimits, McpInstallation, McpServerFailure};

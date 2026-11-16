@@ -20,15 +20,21 @@ acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-mcp = { version = "=0.2.0", path = "../mcp" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 base64 = "=0.23.1"
+blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
+http.workspace = true
+pin-project-lite = "0.2.17"
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
 tokio-util = { workspace = true, features = ["codec"] }
+toml.workspace = true
 tsify = { workspace = true, optional = true }
 uuid.workspace = true
+wasm-bindgen.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-harness-http = { version = "=0.2.0", path = "../harness-http" }
@@ -36,7 +42,9 @@ acyclic-harness-native-settings = { version = "=0.2.0", path = "../harness-nativ
 acyclic-harness-input-watch = { version = "=0.2.0", path = "../harness-input-watch" }
 acyclic-mcp = { version = "=0.2.0", path = "../mcp", features = ["stdio"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+reqwest.workspace = true
 rmcp = { workspace = true, features = ["auth", "reqwest-tls-no-provider"] }
+rustls.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["net", "process", "signal", "io-std"] }
 tempfile = { version = "3.27.0", optional = true }
 

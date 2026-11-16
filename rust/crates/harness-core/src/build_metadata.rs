@@ -5,7 +5,8 @@
 )]
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The crate package version.
+pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const DESCRIPTOR_DIGEST: &str = env!("HARNESS_DESCRIPTOR_DIGEST");
 pub(crate) const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/harness_descriptor.bin"));
@@ -32,7 +33,8 @@ pub(crate) mod generated {
     }
 }
 
-pub(crate) const MCP_INITIALIZATION: &str = concat!(
+/// The pinned MCP client initialization identity.
+pub const MCP_INITIALIZATION: &str = concat!(
     "{\"capabilities\":{},\"clientInfo\":{\"name\":\"acyclic-harness\",\"version\":\"",
     env!("CARGO_PKG_VERSION"),
     "\"},\"protocolVersion\":\"2025-11-25\"}",

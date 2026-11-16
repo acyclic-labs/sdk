@@ -1,6 +1,7 @@
 //! Finite-input oracles over the production HTTP/SSE and JSON-RPC decoders.
 use super::{McpHttpResponse, response};
-use acyclic_harness_core::{OperationId, mcp::rpc, test_support::error_observation};
+use crate::rpc;
+use acyclic_harness_core::{OperationId, test_support::error_observation};
 use bytes::Bytes;
 use serde_json::Value;
 

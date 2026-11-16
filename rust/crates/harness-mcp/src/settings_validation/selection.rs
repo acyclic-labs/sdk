@@ -1,6 +1,5 @@
 //! Whole-entry source selection, before declaration validation.
 
-use super::harness;
 use super::{Files, NativeSettings, SettingsConfig, write};
 use crate::McpTransport;
 use serde_json::{Value, json};

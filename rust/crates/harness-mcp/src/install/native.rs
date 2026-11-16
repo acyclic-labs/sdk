@@ -1,8 +1,6 @@
 use super::*;
-use acyclic_harness_core::{
-    OperationId,
-    mcp::{McpTransport, config::Dialect},
-};
+use crate::{McpTransport, config::Dialect};
+use acyclic_harness_core::OperationId;
 use futures::TryStreamExt;
 use std::collections::BTreeSet;
 

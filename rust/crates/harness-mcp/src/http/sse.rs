@@ -1,9 +1,10 @@
 use super::{HttpMcpTransport, McpHttpRequest, body::bounded};
+use crate::{
+    callbacks::McpCallbackRequest,
+    rpc::{notification, rpc_result},
+};
 use acyclic_harness_core::{
     Error, OperationId, Result,
-    mcp::{
-        callbacks::McpCallbackRequest,
-        rpc::{notification, rpc_result},
     },
     runtime::ToolContext,
 };

@@ -1,6 +1,7 @@
 //! One response decoder for JSON and SSE, independent of platform HTTP I/O.
 use super::{HttpMcpTransport, McpHttpResponse, body::bounded, sse};
-use acyclic_harness_core::{Error, OperationId, Result, mcp::rpc::rpc_result, runtime::ToolContext};
+use crate::rpc::rpc_result;
+use acyclic_harness_core::{Error, OperationId, Result, runtime::ToolContext};
 use futures::StreamExt as _;
 use serde_json::Value;
 

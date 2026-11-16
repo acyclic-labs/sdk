@@ -1,6 +1,5 @@
 //! MCP declaration admission through the original native file loader.
 
-use super::harness;
 use super::{Files, NativeSettings, write};
 use crate::McpTransport;
 use serde_json::{Value, json};
