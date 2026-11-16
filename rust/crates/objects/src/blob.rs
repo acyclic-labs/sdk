@@ -39,8 +39,8 @@ impl Digest {
     /// The first two lowercase hexadecimal digits, the storage shard.
     #[must_use]
     pub fn hex_prefix(&self) -> String {
-        let [first, second, ..] = self.0;
-        hex::encode([first, second])
+        let [first, ..] = self.0;
+        hex::encode([first])
     }
 
     /// Parses exactly 64 lowercase or uppercase hexadecimal digits.
@@ -165,8 +165,10 @@ impl Manifest {
 
     /// Canonical v1 encoding; its BLAKE3 is the manifest's digest.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
-        let parts = u32::try_from(self.parts.len()).map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
-        let edges = u32::try_from(self.edges.len()).map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
+        let parts =
+            u32::try_from(self.parts.len()).map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
+        let edges =
+            u32::try_from(self.edges.len()).map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
         let mut bytes = Vec::with_capacity(
             MANIFEST_MAGIC.len() + 8 + self.parts.len() * 40 + self.edges.len() * 32,
         );
