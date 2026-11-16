@@ -26,7 +26,6 @@ cargo_build_script(
     crate_root = "build.rs",
     srcs = [
         "build.rs",
-        "src/client/commands/name_index.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),

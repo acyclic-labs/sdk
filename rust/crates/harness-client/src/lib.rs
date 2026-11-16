@@ -1,6 +1,9 @@
 //! Bounded view demand and provider-owned pages shared by client adapters, and
 //! the lazy stream [`reader`] every client renders from.
 
+// The core's items keep their `crate::` paths here, as in the facade.
+use acyclic_harness_core::*;
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
@@ -79,3 +82,13 @@ mod tests;
 /// Bounded accumulated usage shared by native and browser clients.
 pub mod usage;
 pub use usage::{UsageQuery, UsageQueryError};
+
+mod command_result;
+pub use command_result::{HeadlessOutcome, decode_command_result, encode_command_result};
+pub mod commands;
+pub mod mentions;
+pub use mentions::*;
+pub mod diff;
+pub use diff::*;
+mod task_list;
+pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
