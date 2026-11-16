@@ -10,6 +10,11 @@ common --disk_cache=~/.cache/bazel-disk
 build --remote_cache_compression
 build --nobuild_runfile_links
 build --verbose_failures
+# Windows Rust targets link the static CRT (-Ctarget-feature=+crt-static), so C and C++ compile for it too:
+# the MSVC toolchain's default /MD, in every build script's CFLAGS, otherwise wins over cc-rs's /MT and leaves
+# a C++ -sys crate (libfuzzer-sys) importing CRT symbols no static link provides. Toolchains without the
+# feature ignore it.
+build --features=static_link_msvcrt
 test --test_output=errors
 # `--config=check` is `cargo check`: each requested crate is type-checked to its metadata, with no code
 # generation or link for it. Its dependencies are their ordinary outputs, shared with every other build.
