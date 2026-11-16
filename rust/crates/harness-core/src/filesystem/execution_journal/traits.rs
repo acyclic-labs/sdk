@@ -87,34 +87,6 @@ where
         }))
     }
 
-    fn claim_if_tail<'a>(
-        &'a self,
-        operation: OperationId,
-        expected_tail: u64,
-        key: &'a str,
-        event: &'a ExecutionEvent,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<u64>>> {
-        // The journal's clock owns every deadline measured from this claim.
-        // A provider's frame time may be on another clock, so keep the
-        // original claim timestamp on the same clock as the actor alarm.
-        let clock = self.clock.clone();
-        self.append_projected(
-            operation,
-            Some(expected_tail),
-            key,
-            event,
-            &[],
-            None,
-            io,
-            move |receipt| {
-                Ok(clock.as_deref().map_or(receipt.committed_at_micros, |clock| {
-                    acyclic_stream::UnixMillisClock::now_unix_millis(clock).saturating_mul(1000)
-                }))
-            },
-        )
-    }
-
     fn supervision(
         &self,
     ) -> acyclic_stream::BoxProviderFuture<'_, Result<Option<crate::supervision::Control>>> {
@@ -575,6 +547,10 @@ where
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<u64>>> {
+        // The journal's clock owns every deadline measured from this claim.
+        // A provider's frame time may be on another clock, so keep the
+        // original claim timestamp on the same clock as the actor alarm.
+        let clock = self.clock.clone();
         self.append_projected(
             operation,
             Some(expected_tail),
@@ -583,7 +559,11 @@ where
             &[],
             None,
             io,
-            |receipt| Ok(receipt.committed_at_micros),
+            move |receipt| {
+                Ok(clock.as_deref().map_or(receipt.committed_at_micros, |clock| {
+                    acyclic_stream::UnixMillisClock::now_unix_millis(clock).saturating_mul(1000)
+                }))
+            },
         )
     }
 
