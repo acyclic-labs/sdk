@@ -129,6 +129,7 @@ rustix = { workspace = true, features = ["fs"] }
 [dev-dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-harness-local = { version = "=0.2.0", path = "../harness-local", features = ["test-support"] }
+acyclic-harness-providers = { version = "=0.2.0", path = "../harness-providers" }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 proc-macro2 = "=1.0.107"
