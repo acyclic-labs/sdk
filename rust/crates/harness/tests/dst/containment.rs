@@ -31,7 +31,7 @@ const MID_TAG: &str = "f1-mid";
 const TARGET_TAG: &str = "f1-target";
 const SETTLER_TAG: &str = "f1-settler";
 const CHECK_TAG: &str = "f1-check";
-const FILE_BYTES: u64 = 64;
+const FILE_BYTES: u64 = 64 * 1024;
 
 /// One world per (origin, location).
 pub(super) const GENERATOR: Generator = Generator {
@@ -433,8 +433,8 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 });
             }
             let prompts = [
-                vec![("root", tag(ROOT_TAG))],
-                vec![("check", tag(CHECK_TAG))],
+                vec![("f1", tag(ROOT_TAG))],
+                vec![("next", tag(CHECK_TAG))],
             ];
             let incarnation = world
                 .incarnation(None, &prompts)
