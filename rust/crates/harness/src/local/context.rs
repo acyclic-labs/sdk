@@ -389,9 +389,7 @@ impl LocalHarness {
                     if !super::open::uses_native_execution(&self.tools)? {
                         None
                     } else if selected.is_none() || workspace.mounted.is_none() {
-                        workspace
-                            .native_cwd()?
-                            .map(std::path::Path::to_path_buf)
+                        workspace.native_cwd()?.map(std::path::Path::to_path_buf)
                     } else {
                         selected_mount
                             .as_ref()

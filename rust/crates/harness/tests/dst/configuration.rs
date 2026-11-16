@@ -7,6 +7,7 @@
 //! each recorded request against its declared role.
 use super::*;
 use acyclic_harness::{
+    LocalHarnessConfig,
     agent::{AgentPath, ConversationEntry, TurnOutcome},
     context::TASK_TOOLS,
     local::{Event, agent_conversation::Conversation},
@@ -17,7 +18,6 @@ use acyclic_harness::{
     test_support::{
         PromptOutcome, ScriptedEvent, ScriptedModelProvider, ScriptedTurn, prompt_settled,
     },
-    LocalHarnessConfig,
 };
 use acyclic_harness_client::{AgentCommand, AgentReply};
 use acyclic_stream::OwnedBytes;
@@ -260,15 +260,20 @@ fn system_text(request: &ModelRequest) -> String {
 }
 
 fn environment_text(request: &ModelRequest) -> Option<String> {
-    request.messages.iter().find_map(|message| match &message.content {
-        ModelContent::Text(text) if text.contains("<environment_context>") => Some(text.clone()),
-        content => content.parts().iter().find_map(|part| match part {
-            ModelContentPart::Text { text, .. } if text.contains("<environment_context>") => {
+    request
+        .messages
+        .iter()
+        .find_map(|message| match &message.content {
+            ModelContent::Text(text) if text.contains("<environment_context>") => {
                 Some(text.clone())
             }
-            _ => None,
-        }),
-    })
+            content => content.parts().iter().find_map(|part| match part {
+                ModelContentPart::Text { text, .. } if text.contains("<environment_context>") => {
+                    Some(text.clone())
+                }
+                _ => None,
+            }),
+        })
 }
 
 fn commands(system: &str) -> BTreeSet<&str> {
@@ -285,7 +290,11 @@ fn commands(system: &str) -> BTreeSet<&str> {
 
 fn expected_tools(node: &str) -> BTreeSet<String> {
     let allowed: &[&str] = match node {
-        "root" => return acyclic_harness::tools::default_names().into_iter().collect(),
+        "root" => {
+            return acyclic_harness::tools::default_names()
+                .into_iter()
+                .collect();
+        }
         "worker" | "forked_child" => &["read", "write", "send", "spawn"],
         "advisor" | "reviewer" => &["read", "send", "spawn"],
         _ => unreachable!("known node"),
@@ -304,14 +313,14 @@ fn expected_marker(node: &str) -> &'static str {
 }
 
 fn expected_model(node: &str) -> &'static str {
-    if node == "root" {
-        "dst"
-    } else {
-        "role-model"
-    }
+    if node == "root" { "dst" } else { "role-model" }
 }
 
-fn check_request(node: &str, first: &ModelRequest, request: &ModelRequest) -> std::result::Result<(), String> {
+fn check_request(
+    node: &str,
+    first: &ModelRequest,
+    request: &ModelRequest,
+) -> std::result::Result<(), String> {
     let system = system_text(request);
     let marker = expected_marker(node);
     if !system.contains(marker) {
@@ -333,7 +342,9 @@ fn check_request(node: &str, first: &ModelRequest, request: &ModelRequest) -> st
         return Err(format!("{node} request appends the root delegation policy"));
     }
     if !system.contains(NONE_FOUND) {
-        return Err(format!("{node} request lacks the declared none-found outcome"));
+        return Err(format!(
+            "{node} request lacks the declared none-found outcome"
+        ));
     }
     let names: BTreeSet<String> = request.tools.iter().map(|tool| tool.name.clone()).collect();
     let expected = expected_tools(node);
@@ -388,10 +399,7 @@ fn check_request(node: &str, first: &ModelRequest, request: &ModelRequest) -> st
     Ok(())
 }
 
-fn check_node(
-    node: &str,
-    requests: &[ModelRequest],
-) -> std::result::Result<(), String> {
+fn check_node(node: &str, requests: &[ModelRequest]) -> std::result::Result<(), String> {
     let first = requests
         .first()
         .ok_or_else(|| format!("{node} made no model request"))?;
@@ -417,9 +425,7 @@ fn check_node(
                         peer_seen = true;
                         let authority = notice.body["authority"].as_str().unwrap_or_default();
                         if !authority.contains(PEER_AUTHORITY) {
-                            return Err(format!(
-                                "{node} peer message has authority {authority:?}"
-                            ));
+                            return Err(format!("{node} peer message has authority {authority:?}"));
                         }
                     }
                 }
@@ -431,7 +437,9 @@ fn check_node(
             return Err("root never saw a peer message from its child".into());
         }
     } else if !parent_seen {
-        return Err(format!("{node} never saw its parent's steering as parent input"));
+        return Err(format!(
+            "{node} never saw its parent's steering as parent input"
+        ));
     }
     Ok(())
 }
@@ -462,7 +470,10 @@ async fn check_output(
         }
         let expected = format!("done {node}");
         let ack = format!("ack {node}");
-        if !outputs.iter().any(|output| output.contains(&expected) || output.contains(&ack)) {
+        if !outputs
+            .iter()
+            .any(|output| output.contains(&expected) || output.contains(&ack))
+        {
             return Err(Error::Conflict(format!(
                 "{node} output channel never published its answer: {outputs:?}"
             )));
@@ -513,9 +524,12 @@ fn focus(seed: u64) -> &'static str {
 /// consume the stack the first spawn needs.
 async fn open(
     directory: &Path,
-) -> Result<(Arc<LocalHarness>, Arc<ScriptedModelProvider>, Arc<Mutex<Plan>>)> {
-    let reference =
-        ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
+) -> Result<(
+    Arc<LocalHarness>,
+    Arc<ScriptedModelProvider>,
+    Arc<Mutex<Plan>>,
+)> {
+    let reference = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
     let volume = VolumeRef::new(
         reference.clone(),
         "project".into(),
@@ -542,10 +556,9 @@ async fn open(
         })
         .reading_content(),
     );
-    let settings = acyclic_harness::native_settings::SettingsConfig::for_test(
-        directory.join("filesystem"),
-    )
-    .map_err(storage)?;
+    let settings =
+        acyclic_harness::native_settings::SettingsConfig::for_test(directory.join("filesystem"))
+            .map_err(storage)?;
     let models = Arc::new(ModelResolver::new("scripted/dst", {
         let provider = Arc::clone(&provider);
         move |selection: &str| {
@@ -620,7 +633,9 @@ async fn spawn_child(
         })
         .await?
     else {
-        return Err(Error::Invalid(format!("{node} spawn returned another reply")));
+        return Err(Error::Invalid(format!(
+            "{node} spawn returned another reply"
+        )));
     };
     let mut plan = plan
         .lock()
@@ -664,7 +679,15 @@ async fn world_at(seed: u64, directory: &Path) -> Result<bool> {
     } else {
         let worker = spawn_child(&connection, &root, "root", "worker", "worker", &plan).await?;
         if focus == "forked_child" {
-            spawn_child(&connection, &worker, "worker", "forked_child", "worker", &plan).await?;
+            spawn_child(
+                &connection,
+                &worker,
+                "worker",
+                "forked_child",
+                "worker",
+                &plan,
+            )
+            .await?;
         }
     }
     let children = plan
