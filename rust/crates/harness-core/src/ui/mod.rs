@@ -20,6 +20,25 @@ pub fn title_matches(title: &str, query: &str) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 pub use stream::{StreamUiCut, StreamUiProvider};
 
+/// Whether `path`, relative to the private volume, is a node this agent's
+/// human view actually renders. Only those files repeat the agent's context;
+/// any other authored file under `ui/` is ordinary source.
+pub(crate) fn is_view_path(path: &str) -> bool {
+    let Some(path) = path.strip_prefix("ui") else {
+        return false;
+    };
+    let path = path.strip_prefix('/').unwrap_or(path);
+    if path.is_empty() {
+        return true;
+    }
+    let mut segments = path.split('/');
+    let root = segments.next().unwrap_or_default();
+    let remainder = segments.next();
+    project::ROOT_NODES
+        .iter()
+        .any(|(name, directory)| *name == root && (*directory || remainder.is_none()))
+}
+
 /// Projection or untrusted document failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

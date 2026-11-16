@@ -323,7 +323,10 @@ impl ToolProjection for FileProjection {
                         ));
                     }
                 }
-                if result.0.self_projection && !input.0.include_body {
+                if result.0.self_projection
+                    && !input.0.include_body
+                    && crate::ui::is_view_path(file.path())
+                {
                     if !text.is_empty()
                         || result.0.page.is_some()
                         || result.0.media.is_some()

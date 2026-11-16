@@ -67,7 +67,10 @@ impl FileTool {
             context.check_layer_version(original)?;
         }
         let self_projection = context.is_self_projection(&input.0.path, io)?;
-        if self_projection && !input.0.include_body {
+        if self_projection
+            && !input.0.include_body
+            && context.is_view_projection(&input.0.path, io)?
+        {
             // A zero-byte read selects and authorizes the immutable source;
             // it requests no projection body bytes.
             let window = super::window::Window::first(

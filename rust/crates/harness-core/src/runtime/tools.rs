@@ -1515,6 +1515,20 @@ impl ToolContext {
             && (relative == "ui" || relative.starts_with("ui/")))
     }
 
+    /// Whether `path` is a node this agent's human view actually renders. Only
+    /// those files repeat the agent's context; any other authored file under
+    /// `ui/` is ordinary source and reads its body.
+    pub(crate) fn is_view_projection(
+        &self,
+        path: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<bool> {
+        let (volume, relative) = self.tool_path_selection(path, io)?;
+        Ok(volume == &self.task().output_content.volume
+            && volume.class() == crate::conversation::VolumeClass::AgentPrivate
+            && crate::ui::is_view_path(&relative))
+    }
+
     /// Resolves and reads one current workspace path through its original bound
     /// reader, without broadening this invocation's effective grants.
     pub(crate) async fn read_tool_path(

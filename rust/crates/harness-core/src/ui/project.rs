@@ -3,7 +3,7 @@ use crate::agent::{AgentPath, Phase, StatusRecord};
 use acyclic_stream::{StreamPath, demand::Want};
 use std::{borrow::Cow, io::Write, ops::Range};
 
-pub(super) const ROOT_NODES: [(&str, bool); 10] = [
+pub(crate) const ROOT_NODES: [(&str, bool); 10] = [
     ("index.md", false),
     ("status.md", false),
     ("children", true),
