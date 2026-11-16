@@ -147,8 +147,9 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
                 while let Some((index, name)) = queue.lock().ok().and_then(|mut queue| queue.next())
                 {
                     let log = suite.logs.join(format!("case-{index}.log"));
+                    let temporary = suite.logs.join(format!("case-{index}.tmp"));
                     let started = Instant::now();
-                    let outcome = case(suite, custody, name, &log);
+                    let outcome = case(suite, custody, name, &log, &temporary);
                     if sender
                         .send((name.as_str(), outcome, started.elapsed(), log))
                         .is_err()
@@ -186,12 +187,28 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
 
 /// Runs one case in its own custodied process tree. A case past the limit fails, and the
 /// tree is stopped with every process the case started, including ones that left its group.
-fn case(suite: &Suite, custody: &ProcessCustody, name: &str, log: &Path) -> io::Result<Outcome> {
+///
+/// The case's temporary directory is its own, under the test's, and on Unix is named by its
+/// resolved path: Bazel gives a test no TMPDIR, and macOS's default `/tmp` is a symlink, which
+/// every case that checks its paths for links refuses.
+fn case(
+    suite: &Suite,
+    custody: &ProcessCustody,
+    name: &str,
+    log: &Path,
+    temporary: &Path,
+) -> io::Result<Outcome> {
     let output = File::create(log)?;
+    fs::create_dir_all(temporary)?;
+    #[cfg(unix)]
+    let temporary = &temporary.canonicalize()?;
     let mut command = ProcessCommand::new(&suite.binary);
     command
         .args([name, "--exact", "--nocapture", "--test-threads", "1"])
         .env("ACYCLIC_TEST_SOURCE_ROOT", &suite.source);
+    for variable in ["TMPDIR", "TMP", "TEMP"] {
+        command.env(variable, temporary);
+    }
     for setting in SETTINGS {
         command.env_remove(setting);
     }
@@ -250,8 +267,8 @@ mod tests {
         }
     }
 
-    /// A case started by a runner whose own settings are set: it sees its source root and
-    /// executables, and none of the runner's settings.
+    /// A case started by a runner whose own settings are set: it sees its source root,
+    /// executables and own resolved temporary directory, and none of the runner's settings.
     #[test]
     fn environment_case() {
         if acting() {
@@ -263,6 +280,17 @@ mod tests {
                 env::var_os("CARGO_BIN_EXE_fixture").map(PathBuf::from),
                 Some(env::current_exe().unwrap())
             );
+            let temporary = env::temp_dir();
+            let directory = env::current_dir().unwrap();
+            #[cfg(unix)]
+            let directory = directory.canonicalize().unwrap();
+            assert!(
+                temporary.starts_with(&directory),
+                "{} is not the case's own directory",
+                temporary.display()
+            );
+            #[cfg(unix)]
+            assert_eq!(temporary.canonicalize().unwrap(), temporary);
         }
     }
 

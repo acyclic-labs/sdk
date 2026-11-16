@@ -18,3 +18,8 @@ build:check --aspects=@rules_rust//rust:defs.bzl%rust_check_aspect --output_grou
 # toolchains, as `cargo test` does, from the invoking environment. Only test actions see it;
 # compile keys stay host independent.
 test --test_env=PATH --test_env=RUSTUP_HOME --test_env=CARGO_HOME
+# macOS Seatbelt sandboxes do not nest, and the native execution boundary confines the
+# processes it starts with Seatbelt: under darwin-sandbox every such test is refused
+# ("Operation not permitted"). Tests on macOS therefore run outside it, as under Cargo.
+common --enable_platform_specific_config
+test:macos --strategy=TestRunner=local
