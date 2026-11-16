@@ -48,7 +48,7 @@ impl RootPolicySeed {
         )?;
         let value = io.encode(
             &(1_u8, (file, Option::<&crate::resources::GenerationRef>::None)),
-            io.remaining()?.bytes_encoded,
+            io.remaining().map_err(crate::Error::from)?.bytes_encoded,
             true,
         )?;
         Ok(vec![acyclic_fs::CreationAttribute {

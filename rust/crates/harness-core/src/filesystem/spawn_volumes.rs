@@ -686,8 +686,9 @@ where
             let mut creation: CreateSpec<'_> =
                 self.host.volume_create_spec(&journal).map_err(guest)?;
             if let Some(policy) = &self.root_policy {
-                let attributes =
-                    policy.attributes(&journal, creation.creation.operation_id)?;
+                let attributes = policy
+                    .attributes(&journal, creation.creation.operation_id)
+                    .map_err(guest)?;
                 creation.creation = acyclic_fs::CreationOperation::populated_with_attributes(
                     creation.creation.operation_id,
                     policy.files(),
