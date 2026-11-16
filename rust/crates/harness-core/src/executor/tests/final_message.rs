@@ -1213,6 +1213,13 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
         )
         .is_ok()
     );
+    let mut totals = super::super::ModelUsageTotals::unpriced();
+    totals
+        .push(&usage.estimate(None)?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(totals.calls, 1);
+    assert_eq!(totals.attempts, 2, "the restarted attempt is counted");
+    assert_eq!(totals.abandoned, usage.abandoned.expect("abandoned attempt"));
     let replay = futures::executor::block_on(executor.execute(input, &journal))?;
     assert_eq!(replay, output);
     assert_eq!(provider.requests().len(), 1);
