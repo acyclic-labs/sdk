@@ -47,7 +47,8 @@ pub struct Evidence {
     // tracing-core's single-dispatcher path consults that thread's default,
     // which can be empty even while this observer is registered elsewhere.
     // This separate, non-recording subscriber cannot retain our capture.
-    _registration: tracing::Dispatch,
+    /// Non-recording dispatcher that keeps callsite registration alive.
+    pub _registration: tracing::Dispatch,
 }
 
 impl Default for Evidence {
