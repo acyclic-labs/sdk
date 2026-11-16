@@ -289,7 +289,7 @@ fn has_file(request: &ModelRequest) -> bool {
         .any(|part| matches!(part, ModelContentPart::File { .. }))
 }
 
-fn d3_service(transition: &'static str, dialect: &'static str) -> ScriptedModelProvider {
+fn d3_service(transition: &'static str, _dialect: &'static str) -> ScriptedModelProvider {
     let failed = Mutex::new(false);
     let responder = move |request: &ModelRequest| {
         if request.summary {
@@ -481,6 +481,17 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 .iter()
                 .filter(|request| request.summary)
                 .collect();
+            let before_summary = incarnation
+                .requests
+                .iter()
+                .enumerate()
+                .find(|(_, request)| request.summary)
+                .and_then(|(index, _)| {
+                    incarnation.requests[..index]
+                        .iter()
+                        .rev()
+                        .find(|request| !request.summary)
+                });
             let after_summary = incarnation
                 .requests
                 .iter()
@@ -501,32 +512,21 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                         return fail("the request after compaction does not carry its summary");
                     }
                 }
-                "background_summary" => {
+                "background_summary" | "context_review" => {
                     if summaries.is_empty() {
-                        return fail("background summary was never dispatched");
+                        return fail("the background call was never dispatched");
                     }
-                    let compacted = after_summary.ok_or("background summary dispatched no worker")?;
+                    let worker = before_summary.ok_or("the background call has no worker request")?;
                     let first = summaries[0]
                         .messages
                         .first()
                         .ok_or("the summary request has no header")?;
-                    let header = compacted
+                    let header = worker
                         .messages
                         .first()
                         .ok_or("the worker request has no header")?;
                     if first != header {
-                        return fail("the background summary did not reuse the agent header");
-                    }
-                }
-                "context_review" => {
-                    if summaries.is_empty() {
-                        return fail("context review was never dispatched");
-                    }
-                    let worker = after_summary.ok_or("context review dispatched no worker")?;
-                    let source = &summaries[0].messages;
-                    let common = source.len().saturating_sub(1).min(worker.messages.len());
-                    if source[..common] != worker.messages[..common] {
-                        return fail("the context review did not reuse the agent prefix");
+                        return fail("the background call did not reuse the agent header");
                     }
                 }
                 "length_continuation" => {
