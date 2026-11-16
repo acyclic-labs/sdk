@@ -30,6 +30,6 @@ pub use lifecycle::{
 };
 mod workspace;
 use identity::{machines_key, map_error, parse_uuid};
-pub use workspace::MachinesWorkspace;
+pub use workspace::{MachinesWorkspace, agent_workspace_scope};
 #[cfg(test)]
 mod tests;

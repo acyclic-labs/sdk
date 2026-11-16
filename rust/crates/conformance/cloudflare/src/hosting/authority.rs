@@ -48,6 +48,11 @@ enum Derivation {
         prefix: String,
         reader: acyclic_harness_core::AgentId,
     },
+    Workload {
+        journal: VolumeRef,
+        volumes: Vec<acyclic_harness_core::agent::WorkspaceEntry>,
+        external: Vec<FileRef>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -309,6 +314,25 @@ impl HostFixtureAuthority {
                 &volume,
                 &prefix,
             ),
+            // The parent's own grants bound the workload, resolved exactly as
+            // the guest requested it.
+            Derivation::Workload {
+                journal,
+                volumes,
+                external,
+            } => {
+                RuntimeAuthority::from(self.root.clone())
+                    .delegate(
+                        &request.parent,
+                        &request.id,
+                        acyclic_harness_core::core::ScopeDerivation::Workload {
+                            journal: &journal,
+                            volumes: &volumes,
+                            external: &external,
+                        },
+                    )
+                    .await
+            }
         }
         .map_err(error)?
         .seal(&self.root.verifier(&mut None).map_err(error)?)
