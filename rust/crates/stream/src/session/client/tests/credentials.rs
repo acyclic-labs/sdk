@@ -64,6 +64,50 @@ async fn scoped_credentials_share_the_pool_and_retire_after_the_last_cursor() ->
     Ok(())
 }
 
+/// Two credentials enrolled on one pool keep their own grants: neither view
+/// can follow the other's path, even though both slots share the connection.
+#[tokio::test]
+async fn credentials_sharing_a_pool_keep_their_own_scopes() -> TestResult {
+    use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "alpha/events", 1).await?;
+    append(&provider, "beta/events", 1).await?;
+    let fixture = Fixture::open(provider, "node").await?;
+    let root = fixture.client()?.session_client()?;
+    let grant = |name: &str| ResourceGrant {
+        resource: ResourcePattern {
+            name: name.into(),
+            prefix: true,
+        },
+        actions: vec!["streams/follow".into(), "streams/read".into()],
+    };
+    let (alpha, alpha_slot) = root
+        .with_credential(crate::session::testing::credential_with_grants(&[grant(
+            "streams:/alpha",
+        )]))
+        .await?;
+    let alpha = alpha.select_credential(alpha_slot);
+    let (beta, beta_slot) = root
+        .with_credential(crate::session::testing::credential_with_grants(&[grant(
+            "streams:/beta",
+        )]))
+        .await?;
+    let beta = beta.select_credential(beta_slot);
+    assert_ne!(alpha_slot, beta_slot);
+    let follow = |path: &str| crate::FollowRequest::new(StreamPath::new(path).unwrap(), 0);
+    let mut alpha_records = alpha.follow_records(follow("alpha/events")).await?;
+    let mut beta_records = beta.follow_records(follow("beta/events")).await?;
+    assert!(alpha_records.try_next().await?.is_some());
+    assert!(beta_records.try_next().await?.is_some());
+    for (client, path) in [(&alpha, "beta/events"), (&beta, "alpha/events")] {
+        assert!(matches!(
+            client.follow_records(follow(path)).await,
+            Err(StreamError::AccessDenied) | Err(StreamError::Refused(_))
+        ));
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_reply() -> TestResult
 {
