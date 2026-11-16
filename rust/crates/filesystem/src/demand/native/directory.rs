@@ -349,7 +349,7 @@ impl NativeDemandSource {
         if !stat.is_dir() {
             return Err(DemandError::NotDirectory);
         }
-        let observed = version(&stat);
+        let observed = version(&path_key(directory), &stat);
         let restore = cursor.is_some();
         let (cursor, state) = if let Some(cursor) = cursor {
             if cursor.source != source {
@@ -455,7 +455,12 @@ impl NativeDemandSource {
             native: Some(lease.cursor.clone().erase()),
         });
         self.check(&source, work)?;
-        if self.metadata(directory, work)?.as_ref().map(version) != Some(observed) {
+        if self
+            .metadata(directory, work)?
+            .as_ref()
+            .map(|metadata| version(&path_key(directory), metadata))
+            != Some(observed)
+        {
             *lease
                 .cursor
                 .position
