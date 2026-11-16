@@ -5,29 +5,92 @@ use proptest::prelude::*;
 
 #[test]
 fn syntax_data_preserves_bundled_grammars_and_rejects_invalid_envelopes() {
-    use syntect::{easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet};
-
     let corpus = acyclic_test_support::crate_path!("fuzz/corpus/syntax_data");
     let theme_data = std::fs::read(corpus.join("default.themedump")).unwrap();
-    let themes: ThemeSet = syntect::dumps::from_reader(&theme_data[..])
-        .expect("default.themedump must decode as ThemeSet");
     syntect::test_support::check_syntax_data(&theme_data);
-    let theme = themes.themes.values().next().unwrap();
-    for name in ["default_newlines.packdump", "default_nonewlines.packdump"] {
-        let data = std::fs::read(corpus.join(name)).unwrap();
-        let syntaxes: SyntaxSet = syntect::dumps::from_uncompressed_data(&data)
-            .unwrap_or_else(|error| panic!("{name} must decode as SyntaxSet: {error}"));
-        syntect::test_support::check_syntax_data(&data);
-        for syntax in syntaxes.syntaxes() {
-            let mut highlighter = HighlightLines::new(syntax, theme);
-            let source = "let answer = 42; // syntax data\n";
-            let spans = highlighter.highlight_line(source, &syntaxes).unwrap();
-            assert_eq!(
-                spans.into_iter().map(|(_, text)| text).collect::<String>(),
-                source
-            );
-        }
+    // The envelope matrix is a property of the dump type; one packdump runs it.
+    let newlines = std::fs::read(corpus.join("default_newlines.packdump")).unwrap();
+    syntect::test_support::check_syntax_data(&newlines);
+    let nonewlines = std::fs::read(corpus.join("default_nonewlines.packdump")).unwrap();
+    syntect::test_support::check_syntax_round_trip(&nonewlines);
+}
+
+struct SyntaxBundle {
+    themes: syntect::highlighting::ThemeSet,
+    newlines: syntect::parsing::SyntaxSet,
+    nonewlines: syntect::parsing::SyntaxSet,
+}
+
+/// The parsed bundled data, loaded once per case process. Every partition
+/// uses the same bundle instead of decoding the dumps again.
+fn syntax_bundle() -> &'static SyntaxBundle {
+    static BUNDLE: std::sync::OnceLock<SyntaxBundle> = std::sync::OnceLock::new();
+    BUNDLE.get_or_init(|| {
+        let corpus = acyclic_test_support::crate_path!("fuzz/corpus/syntax_data");
+        let themes = syntect::dumps::from_reader(
+            &std::fs::read(corpus.join("default.themedump")).unwrap()[..],
+        )
+        .expect("default.themedump must decode as ThemeSet");
+        let newlines =
+            syntect::dumps::from_uncompressed_data(&std::fs::read(corpus.join("default_newlines.packdump")).unwrap())
+                .expect("default_newlines.packdump must decode as SyntaxSet");
+        let nonewlines =
+            syntect::dumps::from_uncompressed_data(&std::fs::read(corpus.join("default_nonewlines.packdump")).unwrap())
+                .expect("default_nonewlines.packdump must decode as SyntaxSet");
+        SyntaxBundle { themes, newlines, nonewlines }
+    })
+}
+
+fn syntax_total() -> usize {
+    let bundle = syntax_bundle();
+    bundle.newlines.syntaxes().len() + bundle.nonewlines.syntaxes().len()
+}
+
+fn highlight_syntax_partition(
+    assigned: Vec<usize>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use syntect::easy::HighlightLines;
+
+    let bundle = syntax_bundle();
+    let theme = bundle
+        .themes
+        .themes
+        .values()
+        .next()
+        .ok_or("the bundled theme set is empty")?;
+    let newlines = bundle.newlines.syntaxes().len();
+    let source = "let answer = 42; // syntax data\n";
+    for index in assigned {
+        let (syntaxes, local) = if index < newlines {
+            (&bundle.newlines, index)
+        } else {
+            (&bundle.nonewlines, index - newlines)
+        };
+        let syntax = syntaxes
+            .syntaxes()
+            .get(local)
+            .ok_or("a syntax partition index is outside its bundle")?;
+        let mut highlighter = HighlightLines::new(syntax, theme);
+        let spans = highlighter.highlight_line(source, syntaxes)?;
+        assert_eq!(
+            spans.into_iter().map(|(_, text)| text).collect::<String>(),
+            source
+        );
     }
+    Ok(())
+}
+
+acyclic_test_support::partitioned_tests! {
+    #[test] fn -> Result<(), Box<dyn std::error::Error>>;
+    HIGHLIGHT_PARTITIONS, syntax_total(), highlight_syntax_partition;
+    0 => highlight_syntax_partition_0,
+    1 => highlight_syntax_partition_1,
+    2 => highlight_syntax_partition_2,
+    3 => highlight_syntax_partition_3,
+    4 => highlight_syntax_partition_4,
+    5 => highlight_syntax_partition_5,
+    6 => highlight_syntax_partition_6,
+    7 => highlight_syntax_partition_7,
 }
 
 #[test]

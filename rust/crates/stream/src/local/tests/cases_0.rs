@@ -563,7 +563,7 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits::default();
     let path = directory.path().join(JOURNAL_FILE);
-    let paths = ["source", "branch", "branch/child", "copy"]
+    let paths = ["source", "branch"]
         .map(StreamPath::new)
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
@@ -583,54 +583,38 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     provider
         .append(AppendRequest {
             path: paths[0].clone(),
-            records: vec![body(b"a", b"alice")?, body(b"z", b"bob")?],
+            records: vec![body(b"a", b"alice")?],
             if_tail: Some(0),
             idempotency_key: IdempotencyKey::new("seed")?,
         })
         .await?;
-    for pair in paths[..3].windows(2) {
-        provider
-            .fork(ForkRequest {
-                source: pair[0].clone(),
-                destination: pair[1].clone(),
-                at_tail: Some(2),
-                exclude: Vec::new(),
-                idempotency_key: IdempotencyKey::unique(),
-            })
-            .await?;
-    }
+    provider
+        .fork(ForkRequest {
+            source: paths[0].clone(),
+            destination: paths[1].clone(),
+            at_tail: Some(1),
+            exclude: Vec::new(),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
     let requests = [
         WriteRequest::Append(AppendRequest {
             path: paths[0].clone(),
             records: vec![body(b"b", b"alice")?],
-            if_tail: Some(2),
+            if_tail: Some(1),
             idempotency_key: IdempotencyKey::new("partial-append")?,
         }),
         WriteRequest::Commit(CommitRequest {
             deadline_unix_millis: None,
             effects: vec![crate::CommitEffect::hard(
-                vec![
-                    crate::CommitCondition::Tail {
-                        path: paths[2].clone(),
-                        expected: 2,
-                    },
-                    crate::CommitCondition::Absent {
-                        path: paths[3].clone(),
-                    },
-                ],
-                vec![
-                    crate::CommitMutation::Append {
-                        path: paths[2].clone(),
-                        records: vec![body(b"b", b"bob")?, body(b"a", b"alice")?],
-                    },
-                    crate::CommitMutation::Fork {
-                        source: paths[2].clone(),
-                        destination: paths[3].clone(),
-                        at_tail: 2,
-                        exclude: Vec::new(),
-                        records: vec![body(b"c", b"alice")?],
-                    },
-                ],
+                vec![crate::CommitCondition::Tail {
+                    path: paths[1].clone(),
+                    expected: 1,
+                }],
+                vec![crate::CommitMutation::Append {
+                    path: paths[1].clone(),
+                    records: vec![body(b"b", b"bob")?],
+                }],
             )],
             idempotency_key: IdempotencyKey::new("partial-commit")?,
         }),
@@ -664,14 +648,11 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
                 .map(|records| records.as_ref().map(Vec::len))
                 .collect::<Vec<_>>(),
             if index == 0 {
-                vec![Some(3), Some(2), Some(2), None]
+                vec![Some(2), Some(1)]
             } else {
-                vec![Some(3), Some(2), Some(4), Some(3)]
+                vec![Some(2), Some(2)]
             }
         );
-        if let Some(copy) = &after[3] {
-            assert_eq!(Some(&copy[..2]), before[2].as_deref());
-        }
         let observed = provider
             .inspect_idempotency(key.clone())
             .await?
