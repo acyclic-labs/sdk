@@ -320,19 +320,28 @@ impl World {
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
                     }
                     let conversation = Conversation::open(Box::pin(harness.connect()).await?);
-                    let mut position = ExecutionPosition::default();
-                    loop {
-                        let query = conversation
-                            .execution_page(position.input, position.after, false)
-                            .await?;
-                        position = query.continuation().map_err(storage)?;
-                        let Some(page) = query.page else {
-                            break;
+                    let settled = conversation.settled().await?;
+                    for input in 0..=settled {
+                        let mut position = ExecutionPosition {
+                            input,
+                            after: 0,
                         };
-                        records
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .extend(page.items);
+                        loop {
+                            let query = conversation
+                                .execution_page(position.input, position.after, false)
+                                .await?;
+                            position = query.continuation().map_err(storage)?;
+                            let Some(page) = query.page else {
+                                break;
+                            };
+                            records
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .extend(page.items);
+                            if position.input != input {
+                                break;
+                            }
+                        }
                     }
                     Ok::<_, Error>(())
                 })
