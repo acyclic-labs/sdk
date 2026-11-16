@@ -231,7 +231,8 @@ pub use distributed::{
 pub use distributed::{StreamStateStoreCause, StreamStateStoreError, UnresolvedCommit};
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    ContentAddress, ContentChange, ContentFile, ContentTimes, CreationOperation, DetachedFile,
+    ContentAddress, ContentChange, ContentFile, ContentTimes, CreationAttribute,
+    CreationOperation, DetachedFile,
     DirectoryBindingChange, DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities,
     FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError, FsResult, GenerationDiff,
     JoinCommitWitness, LiveMutationOutcome, LivePublicationObservation, MergeConflict,
