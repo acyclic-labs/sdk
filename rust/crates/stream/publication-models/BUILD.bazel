@@ -95,6 +95,7 @@ rust_test(
 isolated_test(
     name = "publication",
     binary = ":publication_cases",
+    id = "acyclic-stream-publication-models::publication",
     limit_seconds = 10,
 )
 

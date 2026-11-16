@@ -92,6 +92,7 @@ rust_test(
 isolated_test(
     name = "acyclic_harness_client_test",
     binary = ":acyclic_harness_client_test_cases",
+    id = "acyclic-harness-client",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -144,6 +145,7 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
+    id = "acyclic-harness-client::main",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )

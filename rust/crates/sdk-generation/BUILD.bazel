@@ -114,6 +114,7 @@ rust_test(
 isolated_test(
     name = "sdk_generation_test",
     binary = ":sdk_generation_test_cases",
+    id = "sdk-generation",
     limit_seconds = 10,
 )
 
@@ -252,6 +253,7 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation"},
+    id = "sdk-generation::main",
     limit_seconds = 10,
 )
 

@@ -132,6 +132,7 @@ rust_test(
 isolated_test(
     name = "acyclic_plugin_test",
     binary = ":acyclic_plugin_test_cases",
+    id = "acyclic-plugin",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -278,6 +279,7 @@ rust_test(
 isolated_test(
     name = "acyclic_test",
     binary = ":acyclic_test_cases",
+    id = "acyclic-plugin::bin/acyclic",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -422,6 +424,7 @@ rust_test(
 isolated_test(
     name = "graphcoder_test",
     binary = ":graphcoder_test_cases",
+    id = "acyclic-plugin::bin/graphcoder",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -527,6 +530,7 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     binaries = {":acyclic":"acyclic",":graphcoder":"graphcoder"},
+    id = "acyclic-plugin::main",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -633,6 +637,7 @@ isolated_test(
     name = "cli",
     binary = ":cli_cases",
     binaries = {":acyclic":"acyclic",":graphcoder":"graphcoder"},
+    id = "acyclic-plugin::cli",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )

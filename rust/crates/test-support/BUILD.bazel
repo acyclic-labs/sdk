@@ -80,6 +80,7 @@ rust_test(
 isolated_test(
     name = "acyclic_test_support_test",
     binary = ":acyclic_test_support_test_cases",
+    id = "acyclic-test-support",
     limit_seconds = 10,
 )
 
@@ -113,6 +114,7 @@ rust_test(
 isolated_test(
     name = "uninstalled",
     binary = ":uninstalled_cases",
+    id = "acyclic-test-support::uninstalled",
     limit_seconds = 10,
 )
 

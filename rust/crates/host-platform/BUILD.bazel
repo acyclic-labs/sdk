@@ -57,6 +57,7 @@ rust_test(
 isolated_test(
     name = "acyclic_host_platform_test",
     binary = ":acyclic_host_platform_test_cases",
+    id = "acyclic-host-platform",
     limit_seconds = 10,
 )
 

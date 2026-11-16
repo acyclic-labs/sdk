@@ -92,6 +92,7 @@ rust_test(
 isolated_test(
     name = "acyclic_inference_wasm_test",
     binary = ":acyclic_inference_wasm_test_cases",
+    id = "acyclic-inference-wasm",
     limit_seconds = 10,
 )
 

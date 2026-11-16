@@ -107,6 +107,7 @@ rust_test(
 isolated_test(
     name = "sdk_docs_test",
     binary = ":sdk_docs_test_cases",
+    id = "sdk-docs",
     limit_seconds = 10,
 )
 

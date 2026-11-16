@@ -52,6 +52,7 @@ rust_test(
 isolated_test(
     name = "model_epoch_proofs_test",
     binary = ":model_epoch_proofs_test_cases",
+    id = "model-epoch-proofs",
     limit_seconds = 10,
 )
 

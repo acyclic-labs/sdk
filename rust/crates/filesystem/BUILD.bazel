@@ -409,6 +409,7 @@ rust_test(
 isolated_test(
     name = "acyclic_fs_test",
     binary = ":acyclic_fs_test_cases",
+    id = "acyclic-fs",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -673,6 +674,7 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
+    id = "acyclic-fs::main",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -909,6 +911,7 @@ rust_test(
 isolated_test(
     name = "browser_commit",
     binary = ":browser_commit_cases",
+    id = "acyclic-fs::browser_commit",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -1145,6 +1148,7 @@ rust_test(
 isolated_test(
     name = "browser_blob_custody",
     binary = ":browser_blob_custody_cases",
+    id = "acyclic-fs::browser_blob_custody",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )

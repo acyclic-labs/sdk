@@ -57,6 +57,7 @@ rust_test(
 isolated_test(
     name = "ts_rs_macros_test",
     binary = ":ts_rs_macros_test_cases",
+    id = "ts-rs-macros",
     limit_seconds = 10,
 )
 

@@ -54,6 +54,7 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
+    id = "acyclic-stream-typescript-models::main",
     limit_seconds = 10,
 )
 

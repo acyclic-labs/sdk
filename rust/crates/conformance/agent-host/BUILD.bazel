@@ -73,6 +73,7 @@ rust_test(
 isolated_test(
     name = "acyclic_agent_host_conformance_test",
     binary = ":acyclic_agent_host_conformance_test_cases",
+    id = "acyclic-agent-host-conformance",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -151,6 +152,7 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     binaries = {":oidc-qualify":"oidc-qualify"},
+    id = "acyclic-agent-host-conformance::main",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )

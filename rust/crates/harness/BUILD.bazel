@@ -341,6 +341,7 @@ rust_test(
 isolated_test(
     name = "acyclic_harness_test",
     binary = ":acyclic_harness_test_cases",
+    id = "acyclic-harness",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -840,6 +841,7 @@ rust_test(
 isolated_test(
     name = "acyclic_virtiofsd_test",
     binary = ":acyclic_virtiofsd_test_cases",
+    id = "acyclic-harness::bin/acyclic-virtiofsd",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -1155,6 +1157,7 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
+    id = "acyclic-harness::main",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )
@@ -1421,6 +1424,7 @@ isolated_test(
     name = "native_receipt",
     binary = ":native_receipt_cases",
     binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
+    id = "acyclic-harness::native_receipt",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )

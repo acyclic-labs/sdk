@@ -229,6 +229,7 @@ rust_test(
 isolated_test(
     name = "acyclic_stream_test",
     binary = ":acyclic_stream_test_cases",
+    id = "acyclic-stream",
     limit_seconds = 10,
 )
 
@@ -435,6 +436,7 @@ isolated_test(
     name = "read-selectors",
     binary = ":read-selectors_cases",
     binaries = {":stream-http-contract":"stream-http-contract",":stream-rpc-inventory":"stream-rpc-inventory"},
+    id = "acyclic-stream::read-selectors",
     limit_seconds = 10,
 )
 
@@ -536,6 +538,7 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     binaries = {":stream-http-contract":"stream-http-contract",":stream-rpc-inventory":"stream-rpc-inventory"},
+    id = "acyclic-stream::main",
     limit_seconds = 10,
 )
 

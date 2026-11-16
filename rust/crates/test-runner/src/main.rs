@@ -2,12 +2,14 @@
 //! as cargo-nextest does, so a Bazel test action keeps nextest's per-test isolation.
 //!
 //! The Bazel `isolated_test` rule supplies, relative to the runfiles workspace directory:
-//! `ACYCLIC_TEST_BINARY` (the libtest executable), `ACYCLIC_TEST_PACKAGE` (the Cargo
-//! package directory, each case's working directory as under Cargo) and
-//! `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case limit). Bazel's `--test_filter` arrives as
+//! `ACYCLIC_TEST_BINARY` (the libtest executable), `ACYCLIC_TEST_ID` (its nextest binary id),
+//! `ACYCLIC_TEST_PACKAGE` (the Cargo package directory, each case's working directory as under
+//! Cargo) and `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case limit). Bazel's `--test_filter` arrives as
 //! `TESTBRIDGE_TEST_ONLY` and selects cases as `cargo test <filter>` does.
 //!
-//! Ignored cases are reported as skipped and not run, as under Cargo. Each case runs in an
+//! Each outcome is reported as nextest reports it, `STATUS [ seconds] <binary id> <case>`, so a
+//! case keeps one identity whichever runner ran it. Ignored cases are reported as skipped and
+//! not run, as under Cargo. Each case runs in an
 //! owned process tree, so a case past its limit is stopped with every process it started.
 
 use std::env;
@@ -37,6 +39,8 @@ struct Suite {
     /// Cargo's `CARGO_BIN_EXE_<name>` variables, as absolute paths under the runfiles root.
     executables: Vec<(String, PathBuf)>,
     binary: PathBuf,
+    /// The executable's nextest binary id: `<package>`, `<package>::<test>`, `<package>::bin/<name>`.
+    id: String,
     package: PathBuf,
     logs: PathBuf,
     limit: Duration,
@@ -58,8 +62,9 @@ fn main() -> ExitCode {
 
 /// The runner's own settings, from its rule. Cases never see them: a case may read a variable of
 /// the same name as its own input.
-const SETTINGS: [&str; 3] = [
+const SETTINGS: [&str; 4] = [
     "ACYCLIC_TEST_BINARY",
+    "ACYCLIC_TEST_ID",
     "ACYCLIC_TEST_LIMIT_SECONDS",
     "ACYCLIC_TEST_PACKAGE",
 ];
@@ -84,6 +89,7 @@ fn run() -> Result<usize, String> {
         source: root.clone(),
         executables,
         binary: root.join(setting("ACYCLIC_TEST_BINARY")?),
+        id: setting("ACYCLIC_TEST_ID")?,
         package: root.join(setting("ACYCLIC_TEST_PACKAGE")?),
         logs: PathBuf::from(setting("TEST_TMPDIR")?),
         limit: Duration::from_secs(limit),
@@ -94,14 +100,16 @@ fn run() -> Result<usize, String> {
 
 /// The cases `filter` selects, with `--ignored` only the ignored ones.
 fn list(suite: &Suite, filter: Option<&str>, ignored: bool) -> Result<Vec<String>, String> {
-    let listing = Command::new(&suite.binary)
+    let mut command = Command::new(&suite.binary);
+    command
         .args(["--list", "--format", "terse"])
         .args(ignored.then_some("--ignored"))
         .args(filter)
-        .env("ACYCLIC_TEST_SOURCE_ROOT", &suite.source)
-        .env_remove(SETTINGS[0])
-        .env_remove(SETTINGS[1])
-        .env_remove(SETTINGS[2])
+        .env("ACYCLIC_TEST_SOURCE_ROOT", &suite.source);
+    for setting in SETTINGS {
+        command.env_remove(setting);
+    }
+    let listing = command
         .envs(suite.executables.iter().map(|(name, path)| (name, path)))
         .current_dir(&suite.package)
         .output()
@@ -125,7 +133,8 @@ fn list(suite: &Suite, filter: Option<&str>, ignored: bool) -> Result<Vec<String
 fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result<usize, String> {
     let ignored = list(suite, filter, true)?;
     for name in &ignored {
-        writeln!(out, "SKIP [ ignored] {name}").map_err(|error| format!("report: {error}"))?;
+        writeln!(out, "{:>12} [         ] {} {name}", "SKIP", suite.id)
+            .map_err(|error| format!("report: {error}"))?;
     }
     let cases: Vec<String> = list(suite, filter, false)?
         .into_iter()
@@ -161,21 +170,25 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
         drop(sender);
         let mut failed = 0;
         for (name, outcome, elapsed, log) in results {
-            let verdict = match outcome {
-                Ok(Outcome::Passed) => {
-                    writeln!(out, "PASS [{:>7.3}s] {name}", elapsed.as_secs_f64())
-                        .map_err(|error| format!("report: {error}"))?;
-                    continue;
-                }
-                Ok(Outcome::Failed(code)) => format!("FAIL exit={code:?}"),
-                Ok(Outcome::TimedOut) => format!("TIMEOUT after {:?}", suite.limit),
-                Err(error) => format!("ERROR {error}"),
+            let (status, detail) = match outcome {
+                Ok(Outcome::Passed) => ("PASS", None),
+                Ok(Outcome::Failed(code)) => ("FAIL", Some(format!("exit={code:?}"))),
+                Ok(Outcome::TimedOut) => ("TIMEOUT", Some(format!("after {:?}", suite.limit))),
+                Err(error) => ("FAIL", Some(format!("runner error: {error}"))),
+            };
+            let line = format!(
+                "{status:>12} [{:>8.3}s] {} {name}",
+                elapsed.as_secs_f64(),
+                suite.id
+            );
+            let Some(detail) = detail else {
+                writeln!(out, "{line}").map_err(|error| format!("report: {error}"))?;
+                continue;
             };
             failed += 1;
             writeln!(
                 out,
-                "{verdict} [{:>7.3}s] {name}\n{}",
-                elapsed.as_secs_f64(),
+                "{line}\n{detail}\n{}",
                 fs::read_to_string(&log).unwrap_or_default()
             )
             .map_err(|error| format!("report: {error}"))?;
@@ -279,6 +292,7 @@ mod tests {
                 source: root.clone(),
                 executables: vec![("CARGO_BIN_EXE_fixture".into(), env::current_exe().unwrap())],
                 binary: env::current_exe().unwrap(),
+                id: "fixture".into(),
                 package: root.clone(),
                 logs: root,
                 limit: Duration::from_secs(10),
@@ -319,6 +333,7 @@ mod tests {
             source: dir.clone(),
             executables: Vec::new(),
             binary: env::current_exe().unwrap(),
+            id: "acyclic-test-runner".into(),
             package: dir.clone(),
             logs: dir,
             limit: Duration::from_secs(2),
@@ -336,22 +351,64 @@ mod tests {
     fn reports_each_outcome_and_counts_failures() {
         let (failed, out) = report(&suite("outcomes"), "tests::fixture_");
         assert_eq!(failed, 2, "{out}");
+        let status = |status: &str, case: &str| {
+            let rest = format!("acyclic-test-runner tests::{case}");
+            out.lines()
+                .any(|line| nextest_line(line) == Some((status, rest.as_str())))
+        };
+        assert!(status("PASS", "fixture_pass"), "{out}");
         assert!(
-            out.contains("PASS ") && out.contains("tests::fixture_pass"),
+            status("FAIL", "fixture_fail")
+                && out.contains("exit=Some(101)")
+                && out.contains("fixture failure"),
             "{out}"
         );
         assert!(
-            out.contains("FAIL exit=Some(101)") && out.contains("fixture failure"),
+            status("TIMEOUT", "fixture_hang") && out.contains("after 2s"),
             "{out}"
         );
         assert!(
-            out.contains("TIMEOUT after 2s") && out.contains("tests::fixture_hang"),
+            status("SKIP", "fixture_ignored") && !out.contains("ignored fixture ran"),
             "{out}"
         );
-        assert!(
-            out.contains("SKIP [ ignored] tests::fixture_ignored")
-                && !out.contains("ignored fixture ran"),
-            "{out}"
+    }
+
+    /// A status line exactly as nextest prints it, `{status:>12} [{seconds:>8.3}s] <id> <case>`
+    /// (a skip's bracket is blank), as its status and `<id> <case>`; anything else is refused.
+    fn nextest_line(line: &str) -> Option<(&str, &str)> {
+        let status = line.get(..12)?.trim_start();
+        let rest = line.get(12..)?.strip_prefix(" [")?;
+        let (duration, rest) = (rest.get(..9)?, rest.get(9..)?.strip_prefix("] ")?);
+        let seconds = |text: &str| {
+            let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
+            text.strip_suffix('s')
+                .and_then(|text| text.trim_start().split_once('.'))
+                .is_some_and(|(whole, fraction)| {
+                    !whole.is_empty() && digits(whole) && fraction.len() == 3 && digits(fraction)
+                })
+        };
+        let timed = if status == "SKIP" {
+            duration.bytes().all(|byte| byte == b' ')
+        } else {
+            seconds(duration)
+        };
+        (!status.is_empty() && status.bytes().all(|byte| byte.is_ascii_uppercase()) && timed)
+            .then_some((status, rest))
+    }
+
+    #[test]
+    fn status_lines_parse_only_as_nextest_prints_them() {
+        let line = |bracket: &str| format!("{:>12} [{bracket}] id case", "PASS");
+        assert_eq!(nextest_line(&line("   0.027s")), Some(("PASS", "id case")));
+        for refused in ["invalid", "  0.027s ", "   0.02s", "   0.0275", "         "] {
+            assert_eq!(nextest_line(&line(refused)), None, "[{refused}]");
+        }
+        let skip = format!("{:>12} [         ] id case", "SKIP");
+        assert_eq!(nextest_line(&skip), Some(("SKIP", "id case")));
+        assert_eq!(
+            nextest_line("PASS [   0.027s] id case"),
+            None,
+            "unaligned status"
         );
     }
 

@@ -56,6 +56,7 @@ rust_test(
 isolated_test(
     name = "acyclic_markdown_work_test",
     binary = ":acyclic_markdown_work_test_cases",
+    id = "acyclic-markdown-work",
     limit_seconds = 10,
 )
 

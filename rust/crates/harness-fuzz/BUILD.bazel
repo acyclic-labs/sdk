@@ -114,6 +114,7 @@ rust_test(
 isolated_test(
     name = "acyclic_harness_fuzz_test",
     binary = ":acyclic_harness_fuzz_test_cases",
+    id = "acyclic-harness-fuzz",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )

@@ -58,6 +58,7 @@ rust_test(
 isolated_test(
     name = "acyclic_collections_test",
     binary = ":acyclic_collections_test_cases",
+    id = "acyclic-collections",
     limit_seconds = 10,
 )
 

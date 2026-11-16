@@ -71,6 +71,7 @@ rust_test(
 isolated_test(
     name = "harness_mock_model_test",
     binary = ":harness_mock_model_test_cases",
+    id = "harness-mock-model",
     limit_seconds = 10,
 )
 
@@ -148,6 +149,7 @@ rust_test(
 isolated_test(
     name = "harness_filesystem_fixture_test",
     binary = ":harness_filesystem_fixture_test_cases",
+    id = "harness-mock-model::bin/harness-filesystem-fixture",
     limit_seconds = 10,
 )
 
@@ -225,6 +227,7 @@ rust_test(
 isolated_test(
     name = "harness_hook_fixture_test",
     binary = ":harness_hook_fixture_test_cases",
+    id = "harness-mock-model::bin/harness-hook-fixture",
     limit_seconds = 10,
 )
 
@@ -302,6 +305,7 @@ rust_test(
 isolated_test(
     name = "harness_mock_model_bin_test",
     binary = ":harness_mock_model_bin_test_cases",
+    id = "harness-mock-model::bin/harness-mock-model",
     limit_seconds = 10,
 )
 
@@ -350,6 +354,7 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     binaries = {":harness-filesystem-fixture":"harness-filesystem-fixture",":harness-hook-fixture":"harness-hook-fixture",":harness-mock-model":"harness-mock-model"},
+    id = "harness-mock-model::main",
     limit_seconds = 10,
 )
 

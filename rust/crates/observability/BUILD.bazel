@@ -69,6 +69,7 @@ rust_test(
 isolated_test(
     name = "acyclic_observability_test",
     binary = ":acyclic_observability_test_cases",
+    id = "acyclic-observability",
     limit_seconds = 10,
 )
 
@@ -108,6 +109,7 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
+    id = "acyclic-observability::main",
     limit_seconds = 10,
 )
 

@@ -129,6 +129,7 @@ rust_test(
 isolated_test(
     name = "acyclic_actors_napi_test",
     binary = ":acyclic_actors_napi_test_cases",
+    id = "acyclic-actors-napi",
     limit_seconds = 10,
 )
 

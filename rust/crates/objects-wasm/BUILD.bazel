@@ -84,6 +84,7 @@ rust_test(
 isolated_test(
     name = "acyclic_objects_wasm_test",
     binary = ":acyclic_objects_wasm_test_cases",
+    id = "acyclic-objects-wasm",
     limit_seconds = 10,
 )
 

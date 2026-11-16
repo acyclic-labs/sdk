@@ -80,6 +80,7 @@ rust_test(
 isolated_test(
     name = "sdk_fixture_verification_test",
     binary = ":sdk_fixture_verification_test_cases",
+    id = "sdk-fixture-verification",
     limit_seconds = 10,
 )
 
@@ -130,6 +131,7 @@ rust_test(
 isolated_test(
     name = "fixture-model",
     binary = ":fixture-model_cases",
+    id = "sdk-fixture-verification::fixture-model",
     limit_seconds = 10,
 )
 

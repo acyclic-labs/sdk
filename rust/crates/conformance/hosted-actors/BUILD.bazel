@@ -74,6 +74,7 @@ rust_test(
 isolated_test(
     name = "acyclic_hosted_actors_conformance_test",
     binary = ":acyclic_hosted_actors_conformance_test_cases",
+    id = "acyclic-hosted-actors-conformance",
     limit_seconds = 10,
 )
 
