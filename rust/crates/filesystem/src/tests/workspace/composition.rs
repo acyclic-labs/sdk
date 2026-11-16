@@ -317,11 +317,15 @@ async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn 
             operation: OperationId::from_bytes([attempt; 16]),
             permit: crate::PublicationPermit::Unrestricted,
         }];
+        // The restore retains source custody admitted under this work, so the
+        // commit is submitted under the same work.
+        #[cfg(not(target_arch = "wasm32"))]
+        let cancel = CancellationToken::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
+            .map_err(|(error, _)| error)?;
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let cancel = CancellationToken::new();
-            let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
-                .map_err(|(error, _)| error)?;
             let (generations, allocation) = fs
                 .prepare_restore_many(&restores, &mut commit, &work, &cancel)
                 .await?;
@@ -341,6 +345,9 @@ async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn 
         if concurrent {
             workspace.write_text("/plan.md", "user edit").await?;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let outcome = fs.submit_commit(commit, &work, &cancel).await?;
+        #[cfg(target_arch = "wasm32")]
         let outcome = unbounded!(fs, submit_commit(commit))?;
         if attempt == 3 {
             assert!(matches!(outcome, FilesystemCommitOutcome::Committed(_)));
