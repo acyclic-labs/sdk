@@ -791,7 +791,12 @@ async fn list_objects_lazy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
                 name_prefix,
                 after,
             } => {
-                let page_limit = LIST_PAGE_ENTRIES.min(options.maximum_keys.saturating_add(1));
+                // One entry of lookahead decides whether more follow. An inclusive
+                // seek may also read the marker the cursor already returned (it is
+                // kept for a directory of that name), so it reads one more.
+                let lookahead = 1 + u32::from(matches!(after, Bound::Included(_)));
+                let page_limit =
+                    LIST_PAGE_ENTRIES.min(options.maximum_keys.saturating_add(lookahead));
                 let page = checkout
                     .list_directory_records(
                         &path,
