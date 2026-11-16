@@ -133,6 +133,8 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
     let needles: Vec<_> = plans.iter().map(|plan| appears(&tag(plan.tag))).collect();
     let answer = move |request: &ModelRequest| {
         let messages: Vec<_> = model_visible_messages(&request.messages).collect();
+        // A plan is selected by the newest user brief, never by a tag that a
+        // tool result or a child's answer happens to quote.
         let found = messages
             .iter()
             .enumerate()
