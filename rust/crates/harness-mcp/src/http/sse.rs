@@ -3,11 +3,7 @@ use crate::{
     callbacks::McpCallbackRequest,
     rpc::{notification, rpc_result},
 };
-use acyclic_harness_core::{
-    Error, OperationId, Result,
-    },
-    runtime::ToolContext,
-};
+use acyclic_harness_core::{Error, OperationId, Result, runtime::ToolContext};
 use acyclic_stream::BoxProviderStream;
 use bytes::Bytes;
 use futures::{FutureExt as _, StreamExt as _};
