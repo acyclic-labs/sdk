@@ -20,6 +20,9 @@ pub(super) use view::AppendView;
 #[cfg(test)]
 pub(super) mod group_tests;
 
+pub(super) const NON_ADVANCING_PUBLICATION: &str =
+    "publication condition failed without advancing the authority";
+
 enum Preparation<T> {
     Ready(T),
     Outcome(FsAppendOutcome),
@@ -79,6 +82,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
+        let expected = request.expected;
         match self
             .compare_and_append_group(std::slice::from_ref(&request), &[], work, guard)
             .await?
@@ -100,6 +104,14 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     .ok_or_else(|| authority_corrupt("single append has no receipt", work))?;
                 drop(receipts);
                 drop(allocation);
+                // The single-append contract reports a refused condition that
+                // left the authority at its expected head as definitive. A
+                // group keeps every member's outcome for its own recovery.
+                if matches!(&outcome, FsAppendOutcome::Conflict { actual } if *actual == expected) {
+                    return Err(
+                        AuthorityStoreError::RejectedStatic(NON_ADVANCING_PUBLICATION).into(),
+                    );
+                }
                 Ok(outcome)
             }
             AppendGroupOutcome::Rejected { .. } => {
@@ -153,7 +165,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         prepared: &AppendReceipt<'_>,
         conflicts: &[acyclic_stream::CommitConflict],
         actual: Head,
-        anchor: Head,
+        target_failure: bool,
         recovered: Option<DurableCommit>,
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
@@ -185,14 +197,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             FsAppendOutcome::Fenced {
                 actual_epoch: actual.epoch,
             }
-        } else if actual == anchor {
+        } else if target_failure {
             // Recovery above owns already-committed operations. With no target
-            // advance left to rebase onto, a failed publication condition is
-            // a definitive refusal, not an optimistic head conflict.
-            return Err(AuthorityStoreError::RejectedStatic(
-                "publication condition failed without advancing the authority",
-            )
-            .into());
+            // advance left to rebase onto, a failed condition on the member
+            // authority is a definitive refusal, not an optimistic conflict.
+            return Err(AuthorityStoreError::RejectedStatic(NON_ADVANCING_PUBLICATION).into());
         } else {
             FsAppendOutcome::Conflict { actual }
         })
