@@ -18,7 +18,7 @@ use acyclic_harness_providers::{
     Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures,
     ModelSpec, PromptCache, ProviderSpec, Registry, ResolvedModel, RetrySpec, TimeoutSpec,
 };
-use acyclic_stream::BoxProviderFuture;
+use acyclic_stream::{BoxProviderFuture, UnixMillisClock as _};
 use bytes::Bytes;
 use family::{Generator, Variant};
 use futures::StreamExt as _;
@@ -97,7 +97,7 @@ struct ClockWorld {
 }
 
 impl ClockWorld {
-    fn new(seed: u64, plans: Vec<Plan>) -> std::result::Result<Self, String> {
+    fn new(plans: Vec<Plan>) -> std::result::Result<Self, String> {
         let directory = tempfile::Builder::new()
             .prefix("sdk-dst-clock-")
             .tempdir()
@@ -262,8 +262,8 @@ async fn wait_case(
     seed: u64,
 ) -> std::result::Result<(), String> {
     let child = format!("kid-{seed}-{state}");
-    let world = ClockWorld::new(seed, wait_plan(timer, &child))?;
-    let harness = world.open().await?;
+    let world = ClockWorld::new(wait_plan(timer, &child))?;
+    let harness = world.open().await.map_err(oracle::failed)?;
     let id = format!("{timer}-{state}");
     let prompt_tag = if timer == "call_deadline" {
         tag("parent")
@@ -302,7 +302,7 @@ async fn wait_case(
             drop(observer);
             drop(conversation);
             drop(harness);
-            let reopened = world.open().await?;
+            let reopened = world.open().await.map_err(oracle::failed)?;
             drain(&reopened).await?;
             world.advance(deadline)?;
             drain(&reopened).await?;
