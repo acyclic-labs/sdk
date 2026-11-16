@@ -293,6 +293,7 @@ fn failed(entry: &Value) -> bool {
     entry.get("failed").is_some()
 }
 
+/// Checks the fault stayed at its target and the owner kept working.
 fn checked(
     origin: &str,
     location: &str,
