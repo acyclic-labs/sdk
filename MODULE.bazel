@@ -4,6 +4,16 @@ bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_rust", version = "0.75.0")
 bazel_dep(name = "toolchains_llvm", version = "1.13.0")
 
+# rules_rust, patched:
+# - rust_check_aspect type-checks crates to metadata, as cargo check does;
+# - rustc compiles the main repository's crates incrementally into the directory a host names with
+#   --@rules_rust//rust/settings:incremental_dir.
+single_version_override(
+    module_name = "rules_rust",
+    patch_strip = 1,
+    patches = ["//:rules_rust.patch"],
+)
+
 # Pinned C/C++ toolchain for build scripts, -sys crates and linking.
 llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
 llvm.toolchain(llvm_version = "22.1.8")
