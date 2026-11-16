@@ -368,7 +368,7 @@ where
                             "quiet supervision has no original host clock",
                         )
                     })?
-                    .now_unix_ms();
+                    .now_unix_millis();
                 self.tool_job_projection(
                     &mut projection,
                     crate::supervision::tool_jobs::Record {

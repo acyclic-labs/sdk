@@ -85,7 +85,6 @@ async fn external_process_delivers_attributed_peer_input_to_a_running_session() 
     let changes = hosted.server().bound().changes().map_err(storage)?;
     let config = crate::server::ServerConfig::new(crate::server::Hosted::new(
         Arc::clone(hosted.server()),
-        local.clock.clone(),
         local.clone(),
         Some(Arc::new(changes)),
     ));

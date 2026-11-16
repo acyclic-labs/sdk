@@ -730,7 +730,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// failures. Independent actors share the same active admission as `run`
     /// and event delivery; no task is created for a dormant actor.
     pub async fn drain(&self) -> Vec<(ActorReference, Error)> {
-        let now = self.clock.now_unix_ms();
+        let now = self.clock.now_unix_millis();
         while self.wake_due(now) >= self.limits.work {
             limits::yield_now().await;
         }
@@ -1258,7 +1258,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::Due(result) => {
                     result?;
                     timer = None;
-                    let now = self.clock.now_unix_ms();
+                    let now = self.clock.now_unix_millis();
                     // Hosting a parked actor again moves its token into its
                     // registration, which this same pass then wakes.
                     if self.places {
@@ -1370,7 +1370,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         && timer
                             .as_ref()
                             .map(|(deadline, _)| *deadline)
-                            .is_none_or(|deadline| deadline > self.clock.now_unix_ms())
+                            .is_none_or(|deadline| deadline > self.clock.now_unix_millis())
                     {
                         completing.finish(failure.as_ref());
                     }
@@ -1397,7 +1397,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             if held {
                 continue;
             }
-            let now = self.clock.now_unix_ms();
+            let now = self.clock.now_unix_millis();
             for (&shard, previous) in &mut dispatchers {
                 let Some(checkpoint) = previous.as_ref() else {
                     continue;
@@ -1789,8 +1789,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             self.subscriptions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .bind(self.store.provider(), actor, selections, &tails)?;
-            let now = self.clock.now_unix_ms();
+                .bind(
+                    self.store.provider(),
+                    self.handler.manifest(),
+                    actor,
+                    state,
+                    &tails,
+                )?;
+            let now = self.clock.now_unix_millis();
             let due = slot.registration.observe_delivery(state.alarm(), now)?;
             let (trigger, record, subscription) = match state.alarm().pending() {
                 Some(_) if due => (

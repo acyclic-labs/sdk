@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness/src/local/agents.rs b/rust/crates/harness/src/local/agents.rs
+--- a/rust/crates/harness/src/local/agents.rs
++++ b/rust/crates/harness/src/local/agents.rs
+@@ -992,7 +992,7 @@
+                 history_turns: HISTORY_TURNS,
+             },
+             actors: ActorLimits::default(),
+-            clock: self.clock.clone(),
++            clock: Arc::new(acyclic_actors::local::SystemClock),
+             approval_policy: self.preset.approval_policy.clone(),
+         };
+         let configure = |turns: LocalTurns| {
