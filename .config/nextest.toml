@@ -47,10 +47,12 @@ platform = 'cfg(target_os = "linux")'
 filter = 'test(=native_mount::fuse::tests::guest::standard_qemu_and_cloud_hypervisor_guests_read_write_and_delete) | test(=virtiofs::standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete)'
 test-group = "linux-guest"
 
-# The transport models execute the packaged TypeScript and WASM implementation.
-# Prepare its ignored artifacts once, before any selected model starts.
+# The transport models execute the TypeScript sources and the WASM implementation.
+# Prepare the ignored WASM artifacts once, before any selected model starts; the
+# models import the sources directly, so the package's declaration build is not
+# an input to them.
 [scripts.setup.stream-typescript]
-command = ["bun", "run", "--filter", "@acyclic-labs/stream", "build"]
+command = ["bun", "run", "--filter", "@acyclic-labs/stream", "build:wasm"]
 
 [[profile.default.scripts]]
 filter = 'package(=acyclic-stream-typescript-models)'
