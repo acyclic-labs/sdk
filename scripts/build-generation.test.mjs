@@ -276,6 +276,9 @@ test("a generation key covers every crate a generator compiles and names content
     assert.notEqual(await keyWith({ RUSTC: fake }), base, "RUSTC selects the compiler");
     assert.notEqual(await keyWith({ CARGO_PROFILE_WASM_RELEASE_OPT_LEVEL: "0" }), base, "a profile override changes the output");
     assert.equal(await keyWith({ CARGO_TARGET_DIR: join(repository, "target") }), base, "an output directory selects nothing");
+    assert.equal(await keyWith({ CARGO_BUILD_JOBS: "6" }), base, "parallelism selects nothing");
+    assert.equal(await keyWith({ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: "cc" }), base, "a linker selects nothing");
+    assert.equal(await keyWith({ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: "runner" }), base, "a runner selects nothing");
     rmSync(fake);
     const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd: repository });
     git("init", "-q");
