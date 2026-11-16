@@ -27,7 +27,8 @@ pub struct Journal(
 );
 
 impl Journal {
-    pub(crate) fn reopen_before_tool_completion(&self, call: &str) -> Self {
+    /// Reopens the journal before the named tool completion.
+    pub fn reopen_before_tool_completion(&self, call: &str) -> Self {
         Self(
             Mutex::new(self.0.lock().unwrap().iter().take_while(|record|
                 !matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id == call)

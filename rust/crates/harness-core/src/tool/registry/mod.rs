@@ -206,7 +206,8 @@ impl ToolRegistry {
             })
             .cloned())
     }
-    pub(crate) fn recover(
+    /// Recovers a previously registered tool definition.
+    pub fn recover(
         &self,
         definition: &ToolDefinition,
         io: Option<&crate::executor::PreparationIo>,
