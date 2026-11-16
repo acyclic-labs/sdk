@@ -31,6 +31,8 @@ async fn large_objects_stay_private_until_explicit_publication()
     // Independent durable-provider oracle: explicit publication must make
     // the same object visible there, rather than merely testing our index.
     let scope = PublicationScope {
+        root: None,
+        related_root: None,
         related_objects: &[],
         objects: &[id],
         proven_at: store.collection.sweeps(),
@@ -73,6 +75,8 @@ async fn flush_vector_and_visit_denial_precede_provider_work()
             )
             .await?;
         let scope = PublicationScope {
+            root: None,
+            related_root: None,
             related_objects: &[],
             objects: &[id],
             proven_at: store.collection.sweeps(),
@@ -361,6 +365,8 @@ async fn failed_drain_keeps_objects_private_until_a_durable_retry()
         {
             let __object_args = (
                 PublicationScope {
+                    root: None,
+                    related_root: None,
                     related_objects: &[],
                     objects: &[object_id],
                     proven_at: 0,
@@ -398,6 +404,8 @@ async fn failed_drain_keeps_objects_private_until_a_durable_retry()
     {
         let __object_args = (
             PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &[object_id],
                 proven_at: 0,
@@ -481,6 +489,8 @@ async fn overflow_spills_privately_until_the_publication_drain()
     {
         let __object_args = (
             PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &objects.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
                 proven_at: 0,
@@ -653,6 +663,8 @@ async fn publication_drains_exactly_its_closure_and_keeps_the_rest_private()
     {
         let __object_args = (
             PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &closure,
                 proven_at: 0,
@@ -733,6 +745,8 @@ async fn each_publication_writes_only_what_is_not_already_durable()
             let flushed = {
                 let __object_args = (
                     PublicationScope {
+                        root: None,
+                        related_root: None,
                         related_objects: &[],
                         objects: &[shared, fresh],
                         proven_at: store.collection.sweeps(),
@@ -839,6 +853,8 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
     let published = {
         let __object_args = (
             PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &[object.object_id()],
                 proven_at: 0,
@@ -931,6 +947,8 @@ async fn concurrent_admissions_reads_and_publication_agree()
     {
         let __object_args = (
             PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &closure,
                 proven_at: 0,
@@ -1075,6 +1093,8 @@ async fn a_paused_inner_flush_does_not_hold_another_publications_drain()
             store
                 .flush_before_publish(
                     PublicationScope {
+                        root: None,
+                        related_root: None,
                         related_objects: &[],
                         objects: &objects,
                         proven_at: store.collection.sweeps(),
@@ -1245,6 +1265,8 @@ async fn stale_spilled_pin_and_publication(
     let objects = [id];
     let mut publication = std::pin::pin!(store.flush(
         PublicationScope {
+            root: None,
+            related_root: None,
             related_objects: &[],
             objects: &objects,
             proven_at,
@@ -1261,6 +1283,8 @@ async fn stale_spilled_pin_and_publication(
         pin_gate.take().ok_or("missing pin barrier")?,
         &store,
         PublicationScope {
+            root: None,
+            related_root: None,
             related_objects: &[],
             objects: &objects,
             proven_at,

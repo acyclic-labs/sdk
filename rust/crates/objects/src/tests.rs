@@ -1277,6 +1277,40 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
     Ok(())
 }
 
+/// Each holder owns its own marker on a shared child. Root A releases first,
+/// directly or through the parent it retained, and root B alone keeps the
+/// child; B's release, the last, frees it.
+#[tokio::test]
+async fn a_shared_child_stays_held_until_its_last_holder_releases()
+-> Result<(), Box<dyn std::error::Error>> {
+    for through_parent in [false, true] {
+        let blobs = crate::MemoryObjects::memory();
+        let child = blobs
+            .put(vec![3; 8].into(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("unknown")?
+            .digest;
+        let parent = blobs
+            .put(vec![4; 8].into(), vec![child])
+            .await?
+            .verified()
+            .ok_or("unknown")?
+            .digest;
+        let (a, b) = (RootId::new(*b"rootA")?, RootId::new(*b"rootB")?);
+        let held = if through_parent { parent } else { child };
+        blobs.retain(&a, vec![held]).await?;
+        blobs.retain(&b, vec![child]).await?;
+        assert!(blobs.release(&a).await?.existed);
+        assert_eq!(blobs.delete(parent).await?, Delete::Deleted);
+        // Negative control: A's release leaves the child protected by B.
+        assert_eq!(blobs.delete(child).await?, Delete::Referenced);
+        assert_eq!(blobs.head(child).await?.length, 8);
+        assert!(blobs.release(&b).await?.existed);
+        assert_eq!(blobs.delete(child).await?, Delete::Deleted);
+    }
+    Ok(())
+}
 #[tokio::test]
 async fn delete_reads_only_its_inbound_index() -> Result<(), Box<dyn std::error::Error>> {
     let blobs = crate::MemoryObjects::memory();

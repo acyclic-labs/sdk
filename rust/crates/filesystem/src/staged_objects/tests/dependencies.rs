@@ -185,6 +185,8 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
     let hold = store
         .flush_before_publish(
             PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &[root_id, table_id, metadata_id, tree_id],
                 proven_at: 0,

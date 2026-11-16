@@ -148,6 +148,8 @@ impl Collection {
             .admit(
                 objects,
                 crate::PublicationScope {
+                    root: Some(root),
+                    related_root: None,
                     related_objects: &[],
                     objects: closure,
                     proven_at,
