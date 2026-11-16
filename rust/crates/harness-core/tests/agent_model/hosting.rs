@@ -1414,6 +1414,8 @@ async fn root_admission_requires_the_implicit_journal_before_io() -> Result {
         kind: AggregateKind::Conversation,
         id: "admission".into(),
     };
+    // A self-signing host: it creates the journal under its own custody, and
+    // still admits the root only when the caller grants journal creation.
     let issuer = AuthorityRoot::new("agents", [7; 32], audience.clone());
     for grants_journal in [false, true] {
         let (placement, bucket) = placed(&stream)?;
