@@ -164,13 +164,13 @@ fn wait_call(id: &str, name: &str) -> acyclic_harness::model::ToolCall {
     call(id, "wait", json!({"agents": [name]}))
 }
 
-/// `tag` spawns a child briefed `child` and waits for it.
-fn spawn_plan(tag: &'static str, child: &'static str) -> Plan {
+/// `tag` spawns the named child briefed `child` and waits for it.
+fn spawn_plan(tag: &'static str, name: &str, child: &'static str) -> Plan {
     Plan {
         tag,
         steps: vec![
-            vec![spawn_call(&format!("{tag}-spawn"), "target", child)],
-            vec![wait_call(&format!("{tag}-wait"), "target")],
+            vec![spawn_call(&format!("{tag}-spawn"), name, child)],
+            vec![wait_call(&format!("{tag}-wait"), name)],
         ],
         fail_once: None,
     }
@@ -199,7 +199,7 @@ fn plans(origin: &str, location: &str) -> Vec<Plan> {
             fault_plan(origin, ROOT_TAG)
         }),
         "child" => {
-            plans.push(spawn_plan(ROOT_TAG, TARGET_TAG));
+            plans.push(spawn_plan(ROOT_TAG, "target", TARGET_TAG));
             plans.push(if origin == "child_settles_during_turn" {
                 parent_plan(TARGET_TAG)
             } else {
@@ -207,8 +207,8 @@ fn plans(origin: &str, location: &str) -> Vec<Plan> {
             });
         }
         _ => {
-            plans.push(spawn_plan(ROOT_TAG, MID_TAG));
-            plans.push(spawn_plan(MID_TAG, TARGET_TAG));
+            plans.push(spawn_plan(ROOT_TAG, "mid", MID_TAG));
+            plans.push(spawn_plan(MID_TAG, "target", TARGET_TAG));
             plans.push(if origin == "child_settles_during_turn" {
                 parent_plan(TARGET_TAG)
             } else {
