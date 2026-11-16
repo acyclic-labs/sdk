@@ -147,6 +147,88 @@ async fn creation_publishes_files_in_its_one_commit_and_recovers_only_them()
 }
 
 #[tokio::test]
+async fn creation_attributes_are_published_and_recovery_requires_them()
+-> Result<(), Box<dyn Error>> {
+    let config = crate::VolumeInitialization {
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
+        access_policy: Some(crate::access::INITIAL_POLICY),
+    };
+    let operation = IdempotencyKey::from_bytes([0xe5; 16]).operation_id();
+    let cancellation = CancellationToken::new();
+    let files = [("/report.json", OwnedBytes::from_static(b"{\"ok\":true}"))];
+    let name = crate::kernel::AttributeName::new(
+        crate::kernel::AttributeClass::PosixXattr,
+        b"user.creation".to_vec(),
+    )?;
+    let value = OwnedBytes::from_static(b"metadata");
+    let attributes = vec![crate::CreationAttribute {
+        path: "/report.json".into(),
+        name: name.clone(),
+        value: value.clone(),
+    }];
+    let fs = Fs::memory();
+    let created = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "journal",
+            config,
+            crate::CreationOperation::populated_with_attributes(
+                operation,
+                &files,
+                attributes.clone(),
+            ),
+            budget()?,
+            &cancellation,
+            None,
+        )
+        .await?;
+    let workspace = unbounded!(fs, open_workspace("journal"))?;
+    let head = unbounded!(workspace, head())?;
+    assert_eq!(
+        unbounded!(head, read_named_attribute("/report.json", &name, None))?.map(|chunk| chunk.bytes),
+        Some(value)
+    );
+    let retried = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "journal",
+            config,
+            crate::CreationOperation::populated_with_attributes(operation, &files, attributes),
+            read_only()?,
+            &cancellation,
+            None,
+        )
+        .await?;
+    assert_eq!(retried.value.id(), created.value.id());
+    // Negative control: the same operation and files with another attribute
+    // value are not this creation, and recovery rejects them by reads alone.
+    let changed = vec![crate::CreationAttribute {
+        path: "/report.json".into(),
+        name,
+        value: OwnedBytes::from_static(b"other"),
+    }];
+    let failure = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "journal",
+            config,
+            crate::CreationOperation::populated_with_attributes(operation, &files, changed),
+            read_only()?,
+            &cancellation,
+            None,
+        )
+        .await
+        .err()
+        .ok_or("a creation with another attribute value recovered")?;
+    assert!(
+        matches!(
+            failure.error,
+            WorkspaceError::Filesystem(FsError::CreationRejected)
+        ),
+        "{:?}",
+        failure.error
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn recovery_pages_a_root_larger_than_one_directory_page() -> Result<(), Box<dyn Error>> {
     let mut volume = VolumeConfig::portable(Lifecycle::Ephemeral);
     volume.limits.maximum_directory_page_entries = 2;
