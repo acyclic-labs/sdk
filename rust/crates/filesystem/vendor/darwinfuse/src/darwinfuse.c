@@ -23,9 +23,12 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <spawn.h>
 #include <sys/mount.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+
+extern char **environ;
 
 /* ---- Diagnostics ---- */
 
@@ -176,26 +179,42 @@ static int do_mount_nfs(const char *socket_path, const char *mount_point,
         return -1;
     }
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        DFUSE_ERR("fork failed: %s", strerror(errno));
+    /* posix_spawn, not fork: libSystem's fork child handlers can abort a
+     * child whose fork copied another thread's libnotify setup. */
+    posix_spawn_file_actions_t actions;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        DFUSE_ERR("posix_spawn_file_actions_init failed");
         close(err_pipe[0]);
         close(err_pipe[1]);
         return -1;
     }
-
-    if (pid == 0) {
+    /* mount_nfs inherits only its standard streams, its stderr our pipe. */
+    posix_spawnattr_t attributes;
+    if (posix_spawnattr_init(&attributes) != 0) {
+        DFUSE_ERR("posix_spawnattr_init failed");
+        posix_spawn_file_actions_destroy(&actions);
         close(err_pipe[0]);
-        dup2(err_pipe[1], STDERR_FILENO);
         close(err_pipe[1]);
-        /* Use the same built-in utility admitted by NativeMountProbe.
-         * Embedders need not include system administration tools in PATH. */
-        execl("/sbin/mount_nfs", "mount_nfs",
-               "-o", opts,
-               server,
-               mount_point,
-               NULL);
-        _exit(127);
+        return -1;
+    }
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_CLOEXEC_DEFAULT);
+    posix_spawn_file_actions_addinherit_np(&actions, STDIN_FILENO);
+    posix_spawn_file_actions_addinherit_np(&actions, STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, err_pipe[1], STDERR_FILENO);
+    /* Use the same built-in utility admitted by NativeMountProbe.
+     * Embedders need not include system administration tools in PATH. */
+    char *const argv[] = { "mount_nfs", "-o", opts, server,
+                           (char *)mount_point, NULL };
+    pid_t pid;
+    int spawned = posix_spawn(&pid, "/sbin/mount_nfs", &actions, &attributes,
+                              argv, environ);
+    posix_spawnattr_destroy(&attributes);
+    posix_spawn_file_actions_destroy(&actions);
+    if (spawned != 0) {
+        DFUSE_ERR("posix_spawn mount_nfs failed: %s", strerror(spawned));
+        close(err_pipe[0]);
+        close(err_pipe[1]);
+        return -1;
     }
 
     close(err_pipe[1]);
