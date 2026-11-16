@@ -13,17 +13,17 @@ use std::sync::{
 
 #[derive(Default)]
 pub struct Journal(
-    Mutex<Vec<ExecutionRecord>>,
-    Mutex<HashMap<String, (FileRef, acyclic_stream::OwnedBytes)>>,
-    Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
-    AtomicUsize,
-    AtomicUsize,
-    AtomicUsize,
-    ExecutionClaims,
-    AtomicUsize,
-    Option<crate::core::AuthorityVerifier>,
-    ExecutionJournalCacheId,
-    tokio_util::sync::CancellationToken,
+    pub(crate) Mutex<Vec<ExecutionRecord>>,
+    pub(crate) Mutex<HashMap<String, (FileRef, acyclic_stream::OwnedBytes)>>,
+    pub(crate) Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
+    pub(crate) AtomicUsize,
+    pub(crate) AtomicUsize,
+    pub(crate) AtomicUsize,
+    pub(crate) ExecutionClaims,
+    pub(crate) AtomicUsize,
+    pub(crate) Option<crate::core::AuthorityVerifier>,
+    pub(crate) ExecutionJournalCacheId,
+    pub(crate) tokio_util::sync::CancellationToken,
 );
 
 impl Journal {
