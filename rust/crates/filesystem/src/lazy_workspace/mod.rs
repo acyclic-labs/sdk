@@ -110,6 +110,8 @@ pub(crate) use qualification::NativeSnapshotContext;
 pub use selected_plan::SelectedImportPlan;
 mod binding;
 mod exactify;
+#[cfg(feature = "test-support")]
+pub use exactify::EXACTIFY_CALLS;
 mod materialize;
 mod overlay;
 mod path;
