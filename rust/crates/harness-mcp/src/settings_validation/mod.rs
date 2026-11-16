@@ -300,3 +300,12 @@ pub fn exercise(bytes: &[u8]) {
         }
     });
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(8))]
+    #[test]
+    fn shared_settings_selection_contract(input in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..64)) {
+        exercise(&input);
+    }
+}
