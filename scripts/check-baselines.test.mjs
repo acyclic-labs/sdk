@@ -12,7 +12,7 @@ test("all complete regenerated descriptor closures preserve their pinned identit
 test("descriptor checking rejects breaking changes to a secondary root and an imported schema", () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-proto-mutations-"));
   try {
-    for (const family of ["auth", "actors", "filesystem-wire", "inference", "machines", "objects", "stream"]) {
+    for (const family of ["auth", "actors", "filesystem-wire", "harness-core", "inference", "machines", "objects", "stream"]) {
       cpSync(`rust/crates/${family}/proto`, join(root, `rust/crates/${family}/proto`), { recursive: true });
     }
     for (const [relative, before, after, family] of [
