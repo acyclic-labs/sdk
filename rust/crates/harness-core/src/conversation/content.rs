@@ -274,7 +274,8 @@ impl<T> std::future::Future for BoundedContentFuture<'_, T> {
     }
 }
 
-pub(crate) fn content_error(
+/// Builds the shared content error for the selected IO boundary.
+pub fn content_error(
     io: Option<&ContentIo>,
     code: crate::wire::ErrorCode,
     reason: &'static str,

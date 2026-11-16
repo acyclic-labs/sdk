@@ -1,4 +1,4 @@
-#![doc = include_str!("../../docs/objects.md")]
+#![doc = include_str!("../docs/objects.md")]
 
 use acyclic_harness_core::{
     Error, OperationId, Result,

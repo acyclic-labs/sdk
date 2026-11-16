@@ -1,5 +1,5 @@
 [package]
-include = ["clippy.toml", "Cargo.toml", "src/**"]
+include = ["clippy.toml", "Cargo.toml", "docs/**", "src/**"]
 name = "acyclic-harness-objects"
 version.workspace = true
 edition.workspace = true
