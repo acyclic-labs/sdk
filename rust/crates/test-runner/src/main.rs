@@ -16,6 +16,7 @@ use std::io::{self, Write};
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -147,7 +148,11 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
                 while let Some((index, name)) = queue.lock().ok().and_then(|mut queue| queue.next())
                 {
                     let log = suite.logs.join(format!("case-{index}.log"));
-                    let temporary = temporary_for(&suite.logs, std::process::id(), index);
+                    let temporary = temporary_for(
+                        &suite.logs,
+                        std::process::id(),
+                        CASES.fetch_add(1, Ordering::Relaxed),
+                    );
                     let started = Instant::now();
                     let outcome = case(suite, custody, name, &log, &temporary);
                     if sender
@@ -185,16 +190,16 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
     })
 }
 
-/// The longest file name a case may bind as a Unix socket inside its temporary directory:
-/// `sun_path` holds 107 bytes on Linux (103 on macOS, whose root is also the longer).
-const SOCKET_NAME_ROOM: usize = 56;
+/// Numbers every case this process runs, across all suites, so suites run at once (as `cargo
+/// test` runs this crate's own tests) never share a temporary directory.
+static CASES: AtomicUsize = AtomicUsize::new(0);
 
 /// A case's own temporary directory, short by construction so a socket bound in it fits
 /// `sun_path`: Bazel's test directory alone can exceed it. On Unix it sits under `/tmp`, which
-/// the Linux sandbox makes private to the test, named by the runner's process and the case.
-/// Windows keeps it under the test's directory.
-fn temporary_for(logs: &Path, runner: u32, index: usize) -> PathBuf {
-    let name = format!("acyclic-{runner:x}-{index:x}");
+/// the Linux sandbox makes private to the test, named by the runner's process and the case's
+/// number in it. Windows keeps it under the test's directory.
+fn temporary_for(logs: &Path, runner: u32, number: usize) -> PathBuf {
+    let name = format!("acyclic-{runner:x}-{number:x}");
     if cfg!(unix) {
         Path::new("/tmp").join(name)
     } else {
@@ -272,6 +277,10 @@ mod tests {
     use super::*;
 
     const MARKER: &str = "acyclic-test-runner-fixture";
+
+    /// The longest file name a case may bind as a Unix socket inside its temporary directory:
+    /// `sun_path` holds 107 bytes on Linux (103 on macOS, whose root is also the longer).
+    const SOCKET_NAME_ROOM: usize = 56;
 
     fn acting() -> bool {
         Path::new(MARKER).exists()
