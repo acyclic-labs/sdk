@@ -201,7 +201,7 @@ fn parent_plan(tag: &'static str) -> Plan {
         tag,
         steps: vec![
             vec![spawn_call(&format!("{tag}-spawn"), "settler", SETTLER_TAG)],
-            vec![call(&format!("{tag}-work"), "read", json!({"path": "marker.txt"}))],
+            vec![call(&format!("{tag}-work"), "read", json!({"path": "missing.txt"}))],
             vec![wait_call(&format!("{tag}-wait"), "settler")],
         ],
         fail_once: None,
@@ -420,12 +420,8 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
     let location = location(seed);
     oracle::simulate(seed, move || {
         entry(async move {
-            let mut world = World::new(
-                seed,
-                &[("marker.txt", "marker\n")],
-                service(plans(origin, location)),
-            )
-            .map_err(oracle::failed)?;
+            let mut world = World::new(seed, &[], service(plans(origin, location)))
+                .map_err(oracle::failed)?;
             if origin == "protective_bound" {
                 world = world.with_limits(acyclic_harness::conversation::Limits {
                     file_bytes: Some(FILE_BYTES),
