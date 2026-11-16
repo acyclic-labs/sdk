@@ -7,8 +7,8 @@ use acyclic_harness_core::{
     conversation::VolumeOperation,
     core::AuthorityRoot,
     filesystem::{TurnAdmission, agent_authority},
-    oidc,
 };
+use crate::oidc;
 use acyclic_stream::UnixMillisClock as _;
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
