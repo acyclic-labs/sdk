@@ -172,6 +172,62 @@ impl MemoryStream {
         }
     }
 
+    /// The store's own copy of `path`, funded by this write's custody, so
+    /// what a landed write keeps leaves its writer's ledger with the rest.
+    fn keep_path(&self, path: &StreamPath) -> Result<StreamPath, StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            return work.record(path.bind_native(self.allocation_meter(work)));
+        }
+        Ok(path.clone())
+    }
+
+    /// The store's own copy of a retry key it keeps for replay.
+    fn keep_key(&self, key: &IdempotencyKey) -> Result<IdempotencyKey, StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            return work
+                .record(key.0.bind_native(self.allocation_meter(work)))
+                .map(IdempotencyKey);
+        }
+        Ok(key.clone())
+    }
+
+    /// The store's own copy of a kept record body. A body its caller funds
+    /// would otherwise keep the caller's buffer, and the caller's charge.
+    fn keep_body(
+        &self,
+        _value: &mut Bytes,
+        _headers: &mut crate::RecordHeaders,
+    ) -> Result<(), StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            let meter = self.allocation_meter(work);
+            *_value = work.record(_value.bind_native(meter))?;
+            *_headers = work.record(_headers.bind_native(meter))?;
+        }
+        Ok(())
+    }
+
+    /// Binds every path a write's facts keep to the store. Each mutation's
+    /// records then share its one bound path.
+    fn keep_facts(&self, facts: &mut [CommittedMutation]) -> Result<(), StreamError> {
+        for fact in facts {
+            let (path, records) = match fact {
+                CommittedMutation::Append(append) => (&mut append.path, &mut append.records),
+                CommittedMutation::Fork(fork) => {
+                    fork.source = self.keep_path(&fork.source)?;
+                    (&mut fork.destination, &mut fork.records)
+                }
+            };
+            *path = self.keep_path(path)?;
+            for record in records {
+                record.origin = path.clone();
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn allocation_meter<'w>(&'w self, work: &'w Work) -> &'w Arc<dyn NativeReadMeter> {
         self.custody

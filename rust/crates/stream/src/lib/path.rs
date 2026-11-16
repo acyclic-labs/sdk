@@ -166,6 +166,26 @@ impl StreamPath {
         Self::native_parts(&[parent.as_str(), "/", relative], meter).map(Ok)
     }
 
+    /// Gives this path to the ledger `meter` funds. Text another ledger funds
+    /// is copied once, so whoever keeps the path pays for it; plain text and
+    /// text `meter` already funds are shared without a copy.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn bind_native(
+        &self,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Self> {
+        let PathText::Native(text) = &self.text else {
+            return Ok(self.clone());
+        };
+        let owner = meter
+            .allocation_owner()
+            .unwrap_or_else(|| Arc::clone(meter));
+        if Arc::ptr_eq(text._payload.meter(), &owner) {
+            return Ok(self.clone());
+        }
+        Self::native_parts(&[self.as_str()], meter)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn native_parts(
         parts: &[&str],

@@ -172,7 +172,8 @@ impl MemoryStream {
         drop(state);
         drop((effect.mutations, request.effects));
         drop(input);
-        let key = request.idempotency_key;
+        // Bound now: a funded publication allocates nothing after durability.
+        let key = self.keep_key(&request.idempotency_key)?;
         let deadline = request.deadline_unix_millis;
         let recovery = self.prepare_recovery(
             key.clone(),

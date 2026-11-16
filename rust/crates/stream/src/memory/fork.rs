@@ -35,8 +35,8 @@ impl MemoryStream {
         }
         let (decision, commit_id) = state.identity(&scope, digest)?;
         let receipt = ForkReceipt {
-            source: request.source.clone(),
-            destination: request.destination.clone(),
+            source: self.keep_path(&request.source)?,
+            destination: self.keep_path(&request.destination)?,
             forked_at,
             tail: forked_at,
             commit_id,
@@ -71,6 +71,7 @@ impl MemoryStream {
             durable,
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
+        let key = self.keep_key(&request.idempotency_key)?;
         let retention = self.reserve_custody(&mut Default::default())?;
         Ok(Decision::Accepted {
             ephemeral: matches!(scope, Scope::Ephemeral(_)),
@@ -90,7 +91,7 @@ impl MemoryStream {
                         state,
                         &mut |items| self.record_replay_probe(&mut probes, items),
                         Some(envelope),
-                        Some(request.idempotency_key.clone()),
+                        Some(key),
                         digest,
                         result,
                         (Default::default(), retained),
@@ -103,7 +104,7 @@ impl MemoryStream {
                         RetainedFact {
                             namespace: Default::default(),
                             previous: None,
-                            replay: Some(request.idempotency_key.0.clone()),
+                            replay: Some(key.0),
                             next: Default::default(),
                             digest,
                             result,

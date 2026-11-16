@@ -79,6 +79,7 @@ impl MemoryStream {
         let (mut facts, claim) = self.vector(1)?;
         self.absorb(&mut allocation, claim)?;
         facts.push(CommittedMutation::Append(fact));
+        self.keep_facts(&mut facts)?;
         let (mut histories, _histories) = self.histories(state, &facts)?;
         let (paths, _paths) = self.paths(state, std::iter::once(&request.path), |prefix| {
             request.path.as_str() == prefix
@@ -100,6 +101,7 @@ impl MemoryStream {
             durable,
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
+        let key = self.keep_key(&request.idempotency_key)?;
         let retention = self.reserve_custody(&mut Default::default())?;
         Ok(Decision::Accepted {
             ephemeral: matches!(scope, Scope::Ephemeral(_)),
@@ -121,7 +123,7 @@ impl MemoryStream {
                         state,
                         &mut |items| self.record_replay_probe(&mut probes, items),
                         Some(envelope),
-                        Some(request.idempotency_key.clone()),
+                        Some(key),
                         digest,
                         result,
                         (allocation, retained),
@@ -134,7 +136,7 @@ impl MemoryStream {
                         RetainedFact {
                             namespace: Default::default(),
                             previous: None,
-                            replay: Some(request.idempotency_key.0.clone()),
+                            replay: Some(key.0),
                             next: Default::default(),
                             digest,
                             result,

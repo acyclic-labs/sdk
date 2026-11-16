@@ -135,10 +135,13 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
             Some(&io),
         )?
         .await?;
-    let mut half = None;
+    let mut half = (0, 0);
     for step in 0..1_000 {
         if step == 500 {
-            half = Some(work.receipt().peak_allocation_bytes);
+            half = (
+                work.receipt().peak_allocation_bytes,
+                work.live_allocation_bytes(),
+            );
         }
         // Each append has its own work window while cache allocations stay
         // on the original ledger across the complete history.
@@ -226,14 +229,27 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
             "append charged work outside its invocation at step {step}"
         );
     }
-    let peak = work.receipt().peak_allocation_bytes;
-    eprintln!(
-        "append history=1000 live={} peak={peak} peak_at_500={half:?}",
+    let (peak, live) = (
+        work.receipt().peak_allocation_bytes,
         work.live_allocation_bytes(),
     );
-    // The store keeps what landed, so doubling the history adds nothing to
-    // the writer's peak.
-    assert_eq!(Some(peak), half, "the writer's peak grew with history");
+    eprintln!("append history=1000 live={live} peak={peak} at_500={half:?}");
+    // The store keeps what landed, so the writer holds only its bounded hot
+    // caches. Doubling the history can only widen each hot index page, at
+    // most to a full-width branch. Keeping even 23 bytes per append on the
+    // writer would exceed this over the last 500 appends.
+    use crate::filesystem::execution_journal::persistent_index::{
+        HOT_PAGES, node::MAX_BRANCH_BYTES,
+    };
+    let widening = (HOT_PAGES * MAX_BRANCH_BYTES) as u64;
+    assert!(
+        peak <= half.0 + widening,
+        "the writer's peak grew with history: {peak} after {half:?}"
+    );
+    assert!(
+        live <= half.1 + widening,
+        "the writer's live bytes grew with history: {live} after {half:?}"
+    );
     Ok(())
 }
 

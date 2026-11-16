@@ -180,19 +180,11 @@ impl MemoryStream {
                 (bodies.len() * std::mem::size_of::<Record>()) as u64,
             ))?;
         }
-        let records = crate::preparation::records(origin, start, bodies, commit_id, time, buffer)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let records = {
-            let mut records = records;
-            if let Some(work) = &self.work {
-                let meter = self.allocation_meter(work);
-                for record in &mut records {
-                    record.value = work.record(record.value.bind_native(meter))?;
-                    record.headers = work.record(record.headers.bind_native(meter))?;
-                }
-            }
-            records
-        };
+        let mut records =
+            crate::preparation::records(origin, start, bodies, commit_id, time, buffer)?;
+        for record in &mut records {
+            self.keep_body(&mut record.value, &mut record.headers)?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.record_examination(
@@ -244,6 +236,8 @@ impl MemoryStream {
             },
             output,
         )?;
+        let mut facts = facts;
+        self.keep_facts(&mut facts)?;
         Ok((facts, allocation))
     }
     fn histories(
@@ -697,6 +691,7 @@ impl MemoryStream {
             durable,
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
+        let key = self.keep_key(&request.idempotency_key)?;
         let retention = self.reserve_custody(&mut publication.output_claim)?;
         Ok(Decision::Accepted {
             ephemeral: matches!(scope, Scope::Ephemeral(_)),
@@ -724,7 +719,7 @@ impl MemoryStream {
                 let (outcome, allocation) = publication.publish(
                     state,
                     &mut |items| self.record_replay_probe(&mut probes, items),
-                    request.idempotency_key.clone(),
+                    key,
                     digest,
                     &scope,
                     retained,
