@@ -139,12 +139,18 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         mut replacement: MaterializationJournal,
     ) -> Result<(bool, MaterializationJournal), Self::Error> {
         if let Some(work) = &self.journal_work {
-            let custody = replacement
-                .custody
-                .as_ref()
-                .ok_or(NativeTreeMaterializationError::MissingCustody)?;
-            if !custody.work().shares_ledger(work) {
-                return Err(crate::LazyWorkspaceError::NativeLedgerMismatch.into());
+            match &replacement.custody {
+                Some(custody) if !custody.work().shares_ledger(work) => {
+                    return Err(crate::LazyWorkspaceError::NativeLedgerMismatch.into());
+                }
+                Some(_) => {}
+                None => {
+                    replacement.custody = Some(work.claim(
+                        crate::materializer::journal_owned_bytes(&replacement)?,
+                        0,
+                        crate::WorkCounters::UNCHARGED,
+                    )?);
+                }
             }
         }
         self.transaction(move |namespace| {

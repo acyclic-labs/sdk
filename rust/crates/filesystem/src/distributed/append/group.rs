@@ -285,12 +285,13 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         };
         let mut recovered = work.vec_owned(prepared.len())?;
         recovered.value.resize_with(prepared.len(), || None);
+        let authority = prepared
+            .first()
+            .ok_or(AuthorityStoreError::RejectedStatic("empty prepared group"))?
+            .authority_id;
         let actual = self
             .recover_conflict_head(
-                prepared
-                    .first()
-                    .ok_or(AuthorityStoreError::RejectedStatic("empty prepared group"))?
-                    .authority_id,
+                authority,
                 anchor,
                 conflicts,
                 work,
@@ -318,6 +319,27 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 },
             )
             .await?;
+        // A conflict on the member authority's own conditions is a definitive
+        // refusal when its head did not advance. A conflict on another path
+        // (a caller fence or another authority's policy cut) is an optimistic
+        // conflict whose actual head is still the anchor.
+        let target_failure = actual == anchor.head && {
+            let target = [
+                work.path(&self.placement, authority, "/records", None)?,
+                work.path(&self.placement, authority, "/epochs", None)?,
+                work.path(&self.placement, authority, "/retirement", None)?,
+                work.path(&self.placement, authority, "/lineage", None)?,
+            ];
+            conflicts.iter().any(|conflict| {
+                let path = match conflict {
+                    acyclic_stream::CommitConflict::Tail { path, .. }
+                    | acyclic_stream::CommitConflict::Head { path, .. }
+                    | acyclic_stream::CommitConflict::Missing { path }
+                    | acyclic_stream::CommitConflict::Exists { path } => path,
+                };
+                target.contains(path)
+            })
+        };
         for (index, member) in prepared.iter().enumerate() {
             let recovered = match recovered.value.get_mut(index).and_then(Option::take) {
                 Some((commit, proof)) => {
@@ -363,7 +385,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     member,
                     conflicts,
                     actual,
-                    anchor.head,
+                    target_failure,
                     recovered,
                     work,
                     guard.as_deref_mut(),
