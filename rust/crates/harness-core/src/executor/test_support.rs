@@ -1,9 +1,8 @@
 use super::*;
 use crate::{
-    AgentId, Capabilities,
+    AgentId,
     conversation::{FileDescriptor, VolumeOwner, VolumeRef},
     resources::ProviderRef,
-    tool::ToolExecutor,
 };
 use serde_json::json;
 use std::collections::HashMap;
