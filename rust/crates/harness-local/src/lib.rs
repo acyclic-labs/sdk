@@ -21,6 +21,7 @@
 use acyclic_harness_core::*;
 use acyclic_harness_client as client;
 use acyclic_harness_hosting as hosting;
+use acyclic_harness_search as search;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod local;
