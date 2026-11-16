@@ -1,3 +1,21 @@
+diff -ruN a/cargo/private/cargo_build_script.bzl b/cargo/private/cargo_build_script.bzl
+--- a/cargo/private/cargo_build_script.bzl	2026-11-16 09:34:55.478526830 +0000
++++ b/cargo/private/cargo_build_script.bzl	2026-11-16 09:34:55.492063488 +0000
+@@ -534,11 +534,9 @@
+         cc_c_args, cc_cxx_args, cc_env = get_cc_compile_args_and_env(cc_toolchain, feature_configuration)
+         include = cc_env.get("INCLUDE")
+         if include:
+-            if toolchain.exec_triple.str.find("windows") > 0:
+-                path_separator = ";"
+-            else:
+-                path_separator = ":"
+-            env["INCLUDE"] = path_separator.join(_pwd_paths(include.split(path_separator)))
++            # INCLUDE is read only by MSVC-compatible compilers, which split it on ";" on every host
++            # (clang-cl cross-compiling from Linux included).
++            env["INCLUDE"] = ";".join(_pwd_paths(include.split(";")))
+ 
+         toolchain_tools.append(cc_toolchain.all_files)
+ 
 diff -ruN a/rust/defs.bzl b/rust/defs.bzl
 --- a/rust/defs.bzl
 +++ b/rust/defs.bzl

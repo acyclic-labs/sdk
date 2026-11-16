@@ -42,7 +42,7 @@ const LOADS = {
   rust_test: "@rules_rust//rust:defs.bzl",
 };
 // Rules Bazel defines in every BUILD file; they need no load.
-const NATIVE = new Set(["alias"]);
+const NATIVE = new Set(["alias", "filegroup"]);
 const q = JSON.stringify;
 
 // A TOML file, parsed by a real TOML parser (Python's tomllib): strings, arrays and inline tables
@@ -245,8 +245,11 @@ const scriptEnv = new Map([...members].map(id => {
     return [platform, Object.entries(variables).map(([variable, spec]) => [variable, stagedFile(spec)])];
   })];
 }));
-// select() of one variable's file over the platforms a package names, with no default.
-const platformSelect = (id, variable) => `select(${q(Object.fromEntries(scriptEnv.get(id).flatMap(([platform, vars]) => vars.filter(([v]) => v === variable).map(([, file]) => [`//:${platform}`, file]))))}, no_match_error = ${q(`${packages.get(id).name}: build-script-env names no ${variable} for this execution platform`)})`;
+// select() of one variable's file over the platforms a package names. rules_rust also hands a build
+// script's tools to the script binary as data, in the crate's target configuration, where no file is
+// run: there the default is an empty group. On an execution platform the table does not name,
+// $(execpath) of that empty group fails the build script's analysis.
+const platformSelect = (id, variable) => `select(${q({ ...Object.fromEntries(scriptEnv.get(id).flatMap(([platform, vars]) => vars.filter(([v]) => v === variable).map(([, file]) => [`//:${platform}`, file]))), "//conditions:default": ":build_script_env_none" })})`;
 const platformRules = [...scriptPlatforms].sort().map(platform => {
   const [os, cpu] = platform.split("-");
   return `\n${rule("config_setting", [["name", q(platform)], ["constraint_values", list([`@platforms//os:${os}`, `@platforms//cpu:${cpu}`])]])}\n`;
@@ -436,6 +439,7 @@ function buildFile(p) {
     // a tool resolves its select() in the exec configuration, whatever platform the crate targets.
     // Manual: a pattern such as :all never configures one for a target platform, where it names nothing.
     for (const [variable, name] of envTools) rules.push(["alias", [["name", q(name)], ["actual", platformSelect(p.id, variable)], ["tags", q(["manual"])]]]);
+    if (envTools.length) rules.push(["filegroup", [["name", q("build_script_env_none")], ["srcs", "[]"], ["tags", q(["manual"])]]]);
   }
   // A cdylib output, such as a Node addon, builds as a shared library; beside an rlib it takes a suffix.
   const shared = p.targets.find(t => t.kind.includes("cdylib"));
@@ -561,10 +565,10 @@ function windowsToolchain() {
   const xwin = dir => `WINDOWS_XWIN + ${q(`/${dir}`)}`;
   const env = dirs => `";".join([${dirs.map(xwin).join(", ")}])`;
   const includes = ["crt/include", "sdk/include/ucrt", "sdk/include/um", "sdk/include/shared", "sdk/include/winrt"];
-  // The system headers are compile flags, not INCLUDE: a build script runs from its own directory, and
-  // rules_rust makes each execroot path in a flag absolute, where an INCLUDE list keeps all but its first
-  // entry relative (cc builds of ring and libsqlite3-sys then found no stdint.h).
-  const compileFlags = `[${[q(`--target=${WINDOWS_TRIPLE}`), ...includes.map(d => `"/imsvc" + ${xwin(d)}`)].join(", ")}]`;
+  // The system headers are INCLUDE, the one variable every MSVC compiler reads whatever flags a build
+  // script sets (rquickjs-sys replaces CFLAGS). rules_rust makes each entry absolute for build scripts,
+  // split on ";" as clang-cl splits it (rules_rust.patch).
+  const compileFlags = list([`--target=${WINDOWS_TRIPLE}`]);
   return `
 ${rule("cc_toolchain_config", [
     ["name", q("windows_cc_config")],
@@ -581,8 +585,7 @@ ${rule("cc_toolchain_config", [
     ["msvc_link_path", llvm("lld-link")],
     ["msvc_lib_path", llvm("llvm-lib")],
     ["msvc_ml_path", llvm("clang-cl")],
-    // rules_cc requires a nonempty INCLUDE; one entry is made absolute whole, and every entry is a flag.
-    ["msvc_env_include", xwin(includes[0])],
+    ["msvc_env_include", env(includes)],
     ["msvc_env_lib", env(WINDOWS_LIB_DIRS)],
     ["msvc_env_path", `WINDOWS_LLVM + "/bin"`],
     ["msvc_env_tmp", q("/tmp")],
