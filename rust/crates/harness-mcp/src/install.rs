@@ -19,6 +19,7 @@ mod live;
 mod live_tests;
 mod native;
 mod watched;
+pub use watched::McpConfigWatchExt;
 use cancellation::CancelOnDrop;
 
 /// Host-selected initialization credit and independent per-message bounds.

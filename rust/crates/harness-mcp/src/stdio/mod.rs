@@ -8,7 +8,7 @@ use super::{
 };
 use acyclic_harness_core::{Error, OperationId, Result, wire::ErrorCode};
 use bytes::{Buf as _, BytesMut};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
