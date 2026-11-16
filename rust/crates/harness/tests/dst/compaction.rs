@@ -277,7 +277,11 @@ fn manual_summary(
     })
 }
 
-fn check(trigger: &str, straddle: &str, outcome: &str) -> std::result::Result<(), String> {
+fn check(
+    trigger: &'static str,
+    straddle: &'static str,
+    outcome: &'static str,
+) -> std::result::Result<(), String> {
     oracle::simulate(0, move || {
         entry(async move {
             let source = history(straddle);
