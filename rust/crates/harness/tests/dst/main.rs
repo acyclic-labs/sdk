@@ -19,6 +19,7 @@ mod compaction;
 mod configuration;
 mod containment;
 mod coverage;
+mod determinism;
 mod digest;
 mod driver;
 mod family;
@@ -296,7 +297,7 @@ fn replay_with_directory_times(
     entry(async move {
         // Negative control erases entropy without changing polling or time.
         let mut driver = if erase_source {
-            driver::Driver::without_entropy(seed)
+            driver::Driver::without_entropy(seed, None)
         } else {
             driver::Driver::new(seed, None)
         };
