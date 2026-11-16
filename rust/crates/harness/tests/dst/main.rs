@@ -26,6 +26,7 @@ mod flushes;
 mod grants;
 mod oracle;
 mod publication;
+mod provider;
 mod recovery;
 mod redelivery;
 mod refusal;
