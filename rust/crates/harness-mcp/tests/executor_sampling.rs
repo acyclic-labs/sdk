@@ -2,9 +2,9 @@
 use acyclic_harness_core::{
     Capabilities, Error, OperationId, Result,
     context::{ContextPipeline, ModelContextCapacity},
-    conversation::{Limits, ModelContent},
+    conversation::Limits,
     executor::{StockExecutor, test_support::Journal},
-    model::{Model, ModelEvent, ModelProvider},
+    model::{Model, ModelContent, ModelEvent, ModelProvider},
     runtime::{RuntimeScope, ToolContext, ToolPolicy, ToolPolicyDecision},
     test_support::{FixedToolPolicy, ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
