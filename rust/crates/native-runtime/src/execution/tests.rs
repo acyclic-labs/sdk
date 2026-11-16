@@ -423,10 +423,8 @@ fn linux_boundary_probes(path: &Path, confined: bool, seed: bool) {
     // A negative PID cannot change any thread. The unconfined control reaches
     // the kernel's EINVAL; confinement must still reject the mutation with EPERM.
     // SAFETY: parameters is valid; the deliberately invalid PID names no process.
-    assert_eq!(
-        unsafe { libc::sched_setscheduler(-1, policy, &parameters) },
-        -1
-    );
+    let changed = unsafe { libc::sched_setscheduler(-1, policy, &parameters) };
+    assert_eq!(changed, -1);
     assert_eq!(
         io::Error::last_os_error().raw_os_error(),
         Some(if confined { libc::EPERM } else { libc::EINVAL })

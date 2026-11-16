@@ -175,7 +175,8 @@ fn evaluate_work(
 
 #[test]
 fn scheduler_queries_are_read_only() -> Result<(), TestCaseError> {
-    let code = filter(&ExecutionNetwork::On).unwrap();
+    let code = filter(&ExecutionNetwork::On)
+        .map_err(|error| TestCaseError::fail(error.to_string()))?;
     for call in [libc::SYS_sched_getparam, libc::SYS_sched_getscheduler] {
         assert_eq!(
             evaluate(
@@ -269,7 +270,8 @@ proptest! {
         syscall in any::<u32>(),
         arguments in any::<[u64; 6]>(),
     ) {
-        let code = filter(&ExecutionNetwork::On).unwrap();
+        let code = filter(&ExecutionNetwork::On)
+        .map_err(|error| TestCaseError::fail(error.to_string()))?;
         let attributes = [libc::SYS_getxattr, libc::SYS_lgetxattr, libc::SYS_fgetxattr,
             libc::SYS_listxattr, libc::SYS_llistxattr, libc::SYS_flistxattr];
         if !ALLOWED_SYSCALLS.iter().any(|call| *call == i64::from(syscall))
