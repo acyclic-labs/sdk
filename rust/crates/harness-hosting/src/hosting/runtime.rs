@@ -58,7 +58,8 @@ impl Runtime {
 
     /// Keeps client admission under the application's original lifetime,
     /// including closure before admission or during a Session handshake.
-    pub(crate) async fn admit<T>(&self, operation: impl Future<Output = Result<T>>) -> Result<T> {
+    #[doc(hidden)]
+    pub async fn admit<T>(&self, operation: impl Future<Output = Result<T>>) -> Result<T> {
         let mut lifetime = self.lifetime.clone();
         tokio::select! {
             biased;
