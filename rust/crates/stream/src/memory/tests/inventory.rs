@@ -51,12 +51,18 @@ async fn retained_entries_never_move_across_power_of_two_boundaries() -> TestRes
     }
     assert_eq!(provider.state.read().await.retained.capacity(), 1023);
 
-    // Negative control: the replaced doubling backing copies its prior entries
-    // into a new allocation, which the same check observes.
-    let mut control = Vec::new();
+    // Negative control: the replaced growth path. At a full backing it funds a
+    // doubled buffer while the old one is live and moves every entry into it,
+    // so the same check must observe each prior entry at a new address.
+    let mut control: Vec<u64> = Vec::new();
     let mut seen = Vec::new();
     let mut moved = 0;
     for value in 0..1023_u64 {
+        if control.len() == control.capacity() {
+            let mut grown = Vec::with_capacity((2 * control.capacity()).max(1));
+            grown.append(&mut control);
+            control = grown;
+        }
         control.push(value);
         let current: Vec<usize> = control
             .iter()
