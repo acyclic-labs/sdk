@@ -18,6 +18,7 @@ use std::io::{self, Write};
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -156,8 +157,13 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
                 while let Some((index, name)) = queue.lock().ok().and_then(|mut queue| queue.next())
                 {
                     let log = suite.logs.join(format!("case-{index}.log"));
+                    let temporary = temporary_for(
+                        &suite.logs,
+                        std::process::id(),
+                        CASES.fetch_add(1, Ordering::Relaxed),
+                    );
                     let started = Instant::now();
-                    let outcome = case(suite, custody, name, &log);
+                    let outcome = case(suite, custody, name, &log, &temporary);
                     if sender
                         .send((name.as_str(), outcome, started.elapsed(), log))
                         .is_err()
@@ -197,14 +203,61 @@ fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result
     })
 }
 
+/// Numbers every case this process runs, across all suites, so suites run at once (as `cargo
+/// test` runs this crate's own tests) never share a temporary directory.
+static CASES: AtomicUsize = AtomicUsize::new(0);
+
+/// A case's own temporary directory, short by construction so a socket bound in it fits
+/// `sun_path`: Bazel's test directory alone can exceed it. On Unix it sits under `/tmp`, which
+/// the Linux sandbox makes private to the test, named by the runner's process and the case's
+/// number in it. Windows keeps it under the test's directory.
+fn temporary_for(logs: &Path, runner: u32, number: usize) -> PathBuf {
+    let name = format!("acyclic-{runner:x}-{number:x}");
+    if cfg!(unix) {
+        Path::new("/tmp").join(name)
+    } else {
+        logs.join(name)
+    }
+}
+
 /// Runs one case in its own custodied process tree. A case past the limit fails, and the
 /// tree is stopped with every process the case started, including ones that left its group.
-fn case(suite: &Suite, custody: &ProcessCustody, name: &str, log: &Path) -> io::Result<Outcome> {
+///
+/// The case's temporary directory is its own (`temporary_for`), created empty and removed after
+/// the case, and on Unix is named by its resolved path: Bazel gives a test no TMPDIR, and
+/// macOS's `/tmp` is a symlink, which every case that checks its paths for links refuses. A
+/// directory left by an earlier runner of the same process id is stale and is replaced.
+fn case(
+    suite: &Suite,
+    custody: &ProcessCustody,
+    name: &str,
+    log: &Path,
+    temporary: &Path,
+) -> io::Result<Outcome> {
     let output = File::create(log)?;
+    match fs::remove_dir_all(temporary) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => fs::create_dir(temporary)?,
+    }
+    let outcome = run_case(suite, custody, name, output, &temporary.canonicalize()?);
+    fs::remove_dir_all(temporary)?;
+    outcome
+}
+
+fn run_case(
+    suite: &Suite,
+    custody: &ProcessCustody,
+    name: &str,
+    output: File,
+    temporary: &Path,
+) -> io::Result<Outcome> {
     let mut command = ProcessCommand::new(&suite.binary);
     command
         .args([name, "--exact", "--nocapture", "--test-threads", "1"])
         .env("ACYCLIC_TEST_SOURCE_ROOT", &suite.source);
+    for variable in ["TMPDIR", "TMP", "TEMP"] {
+        command.env(variable, temporary);
+    }
     for setting in SETTINGS {
         command.env_remove(setting);
     }
@@ -238,6 +291,10 @@ mod tests {
 
     const MARKER: &str = "acyclic-test-runner-fixture";
 
+    /// The longest file name a case may bind as a Unix socket inside its temporary directory:
+    /// `sun_path` holds 107 bytes on Linux (103 on macOS, whose root is also the longer).
+    const SOCKET_NAME_ROOM: usize = 56;
+
     fn acting() -> bool {
         Path::new(MARKER).exists()
     }
@@ -263,8 +320,8 @@ mod tests {
         }
     }
 
-    /// A case started by a runner whose own settings are set: it sees its source root and
-    /// executables, and none of the runner's settings.
+    /// A case started by a runner whose own settings are set: it sees its source root,
+    /// executables and own resolved temporary directory, and none of the runner's settings.
     #[test]
     fn environment_case() {
         if acting() {
@@ -276,7 +333,33 @@ mod tests {
                 env::var_os("CARGO_BIN_EXE_fixture").map(PathBuf::from),
                 Some(env::current_exe().unwrap())
             );
+            let temporary = env::temp_dir();
+            // The runner's process id is not the case's: the directory is checked by shape.
+            let name = temporary.file_name().unwrap().to_str().unwrap();
+            assert!(
+                name.starts_with("acyclic-") && name.ends_with("-0"),
+                "{} is not case 0's own directory",
+                temporary.display()
+            );
+            assert_eq!(temporary.canonicalize().unwrap(), temporary, "unresolved");
+            assert_eq!(fs::read_dir(&temporary).unwrap().count(), 0, "not empty");
         }
+    }
+
+    /// The longest per-case directory (any runner, any case) leaves a socket name of
+    /// `SOCKET_NAME_ROOM` bytes inside Linux's 107-byte `sun_path`.
+    #[cfg(unix)]
+    #[test]
+    fn every_case_directory_leaves_room_for_a_socket() {
+        let root = Path::new("/tmp").canonicalize().unwrap();
+        let longest = temporary_for(Path::new("/unused"), u32::MAX, usize::MAX);
+        let resolved = root.join(longest.file_name().unwrap());
+        let length = resolved.as_os_str().len() + 1 + SOCKET_NAME_ROOM;
+        assert!(
+            length <= 107,
+            "{} leaves {length} > 107",
+            resolved.display()
+        );
     }
 
     /// Acts as a runner started with its settings set, running `environment_case`.
