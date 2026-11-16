@@ -132,7 +132,7 @@ fn frames(bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_harness_core::mcp::{http, stdio};
+    use acyclic_harness_mcp::{http, stdio};
 
     #[test]
     fn captured_mcp_refusals_keep_diagnostics_and_uncertainty() {
