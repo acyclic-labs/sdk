@@ -155,6 +155,13 @@ impl Environment {
         if !self.clear && self.vars.is_empty() {
             return None;
         }
+        Some(self.resolved())
+    }
+
+    /// The child's whole environment: this process's, unless cleared, with
+    /// the changes applied.
+    #[cfg(any(windows, target_os = "macos"))]
+    pub(super) fn resolved(&self) -> BTreeMap<EnvKey, OsString> {
         let mut result = BTreeMap::new();
         if !self.clear {
             for (key, value) in std::env::vars_os() {
@@ -171,7 +178,7 @@ impl Environment {
                 }
             }
         }
-        Some(result)
+        result
     }
 }
 

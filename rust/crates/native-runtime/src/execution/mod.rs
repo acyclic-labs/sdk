@@ -18,6 +18,8 @@ mod defaults;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+pub(crate) use macos::SealedExec;
 #[cfg(windows)]
 pub(crate) mod windows;
 

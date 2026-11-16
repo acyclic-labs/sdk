@@ -218,7 +218,12 @@ impl Prepared {
         arg0: Option<&std::ffi::OsStr>,
     ) -> io::Result<()> {
         use std::os::unix::process::CommandExt;
-        let exec = SealedExec::new(command, arg0)?;
+        // The boundary admits only the environment the command sets.
+        let environment = command
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_owned())))
+            .collect::<Vec<_>>();
+        let exec = SealedExec::new(command, arg0, environment)?;
         // SAFETY: the child uses only native calls and parent-owned buffers;
         // neither the allocator nor sandbox compiler runs after our fork.
         unsafe {
@@ -238,7 +243,7 @@ impl Prepared {
 // process owner. CLOEXEC_DEFAULT seals *all* ambient descriptors in the kernel
 // without scanning the host's descriptor table. std has already installed the
 // three admitted standard streams before calling this final exec hook.
-struct SealedExec {
+pub(crate) struct SealedExec {
     attributes: libc::posix_spawnattr_t,
     actions: Option<libc::posix_spawn_file_actions_t>,
     program: std::ffi::CString,
@@ -265,7 +270,13 @@ unsafe impl Send for SealedExec {}
 unsafe impl Sync for SealedExec {}
 
 impl SealedExec {
-    fn new(command: &std::process::Command, arg0: Option<&std::ffi::OsStr>) -> io::Result<Self> {
+    /// Prepares, in the parent, an exec of `command` with exactly
+    /// `environment` and only the three standard streams.
+    pub(crate) fn new(
+        command: &std::process::Command,
+        arg0: Option<&std::ffi::OsStr>,
+        environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    ) -> io::Result<Self> {
         use std::{ffi::CString, os::unix::ffi::OsStrExt};
         let cstring = |text: &std::ffi::OsStr| CString::new(text.as_bytes()).map_err(refused);
         let program = cstring(command.get_program())?;
@@ -273,9 +284,8 @@ impl SealedExec {
             .chain(command.get_args())
             .map(cstring)
             .collect::<io::Result<Vec<_>>>()?;
-        let environment = command
-            .get_envs()
-            .filter_map(|(key, value)| value.map(|value| (key, value)))
+        let environment = environment
+            .into_iter()
             .map(|(key, value)| {
                 let mut bytes = key.as_bytes().to_vec();
                 bytes.push(b'=');
@@ -327,6 +337,14 @@ impl SealedExec {
         Ok(result)
     }
 
+    /// Makes this exec `command`'s final hook, after every hook added before.
+    pub(crate) fn install(self, command: &mut std::process::Command) {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: the child uses only native calls and parent-owned buffers.
+        unsafe { command.pre_exec(move || self.enter()) };
+    }
+
+    /// In the forked child: replaces it with the program; returns only on failure.
     fn enter(&self) -> io::Result<()> {
         // Native posix_spawnp reads PATH from environ, not envp. Match std's
         // child-only environment handoff; restore it on every failed exec.

@@ -155,6 +155,32 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
 /// pass sees its output end before any later write could meet the closed pipe.
 /// EOF must fail the incomplete exchange without waiting for an exit status;
 /// the original cleanup still reaps the child.
+/// A program receives only its three standard streams. A descriptor this
+/// process holds without close-on-exec, as another thread's new pipe is
+/// until std marks it, is absent from the program.
+#[cfg(unix)]
+#[test]
+fn a_program_inherits_only_its_standard_streams() -> io::Result<()> {
+    use std::os::fd::FromRawFd as _;
+    let mut ends = [0; 2];
+    // SAFETY: writable storage for two descriptors; no close-on-exec flag.
+    assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+    // SAFETY: the two descriptors the call above just returned, held open
+    // across the spawn so that no other descriptor takes their numbers.
+    let _ends = ends.map(|end| unsafe { std::fs::File::from_raw_fd(end) });
+    let mut command = super::ProcessCommand::new("/bin/sh");
+    command.arg("-c").arg(format!(
+        "! [ -e /dev/fd/{} ] && ! [ -e /dev/fd/{} ]",
+        ends[0], ends[1]
+    ));
+    let status = ProcessTree::spawn(&mut command)?.wait(CaptureSchedule::Unbounded)?;
+    assert!(
+        status.success(),
+        "the program holds an inherited descriptor"
+    );
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Result<()> {
@@ -174,15 +200,22 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
         .ok_or(io::ErrorKind::NotFound)?;
     let input = vec![b'x'; 1 << 20];
     let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    // The write can block again after the kill: a concurrent fork elsewhere
+    // in this process holds the read end until it execs, and the pipe breaks
+    // only when that last reader closes.
+    let killed = std::sync::Once::new();
     meter.blocked_write = Some(Box::new(move || {
-        // The program leads no group: the tree's group, which the unreaped
-        // warden's PID reserves, holds the program and never the warden.
-        // SAFETY: a signal to the tree's own process group.
-        assert_eq!(
-            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) },
-            0
-        );
-        super::platform::await_exiting_id(pid, None, &mut None).expect("observe the killed child");
+        killed.call_once(|| {
+            // The program leads no group: the tree's group, which the unreaped
+            // warden's PID reserves, holds the program and never the warden.
+            // SAFETY: a signal to the tree's own process group.
+            assert_eq!(
+                unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) },
+                0
+            );
+            super::platform::await_exiting_id(pid, None, &mut None)
+                .expect("observe the killed child");
+        });
     }));
     let failure = tree
         .wait_with_output(
@@ -1123,7 +1156,21 @@ fn queued_stdin_rejects_early_closure_that_optional_literal_capture_accepts() {
                     .expect("optional input control"),
             );
         }
-        let result = tree.pump_stdin();
+        // The pipe breaks once its last reader closes: a concurrent fork
+        // elsewhere in this process holds the read end until it execs.
+        let result = loop {
+            match tree.pump_stdin() {
+                Ok(false) => {
+                    tree.stdin_readiness()
+                        .expect("arm stdin")
+                        .0
+                        .block()
+                        .into_result()
+                        .expect("original native event succeeded");
+                }
+                result => break result,
+            }
+        };
         if required {
             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
         } else {
