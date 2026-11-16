@@ -274,7 +274,7 @@ async fn policy_rebase(observe: bool, revoke: bool) -> Result<bool, Box<dyn std:
         .value;
     if observe {
         transaction
-            .observe_policy_fence(fence, WorkBudget::UNBOUNDED, &cancel)
+            .observe_policy_fence(fence, super::access::access_time()?, WorkBudget::UNBOUNDED, &cancel)
             .await?;
     }
     transaction
@@ -330,7 +330,7 @@ async fn policy_rebase(observe: bool, revoke: bool) -> Result<bool, Box<dyn std:
             .await?
             .value;
         assert!(matches!(
-            next.observe_policy_fence(fence, WorkBudget::UNBOUNDED, &cancel)
+            next.observe_policy_fence(fence, super::access::access_time()?, WorkBudget::UNBOUNDED, &cancel)
                 .await,
             Err(crate::OperationFailure {
                 error: WorkspaceError::AccessDenied,
@@ -375,11 +375,11 @@ async fn explicit_generation_preconditions_survive_policy_fences()
         .await?
         .value;
     transaction
-        .observe_policy_fence(fence, WorkBudget::UNBOUNDED, &cancel)
+        .observe_policy_fence(fence, super::access::access_time()?, WorkBudget::UNBOUNDED, &cancel)
         .await?;
     assert!(matches!(
         transaction
-            .observe_policy_fence(fence.pin_generation(), WorkBudget::UNBOUNDED, &cancel)
+            .observe_policy_fence(fence.pin_generation(), super::access::access_time()?, WorkBudget::UNBOUNDED, &cancel)
             .await,
         Err(crate::OperationFailure {
             error: WorkspaceError::AccessDenied,

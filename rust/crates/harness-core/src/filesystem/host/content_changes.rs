@@ -538,7 +538,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .ok_or_else(|| io.invalid("missing conditional publication policy fence"))?;
                 io.sdk(
                     transaction
-                        .observe_policy_fence(fence, io, io.cancellation())
+                        .observe_policy_fence(fence, self.access_now()?, io, io.cancellation())
                         .await,
                 )?;
                 for (change, record) in changes.iter().zip(&records) {

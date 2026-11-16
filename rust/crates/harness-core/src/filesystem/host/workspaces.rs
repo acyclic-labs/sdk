@@ -286,8 +286,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map_err(map_error)?,
             };
             if let Some(fence) = publication.fence() {
+                let now = self.access_now()?;
                 unmeasured_workspace_operation(|| {
-                    transaction.observe_policy_fence(fence, budget, &cancellation)
+                    transaction.observe_policy_fence(fence, now, budget, &cancellation)
                 })?
                 .await?
                 .map_err(|failure| map_error(failure.error))?;

@@ -145,7 +145,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if let Some(fence) = publication.fence() {
                     io.sdk(
                         transaction
-                            .observe_policy_fence(fence, io, io.cancellation())
+                            .observe_policy_fence(fence, now, io, io.cancellation())
                             .await,
                     )?;
                 }
