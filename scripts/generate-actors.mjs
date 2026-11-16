@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateFiles, writeChanged } from "./generated-bindings.mjs";
 import { generate } from "./proto-codegen.mjs";
+import { bazelExecutable } from "./bazel-executables.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageGenerated = join(root, "typescript/packages/actors/src/generated");
@@ -15,7 +16,7 @@ function run(command, args, cwd = root) {
 }
 
 async function rustGenerate(output) {
-  run("cargo", ["run", "--locked", "-p", "acyclic-actors", "--example", "actors-http-routes", "--", output]);
+  run(bazelExecutable(root, "//rust/crates/actors:actors-http-routes_example"), [output]);
   await serviceGenerate("Actors", dirname(output), output);
   writeChanged(join(dirname(output), "readonly.ts"), generate(["readonly"]));
 }

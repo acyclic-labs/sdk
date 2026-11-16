@@ -1,4 +1,4 @@
-export const rust = [["acyclic-inference-wasm", "example", "inference-typescript-widths"]];
+export const rust = ["//rust/crates/inference-wasm:inference-typescript-widths_example"];
 
 export function render([stdout]) {
   const widths = JSON.parse(stdout);

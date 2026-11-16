@@ -8,7 +8,7 @@ const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
 
 /** Derive native provenance through the same Rust owner used at build admission. */
 export function generateNativeFamily(key, root = sourceRoot) {
-  return JSON.parse(generate(["native-family", root, key], { offline: true }));
+  return JSON.parse(generate(["native-family", root, key]));
 }
 
 /** Refresh or check the selected families with the canonical generated-file policy. */

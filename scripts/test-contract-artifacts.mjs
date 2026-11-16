@@ -28,29 +28,29 @@ test("the generator compares executed bytes and records failure without changing
     const generator = source("generate-contracts.mjs");
     put("scripts/generate-contracts.mjs", generator);
     put("scripts/contract-targets.mjs", source("contract-targets.mjs"));
+    put("scripts/bazel-executables.mjs", source("bazel-executables.mjs"));
     put("scripts/package-closure.mjs", source("package-closure.mjs"));
     put("scripts/generated-bindings.mjs", source("generated-bindings.mjs"));
     put("package.json", JSON.stringify({ workspaces: [] }));
     for (const name of contractModules()) {
       put(`scripts/${name}`, name === "generate-actors-routes.mjs"
-        ? 'export const rust = [["fixture", "bin", "contract"]]; export const render = ([stdout]) => ({"contract.txt": stdout});'
+        ? 'export const rust = ["//fixture:contract"]; export const render = ([stdout]) => ({"contract.txt": stdout});'
         : 'export const render = () => ({});');
     }
-    // Execute the actual generator entry, Cargo metadata/artifact discovery and
-    // selected Rust binary. No hand-written Cargo messages admit this exporter.
-    const cargo = process.env.ACYCLIC_CARGO_BIN || "cargo";
-    put("Cargo.toml", '[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2024"\n[[bin]]\nname = "contract"\npath = "src/main.rs"\n');
-    mkdirSync(join(root, "src"));
-    put("src/main.rs", `use std::io::Write;
-fn main() -> std::io::Result<()> {
-    std::fs::OpenOptions::new().create(true).append(true).open("executions.txt")?.write_all(b"execute\\n")?;
-    std::io::stdout().lock().write_all(&std::fs::read("candidate.txt")?)
+    // Bazel is this Node executable running the build, info and cquery files below; cquery names the same
+    // executable as the contract target, which the imported producer turns into the exporter only when it runs
+    // with no script. The generator entry, its receipt and drift comparison are the real ones.
+    put("producer.mjs", `import { appendFileSync, readFileSync, writeSync } from "node:fs";
+if (process.argv.length === 1) {
+  appendFileSync("executions.txt", "execute\\n");
+  writeSync(1, readFileSync("candidate.txt"));
 }
 `);
-    const env = { ...process.env, ACYCLIC_CARGO_BIN: cargo, CARGO_TARGET_DIR: join(root, "target"),
-      SDK_TEMP_DIR: join(root, "diagnostics"), GITHUB_RUN_ID: "fixture-run" };
-    const locked = spawnSync(cargo, ["generate-lockfile", "--offline"], { cwd: root, env, encoding: "utf8" });
-    assert.equal(locked.status, 0, locked.error?.message ?? locked.stderr);
+    put("build", "");
+    put("info", "process.stdout.write(process.cwd() + '\\n');");
+    put("cquery", `process.stdout.write("@@//fixture:contract\\t" + ${JSON.stringify(process.execPath)} + "\\n");`);
+    const env = { ...process.env, ACYCLIC_BAZEL: process.execPath, SDK_TEMP_DIR: join(root, "diagnostics"), GITHUB_RUN_ID: "fixture-run",
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(join(root, "producer.mjs")).href}` };
     put("contract.txt", "current\n");
     put("candidate.txt", "current\n");
     const git = args => {
@@ -63,31 +63,14 @@ fn main() -> std::io::Result<()> {
     git(["-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "--quiet", "-m", "Fixture"]);
     const sourceSha = git(["rev-parse", "HEAD"]);
     env.CI_HEAD_SHA = sourceSha;
-    // Retain the exact real wire at the generator's existing decode boundary.
-    // Later report/drift controls replay it against the SAME unchanged binary;
-    // source/configuration freshness is covered by the real Cargo control.
-    put("capture-wire.mjs", `import { appendFileSync, writeFileSync } from "node:fs";
-const parse = JSON.parse;
-JSON.parse = (text, ...args) => {
-  const value = parse(text, ...args);
-  if (value?.packages) writeFileSync("metadata.json", text);
-  else if (value?.reason) appendFileSync("artifacts.jsonl", text + "\\n");
-  return value;
-};
-`);
-    env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(join(root, "capture-wire.mjs")).href}`;
     const run = () => spawnSync(process.execPath, [join(root, "scripts/generate-contracts.mjs"), "check"], { cwd: root, env, encoding: "utf8" });
     const receipt = () => JSON.parse(readFileSync(join(root, "diagnostics/observability/generated-contracts.json"), "utf8"));
     const success = run();
     assert.equal(success.status, 0, success.stderr);
     assert.equal(receipt().status, "success");
     assert.equal(receipt().source_commit, sourceSha);
-    assert.equal(receipt().artifacts.filter(item => item.requested).length, 1);
-    env.NODE_OPTIONS = process.env.NODE_OPTIONS;
-    put("metadata", 'process.stdout.write(require("node:fs").readFileSync("metadata.json"));');
-    put("build", 'process.stdout.write(require("node:fs").readFileSync("artifacts.jsonl"));');
-    env.ACYCLIC_CARGO_BIN = process.execPath;
-    // An executable selected under the correct Cargo identity can still emit
+    assert.deepEqual(receipt().labels, ["//fixture:contract"]);
+    // An executable cquery names for the requested label can still emit
     // wrong bytes; the independent generated drift comparison must reject it.
     put("candidate.txt", "substituted\n");
     const substituted = run();
@@ -107,14 +90,13 @@ JSON.parse = (text, ...args) => {
     put("scripts/generate-inference-defaults.mjs", 'export const render = () => ({});');
     put("candidate.txt", "current\n");
     assert.equal(run().status, 0);
-    const metadataReplay = readFileSync(join(root, "metadata"));
     const readinessFailure = step => Object.assign(new Error(`compiler-readiness step=${step}; recovery command: node --test scripts/test-contract-artifacts.mjs`), {
       code: "COMPILER_READINESS_FAILED", step,
     });
     let ready = Promise.withResolvers();
     ready.promise.catch(() => {}); // Listening failure can precede the await.
-    // A separate native child stalls the metadata phase for the cancellation
-    // control only. It supplies no metadata or compiler wire. Arm its channel
+    // A separate native child stalls the build phase for the cancellation
+    // control only. It supplies no build output. Arm its channel
     // before starting it, including early connection loss.
     compilerServer = createServer(socket => {
       const admitted = ready;
@@ -150,7 +132,7 @@ JSON.parse = (text, ...args) => {
     reset.resetAndDestroy();
     await resetLost;
     ready = Promise.withResolvers();
-    put("metadata", `const socket = require("node:net").connect(${JSON.stringify({ host: "127.0.0.1", port })}, () => socket.write(String(process.pid) + "\\n"));`);
+    put("build", `const socket = require("node:net").connect(${JSON.stringify({ host: "127.0.0.1", port })}, () => socket.write(String(process.pid) + "\\n"));`);
     cancelled = spawn(process.execPath, [join(root, "scripts/generate-contracts.mjs"), "check"], { cwd: root, env, stdio: "ignore", windowsHide: true });
     generatorExit = once(cancelled, "exit");
     generatorExit.catch(() => {}); // The original join below observes spawn loss.
@@ -162,15 +144,15 @@ JSON.parse = (text, ...args) => {
     await generatorExit;
     stopCompiler();
     assert.equal(receipt().status, "incomplete", "abrupt termination must not reuse the previous success");
-    assert.equal(receipt().phase, "metadata");
+    assert.equal(receipt().phase, "build");
     assert.equal(receipt().source_commit, sourceSha);
     assert.equal(readFileSync(join(root, "contract.txt"), "utf8"), "current\n");
-    put("metadata", metadataReplay);
-    // Two renderers share the exact Cargo artifact and execute it once. Both
+    put("build", "");
+    // Two renderers share the exact Bazel executable and execute it once. Both
     // independent file comparisons still run after cancellation. Decoder
     // missing/malformed cases live in the shared contract-target controls.
-    put("scripts/generate-actors-routes.mjs", 'export const rust = [["fixture", "bin", "contract"]]; export const rustPayload = "first"; export const render = ([stdout]) => ({"contract.txt": stdout});');
-    put("scripts/generate-inference-defaults.mjs", 'export const rust = [["fixture", "bin", "contract"]]; export const rustPayload = "second"; export const render = ([stdout]) => ({"second.txt": stdout});');
+    put("scripts/generate-actors-routes.mjs", 'export const rust = ["//fixture:contract"]; export const rustPayload = "first"; export const render = ([stdout]) => ({"contract.txt": stdout});');
+    put("scripts/generate-inference-defaults.mjs", 'export const rust = ["//fixture:contract"]; export const rustPayload = "second"; export const render = ([stdout]) => ({"second.txt": stdout});');
     put("second.txt", "second\n");
     put("candidate.txt", JSON.stringify({ first: "current\n", second: "second\n" }));
     rmSync(join(root, "executions.txt"));
@@ -178,7 +160,7 @@ JSON.parse = (text, ...args) => {
     assert.equal(shared.status, 0, shared.stderr);
     assert.equal(receipt().status, "success");
     assert.equal(readFileSync(join(root, "executions.txt"), "utf8"), "execute\n");
-    assert.equal(receipt().artifacts.filter(item => item.requested).length, 1);
+    assert.deepEqual(receipt().labels, ["//fixture:contract"]);
   } finally {
     if (cancelled?.exitCode === null && cancelled.signalCode === null) cancelled.kill("SIGKILL");
     stopCompiler();

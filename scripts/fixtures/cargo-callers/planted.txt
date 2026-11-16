@@ -1,0 +1,7 @@
+execFileSync("cargo", ["run"]);
+cargo build --locked -p a
+cargo +nightly kani -p a
+spawn('cargo.exe')
+cargo --quiet build -p a
+cargo -C rust --locked fetch
+cargo +stable --color never update -p a

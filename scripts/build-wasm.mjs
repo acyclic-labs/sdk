@@ -9,6 +9,7 @@ import { packageClosure } from "./package-closure.mjs";
 import { copyWasmArtifacts, isWasmArtifactPath } from "./archive-utils.mjs";
 import { nativeFamily } from "./native-family.mjs";
 import { generationKey, memoizedGeneration } from "./generation-cache.mjs";
+import { memberDirectory } from "./workspace-manifests.mjs";
 import { recordGeneration } from "./generated-bindings.mjs";
 
 const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen_(?:[0-9a-f]+)?_+convert__closures_+invoke_[^:\s]*:.*\r?\n/gm;
@@ -203,7 +204,7 @@ async function buildWasm() {
     else await memoizedGeneration(root, { name: `wasm-${name}`, packages: [name], native: false }, build, {
       key: await generationKey(root, {
         label: `wasm ${selection.join(" ")}`,
-        roots: async () => selection.filter((_, index) => selection[index - 1] === "-p"),
+        roots: async () => selection.filter((_, index) => selection[index - 1] === "-p").map(name => memberDirectory(root, name)),
         // A family's receipt digests its source roots, so they are inputs whole.
         paths: family?.sourceRoots ?? [],
         // A family's receipt records its exact source snapshot, ignored files included, so the key does too.

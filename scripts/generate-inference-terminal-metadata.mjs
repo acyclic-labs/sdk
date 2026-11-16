@@ -1,6 +1,6 @@
 // Run the current Rust source directly. Reading generated WASM here would
 // allow an ignored or stale artifact to hide descriptor and option drift.
-export const rust = [["acyclic-inference-wasm", "example", "inference-typescript-terminal-metadata"]];
+export const rust = ["//rust/crates/inference-wasm:inference-typescript-terminal-metadata_example"];
 
 function readRustMetadata(stdout) {
   const metadata = JSON.parse(stdout);

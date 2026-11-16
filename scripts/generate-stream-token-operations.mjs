@@ -1,4 +1,4 @@
-export const rust = [["acyclic-stream", "example", "token-operations"]];
+export const rust = ["//rust/crates/stream:token-operations_example"];
 
 export function render([stdout]) {
   const operations = JSON.parse(stdout);

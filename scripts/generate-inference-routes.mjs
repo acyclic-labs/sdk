@@ -1,4 +1,4 @@
-export const rust = [["acyclic-inference-wasm", "example", "inference-typescript-http-routes"]];
+export const rust = ["//rust/crates/inference-wasm:inference-typescript-http-routes_example"];
 
 export function render([stdout]) {
   return {

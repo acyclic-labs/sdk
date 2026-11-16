@@ -63,11 +63,10 @@ export async function generateContracts(mode = "write", families = [], { native 
   let modules = contractModules(families);
 
   if (mode !== "write" && mode !== "check") throw new Error("STEP_FAILED contract-mode: expected write|check; recovery: bun scripts/generate-contracts.mjs check");
-  // One build compiles every contract target from current Rust source; the
-  // emitted executables are then run directly instead of one `cargo run` each.
-  // Selected packages omit defaults; Cargo still unifies dependency features.
-  /** @type {{ revision: number, status: string, phase: string, mode: string, source_commit: string | null, run_id: string | null, metadata_ms: number, build_ms: number, artifacts: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[], generators: { name: string, execute_ms: number, render_compare_ms: number }[] }} */
-  const report = { revision: 2, status: "incomplete", phase: "start", mode, source_commit: null, run_id: process.env.GITHUB_RUN_ID ?? null, metadata_ms: 0, build_ms: 0, artifacts: [], generators: [] };
+  // One Bazel build brings every contract target up to date from current Rust source; the
+  // executables are then run directly, each at most once.
+  /** @type {{ revision: number, status: string, phase: string, mode: string, source_commit: string | null, run_id: string | null, build_ms: number, labels: string[], generators: { name: string, execute_ms: number, render_compare_ms: number }[] }} */
+  const report = { revision: 3, status: "incomplete", phase: "start", mode, source_commit: null, run_id: process.env.GITHUB_RUN_ID ?? null, build_ms: 0, labels: [], generators: [] };
   const started = performance.now();
   const saveReport = () => {
     if (!process.env.SDK_TEMP_DIR) return;
@@ -92,13 +91,12 @@ export async function generateContracts(mode = "write", families = [], { native 
     const kept = generators.map(generator => keepsGenerator(generator, families, native));
     modules = modules.filter((_, index) => kept[index]);
     generators = generators.filter((_, index) => kept[index]);
-    const targets = [...new Map(generators.flatMap(generator => generator.rust ?? [])
-      .map(target => [JSON.stringify(target), target])).values()];
-    const features = [...new Set(generators.flatMap(generator => generator.rustFeatures ?? []))];
-    const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport, features);
-    const targetIndex = new Map(targets.map((target, index) => [JSON.stringify(target), index]));
+    const targets = [...new Set(generators.flatMap(generator => generator.rust ?? []))];
+    report.labels = targets;
+    const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, report, saveReport);
+    const targetIndex = new Map(targets.map((target, index) => [target, index]));
     const consumers = generators.flatMap(generator => (generator.rust ?? [])
-      .map(target => [targetIndex.get(JSON.stringify(target)), generator.rustPayload]));
+      .map(target => [targetIndex.get(target), generator.rustPayload]));
     const outputFor = contractTargetOutputs(root, executables, consumers);
 
     const stale = [];
@@ -107,7 +105,7 @@ export async function generateContracts(mode = "write", families = [], { native 
       report.phase = `execute:${modules[index]}`;
       saveReport();
       const stdout = (generator.rust ?? []).map(target => {
-        const targetSlot = targetIndex.get(JSON.stringify(target));
+        const targetSlot = targetIndex.get(target);
         return outputFor(targetSlot, generator.rustPayload);
       });
       const execute_ms = performance.now() - executionStart;
@@ -136,7 +134,7 @@ export async function generateContracts(mode = "write", families = [], { native 
   } finally {
     if (report.status !== "success") report.status = "failed";
     const total_ms = performance.now() - started;
-    console.error(`Rust contracts: ${report.status}; metadata ${report.metadata_ms.toFixed(0)}ms; build ${report.build_ms.toFixed(0)}ms; total ${total_ms.toFixed(0)}ms`);
+    console.error(`Rust contracts: ${report.status}; build ${report.build_ms.toFixed(0)}ms; total ${total_ms.toFixed(0)}ms`);
     saveReport();
   }
 

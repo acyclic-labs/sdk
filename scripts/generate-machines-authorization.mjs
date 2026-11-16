@@ -1,4 +1,4 @@
-export const rust = [["acyclic-machines", "example", "machines-authorization"]];
+export const rust = ["//rust/crates/machines:machines-authorization_example"];
 export function render([stdout]) {
   return { "typescript/packages/machines/src/generated/authorization.ts": stdout };
 }

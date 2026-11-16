@@ -1,4 +1,4 @@
-export const rust = [["acyclic-harness", "example", "file-tools-contract"]];
+export const rust = ["//rust/crates/harness:file-tools-contract_example"];
 
 export function render([stdout]) {
   const contract = JSON.parse(stdout);

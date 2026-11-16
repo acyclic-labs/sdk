@@ -3,7 +3,7 @@ const KINDS = new Set([
   "heads", "read", "children_page", "commit", "envelope", "token", "empty",
 ]);
 
-export const rust = [["acyclic-stream", "bin", "stream-http-contract"]];
+export const rust = ["//rust/crates/stream:stream-http-contract"];
 
 function readRustContract(stdout) {
   const contract = JSON.parse(stdout);
