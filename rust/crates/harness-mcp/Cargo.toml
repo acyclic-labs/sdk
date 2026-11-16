@@ -31,6 +31,9 @@ tsify = { workspace = true, optional = true }
 uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-harness-http = { version = "=0.2.0", path = "../harness-http" }
+acyclic-harness-native-settings = { version = "=0.2.0", path = "../harness-native-settings" }
+acyclic-harness-input-watch = { version = "=0.2.0", path = "../harness-input-watch" }
 acyclic-mcp = { version = "=0.2.0", path = "../mcp", features = ["stdio"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 rmcp = { workspace = true, features = ["auth", "reqwest-tls-no-provider"] }

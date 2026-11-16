@@ -9,7 +9,7 @@ repository.workspace = true
 description = "Host input invalidation behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-input-watch"
 
-[dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }

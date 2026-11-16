@@ -21,6 +21,8 @@ acyclic_test_support::counting_allocator!();
 // Everything below the client and host compositions lives in
 // `acyclic-harness-core`; its public items keep their paths here.
 pub use acyclic_harness_core::*;
+/// Shared host HTTP boundary.
+pub use acyclic_harness_http as http;
 /// Experiment planning and analysis.
 pub use acyclic_harness_experiments as experiments;
 /// Object content stores.
@@ -30,6 +32,9 @@ pub use acyclic_harness_oidc as oidc;
 #[cfg(not(target_arch = "wasm32"))]
 /// Host input invalidation.
 pub use acyclic_harness_input_watch as input_watch;
+#[cfg(not(target_arch = "wasm32"))]
+/// Native settings admission.
+pub use acyclic_harness_native_settings as native_settings;
 /// MCP clients over the ordinary tool, execution and interaction owners.
 pub use acyclic_harness_mcp as mcp;
 #[cfg(not(target_arch = "wasm32"))]

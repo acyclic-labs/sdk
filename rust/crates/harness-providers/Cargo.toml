@@ -23,6 +23,7 @@ acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = fa
 acyclic-model-render = { path = "../model-render", version = "=0.2.0" }
 acyclic-auth = { path = "../auth", version = "=0.2.0" }
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
+acyclic-harness-http = { path = "../harness-http", version = "=0.2.0" }
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 async-stream = "0.3.6"
 base64 = "=0.23.1"
