@@ -53,11 +53,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         E: From<FsError> + From<WorkspaceError> + acyclic_stream::ProviderTask,
     {
         let creation = creation.into();
-        let crate::CreationOperation {
-            operation_id,
-            files,
-            attributes,
-        } = creation;
+        let operation_id = creation.operation_id;
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             let config = initialization.config;
@@ -76,7 +72,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         .create_volume_operation(
                             id.volume_id(),
                             initialization,
-                            Some(creation),
+                            Some(creation.clone()),
                             &mut accounting,
                             cancellation,
                             guard,
@@ -113,8 +109,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         id.volume_id(),
                         config,
                         creation.initial_generation_root,
-                        files,
-                        &attributes,
+                        creation.files,
+                        &creation.attributes,
                         &mut accounting,
                         cancellation,
                     )
