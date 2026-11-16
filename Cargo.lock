@@ -1012,6 +1012,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-harness-http",
  "acyclic-harness-input-watch",
+ "acyclic-machines",
  "acyclic-machines-daytona",
  "acyclic-model-render",
  "acyclic-native-runtime",

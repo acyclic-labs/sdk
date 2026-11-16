@@ -2,7 +2,7 @@
 use acyclic_harness_core::{Error, Result};
 use acyclic_harness_http::*;
 use acyclic_harness_providers::ReqwestTransport;
-use acyclic_machines::{conformance, *};
+use acyclic_machines::{conformance, provider::MachinesProvider, *};
 use acyclic_machines_daytona::{DaytonaConfig, DaytonaProvider};
 use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
