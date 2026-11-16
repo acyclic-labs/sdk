@@ -283,9 +283,13 @@ async fn wait_case(
             drain(&harness).await?;
         }
         "reopened_after_crash" => {
+            let completion = harness.completion();
             drop(observer);
             drop(conversation);
             drop(harness);
+            if let Some(completion) = completion {
+                let _ = completion.await;
+            }
             world.clear_registered();
             let reopened = world.open().await.map_err(oracle::failed)?;
             drain(&reopened).await?;
