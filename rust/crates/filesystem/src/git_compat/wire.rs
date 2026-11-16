@@ -113,6 +113,7 @@ pub const GIT_COMPAT_BYTE_WIRE_FIELDS: &[(&str, Option<usize>)] = &[
     ("overlay", Some(std::mem::size_of::<crate::LazyOverlayId>())),
     ("shadows", Some(std::mem::size_of::<crate::LazyShadowId>())),
     ("patch", None),
+    ("components", None),
 ];
 
 /// Field names using the signed JSON timestamp representation.
