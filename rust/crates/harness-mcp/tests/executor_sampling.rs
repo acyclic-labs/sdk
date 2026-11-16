@@ -1,8 +1,8 @@
 //! MCP sampling over the ordinary executor and model boundary.
 use acyclic_harness_core::{
     Capabilities, Error, OperationId, Result,
-    context::{ContextPipeline, Limits, ModelContextCapacity},
-    conversation::ModelContent,
+    context::{ContextPipeline, ModelContextCapacity},
+    conversation::{Limits, ModelContent},
     executor::{StockExecutor, test_support::Journal},
     model::{Model, ModelEvent, ModelProvider},
     runtime::{RuntimeScope, ToolContext, ToolPolicy, ToolPolicyDecision},
@@ -10,7 +10,6 @@ use acyclic_harness_core::{
     tool::ToolRegistry,
 };
 use acyclic_harness_mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
-use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -104,9 +103,6 @@ async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -
     }
     Ok(())
 }
-
-use super::*;
-use acyclic_harness_mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
 
 fn catalog(count: usize) -> Result<ToolRegistry> {
     let template = acyclic_harness_core::tool::files::read()?;
