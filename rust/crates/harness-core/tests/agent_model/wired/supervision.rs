@@ -205,7 +205,7 @@ async fn admitted_files(
     acyclic_harness_core::core::RuntimeAuthority,
     Arc<dyn ContentPublisher>,
 )> {
-    let (filesystem, private) = private_in(stream, path).await?;
+    let (filesystem, private) = with_journal(private_in(stream, path).await?).await?;
     let home = VolumeRef::new(
         private.volume()?.provider().clone(),
         "home".into(),

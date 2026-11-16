@@ -66,9 +66,23 @@ fn journal_of(volume: &VolumeRef) -> Result<VolumeRef> {
 /// A memory filesystem host with agent `path`'s private volume.
 type Host = Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>;
 
-/// The private-volume binding of agent `path`, and its filesystem host.
+/// The private-volume binding of agent `path`, and its filesystem host with
+/// the agent's journal: a separate filesystem can only host roots committed
+/// directly through actors.
 async fn private(path: &AgentPath) -> Result<(Host, WorkspaceEntry)> {
-    private_on(path, Fs::memory()).await
+    with_journal(private_on(path, Fs::memory()).await?).await
+}
+
+/// Also creates the journal of the agent owning `files`' private volume, for
+/// a root committed directly through actors. The production route,
+/// [`create_filesystem_root`], creates the journal in the root's own commit
+/// and refuses one that already exists.
+async fn with_journal(files: (Host, WorkspaceEntry)) -> Result<(Host, WorkspaceEntry)> {
+    files
+        .0
+        .create_volume(&journal_of(files.1.volume()?)?)
+        .await?;
+    Ok(files)
 }
 
 /// Turns and filesystem history participate in the same publication domain.
@@ -159,11 +173,6 @@ async fn private_on(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    host.create_volume(&acyclic_harness_core::conversation::journal_volume(
-        volume.provider().clone(),
-        &path.id(),
-    )?)
-    .await?;
     Ok((
         host,
         WorkspaceEntry::initial_volume(
@@ -1232,12 +1241,15 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         ScriptedTurn::Text("second".into()),
         ScriptedTurn::Text("after cancellation".into()),
     ]));
-    let (filesystem, binding) = private_on(
-        &path,
-        Fs::from_memory_providers(
-            stream.clone(),
-            Arc::new(acyclic_objects::MemoryObjects::memory()),
-        ),
+    let (filesystem, binding) = with_journal(
+        private_on(
+            &path,
+            Fs::from_memory_providers(
+                stream.clone(),
+                Arc::new(acyclic_objects::MemoryObjects::memory()),
+            ),
+        )
+        .await?,
     )
     .await?;
     let notice_issuer = AuthorityRoot::new(
@@ -1626,6 +1638,54 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         let first = request.messages.first().ok_or("empty request")?;
         assert_eq!(first.role, ModelRole::System);
         assert_eq!(first.content, requests[0].messages[0].content);
+    }
+    Ok(())
+}
+
+/// Root creation owns the agent's journal: it creates it in the root's own
+/// commit, and a journal created before the root is another creation.
+#[tokio::test]
+async fn root_creation_creates_the_journal_and_refuses_an_earlier_one() -> Result {
+    for earlier in [false, true] {
+        let path = AgentPath::root(&id(4));
+        let stream = Arc::new(MemoryStream::default());
+        let mut files = private_in(&stream, &path).await?;
+        if earlier {
+            files = with_journal(files).await?;
+        }
+        let (files, binding) = files;
+        let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+            stream.clone(),
+            within(),
+            files.clone(),
+            AuthorityRoot::new(
+                "agents",
+                [7; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "agents".into(),
+                },
+            ),
+            TurnAdmission::LocalRoot,
+            executors(Arc::new(ScriptedModelProvider::new([])))?,
+            LIMITS,
+            Default::default(),
+        ));
+        let mut adoption = adopted(id(4));
+        adoption.volumes = vec![binding];
+        let host = committing(&stream, &files, driver)?;
+        let created = create_filesystem_root(&host, &files, &intent("root"), adoption).await;
+        if earlier {
+            let refused = created.err().ok_or("an earlier journal was adopted")?;
+            assert!(
+                refused
+                    .to_string()
+                    .contains("agent exists with another creation"),
+                "{refused}"
+            );
+        } else {
+            assert_eq!(created?, path);
+        }
     }
     Ok(())
 }

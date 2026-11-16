@@ -69,7 +69,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             Default::default(),
             Arc::new(super::preparation::JournalClock(clock.clone())),
         ));
-        let (filesystem, binding) = private_in(&stream, &path).await?;
+        let (filesystem, binding) = with_journal(private_in(&stream, &path).await?).await?;
         let mut turns = vec![
             ScriptedTurn::Text("reply body".into()),
             ScriptedTurn::Text("none".into()),

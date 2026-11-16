@@ -7,7 +7,7 @@ async fn interrupted_streams_keep_live_reply_on_the_journal() -> Result {
     for expected in ["saved prefix", ""] {
         let path = AgentPath::root(&id(214));
         let stream = Arc::new(MemoryStream::default());
-        let (files, private) = private_in(&stream, &path).await?;
+        let (files, private) = with_journal(private_in(&stream, &path).await?).await?;
         let mut events = vec![
             ScriptedEvent::Event(ModelEvent::Content {
                 delta: "abandoned prefix".into(),
@@ -100,7 +100,7 @@ async fn interrupted_streams_keep_live_reply_on_the_journal() -> Result {
 async fn journal_payloads_and_effects_replay_outside_model_writable_storage() -> Result {
     let path = AgentPath::root(&id(211));
     let stream = Arc::new(MemoryStream::default());
-    let (files, private) = private_in(&stream, &path).await?;
+    let (files, private) = with_journal(private_in(&stream, &path).await?).await?;
     let journal = journal_of(private.volume()?)?;
     let issuer = AuthorityRoot::new(
         "agents",
