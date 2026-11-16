@@ -708,10 +708,9 @@ function moduleFile() {
     rule("crate.from_specs", [
       ["name", q(HUB)],
       ["lockfile", q("//:cargo-bazel-lock.json")],
-      // The workspace Cargo.lock seeds the splice, so the universe resolves Cargo's own versions;
-      // it is Cargo's file, never written back.
-      ["cargo_lockfile", q("//:Cargo.lock")],
-      ["skip_cargo_lockfile_overwrite", "True"],
+      // The splice's own Cargo.lock, which a repin writes; it was first seeded from the workspace
+      // Cargo.lock, so the universe resolves Cargo's versions.
+      ["cargo_lockfile", q("//:cargo-bazel.Cargo.lock")],
       ["supported_platform_triples", list(TRIPLES)],
     ]),
     ...[...staged].sort().map(([, { name, version, files }]) => `${rule("crate.annotation", [
