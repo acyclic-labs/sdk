@@ -309,10 +309,7 @@ rust_test(
         "//rust/crates/harness:tests/support/scenario_data.rs",
         "//rust/crates/harness:tests/support/scenario_matchers.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//rust/crates/harness-fuzz:corpus/provider_scenario/chat.json",
-        "//rust/crates/harness-fuzz:corpus/provider_scenario/gemini.json",
-    ],
+    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

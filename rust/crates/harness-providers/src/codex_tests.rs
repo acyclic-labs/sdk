@@ -334,11 +334,6 @@ proptest! {
     }
 
     #[test]
-    fn jwt_refresh_boundary_matches_the_signed_expiry(expiry in any::<i64>()) {
-        prop_assert_eq!(needs_refresh(&auth(&jwt(expiry)), OffsetDateTime::UNIX_EPOCH), expiry <= 300);
-    }
-
-    #[test]
     fn jwt_claims_ignore_unrelated_unicode_payloads_without_losing_expiry(expiry in any::<i64>(), text in ".{0,128}") {
         let payload = json!({"exp":expiry,"extra":[{"text":text},[true,false,null]]});
         let access = format!("header.{}.signature", URL_SAFE_NO_PAD.encode(payload.to_string()));

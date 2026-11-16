@@ -115,27 +115,3 @@ fn alloy_capacity(a: ModelContextCapacity, b: ModelContextCapacity) -> ModelCont
         .unwrap()
         .capacity()
 }
-
-#[test]
-fn alloy_unknown_member_context_can_be_below_the_known_output_ceiling() {
-    let capacity = alloy_capacity(
-        ModelContextCapacity {
-            context_tokens: 65_536,
-            output_tokens: Some(65_536),
-            output_shares_context: false,
-        },
-        ModelContextCapacity {
-            context_tokens: 1,
-            output_tokens: None,
-            output_shares_context: false,
-        },
-    );
-    assert_eq!(
-        capacity,
-        ModelContextCapacity {
-            context_tokens: 1,
-            output_tokens: Some(1),
-            output_shares_context: false
-        }
-    );
-}

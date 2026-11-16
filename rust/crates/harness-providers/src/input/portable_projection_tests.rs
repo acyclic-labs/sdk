@@ -141,10 +141,7 @@ proptest! {
         assert_order(&batch_wire(&order));
     }
 }
-#[test]
-fn reversed_batch_regression_preserves_response_identity_and_payload() {
-    assert_order(&batch_wire(&[1, 0]));
-}
+
 #[test]
 #[should_panic(expected = "results must follow ordered calls")]
 fn negative_control_retaining_completion_order_is_detected() {

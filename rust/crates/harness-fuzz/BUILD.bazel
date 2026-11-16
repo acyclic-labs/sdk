@@ -2803,8 +2803,6 @@ exports_files([
         "corpus/model_request/obsolete-pinned",
         "corpus/native_answer/agy-hook-refusal.jsonl",
         "corpus/native_answer/opencode-incomplete.jsonl",
-        "corpus/provider_scenario/chat.json",
-        "corpus/provider_scenario/gemini.json",
         "corpus/recorded_replay/accepted-reconciliation",
         "corpus/recorded_replay/interleaved-cancellation",
         "corpus/recorded_replay/refusal-retry",
