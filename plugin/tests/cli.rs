@@ -19,6 +19,7 @@ const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\
 async fn physical_private_state_needs_no_global_mount_registry() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
+    let plugins = task_plugins(&fixture);
     let unavailable = fixture._directory.path().join("unavailable-global-state");
     std::fs::write(&unavailable, "a file cannot contain a mount registry").unwrap();
     let mut command = graphcoder_command(&fixture);
@@ -33,6 +34,8 @@ async fn physical_private_state_needs_no_global_mount_registry() {
         .arg("physical")
         .arg("--catalog")
         .arg(&model.catalog)
+        .arg("--home-file")
+        .arg(&plugins)
         .args(["--model", "fixture/tiny", "exec", "answer"]);
     let output = capture(command, "").await;
     assert!(
