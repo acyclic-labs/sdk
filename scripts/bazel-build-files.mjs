@@ -9,6 +9,7 @@
 // Every workspace member builds with Bazel, and every target `cargo test --all-features` builds
 // is rendered: a target with `test = false` is the only one left out of testing.
 import { execFileSync } from "node:child_process";
+import { devDependencyCycles } from "./dev-dependency-cycles.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,6 +91,11 @@ const packages = new Map(runs.flatMap(run => run.packages.map(p => [p.id, p])));
 const workspace = new Set(runs.flatMap(run => run.workspace_members));
 const members = new Set(workspace);
 const nodes = runs.map(run => new Map(run.resolve.nodes.map(node => [node.id, node])));
+const devCycles = devDependencyCycles(members, nodes[0]);
+if (devCycles.length) {
+  const name = id => packages.get(id)?.name ?? id;
+  throw new Error(`STEP_FAILED dev-dependency cycle: ${devCycles.map(path => path.map(name).join(" -> ")).join("; ")}`);
+}
 const dir = p => path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/");
 // Local path crates are first-party: their BUILD files are generated here, so the
 // crate universe must not carry them as local path dependencies. Cargo tests only the

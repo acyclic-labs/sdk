@@ -1,8 +1,115 @@
+//! MCP sampling over the ordinary executor and model boundary.
+use acyclic_harness_core::{
+    Capabilities, Error, OperationId, Result,
+    context::{ContextPipeline, Limits, ModelContextCapacity},
+    conversation::ModelContent,
+    executor::{StockExecutor, test_support::Journal},
+    model::{Model, ModelEvent, ModelProvider},
+    runtime::{RuntimeScope, ToolContext, ToolPolicy, ToolPolicyDecision},
+    test_support::{FixedToolPolicy, ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
+    tool::ToolRegistry,
+};
+use acyclic_harness_mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
+use proptest::prelude::*;
+use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
+
+fn tool_turn(calls: impl IntoIterator<Item = ModelEvent>) -> ScriptedTurn {
+    let mut events: Vec<_> = calls.into_iter().map(ScriptedEvent::Event).collect();
+    events.push(ScriptedEvent::Event(ModelEvent::Completed {
+        metadata: Value::Null,
+    }));
+    ScriptedTurn::Events(events)
+}
+
+fn uncompacted_executor(
+    model: Model,
+    provider: Arc<dyn ModelProvider>,
+    context: ContextPipeline,
+    tools: ToolRegistry,
+) -> StockExecutor {
+    StockExecutor::new(model, provider, context, tools)
+        .with_compaction_policy(acyclic_harness_core::context::CompactionPolicy::Disabled)
+}
+
+fn allowed() -> acyclic_harness_core::Result<Arc<dyn ToolPolicy>> {
+    Ok(Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?))
+}
+
+fn admitted_context(
+    scope: RuntimeScope,
+) -> acyclic_harness_core::Result<acyclic_harness_core::runtime::TaskContext> {
+    acyclic_harness_core::runtime::test_context::agent_context(scope, None)
+}
+
+#[tokio::test]
+async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -> Result<()> {
+    use acyclic_harness_mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
+    for answer in ["", "final λ\n"] {
+        let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
+        let context = Arc::new(admitted_context(scope.clone())?);
+        let parent = OperationId::new();
+        let tool = ToolContext::new(context, parent, "remote")?;
+        let model = Arc::new(
+            ScriptedModelProvider::new([tool_turn([
+                ModelEvent::Content {
+                    delta: "older answer".into(),
+                },
+                ModelEvent::Content {
+                    delta: answer.into(),
+                },
+                ModelEvent::MessageCompleted {
+                    text: answer.into(),
+                },
+            ])])
+            .with_context_capacity(ModelContextCapacity {
+                context_tokens: 65_536,
+                output_tokens: Some(128),
+                output_shares_context: false,
+            }),
+        );
+        let callbacks = McpRuntimeCallbacks::new(
+            uncompacted_executor(
+                Model::new("fixture".into(), "sampling".into(), "1".into())?,
+                model.clone(),
+                ContextPipeline::default(),
+                ToolRegistry::default(),
+            )
+            .with_tool_authority(scope, allowed()?)?,
+            Arc::new(Journal::default()),
+            "fixture".into(),
+            ModelContent::Text("continue".into()),
+            None,
+            None,
+        )?;
+        let request = McpCallbackRequest {
+            parent,
+            policy: McpCallbackPolicy {
+                server: "sample".into(),
+                revision: "1".into(),
+                sampling: true,
+                maximum_requests: 1,
+            },
+            message: json!({"jsonrpc":"2.0","id":"sample","method":"sampling/createMessage",
+                "params":{"messages":[{"role":"user","content":{"type":"text","text":"sample"}}],"maxTokens":128}}),
+        };
+        let mut bounded = request.clone();
+        bounded.message["params"]["maxTokens"] = json!(127);
+        assert!(matches!(callbacks.admit(tool.clone(), &bounded).await,
+            Err(Error::Unsupported(message)) if message.contains("maxTokens")));
+        assert!(model.requests().is_empty());
+        let (_, reply) = callbacks.admit(tool, &request).await?;
+        assert_eq!(reply.pointer("/result/content/text"), Some(&json!(answer)));
+        assert_eq!(model.requests().len(), 1);
+    }
+    Ok(())
+}
+
 use super::*;
 use acyclic_harness_mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
 
 fn catalog(count: usize) -> Result<ToolRegistry> {
-    let template = crate::tool::files::read()?;
+    let template = acyclic_harness_core::tool::files::read()?;
     let mut tools = ToolRegistry::default();
     for index in 0..count {
         let name = format!("tool_{index:05}");
@@ -60,7 +167,7 @@ async fn tool_free_sampling_allocations_are_independent_of_catalog_size() -> Res
         let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
         let context = Arc::new(admitted_context(scope.clone())?);
         let parent = OperationId::from_bytes([1; 16]);
-        let tool = crate::runtime::ToolContext::new(context, parent, "remote")?;
+        let tool = ToolContext::new(context, parent, "remote")?;
         let catalog = catalog(count)?;
         let callbacks = McpRuntimeCallbacks::new(
             uncompacted_executor(

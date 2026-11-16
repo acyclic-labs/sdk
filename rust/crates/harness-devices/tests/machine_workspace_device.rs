@@ -1,3 +1,5 @@
+mod support;
+
 //! Real Machine execution over the same authenticated Actor socket and journal.
 use acyclic_actors::{
     addressing::ActorReference,
@@ -38,7 +40,7 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
     )
     .await?;
     let (owner, scope, workspace) =
-        super::workspace_fixture_for_volume(storage.volume().clone()).await?;
+        support::workspace_fixture_for_volume(storage.volume().clone()).await?;
     let home: Arc<dyn acyclic_harness_core::tool::ToolExecutor> = Arc::new(workspace);
     let other_storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
         acyclic_harness_core::AgentId::from_bytes([42; 16]),
@@ -46,7 +48,7 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
     )
     .await?;
     let (_, _, other_workspace) =
-        super::workspace_fixture_for_volume(other_storage.volume().clone()).await?;
+        support::workspace_fixture_for_volume(other_storage.volume().clone()).await?;
     assert_ne!(storage.volume(), other_storage.volume());
     let other: Arc<dyn acyclic_harness_core::tool::ToolExecutor> = Arc::new(other_workspace);
     // Attach order is independent of the declared home. Both devices belong
@@ -357,7 +359,7 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
 }
 
 async fn committed_handover(refused_close: bool) -> Result {
-    let (owner, scope, workspace) = super::workspace_fixture().await?;
+    let (owner, scope, workspace) = support::workspace_fixture().await?;
     let workspace = Arc::new(workspace);
     let provider = Arc::new(MemoryStream::default());
     // The original signed session credential certifies this account; a grant

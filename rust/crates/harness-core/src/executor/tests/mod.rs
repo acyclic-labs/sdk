@@ -25,7 +25,6 @@ mod original_preparation;
 mod preparation_differential;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod sampling_allocations;
 
 use serde_json::json;
 
