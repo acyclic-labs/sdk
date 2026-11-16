@@ -184,6 +184,7 @@ pub(crate) struct JsonSpans {
     position: u64,
     root_started: bool,
     root_done: bool,
+    sequence: bool,
     token_start: u64,
     key: bool,
     atom: Option<Atom>,
@@ -191,6 +192,15 @@ pub(crate) struct JsonSpans {
 }
 
 impl JsonSpans {
+    /// A sequence of complete JSON values, including JSONL, on the same lexical
+    /// pass and cumulative byte/item admission as an ordinary document.
+    pub fn sequence() -> Self {
+        Self {
+            sequence: true,
+            ..Self::default()
+        }
+    }
+
     /// Resume a validated immutable array at an indexed element boundary.
     /// Its producer has already validated the document and retained its bounds.
     pub fn array_at(position: u64, opening: u64) -> Self {
@@ -223,8 +233,9 @@ impl JsonSpans {
                 }
                 _ => return Err(Self::invalid(code)),
             }
-        } else if !self.root_started {
+        } else if !self.root_started || self.sequence && self.root_done {
             self.root_started = true;
+            self.root_done = false;
             false
         } else {
             return Err(Self::invalid(code));
@@ -410,7 +421,10 @@ impl JsonSpans {
             }
             self.end(SpanKind::Scalar, self.token_start, self.position, emit)?;
         }
-        if !self.root_done || !self.frames.is_empty() || self.lexical.string {
+        if !(self.root_done || self.sequence && !self.root_started)
+            || !self.frames.is_empty()
+            || self.lexical.string
+        {
             return Err(input_error(JsonInputError::Incomplete, code));
         }
         Ok(())

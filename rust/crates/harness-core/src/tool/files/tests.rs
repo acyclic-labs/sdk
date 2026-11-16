@@ -534,3 +534,97 @@ async fn private_evaluation_files_are_readable_but_never_model_writable() -> Res
     );
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn feedback_sink_resolves_every_path_form_is_appended_and_readable() -> Result<()> {
+    use crate::{conversation::VolumeOperation, runtime::Bindings};
+
+    let project =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+    let home = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+    let mut grants = vec!["tool:call:read".into(), "tool:call:write".into()];
+    for storage in [&project, &home] {
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            grants.push(storage.volume().capability(operation, &mut None)?);
+        }
+    }
+    let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([51; 16]));
+    let task = Arc::new(
+        Bindings {
+            scope: RuntimeScope::new(
+                Capabilities::new(grants),
+                Limits {
+                    file_bytes: Some(65536),
+                    ..Limits::default()
+                },
+            )?,
+            content: Some(project.content_bindings()),
+            artifacts: Some(home.content_bindings()),
+            ..Bindings::local()
+        }
+        .build()?
+        .agent_context(&Capabilities::default(), home.content_bindings())?
+        .for_agent(agent, Vec::new()),
+    );
+    let execute = |name: &'static str, arguments: Value| {
+        let task = Arc::clone(&task);
+        async move {
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: name.into(),
+                name: name.into(),
+                arguments,
+            };
+            let context = ToolContext::new(task, invocation.operation_id, &invocation.call_id)?;
+            let tool = if name == "write" { write()? } else { read()? };
+            tool.executor.execute(invocation, Some(context)).await
+        }
+    };
+    for (path, what) in [
+        (
+            crate::live::feedback::PATH,
+            "The canonical relative path reaches the sink.",
+        ),
+        (
+            "volume:///home/live/agents/self/feedback.jsonl",
+            "The volume-qualified path reaches the same sink.",
+        ),
+    ] {
+        let result = execute(
+            "write",
+            json!({
+                "path": path,
+                "content": serde_json::json!({
+                    "version": 1, "kind": "slow", "what": what, "evidence": "test"
+                }).to_string()
+            }),
+        )
+        .await?;
+        assert_eq!(result.value["reports"].as_array().map(Vec::len), Some(1));
+    }
+    for path in [
+        crate::live::feedback::PATH,
+        "volume:///home/live/agents/self/feedback.jsonl",
+    ] {
+        let result = execute("read", json!({"path": path})).await?;
+        let text = result.value["text"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("feedback read returned no text".into()))?;
+        let reports: Vec<crate::live::feedback::Report> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).map_err(|error| Error::Invalid(error.to_string())))
+            .collect::<Result<_>>()?;
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].what, "The canonical relative path reaches the sink.");
+        assert_eq!(
+            reports[1].what,
+            "The volume-qualified path reaches the same sink."
+        );
+    }
+    let page = project
+        .list_private_directory("live/agents/self", None, None, 8)
+        .await?;
+    assert!(page.entries.iter().any(|entry| entry.name == "feedback.jsonl"));
+    Ok(())
+}

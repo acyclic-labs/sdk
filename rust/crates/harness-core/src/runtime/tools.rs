@@ -1176,6 +1176,12 @@ impl ToolContext {
             ))
             .tool_input());
         }
+        if crate::live::feedback::is_sink(path) {
+            return Ok((
+                &self.task().tool_read_content().volume,
+                std::borrow::Cow::Borrowed(crate::live::feedback::PATH),
+            ));
+        }
         if let Some((binding, relative)) = self.task().private_content_path(path, io, false)? {
             return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
         }
