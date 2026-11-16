@@ -532,64 +532,106 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         trace.follow(0, Default::default()).await?,
         Default::default(),
     );
-    let (
-        mut completed,
-        mut exchanges,
-        mut auth_checks,
-        mut refused_credentials,
-        mut rejected_replies,
-    ) = (0, 0, 0, 0, 0);
-    let mut auth_parents = Vec::new();
-    let mut exchange_ids = Vec::new();
-    while completed < 12 {
-        if let Some(Observation::Completed {
+    let mut completed = Vec::new();
+    while let Some(observation) = query.next().await? {
+        if let Observation::Completed {
             id,
             start,
             bytes,
             result,
             ..
-        }) = query.next().await?
+        } = observation
         {
-            completed += 1;
-            if start.mechanism == Mechanism::AuthCheck {
-                auth_checks += 1;
-                auth_parents.push(start.parent);
-                assert_eq!(bytes, None);
-                assert_eq!(
-                    start.guarantee.as_deref(),
-                    Some(if start.name == "credential.resolve" {
-                        "original_credential_source_admission"
-                    } else {
-                        "original_credential_lease_valid_at_boundary"
-                    })
-                );
-                if result == Outcome::Unsettled {
-                    assert_eq!(start.name, "credential.resolve");
-                    assert_eq!(start.parent, Some(parent));
-                    refused_credentials += 1;
-                } else {
-                    assert_eq!(result, Outcome::Succeeded);
-                }
-            } else if id != parent {
-                exchanges += 1;
-                exchange_ids.push(id);
-                assert_eq!(start.parent, Some(parent));
-                assert_eq!(start.name, "stream.http.request");
-                assert_eq!(start.mechanism, Mechanism::RoundTrip);
-                assert_eq!(
-                    start.guarantee.as_deref(),
-                    Some("authenticated_bounded_json_reply_validated_for_original_call")
-                );
-                if result == Outcome::Succeeded {
-                    assert_eq!(bytes, Some(response_bytes));
-                } else {
-                    assert_eq!(result, Outcome::Unsettled);
-                    assert_eq!(bytes, None);
-                    rejected_replies += 1;
-                }
-            } else {
-                assert_eq!(result, Outcome::Succeeded);
+            completed.push((id, start, bytes, result));
+            if completed.len() == 13 {
+                break;
             }
+        }
+    }
+    let append_ids: Vec<_> = completed
+        .iter()
+        .filter(|(_, start, ..)| start.name == "stream.append")
+        .map(|(id, ..)| *id)
+        .collect();
+    let exchange_ids: Vec<_> = completed
+        .iter()
+        .filter(|(_, start, ..)| start.name == "stream.http.request")
+        .map(|(id, ..)| *id)
+        .collect();
+    assert_eq!(append_ids.len(), 1);
+    assert_eq!(exchange_ids.len(), 2);
+    for (_, start, bytes, result) in completed
+        .iter()
+        .filter(|(_, start, ..)| start.name == "stream.append")
+    {
+        assert_eq!(start.parent, Some(parent));
+        assert_eq!(start.mechanism, Mechanism::Commit);
+        assert_eq!(
+            start.guarantee.as_deref(),
+            Some("atomic_contiguous_append_decision")
+        );
+        assert_eq!(*bytes, None);
+        assert_eq!(*result, Outcome::Unsettled);
+    }
+    let mut exchanges = 0;
+    let mut rejected_replies = 0;
+    for (_, start, bytes, result) in completed
+        .iter()
+        .filter(|(_, start, ..)| start.name == "stream.http.request")
+    {
+        exchanges += 1;
+        let owner = start.parent.expect("physical exchange has an owner");
+        assert!(owner == parent || append_ids.contains(&owner));
+        assert_eq!(start.mechanism, Mechanism::RoundTrip);
+        assert_eq!(
+            start.guarantee.as_deref(),
+            Some("authenticated_bounded_json_reply_validated_for_original_call")
+        );
+        if *result == Outcome::Succeeded {
+            assert_eq!(owner, parent);
+            assert_eq!(*bytes, Some(response_bytes));
+        } else {
+            assert_eq!(*result, Outcome::Unsettled);
+            assert!(append_ids.contains(&owner));
+            assert_eq!(*bytes, None);
+            rejected_replies += 1;
+        }
+    }
+    let mut auth_checks = 0;
+    let mut refused_credentials = 0;
+    let mut auth_root = 0;
+    let mut auth_exchange = 0;
+    let mut auth_append = 0;
+    for (_, start, bytes, result) in completed
+        .iter()
+        .filter(|(_, start, ..)| start.mechanism == Mechanism::AuthCheck)
+    {
+        auth_checks += 1;
+        assert_eq!(*bytes, None);
+        assert_eq!(
+            start.guarantee.as_deref(),
+            Some(if start.name == "credential.resolve" {
+                "original_credential_source_admission"
+            } else {
+                "original_credential_lease_valid_at_boundary"
+            })
+        );
+        let owner = start.parent.expect("auth check has an owner");
+        if owner == parent {
+            auth_root += 1;
+        } else if exchange_ids.contains(&owner) {
+            auth_exchange += 1;
+        } else if append_ids.contains(&owner) {
+            auth_append += 1;
+        } else {
+            return Err("auth check has an unknown owner".into());
+        }
+        if *result == Outcome::Unsettled {
+            assert_eq!(start.name, "credential.resolve");
+            assert_eq!(owner, parent);
+            refused_credentials += 1;
+        } else {
+            assert_eq!(*result, Outcome::Succeeded);
         }
     }
     assert_eq!(
@@ -601,20 +643,8 @@ async fn physical_http_exchange_has_owned_round_trip_and_original_body_bytes()
         ),
         (2, 9, 1, 1)
     );
-    assert_eq!(
-        auth_parents
-            .iter()
-            .filter(|value| **value == Some(parent))
-            .count(),
-        5
-    );
-    assert_eq!(
-        auth_parents
-            .iter()
-            .filter(|value| value.is_some_and(|id| exchange_ids.contains(&id)))
-            .count(),
-        4
-    );
+    assert_eq!((auth_root, auth_exchange, auth_append), (3, 4, 2));
+    assert_eq!(completed.iter().filter(|(id, ..)| *id == parent).count(), 1);
     assert_eq!(resolutions.load(std::sync::atomic::Ordering::SeqCst), 3);
     Ok(())
 }
