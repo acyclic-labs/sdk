@@ -108,3 +108,15 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
     }
     Ok(())
 }
+
+/// Persisted `e/` and `p/` keys shard on the digest's first byte. Hosted
+/// mediums validate that layout, so the shard is pinned by literal bytes.
+#[test]
+fn storage_shard_is_the_first_digest_byte() {
+    for (first, second, shard) in [(0x00, 0x00, "00"), (0xab, 0xcd, "ab"), (0xff, 0x01, "ff")] {
+        let mut bytes = [0x5a; 32];
+        bytes[0] = first;
+        bytes[1] = second;
+        assert_eq!(Digest::from_bytes(bytes).hex_prefix(), shard);
+    }
+}

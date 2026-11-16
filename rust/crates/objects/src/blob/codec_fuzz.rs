@@ -128,7 +128,13 @@ fn check_codec<T: PartialEq>(
     };
     // A fixed number of selected prefixes keeps total work linear in the input.
     let last = bytes.len().saturating_sub(1);
-    for end in [0, magic.len().saturating_sub(1), magic.len(), bytes.len() / 2, last] {
+    for end in [
+        0,
+        magic.len().saturating_sub(1),
+        magic.len(),
+        bytes.len() / 2,
+        last,
+    ] {
         let Some(prefix) = bytes.get(..end) else {
             return false;
         };
@@ -463,10 +469,7 @@ pub fn check(bytes: &[u8]) -> bool {
     ) && check_codec(
         bytes,
         INCARNATION_MAGIC,
-        &(
-            u128::from_le_bytes(wide(&fields, 0)),
-            word(&fields, 16),
-        ),
+        &(u128::from_le_bytes(wide(&fields, 0)), word(&fields, 16)),
         decode_incarnation,
         |&(incarnation, run)| Ok(encode_incarnation(incarnation, run)),
         |_| false,
