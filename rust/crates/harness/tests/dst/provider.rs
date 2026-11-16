@@ -137,10 +137,11 @@ fn request_tag(request: &ModelRequest, tags: &[&'static str]) -> Option<&'static
     let body = serde_json::to_string(&message.content).unwrap_or_default();
     tags.iter().copied().find(|candidate| {
         let text = tag(candidate);
+        let digest: [u8; 32] = sha2::Sha256::digest(text.as_bytes()).into();
         body.contains(&text)
             || body.contains(&format!(
                 "\"sha256\":{}",
-                serde_json::to_string(&sha2::Sha256::digest(text.as_bytes())).unwrap_or_default()
+                serde_json::to_string(&digest).unwrap_or_default()
             ))
     })
 }
@@ -226,26 +227,26 @@ fn review_decision() -> ScriptedTurn {
     )
 }
 
-fn prefix(message: &str) -> std::result::Result<(), String> {
+fn fail<T>(message: &str) -> std::result::Result<T, String> {
     Err(message.into())
 }
 
 fn stable(first: &ModelRequest, next: &ModelRequest) -> std::result::Result<(), String> {
     if first.model != next.model {
-        return prefix("the request's model selection changed between steps");
+        return fail("the request's model selection changed between steps");
     }
     if first.tools != next.tools || first.sampling != next.sampling || first.summary != next.summary {
-        return prefix("the request's tools, sampling or purpose changed between steps");
+        return fail("the request's tools, sampling or purpose changed between steps");
     }
     if next.messages.len() < first.messages.len()
         || next.messages[..first.messages.len()] != first.messages
     {
-        return prefix("the next request did not extend the previous request byte-for-byte");
+        return fail("the next request did not extend the previous request byte-for-byte");
     }
     Ok(())
 }
 
-fn history(requests: &[ModelRequest], tag: &str) -> Vec<&ModelRequest> {
+fn history<'a>(requests: &'a [ModelRequest], tag: &str) -> Vec<&'a ModelRequest> {
     requests
         .iter()
         .filter(|request| request_tag(request, &[tag]) == Some(tag) && !request.summary)
@@ -270,7 +271,7 @@ fn assert_reasoning(request: &ModelRequest, model: &str) -> std::result::Result<
             return Ok(());
         }
     }
-    prefix("the continued request lost its byte-exact reasoning block")
+    fail("the continued request lost its byte-exact reasoning block")
 }
 
 fn has_file(request: &ModelRequest) -> bool {
@@ -292,7 +293,7 @@ fn d3_service(transition: &'static str, dialect: &'static str) -> ScriptedModelP
                 _ => ScriptedTurn::Text("unexpected summary request".into()),
             });
         }
-        let Some(tag) = request_tag(request, &["d3-parent", "d3-child"]) else {
+        let Some(found_tag) = request_tag(request, &["d3-parent", "d3-child"]) else {
             return Ok(ScriptedTurn::Text("untagged request".into()));
         };
         let step = assistant_since_prompt(request);
@@ -310,7 +311,7 @@ fn d3_service(transition: &'static str, dialect: &'static str) -> ScriptedModelP
                         }),
                     ])
                 } else {
-                    ScriptedTurn::Text(done(tag))
+                    ScriptedTurn::Text(done(found_tag))
                 }
             }
             "parallel_results" => {
@@ -331,10 +332,10 @@ fn d3_service(transition: &'static str, dialect: &'static str) -> ScriptedModelP
                         }),
                     ])
                 } else {
-                    ScriptedTurn::Text(done(tag))
+                    ScriptedTurn::Text(done(found_tag))
                 }
             }
-            "child_notice_mid_turn" if tag == "d3-child" => ScriptedTurn::Text(done(tag)),
+            "child_notice_mid_turn" if found_tag == "d3-child" => ScriptedTurn::Text(done(found_tag)),
             "child_notice_mid_turn" => match step {
                 0 => ScriptedTurn::Events(vec![
                     ScriptedEvent::Event(ModelEvent::ToolCall(oracle::call(
@@ -356,17 +357,17 @@ fn d3_service(transition: &'static str, dialect: &'static str) -> ScriptedModelP
                         metadata: json!({"finish_reason":"tool_calls"}),
                     }),
                 ]),
-                _ => ScriptedTurn::Text(done(tag)),
+                _ => ScriptedTurn::Text(done(found_tag)),
             },
             "context_review" => match step {
                 0 => tool_with_usage(),
-                _ => text_with_usage(done(tag), 100),
+                _ => text_with_usage(done(found_tag), 100),
             },
             "length_continuation" => {
                 if step == 0 {
                     length_stop("reasoning_only", dialect)
                 } else {
-                    ScriptedTurn::Text(done(tag))
+                    ScriptedTurn::Text(done(found_tag))
                 }
             }
             "retry_after" => {
@@ -378,10 +379,10 @@ fn d3_service(transition: &'static str, dialect: &'static str) -> ScriptedModelP
                         error: "rate limited".into(),
                     }])
                 } else {
-                    ScriptedTurn::Text(done(tag))
+                    ScriptedTurn::Text(done(found_tag))
                 }
             }
-            _ => ScriptedTurn::Text(done(tag)),
+            _ => ScriptedTurn::Text(done(found_tag)),
         };
         Ok(answer)
     };
@@ -416,7 +417,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 if opener.prompts.first().map(|(outcome, _)| outcome)
                     != Some(&Prompted::Settled(done("d3-parent")))
                 {
-                    return prefix("the first incarnation did not settle");
+                    return fail("the first incarnation did not settle");
                 }
                 let next = vec![vec![("d3-next", tag("d3-next"))]];
                 let reopened = world
@@ -442,7 +443,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
             if incarnation.prompts.first().map(|(outcome, _)| outcome)
                 != Some(&Prompted::Settled(done("d3-parent")))
             {
-                return prefix(&format!(
+                return fail(&format!(
                     "{transition} did not settle its turn: {:?}",
                     incarnation.prompts
                 ));
@@ -455,7 +456,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
             match transition {
                 "compaction_applied" => {
                     if summaries.is_empty() {
-                        return prefix("compaction sent no summary request");
+                        return fail("compaction sent no summary request");
                     }
                     let compacted = incarnation
                         .requests
@@ -463,12 +464,12 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                         .find(|request| !request.summary)
                         .ok_or("compaction dispatched no worker")?;
                     if !has_file(compacted) {
-                        return prefix("the request after compaction does not carry its summary");
+                        return fail("the request after compaction does not carry its summary");
                     }
                 }
                 "background_summary" => {
                     if summaries.is_empty() {
-                        return prefix("background summary was never dispatched");
+                        return fail("background summary was never dispatched");
                     }
                     let compacted = incarnation
                         .requests
@@ -484,12 +485,12 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                         .first()
                         .ok_or("the worker request has no header")?;
                     if first != header {
-                        return prefix("the background summary did not reuse the agent header");
+                        return fail("the background summary did not reuse the agent header");
                     }
                 }
                 "context_review" => {
                     if summaries.is_empty() {
-                        return prefix("context review was never dispatched");
+                        return fail("context review was never dispatched");
                     }
                     let worker = incarnation
                         .requests
@@ -502,7 +503,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                     let source = &summaries[0].messages;
                     let common = source.len().saturating_sub(1).min(worker.messages.len());
                     if source[..common] != worker.messages[..common] {
-                        return prefix("the context review did not reuse the agent prefix");
+                        return fail("the context review did not reuse the agent prefix");
                     }
                 }
                 "length_continuation" => {
@@ -518,7 +519,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 "retry_after" => {
                     let requests = history(&incarnation.requests, "d3-parent");
                     if requests.len() < 2 || requests[0].messages != requests[1].messages {
-                        return prefix("the Retry-After retry changed the request bytes");
+                        return fail("the Retry-After retry changed the request bytes");
                     }
                 }
                 _ => assert_history(&incarnation.requests, "d3-parent")?,
@@ -643,12 +644,12 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                 match call {
                     "summary" => {
                         if summary_requests.is_empty() {
-                            return prefix("a length-cut summary was never requested");
+                            return fail("a length-cut summary was never requested");
                         }
                         // The cut summary authorises no rewrite: no request may
                         // carry a summary file and the agent stays open.
                         if incarnation.requests.iter().any(has_file) {
-                            return prefix("a length-cut summary published a rewrite");
+                            return fail("a length-cut summary published a rewrite");
                         }
                         let after = vec![vec![("d4-after", tag("d4-after"))]];
                         let reopened = world
@@ -656,27 +657,27 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                             .await
                             .map_err(oracle::failed)?;
                         if reopened.prompts.is_empty() {
-                            return prefix("the worker died after its cut summary");
+                            return fail("the worker died after its cut summary");
                         }
                     }
                     "context_review" => {
                         if summary_requests.is_empty() {
-                            return prefix("the length-cut context review was never requested");
+                            return fail("the length-cut context review was never requested");
                         }
                         if incarnation.prompts.first().map(|(outcome, _)| outcome)
                             != Some(&Prompted::Settled(done("d4")))
                         {
-                            return prefix("a length-cut context review ended the worker");
+                            return fail("a length-cut context review ended the worker");
                         }
                         if incarnation.requests.iter().any(has_file) {
-                            return prefix("a length-cut context review published a rewrite");
+                            return fail("a length-cut context review published a rewrite");
                         }
                     }
                     _ => {
                         if incarnation.prompts.first().map(|(outcome, _)| outcome)
                             != Some(&Prompted::Settled(done("d4")))
                         {
-                            return prefix(&format!(
+                            return fail(&format!(
                                 "{call} did not continue after a length stop: {:?}",
                                 incarnation.prompts
                             ));
@@ -684,7 +685,7 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                         if content == "reasoning_only"
                             && !incarnation.requests.iter().any(contains_reasoning)
                         {
-                            return prefix("reasoning did not round-trip into the continuation");
+                            return fail("reasoning did not round-trip into the continuation");
                         }
                         if content == "partial_tool_call"
                             && incarnation.requests.iter().any(|request| {
@@ -695,14 +696,14 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                                 })
                             })
                         {
-                            return prefix("a length-cut tool call was admitted");
+                            return fail("a length-cut tool call was admitted");
                         }
                     }
                 }
                 requests.extend(incarnation.requests);
             }
             if requests.is_empty() {
-                return prefix("the length world dispatched no request");
+                return fail("the length world dispatched no request");
             }
             Ok(true)
         })
