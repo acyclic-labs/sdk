@@ -51,11 +51,17 @@ impl DemandSource for NativeDemandSource {
                 })?;
                 provider.check(&source, context)?;
                 provider.observe_parent(path, context)?;
-                let mut node = provider.metadata(path, context)?.as_ref().map(Self::node);
+                let mut node = provider
+                    .metadata(path, context)?
+                    .as_ref()
+                    .map(|metadata| Self::node(path, metadata));
                 if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
                     && provider.admit_to_watches(path, context)?
                 {
-                    node = provider.metadata(path, context)?.as_ref().map(Self::node);
+                    node = provider
+                        .metadata(path, context)?
+                        .as_ref()
+                        .map(|metadata| Self::node(path, metadata));
                 }
                 provider.check(&source, context)?;
                 Ok(node)
