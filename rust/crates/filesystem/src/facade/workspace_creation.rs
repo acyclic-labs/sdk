@@ -134,7 +134,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             };
             self.initial_generation(
                 workspace,
-                creation.initial_generation_root,
+                recorded.initial_generation_root,
                 &mut accounting,
                 cancellation,
             )
