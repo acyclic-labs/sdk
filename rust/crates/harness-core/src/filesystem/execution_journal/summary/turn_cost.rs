@@ -135,7 +135,11 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
             Some(&io),
         )?
         .await?;
+    let mut half = None;
     for step in 0..1_000 {
+        if step == 500 {
+            half = Some(work.receipt().peak_allocation_bytes);
+        }
         // Each append has its own work window while cache allocations stay
         // on the original ledger across the complete history.
         let io = PreparationIo::from_native_work(&work.invocation_window()?)?;
@@ -222,11 +226,14 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
             "append charged work outside its invocation at step {step}"
         );
     }
+    let peak = work.receipt().peak_allocation_bytes;
     eprintln!(
-        "append history=1000 live={} peak={}",
+        "append history=1000 live={} peak={peak} peak_at_500={half:?}",
         work.live_allocation_bytes(),
-        work.receipt().peak_allocation_bytes
     );
+    // The store keeps what landed, so doubling the history adds nothing to
+    // the writer's peak.
+    assert_eq!(Some(peak), half, "the writer's peak grew with history");
     Ok(())
 }
 
