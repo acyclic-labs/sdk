@@ -37,6 +37,27 @@ fn output(command: &mut ProcessCommand, custody: &ProcessCustody) -> String {
     output
 }
 
+#[cfg(all(feature = "test-support", target_pointer_width = "64"))]
+#[test]
+fn a_trusted_unrecorded_request_round_trips_through_the_runner_decoder() {
+    let mut command = ProcessCommand::new("/bin/true");
+    command.current_dir("/");
+    let mut body = Vec::new();
+    let boundary = super::encode(
+        &mut body,
+        &command,
+        &std::collections::BTreeMap::new(),
+        false,
+        true,
+    )
+    .expect("encode");
+    assert!(boundary.is_none(), "a trusted launch has no boundary");
+    // Null stdin, stdout and stderr leave three original descriptors.
+    let capture = [&[3][..], &body].concat();
+    super::super::fuzz_runner_request(&capture)
+        .expect("the runner accepts the host's trusted unrecorded request");
+}
+
 #[test]
 fn a_custodied_program_receives_exactly_its_environment_and_directory() {
     let (root, custody) = custody();
