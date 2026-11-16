@@ -250,7 +250,7 @@ impl World {
             // Each incarnation is an independent scheduler over the same files.
             let scheduler = self.seed ^ self.incarnations.wrapping_mul(0x9e37_79b9_7f4a_7c15);
             self.incarnations += 1;
-            let mut driver = Driver::new(scheduler, cut);
+            let mut driver = Driver::world(scheduler, cut);
             let schedule = driver.schedule.clone();
             let counter = schedule.clone();
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));

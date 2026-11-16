@@ -4,6 +4,7 @@ use acyclic_native_runtime::{
     ProcessCaptureFailure, ProcessInput,
     testing::{Boundary, DurableFault, InjectedStorageFault, ProcessCapture, Schedule},
 };
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -16,22 +17,31 @@ pub(super) struct Driver {
     pub schedule: Schedule,
     events: mpsc::UnboundedReceiver<Boundary>,
     pub boundaries: Vec<(String, String)>,
+    record_boundaries: bool,
+    last_boundary: Option<(&'static str, Arc<str>)>,
 }
 
 const UNSIMULATED_PROCESS: &str = "unsimulated process reached a seeded replay";
 
 impl Driver {
     pub fn new(seed: u64, cut: Option<(usize, DurableFault)>) -> Self {
-        Self::from_scope(Schedule::seeded(seed), cut).refuse_processes()
+        Self::from_scope(Schedule::seeded(seed), cut, true).refuse_processes()
+    }
+
+    /// A world that replays production but never reads the diagnostic
+    /// boundary trace, so the driver does not retain it.
+    pub fn world(seed: u64, cut: Option<(usize, DurableFault)>) -> Self {
+        Self::from_scope(Schedule::seeded_unrecorded(seed), cut, false).refuse_processes()
     }
 
     pub fn without_entropy(seed: u64) -> Self {
-        Self::from_scope(Schedule::without_entropy(seed), None).refuse_processes()
+        Self::from_scope(Schedule::without_entropy(seed), None, true).refuse_processes()
     }
 
     fn from_scope(
         (schedule, events): (Schedule, mpsc::UnboundedReceiver<Boundary>),
         cut: Option<(usize, DurableFault)>,
+        record_boundaries: bool,
     ) -> Self {
         if let Some((ordinal, fault)) = cut {
             schedule.cut_at(ordinal, fault);
@@ -40,6 +50,8 @@ impl Driver {
             schedule,
             events,
             boundaries: Vec::new(),
+            record_boundaries,
+            last_boundary: None,
         }
     }
 
@@ -58,6 +70,14 @@ impl Driver {
         self
     }
 
+    fn observe(&mut self, event: &Boundary) {
+        if self.record_boundaries {
+            self.last_boundary = Some((event.name, Arc::clone(&event.detail)));
+            self.boundaries
+                .push((event.name.into(), event.detail.to_string()));
+        }
+    }
+
     pub fn run<'a, T: 'a>(&'a mut self, future: EntryFuture<'a, T>) -> EntryFuture<'a, Outcome<T>> {
         entry(async move {
             let schedule = self.schedule.clone();
@@ -71,7 +91,7 @@ impl Driver {
                     biased;
                     event = self.events.recv() => {
                         let event = event.expect("lost boundary driver");
-                        self.boundaries.push((event.name.into(), event.detail.to_string()));
+                        self.observe(&event);
                         if let Some(cause) = schedule.storage_fault() {
                             schedule.cancel();
                             // Drop all caller state before any accepted completion
@@ -98,7 +118,7 @@ impl Driver {
                     },
                     () = &mut deadline => panic!(
                         "turn exceeded the simulated deadline; last boundary: {:?}; pending: {}; polls: {:?}; trace: {:?}",
-                        self.boundaries.last(), schedule.pending_native_work(),
+                        self.last_boundary, schedule.pending_native_work(),
                         schedule.polls().iter().rev().take(20).collect::<Vec<_>>(),
                         schedule.trace().iter().rev().take(10).collect::<Vec<_>>()
                     ),
@@ -109,7 +129,7 @@ impl Driver {
                     biased;
                     event = self.events.recv() => {
                         let event = event.expect("lost drain driver");
-                        self.boundaries.push((event.name.into(), event.detail.to_string()));
+                        self.observe(&event);
                         event.release();
                     },
                     () = schedule.drained() => break,

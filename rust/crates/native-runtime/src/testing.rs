@@ -169,6 +169,7 @@ struct State {
     native_active: usize,
     idle: Option<Waker>,
     cancelled: bool,
+    record_trace: bool,
     trace: Vec<String>,
     ready_reads: usize,
     // Read only through a seeded schedule; see `Schedule::is_seeded`.
@@ -255,27 +256,48 @@ impl Drop for Active {
 impl Schedule {
     /// Creates the push receiver used by a deterministic test driver.
     pub fn new() -> (Self, mpsc::UnboundedReceiver<Boundary>) {
-        Self::with_seed(None, true)
+        Self::with_seed(None, true, true)
     }
 
     /// Creates a simulation scope with reproducible entropy and owned-task polling.
     /// Neither changes ordinary execution outside the scope and its descendants.
     pub fn seeded(seed: u64) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
-        Self::with_seed(Some(seed), true)
+        Self::with_seed(Some(seed), true, true)
+    }
+
+    /// A seeded scope that keeps its entropy and poll order but not the
+    /// diagnostic boundary and poll traces, for a world that never reads them.
+    pub fn seeded_unrecorded(seed: u64) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
+        Self::with_seed(Some(seed), true, false)
     }
 
     /// Negative control: erase scoped entropy while preserving the exact same
     /// executor, clock, owned work and physical I/O completion boundaries.
     pub fn without_entropy(seed: u64) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
-        Self::with_seed(Some(seed), false)
+        Self::with_seed(Some(seed), false, true)
     }
 
-    fn with_seed(seed: Option<u64>, entropy: bool) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
+    fn with_seed(
+        seed: Option<u64>,
+        entropy: bool,
+        record_trace: bool,
+    ) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
         let (events, receiver) = mpsc::unbounded_channel();
-        let executor = seed.map(executor::Executor::new);
+        let executor = seed.map(|seed| {
+            if record_trace {
+                executor::Executor::new(seed)
+            } else {
+                executor::Executor::unrecorded(seed)
+            }
+        });
+        let mut state = State {
+            record_trace,
+            ..State::default()
+        };
+        state.writes.set_record(record_trace);
         let inner = Arc::new(Inner {
             events,
-            state: Mutex::new(State::default()),
+            state: Mutex::new(state),
             ledger: Arc::default(),
             entropy: seed
                 .filter(|_| entropy)
@@ -337,7 +359,9 @@ impl Schedule {
     pub fn cancel(&self) {
         let mut state = self.0.state();
         state.cancelled = true;
-        state.trace.push("CANCEL".into());
+        if state.record_trace {
+            state.trace.push("CANCEL".into());
+        }
     }
 
     /// Waits for accepted operations to reach their physical terminal.
@@ -404,10 +428,12 @@ impl Context {
             // returns, drain cannot miss an already accepted submission.
             state.active += 1;
             state.native_active += usize::from(native);
-            state.trace.push(format!(
-                "{kind}:{}",
-                if self.owned { "completion" } else { "dispatch" }
-            ));
+            if state.record_trace {
+                state.trace.push(format!(
+                    "{kind}:{}",
+                    if self.owned { "completion" } else { "dispatch" }
+                ));
+            }
         }
         Active(
             Self {

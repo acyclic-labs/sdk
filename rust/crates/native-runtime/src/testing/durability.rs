@@ -75,6 +75,8 @@ pub struct DurableWrite {
 pub(super) struct Writes {
     cut: Option<(usize, DurableFault)>,
     failed: Option<InjectedStorageFault>,
+    count: usize,
+    record: bool,
     trace: Vec<DurableWrite>,
     #[cfg(test)]
     skip_write: bool,
@@ -88,6 +90,12 @@ struct Call {
     fault: Option<InjectedStorageFault>,
 }
 
+impl Writes {
+    pub(super) fn set_record(&mut self, record: bool) {
+        self.record = record;
+    }
+}
+
 impl Schedule {
     /// Arms a fresh scope. No operation can clear a crash while descendants live.
     ///
@@ -97,7 +105,7 @@ impl Schedule {
     pub fn cut_at(&self, ordinal: usize, fault: DurableFault) {
         let mut state = self.0.state();
         assert_eq!(state.active, 0, "cannot arm live owned work");
-        assert!(state.writes.trace.is_empty(), "cut must precede all writes");
+        assert_eq!(state.writes.count, 0, "cut must precede all writes");
         state.writes.cut = Some((ordinal, fault));
     }
 
@@ -113,7 +121,7 @@ impl Schedule {
         let writes = &mut state.writes;
         assert!(writes.cut.is_none(), "scope already has a physical cut");
         assert!(writes.failed.is_none(), "cannot arm a crashed scope");
-        let ordinal = writes.trace.len();
+        let ordinal = writes.count;
         writes.cut = Some((ordinal, fault));
         ordinal
     }
@@ -125,7 +133,7 @@ impl Schedule {
 
     /// Number of original physical calls, without copying the retained trace.
     pub fn durable_write_count(&self) -> usize {
-        self.0.state().writes.trace.len()
+        self.0.state().writes.count
     }
 
     /// Latched cause of the first cut, retained until this scope is discarded.
@@ -170,7 +178,8 @@ fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::R
         if let Some(failed) = &writes.failed {
             return Err(failed.error());
         }
-        let ordinal = writes.trace.len();
+        let ordinal = writes.count;
+        writes.count += 1;
         let fault = writes
             .cut
             .filter(|(cut, _)| *cut == ordinal)
@@ -187,13 +196,15 @@ fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::R
         if writes.forget_crash {
             writes.failed = None;
         }
-        writes.trace.push(DurableWrite {
-            ordinal,
-            operation,
-            requested,
-            transferred: None,
-            failure: None,
-        });
+        if writes.record {
+            writes.trace.push(DurableWrite {
+                ordinal,
+                operation,
+                requested,
+                transferred: None,
+                failure: None,
+            });
+        }
         (ordinal, fault)
     };
     Ok(Call {
@@ -206,6 +217,9 @@ fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::R
 impl Call {
     fn record(&self, update: impl FnOnce(&mut DurableWrite)) -> io::Result<()> {
         let mut state = self.schedule.0.state();
+        if !state.writes.record {
+            return Ok(());
+        }
         let event = state.writes.trace.get_mut(self.ordinal).ok_or_else(|| {
             io::Error::other("durable operation is missing its registered trace entry")
         })?;
