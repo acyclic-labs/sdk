@@ -368,8 +368,9 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 .create_volume(&volume)
                 .await
                 .map_err(oracle::failed)?;
-            std::fs::write(directory.path().join("checkout").join("a.txt"), "alpha\n")
-                .map_err(oracle::failed)?;
+            let checkout = directory.path().join("checkout");
+            std::fs::create_dir_all(&checkout).map_err(oracle::failed)?;
+            std::fs::write(checkout.join("a.txt"), "alpha\n").map_err(oracle::failed)?;
             let model = Model::new("scripted".into(), "dst".into(), "1".into())
                 .map_err(oracle::failed)?;
             let call = ToolCall::new(
@@ -400,10 +401,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                     }),
                 ]),
             ]));
-            let config = local_harness_config(
-                directory.path().join("checkout"),
-                (model, provider),
-            )
+            let config = local_harness_config(checkout, (model, provider))
             .map_err(oracle::failed)?
             .without_user_settings()
             .volume(volume)
