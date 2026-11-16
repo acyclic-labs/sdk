@@ -115,9 +115,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             // Authorize the complete batch before inspecting any destination.
             // Create-only callers need Create even when the target is present.
             for change in changes {
-                access::require(&view.0, change.action(), change.path(), io)?;
+                self.require(&view.0, change.action(), change.path(), io)?;
                 if let Some(root_view) = &root_view {
-                    access::require(&root_view.0, change.action(), change.path(), io)?;
+                    self.require(&root_view.0, change.action(), change.path(), io)?;
                 }
             }
             if !inspect_destinations {
@@ -236,9 +236,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         return Err(io.invalid("conditional receipt volume differs"));
                     }
                 }
-                access::require(&view.0, action, path, io)?;
+                self.require(&view.0, action, path, io)?;
                 if let Some(root_view) = &root_view {
-                    access::require(&root_view.0, action, path, io)?;
+                    self.require(&root_view.0, action, path, io)?;
                 }
             }
             if let Some(root_view) = &root_view {
@@ -408,7 +408,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             if let Some(root_view) = &root_view {
                 for change in changes {
-                    access::require(&root_view.0, change.action(), change.path(), io)?;
+                    self.require(&root_view.0, change.action(), change.path(), io)?;
                 }
                 if needs_binding {
                     let fence = root_view
@@ -440,7 +440,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if let Some(check) = check {
                     check(action, change.path())?;
                 }
-                access::require(&view.0, action, change.path(), io)?;
+                self.require(&view.0, action, change.path(), io)?;
             }
             let generation = if let Some(prior) = prior {
                 if super::publication::publication_evidence(prior.evidence(), Some(io))?
@@ -540,14 +540,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                             io.cancellation(),
                                             |prefix| {
                                                 let candidate = prefix.trim_start_matches('/');
-                                                access::require(
+                                                self.require(
                                                     &view.0,
                                                     Action::Create,
                                                     candidate,
                                                     io,
                                                 )?;
                                                 if let Some(root_view) = &root_view {
-                                                    access::require(
+                                                    self.require(
                                                         &root_view.0,
                                                         Action::Create,
                                                         candidate,

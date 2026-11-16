@@ -60,12 +60,13 @@ impl FilePublication<'_> {
 fn require_publication_time(
     publication: FilePublication<'_>,
     io: Option<&PreparationIo>,
+    now: u64,
 ) -> Result<()> {
     if let FilePublication::Authorized(_, grant, root_fence) = publication {
         grant.recheck(io)?;
-        require_publication_fence(root_fence, "root")?;
+        require_publication_fence(root_fence, "root", now)?;
     }
-    require_publication_fence(publication.fence(), "volume")
+    require_publication_fence(publication.fence(), "volume", now)
 }
 
 /// Refuses a write outside its decision's validity interval, naming the
@@ -73,8 +74,8 @@ fn require_publication_time(
 fn require_publication_fence(
     fence: Option<acyclic_fs::access::PolicyFence>,
     which: &str,
+    now: u64,
 ) -> Result<()> {
-    let now = access::access_now()?;
     match fence {
         Some(fence) if !fence.valid_at(now) => {
             let (from, until) = fence.interval();
@@ -258,6 +259,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         publication: FilePublication<'a>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         // Construction returns before polling this concrete publication graph.
+        let now = self.access_now()?;
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::WorkBudget::UNBOUNDED;
@@ -306,7 +308,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         budget,
                         &cancellation,
                         |_| async {
-                            require_publication_time(publication, None)
+                            require_publication_time(publication, None, now)
                                 .map_err(acyclic_fs::OperationFailure::before_work)?;
                             Ok::<_, acyclic_fs::OperationFailure<Error>>(
                                 acyclic_fs::OperationReceipt {
