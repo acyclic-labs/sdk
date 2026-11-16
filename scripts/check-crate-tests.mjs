@@ -54,7 +54,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const failures = await checkCrateTests(packages, workers, target, run);
   const wasmTarget = "wasm32-unknown-unknown";
   execFileSync("bash", [resolve(root, "scripts/ensure-rust-target.sh"), wasmTarget], { stdio: "inherit" });
-  const wasmFailures = await checkCrateTests(wasm, workers, target, run,
+  // The wasm members share one dependency graph. One target directory compiles
+  // each dependency once; separate worker targets would compile it again per worker.
+  const wasmFailures = await checkCrateTests(wasm, 1, target, run,
     ["--target", wasmTarget, "--features", "wasm"]);
   console.log(`Standalone test checks: ${packages.length} crates, ${failures.length} failures`);
   console.log(`Standalone wasm checks: ${wasm.length} crates, ${wasmFailures.length} failures`);
