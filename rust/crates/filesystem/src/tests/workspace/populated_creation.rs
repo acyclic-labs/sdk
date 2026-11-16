@@ -147,8 +147,8 @@ async fn creation_publishes_files_in_its_one_commit_and_recovers_only_them()
 }
 
 #[tokio::test]
-async fn creation_attributes_are_published_and_recovery_requires_them()
--> Result<(), Box<dyn Error>> {
+async fn creation_attributes_are_published_and_recovery_requires_them() -> Result<(), Box<dyn Error>>
+{
     let config = crate::VolumeInitialization {
         config: VolumeConfig::portable(Lifecycle::Ephemeral),
         access_policy: Some(crate::access::INITIAL_POLICY),
@@ -184,7 +184,8 @@ async fn creation_attributes_are_published_and_recovery_requires_them()
     let workspace = unbounded!(fs, open_workspace("journal"))?;
     let head = unbounded!(workspace, head())?;
     assert_eq!(
-        unbounded!(head, read_named_attribute("/report.json", &name, None))?.map(|chunk| chunk.bytes),
+        unbounded!(head, read_named_attribute("/report.json", &name, None))?
+            .map(|chunk| chunk.bytes),
         Some(value)
     );
     let retried = fs
