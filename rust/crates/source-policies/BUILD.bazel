@@ -244,6 +244,7 @@ rust_test(
         "//rust/crates/harness-core:src/tools/git/materialize.rs",
         "//rust/crates/harness/tests/ui/native-environment:src/lib.rs",
         "//rust/crates/harness:src/local/workspace.rs",
+        "//rust/crates/harness:tree/src",
         "//rust/crates/markdown:tests/whitespace.rs",
         "//rust/crates/native-runtime:src/file_lock.rs",
         "//rust/crates/source-policies:tree/src",

@@ -1648,6 +1648,12 @@ filegroup(
 )
 
 filegroup(
+    name = "tree/src",
+    srcs = glob(["src/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
     name = "tree/tests/fixtures",
     srcs = glob(["tests/fixtures/**"], allow_empty = True),
     visibility = ["//visibility:public"],
