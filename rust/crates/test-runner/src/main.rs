@@ -235,6 +235,8 @@ fn temporary_for(logs: &Path, runner: u32, number: usize) -> PathBuf {
 /// the case, and on Unix is named by its resolved path: Bazel gives a test no TMPDIR, and
 /// macOS's `/tmp` is a symlink, which every case that checks its paths for links refuses. A
 /// directory left by an earlier runner of the same process id is stale and is replaced.
+/// Windows names it by its absolute path, never a resolved one: `canonicalize` there returns a
+/// `\\?\` verbatim path, which programs a case starts (the vendored protoc) cannot open.
 fn case(
     suite: &Suite,
     custody: &ProcessCustody,
@@ -247,7 +249,12 @@ fn case(
         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
         _ => fs::create_dir(temporary)?,
     }
-    let outcome = run_case(suite, custody, name, output, &temporary.canonicalize()?);
+    let named = if cfg!(windows) {
+        std::path::absolute(temporary)?
+    } else {
+        temporary.canonicalize()?
+    };
+    let outcome = run_case(suite, custody, name, output, &named);
     fs::remove_dir_all(temporary)?;
     outcome
 }
@@ -349,7 +356,20 @@ mod tests {
                 "{} is not case 0's own directory",
                 temporary.display()
             );
-            assert_eq!(temporary.canonicalize().unwrap(), temporary, "unresolved");
+            if cfg!(windows) {
+                assert!(
+                    !temporary.as_os_str().to_string_lossy().starts_with(r"\\?\"),
+                    "{} is a verbatim path",
+                    temporary.display()
+                );
+                assert!(
+                    temporary.is_absolute(),
+                    "{} is relative",
+                    temporary.display()
+                );
+            } else {
+                assert_eq!(temporary.canonicalize().unwrap(), temporary, "unresolved");
+            }
             assert_eq!(fs::read_dir(&temporary).unwrap().count(), 0, "not empty");
         }
     }
