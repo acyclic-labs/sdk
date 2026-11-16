@@ -128,7 +128,7 @@ fn length_variants(seed: u64) -> Vec<Variant> {
         .collect()
 }
 
-fn request_tag(request: &ModelRequest, tags: &[&'static str]) -> Option<&'static str> {
+fn request_tag<'a>(request: &ModelRequest, tags: &[&'a str]) -> Option<&'a str> {
     let message = request
         .messages
         .iter()
