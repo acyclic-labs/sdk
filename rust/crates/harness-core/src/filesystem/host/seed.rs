@@ -148,6 +148,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 acyclic_stream::OwnedBytes::from_static(DOMAIN),
                 acyclic_fs::PublicationPermit::Unrestricted,
             )),
+            self.access_now()?,
         )?;
         let generation = publication.await?;
         self.generation_ref_id(generation.id(), Some(&io))

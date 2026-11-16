@@ -197,7 +197,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let context = evidence
                     .map(|(evidence, _)| publication_context(evidence, io))
                     .transpose()?;
-                Self::commit_contextual_publication(transaction, io, publication, context)?.await
+                Self::commit_contextual_publication(transaction, io, publication, context, now)?.await
             };
             match root_cut {
                 Some(cut) => futures::future::Either::Left(cut.scope(operation)),
@@ -259,6 +259,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             acyclic_stream::OwnedBytes,
             acyclic_fs::PublicationPermit,
         )>,
+        now: u64,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let commit = loop {
