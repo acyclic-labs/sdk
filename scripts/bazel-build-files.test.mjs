@@ -54,3 +54,21 @@ test("check accepts the generated files and fails on a stale BUILD file", () => 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("every toolchain builds the dev profile's opt-level, and a profile Bazel cannot render refuses", () => {
+  const { root, run } = fixture();
+  try {
+    assert.equal(run("write").status, 0);
+    const moduleFile = readFileSync(join(root, "cargo.MODULE.bazel"), "utf8");
+    // rust.toolchain and the musl repository set each carry the dev profile's opt-level 1 for fastbuild.
+    assert.equal(moduleFile.match(/opt_level = \{"dbg":"0","fastbuild":"1","opt":"3"\}/g)?.length, 2);
+    for (const [table, line] of [["profile.dev", "debug-assertions = false"], ["profile.dev", "overflow-checks = false"], ["profile.release", "debug-assertions = true"]]) {
+      writeFileSync(join(root, "Cargo.toml"), `[workspace]\nmembers = ["member"]\nresolver = "3"\n\n[${table}]\n${line}\n`);
+      const refused = run("check");
+      assert.notEqual(refused.status, 0);
+      assert.match(refused.stderr, new RegExp(`STEP_FAILED bazel-build-files: \[${table.replace(".", "\.")}\] ${line.split(" ")[0]} = ${line.split(" = ")[1]} has no Bazel rendering`));
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
