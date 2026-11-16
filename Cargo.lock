@@ -744,7 +744,6 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "sha2 0.11.1",
- "shuttle",
  "sse-stream",
  "syn 3.0.9",
  "tar",
