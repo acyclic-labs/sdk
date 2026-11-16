@@ -66,9 +66,11 @@ test("the Machines, Objects and Streams endpoints and their credential stay host
   expect(declared!.bindings).toContain(HARNESS_BINDINGS.streams);
   expect(declared!.bindings).not.toContain(OBJECTS_ENDPOINT);
   expect(declared!.bindings).not.toContain(STREAMS_ENDPOINT);
-  expect(manifest().environments[0]!.secrets.map(secret => secret.reference)).not.toContain(ACCOUNT_LEAF.reference);
+  // No environment secret selects the account leaf's variable, `secrets:/account/leaf`.
+  expect(manifest().environments[0]!.secrets.map(({ reference }) => `secrets:/${reference.scope}/${reference.name}`))
+    .not.toContain("secrets:/account/leaf");
   // A Machines bearer leaves the Objects and Streams endpoints on the account leaf.
-  const bearer = { scheme: "bearer", reference: "secrets:/machines/token" } as const;
+  const bearer = { scheme: "bearer", reference: { scope: "machines", name: "token", version: "1" } } as const;
   const own = harnessManifest({ ...deployment, machines: { ...deployment.machines, credential: bearer } },
     spec, volumes, sha256(entry), [asset]);
   validate(JSON.stringify(own));
