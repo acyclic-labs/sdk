@@ -4,8 +4,6 @@ use acyclic_stream::{OwnedBytes, StreamPath};
 
 mod cache;
 pub(super) mod node;
-#[cfg(test)]
-pub(super) use cache::HOT_PAGES;
 pub(super) use cache::NodeCache;
 mod read;
 mod update;

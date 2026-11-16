@@ -3,7 +3,7 @@ use super::*;
 use crate::wire_codec::{OwnedIndexAllocation, OwnedIndexWork};
 use acyclic_collections::FixedIndex;
 
-pub(in crate::filesystem::execution_journal) const HOT_PAGES: usize = 128;
+const HOT_PAGES: usize = 128;
 
 struct CachedNode {
     reference: NodeRef,

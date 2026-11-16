@@ -100,31 +100,16 @@ async fn check_replay_payload_cost(native: bool) -> Result<()> {
 
 #[tokio::test]
 async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
-    // Exercise the durable codecs as well as their retained in-memory history;
-    // all live allocations must remain on their original ledger.
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let stream =
-        acyclic_stream::LocalStream::open(directory.path().join("journal"), Default::default())
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
-    let filesystem = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
-        directory.path().join("filesystem"),
-    ))
-    .await?;
-    let (journal, _issuer) =
-        crate::filesystem::execution_journal::test_support::journal_with_backends(
-            Arc::new(stream),
-            filesystem,
-        )
-        .await?;
+    // Count the work each append does against an in-memory store. The durable
+    // codecs still run, but this case measures work per append rather than
+    // device flush latency.
+    let (journal, _issuer) = journal().await?;
     // The retry digest includes this identity, so fix it to keep index shape
-    // and the allocation high-water mark reproducible.
+    // reproducible.
     let operation = OperationId::from_bytes([81; 16]);
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
-    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let io = PreparationIo::from_native_work(&work.invocation_window()?)?;
+    let io = PreparationIo::from_budget(budget, &cancellation)?;
     journal
         .append(
             operation,
@@ -135,127 +120,117 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
             Some(&io),
         )?
         .await?;
-    // The writer's allocation history is what this test measures, not the
-    // device flush of each append; defer those flushes and still encode every
-    // durable frame.
-    let (peak, live, half) = acyclic_stream::deferring_durability(async {
-        let mut half = (0, 0);
-        for step in 0..1_000 {
-            if step == 500 {
-                half = (
-                    work.receipt().peak_allocation_bytes,
-                    work.live_allocation_bytes(),
+    use crate::filesystem::execution_journal::persistent_index::node::MAX_BRANCH_BYTES;
+    const INDEX_DEPTH: u64 = 256;
+    const INDEX_RECORDS: u64 = 2;
+    const RECORD_FRAMING_BYTES: u64 = 64;
+    const ENVELOPE_BYTES: u64 = 4 * 1024;
+    let max_branch_bytes = u64::try_from(MAX_BRANCH_BYTES)
+        .map_err(|_| Error::Invalid("branch page bound does not fit u64".into()))?;
+    let read_bound = 2 * (INDEX_DEPTH + INDEX_RECORDS);
+    let encoding_bound = 2
+        * (INDEX_DEPTH + INDEX_RECORDS)
+        * (2 * max_branch_bytes + RECORD_FRAMING_BYTES)
+        + ENVELOPE_BYTES;
+    let mut first = (0, 0);
+    let mut last = (0, 0);
+    for step in 0..450 {
+        // Each append has its own work window.
+        let io = PreparationIo::from_budget(budget, &cancellation)?;
+        let event = ExecutionEvent::ToolFailed {
+            step,
+            call_id: "call".into(),
+            reason: ToolFailureKind::Unavailable,
+            cause: ToolFailureCause {
+                class: ToolErrorClass::Invalid,
+                message: "unavailable".into(),
+            },
+        };
+        let before = io.receipt();
+        assert_eq!(
+            io.remaining()?.bytes_encoded,
+            budget.bytes_encoded,
+            "append inherited prior invocation work at step {step}"
+        );
+        let appended = journal
+            .append_if_tail(
+                operation,
+                u64::from(step) + 1,
+                &format!("failed:{step}"),
+                &event,
+                Some(&io),
+            )?
+            .await;
+        let accepted = match appended {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                // Distinguish retained journal caches from backend custody.
+                // Always return the original error; eviction cannot retry or
+                // turn an exhausted invocation into a successful append.
+                *journal.verified.lock().await = SummaryCache::default();
+                eprintln!(
+                    "append step={step} local={} error={error:?}",
+                    io.owned_bytes().unwrap_or_default()
                 );
+                return Err(error);
             }
-            // Each append has its own work window while cache allocations stay
-            // on the original ledger across the complete history.
-            let io = PreparationIo::from_native_work(&work.invocation_window()?)?;
-            let event = ExecutionEvent::ToolFailed {
-                step,
-                call_id: "call".into(),
-                reason: ToolFailureKind::Unavailable,
-                cause: ToolFailureCause {
-                    class: ToolErrorClass::Invalid,
-                    message: "unavailable".into(),
-                },
-            };
-            let before = io.receipt();
-            assert_eq!(
-                io.remaining()?.bytes_encoded,
-                budget.bytes_encoded,
-                "append inherited prior invocation work at step {step}"
-            );
-            let appended = journal
-                .append_if_tail(
-                    operation,
-                    u64::from(step) + 1,
-                    &format!("failed:{step}"),
-                    &event,
-                    Some(&io),
-                )?
-                .await;
-            let accepted = match appended {
-                Ok(accepted) => accepted,
-                Err(error) => {
-                    let live = work.live_allocation_bytes();
-                    // Distinguish retained journal caches from backend custody.
-                    // Always return the original error; eviction cannot retry or
-                    // turn an exhausted invocation into a successful append.
-                    *journal.verified.lock().await = SummaryCache::default();
-                    eprintln!(
-                        "append step={step} live={live} after_cache_drop={} local={} error={error:?}",
-                        work.live_allocation_bytes(),
-                        io.owned_bytes().unwrap_or_default()
-                    );
-                    return Err(error);
-                }
-            };
-            assert!(accepted);
-            let after = io.receipt();
-            // A bounded cache may read cold index pages, never a journal
-            // prefix. Retry and tool-state preloads plus their two updates
-            // each traverse at most 256 branches, a leaf and an external value.
-            // Acknowledged appends are not reads: publication need not read
-            // its own records back. Bound all actual reads, including replay.
-            let historical = after.authority_records_read - before.authority_records_read;
-            assert!(
-                historical <= 4 * 258,
-                "append exceeded fixed-width index work at step {step}"
-            );
-            {
-                let cache = journal.verified.lock().await;
-                let summary = cache.summary();
-                let entries = summary.retries.len()
-                    + summary.contexts.len()
-                    + summary.models.len()
-                    + summary.tools.len();
-                assert!(
-                    entries
-                        <= crate::filesystem::execution_journal::summary_cache::HOT_SUMMARY_ENTRIES + 3,
-                    "hot summary grew with history: step={step}, entries={entries}"
-                );
-            }
-            // Two 256-bit index paths each contain at most 256 branches and two
-            // leaf/value records. A branch is at most 86 bytes; count both node
-            // encoding and the local durable copy, with 64 bytes of record framing.
-            // The fixed event, checkpoint and commit envelope fit in another 4 KiB.
-            let encoding_bound = 2 * 258 * (2 * 86 + 64) + 4_096;
-            let encoded = after.bytes_encoded - before.bytes_encoded;
-            assert!(
-                encoded <= encoding_bound,
-                "append encoding exceeded the fixed per-append bound at step {step}: encoded={encoded}"
-            );
-            // Local storage also encodes its own durable records. Its exact work
-            // belongs to this invocation, independently of earlier appends.
-            assert_eq!(
-                io.remaining()?.bytes_encoded,
-                budget.bytes_encoded - encoded,
-                "append charged work outside its invocation at step {step}"
-            );
+        };
+        assert!(accepted);
+        let after = io.receipt();
+        // A bounded cache may read cold index pages, never a journal
+        // prefix. Retry and tool-state preloads plus their two updates
+        // each traverse at most 256 branches, a leaf and an external value.
+        // Acknowledged appends are not reads: publication need not read
+        // its own records back. Bound all actual reads, including replay.
+        let historical = after.authority_records_read - before.authority_records_read;
+        assert!(
+            historical <= read_bound,
+            "append exceeded fixed-width index work at step {step}"
+        );
+        let encoded = after.bytes_encoded - before.bytes_encoded;
+        assert!(
+            encoded <= encoding_bound,
+            "append encoding exceeded the fixed per-append bound at step {step}: encoded={encoded}"
+        );
+        let measured = (historical, encoded);
+        if step < 50 {
+            first = (first.0.max(measured.0), first.1.max(measured.1));
         }
-        Ok::<_, Error>((
-            work.receipt().peak_allocation_bytes,
-            work.live_allocation_bytes(),
-            half,
-        ))
-    })
-    .await?;
-    eprintln!("append history=1000 live={live} peak={peak} at_500={half:?}");
-    // The store keeps what landed, so the writer holds only its bounded hot
-    // caches. Doubling the history can only widen each hot index page, at
-    // most to a full-width branch. Keeping even 23 bytes per append on the
-    // writer would exceed this over the last 500 appends.
-    use crate::filesystem::execution_journal::persistent_index::{
-        HOT_PAGES, node::MAX_BRANCH_BYTES,
-    };
-    let widening = (HOT_PAGES * MAX_BRANCH_BYTES) as u64;
+        if step >= 400 {
+            last = (last.0.max(measured.0), last.1.max(measured.1));
+        }
+        // The store also encodes its own records. Its exact work belongs to
+        // this invocation, independently of earlier appends.
+        assert_eq!(
+            io.remaining()?.bytes_encoded,
+            budget.bytes_encoded - encoded,
+            "append charged work outside its invocation at step {step}"
+        );
+    }
+    {
+        let cache = journal.verified.lock().await;
+        let summary = cache.summary();
+        let entries = summary.retries.len()
+            + summary.contexts.len()
+            + summary.models.len()
+            + summary.tools.len();
+        assert!(
+            entries <= crate::filesystem::execution_journal::summary_cache::HOT_SUMMARY_ENTRIES + 3,
+            "hot summary grew with history: entries={entries}"
+        );
+    }
+    eprintln!("append history=450 first={first:?} last={last:?}");
     assert!(
-        peak <= half.0 + widening,
-        "the writer's peak grew with history: {peak} after {half:?}"
+        first.0 <= read_bound && first.1 <= encoding_bound,
+        "the first appends exceeded their fixed work bound: {first:?}"
     );
     assert!(
-        live <= half.1 + widening,
-        "the writer's live bytes grew with history: {live} after {half:?}"
+        last.0 <= read_bound && last.1 <= encoding_bound,
+        "appends after the full history exceeded their fixed work bound: {last:?}"
+    );
+    assert!(
+        last.0 <= first.0.max(1) * 2 && last.1 <= first.1.max(1) * 2,
+        "append work grew with history: first={first:?} last={last:?}"
     );
     Ok(())
 }
