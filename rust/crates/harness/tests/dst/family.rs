@@ -36,6 +36,7 @@ pub(super) const GENERATORS: &[&Generator] = &[
     &super::determinism::GENERATOR,
     &super::filesystem::READ_GENERATOR,
     &super::wait::GENERATOR,
+    &super::child::GENERATOR,
 ];
 
 impl Generator {

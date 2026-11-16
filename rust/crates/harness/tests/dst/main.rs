@@ -36,6 +36,7 @@ mod redelivery;
 mod refusal;
 mod settlement;
 mod wait;
+mod child;
 mod swarm;
 
 // Keep each simulator layer independent of the production future's layout.
