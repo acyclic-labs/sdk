@@ -5,7 +5,7 @@
 use super::*;
 use acyclic_harness::{
     local::WorkspaceMounting,
-    model::{ModelContentPart, ModelEvent, ModelRequest, ToolCall, ToolResultContent},
+    model::{ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall, ToolResultContent},
     test_support::{ScriptedEvent, model_visible_messages},
 };
 use acyclic_native_runtime::testing::{DurableFault, InjectedStorageFault};
@@ -108,7 +108,7 @@ pub(super) fn tag(tag: &str) -> String {
 
 /// How a prompt appears in a request: inline, or as the content digest of
 /// the input file the host stored it in.
-fn appears(tag_text: &str) -> [String; 2] {
+pub(super) fn appears(tag_text: &str) -> [String; 2] {
     use sha2::Digest as _;
     let digest: [u8; 32] = sha2::Sha256::digest(tag_text.as_bytes()).into();
     [
@@ -135,6 +135,7 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
             .iter()
             .enumerate()
             .rev()
+            .filter(|(_, message)| message.role == ModelRole::User)
             .find_map(|(index, message)| {
                 // Prompts reach the model inline or as a stored input file.
                 let body = serde_json::to_string(&message.content).unwrap_or_default();
