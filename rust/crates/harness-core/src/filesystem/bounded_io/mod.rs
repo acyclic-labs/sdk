@@ -33,7 +33,7 @@ pub use quota::Charged;
 use quota::finish_decode;
 use quota::finish_encoding;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use quota::native_decoded;
+pub use quota::native_decoded;
 pub(crate) use quota::{DecodeReservation, retain_decoded};
 pub use records::PreparationRecord;
 pub use records::UploadRecord;
