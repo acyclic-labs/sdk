@@ -15,20 +15,20 @@ type CaptureWork<'a> = Option<&'a ()>;
 
 struct RetainedReservation {
     slot: RetainedFactRef,
-    growth: Option<RetainedGrowthReservation>,
+    growth: Option<Arc<RetainedGrowth>>,
 }
 
-struct RetainedGrowthReservation {
-    growth: Arc<RetainedGrowth>,
-    #[cfg(not(target_arch = "wasm32"))]
-    codec: Option<acyclic_native_runtime::NativeCodecReservation<Arc<dyn NativeReadMeter>>>,
-}
-
+/// The newest funded segment awaiting installation. Concurrent reservations
+/// share it, so a boundary funds each segment once.
 #[derive(Default)]
 struct RetainedPool(crate::query_sync::SyncMutex<std::sync::Weak<RetainedGrowth>>);
 
+/// One funded segment awaiting installation, above the pending segments it
+/// extends. Segments strictly decrease along `below`.
 struct RetainedGrowth {
-    buffer: crate::query_sync::SyncMutex<Option<(Vec<Retained>, Allocation)>>,
+    segment: usize,
+    buffer: crate::query_sync::SyncMutex<Option<RetainedSegment>>,
+    below: Option<Arc<RetainedGrowth>>,
     pool: std::sync::Weak<RetainedPool>,
     _allocation: Allocation,
 }
@@ -40,10 +40,37 @@ impl Drop for RetainedGrowth {
                 .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A live lower segment stays shareable after its extension retires.
             if std::ptr::eq(pending.as_ptr(), self) {
-                *pending = std::sync::Weak::new();
+                *pending = self
+                    .below
+                    .as_ref()
+                    .map_or_else(std::sync::Weak::new, Arc::downgrade);
             }
         }
+    }
+}
+
+impl RetainedGrowth {
+    /// Takes the pending allocation for `segment`, if this chain still holds it.
+    fn take(&self, segment: usize) -> Option<RetainedSegment> {
+        self.find(segment)?
+            .buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    /// The pending node for `segment`, if this chain funds it.
+    fn find(&self, segment: usize) -> Option<&Self> {
+        let mut node = Some(self);
+        while let Some(current) = node {
+            if current.segment <= segment {
+                return (current.segment == segment).then_some(current);
+            }
+            node = current.below.as_deref();
+        }
+        None
     }
 }
 
@@ -62,31 +89,11 @@ impl MemoryStream {
         reservation: RetainedReservation,
     ) -> Result<RetainedFactRef, StreamError> {
         let RetainedReservation { slot, growth } = reservation;
-        if let Some(reservation) = growth {
-            #[cfg(not(target_arch = "wasm32"))]
-            let mut codec = reservation.codec;
-            let mut pending = reservation
-                .growth
-                .buffer
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if pending
-                .as_ref()
-                .is_some_and(|(buffer, _)| buffer.capacity() > state.retained.capacity())
-            {
-                let (mut buffer, allocation) = pending.take().ok_or(StreamError::Capacity)?;
-                #[cfg(not(target_arch = "wasm32"))]
-                let copied = (state.retained.len() * std::mem::size_of::<Retained>()) as u64;
-                buffer.append(&mut state.retained);
-                state.retained = buffer;
-                state.retained_allocation = allocation;
-                #[cfg(not(target_arch = "wasm32"))]
-                if let (Some(work), Some(codec)) = (&self.work, &mut codec) {
-                    let _ = work.record(codec.record(acyclic_native_runtime::NativeCodecWork {
-                        copied,
-                        ..Default::default()
-                    }));
-                }
+        if let Some(growth) = growth {
+            // Install from the lowest missing segment upward. A segment another
+            // installation already took is skipped; nothing is moved or copied.
+            while let Some(segment) = growth.take(state.retained.next_segment()) {
+                state.retained.install(segment);
             }
         }
         if state.retained.len() >= state.retained.capacity() {
