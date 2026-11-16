@@ -41,8 +41,11 @@ fn owner_exit_helper() {
         let spawned = tree.insert(ProcessTree::spawn(&mut command).expect("spawn tree"));
         Box::new(spawned.take_stdout().expect("member output"))
     } else {
+        use std::os::unix::process::CommandExt as _;
+        // Its own group, as a terminal job's leader, whatever runs this test.
         let spawned = plain.insert(
             Command::new(&exe)
+                .process_group(0)
                 .args(args)
                 .env(MODE, "member")
                 .stdin(Stdio::null())
@@ -101,8 +104,8 @@ fn a_tree_and_its_services_die_with_a_killed_owner() {
     member.wait();
 }
 
-/// Negative control: the same member outside a tree survives the same kill
-/// and would start its services detached.
+/// Negative control: the same member leading its own group outside a tree
+/// survives the same kill and would start its services detached.
 #[test]
 fn a_plain_child_outlives_its_killed_owner() {
     let (member, warded) = kill_owner("plain-owner");
