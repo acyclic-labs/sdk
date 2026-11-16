@@ -45,7 +45,9 @@ pub struct IndexInsertionBound {
 /// Shared immutable tree representation; public compositions select the cut types.
 pub struct Tree<V, A, const N: usize, C, K> {
     root: Option<Node<V, A, N, C, K>>,
-    before: Option<K>,
+    // The cut is shared by every view and child that inherits it, so a view's
+    // size never depends on the key width.
+    before: Option<Arc<K>>,
     value_before: Option<C>,
 }
 
@@ -63,7 +65,7 @@ pub struct PersistentPosition<'a, V, const N: usize> {
 pub(crate) struct Position<'a, V, const N: usize, C, K> {
     pub(crate) key: &'a [u8; N],
     pub(crate) value: &'a V,
-    pub(crate) before: Option<K>,
+    pub(crate) before: Option<Arc<K>>,
     pub(crate) value_before: Option<C>,
 }
 
@@ -72,7 +74,7 @@ impl<'a, V, const N: usize> Position<'a, V, N, std::convert::Infallible, [u8; N]
         PersistentPosition {
             key: self.key,
             value: self.value,
-            before: self.before,
+            before: self.before.map(|cut| *cut),
         }
     }
 }
@@ -209,11 +211,11 @@ fn retire<V, A, const N: usize, C, K>(node: Arc<Body<V, A, N, C, K>>) {
     drop(Arc::into_inner(node));
 }
 
-impl<V, A, const N: usize, C: Copy, K: Copy> Clone for Tree<V, A, N, C, K> {
+impl<V, A, const N: usize, C: Copy, K> Clone for Tree<V, A, N, C, K> {
     fn clone(&self) -> Self {
         Self {
             root: self.root.clone(),
-            before: self.before,
+            before: self.before.clone(),
             value_before: self.value_before,
         }
     }
@@ -263,11 +265,24 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
     }
 
     fn cut(&self, before: K) -> Self {
-        let before = self.before.map_or(before, |prior| prior.min(before));
-        Self {
-            root: self.root.clone(),
-            before: Some(before),
-            value_before: self.value_before,
+        match &self.before {
+            Some(prior) if **prior <= before => self.clone(),
+            _ => Self {
+                root: self.root.clone(),
+                before: Some(Arc::new(before)),
+                value_before: self.value_before,
+            },
+        }
+    }
+
+    fn cut_shared(&self, before: &Arc<K>) -> Self {
+        match &self.before {
+            Some(prior) if **prior <= **before => self.clone(),
+            _ => Self {
+                root: self.root.clone(),
+                before: Some(Arc::clone(before)),
+                value_before: self.value_before,
+            },
         }
     }
 
@@ -276,7 +291,7 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
     pub(crate) fn values_before(&self, before: C) -> Self {
         Self {
             root: self.root.clone(),
-            before: self.before,
+            before: self.before.clone(),
             value_before: Some(self.value_before.map_or(before, |prior| prior.min(before))),
         }
     }
@@ -309,9 +324,10 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
         if self.root.is_none() {
             return Ok(None);
         }
-        work.examine(1 + self.before.map_or(0, |_| N as u64))?;
+        work.examine(1 + self.before.as_ref().map_or(0, |_| N as u64))?;
         Ok(self.body().filter(|body| {
             self.before
+                .as_ref()
                 .is_none_or(|before| body.minimum < *before.key())
         }))
     }
@@ -319,7 +335,8 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
     fn child(&self, child: &Self) -> Self {
         let child = self
             .before
-            .map_or_else(|| child.clone(), |before| child.cut(before));
+            .as_ref()
+            .map_or_else(|| child.clone(), |before| child.cut_shared(before));
         match self.value_before {
             Some(before) => child.values_before(before),
             None => child,
@@ -378,10 +395,10 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
     ) -> Result<Option<Position<'_, V, N, C, K>>, W::Error> {
         work.validate()?;
         let mut cursor = self;
-        let mut before = None;
+        let mut before: Option<Arc<K>> = None;
         let mut value_before = None;
         loop {
-            if let Some(cut) = cursor.before {
+            if let Some(cut) = &cursor.before {
                 work.examine(N as u64)?;
                 if key >= cut.key() {
                     return Ok(None);
@@ -389,7 +406,10 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
                 if before.is_some() {
                     work.examine(N as u64)?;
                 }
-                before = Some(before.map_or(cut, |prior: K| prior.min(cut)));
+                before = Some(match before {
+                    Some(prior) if *prior <= **cut => prior,
+                    _ => Arc::clone(cut),
+                });
             }
             if let Some(cut) = cursor.value_before {
                 value_before = Some(value_before.map_or(cut, |prior: C| prior.min(cut)));
@@ -426,14 +446,18 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
     ) -> Result<Option<Position<'_, V, N, C, K>>, W::Error> {
         work.validate()?;
         let mut cursor = self;
-        let mut before = self.before;
+        let mut before = self.before.clone();
         let mut value_before = self.value_before;
         loop {
             let Some(body) = cursor.visible_body(work)? else {
                 return Ok(None);
             };
             work.examine(2 * N as u64)?;
-            if body.minimum > key || before.is_some_and(|before| body.minimum >= *before.key()) {
+            if body.minimum > key
+                || before
+                    .as_ref()
+                    .is_some_and(|before| body.minimum >= *before.key())
+            {
                 return Ok(None);
             }
             match &body.kind {
@@ -450,14 +474,19 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
                     work.examine(3 * N as u64)?;
                     cursor = if upper.is_some_and(|upper| {
                         upper.minimum <= key
-                            && before.is_none_or(|before| upper.minimum < *before.key())
+                            && before
+                                .as_ref()
+                                .is_none_or(|before| upper.minimum < *before.key())
                     }) {
                         high
                     } else {
                         low
                     };
-                    if let Some(cut) = cursor.before {
-                        before = Some(before.map_or(cut, |prior| prior.min(cut)));
+                    if let Some(cut) = &cursor.before {
+                        before = Some(match before {
+                            Some(prior) if *prior <= **cut => prior,
+                            _ => Arc::clone(cut),
+                        });
                     }
                     if let Some(cut) = cursor.value_before {
                         value_before = Some(value_before.map_or(cut, |prior| prior.min(cut)));
@@ -474,12 +503,15 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
     ) -> Result<Option<Position<'_, V, N, C, K>>, W::Error> {
         work.validate()?;
         let mut cursor = self;
-        let mut before = None;
+        let mut before: Option<Arc<K>> = None;
         let mut value_before = None;
         let mut candidate = None;
         loop {
-            if let Some(cut) = cursor.before {
-                before = Some(before.map_or(cut, |prior: K| prior.min(cut)));
+            if let Some(cut) = &cursor.before {
+                before = Some(match before {
+                    Some(prior) if *prior <= **cut => prior,
+                    _ => Arc::clone(cut),
+                });
             }
             if let Some(cut) = cursor.value_before {
                 value_before = Some(value_before.map_or(cut, |prior: C| prior.min(cut)));
@@ -487,7 +519,9 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
             let body = cursor.visible_body(work)?;
             work.examine(2 * N as u64)?;
             match body.filter(|body| {
-                before.is_none_or(|cut| key < *cut.key() && body.minimum < *cut.key())
+                before
+                    .as_ref()
+                    .is_none_or(|cut| key < *cut.key() && body.minimum < *cut.key())
             }) {
                 Some(Body {
                     minimum,
@@ -507,9 +541,11 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
                 }) => {
                     let upper = high.visible_body(work)?;
                     work.examine(2 * N as u64)?;
-                    if let Some(upper) =
-                        upper.filter(|upper| before.is_none_or(|cut| upper.minimum < *cut.key()))
-                    {
+                    if let Some(upper) = upper.filter(|upper| {
+                        before
+                            .as_ref()
+                            .is_none_or(|cut| upper.minimum < *cut.key())
+                    }) {
                         if upper.minimum <= key {
                             cursor = high;
                         } else {
