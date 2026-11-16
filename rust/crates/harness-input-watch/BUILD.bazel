@@ -55,6 +55,9 @@ rust_test(
         "--check-cfg=cfg(kani)",
     ],
     lint_config = ":lints",
+    deps = [
+        "@crates//tempfile-3.27.0",
+    ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
 )
