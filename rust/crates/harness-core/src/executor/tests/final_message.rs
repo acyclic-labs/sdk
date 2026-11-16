@@ -1219,3 +1219,53 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
     assert_eq!(journal.0.lock().unwrap().len(), records.len());
     Ok(())
 }
+
+#[tokio::test]
+async fn a_repeating_reasoning_stream_settles_as_a_model_error() -> Result<()> {
+    let line = "Let me look at the same file again.\n";
+    let mut events = Vec::new();
+    for _ in 0..(64 * 1024 / line.len() + 1) {
+        events.push(ScriptedEvent::Event(ModelEvent::Reasoning {
+            delta: line.into(),
+        }));
+    }
+    events.push(ScriptedEvent::Event(ModelEvent::Completed {
+        metadata: json!({"finish_reason":"stop"}),
+    }));
+    let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(events)]));
+    let executor = uncompacted_executor(
+        Model::new("fixture".into(), "loop".into(), "1".into())?,
+        provider,
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("loop".into()),
+        selected_context: None,
+        max_steps: None,
+    };
+    let error = match executor.execute(input, journal.as_ref()).await {
+        Ok(output) => {
+            return Err(Error::Invalid(format!(
+                "degenerate stream settled with {} steps",
+                output.steps
+            )));
+        }
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            error,
+            Error::ModelDiagnostic {
+                code: crate::wire::ErrorCode::Invalid,
+                ref message,
+                ..
+            } if message == "model stream repeated without progress"
+        ),
+        "{error:?}"
+    );
+    Ok(())
+}

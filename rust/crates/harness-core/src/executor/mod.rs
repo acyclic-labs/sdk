@@ -70,6 +70,7 @@ pub use model_cache::{
     ModelCacheResidency, ModelCacheTtl,
 };
 mod model_observation;
+mod model_progress;
 pub use model_cost::{
     ModelCostEstimate, ModelPriceError, ModelPriceRecord, ModelPrices, ModelUsageProjection,
     ModelUsageTotals, TokenPrice, UsageTotal,
