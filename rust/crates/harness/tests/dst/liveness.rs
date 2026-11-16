@@ -10,7 +10,7 @@ use super::*;
 use acyclic_harness::{
     agent::kernel,
     context::{CapacityCompaction, CompactionPolicy, ModelContextCapacity},
-    model::ModelContentPart,
+    model::{ModelContentPart, ModelRole},
     test_support::ScriptedEvent,
 };
 use family::{Generator, Variant};
@@ -427,7 +427,7 @@ fn request_tag(request: &acyclic_harness::model::ModelRequest) -> Option<&'stati
             )
         })
         .collect();
-    request.messages.iter().rev().find_map(|message| {
+    request.messages.iter().rev().filter(|message| message.role == ModelRole::User).find_map(|message| {
         let body = serde_json::to_string(&message.content).unwrap_or_default();
         needles
             .iter()
