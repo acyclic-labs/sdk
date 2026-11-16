@@ -912,6 +912,12 @@ async fn fork_change_set(
     for record in &records {
         let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
         let appender = crate::PublicationContext::from_bytes(changes.context.as_ref())?.volume;
+        // A follow of the fork delivers every record; each is authenticated by
+        // the volume that appended it, never by the followed path.
+        assert_eq!(
+            crate::session::appended_publication(&fs, record)?.volume,
+            appender
+        );
         if record.origin == own {
             assert_eq!(appender, fork.id().volume_id());
             listed += changes
@@ -923,6 +929,11 @@ async fn fork_change_set(
             // A shared record names its source's stream and volume.
             assert_eq!(record.origin, shared);
             assert_eq!(appender, workspace.id().volume_id());
+            // Negative control: the same publication claiming the fork's own
+            // stream as its appender is refused.
+            let mut forged = record.clone();
+            forged.origin = own.clone();
+            assert!(crate::session::appended_publication(&fs, &forged).is_err());
             inherited += 1;
         }
     }
