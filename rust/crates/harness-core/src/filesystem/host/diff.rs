@@ -125,7 +125,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let change = entry.value();
             let mut paths = Vec::new();
-            let now = super::super::access::access_now()?;
+            let now = self.access_now()?;
             let regular = |record: Option<FileRecord>| {
                 record.filter(|record| record.kind == acyclic_fs::kernel::FileKind::Regular)
             };
@@ -192,7 +192,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let (before, after) = self
             .diff_endpoints(volume, grant, (base, current), "", &io)
             .await?;
-        let now = super::super::access::access_now()?;
+        let now = self.access_now()?;
         let discloses = |selection: &super::directory::DirectorySelection<'_, A, O>, path: &str| {
             [Action::List, Action::Read]
                 .into_iter()

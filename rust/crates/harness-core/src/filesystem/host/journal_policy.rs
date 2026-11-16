@@ -89,12 +89,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if !required
                 && !view
                     .0
-                    .decide(acyclic_fs::access::Action::Admin, "", access::access_now()?)
+                    .decide(acyclic_fs::access::Action::Admin, "", self.access_now()?)
                     .allowed
             {
                 return Ok(());
             }
-            access::require(&view.0, acyclic_fs::access::Action::Admin, "", io)?;
+            self.require(&view.0, acyclic_fs::access::Action::Admin, "", io)?;
             let fence = view
                 .0
                 .publication_fence()

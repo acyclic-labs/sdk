@@ -203,11 +203,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .decide(
                     acyclic_fs::access::Action::Create,
                     file.path(),
-                    super::super::access::access_now()?,
+                    self.access_now()?,
                 )
                 .allowed
             {
-                super::super::access::require(
+                self.require(
                     &view.0,
                     acyclic_fs::access::Action::Write,
                     file.path(),
@@ -215,7 +215,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )?;
             }
         } else {
-            super::super::access::require(
+            self.require(
                 &view.0,
                 acyclic_fs::access::Action::List,
                 file.path(),
@@ -223,7 +223,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?;
         }
         if purpose == PublicationPurpose::Content {
-            super::super::access::require(
+            self.require(
                 &view.0,
                 acyclic_fs::access::Action::Read,
                 file.path(),

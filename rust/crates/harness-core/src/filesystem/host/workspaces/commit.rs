@@ -109,6 +109,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             acyclic_fs::StagedContent,
         )>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        let now = self.access_now()?;
         crate::conversation::BoundedContentFuture::new(Some(io), || {
             let operation = async move {
                 let operation = operation()?;
@@ -152,7 +153,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if let Some(pause) = &self.publication_pause {
                     pause().await;
                 }
-                Self::publish_mutations(&mut transaction, mutations, io)?.await?;
+                Self::publish_mutations(&mut transaction, mutations, io, now)?.await?;
                 if let Some((path, content)) = &content {
                     io.sdk(
                         transaction
@@ -208,6 +209,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         transaction: &'a mut acyclic_fs::Transaction<A, O>,
         mutations: &'a [WorkspaceMutation],
         io: &'a PreparationIo,
+        now: u64,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             #[cfg(not(target_arch = "wasm32"))]
@@ -295,8 +297,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 let authority = authority.clone();
                                 async move {
                                     let check = || -> Result<()> {
-                                        require_publication_fence(fence, "volume")?;
-                                        require_publication_fence(root_fence, "root")?;
+                                        require_publication_fence(fence, "volume", now)?;
+                                        require_publication_fence(root_fence, "root", now)?;
                                         if let Some(authority) = &authority {
                                             let io = PreparationIo::from_native_work(&work)?;
                                             authority.0.verify(
@@ -327,7 +329,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 io.remaining()?,
                                 io.cancellation(),
                                 &mut |_| async move {
-                                    require_publication_time(publication, Some(io))
+                                    require_publication_time(publication, Some(io), now)
                                         .map_err(acyclic_fs::OperationFailure::before_work)?;
                                     Ok(acyclic_fs::OperationReceipt {
                                         value: (),
