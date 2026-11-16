@@ -397,7 +397,9 @@ fn linux_boundary_probes(path: &Path, confined: bool, seed: bool) {
     }
     // SAFETY: gettid has no pointer arguments and returns this live thread's ID.
     let thread = libc::pid_t::try_from(unsafe { libc::syscall(libc::SYS_gettid) }).unwrap();
-    let mut parameters = libc::sched_param { sched_priority: 0 };
+    // sched_param's fields differ by libc (musl adds the sched_ss_* fields), so it starts zeroed, never as a
+    // literal. SAFETY: sched_param is plain integers and timespecs on every target; all zeros is a valid value.
+    let mut parameters: libc::sched_param = unsafe { std::mem::zeroed() };
     // SAFETY: the current thread exists and the output parameter is writable.
     assert_eq!(unsafe { libc::sched_getparam(thread, &mut parameters) }, 0);
     // SAFETY: querying this live thread needs no borrowed storage.
@@ -408,7 +410,10 @@ fn linux_boundary_probes(path: &Path, confined: bool, seed: bool) {
         io::Error::last_os_error()
     );
     let mut pthread_policy = -1;
-    let mut pthread_parameters = libc::sched_param { sched_priority: -1 };
+    let mut pthread_parameters = libc::sched_param {
+        sched_priority: -1,
+        ..parameters
+    };
     // SAFETY: pthread_self is a live pthread handle; both outputs are writable.
     let result = unsafe {
         libc::pthread_getschedparam(
