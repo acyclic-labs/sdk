@@ -279,7 +279,7 @@ async fn wait_case(
     } else {
         tag("wait")
     };
-    let (mut conversation, mut observer, inbox, deadline) =
+    let (conversation, mut observer, inbox, deadline) =
         parked(&harness, &id, &prompt_tag).await?;
     let expected_deadline = world.base.saturating_add(20);
     if deadline != expected_deadline {
@@ -521,7 +521,7 @@ async fn provider_exchange(
     let mut stream = provider.generate(&prepared, dispatch);
     let mut waits = Vec::new();
     let mut first_event = loop {
-        let mut next = stream.next();
+        let next = stream.next();
         tokio::pin!(next);
         let duration = tokio::select! {
             delay = delays.recv() => delay.ok_or_else(|| "provider timer was never registered".to_owned())?,
@@ -630,7 +630,7 @@ async fn provider_case(
         let (prepared, dispatch) = request(&provider)?;
         let mut stream = provider.generate(&prepared, dispatch);
         loop {
-            let mut next = stream.next();
+            let next = stream.next();
             tokio::pin!(next);
             tokio::select! {
                 delay = delays.recv() => {
