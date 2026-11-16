@@ -22,7 +22,7 @@ impl Default for Thinking {
     }
 }
 impl Thinking {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn bytes(&self) -> usize {
         self.native.capacity() + self.text.capacity() + self.signature.capacity()
     }
