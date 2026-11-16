@@ -146,9 +146,14 @@ pub struct TimeoutSpec {
 }
 
 impl TimeoutSpec {
+    /// Requests have no implicit deadline; a host selects the first-byte policy.
+    pub const DEFAULT: Self = Self {
+        total_ms: None,
+        first_byte_ms: None,
+    };
     /// Thirty seconds for the first byte, plus one millisecond per input token
     /// (four request bytes), and no total deadline.
-    pub const DEFAULT: Self = Self {
+    pub const FIRST_BYTE: Self = Self {
         total_ms: None,
         first_byte_ms: Some(30_000),
     };

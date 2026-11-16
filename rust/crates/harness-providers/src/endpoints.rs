@@ -17,7 +17,7 @@ fn chat(base_url: String, authentication: Authentication) -> Result<ProviderSpec
         token_counter: None,
         max_event_bytes: None,
         retry: RetrySpec::DEFAULT,
-        timeouts: TimeoutSpec::DEFAULT,
+        timeouts: TimeoutSpec::FIRST_BYTE,
         prompt_cache: crate::PromptCache::Implicit,
     })
 }
