@@ -9,23 +9,6 @@ use family::{Generator, Variant};
 use oracle::{Plan, Prompted, World, call, done, service, settlements, tag};
 use serde_json::{Value, json};
 
-/// Every origin, in seed order.
-const ORIGINS: [&str; 10] = [
-    "tool_error",
-    "rate_limit",
-    "transport",
-    "protective_bound",
-    "internal_error",
-    "custody_conflict",
-    "malformed_output",
-    "subscription_end",
-    "child_settles_during_turn",
-    "interaction_cancelled",
-];
-
-/// The three depths a fault can be injected at.
-const LOCATIONS: [&str; 3] = ["root", "child", "grandchild"];
-
 const ROOT_TAG: &str = "f1-root";
 const MID_TAG: &str = "f1-mid";
 const TARGET_TAG: &str = "f1-target";
@@ -353,15 +336,11 @@ fn checked(
         ));
     }
 
-    let target_brief = if location == "root" {
-        ROOT_TAG
-    } else {
-        TARGET_TAG
-    };
-    if !incarnation
-        .requests
-        .iter()
-        .any(|request| briefed(request, target_brief))
+    if location != "root"
+        && !incarnation
+            .requests
+            .iter()
+            .any(|request| briefed(request, TARGET_TAG))
     {
         return Err(format!("{origin} at {location} never reached its target"));
     }
