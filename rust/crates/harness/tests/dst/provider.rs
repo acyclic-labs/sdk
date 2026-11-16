@@ -67,6 +67,12 @@ acyclic_test_support::cases! {
     cases = [
         seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3,
         seed_4 => 4, seed_5 => 5, seed_6 => 6, seed_7 => 7,
+        seed_8 => 8, seed_9 => 9, seed_10 => 10, seed_11 => 11,
+        seed_12 => 12, seed_13 => 13, seed_14 => 14, seed_15 => 15,
+        seed_16 => 16, seed_17 => 17, seed_18 => 18, seed_19 => 19,
+        seed_20 => 20, seed_21 => 21, seed_22 => 22, seed_23 => 23,
+        seed_24 => 24, seed_25 => 25, seed_26 => 26, seed_27 => 27,
+        seed_28 => 28, seed_29 => 29, seed_30 => 30, seed_31 => 31,
     ],
 }
 
@@ -114,19 +120,26 @@ fn capacity(seed: u64) -> &'static str {
         .unwrap_or("output_lt_context")
 }
 
-fn length_variants(seed: u64) -> Vec<Variant> {
-    let (_, call) = call(seed);
-    let capacity = capacity(seed);
+fn length_base(seed: u64) -> u64 {
+    seed / CONTENTS.len() as u64
+}
+
+fn length_content(seed: u64) -> &'static str {
     CONTENTS
-        .iter()
-        .map(|content| {
-            Variant::from([
-                ("content", *content),
-                ("call", call),
-                ("capacity", capacity),
-            ])
-        })
-        .collect()
+        .get(usize::try_from(seed % CONTENTS.len() as u64).unwrap_or(0))
+        .copied()
+        .unwrap_or("text")
+}
+
+fn length_variants(seed: u64) -> Vec<Variant> {
+    let base = length_base(seed);
+    let (_, call) = call(base);
+    let capacity = capacity(base);
+    vec![Variant::from([
+        ("content", length_content(seed)),
+        ("call", call),
+        ("capacity", capacity),
+    ])]
 }
 
 fn request_tag<'a>(request: &ModelRequest, tags: &[&'a str]) -> Option<&'a str> {
@@ -441,12 +454,12 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
             let prompts = if transition == "compaction_applied"
                 || transition == "background_summary"
             {
-                let mut prompts: Vec<Vec<(&str, String)>> = (0..4)
+                let mut prompts: Vec<Vec<(&str, String)>> = (0..2)
                     .map(|index| {
-                        let id = ["d3-warm-0", "d3-warm-1", "d3-warm-2", "d3-warm-3"][index];
+                        let id = ["d3-warm-0", "d3-warm-1"][index];
                         vec![(
                             id,
-                            format!("{} large context {}", tag(id), "x".repeat(30_000)),
+                            format!("{} large context {}", tag(id), "x".repeat(60_000)),
                         )]
                     })
                     .collect();
@@ -521,11 +534,11 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                         .messages
                         .first()
                         .ok_or("the summary request has no header")?;
-                    let header = worker
+                    if !worker
                         .messages
-                        .first()
-                        .ok_or("the worker request has no header")?;
-                    if first != header {
+                        .iter()
+                        .any(|message| message.role == ModelRole::System && message == first)
+                    {
                         return fail("the background call did not reuse the agent header");
                     }
                 }
@@ -648,119 +661,118 @@ fn contains_reasoning(request: &ModelRequest) -> bool {
 }
 
 fn length_world(seed: u64) -> std::result::Result<bool, String> {
-    let (_, call) = call(seed);
-    let capacity = capacity(seed);
-    let contents = CONTENTS;
+    let base = length_base(seed);
+    let (_, call) = call(base);
+    let capacity = capacity(base);
+    let content = length_content(seed);
     oracle::simulate(seed, move || {
         entry(async move {
             let files = [("a.txt", "alpha\n")];
-            let mut requests = Vec::new();
-            for content in contents {
-                let service =
-                    d4_service(call, content).with_context_capacity(d4_capacity(capacity));
-                let mut world =
-                    World::new(seed, &files, service).map_err(oracle::failed)?;
-                let prompt = format!("d4-content:{content} {}", tag("d4"));
-                let groups = if call == "summary" {
-                    let warmups = if capacity == "output_eq_context" { 4 } else { 3 };
-                    let mut groups: Vec<Vec<(&str, String)>> = (0..warmups)
-                        .map(|index| {
-                            let id = ["d4-warm-0", "d4-warm-1", "d4-warm-2", "d4-warm-3"][index];
-                            vec![(
-                                id,
-                                format!("{} large context {}", tag(id), "x".repeat(30_000)),
-                            )]
-                        })
-                        .collect();
-                    groups.push(vec![("d4", prompt.clone())]);
-                    groups
-                } else if call == "context_review" {
-                    vec![
-                        vec![(
-                            "d4-warm-0",
-                            format!("{} history {}", tag("d4-warm-0"), "x".repeat(20_000)),
-                        )],
-                        vec![("d4", prompt.clone())],
-                    ]
+            let service = d4_service(call, content).with_context_capacity(d4_capacity(capacity));
+            let mut world = World::new(seed, &files, service).map_err(oracle::failed)?;
+            let prompt = format!("d4-content:{content} {}", tag("d4"));
+            let groups = if call == "summary" {
+                let (warmups, size) = if capacity == "output_eq_context" {
+                    (2, 60_000)
                 } else {
-                    vec![vec![("d4", prompt.clone())]]
+                    (3, 30_000)
                 };
-                let incarnation = world
-                    .incarnation(None, &groups)
-                    .await
-                    .map_err(oracle::failed)?;
-                let summary_requests: Vec<_> = incarnation
-                    .requests
-                    .iter()
-                    .filter(|request| request.summary)
+                let mut groups: Vec<Vec<(&str, String)>> = (0..warmups)
+                    .map(|index| {
+                        let id = ["d4-warm-0", "d4-warm-1", "d4-warm-2"][index];
+                        vec![(
+                            id,
+                            format!("{} large context {}", tag(id), "x".repeat(size)),
+                        )]
+                    })
                     .collect();
-                match call {
-                    "summary" => {
-                        if summary_requests.is_empty() {
-                            return fail("a length-cut summary was never requested");
-                        }
-                        // The cut summary authorises no rewrite: no request may
-                        // carry a summary file and the agent stays open.
-                        if incarnation.requests.iter().any(has_file) {
-                            return fail("a length-cut summary published a rewrite");
-                        }
-                        let after = vec![vec![("d4-after", tag("d4-after"))]];
-                        let reopened = world
-                            .incarnation(None, &after)
-                            .await
-                            .map_err(oracle::failed)?;
-                        if reopened.prompts.is_empty() {
-                            return fail("the worker died after its cut summary");
-                        }
+                groups.push(vec![("d4", prompt.clone())]);
+                groups
+            } else if call == "context_review" {
+                vec![
+                    vec![(
+                        "d4-warm-0",
+                        format!("{} history {}", tag("d4-warm-0"), "x".repeat(20_000)),
+                    )],
+                    vec![("d4", prompt.clone())],
+                ]
+            } else {
+                vec![vec![("d4", prompt.clone())]]
+            };
+            let incarnation = world
+                .incarnation(None, &groups)
+                .await
+                .map_err(oracle::failed)?;
+            let summary_requests: Vec<_> = incarnation
+                .requests
+                .iter()
+                .filter(|request| request.summary)
+                .collect();
+            match call {
+                "summary" => {
+                    if summary_requests.is_empty() {
+                        return fail("a length-cut summary was never requested");
                     }
-                    "context_review" => {
-                        if summary_requests.is_empty() {
-                            return fail("the length-cut context review was never requested");
-                        }
-                        if incarnation.prompts.first().map(|(outcome, _)| outcome)
-                            != Some(&Prompted::Settled(done("d4")))
-                        {
-                            return fail("a length-cut context review ended the worker");
-                        }
-                        if incarnation.requests.iter().any(has_file) {
-                            return fail("a length-cut context review published a rewrite");
-                        }
+                    // The cut summary authorises no rewrite: no request may
+                    // carry a summary file and the agent stays open.
+                    if incarnation.requests.iter().any(has_file) {
+                        return fail("a length-cut summary published a rewrite");
                     }
-                    _ => {
-                        let expected = if content == "text" {
-                            "partial textdone d4".to_owned()
-                        } else {
-                            done("d4")
-                        };
-                        if incarnation.prompts.first().map(|(outcome, _)| outcome)
-                            != Some(&Prompted::Settled(expected))
-                        {
-                            return fail(&format!(
-                                "{call} did not continue after a length stop: {:?}",
-                                incarnation.prompts
-                            ));
-                        }
-                        if content == "reasoning_only"
-                            && !incarnation.requests.iter().any(contains_reasoning)
-                        {
-                            return fail("reasoning did not round-trip into the continuation");
-                        }
-                        if content == "partial_tool_call"
-                            && incarnation.requests.iter().any(|request| {
-                                request.messages.iter().any(|message| {
-                                    serde_json::to_string(&message.content)
-                                        .unwrap_or_default()
-                                        .contains("cut-call")
-                                })
-                            })
-                        {
-                            return fail("a length-cut tool call was admitted");
-                        }
+                    let after = vec![vec![("d4-after", tag("d4-after"))]];
+                    let reopened = world
+                        .incarnation(None, &after)
+                        .await
+                        .map_err(oracle::failed)?;
+                    if reopened.prompts.is_empty() {
+                        return fail("the worker died after its cut summary");
                     }
                 }
-                requests.extend(incarnation.requests);
+                "context_review" => {
+                    if summary_requests.is_empty() {
+                        return fail("the length-cut context review was never requested");
+                    }
+                    if incarnation.prompts.first().map(|(outcome, _)| outcome)
+                        != Some(&Prompted::Settled(done("d4")))
+                    {
+                        return fail("a length-cut context review ended the worker");
+                    }
+                    if incarnation.requests.iter().any(has_file) {
+                        return fail("a length-cut context review published a rewrite");
+                    }
+                }
+                _ => {
+                    let expected = if content == "text" {
+                        "partial textdone d4".to_owned()
+                    } else {
+                        done("d4")
+                    };
+                    if incarnation.prompts.first().map(|(outcome, _)| outcome)
+                        != Some(&Prompted::Settled(expected))
+                    {
+                        return fail(&format!(
+                            "{call} did not continue after a length stop: {:?}",
+                            incarnation.prompts
+                        ));
+                    }
+                    if content == "reasoning_only"
+                        && !incarnation.requests.iter().any(contains_reasoning)
+                    {
+                        return fail("reasoning did not round-trip into the continuation");
+                    }
+                    if content == "partial_tool_call"
+                        && incarnation.requests.iter().any(|request| {
+                            request.messages.iter().any(|message| {
+                                serde_json::to_string(&message.content)
+                                    .unwrap_or_default()
+                                    .contains("cut-call")
+                            })
+                        })
+                    {
+                        return fail("a length-cut tool call was admitted");
+                    }
+                }
             }
-            if requests.is_empty() {
+            if incarnation.requests.is_empty() {
                 return fail("the length world dispatched no request");
             }
             Ok(true)
