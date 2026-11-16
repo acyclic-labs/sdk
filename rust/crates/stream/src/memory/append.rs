@@ -8,8 +8,9 @@ impl MemoryStream {
     ) -> Result<(AppendOutcome, Allocation), StreamError> {
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
-        self.plan_append_locked(&mut state, &request)?
-            .install(self, &mut state, false)
+        let core = self.in_custody()?;
+        core.plan_append_locked(&mut state, &request)?
+            .install(&core, &mut state, false)
     }
 
     fn plan_append_locked<'a>(
@@ -99,6 +100,7 @@ impl MemoryStream {
             durable,
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
+        let retention = self.reserve_custody(&mut Default::default())?;
         Ok(Decision::Accepted {
             ephemeral: matches!(scope, Scope::Ephemeral(_)),
             bytes,
@@ -143,6 +145,7 @@ impl MemoryStream {
                         },
                     ),
                 }
+                Self::keep(retention);
                 Ok((outcome, Default::default()))
             },
         })

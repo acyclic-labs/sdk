@@ -32,7 +32,8 @@ impl LocalStream {
                                 let copied = work.record(request.try_clone_native(&work.meter))?;
                                 let (command, command_claim) = copied.into_parts();
                                 let command = WriteRequest::Commit(command);
-                                let (plan, recovery) = provider.prepare(request, capacity).await?;
+                                let (plan, recovery) =
+                                    provider.in_custody()?.prepare(request, capacity).await?;
                                 let WriteRequest::Commit(request) = &command else {
                                     unreachable!()
                                 };

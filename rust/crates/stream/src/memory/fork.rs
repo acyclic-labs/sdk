@@ -71,6 +71,7 @@ impl MemoryStream {
             durable,
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
+        let retention = self.reserve_custody(&mut Default::default())?;
         Ok(Decision::Accepted {
             ephemeral: matches!(scope, Scope::Ephemeral(_)),
             bytes: 0,
@@ -113,6 +114,7 @@ impl MemoryStream {
                         },
                     ),
                 }
+                Self::keep(retention);
                 Ok(receipt)
             },
         })

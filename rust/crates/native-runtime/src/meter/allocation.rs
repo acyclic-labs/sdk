@@ -189,6 +189,17 @@ impl ReadAllocation {
         Ok(bytes)
     }
 
+    /// Returns this guard from `custody` to the invocation that funded it, so
+    /// payload handed back to a caller stays on that caller's ledger when the
+    /// rest of the custody moves to a store.
+    pub fn leave_custody(&mut self, custody: &Arc<NativeCustody>) -> io::Result<()> {
+        if !std::ptr::addr_eq(Arc::as_ptr(&self.meter), Arc::as_ptr(custody)) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.meter = custody.release_to_invocation(self.bytes)?;
+        Ok(())
+    }
+
     /// Moves another same-ledger claim without allocating or releasing it.
     pub fn absorb(&mut self, other: &mut Self) -> io::Result<()> {
         if !Arc::ptr_eq(&self.meter, &other.meter) {

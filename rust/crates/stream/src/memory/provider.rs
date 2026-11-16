@@ -743,8 +743,9 @@ impl StreamProvider for MemoryStream {
                     async move {
                         let _publication = self.publication.lock().await;
                         let mut state = self.state.write().await;
-                        self.plan_fork_locked(&mut state, &request)?
-                            .install(self, &mut state, false)
+                        let core = self.in_custody()?;
+                        core.plan_fork_locked(&mut state, &request)?
+                            .install(&core, &mut state, false)
                             .map(crate::WriteOutcome::Fork)
                     }
                 ))
@@ -759,8 +760,9 @@ impl StreamProvider for MemoryStream {
                         let digest = self.commit_request_digest(&mut request)?;
                         let _publication = self.publication.lock().await;
                         let mut state = self.state.write().await;
-                        self.plan_commit_locked(&mut state, &request, digest, None, accepted)?
-                            .install(self, &mut state, false)
+                        let core = self.in_custody()?;
+                        core.plan_commit_locked(&mut state, &request, digest, None, accepted)?
+                            .install(&core, &mut state, false)
                             .map(|(outcome, _)| outcome)
                     }
                 ))
@@ -941,7 +943,8 @@ impl crate::NativeStreamProvider for MemoryStream {
                     async move {
                         let provider = self.with_context(Arc::clone(&work));
                         let result = async {
-                            let (plan, recovery) = provider.prepare(request, capacity).await?;
+                            let (plan, recovery) =
+                                provider.in_custody()?.prepare(request, capacity).await?;
                             work.reserve_write(capacity.payload_bytes)?;
                             let slot = work
                                 .record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
@@ -1128,10 +1131,13 @@ impl MemoryStream {
                                 .sum();
                             work.reserve_write(bytes).map_err(E::from)?;
                             provider
-                                .plan_commit_locked(
-                                    &mut state, &request, digest, deadline, accepted,
-                                )
-                                .and_then(|plan| plan.install(&provider, &mut state, false))
+                                .in_custody()
+                                .and_then(|core| {
+                                    core.plan_commit_locked(
+                                        &mut state, &request, digest, deadline, accepted,
+                                    )?
+                                    .install(&core, &mut state, false)
+                                })
                                 .map_err(E::from)
                         }
                         .await;

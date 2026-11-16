@@ -19,6 +19,13 @@ pub struct MemoryStream {
     admission: Arc<std::sync::OnceLock<Arc<dyn CommitAdmission>>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) work: Option<Arc<Work>>,
+    /// The custody of one write's payload, which moves to `capacity` when
+    /// the write lands. Only a planning clone made by `in_custody` holds one.
+    #[cfg(not(target_arch = "wasm32"))]
+    custody: Option<WriteCustody>,
+    /// The store's own ledger for everything it keeps, shared by every clone.
+    #[cfg(not(target_arch = "wasm32"))]
+    capacity: Arc<acyclic_native_runtime::NativeCapacity>,
     #[cfg(loom)]
     pub(crate) retain_pending_read: bool,
 }
@@ -66,6 +73,12 @@ impl MemoryStream {
             admission: Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
             work: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            custody: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            capacity: Arc::new(acyclic_native_runtime::NativeCapacity::new(
+                limits.retained_bytes,
+            )),
             #[cfg(loom)]
             retain_pending_read: false,
         }

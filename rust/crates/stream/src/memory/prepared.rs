@@ -94,7 +94,7 @@ impl MemoryStream {
             .checked_add(identity_bytes())
             .ok_or(StreamError::Capacity)?;
         let headers = work.record(crate::record_headers::PreparedHeaders::new_shape(
-            &work.meter,
+            self.allocation_meter(work),
             maximum,
             capacity.keys,
             capacity.attributes,
@@ -509,6 +509,9 @@ impl PreparedCommit {
                     reserve: Some(&mut self.namespace),
                 },
             )?;
+            let retention = self
+                .provider
+                .reserve_custody(&mut publication.output_claim)?;
             let mut persist = std::pin::pin!(persist);
             Decision::Accepted {
                 ephemeral: false,
@@ -516,14 +519,16 @@ impl PreparedCommit {
                 install: |state: &mut State, _durable, at_millis| {
                     publication.bind_acceptance(state, at_millis, &Scope::Durable)?;
                     let retained = self.provider.install_retained(state, self.retained)?;
-                    publication.publish(
+                    let published = publication.publish(
                         state,
                         &mut |items| self.provider.record_replay_probe(&mut self.probes, items),
                         self.key,
                         digest,
                         &Scope::Durable,
                         PublicationRetention::Durable(retained),
-                    )
+                    )?;
+                    MemoryStream::keep(retention);
+                    Ok(published)
                 },
             }
             .durable(&self.provider, state, persist.as_mut())
