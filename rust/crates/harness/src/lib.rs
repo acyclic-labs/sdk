@@ -34,12 +34,12 @@ pub mod completion;
 #[cfg(feature = "conformance")]
 pub mod conformance;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod local;
+pub use acyclic_harness_local::local;
 pub mod preset;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod server;
+pub use acyclic_harness_local::server;
 #[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
+pub use acyclic_harness_local::test_support;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tui;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

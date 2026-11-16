@@ -306,7 +306,7 @@ fn tool(name: &str) -> Tool {
             description: "echo".into(),
             input_schema: json!({"type":"object"}),
             output_schema: json!({"type":"object"}),
-            projection_schema: acyclic_harness::tool::json_projection_schema(
+            projection_schema: acyclic_harness_core::tool::json_projection_schema(
                 json!({"type":"object"}),
             ),
         },
