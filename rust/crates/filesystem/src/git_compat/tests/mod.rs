@@ -234,6 +234,15 @@ pub(super) fn assert_json_value_matches_typescript_hint(
         matches,
         "TypeScript type hint for {field} ({type_hint}) does not match serde value {value}"
     );
+    // The binding hydrates a JSON array into a Uint8Array only for listed byte
+    // fields; any other declared Uint8Array would reach callers as a plain array.
+    assert!(
+        !(value.is_array() && type_hint == "Uint8Array")
+            || GIT_COMPAT_BYTE_WIRE_FIELDS
+                .iter()
+                .any(|(name, _)| *name == field),
+        "TypeScript declares {field} as Uint8Array but the binding does not hydrate it"
+    );
 }
 
 pub(super) fn assert_nested_typescript_projection(

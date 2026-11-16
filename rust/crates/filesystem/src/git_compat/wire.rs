@@ -113,6 +113,7 @@ pub const GIT_COMPAT_BYTE_WIRE_FIELDS: &[(&str, Option<usize>)] = &[
     ("overlay", Some(std::mem::size_of::<crate::LazyOverlayId>())),
     ("shadows", Some(std::mem::size_of::<crate::LazyShadowId>())),
     ("patch", None),
+    ("components", None),
 ];
 
 /// Field names using the signed JSON timestamp representation.
@@ -368,7 +369,7 @@ pub const GIT_COMPAT_NESTED_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ),
     (
         "GitLazySource",
-        r#"export interface GitLazySource { readonly identity: Uint8Array; readonly epoch: bigint; }"#,
+        r#"export interface GitLazySource { readonly identity: Uint8Array; readonly epoch: bigint; readonly components: Uint8Array; }"#,
     ),
     (
         "GitTreeRef",
