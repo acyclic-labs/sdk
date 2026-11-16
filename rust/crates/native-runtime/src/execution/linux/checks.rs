@@ -175,8 +175,8 @@ fn evaluate_work(
 
 #[test]
 fn scheduler_queries_are_read_only() -> Result<(), TestCaseError> {
-    let code = filter(&ExecutionNetwork::On)
-        .map_err(|error| TestCaseError::fail(error.to_string()))?;
+    let code =
+        filter(&ExecutionNetwork::On).map_err(|error| TestCaseError::fail(error.to_string()))?;
     for call in [libc::SYS_sched_getparam, libc::SYS_sched_getscheduler] {
         assert_eq!(
             evaluate(
