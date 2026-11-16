@@ -271,7 +271,15 @@ impl Platform {
 
 async fn gc_wait_waits_resume_on_the_original_platform_clock(mode: Mode) -> Result<()> {
     use crate::test_support::ScriptedEvent;
-    let (clock, mut control) = acyclic_actors::local::ControlledClock::new(100);
+    // The trust owner's protected time never moves backwards, so the controlled
+    // clock starts at the wall time that already signed this platform's
+    // admission. One millisecond covers the signing clock reaching that instant.
+    const LEAD_MS: u64 = 1;
+    let start = acyclic_stream::UnixMillisClock::now_unix_millis(
+        &acyclic_stream::SystemUnixMillisClock,
+    )
+    .saturating_add(LEAD_MS);
+    let (clock, mut control) = acyclic_actors::local::ControlledClock::new(start);
     let provider = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![
