@@ -153,7 +153,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if let Some(pause) = &self.publication_pause {
                     pause().await;
                 }
-                Self::publish_mutations(&mut transaction, mutations, io, now)?.await?;
+                Self::publish_mutations(&mut transaction, mutations, io)?.await?;
                 if let Some((path, content)) = &content {
                     io.sdk(
                         transaction
@@ -209,7 +209,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         transaction: &'a mut acyclic_fs::Transaction<A, O>,
         mutations: &'a [WorkspaceMutation],
         io: &'a PreparationIo,
-        now: u64,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             #[cfg(not(target_arch = "wasm32"))]

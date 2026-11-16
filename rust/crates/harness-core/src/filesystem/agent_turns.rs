@@ -1619,7 +1619,7 @@ where
                     .await?;
             if !view
                 .0
-                .allows_every_path(actions, super::access::access_now()?)
+                .allows_every_path(actions, self.host.access_now()?)
             {
                 return Err(Error::Unauthorized(
                     "project selection requires authority over the whole volume".into(),
