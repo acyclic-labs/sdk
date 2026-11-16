@@ -1241,15 +1241,12 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         ScriptedTurn::Text("second".into()),
         ScriptedTurn::Text("after cancellation".into()),
     ]));
-    let (filesystem, binding) = with_journal(
-        private_on(
-            &path,
-            Fs::from_memory_providers(
-                stream.clone(),
-                Arc::new(acyclic_objects::MemoryObjects::memory()),
-            ),
-        )
-        .await?,
+    let (filesystem, binding) = private_on(
+        &path,
+        Fs::from_memory_providers(
+            stream.clone(),
+            Arc::new(acyclic_objects::MemoryObjects::memory()),
+        ),
     )
     .await?;
     let notice_issuer = AuthorityRoot::new(
@@ -1311,7 +1308,10 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let host = reopen()?;
     let mut adoption = adopted(path.id());
     adoption.volumes = vec![binding];
-    assert_eq!(host.create(&intent("notice-root"), adoption).await?, path);
+    assert_eq!(
+        create_filesystem_root(&host, &filesystem, &intent("notice-root"), adoption).await?,
+        path
+    );
     host.drain(&path).await.expect("adoption drains");
     let event = |name: &str, wake| Notice {
         source: "filesystem".into(),
