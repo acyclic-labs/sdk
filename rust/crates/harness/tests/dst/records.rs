@@ -343,34 +343,6 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
     oracle::simulate(seed, move || {
         entry(async move {
             let directory = tempfile::tempdir().map_err(oracle::failed)?;
-            let reference = ProviderRef::new(
-                "local".into(),
-                "filesystem".into(),
-                "2".into(),
-                &mut None,
-            )
-            .map_err(oracle::failed)?;
-            let volume = VolumeRef::new(
-                reference.clone(),
-                "project".into(),
-                VolumeClass::Project,
-                VolumeOwner::Project("dst".into()),
-                &mut None,
-            )
-            .map_err(oracle::failed)?;
-            let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
-                directory.path().join("filesystem"),
-            ))
-            .await
-            .map_err(oracle::failed)?;
-            FilesystemHost::new(fs, &reference, None)
-                .map_err(oracle::failed)?
-                .create_volume(&volume)
-                .await
-                .map_err(oracle::failed)?;
-            let checkout = directory.path().join("checkout");
-            std::fs::create_dir_all(&checkout).map_err(oracle::failed)?;
-            std::fs::write(checkout.join("a.txt"), "alpha\n").map_err(oracle::failed)?;
             let model = Model::new("scripted".into(), "dst".into(), "1".into())
                 .map_err(oracle::failed)?;
             let call = ToolCall::new(
@@ -402,10 +374,10 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 ]),
             ]));
             let config = local_harness_config(checkout, (model, provider))
-            .map_err(oracle::failed)?
-            .without_user_settings()
-            .volume(volume)
-            .state_directory(directory.path().join("state"));
+                .map_err(oracle::failed)?
+                .without_user_settings()
+                .workspace_mounting(acyclic_harness::local::WorkspaceMounting::Physical)
+                .state_directory(directory.path().join("state"));
             let harness = Arc::new(entry(LocalHarness::open(config)).await.map_err(oracle::failed)?);
             let output = match entry(prompt_settled(&harness, "s1", "[dst:s1]"))
                 .await
