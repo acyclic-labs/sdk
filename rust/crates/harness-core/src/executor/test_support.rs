@@ -40,7 +40,7 @@ impl Journal {
             ExecutionJournalCacheId::default(), Default::default(),
         )
     }
-    fn stage_source<'a>(
+    pub(crate) fn stage_source<'a>(
         &'a self,
         operation_id: OperationId,
         idempotency_key: String,
@@ -78,7 +78,7 @@ impl Journal {
     }
 }
 
-struct ChangingContextSource(AtomicUsize);
+pub(crate) struct ChangingContextSource(AtomicUsize);
 
 impl crate::context::ContextSource for ChangingContextSource {
     fn load<'a>(
@@ -473,7 +473,7 @@ impl crate::conversation::ContentResidencyVerifier for Journal {
     }
 }
 
-struct OnceStage(AtomicUsize);
+pub(crate) struct OnceStage(AtomicUsize);
 
 impl crate::context::ContextStage for OnceStage {
     fn name(&self) -> &str {

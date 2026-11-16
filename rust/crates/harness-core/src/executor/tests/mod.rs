@@ -1,5 +1,5 @@
 use super::*;
-use super::test_support::Journal;
+pub(crate) use super::test_support::{ChangingContextSource, Journal, OnceStage};
 #[cfg(not(target_arch = "wasm32"))]
 mod code_mode;
 mod context_review;
