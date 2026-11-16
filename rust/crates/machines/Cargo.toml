@@ -71,7 +71,7 @@ hyper-util = { workspace = true }
 rustix = { workspace = true, features = ["fs"] }
 tower = { workspace = true }
 tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
-tokio = { version = "1.48.0", default-features = false, features = ["net", "time", "rt-multi-thread", "macros"] }
+tokio = { version = "1.48.0", default-features = false, features = ["fs", "macros", "net", "rt-multi-thread", "signal", "time"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 tracing.workspace = true
 

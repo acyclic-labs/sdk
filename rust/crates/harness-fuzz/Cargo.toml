@@ -462,3 +462,6 @@ required-features = ["oidc"]
 test = false
 doc = false
 bench = false
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "signal"] }

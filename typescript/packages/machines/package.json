@@ -45,7 +45,6 @@
   ],
   "scripts": {
     "build": "bun run generate && bun run build:wasm && tsc -b",
-    "build:wasm": "bun ../../../scripts/build-wasm.mjs machines",
     "test": "bun run generate && bun run build && bun test test",
     "pack:dry": "bun pm pack --dry-run",
     "generate": "bun ../../../scripts/generate.mjs machines",

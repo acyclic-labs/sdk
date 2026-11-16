@@ -104,7 +104,7 @@ pin-project-lite = "0.2.17"
 tracing.workspace = true
 tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
-
+tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "signal"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }

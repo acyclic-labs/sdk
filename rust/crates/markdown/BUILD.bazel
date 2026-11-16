@@ -213,6 +213,42 @@ isolated_test(
     tags = ["manual"],
 )
 
+rust_library(
+    name = "acyclic_markdown_wasm",
+    crate_name = "acyclic_markdown",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "tests/block_checkpoints.rs",
+        "tests/full_parse.rs",
+        "tests/maintenance_work.rs",
+        "tests/reference_updates.rs",
+        "tests/sequence_work.rs",
+        "tests/table_shape.rs",
+        "tests/table_width.rs",
+        "tests/whitespace.rs",
+    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "tests/fixtures/grammar.md",
+        "tests/fixtures/selection.md",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        "//rust/crates/markdown-work:acyclic_markdown_work_wasm",
+        "@crates_wasm//acyclic-syntect-0.2.0",
+        "@crates_wasm//pulldown-cmark-0.13.6",
+        "@crates_wasm//unicase-2.10.0",
+        "@crates_wasm//unicode-segmentation-1.13.3",
+        "@crates_wasm//unicode-width-0.2.2",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "rust_sources",
     srcs = glob(["**/*.rs"], allow_empty = True),

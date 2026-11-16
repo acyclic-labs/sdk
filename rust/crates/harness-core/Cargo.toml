@@ -133,8 +133,7 @@ reqwest = { workspace = true }
 rustls = { workspace = true }
 h2 = { version = "0.4", default-features = false }
 hyper = { version = "1", default-features = false }
-tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "process"] }
-
+tokio = { version = "1.48.0", default-features = false, features = ["fs", "io-std", "io-util", "net", "process", "rt-multi-thread", "signal"] }
 [dev-dependencies]
 acyclic-actors = { version = "=0.2.0", path = "../actors", features = ["conformance"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
@@ -167,7 +166,7 @@ wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "=0.3.67"
+wasm-bindgen-test = "=0.3.71"
 
 [lints]
 workspace = true

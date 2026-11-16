@@ -596,6 +596,66 @@ isolated_test(
     tags = ["manual"],
 )
 
+cargo_build_script(
+    name = "build_script_wasm",
+    crate_root = "build.rs",
+    srcs = [
+        "build.rs",
+    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    pkg_name = "acyclic-harness-tui",
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    lint_config = ":lints",
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values())",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+    ],
+    build_script_env = PACKAGE_ENV,
+    deps = [
+        "@crates//serde_json-1.0.154",
+    ],
+)
+
+rust_library(
+    name = "acyclic_harness_tui_wasm",
+    crate_name = "acyclic_harness_tui",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "//rust/crates/harness-tui/fuzz:transcript_anchor.rs",
+        "tests/support/status_flags.rs",
+    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        ":build_script_wasm",
+    ] + [
+        "//rust/crates/markdown:acyclic_markdown_wasm",
+        "@crates_wasm//arrayvec-0.7.8",
+        "@crates_wasm//caseless-0.2.2",
+        "@crates_wasm//futures-0.3.34",
+        "@crates_wasm//serde-1.0.229",
+        "@crates_wasm//serde_json-1.0.154",
+        "@crates_wasm//shell-words-1.1.1",
+        "@crates_wasm//unicode-segmentation-1.13.3",
+        "@crates_wasm//unicode-width-0.2.2",
+        "@crates_wasm//vte-0.15.0",
+        "@crates_wasm//zeroize-1.9.1",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "rust_sources",
     srcs = glob(["**/*.rs"], allow_empty = True),

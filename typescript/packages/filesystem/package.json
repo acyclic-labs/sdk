@@ -66,7 +66,6 @@
     "clean": "bun -e \"import { rmSync } from 'node:fs'; for (const path of ['dist', 'tsconfig.tsbuildinfo']) rmSync(path, { recursive: true, force: true })\"",
     "build": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json",
     "build:clean": "bun run clean && bun run build",
-    "build:wasm": "bun ../../../scripts/build-wasm.mjs filesystem",
     "check": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json --pretty false",
     "check:types": "bun x tsc -p tsconfig.type-tests.json --pretty false",
     "test": "bun run generate && bun run build && bun run test:composition && bun run test:s3",

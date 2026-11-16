@@ -559,6 +559,105 @@ rust_binary(
     ],
 )
 
+cargo_build_script(
+    name = "build_script_wasm",
+    crate_root = "build.rs",
+    srcs = [
+        "build.rs",
+    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    pkg_name = "acyclic-auth",
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    lint_config = ":lints",
+    crate_features = [
+        "javascript",
+        "js-credential",
+    ],
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"javascript\", \"js-credential\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+    ],
+    build_script_env = PACKAGE_ENV,
+    deps = [
+        "//compatibility:acyclic_proto_build",
+    ],
+)
+
+rust_library(
+    name = "acyclic_auth_wasm",
+    crate_name = "acyclic_auth",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "tests/common/addressing.rs",
+        "tests/common/credential.rs",
+        "tests/common/mod.rs",
+        "tests/common/secret_ref.rs",
+        "tests/common/signed.rs",
+        "tests/common/trust.rs",
+        "tests/common/trust_record.rs",
+    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "//rust/crates/auth/fuzz:corpus/trust_record/environment-bootstrap",
+        "//rust/crates/auth/fuzz:corpus/trust_record/environment-rotation",
+        "//rust/crates/auth/fuzz:corpus/trust_record/environment-successor",
+        "//rust/crates/auth/fuzz:corpus/trust_record/foreign-checkpoint",
+        "//rust/crates/auth/fuzz:corpus/trust_record/foreign-keyring",
+        "//rust/crates/auth/fuzz:corpus/trust_record/selected-epoch",
+        "//rust/crates/auth/fuzz:corpus/trust_record/snapshot-retiring",
+        "//rust/crates/auth/fuzz:corpus/trust_record/snapshot-unbounded",
+        "tests/fixtures/resource-identity-v1.json",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = [
+        "javascript",
+        "js-credential",
+    ],
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        ":build_script_wasm",
+    ] + [
+        "//rust/crates/auth-action:acyclic_auth_action_wasm",
+        "//rust/crates/observability:acyclic_observability_wasm",
+        "@crates_wasm//base64_0_23_1-0.23.1",
+        "@crates_wasm//bytes-1.12.1",
+        "@crates_wasm//chacha20poly1305-0.11.0",
+        "@crates_wasm//ed25519-dalek-3.0.0",
+        "@crates_wasm//futures-0.3.34",
+        "@crates_wasm//getrandom_0_4_3-0.4.3",
+        "@crates_wasm//hmac-0.13.0",
+        "@crates_wasm//http-1.5.0",
+        "@crates_wasm//js-sys-0.3.98",
+        "@crates_wasm//prost-0.14.4",
+        "@crates_wasm//serde-1.0.229",
+        "@crates_wasm//serde_json-1.0.154",
+        "@crates_wasm//sha2-0.11.1",
+        "@crates_wasm//subtle-2.6.1",
+        "@crates_wasm//thiserror-2.0.21",
+        "@crates_wasm//tokio-1.54.1",
+        "@crates_wasm//ts-rs-12.0.1",
+        "@crates_wasm//url-2.5.8",
+        "@crates_wasm//wasm-bindgen-0.2.121",
+        "@crates_wasm//wasm-bindgen-futures-0.4.71",
+        "@crates_wasm//web-sys-0.3.98",
+        "@crates_wasm//zeroize-1.9.1",
+    ],
+    proc_macro_deps = [
+        "//rust/crates/contract-derive:acyclic_contract_derive",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "rust_sources",
     srcs = glob(["**/*.rs"], allow_empty = True),

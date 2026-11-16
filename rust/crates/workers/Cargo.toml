@@ -18,7 +18,7 @@ thiserror.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
-
+tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "signal"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 proptest.workspace = true

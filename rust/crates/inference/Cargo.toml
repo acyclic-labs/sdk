@@ -47,7 +47,7 @@ tokio.workspace = true
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 tracing.workspace = true
-
+tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "signal"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio-stream.workspace = true
 tracing-subscriber.workspace = true

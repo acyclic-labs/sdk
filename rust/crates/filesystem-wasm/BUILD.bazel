@@ -2,6 +2,7 @@
 load("//rust/crates/test-runner:isolated_test.bzl", "isolated_test")
 load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library", "rust_test")
+load("@rules_rust_wasm_bindgen//:defs.bzl", "rust_wasm_bindgen", "rust_wasm_bindgen_test")
 
 FEATURES = []
 
@@ -116,6 +117,97 @@ isolated_test(
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
     tags = ["manual","no-sandbox"],
+)
+
+rust_library(
+    name = "acyclic_fs_wasm_wasm",
+    crate_name = "acyclic_fs_wasm",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        "//rust/crates/filesystem:acyclic_fs_wasm",
+        "//rust/crates/objects:acyclic_objects_wasm",
+        "//rust/crates/stream:acyclic_stream_wasm",
+        "@crates_wasm//blake3-1.8.7",
+        "@crates_wasm//bytes-1.12.1",
+        "@crates_wasm//futures-0.3.34",
+        "@crates_wasm//js-sys-0.3.98",
+        "@crates_wasm//serde-1.0.229",
+        "@crates_wasm//serde-wasm-bindgen-0.6.5",
+        "@crates_wasm//serde_bytes-0.11.19",
+        "@crates_wasm//serde_json-1.0.154",
+        "@crates_wasm//thiserror-2.0.21",
+        "@crates_wasm//tsify-0.5.8",
+        "@crates_wasm//wasm-bindgen-0.2.121",
+        "@crates_wasm//wasm-bindgen-futures-0.4.71",
+        "@crates_wasm//web-sys-0.3.98",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_shared_library(
+    name = "acyclic_fs_wasm_wasm_cdylib",
+    crate_name = "acyclic_fs_wasm",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        "//rust/crates/filesystem:acyclic_fs_wasm",
+        "//rust/crates/objects:acyclic_objects_wasm",
+        "//rust/crates/stream:acyclic_stream_wasm",
+        "@crates_wasm//blake3-1.8.7",
+        "@crates_wasm//bytes-1.12.1",
+        "@crates_wasm//futures-0.3.34",
+        "@crates_wasm//js-sys-0.3.98",
+        "@crates_wasm//serde-1.0.229",
+        "@crates_wasm//serde-wasm-bindgen-0.6.5",
+        "@crates_wasm//serde_bytes-0.11.19",
+        "@crates_wasm//serde_json-1.0.154",
+        "@crates_wasm//thiserror-2.0.21",
+        "@crates_wasm//tsify-0.5.8",
+        "@crates_wasm//wasm-bindgen-0.2.121",
+        "@crates_wasm//wasm-bindgen-futures-0.4.71",
+        "@crates_wasm//web-sys-0.3.98",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_wasm_bindgen_test(
+    name = "acyclic_fs_wasm_wasm_test",
+    wasm = ":acyclic_fs_wasm_wasm_bindgen",
+    edition = "2024",
+    version = "0.2.0",
+    tags = ["no-sandbox"],
+)
+
+rust_wasm_bindgen(
+    name = "acyclic_fs_wasm_wasm_bindgen",
+    wasm_file = ":acyclic_fs_wasm_wasm_cdylib",
+    target = "web",
+    out_name = "acyclic_fs_wasm",
+    bindgen_flags = [
+        "--remove-name-section",
+        "--remove-producers-section",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
 )
 
 filegroup(

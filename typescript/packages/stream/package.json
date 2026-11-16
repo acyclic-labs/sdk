@@ -50,7 +50,6 @@
   ],
   "scripts": {
     "build": "bun run build:wasm && tsc -b",
-    "build:wasm": "bun ../../../scripts/build-wasm.mjs stream",
     "build:native": "node ../../../scripts/build-stream-native.mjs build",
     "stage:native": "node ../../../scripts/build-stream-native.mjs stage",
     "check:native": "node ../../../scripts/build-stream-native.mjs check",

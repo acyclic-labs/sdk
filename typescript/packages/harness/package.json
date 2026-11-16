@@ -51,7 +51,6 @@
     }
   },
   "scripts": {
-    "build:wasm": "bun ../../../scripts/build-wasm.mjs harness",
     "build": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json",
     "check": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json --pretty false",
     "check:types": "bun x tsc -p tsconfig.type-tests.json",
