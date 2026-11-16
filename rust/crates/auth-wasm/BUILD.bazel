@@ -98,6 +98,7 @@ rust_test(
 isolated_test(
     name = "acyclic_auth_wasm_test",
     binary = ":acyclic_auth_wasm_test_cases",
+    id = "acyclic-auth-wasm",
     limit_seconds = 10,
 )
 
@@ -143,6 +144,7 @@ rust_test(
 isolated_test(
     name = "snapshot",
     binary = ":snapshot_cases",
+    id = "acyclic-auth-wasm::snapshot",
     limit_seconds = 10,
 )
 

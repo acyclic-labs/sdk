@@ -64,6 +64,7 @@ rust_test(
 isolated_test(
     name = "acyclic_model_render_test",
     binary = ":acyclic_model_render_test_cases",
+    id = "acyclic-model-render",
     limit_seconds = 10,
 )
 

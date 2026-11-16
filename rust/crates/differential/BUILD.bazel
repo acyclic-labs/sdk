@@ -54,6 +54,7 @@ rust_test(
 isolated_test(
     name = "acyclic_differential_test",
     binary = ":acyclic_differential_test_cases",
+    id = "acyclic-differential",
     limit_seconds = 10,
 )
 

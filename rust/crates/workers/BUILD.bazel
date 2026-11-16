@@ -73,6 +73,7 @@ rust_test(
 isolated_test(
     name = "acyclic_workers_test",
     binary = ":acyclic_workers_test_cases",
+    id = "acyclic-workers",
     limit_seconds = 10,
 )
 
@@ -119,6 +120,7 @@ rust_test(
 isolated_test(
     name = "entry_attachment",
     binary = ":entry_attachment_cases",
+    id = "acyclic-workers::entry_attachment",
     limit_seconds = 10,
 )
 

@@ -188,6 +188,7 @@ rust_test(
 isolated_test(
     name = "acyclic_objects_test",
     binary = ":acyclic_objects_test_cases",
+    id = "acyclic-objects",
     limit_seconds = 10,
 )
 
@@ -444,6 +445,7 @@ isolated_test(
     name = "binary",
     binary = ":binary_cases",
     binaries = {":objects-rpc-inventory":"objects-rpc-inventory"},
+    id = "acyclic-objects::binary",
     limit_seconds = 10,
 )
 

@@ -57,6 +57,7 @@ rust_test(
 isolated_test(
     name = "acyclic_fs_base_test",
     binary = ":acyclic_fs_base_test_cases",
+    id = "acyclic-fs-base",
     limit_seconds = 10,
 )
 

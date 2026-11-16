@@ -83,6 +83,7 @@ rust_test(
 isolated_test(
     name = "acyclic_grpc_observability_test",
     binary = ":acyclic_grpc_observability_test_cases",
+    id = "acyclic-grpc-observability",
     limit_seconds = 10,
 )
 

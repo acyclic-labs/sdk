@@ -284,6 +284,7 @@ rust_test(
 isolated_test(
     name = "acyclic_source_policies_test",
     binary = ":acyclic_source_policies_test_cases",
+    id = "acyclic-source-policies",
     limit_seconds = 10,
 )
 

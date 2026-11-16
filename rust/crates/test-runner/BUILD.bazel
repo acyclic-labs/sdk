@@ -63,6 +63,7 @@ rust_test(
 isolated_test(
     name = "acyclic_test_runner_test",
     binary = ":acyclic_test_runner_test_cases",
+    id = "acyclic-test-runner::bin/acyclic-test-runner",
     limit_seconds = 10,
 )
 

@@ -394,13 +394,16 @@ function buildFile(p) {
     }
     return [...labels].sort();
   };
-  const test = (wanted, attrs, reads, binaries = {}) => {
+  // Each isolated test reports its cases under the executable's nextest binary id, so a case has one
+  // identity whichever runner ran it: `<package>` for the library, `<package>::bin/<name>` for a
+  // binary, `<package>::<name>` for an integration test, `<package>::<kind>/<name>` for the rest.
+  const test = (wanted, attrs, reads, binaries, id) => {
     let name = wanted;
     while (names.has(name) || names.has(`${name}_cases`)) name += "_test";
     names.add(name).add(`${name}_cases`);
     rules.push(
       ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
-      ["isolated_test", [["name", q(name)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(binaries).length ? q(binaries) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["tags", reachesMount(p.id, [null, "dev"]) ? q(["no-sandbox"]) : undefined]]],
+      ["isolated_test", [["name", q(name)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(binaries).length ? q(binaries) : undefined], ["id", q(id)], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["tags", reachesMount(p.id, [null, "dev"]) ? q(["no-sandbox"]) : undefined]]],
     );
   };
   if (script) {
@@ -450,7 +453,7 @@ function buildFile(p) {
       ["compile_data", list(extras(lib, libCovered).data)],
       ...common(lib).filter(([k]) => k !== "rustc_env"),
       ...deps(["dev"]),
-    ], runtimeData(lib));
+    ], runtimeData(lib), {}, p.name);
   }
   for (const bin of p.targets.filter(t => t.kind.includes("bin"))) {
     covered.add(`build bin ${bin.name}`);
@@ -470,7 +473,7 @@ function buildFile(p) {
       ...common(bin),
       ...deps([null, "dev"],
         [...ownLib, ...ownDeps], ownMacro),
-    ], runtimeData(bin));
+    ], runtimeData(bin), {}, `${p.name}::bin/${bin.name}`);
   }
   // Integration tests, examples and benches compile from their own directory and the package's
   // library, with dev-dependencies. Cargo builds every example and runs those with `test = true`;
@@ -492,7 +495,7 @@ function buildFile(p) {
     const binaries = target.kind.includes("test") || target.kind.includes("bench")
       ? Object.fromEntries(p.targets.filter(t => t.kind.includes("bin")).map(bin => [`:${bin.name}`, bin.name]))
       : {};
-    test(target.name, separate(target), runtimeData(target), binaries);
+    test(target.name, separate(target), runtimeData(target), binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`);
   }
   for (const example of p.targets.filter(t => t.kind.includes("example") && !t.test)) {
     let name = `${example.name}_example`;

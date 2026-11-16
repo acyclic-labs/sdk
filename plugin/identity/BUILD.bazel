@@ -109,6 +109,7 @@ rust_test(
 isolated_test(
     name = "acyclic_plugin_identity_test",
     binary = ":acyclic_plugin_identity_test_cases",
+    id = "acyclic-plugin-identity",
     limit_seconds = 10,
 )
 
@@ -192,6 +193,7 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
+    id = "acyclic-plugin-identity::main",
     limit_seconds = 10,
 )
 

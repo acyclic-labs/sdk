@@ -62,6 +62,7 @@ rust_test(
 isolated_test(
     name = "acyclic_protobuf_json_test",
     binary = ":acyclic_protobuf_json_test_cases",
+    id = "acyclic-protobuf-json",
     limit_seconds = 10,
 )
 
@@ -97,6 +98,7 @@ rust_test(
 isolated_test(
     name = "codec",
     binary = ":codec_cases",
+    id = "acyclic-protobuf-json::codec",
     limit_seconds = 10,
 )
 

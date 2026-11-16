@@ -66,6 +66,7 @@ rust_test(
 isolated_test(
     name = "sdk_file_identity_test",
     binary = ":sdk_file_identity_test_cases",
+    id = "sdk-file-identity",
     limit_seconds = 10,
 )
 

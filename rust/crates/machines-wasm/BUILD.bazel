@@ -92,6 +92,7 @@ rust_test(
 isolated_test(
     name = "acyclic_machines_wasm_test",
     binary = ":acyclic_machines_wasm_test_cases",
+    id = "acyclic-machines-wasm",
     limit_seconds = 10,
 )
 

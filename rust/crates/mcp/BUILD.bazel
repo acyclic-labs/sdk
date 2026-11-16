@@ -93,6 +93,7 @@ rust_test(
 isolated_test(
     name = "acyclic_mcp_test",
     binary = ":acyclic_mcp_test_cases",
+    id = "acyclic-mcp",
     limit_seconds = 10,
 )
 

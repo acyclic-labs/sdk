@@ -9,6 +9,7 @@ def _isolated_test_impl(ctx):
     runfiles = runfiles.merge(ctx.attr.binary[DefaultInfo].default_runfiles)
     environment = {
         "ACYCLIC_TEST_BINARY": ctx.executable.binary.short_path,
+        "ACYCLIC_TEST_ID": ctx.attr.id,
         "ACYCLIC_TEST_LIMIT_SECONDS": str(ctx.attr.limit_seconds),
         "ACYCLIC_TEST_PACKAGE": ctx.label.package,
     }
@@ -29,6 +30,8 @@ isolated_test = rule(
     attrs = {
         "binary": attr.label(executable = True, cfg = "target", mandatory = True),
         "binaries": attr.label_keyed_string_dict(cfg = "target"),
+        # The executable's nextest binary id, which names each of its cases in the report.
+        "id": attr.string(mandatory = True),
         "limit_seconds": attr.int(mandatory = True),
         "_runner": attr.label(
             default = "//rust/crates/test-runner:acyclic-test-runner",

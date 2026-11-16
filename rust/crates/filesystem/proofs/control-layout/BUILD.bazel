@@ -58,6 +58,7 @@ rust_test(
 isolated_test(
     name = "acyclic_fs_control_layout_proof_test",
     binary = ":acyclic_fs_control_layout_proof_test_cases",
+    id = "acyclic-fs-control-layout-proof",
     limit_seconds = 10,
 )
 

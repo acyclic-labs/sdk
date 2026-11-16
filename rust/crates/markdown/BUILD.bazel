@@ -84,6 +84,7 @@ rust_test(
 isolated_test(
     name = "acyclic_markdown_test",
     binary = ":acyclic_markdown_test_cases",
+    id = "acyclic-markdown",
     limit_seconds = 10,
 )
 
@@ -123,6 +124,7 @@ rust_test(
 isolated_test(
     name = "streaming",
     binary = ":streaming_cases",
+    id = "acyclic-markdown::streaming",
     limit_seconds = 10,
 )
 
@@ -167,6 +169,7 @@ rust_test(
 isolated_test(
     name = "streaming_properties",
     binary = ":streaming_properties_cases",
+    id = "acyclic-markdown::streaming_properties",
     limit_seconds = 10,
 )
 

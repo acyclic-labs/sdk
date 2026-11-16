@@ -134,6 +134,7 @@ rust_test(
 isolated_test(
     name = "acyclic_machines_test",
     binary = ":acyclic_machines_test_cases",
+    id = "acyclic-machines",
     limit_seconds = 10,
 )
 
@@ -252,6 +253,7 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     binaries = {":machines-managed-oci-contract":"machines-managed-oci-contract"},
+    id = "acyclic-machines::main",
     limit_seconds = 10,
 )
 

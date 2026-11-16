@@ -181,6 +181,7 @@ rust_test(
 isolated_test(
     name = "acyclic_proto_build_test",
     binary = ":acyclic_proto_build_test_cases",
+    id = "acyclic-proto-build",
     limit_seconds = 10,
 )
 

@@ -144,6 +144,7 @@ rust_test(
 isolated_test(
     name = "acyclic_stream_napi_test",
     binary = ":acyclic_stream_napi_test_cases",
+    id = "acyclic-stream-napi",
     limit_seconds = 10,
 )
 

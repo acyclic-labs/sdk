@@ -96,6 +96,7 @@ rust_test(
 isolated_test(
     name = "acyclic_fs_wire_test",
     binary = ":acyclic_fs_wire_test_cases",
+    id = "acyclic-fs-wire",
     limit_seconds = 10,
 )
 

@@ -132,6 +132,7 @@ rust_test(
 isolated_test(
     name = "acyclic_fs_napi_test",
     binary = ":acyclic_fs_napi_test_cases",
+    id = "acyclic-fs-napi",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )

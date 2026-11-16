@@ -146,6 +146,7 @@ rust_test(
 isolated_test(
     name = "acyclic_actors_test",
     binary = ":acyclic_actors_test_cases",
+    id = "acyclic-actors",
     limit_seconds = 10,
 )
 
@@ -284,6 +285,7 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     binaries = {":actors-rpc-inventory":"actors-rpc-inventory"},
+    id = "acyclic-actors::main",
     limit_seconds = 10,
 )
 

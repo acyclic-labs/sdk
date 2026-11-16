@@ -56,6 +56,7 @@ rust_test(
 isolated_test(
     name = "acyclic_id_codec_proofs_test",
     binary = ":acyclic_id_codec_proofs_test_cases",
+    id = "acyclic-id-codec-proofs",
     limit_seconds = 10,
     tags = ["no-sandbox"],
 )

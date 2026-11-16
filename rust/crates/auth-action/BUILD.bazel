@@ -54,6 +54,7 @@ rust_test(
 isolated_test(
     name = "acyclic_auth_action_test",
     binary = ":acyclic_auth_action_test_cases",
+    id = "acyclic-auth-action",
     limit_seconds = 10,
 )
 
