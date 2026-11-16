@@ -510,6 +510,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
  "acyclic-observability",
+ "acyclic-test-support",
  "futures",
  "http-body",
  "pin-project-lite",
@@ -1003,7 +1004,6 @@ dependencies = [
 name = "acyclic-harness-providers"
 version = "0.2.0"
 dependencies = [
- "acyclic-machines-daytona",
  "acyclic-actors",
  "acyclic-auth",
  "acyclic-fs",
@@ -1011,6 +1011,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-harness-http",
  "acyclic-harness-input-watch",
+ "acyclic-machines-daytona",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -1810,6 +1811,8 @@ dependencies = [
  "proptest",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
