@@ -320,6 +320,27 @@ mod unix {
             }
             if let Some(boundary) = boundary {
                 boundary.install(&mut native, command.unix.arg0.as_deref())?;
+            } else {
+                // Every program starts with only its three standard streams.
+                // macOS has no atomic close-on-exec pipe, so a descriptor
+                // another thread has just created can still be inheritable
+                // here; a program holding another tree's pipe end would keep
+                // that peer alive. The kernel's default close-on-exec seals
+                // them all, as the boundary's exec does.
+                #[cfg(target_os = "macos")]
+                {
+                    let environment = command
+                        .env
+                        .resolved()
+                        .into_iter()
+                        .map(|(key, value)| (key.name, value));
+                    crate::execution::SealedExec::new(
+                        &native,
+                        command.unix.arg0.as_deref(),
+                        environment,
+                    )?
+                    .install(&mut native);
+                }
             }
             super::super::platform::spawn_controlled(&mut native, meter, retained)
         }

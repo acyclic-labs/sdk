@@ -210,6 +210,17 @@ pub fn spawn_service_process(
                 for name in obs::LAUNCH_ENVIRONMENT {
                     command.env_remove(name);
                 }
+                // A service runs long, so it must not keep another thread's
+                // still-inheritable pipe end alive: like every tree program,
+                // it starts with only its three standard streams.
+                #[cfg(target_os = "macos")]
+                {
+                    let environment = std::env::vars_os()
+                        .filter(|(key, _)| !obs::LAUNCH_ENVIRONMENT.iter().any(|name| key == *name))
+                        .collect::<Vec<_>>();
+                    crate::execution::SealedExec::new(&command, None, environment)?
+                        .install(&mut command);
+                }
                 let mut child = command.spawn()?;
                 let readiness = child
                     .stdout
