@@ -5,8 +5,10 @@ use regex_lite::Regex;
 use serde_json::Value;
 use std::{future::Future, sync::Arc};
 
-pub(crate) mod imports;
-pub(crate) use imports::Document;
+#[doc(hidden)]
+pub mod imports;
+#[doc(hidden)]
+pub use imports::Document;
 #[doc(hidden)]
 pub mod budget;
 #[doc(hidden)]
@@ -336,7 +338,8 @@ impl Hooks {
             .map(|(hook, requests)| (hook, requests.as_ref())))
     }
 
-    pub(crate) fn commands<'a, 'input>(
+    /// The admitted commands for one event and input.
+    pub fn commands<'a, 'input>(
         &'a self,
         event: HookEvent,
         input: impl Into<HookInput<'input>>,
