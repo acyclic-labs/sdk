@@ -294,7 +294,7 @@ fn parent_steps(event: &str, mode: &str, children: &[&str], file: &str) -> Vec<V
             // Enough boundaries for the child to settle while this parent is
             // still in its turn. No wait call is made, so only the waking
             // settlement notice can carry the child's result here.
-            for index in 0..8 {
+            for index in 0..32 {
                 steps.push(vec![call(
                     &format!("write-{index}"),
                     "write",
