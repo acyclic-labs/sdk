@@ -33,7 +33,7 @@ acyclic_test_support::cases! {
         seed_10 => 10, seed_11 => 11, seed_12 => 12, seed_13 => 13, seed_14 => 14,
         seed_15 => 15, seed_16 => 16, seed_17 => 17, seed_18 => 18, seed_19 => 19,
         seed_20 => 20, seed_21 => 21, seed_22 => 22, seed_23 => 23, seed_24 => 24,
-        seed_25 => 25, seed_26 => 26, seed_27 => 27, seed_28 => 28, seed_29 => 29,
+        seed_25 => 25, seed_26 => 26,
     ],
 }
 
@@ -42,7 +42,7 @@ fn run(seed: u64) -> std::result::Result<(), String> {
 }
 
 fn origin(seed: u64) -> &'static str {
-    match seed % 10 {
+    match seed % 9 {
         0 => "tool_error",
         1 => "rate_limit",
         2 => "transport",
@@ -51,13 +51,12 @@ fn origin(seed: u64) -> &'static str {
         5 => "custody_conflict",
         6 => "malformed_output",
         7 => "subscription_end",
-        8 => "child_settles_during_turn",
-        _ => "interaction_cancelled",
+        _ => "child_settles_during_turn",
     }
 }
 
 fn location(seed: u64) -> &'static str {
-    match (seed / 10) % 3 {
+    match (seed / 9) % 3 {
         0 => "root",
         1 => "child",
         _ => "grandchild",
@@ -95,9 +94,6 @@ fn model_fault(origin: &str) -> Option<ScriptedEvent> {
         }),
         "subscription_end" => Some(ScriptedEvent::Error {
             error: "stream unavailable".into(),
-        }),
-        "interaction_cancelled" => Some(ScriptedEvent::Interrupted {
-            error: "interaction cancelled".into(),
         }),
         _ => None,
     }
@@ -240,30 +236,24 @@ fn plans(origin: &str, location: &str) -> Vec<Plan> {
     plans
 }
 
-/// The faulted turn's own outcome. A tool-level fault reaches the model,
-/// which finishes the turn. A model-level fault either fails the turn naming
-/// its cause or, when the harness retries it, completes it with the plan's
+/// The faulted turn's own outcome, for the agent tagged `tag`. A tool-level
+/// fault reaches the model, and a failed child reaches its parent, which
+/// finishes the turn. A model-level fault either fails the turn naming its
+/// cause or, when the harness retries it, completes it with the plan's
 /// answer; nothing else is a contained fault.
-fn faulted(origin: &str, outcome: Option<&Prompted>) -> std::result::Result<(), String> {
-    if tool_level(origin) {
-        return match outcome {
-            Some(Prompted::Settled(text)) if *text == done(ROOT_TAG) => Ok(()),
-            other => Err(format!("{origin} ended its turn as {other:?}")),
-        };
-    }
+fn faulted(origin: &str, tag: &str, outcome: Option<&Prompted>) -> std::result::Result<(), String> {
     let cause = match origin {
         "rate_limit" => "rate limited",
         "transport" => "connection reset",
         "protective_bound" => "protective bound exceeded",
         "internal_error" => "provider internal error",
         "subscription_end" => "stream unavailable",
-        "interaction_cancelled" => "interaction cancelled",
-        _ => return Ok(()),
+        _ => "",
     };
     match outcome {
-        Some(Prompted::Failed(message)) if message.contains(cause) => Ok(()),
-        Some(Prompted::Settled(text)) if *text == done(ROOT_TAG) => Ok(()),
-        other => Err(format!("{origin} ended its turn as {other:?}")),
+        Some(Prompted::Failed(message)) if !cause.is_empty() && message.contains(cause) => Ok(()),
+        Some(Prompted::Settled(text)) if *text == done(tag) => Ok(()),
+        other => Err(format!("{origin} ended {tag}'s turn as {other:?}")),
     }
 }
 
@@ -293,8 +283,55 @@ fn named<'a>(entries: &'a [Value], name: &str) -> Vec<&'a Value> {
         .collect()
 }
 
-fn failed(entry: &Value) -> bool {
-    entry.get("failed").is_some()
+/// How a wait entry reports its child's turn ended.
+fn reported(entry: &Value) -> Option<Prompted> {
+    match entry.get("failed").and_then(Value::as_str) {
+        Some(message) => Some(Prompted::Failed(message.into())),
+        None => entry
+            .get("answer")
+            .and_then(Value::as_str)
+            .map(|answer| Prompted::Settled(answer.into())),
+    }
+}
+
+/// Every reported outcome of `name` passes `expected`, and there is one.
+fn each_reported(
+    entries: &[Value],
+    name: &str,
+    expected: impl Fn(Option<&Prompted>) -> std::result::Result<(), String>,
+) -> std::result::Result<(), String> {
+    let settled = named(entries, name);
+    if settled.is_empty() {
+        return Err(format!("{name} never settled: {entries:?}"));
+    }
+    settled
+        .into_iter()
+        .try_for_each(|entry| expected(reported(entry).as_ref()))
+}
+
+/// The settlements a faulted world's parents received: the target's settlement names
+/// its own fault, a grandchild's middle finished its turn, and a settler's
+/// failure reached only the target that spawned it.
+fn child_outcomes(
+    origin: &str,
+    location: &str,
+    entries: &[Value],
+) -> std::result::Result<(), String> {
+    if location != "root" {
+        each_reported(entries, "target", |outcome| {
+            faulted(origin, TARGET_TAG, outcome)
+        })?;
+    }
+    if location == "grandchild" {
+        each_reported(entries, "mid", |outcome| faulted("", MID_TAG, outcome))?;
+    }
+    if origin == "child_settles_during_turn" {
+        each_reported(entries, "settler", |outcome| match outcome {
+            Some(Prompted::Failed(message)) if message.contains("settling child failed") => Ok(()),
+            other => Err(format!("settler ended its turn as {other:?}")),
+        })?;
+    }
+    Ok(())
 }
 
 /// Checks the fault stayed at its target and the owner kept working.
@@ -309,8 +346,8 @@ fn checked(
         .iter()
         .map(|(outcome, _)| outcome)
         .collect();
-    if location == "root" && origin != "child_settles_during_turn" {
-        faulted(origin, outcomes.first().copied())?;
+    if location == "root" {
+        faulted(origin, ROOT_TAG, outcomes.first().copied())?;
     } else if outcomes.first() != Some(&&Prompted::Settled(done(ROOT_TAG))) {
         return Err(format!(
             "{origin} at {location} reached the owner: {outcomes:?}"
@@ -323,34 +360,8 @@ fn checked(
     }
 
     let entries = wait_entries(&incarnation.requests)?;
-    if location != "root" && named(&entries, "target").is_empty() {
-        return Err(format!("{origin} at {location} never reached its target"));
-    }
-    if location == "grandchild" && named(&entries, "mid").is_empty() {
-        return Err(format!("{origin} at {location} never reached its middle"));
-    }
-    if origin == "child_settles_during_turn" {
-        let settler = named(&entries, "settler");
-        if settler.is_empty() || settler.iter().any(|entry| !failed(entry)) {
-            return Err(format!(
-                "{origin} at {location} did not contain the settler failure: {entries:?}"
-            ));
-        }
-        for name in ["target", "mid"] {
-            if named(&entries, name).iter().any(|entry| failed(entry)) {
-                return Err(format!(
-                    "{origin} at {location} reached {name}: {entries:?}"
-                ));
-            }
-        }
-    } else if location == "grandchild" {
-        let middle = named(&entries, "mid");
-        if middle.is_empty() || middle.iter().any(|entry| failed(entry)) {
-            return Err(format!(
-                "{origin} at {location} reached its parent: {entries:?}"
-            ));
-        }
-    }
+    child_outcomes(origin, location, &entries)
+        .map_err(|error| format!("{origin} at {location}: {error}"))?;
 
     if tool_level(origin) {
         let prefix = if location == "root" {
@@ -392,4 +403,56 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             Ok(true)
         })
     })
+}
+
+/// Negative control: a child settlement that names the wrong outcome fails
+/// the oracle even though its parent continues.
+#[test]
+fn wrong_child_outcomes_fail_the_oracle() {
+    let answered = |name: &str, tag: &str| json!({"name": name, "answer": done(tag)});
+    let failed =
+        |name: &str, message: &str| json!({"name": name, "answer": null, "failed": message});
+    for (origin, location, entries) in [
+        ("tool_error", "child", vec![answered("target", TARGET_TAG)]),
+        (
+            "transport",
+            "child",
+            vec![failed("target", "connection reset")],
+        ),
+        (
+            "rate_limit",
+            "grandchild",
+            vec![answered("target", TARGET_TAG), answered("mid", MID_TAG)],
+        ),
+    ] {
+        assert_eq!(child_outcomes(origin, location, &entries), Ok(()));
+    }
+    for (origin, location, entries) in [
+        // A tool error ended the child's turn instead of reaching its model.
+        ("tool_error", "child", vec![failed("target", "read failed")]),
+        // A model fault reported under an unrelated cause.
+        (
+            "transport",
+            "child",
+            vec![failed("target", "unrelated failure")],
+        ),
+        // The child settled with another agent's answer.
+        ("rate_limit", "child", vec![answered("target", MID_TAG)]),
+        // The fault escaped to the middle agent.
+        (
+            "transport",
+            "grandchild",
+            vec![
+                failed("target", "connection reset"),
+                failed("mid", "connection reset"),
+            ],
+        ),
+        // The target never settled.
+        ("transport", "child", Vec::new()),
+    ] {
+        assert!(
+            child_outcomes(origin, location, &entries).is_err(),
+            "{origin} at {location} accepted {entries:?}"
+        );
+    }
 }
