@@ -16,6 +16,7 @@ use acyclic_harness::{
 use family::{Generator, Variant};
 use oracle::{Plan, Prompted, World, call, done, service, settlements, tag};
 use serde_json::json;
+use sha2::Digest as _;
 use std::collections::BTreeSet;
 
 /// C1: every waiter is paired with an event source the schedule can still fire.
@@ -299,7 +300,7 @@ fn parent_steps(event: &str, mode: &str, children: &[&str], file: &str) -> Vec<V
                     "write",
                     json!({
                         "path": format!("parent-{index}.txt"),
-                        "content": format!("parent boundary {index}"),
+                        "content": format!("parent boundary {index} {}", "x".repeat(4096)),
                     }),
                 )]);
             }
@@ -339,7 +340,7 @@ fn event_plan(event: &str, child_tag: &'static str, file: &str) -> Plan {
             vec![vec![call(
                 &format!("wait-{child_tag}"),
                 "wait",
-                json!({"input": true}),
+                json!({"input": true, "timeout_ms": 10_000}),
             )]],
             None,
         ),
@@ -411,10 +412,27 @@ fn plans(event: &str, mode: &str) -> Vec<Plan> {
 
 fn request_tag(request: &acyclic_harness::model::ModelRequest) -> Option<&'static str> {
     let tags = ["root", "w", "d", "g", "recover"];
+    let needles: Vec<_> = tags
+        .into_iter()
+        .map(|name| {
+            let text = tag(name);
+            let digest: [u8; 32] = sha2::Sha256::digest(text.as_bytes()).into();
+            (
+                name,
+                text,
+                format!(
+                    "\"sha256\":{}",
+                    serde_json::to_string(&digest).unwrap_or_default()
+                ),
+            )
+        })
+        .collect();
     request.messages.iter().rev().find_map(|message| {
         let body = serde_json::to_string(&message.content).unwrap_or_default();
-        tags.into_iter()
-            .find(|name| body.contains(&tag(name)))
+        needles
+            .iter()
+            .find(|(_, text, digest)| body.contains(text) || body.contains(digest))
+            .map(|(name, _, _)| *name)
     })
 }
 
@@ -475,8 +493,8 @@ fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
             let mut model = service(plans(event, mode));
             if mode == "in_compaction" {
                 model = model.with_context_capacity(ModelContextCapacity {
-                    context_tokens: 8192,
-                    output_tokens: Some(2048),
+                    context_tokens: 4096,
+                    output_tokens: Some(1024),
                     output_shares_context: false,
                 });
             }
