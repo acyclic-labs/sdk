@@ -267,9 +267,10 @@ impl World {
         Ok(())
     }
 
-    /// Run the host to quiescence, then once more from its checkpoint, as
-    /// after a failed delivery or a release: every committed input is
-    /// delivered.
+    /// Run the host to quiescence, then once more from its checkpoint when a
+    /// failed delivery or a release left input undelivered: every committed
+    /// input is delivered. A pass that already delivered all input needs no
+    /// replay, because a replay could deliver nothing more.
     fn finish(mut self) -> Outcome {
         let mut restarted = false;
         loop {
@@ -284,7 +285,10 @@ impl World {
             .into_iter()
             .find(|&op| self.enabled(op) && (!matches!(op, Op::Take(_)) || self.set.busy()));
             let Some(op) = op else {
-                if restarted {
+                // A restart can only deliver input the first pass left
+                // undelivered. Once it delivered every committed input, the
+                // replay from the checkpoint has nothing to prove.
+                if restarted || self.undelivered.is_empty() {
                     break;
                 }
                 restarted = true;
