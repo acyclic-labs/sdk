@@ -560,6 +560,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-harness-hosting",
  "acyclic-harness-local",
+ "acyclic-harness-providers",
  "acyclic-harness-search",
  "acyclic-harness-suite",
  "acyclic-harness-tui",
