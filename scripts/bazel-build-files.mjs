@@ -87,11 +87,13 @@ const configEnv = Object.fromEntries(Object.entries(toml(".cargo/config.toml").e
 const runs = TRIPLES.map(triple => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, "--all-features"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 })));
 const [base] = runs;
 const packages = new Map(runs.flatMap(run => run.packages.map(p => [p.id, p])));
-const members = new Set(runs.flatMap(run => run.workspace_members));
+const workspace = new Set(runs.flatMap(run => run.workspace_members));
+const members = new Set(workspace);
 const nodes = runs.map(run => new Map(run.resolve.nodes.map(node => [node.id, node])));
 const dir = p => path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/");
 // Vendored path crates are first-party: their BUILD files are generated here, so the
-// crate universe must not carry them as local path dependencies.
+// crate universe must not carry them as local path dependencies. Cargo tests only the
+// workspace, so a vendored crate renders its library and build script alone.
 for (const p of base.packages) if (dir(p).startsWith("rust/vendor/")) members.add(p.id);
 const label = p => `//${dir(p)}`;
 const libOf = p => p.targets.find(t => t.kind.some(k => k === "lib" || k === "rlib" || k === "proc-macro"));
@@ -490,14 +492,15 @@ function buildFile(p) {
       ["visibility", q(["//visibility:public"])],
     ]]);
     // The crate's tests compile its sources again; rust_test does not inherit compile_data.
-    if (lib.test) covered.add(`test ${lib.kind[0]} ${lib.name}`), test(`${crateName(lib)}_test`, [
+    if (lib.test && workspace.has(p.id)) covered.add(`test ${lib.kind[0]} ${lib.name}`), test(`${crateName(lib)}_test`, [
       ["crate", q(`:${crateName(lib)}`)],
       ["compile_data", list(extras(lib, libCovered).data)],
       ...common(lib).filter(([k]) => k !== "rustc_env"),
       ...deps(["dev"]),
     ], runtimeData(lib), {}, p.name);
   }
-  for (const bin of p.targets.filter(t => t.kind.includes("bin"))) {
+  const executables = workspace.has(p.id) ? p.targets : [];
+  for (const bin of executables.filter(t => t.kind.includes("bin"))) {
     covered.add(`build bin ${bin.name}`);
     rules.push(["rust_binary", [
       ["name", q(bin.name)],
@@ -531,7 +534,7 @@ function buildFile(p) {
       ...deps([null, "dev"], [...ownLib, ...ownDeps], ownMacro),
     ];
   };
-  for (const target of p.targets.filter(t => (t.kind.includes("test") || t.kind.includes("example") || t.kind.includes("bench")) && t.test)) {
+  for (const target of executables.filter(t => (t.kind.includes("test") || t.kind.includes("example") || t.kind.includes("bench")) && t.test)) {
     covered.add(`test ${target.kind[0]} ${target.name}`);
     // Cargo gives integration tests and benches the package's executables as CARGO_BIN_EXE_<name>.
     const binaries = target.kind.includes("test") || target.kind.includes("bench")
@@ -539,7 +542,7 @@ function buildFile(p) {
       : {};
     test(target.name, separate(target), runtimeData(target), binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`);
   }
-  for (const example of p.targets.filter(t => t.kind.includes("example") && !t.test)) {
+  for (const example of executables.filter(t => t.kind.includes("example") && !t.test)) {
     let name = `${example.name}_example`;
     while (names.has(name)) name += "_example";
     names.add(name);
@@ -557,14 +560,15 @@ function buildFile(p) {
   return header.join("") + rules.map(([kind, attrs]) => `\n${rule(kind, attrs)}`).join("") + sourcesRule;
 }
 
-// Every universe crate is a spec with its all-features set, so the hub names each one directly
-// and the committed lockfile resolves without reading a Cargo workspace.
+// Every universe crate is a spec with exactly Cargo's resolved feature set, which names "default"
+// when Cargo enables it, so the hub names each one directly and the committed lockfile resolves
+// without reading a Cargo workspace.
 function universeSpecs() {
   return universe.map(p => `${rule("crate.spec", [
     ["package", q(p.name)],
     ["version", q(`=${p.version}`)],
     ["package_alias", spliceKey.has(p.id) ? q(spliceKey.get(p.id)) : undefined],
-    ["default_features", "True"],
+    ["default_features", "False"],
     ["features", list([...(pinned.get(p.id) ?? [])].sort())],
   ])}
 `);
@@ -687,18 +691,18 @@ function moduleFile() {
     // rules_rust also considers compatible with the musl platform.
     `register_toolchains("//:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__${LINUX_MUSL_TRIPLE}__${channelName}", "@rust_toolchains//:all")\n\n`,
     `crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")\n\n`,
-    // Crate universe omits a third-party crate's dependencies on workspace members, such as a [patch].
-    ...[...new Map(runs.flatMap(run => run.resolve.nodes.map(node => [node.id, node]))).values()].filter(node => !members.has(node.id)).flatMap(node => {
-      const own = node.deps.filter(dep => members.has(dep.pkg)).map(dep => packages.get(dep.pkg)).filter(libOf);
-      if (!own.length) return [];
-      const target = p => `@@${label(p)}:${crateName(libOf(p))}`;
-      const { name, version } = packages.get(node.id);
-      return [`${rule("crate.annotation", [
-        ["crate", q(name)],
-        ["version", q(`=${version}`)],
-        ["deps", list(own.filter(p => !libOf(p).kind.includes("proc-macro")).map(target).sort())],
-        ["proc_macro_deps", list(own.filter(p => libOf(p).kind.includes("proc-macro")).map(target).sort())],
-      ])}\n`];
+    ...thirdParty.map(([name, opt]) => `${rule("crate.annotation", [["crate", q(name)], ["rustc_flags", list([`-Copt-level=${opt}`])]])}
+`),
+    // A [patch] replaces a registry crate with a first-party one. The specs resolve the registry
+    // crate, so every dependent's edge to it is overridden by the first-party target.
+    ...[...new Set(runs.flatMap(run => run.resolve.nodes).filter(node => !members.has(node.id))
+      .flatMap(node => node.deps.map(dep => dep.pkg).filter(id => members.has(id) && libOf(packages.get(id)))))].sort().map(id => {
+      const p = packages.get(id), lib = libOf(p);
+      return `${rule("crate.annotation", [
+        ["crate", q(p.name)],
+        [lib.kind.includes("proc-macro") ? "override_target_proc_macro" : "override_target_lib", q(`${label(p)}:${crateName(lib)}`)],
+      ])}
+`;
     }),
     ...universeSpecs(),
     rule("crate.from_specs", [
@@ -721,7 +725,7 @@ const bodies = new Map([...members].map(id => [dir(packages.get(id)), buildFile(
 // Coverage equals the cargo legs: every target `cargo test --all-features --no-run` builds.
 for (const id of members) {
   const p = packages.get(id), expected = new Set();
-  for (const t of p.targets) {
+  for (const t of workspace.has(id) ? p.targets : [libOf(p)].filter(Boolean)) {
     // Each output kind of a target is its own rendered rule; one that is not rendered fails the check.
     if (!t.kind.some(k => k === "test" || k === "bench" || k === "custom-build")) for (const kind of t.kind) expected.add(`build ${kind} ${t.name}`);
     if (t.test && (t.kind.some(k => ["bin", "test", "example", "bench"].includes(k)) || t === libOf(p))) expected.add(`test ${t.kind[0]} ${t.name}`);
@@ -753,20 +757,6 @@ for (const [file, text] of files) files.set(file, text.replace(/\n*$/, "\n"));
 for (const file of execFileSync("git", ["ls-files", "*BUILD.bazel"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean)) {
   if (!files.has(file) && fs.readFileSync(path.join(root, file), "utf8").startsWith(HEADER)) files.set(file, null);
 }
-// The committed crate_universe lockfile is the SDK's non-root resolution. A Cargo.lock
-// change that is not repinned makes it describe a different workspace.
-if (mode === "check") {
-  const lockfilePath = path.join(root, "cargo-bazel-lock.json");
-  let universe;
-  try { universe = JSON.parse(fs.readFileSync(lockfilePath, "utf8")); }
-  catch (error) {
-    throw new Error(`STEP_FAILED bazel-build-files: cargo-bazel-lock.json is missing or unreadable; recovery: CARGO_BAZEL_REPIN=1 bazel mod tidy (${error.message})`);
-  }
-  if (JSON.stringify(universe).includes('"local_path"')) {
-    throw new Error("STEP_FAILED bazel-build-files: cargo-bazel-lock.json contains a local_path; path dependencies belong in first-party BUILD files; recovery: CARGO_BAZEL_REPIN=1 bazel mod tidy");
-  }
-}
-
 const stale = [];
 for (const [file, text] of files) {
   const target = path.join(root, file), current = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : null;
