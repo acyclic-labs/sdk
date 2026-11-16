@@ -171,7 +171,6 @@ pub(super) fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno
     if flags & !(HAS_CWD | HAS_UID | HAS_GID | HAS_BOUNDARY | ON_RELEASE | UNRECORDED) != 0
         || flags & (HAS_BOUNDARY | HAS_CWD) == (HAS_BOUNDARY | HAS_CWD)
         || flags & (HAS_BOUNDARY | ON_RELEASE) == (HAS_BOUNDARY | ON_RELEASE)
-        || (flags & UNRECORDED != 0 && flags & HAS_BOUNDARY == 0)
     {
         return Err(invalid);
     }
