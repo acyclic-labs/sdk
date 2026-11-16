@@ -107,9 +107,10 @@ export async function generationInputs(root, action = generation) {
  * @param {string} root @param {{label: string, roots: () => Promise<string[]>, paths?: string[], parts?: string[]}} [action] */
 // Every environment setting that selects a compiler or changes what it emits: the compiler Cargo runs, its flags, Cargo's
 // profile, build and per-target configuration. Directories (CARGO_TARGET_DIR, CARGO_BUILD_TARGET_DIR) place outputs that
-// are remapped away, and a wrapper (sccache) caches without changing a byte, so neither selects an entry.
+// are remapped away, a wrapper (sccache) caches without changing a byte, parallelism (CARGO_BUILD_JOBS) only schedules
+// work, and a linker or runner never runs for a generated source or a wasm module, so none selects an entry.
 const buildSetting = name => /^(?:SDK_PROTO_CODEGEN|ACYCLIC_CARGO_BIN|RUSTC|RUSTFLAGS|RUSTC_BOOTSTRAP|CARGO_ENCODED_RUSTFLAGS|CARGO_PROFILE_\w+|CARGO_BUILD_\w+|CARGO_TARGET_\w+)$/.test(name)
-  && !name.endsWith("_DIR");
+  && !name.endsWith("_DIR") && name !== "CARGO_BUILD_JOBS" && !/^CARGO_TARGET_\w+_(?:LINKER|RUNNER)$/.test(name);
 
 export async function generationKey(root, action = generation) {
   const tools = [`sdk-generation-v1\0${process.version}\0${process.platform}-${process.arch}`,

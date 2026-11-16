@@ -105,6 +105,9 @@ async function buildWasm() {
   const targetRoot = JSON.parse(metadata).target_directory;
   const profile = process.env.ACYCLIC_WASM_PROFILE || "wasm-release";
   const profileDirectory = profile === "dev" ? "debug" : profile;
+  // The dev profile is the one a caller can select without a profile override; own its debug setting so a caller that
+  // strips CARGO_PROFILE_DEV_* still produces the same module and key as the SDK's published dev build.
+  if (profile === "dev") process.env.CARGO_PROFILE_DEV_DEBUG = "0";
 
   const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("./archive-utils.mjs", import.meta.url)), readFileSync(new URL("./wasm-source-policy.mjs", import.meta.url))]);
 
