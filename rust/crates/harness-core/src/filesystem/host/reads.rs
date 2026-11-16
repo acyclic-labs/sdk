@@ -70,20 +70,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(workspace_ref);
         let cut = self.select_cut(&workspace, expected_generation, io).await?;
         let generation = &cut.generation;
-        let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
-        super::super::access::require_at(&view.0, acyclic_fs::access::Action::List, path, io, self.access_now()?)?;
-        super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, self.access_now()?)?;
+        let now = self.access_now()?;
+        let view = private_read_view(&workspace, grant, generation.id(), ceiling, io, now).await?;
+        super::super::access::require_at(&view.0, acyclic_fs::access::Action::List, path, io, now)?;
+        super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, now)?;
         let data_access = super::super::access::selected_data_access(
             &workspace,
             generation,
             grant.policy_scope(),
             ceiling,
             io,
+            now,
         )
         .await?;
         if let Some((_, view)) = &data_access {
-            super::super::access::require_at(&view.0, acyclic_fs::access::Action::List, path, io, self.access_now()?)?;
-            super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, self.access_now()?)?;
+            super::super::access::require_at(&view.0, acyclic_fs::access::Action::List, path, io, now)?;
+            super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, now)?;
         }
         bounded_io::retain(generation, Some(io)).await?;
         Ok(PrivateReadSelection {
@@ -914,6 +916,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             grant.policy_scope().capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
+        let now = self.access_now()?;
         let view = crate::filesystem::access::access_view(
             &workspace,
             grant.policy_scope(),
@@ -921,19 +924,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
             ceiling,
             io,
+            now,
         )
         .await?;
-        super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, self.access_now()?)?;
+        super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, now)?;
         let data_access = super::super::access::selected_data_access(
             &workspace,
             &pinned,
             grant.policy_scope(),
             ceiling,
             io,
+            now,
         )
         .await?;
         if let Some((_, view)) = &data_access {
-            super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, self.access_now()?)?;
+            super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, now)?;
         }
         bounded_io::retain(&pinned, Some(io)).await?;
         let path = crate::executor::with_history_io(Some(io), |work| {
@@ -1265,6 +1270,7 @@ async fn private_read_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: GenerationId,
     ceiling: Option<&crate::Capabilities>,
     io: &'a PreparationIo,
+    now: u64,
 ) -> Result<super::super::access::CompiledAccess<'a>> {
     let label = crate::core::filesystem_scope_label(
         grant.policy_scope().capabilities(),
@@ -1277,6 +1283,7 @@ async fn private_read_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
         super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
         ceiling,
         io,
+        now,
     )
     .await
 }

@@ -47,6 +47,7 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
             scope,
             ceiling,
             self.io,
+            self.host.access_now()?,
         )
         .await?;
         if let Some((_, compiled)) = &self.data_access {

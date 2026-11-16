@@ -5,6 +5,7 @@ pub(super) async fn authorize_fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     grant: &ContentGrant,
     generation: GenerationId,
     io: &PreparationIo,
+    now: u64,
 ) -> Result<()> {
     let access = compile(
         workspace,
@@ -17,6 +18,7 @@ pub(super) async fn authorize_fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             acyclic_fs::access::Action::Fork,
         ],
         io,
+        now,
     )
     .await?;
     super::super::access::require_current(workspace, &access.0, io).await
@@ -29,6 +31,7 @@ pub(super) async fn compile<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     operation: VolumeOperation,
     actions: &[acyclic_fs::access::Action],
     io: &'a PreparationIo,
+    now: u64,
 ) -> Result<super::super::access::CompiledAccess<'a>> {
     grant.recheck(Some(io))?;
     let scope = grant.policy_scope();
@@ -41,6 +44,7 @@ pub(super) async fn compile<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
         super::super::access::capability_payload(label, operation, io)?,
         None,
         io,
+        now,
     )
     .await?;
     super::super::access::require_unrestricted(&view.0, actions, "whole-volume copy")?;

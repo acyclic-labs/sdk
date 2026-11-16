@@ -255,6 +255,7 @@ async fn private_checkpoints_cannot_claim_a_publication_range_or_head_grant() ->
             &serde_json::to_vec(&capability)?,
             None,
             &io,
+            access::access_now()?,
         )
         .await;
         match generations {

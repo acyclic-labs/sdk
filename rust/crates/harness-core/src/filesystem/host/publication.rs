@@ -180,6 +180,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             scope.capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
+        let now = self.access_now()?;
         let view = crate::filesystem::access::access_view(
             workspace,
             scope,
@@ -195,16 +196,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?,
             ceiling,
             io,
+            now,
         )
         .await?;
         if write_receipt {
             if !view
                 .0
-                .decide(
-                    acyclic_fs::access::Action::Create,
-                    file.path(),
-                    self.access_now()?,
-                )
+                .decide(acyclic_fs::access::Action::Create, file.path(), now)
                 .allowed
             {
                 self.require(

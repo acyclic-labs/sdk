@@ -54,6 +54,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore> VolumeImportPlan<'_,
             self.plan
                 .source()
                 .with_stable_policy(&io, io.cancellation(), || async {
+                    let now = super::super::access::access_now()?;
                     let source = super::volume_access::compile(
                         self.plan.source(),
                         self.source_grant,
@@ -61,6 +62,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore> VolumeImportPlan<'_,
                         VolumeOperation::Read,
                         &[Action::Read, Action::List],
                         &io,
+                        now,
                     )
                     .await?;
                     let target = super::volume_access::compile(
@@ -70,6 +72,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore> VolumeImportPlan<'_,
                         VolumeOperation::Write,
                         &[Action::MergeInto],
                         &io,
+                        now,
                     )
                     .await?;
                     super::super::access::require_current(self.plan.source(), &source.0, &io)
