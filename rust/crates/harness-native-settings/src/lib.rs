@@ -1,9 +1,10 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! One native settings snapshot for hooks and MCP connection declarations.
 
-use crate::{
-    Error, Result,
-    mcp::config::{Dialect, ImportedServer, McpConfig},
-};
+use acyclic_harness_core::{Error, Result};
+
+pub mod mcp_config;
+use mcp_config::{Dialect, ImportedServer, McpConfig};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
@@ -13,6 +14,9 @@ use std::{
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 #[doc(hidden)]
 pub mod codec_fuzz;
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+#[doc(hidden)]
+pub mod hooks_codec_fuzz;
 mod model;
 mod model_selection;
 mod workspace;
@@ -24,7 +28,7 @@ pub struct ModelPreferences {
     /// Selected provider/model, or the host's default when absent.
     pub model: Option<String>,
     /// Explicit context policy; absent selects verified automatic admission.
-    pub compaction: Option<crate::context::CompactionPolicy>,
+    pub compaction: Option<acyclic_harness_core::context::CompactionPolicy>,
 }
 
 /// Production native settings boundaries for decoder conformance.
@@ -206,7 +210,7 @@ impl SettingsConfig {
 pub struct NativeSettings {
     /// Normalized, compiled lifecycle hooks.
     #[cfg(not(target_arch = "wasm32"))]
-    pub hooks: crate::hooks::Hooks,
+    pub hooks: acyclic_harness_core::hooks::Hooks,
     /// Enabled MCP declarations after whole-entry scope overrides.
     pub mcp: McpConfig,
 }
@@ -238,7 +242,7 @@ impl NativeSettings {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
-    pub async fn load_hooks(config: std::sync::Arc<SettingsConfig>) -> Result<crate::hooks::Hooks> {
+    pub async fn load_hooks(config: std::sync::Arc<SettingsConfig>) -> Result<acyclic_harness_core::hooks::Hooks> {
         Ok(Self::snapshot(config, false, true).await?.hooks)
     }
 
@@ -441,7 +445,7 @@ impl NativeSettings {
                 for (_, hooks) in hook_documents {
                     snapshot
                         .hooks
-                        .add_document(crate::hooks::imports::Document {
+                        .add_document(acyclic_harness_core::hooks::imports::Document {
                             hooks: serde_json::from_value(hooks).map_err(|error| {
                                 Error::Invalid(format!("settings hooks: {error}"))
                             })?,
@@ -498,7 +502,7 @@ fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8], toml: bool) -> Result<T> 
 /// test can reach a real Codex directory or its credentials.
 #[cfg(not(test))]
 fn configured_codex_home() -> Option<std::ffi::OsString> {
-    crate::native_environment::variable("CODEX_HOME")
+    acyclic_harness_core::native_environment::variable("CODEX_HOME")
 }
 
 #[cfg(test)]

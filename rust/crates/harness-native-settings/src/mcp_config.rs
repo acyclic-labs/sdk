@@ -7,7 +7,8 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 /// Host-owned connection configuration. Credentials are never serialized into task records.
 #[derive(Clone, Default, PartialEq)]
 pub struct McpConfig {
-    pub(super) servers: BTreeMap<String, McpServer>,
+        /// Exact declarations keyed by server name.
+    pub servers: BTreeMap<String, McpServer>,
 }
 
 /// One normalized server declaration; credentials remain host-owned.
@@ -25,7 +26,8 @@ pub struct McpServer {
     pub disabled_tools: Vec<String>,
     /// Whether connection failure prevents session startup.
     pub required: bool,
-    pub(super) dialect: Dialect,
+    /// Declaration dialect that admitted this server.
+    pub dialect: Dialect,
 }
 
 /// Finite native connection vocabulary, without an embedded command language.
@@ -58,14 +60,14 @@ pub enum McpTransport {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub(crate) enum Dialect {
+pub enum Dialect {
     Claude,
     Codex,
 }
 
 #[derive(Default, Deserialize, acyclic_harness_core::HeapLayout)]
 #[serde(default, deny_unknown_fields)]
-pub(crate) struct ImportedServer {
+pub struct ImportedServer {
     #[serde(rename = "type")]
     kind: Option<String>,
     command: Option<String>,
@@ -99,7 +101,8 @@ impl McpConfig {
             .map(|(name, server)| (name.as_str(), server))
     }
 
-    pub(crate) fn insert(
+    /// Inserts one normalized declaration for the selected dialect.
+    pub fn insert(
         &mut self,
         name: String,
         imported: ImportedServer,

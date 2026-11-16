@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness_mcp::McpTransport;
+use crate::mcp_config::McpTransport;
 use serde_json::json;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
@@ -250,15 +250,15 @@ async fn canonical_aliases_keep_the_highest_declared_scope() -> Result<()> {
 async fn stop_hooks(
     snapshot: NativeSettings,
     fixture: &Fixture,
-) -> Result<crate::hooks::HookOutput> {
+) -> Result<acyclic_harness_core::hooks::HookOutput> {
     snapshot
         .hooks
         .run(
-            crate::hooks::HookEvent::Stop,
+            acyclic_harness_core::hooks::HookEvent::Stop,
             &fixture.workspace,
             &fixture.workspace,
             &json!({}),
-            &crate::tool::ToolRegistry::default(),
+            &acyclic_harness_core::tool::ToolRegistry::default(),
         )
         .await
 }
@@ -347,11 +347,11 @@ async fn canonical_aliases_preserve_the_first_hook_bearing_source_order() -> Res
     let output = snapshot
         .hooks
         .run(
-            crate::hooks::HookEvent::PreToolUse,
+            acyclic_harness_core::hooks::HookEvent::PreToolUse,
             &fixture.workspace,
             &fixture.workspace,
             &json!({"tool_name":"custom"}),
-            &crate::tool::ToolRegistry::default(),
+            &acyclic_harness_core::tool::ToolRegistry::default(),
         )
         .await?;
     assert!(output.diagnostics.is_empty(), "{output:?}");

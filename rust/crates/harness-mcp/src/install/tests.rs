@@ -757,7 +757,7 @@ fn http_binding_tracks_resolved_endpoint_and_credentials_but_not_header_order() 
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn configured_stdio_server_inherits_its_workspace_and_retains_one_session() -> Result<()> {
-    use acyclic_harness_core::native_settings::{NativeSettings, SettingsConfig};
+    use acyclic_harness_native_settings::{NativeSettings, SettingsConfig};
     let root = tempfile::tempdir().map_err(Error::process_io)?;
     let cwd = root.path().join("child");
     std::fs::create_dir(&cwd).map_err(Error::process_io)?;

@@ -1,7 +1,7 @@
 //! Arbitrary inputs enter the same native settings parser and hook importer.
 //! This does not execute commands or qualify host trust and file precedence.
 use super::*;
-use crate::{hooks::Hooks, tool::ToolRegistry};
+use acyclic_harness_core::{hooks::Hooks, tool::ToolRegistry};
 
 pub fn check(bytes: &[u8]) -> Result<()> {
     check_model_selection(bytes)?;
@@ -38,7 +38,7 @@ pub fn check(bytes: &[u8]) -> Result<()> {
             continue;
         };
         let mut original = Hooks::default();
-        let original_admitted = original.add_document(crate::hooks::imports::Document { hooks });
+        let original_admitted = original.add_document(acyclic_harness_core::hooks::imports::Document { hooks });
         if admitted.is_ok() != original_admitted.is_ok() {
             return Err(Error::Invalid(
                 "native and public settings imports disagree on admission".into(),
@@ -109,8 +109,8 @@ fn check_rules(original: &Hooks, bytes: &[u8]) -> Result<()> {
     let registry = ToolRegistry::default();
     for subject in ["shell", "Read", std::str::from_utf8(bytes).unwrap_or("")] {
         let input = serde_json::json!({"tool_name": subject, "source": subject});
-        for event in crate::hooks::HookEvent::ALL {
-            let selected = |rules: &Hooks| -> Result<Vec<crate::hooks::HookSpec>> {
+        for event in acyclic_harness_core::hooks::HookEvent::ALL {
+            let selected = |rules: &Hooks| -> Result<Vec<acyclic_harness_core::hooks::HookSpec>> {
                 Ok(rules
                     .commands(event, &input, &registry)?
                     .map(|hook| hook.as_ref().clone())

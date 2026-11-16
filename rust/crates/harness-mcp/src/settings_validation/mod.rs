@@ -1,4 +1,4 @@
-use acyclic_harness_core::native_settings::{NativeSettings, SettingsConfig};
+use acyclic_harness_native_settings::{NativeSettings, SettingsConfig};
 use std::path::{Path, PathBuf};
 mod mcp;
 mod model;

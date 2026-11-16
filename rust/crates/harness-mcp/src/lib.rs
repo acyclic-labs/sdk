@@ -2,7 +2,7 @@
 pub mod callbacks;
 mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod config;
+pub use acyclic_harness_native_settings::mcp_config as config;
 #[cfg(not(target_arch = "wasm32"))]
 mod deadline;
 #[cfg(not(target_arch = "wasm32"))]

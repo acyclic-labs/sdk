@@ -7,7 +7,8 @@ use std::{future::Future, sync::Arc};
 
 pub(crate) mod imports;
 pub(crate) use imports::Document;
-mod budget;
+#[doc(hidden)]
+pub mod budget;
 #[doc(hidden)]
 pub mod effects;
 #[cfg(test)]
@@ -21,9 +22,6 @@ mod chain;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use chain::model as chain_model;
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub mod codec_fuzz;
 mod input;
 mod request;
 pub use input::HookInput;

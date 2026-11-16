@@ -1,10 +1,8 @@
 //! Trusted settings edits replace the same shared catalog source.
 use super::*;
-use acyclic_harness_core::{
-    input_watch::InputWatch,
-    native_settings::{NativeSettings, SettingsConfig},
-    tool::ToolSource,
-};
+use acyclic_harness_core::tool::ToolSource;
+use acyclic_harness_input_watch::InputWatch;
+use acyclic_harness_native_settings::{NativeSettings, SettingsConfig};
 
 struct WatchedConfig {
     watch: InputWatch,

@@ -1,6 +1,8 @@
 //! Decoder and bounded-ledger properties over the production hook implementation.
-use super::{HookEvent, HookFailure, HookInput, HookOutput, budget, spec};
-use crate::{Result, tool};
+use acyclic_harness_core::hooks::{
+    HookEvent, HookFailure, HookInput, HookOutput, HookRule, budget,
+};
+use acyclic_harness_core::{Result, tool};
 use serde_json::Value;
 
 type CheckResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -26,8 +28,8 @@ fn apply(
 /// # Panics
 /// Panics if decoder, event-site, round-trip or bounded-ledger invariants fail.
 pub fn check(bytes: &[u8]) -> CheckResult {
-    crate::native_settings::codec_fuzz::check(bytes)?;
-    futures::executor::block_on(crate::hooks::chain_model::check(bytes))?;
+    crate::codec_fuzz::check(bytes)?;
+    futures::executor::block_on(acyclic_harness_core::hooks::chain_model::check(bytes))?;
     check_input(bytes)?;
     check_decisions(bytes)?;
     check_budget(bytes)?;
@@ -38,7 +40,7 @@ pub fn check(bytes: &[u8]) -> CheckResult {
 fn check_input(bytes: &[u8]) -> CheckResult {
     if let Ok(fields) = serde_json::from_slice::<Value>(bytes) {
         let invocation = tool::ToolInvocation {
-            operation_id: crate::OperationId::from_bytes([1; 16]),
+            operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
             call_id: "fuzz-call".into(),
             name: "fuzz-tool".into(),
             arguments: fields.clone(),
@@ -117,9 +119,9 @@ fn check_decisions(bytes: &[u8]) -> CheckResult {
             Ok((Some(0), bytes.to_vec(), vec![])),
         )?;
         let mut merged = HookOutput {
-            approval: Some(crate::hooks::HookApproval {
+            approval: Some(acyclic_harness_core::hooks::HookApproval {
                 prompt: "earlier approval".into(),
-                route: crate::interaction::ApprovalRoute::Human,
+                route: acyclic_harness_core::interaction::ApprovalRoute::Human,
             }),
             ..HookOutput::default()
         };
@@ -222,9 +224,9 @@ fn check_budget(bytes: &[u8]) -> CheckResult {
 }
 
 fn check_rule(bytes: &[u8]) -> CheckResult {
-    if let Ok(rule) = serde_json::from_slice::<spec::HookRule>(bytes) {
+    if let Ok(rule) = serde_json::from_slice::<HookRule>(bytes) {
         let encoded = serde_json::to_vec(&rule)?;
-        let decoded: spec::HookRule = serde_json::from_slice(&encoded)?;
+        let decoded: HookRule = serde_json::from_slice(&encoded)?;
         assert_eq!(rule, decoded);
         for (original, restored) in rule.hooks.iter().zip(&decoded.hooks) {
             assert_eq!(original.validate().is_ok(), restored.validate().is_ok());

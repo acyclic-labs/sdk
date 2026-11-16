@@ -4,7 +4,7 @@ use serde::Deserialize;
 struct ModelSettings {
     model: Option<String>,
     model_provider: Option<String>,
-    compaction: Option<crate::context::CompactionPolicy>,
+    compaction: Option<acyclic_harness_core::context::CompactionPolicy>,
 }
 
 struct Selection<'a> {

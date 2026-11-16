@@ -134,6 +134,7 @@ hyper = { version = "1", default-features = false }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "process"] }
 
 [dev-dependencies]
+acyclic-harness-native-settings = { version = "=0.2.0", path = "../harness-native-settings" }
 acyclic-harness-mcp = { version = "=0.2.0", path = "../harness-mcp" }
 acyclic-actors = { version = "=0.2.0", path = "../actors", features = ["conformance"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }

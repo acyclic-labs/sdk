@@ -98,7 +98,7 @@ mod tests {
                 let encoded = toml::to_string(&value).unwrap();
                 std::fs::write(config.codex_home.join("config.toml"), &encoded).unwrap();
                 #[cfg(not(target_arch = "wasm32"))]
-                crate::native_settings::codec_fuzz::check(encoded.as_bytes()).unwrap();
+                crate::codec_fuzz::check(encoded.as_bytes()).unwrap();
                 let provider = selected_provider.unwrap_or("openai");
                 prop_assert_eq!(config.configured_model().unwrap(), Some(format!("{provider}/{model}")));
                 #[cfg(not(target_arch = "wasm32"))]

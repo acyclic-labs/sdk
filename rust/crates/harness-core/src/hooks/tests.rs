@@ -1,5 +1,5 @@
 use super::*;
-use crate::native_settings::{NativeSettings, SettingsConfig};
+use acyclic_harness_native_settings::{NativeSettings, SettingsConfig};
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -1103,7 +1103,7 @@ exit 2
         )
         .map_err(process_error)?;
         let bytes = serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?;
-        crate::native_settings::codec_fuzz::check(&bytes)?;
+        acyclic_harness_native_settings::codec_fuzz::check(&bytes)?;
         std::fs::write(path, bytes).map_err(process_error)
     };
     write(
@@ -1114,7 +1114,7 @@ exit 2
     let project = json!({"hooks":{"Stop":[{"hooks":[hook]}]}});
     // Configuration input, not a fabricated command-output fixture: the second
     // selector must refuse the whole import before publishing the first group.
-    crate::native_settings::codec_fuzz::check(
+    acyclic_harness_native_settings::codec_fuzz::check(
         &serde_json::to_vec(&json!({"hooks":{"PreToolUse":[
             {"matcher":"shell","hooks":[hook]},
             {"matcher":"[","hooks":[hook]}
@@ -1131,7 +1131,7 @@ exit 2
     let toml = format!(
         "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = {command:?}\nshell = '{shell}'\n"
     );
-    crate::native_settings::codec_fuzz::check(toml.as_bytes())?;
+    acyclic_harness_native_settings::codec_fuzz::check(toml.as_bytes())?;
     std::fs::write(workspace.join(".codex/config.toml"), toml).map_err(process_error)?;
     let registry = registry()?;
     let hooks = NativeSettings::load(
