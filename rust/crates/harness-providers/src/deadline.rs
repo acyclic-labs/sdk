@@ -102,7 +102,11 @@ impl Bounded {
             }
         })
         .await?;
-        let total = total.map(|millis| Deadline::start(self.inner.clone(), millis, work.is_some()));
+        let total = if first_byte {
+            total.map(|millis| Deadline::start(self.inner.clone(), millis, work.is_some()))
+        } else {
+            deadline
+        };
         Ok((response, total))
     }
 }
