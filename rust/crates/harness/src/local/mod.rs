@@ -256,3 +256,5 @@ impl LocalHarness {
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
+
+// Baseline measurement anchor for the harness split.
