@@ -22,16 +22,37 @@ pub struct FilesystemHost<A: 'static, O: 'static> {
         >,
     >,
     project_family: Option<Arc<dyn family::ProjectFamily<A, O>>>,
+    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<A, O> FilesystemHost<A, O> {
+    /// The host clock's current Unix seconds for access decisions.
+    pub(in crate::filesystem) fn access_now(&self) -> Result<u64> {
+        super::access::access_now_at(self.clock.now_unix_millis())
+    }
+
     /// Binds a deployment and funds its shared descriptor on the optional ledger.
     pub fn new(
         filesystem: Fs<A, O>,
         provider: &ProviderRef,
         io: Option<&PreparationIo>,
+    ) -> Result<Arc<Self>> {
+        Self::new_with_clock(
+            filesystem,
+            provider,
+            io,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+        )
+    }
+
+    /// Binds a deployment whose access decisions use `clock`.
+    pub fn new_with_clock(
+        filesystem: Fs<A, O>,
+        provider: &ProviderRef,
+        io: Option<&PreparationIo>,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<Arc<Self>> {
         crate::executor::with_history_io(io, |work| provider.validate(work))?;
         if provider.family() != "filesystem" {
@@ -67,6 +88,7 @@ impl<A, O> FilesystemHost<A, O> {
                     std::collections::HashMap::new(),
                 )),
                 project_family: None,
+                clock,
                 #[cfg(not(target_arch = "wasm32"))]
                 _native_custody,
             }))

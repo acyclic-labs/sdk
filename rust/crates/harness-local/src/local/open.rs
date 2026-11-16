@@ -346,8 +346,13 @@ impl Opening {
             .install_commit_admission(acyclic_actors::local::alarm_admission())
             .map_err(storage)?;
         let provider_ref = owner.project.provider();
-        let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?
-            .with_changes(filesystem.stream_provider())?;
+        let files = FilesystemHost::new_with_clock(
+            filesystem.clone(),
+            provider_ref,
+            None,
+            self.config.clock.clone(),
+        )?
+        .with_changes(filesystem.stream_provider())?;
         let issuer = AuthorityRoot::bootstrap(
             "acyclic.local",
             &owner.key_ref,
