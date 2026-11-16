@@ -334,13 +334,14 @@ pub(super) struct World {
     directory: WorldDirectory,
     pub service: ScriptedModelProvider,
     pub seed: u64,
+    model: Model,
     incarnations: u64,
     entropy: bool,
 }
 
 impl World {
     pub fn new(seed: u64, files: &[(&str, &str)], service: ScriptedModelProvider) -> Result<Self> {
-        Self::with_entropy(seed, seed, files, service, true)
+        Self::new_with_model(seed, files, service, Self::default_model()?)
     }
 
     /// A world whose scheduler seed and directory key differ, so two seeds
@@ -351,7 +352,7 @@ impl World {
         files: &[(&str, &str)],
         service: ScriptedModelProvider,
     ) -> Result<Self> {
-        Self::with_entropy(seed, directory_seed, files, service, true)
+        Self::with_entropy(seed, directory_seed, files, service, true, Self::default_model()?)
     }
 
     /// The same world with the scheduler's entropy source erased, so a trace
@@ -361,7 +362,7 @@ impl World {
         files: &[(&str, &str)],
         service: ScriptedModelProvider,
     ) -> Result<Self> {
-        Self::with_entropy(seed, seed, files, service, false)
+        Self::with_entropy(seed, seed, files, service, false, Self::default_model()?)
     }
 
     /// The entropy-erased world with a separate directory key.
@@ -371,7 +372,21 @@ impl World {
         files: &[(&str, &str)],
         service: ScriptedModelProvider,
     ) -> Result<Self> {
-        Self::with_entropy(seed, directory_seed, files, service, false)
+        Self::with_entropy(seed, directory_seed, files, service, false, Self::default_model()?)
+    }
+
+    /// A world whose provider selection names the protocol dialect under test.
+    pub fn new_with_model(
+        seed: u64,
+        files: &[(&str, &str)],
+        service: ScriptedModelProvider,
+        model: Model,
+    ) -> Result<Self> {
+        Self::with_entropy(seed, seed, files, service, true, model)
+    }
+
+    fn default_model() -> Result<Model> {
+        Model::new("scripted".into(), "dst".into(), "1".into())
     }
 
     fn with_entropy(
@@ -380,6 +395,7 @@ impl World {
         files: &[(&str, &str)],
         service: ScriptedModelProvider,
         entropy: bool,
+        model: Model,
     ) -> Result<Self> {
         let directory = WorldDirectory::new(directory_seed).map_err(storage)?;
         let checkout = directory.path().join("checkout");
@@ -395,6 +411,7 @@ impl World {
             directory,
             service,
             seed,
+            model,
             incarnations: 0,
             entropy,
         })
@@ -455,11 +472,11 @@ impl World {
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
             let directory = self.directory.path();
+            let model = self.model.clone();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
                 entry(async move {
-                    let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
                     acyclic_harness::test_support::inject_checkout_identity(
                         checkout_identity.0,
                         checkout_identity.1,

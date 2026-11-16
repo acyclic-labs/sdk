@@ -31,6 +31,7 @@ mod oracle;
 mod protective;
 mod publication;
 mod records;
+mod provider;
 mod recovery;
 mod redelivery;
 mod refusal;
