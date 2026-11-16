@@ -547,6 +547,8 @@ async fn publish(
     cancel: &CancellationToken,
 ) -> Result<crate::PublicationHold, ObjectStoreError> {
     let scope = crate::PublicationScope {
+        root: None,
+        related_root: None,
         related_objects: &[],
         objects,
         proven_at: 0,
@@ -692,6 +694,8 @@ async fn a_publication_retains_inside_the_callers_work() -> Result<(), Box<dyn s
         let hold = store
             .flush_before_publish(
                 crate::PublicationScope {
+                    root: None,
+                    related_root: None,
                     related_objects: &[],
                     objects: &[native_id],
                     proven_at: 0,

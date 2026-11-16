@@ -638,6 +638,8 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                     let hold = store
                         .flush_before_publish(
                             PublicationScope {
+                                root: None,
+                                related_root: None,
                                 related_objects: &[],
                                 objects: &closure,
                                 proven_at: store.collection.sweeps(),

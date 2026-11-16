@@ -1277,6 +1277,40 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
     Ok(())
 }
 
+/// Each holder owns its own marker on a shared child. Root A releases first,
+/// directly or through the parent it retained, and root B alone keeps the
+/// child; B's release, the last, frees it.
+#[tokio::test]
+async fn a_shared_child_stays_held_until_its_last_holder_releases()
+-> Result<(), Box<dyn std::error::Error>> {
+    for through_parent in [false, true] {
+        let blobs = crate::MemoryObjects::memory();
+        let child = blobs
+            .put(vec![3; 8].into(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("unknown")?
+            .digest;
+        let parent = blobs
+            .put(vec![4; 8].into(), vec![child])
+            .await?
+            .verified()
+            .ok_or("unknown")?
+            .digest;
+        let (a, b) = (RootId::new(*b"rootA")?, RootId::new(*b"rootB")?);
+        let held = if through_parent { parent } else { child };
+        blobs.retain(&a, vec![held]).await?;
+        blobs.retain(&b, vec![child]).await?;
+        assert!(blobs.release(&a).await?.existed);
+        assert_eq!(blobs.delete(parent).await?, Delete::Deleted);
+        // Negative control: A's release leaves the child protected by B.
+        assert_eq!(blobs.delete(child).await?, Delete::Referenced);
+        assert_eq!(blobs.head(child).await?.length, 8);
+        assert!(blobs.release(&b).await?.existed);
+        assert_eq!(blobs.delete(child).await?, Delete::Deleted);
+    }
+    Ok(())
+}
 #[tokio::test]
 async fn delete_reads_only_its_inbound_index() -> Result<(), Box<dyn std::error::Error>> {
     let blobs = crate::MemoryObjects::memory();
@@ -2836,13 +2870,16 @@ fn committed_blobs_are_whole(disk: &Disk) -> Result<(), String> {
     let mut pending = disk.commits.clone();
     for (key, batch) in &disk.durable {
         // A torn batch was never acknowledged.
-        if key.starts_with(&format!("{prefix}r/"))
+        if let Some(name) = key.strip_prefix(&format!("{prefix}r/"))
             && let Ok(batch) = crate::blob::decode_batch(batch)
         {
             // A batch a crash kept still pins its members against a delete.
+            let tag = format!("r{}", name.replacen('/', ".", 1));
             for member in &batch {
-                let marker = format!("{prefix}i/{}/", member.to_hex());
-                if !disk.durable.keys().any(|key| key.starts_with(&marker)) {
+                if !disk
+                    .durable
+                    .contains_key(&format!("{prefix}i/{}/{tag}", member.to_hex()))
+                {
                     return Err(format!("{key}: {} unindexed", member.to_hex()));
                 }
             }
@@ -2867,9 +2904,12 @@ fn blobs_are_whole(disk: &Disk, mut pending: Vec<Digest>) -> Result<(), String> 
         let envelope =
             crate::blob::Envelope::decode(envelope).map_err(|_| format!("{hex}: torn envelope"))?;
         // Each child is pinned against a delete by this blob's index key.
+        let tag = format!("e{hex}.{}", hex::encode(envelope.version));
         for child in &envelope.references {
-            let marker = format!("{prefix}i/{}/", child.to_hex());
-            if !disk.durable.keys().any(|key| key.starts_with(&marker)) {
+            if !disk
+                .durable
+                .contains_key(&format!("{prefix}i/{}/{tag}", child.to_hex()))
+            {
                 return Err(format!("{hex}: child {} unindexed", child.to_hex()));
             }
         }

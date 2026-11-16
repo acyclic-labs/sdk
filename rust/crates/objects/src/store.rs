@@ -746,7 +746,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 let key = self.index_key(child, &tag);
                 if self
                     .medium
-                    .create(&key, OwnedBytes::from(tag.as_bytes().to_vec()))
+                    .create(&key, OwnedBytes::new())
                     .await
                     .map_err(medium)?
                 {
@@ -896,10 +896,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         for child in children {
             match self
                 .medium
-                .create(
-                    &self.index_key(child, tag),
-                    OwnedBytes::from(tag.as_bytes().to_vec()),
-                )
+                .create(&self.index_key(child, tag), OwnedBytes::new())
                 .await
             {
                 Ok(new) => created |= new,
@@ -915,8 +912,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         Ok(created)
     }
 
-    fn index_key(&self, child: &Digest, _tag: &str) -> String {
-        format!("{}e", self.index_prefix(child))
+    fn index_key(&self, child: &Digest, tag: &str) -> String {
+        format!("{}{tag}", self.index_prefix(child))
     }
 
     /// Indexes `references` under `tag`, creates the root batch `key` that
@@ -954,34 +951,13 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .map_err(Commit::Unflushed)
     }
 
-    /// Retires a root batch's marker only when no other root batch still
-    /// reaches the child. Envelope markers are retired by collection when the
-    /// child itself is swept, so a pending writer's marker is never cleared by
-    /// a deleter that already passed its index check.
+    /// Removes `tag`'s index keys, once its holder is gone.
     async fn unreference(&self, children: &[Digest], tag: &str) -> Result<(), Error> {
-        if !tag.starts_with('r') {
-            return Ok(());
-        }
-        let mut live = HashSet::new();
-        let mut pages = self.pages(format!("{}r/", self.state.prefix));
-        while let Some(page) = pages.next().await? {
-            for (key, _) in page {
-                if let Some(members) = self.batch(&key).await? {
-                    live.extend(members);
-                }
-            }
-        }
         for child in children {
-            if live.contains(child) {
-                continue;
-            }
-            let key = self.index_key(child, tag);
-            let Some(value) = self.medium.read(&key, None).await.map_err(medium)? else {
-                continue;
-            };
-            if value.as_ref() == tag.as_bytes() {
-                self.medium.remove(&key).await.map_err(medium)?;
-            }
+            self.medium
+                .remove(&self.index_key(child, tag))
+                .await
+                .map_err(medium)?;
         }
         Ok(())
     }
@@ -1216,12 +1192,11 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .remove(&self.payload_key(&digest, &envelope.version))
             .await
             .map_err(medium)?;
-        if fence.is_some() {
-            self.medium
-                .remove(&self.index_key(&digest, ""))
-                .await
-                .map_err(medium)?;
-        }
+        self.unreference(
+            &envelope.references,
+            &Self::envelope_tag(&digest, &envelope.version),
+        )
+        .await?;
         Ok((Delete::Deleted, envelope.references))
     }
 

@@ -412,6 +412,8 @@ async fn a_closure_proven_before_a_sweep_of_its_object_is_refused()
     }
     drop(gate);
     let scope = crate::PublicationScope {
+        root: None,
+        related_root: None,
         related_objects: &[],
         objects: &[object(1)],
         proven_at,
@@ -435,6 +437,8 @@ async fn a_closure_proven_before_a_sweep_of_its_object_is_refused()
             .admit(
                 &objects,
                 crate::PublicationScope {
+                    root: None,
+                    related_root: None,
                     related_objects: &[],
                     objects: &[object(1)],
                     proven_at: collection.sweeps(),
@@ -460,6 +464,8 @@ async fn a_closure_admitted_while_collecting_is_kept() -> Result<(), Box<dyn std
             .admit(
                 &objects,
                 crate::PublicationScope {
+                    root: None,
+                    related_root: None,
                     related_objects: &[],
                     objects: &[object(1)],
                     proven_at: collection.sweeps(),
@@ -486,6 +492,8 @@ async fn a_collection_begins_after_every_admitted_record_is_written()
         .admit(
             &crate::MemoryObjectStore::default(),
             crate::PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &[object(1)],
                 proven_at: 0,
@@ -534,6 +542,8 @@ async fn an_intact_old_closure_survives_unrelated_collections_with_original_work
         collecting.sweeping();
     }
     let scope = crate::PublicationScope {
+        root: None,
+        related_root: None,
         related_objects: &[],
         objects: &[id],
         proven_at,

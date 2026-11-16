@@ -264,6 +264,8 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
             .map_err(E::from)?;
         }
         let scope = crate::PublicationScope {
+            root: Some(authentication.proof.generation_id.object_id()),
+            related_root: evidence.root,
             related_objects: &evidence.objects,
             objects: &authentication.proof.objects,
             proven_at,

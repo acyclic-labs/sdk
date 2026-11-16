@@ -593,6 +593,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<crate::PublicationHold, FsError> {
         self.flush_publication(
             crate::PublicationScope {
+                root: Some(parent),
+                related_root: None,
                 related_objects: &[],
                 objects: &[parent],
                 proven_at: self.inner.objects.collection_sweeps(),

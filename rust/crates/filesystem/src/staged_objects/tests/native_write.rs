@@ -147,6 +147,8 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
         store
             .flush_before_publish(
                 PublicationScope {
+                    root: None,
+                    related_root: None,
                     related_objects: &[],
                     objects: &[id],
                     proven_at: store.collection.sweeps()
@@ -201,6 +203,8 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
                 store
                     .flush_before_publish(
                         PublicationScope {
+                            root: None,
+                            related_root: None,
                             related_objects: &[],
                             objects: &closure,
                             proven_at: store.collection.sweeps(),
@@ -285,6 +289,8 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
         store
             .flush_before_publish(
                 PublicationScope {
+                    root: None,
+                    related_root: None,
                     related_objects: &[],
                     objects: &[id],
                     proven_at: store.collection.sweeps(),
@@ -345,6 +351,8 @@ async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption
     let hold = store
         .flush_before_publish(
             PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &closure,
                 proven_at: store.collection.sweeps(),
@@ -431,6 +439,8 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
             store
                 .flush_before_publish(
                     PublicationScope {
+                        root: None,
+                        related_root: None,
                         related_objects: &[],
                         objects: &closure,
                         proven_at: store.collection.sweeps(),
@@ -485,6 +495,8 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
     let hold = store
         .flush_before_publish(
             PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &closure,
                 proven_at: store.collection.sweeps(),
@@ -595,6 +607,8 @@ async fn native_flush_spilled_read_denial_keeps_private_remainder()
         store
             .flush_before_publish(
                 PublicationScope {
+                    root: None,
+                    related_root: None,
                     related_objects: &[],
                     objects: &closure,
                     proven_at: store.collection.sweeps(),
@@ -693,6 +707,8 @@ async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
         store
             .flush_before_publish(
                 PublicationScope {
+                    root: None,
+                    related_root: None,
                     related_objects: &[],
                     objects: &closure,
                     proven_at: store.collection.sweeps(),
@@ -745,6 +761,8 @@ async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
     let hold = store
         .flush_before_publish(
             PublicationScope {
+                root: None,
+                related_root: None,
                 related_objects: &[],
                 objects: &closure,
                 proven_at: store.collection.sweeps(),

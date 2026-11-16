@@ -18,21 +18,26 @@ pub(super) fn retention(
         value: super::Epoch::root_from(epoch, root.value),
         allocation: root.allocation,
     };
-    let count = scope
-        .related_objects
+    // A root's envelope chain holds its whole closure, so the batch links to
+    // a scope's root instead of enumerating every descendant.
+    let (objects, related) = (
+        scope
+            .root
+            .as_ref()
+            .map_or(scope.objects, std::slice::from_ref),
+        scope
+            .related_root
+            .as_ref()
+            .map_or(scope.related_objects, std::slice::from_ref),
+    );
+    let count = objects
         .len()
-        .checked_add(usize::from(!scope.objects.is_empty()))
+        .checked_add(related.len())
         .ok_or(WorkError::Overflow)?;
     let mut references = Retained::<Vec<acyclic_objects::Digest>>::allocate(count, work)?;
-    // The publication proof orders dependencies before their parents, so the
-    // last object is the generation root. Its envelope reaches the closure;
-    // the batch links to that root instead of enumerating every descendant.
-    if let Some(root) = scope.objects.last() {
-        references.value.push(blob(*root));
-    }
     references
         .value
-        .extend(scope.related_objects.iter().copied().map(blob));
+        .extend(objects.iter().chain(related).copied().map(blob));
     Ok((root, references))
 }
 
