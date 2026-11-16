@@ -2,7 +2,7 @@
 //! model sees or a failed turn; the owner keeps accepting work.
 use super::*;
 use acyclic_harness::{
-    model::{ModelRequest, ModelRole, ToolResultContent},
+    model::{ModelRequest, ToolResultContent},
     test_support::ScriptedEvent,
 };
 use family::{Generator, Variant};
@@ -263,18 +263,6 @@ fn faulted(origin: &str, outcome: Option<&Prompted>) -> std::result::Result<(), 
     }
 }
 
-/// Whether `request` carries `brief` as its newest user input.
-fn briefed(request: &ModelRequest, brief: &'static str) -> bool {
-    let needles = oracle::appears(&tag(brief));
-    request
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.role == ModelRole::User)
-        .and_then(|message| serde_json::to_string(&message.content).ok())
-        .is_some_and(|body| needles.iter().any(|needle| body.contains(needle)))
-}
-
 /// Every child entry a wait result in the history returned.
 fn wait_entries(requests: &[ModelRequest]) -> std::result::Result<Vec<Value>, String> {
     let mut entries = Vec::new();
@@ -327,26 +315,13 @@ fn checked(
         ));
     }
 
-    if location != "root"
-        && !incarnation
-            .requests
-            .iter()
-            .any(|request| briefed(request, TARGET_TAG))
-    {
+    let entries = wait_entries(&incarnation.requests)?;
+    if location != "root" && named(&entries, "target").is_empty() {
         return Err(format!("{origin} at {location} never reached its target"));
     }
-    if origin == "child_settles_during_turn"
-        && !incarnation
-            .requests
-            .iter()
-            .any(|request| briefed(request, SETTLER_TAG))
-    {
-        return Err(format!(
-            "{origin} at {location} never reached its settler"
-        ));
+    if location == "grandchild" && named(&entries, "mid").is_empty() {
+        return Err(format!("{origin} at {location} never reached its middle"));
     }
-
-    let entries = wait_entries(&incarnation.requests)?;
     if origin == "child_settles_during_turn" {
         let settler = named(&entries, "settler");
         if settler.is_empty() || settler.iter().any(|entry| !failed(entry)) {

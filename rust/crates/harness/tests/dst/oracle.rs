@@ -217,7 +217,6 @@ pub(super) struct World {
     pub service: ScriptedModelProvider,
     pub seed: u64,
     incarnations: u64,
-    limits: acyclic_harness::conversation::Limits,
 }
 
 impl World {
@@ -236,15 +235,7 @@ impl World {
             service,
             seed,
             incarnations: 0,
-            limits: acyclic_harness::conversation::Limits::default(),
         })
-    }
-
-    /// Selects the content and projection bounds this world opens with.
-    #[must_use]
-    pub fn with_limits(mut self, limits: acyclic_harness::conversation::Limits) -> Self {
-        self.limits = limits;
-        self
     }
 
     /// Opens a host on the world's files and sends each group of prompts,
@@ -274,7 +265,6 @@ impl World {
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
             let directory = self.directory.path();
-            let limits = self.limits.clone();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
@@ -286,7 +276,6 @@ impl World {
                     )?
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
-                    .limits(limits)
                     .state_directory(directory.join("state"));
                     let harness = Arc::new(entry(LocalHarness::open(config)).await?);
                     for group in prompts {
