@@ -42,6 +42,9 @@ describe("guest dependency failures", () => {
     // A host freezes its admitted bindings; proxying the frozen value itself
     // made every member read a TypeError, so readiness refused the binding.
     const original = new Error("connection reset");
+    // Negative control: a get trap on the frozen value itself cannot return a wrapper.
+    const wrapped = new Proxy(Object.freeze({ admit() {} }), { get: () => () => undefined });
+    expect(() => wrapped.admit).toThrow(TypeError);
     const workspace = dependencyBinding("machinesWorkspace", Object.freeze({
       admit: async (request: bigint) => { if (request === 0n) throw original; return { request }; },
       limit: 3,
