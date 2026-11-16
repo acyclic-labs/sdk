@@ -46,6 +46,9 @@ enum Case {
     ReadOnlyPrivate,
     ReadOnlyShared,
     ReadOnlyJournal,
+    /// Native custody still requires the admitted caller to grant the
+    /// journal's write through its own scope. Host custody alone authorizes
+    /// only local enrollment (#4155).
     NativeJournalCustody,
     WrongAudience,
     OtherAgent,
@@ -143,7 +146,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
                 .capability(VolumeOperation::Write, &mut None)?,
         );
     }
-    if !matches!(case, Case::ReadOnlyJournal | Case::NativeJournalCustody) {
+    if case != Case::ReadOnlyJournal {
         grants.push(journal.capability(VolumeOperation::Write, &mut None)?);
     }
     if case == Case::StructuredPrivateOnly {
