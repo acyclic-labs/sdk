@@ -544,6 +544,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-harness-providers",
  "acyclic-harness-search",
  "acyclic-harness-tui",
  "acyclic-host-platform",
