@@ -8,8 +8,7 @@ use acyclic_harness::{
     local::agent_conversation::Conversation,
     model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent},
     test_support::{
-        PromptOutcome, ScriptedEvent, ScriptedModelProvider, ScriptedTurn, local_harness_config,
-        prompt_settled,
+        PromptOutcome, local_harness_config, prompt_settled,
     },
     tool::{RecordedInvocation, ToolInvocation},
 };
@@ -353,29 +352,11 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 "read".into(),
                 json!({"path": "a.txt"}),
             );
-            let provider = Arc::new(ScriptedModelProvider::new([
-                ScriptedTurn::Events(vec![
-                    ScriptedEvent::Event(ModelEvent::Content {
-                        delta: "reading".into(),
-                    }),
-                    ScriptedEvent::Event(ModelEvent::TextPart {
-                        text: "reading".into(),
-                        native: None,
-                    }),
-                    ScriptedEvent::Event(ModelEvent::ToolCall(call)),
-                    ScriptedEvent::Event(ModelEvent::Completed {
-                        metadata: json!({"usage": {"input_tokens": 3, "output_tokens": 2}}),
-                    }),
-                ]),
-                ScriptedTurn::Events(vec![
-                    ScriptedEvent::Event(ModelEvent::Content {
-                        delta: "done".into(),
-                    }),
-                    ScriptedEvent::Event(ModelEvent::Completed {
-                        metadata: json!({"usage": {"input_tokens": 4, "output_tokens": 1}}),
-                    }),
-                ]),
-            ]));
+            let provider = Arc::new(oracle::service(vec![oracle::Plan {
+                tag: "s1",
+                steps: vec![vec![call]],
+                fail_once: None,
+            }]));
             let config = local_harness_config(checkout, (model, provider))
                 .map_err(oracle::failed)?
                 .without_user_settings()
