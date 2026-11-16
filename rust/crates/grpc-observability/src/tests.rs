@@ -7,7 +7,7 @@
     reason = "test capture invariants fail immediately; plain fixture tuples avoid forwarding types"
 )]
 
-pub use acyclic_test_support::capture::{Capture, CapturedSpan, Evidence};
+pub use acyclic_observability::capture::{Capture, CapturedSpan, Evidence};
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 
 #[cfg(test)]

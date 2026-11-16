@@ -508,7 +508,6 @@ dependencies = [
 name = "acyclic-grpc-observability"
 version = "0.2.0"
 dependencies = [
- "acyclic-test-support",
  "acyclic-native-runtime",
  "acyclic-observability",
  "futures",
@@ -1807,8 +1806,6 @@ dependencies = [
 name = "acyclic-test-support"
 version = "0.2.0"
 dependencies = [
- "tracing-subscriber",
- "tracing",
  "acyclic-differential",
  "proptest",
  "tempfile",

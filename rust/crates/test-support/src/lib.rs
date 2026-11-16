@@ -4,8 +4,6 @@
 //! link, and a dependency would silently replace the allocator of every
 //! binary that links it. A test, bench or fuzz binary that measures declares
 //! [`counting_allocator!`] once at its crate root.
-/// Shared tracing capture for span and field assertions.
-pub mod capture;
 /// One `#[test]` per case of a static list, from [`cases!`].
 pub mod cases;
 /// Language-independent source/model coverage and reachability checks.
