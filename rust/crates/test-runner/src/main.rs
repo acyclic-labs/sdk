@@ -146,6 +146,9 @@ fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Resu
         .into_iter()
         .filter(|name| !ignored.contains(name))
         .collect();
+    if !selection.is_empty() && cases.is_empty() && ignored.is_empty() {
+        return Err(format!("{selection:?} selects no case of {}", suite.id));
+    }
     // Every case tree is held in custody, so a timeout stops descendants that left its process
     // group (setsid, nested trees) too.
     let custody = ProcessCustody::acquire(&suite.logs.join("processes"))
@@ -521,5 +524,17 @@ mod tests {
             ],
         );
         assert_eq!((failed, out.lines().count()), (0, 2), "{out}");
+    }
+
+    /// A selection that names no case fails the run instead of passing with nothing run.
+    #[test]
+    fn a_selection_matching_no_case_is_refused() {
+        let suite = suite("unmatched");
+        let refused = run_suite(&suite, &["tests::no_such_case".into()], &mut Vec::new());
+        fs::remove_dir_all(&suite.package).unwrap();
+        assert_eq!(
+            refused,
+            Err(r#"["tests::no_such_case"] selects no case of acyclic-test-runner"#.into())
+        );
     }
 }
