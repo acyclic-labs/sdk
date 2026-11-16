@@ -13,11 +13,13 @@ export function workspacePackages(metadata) {
   return workspaceDefaults(metadata).map(pkg => pkg.name);
 }
 
-/** Every default member that exposes a `wasm` feature, so its browser build is checked too. */
+/** Every workspace member that exposes a `wasm` feature, so its browser build is checked too. */
 export function wasmPackages(metadata) {
-  return workspaceDefaults(metadata)
-    .filter(pkg => Object.hasOwn(pkg.features, "wasm"))
-    .map(pkg => pkg.name);
+  const members = new Set(metadata.workspace_members);
+  return metadata.packages
+    .filter(pkg => members.has(pkg.id) && Object.hasOwn(pkg.features, "wasm"))
+    .map(pkg => pkg.name)
+    .sort();
 }
 
 export async function checkCrateTests(packages, workers, target, run, selection = ["--tests"]) {
