@@ -1,6 +1,6 @@
 //! Host-owned credential binding shared by all HTTP providers.
 use super::HttpTransport;
-use crate::Result;
+use acyclic_harness_core::Result;
 use acyclic_stream::ProviderPlatform;
 use std::sync::Arc;
 /// Authentication header selected by the protocol, independently of secret storage.
@@ -95,7 +95,7 @@ impl CredentialBinding {
     /// Accepts only host-protected authority; never exposes a local key.
     pub fn protected_transport(self) -> Result<Arc<dyn HttpTransport>> {
         if self.key.is_some() || self.scope.is_none() {
-            return Err(crate::Error::Invalid(
+            return Err(acyclic_harness_core::Error::Invalid(
                 "credential binding exposed a value; recovery: use a protected host binding".into(),
             ));
         }

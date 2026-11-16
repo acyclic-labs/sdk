@@ -116,7 +116,7 @@ impl WasmMachinesWorkspace {
 
             }
             ("io.daytona", "machines") => {
-                use acyclic_harness_core::http::{BrowserCredentialResolver, BrowserTransport};
+                use crate::http::{BrowserCredentialResolver, BrowserTransport};
                 use acyclic_machines_daytona::{DaytonaConfig, DaytonaProvider};
                 let reference = js_sys::Reflect::get(&source, &"secretReference".into())?;
                 let reference: acyclic_auth::secrets::SecretRef = serde_wasm_bindgen::from_value(reference).map_err(|_| super::js_error(crate::Error::Invalid("Daytona requires a canonical SecretRef object; recovery: retain the protected sandbox binding".into())))?;

@@ -1,5 +1,5 @@
 //! Shared credential-free HTTP exchange boundary for model and machine adapters.
-use crate::Result;
+use acyclic_harness_core::Result;
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, ProviderPlatform};
 use bytes::Bytes;
 use std::collections::BTreeMap;
@@ -74,15 +74,15 @@ pub trait HttpTransport: ProviderPlatform {
         {
             let time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| crate::Error::Invalid("HTTP wall clock unavailable".into()))?;
+                .map_err(|_| acyclic_harness_core::Error::Invalid("HTTP wall clock unavailable".into()))?;
             u64::try_from(time.as_millis())
-                .map_err(|_| crate::Error::Invalid("HTTP clock overflow".into()))
+                .map_err(|_| acyclic_harness_core::Error::Invalid("HTTP clock overflow".into()))
         }
         #[cfg(target_arch = "wasm32")]
         {
             let time = js_sys::Date::now();
             if !time.is_finite() || time < 0.0 {
-                return Err(crate::Error::Invalid("HTTP wall clock unavailable".into()));
+                return Err(acyclic_harness_core::Error::Invalid("HTTP wall clock unavailable".into()));
             }
             Ok(time as u64)
         }
@@ -96,10 +96,10 @@ pub trait HttpTransport: ProviderPlatform {
         &self,
         _: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), crate::Error>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
         work.remaining()?;
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
+        Err(acyclic_harness_core::Error::NativeBoundary {
+            code: acyclic_harness_core::wire::ErrorCode::Unsupported,
             reason: "HTTP transport has no native timer",
         })
     }
@@ -115,10 +115,10 @@ pub trait HttpTransport: ProviderPlatform {
         &'a self,
         _: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, crate::Error>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
         work.remaining()?;
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
+        Err(acyclic_harness_core::Error::NativeBoundary {
+            code: acyclic_harness_core::wire::ErrorCode::Unsupported,
             reason: "HTTP transport has no native producer",
         })
     }
@@ -130,8 +130,8 @@ pub use credentials::{
 };
 
 #[cfg(target_arch = "wasm32")]
-fn invalid(reason: impl Into<String>) -> crate::Error {
-    crate::Error::Invalid(reason.into())
+fn invalid(reason: impl Into<String>) -> acyclic_harness_core::Error {
+    acyclic_harness_core::Error::Invalid(reason.into())
 }
 #[cfg(target_arch = "wasm32")]
 /// Shared browser exchange implementation.

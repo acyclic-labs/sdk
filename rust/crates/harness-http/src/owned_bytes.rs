@@ -1,4 +1,4 @@
-use crate::Result;
+use acyclic_harness_core::Result;
 use acyclic_fs::{NativeAllocation, WorkCounters};
 use bytes::Bytes;
 
@@ -119,7 +119,7 @@ mod tests {
             let mut budget = acyclic_fs::performance::work_budget(100_000, 8_000_000);
             budget.peak_allocation_bytes = baseline + CAPACITY;
             let work = NativeMaterializationWork::new(budget, &CancellationToken::new())
-                .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+                .map_err(|(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work })?;
             let custody = work.claim(CAPACITY, 0, WorkCounters::UNCHARGED)?;
             let retired_at = Arc::new(AtomicU64::new(u64::MAX));
             let payload = Observed {
@@ -138,7 +138,7 @@ mod tests {
                 let error = owned(payload, custody).expect_err("control needs overlapping credit");
                 assert!(matches!(
                     error,
-                    crate::Error::NativeWork {
+                    acyclic_harness_core::Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(
                             acyclic_fs::WorkError::BudgetExceeded {
                                 counter: "peak_allocation_bytes",

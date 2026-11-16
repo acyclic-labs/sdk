@@ -3,7 +3,7 @@ use super::{
     AuthorizationScheme, BrowserTransport, CredentialBinding, CredentialResolver, CredentialSource,
     HttpTransport, invalid,
 };
-use crate::Result;
+use acyclic_harness_core::Result;
 use js_sys::{Function, Reflect, Uint8Array};
 use std::sync::Arc;
 use wasm_bindgen::{JsCast as _, JsValue};

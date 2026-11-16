@@ -1,6 +1,6 @@
 use super::invalid;
 use super::{HttpRequest, HttpResponse, HttpTransport};
-use crate::Result;
+use acyclic_harness_core::Result;
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
@@ -10,13 +10,8 @@ use web_sys::{
     AbortController, Headers, ReadableStreamDefaultReader, RequestCredentials, RequestInit,
     RequestRedirect, Response,
 };
-#[path = "browser_delay.rs"]
-mod timer;
-
 /// Monotonic coordinates in the current realm; unknown without `performance.now`.
-pub fn monotonic_now() -> Option<std::time::Duration> {
-    timer::monotonic_now()
-}
+pub use acyclic_harness_core::clock::monotonic_now;
 
 /// Browser HTTP with an explicitly owned fetch function.
 pub struct BrowserTransport(Function);
@@ -151,17 +146,17 @@ impl HttpTransport for BrowserTransport {
     }
 
     fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
-        Box::pin(timer::delay(duration))
+        Box::pin(acyclic_harness_core::clock::delay(duration))
     }
 
     fn now(&self) -> std::time::Duration {
-        timer::now()
+        acyclic_harness_core::clock::now()
     }
 }
 
 /// Retains a host refusal code without exposing arbitrary JavaScript error data.
-pub fn failure(cause: JsValue, message: &'static str) -> crate::Error {
-    use crate::{Error, wire::ErrorCode};
+pub fn failure(cause: JsValue, message: &'static str) -> acyclic_harness_core::Error {
+    use acyclic_harness_core::{Error, wire::ErrorCode};
     let received = Reflect::get(&cause, &JsValue::from_str("code"))
         .ok()
         .and_then(|value| value.as_f64());
@@ -189,8 +184,8 @@ pub fn failure(cause: JsValue, message: &'static str) -> crate::Error {
             custody: None,
         };
     }
-    crate::Error::ModelUnavailable {
-        failure: crate::ModelTransportFailure::Interrupted,
+    acyclic_harness_core::Error::ModelUnavailable {
+        failure: acyclic_harness_core::ModelTransportFailure::Interrupted,
         excerpt: message.into(),
     }
 }

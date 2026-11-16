@@ -18,7 +18,7 @@ fn check_retention(input: Vec<u8>, broken: bool, terminal: u8) {
     let mut eof = false;
     let source =
         futures::stream::iter(std::iter::once(Ok(bytes)).chain((terminal == 1).then(|| {
-            Err(crate::Error::Invalid(
+            Err(acyclic_harness_core::Error::Invalid(
                 "generated body source stopped".into(),
             ))
         })))
@@ -42,12 +42,12 @@ fn check_retention(input: Vec<u8>, broken: bool, terminal: u8) {
         0 => assert!(end.is_none()),
         1 => assert!(matches!(
             end,
-            Some(Err(crate::Error::Invalid(message)))
+            Some(Err(acyclic_harness_core::Error::Invalid(message)))
                 if message == "generated body source stopped"
         )),
         _ => assert_eq!(
             end.unwrap().unwrap_err().code(),
-            crate::wire::ErrorCode::Cancelled
+            acyclic_harness_core::wire::ErrorCode::Cancelled
         ),
     }
     assert!(futures::executor::block_on(body.next()).is_none());

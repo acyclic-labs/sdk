@@ -569,7 +569,7 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
 
     #[cfg(target_arch = "wasm32")]
     assert!(
-        crate::http::browser::monotonic_now().is_some(),
+        crate::clock::monotonic_now().is_some(),
         "the browser test runtime supplies a monotonic clock"
     );
 

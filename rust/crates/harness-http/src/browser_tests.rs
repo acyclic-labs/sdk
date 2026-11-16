@@ -85,7 +85,7 @@ impl Drop for TimerFixture {
 async fn deadline_timers_are_cancelled_and_long_waits_never_overflow() {
     for millis in [1, i32::MAX as u64, i32::MAX as u64 + 1, u32::MAX as u64] {
         let fixture = TimerFixture(timer_fixture("working"));
-        let mut delay = Box::pin(timer::delay(std::time::Duration::from_millis(millis)));
+        let mut delay = Box::pin(acyclic_harness_core::clock::delay(std::time::Duration::from_millis(millis)));
         let mut elapsed = false;
         while !elapsed {
             assert!(futures::poll!(&mut delay).is_pending());
@@ -114,7 +114,7 @@ async fn deadline_timers_are_cancelled_and_long_waits_never_overflow() {
         assert_eq!(fixture.call("active").as_f64(), Some(0.0));
     }
     let fixture = TimerFixture(timer_fixture("working"));
-    let mut delay = Box::pin(timer::delay(std::time::Duration::from_secs(3600)));
+    let mut delay = Box::pin(acyclic_harness_core::clock::delay(std::time::Duration::from_secs(3600)));
     assert!(futures::poll!(&mut delay).is_pending());
     drop(delay);
     assert_eq!(fixture.call("active").as_f64(), Some(0.0));
@@ -129,8 +129,8 @@ async fn deadline_timer_registration_failure_is_terminal() {
     for mode in ["missing", "reject"] {
         let fixture = TimerFixture(timer_fixture(mode));
         assert!(matches!(
-            timer::delay(std::time::Duration::from_millis(1)).await,
-            Err(crate::Error::Invalid(_))
+            acyclic_harness_core::clock::delay(std::time::Duration::from_millis(1)).await,
+            Err(acyclic_harness_core::Error::Invalid(_))
         ));
         assert_eq!(fixture.call("active").as_f64(), Some(0.0));
     }
@@ -159,7 +159,7 @@ fn request() -> HttpRequest {
     }
 }
 
-fn js_error(error: crate::Error) -> JsValue {
+fn js_error(error: acyclic_harness_core::Error) -> JsValue {
     JsValue::from_str(&error.to_string())
 }
 

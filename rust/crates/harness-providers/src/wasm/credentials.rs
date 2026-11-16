@@ -2,7 +2,7 @@
 use crate::{AuthorizationScheme, CredentialResolver, CredentialSource, HttpTransport};
 #[cfg(test)]
 use acyclic_harness_core::Result;
-pub(super) use acyclic_harness_core::http::BrowserCredentialResolver as Resolver;
+pub(super) use acyclic_harness_http::BrowserCredentialResolver as Resolver;
 #[cfg(test)]
 use js_sys::{Function, Reflect, Uint8Array};
 #[cfg(test)]

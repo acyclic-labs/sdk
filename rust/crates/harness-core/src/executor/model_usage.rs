@@ -554,7 +554,7 @@ impl CallClock {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            self.started = crate::http::browser::monotonic_now();
+            self.started = crate::clock::monotonic_now();
         }
     }
 
@@ -596,7 +596,7 @@ impl CallClock {
         #[cfg(target_arch = "wasm32")]
         {
             self.started
-                .zip(crate::http::browser::monotonic_now())
+                .zip(crate::clock::monotonic_now())
                 .and_then(|(started, now)| now.checked_sub(started))
                 .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok())
         }

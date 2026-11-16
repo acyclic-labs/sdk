@@ -1,5 +1,5 @@
 //! Native HTTP source classification, independent of request replay policy.
-use crate::wire::ErrorCode;
+use acyclic_harness_core::wire::ErrorCode;
 
 /// Classify an actual transport cause. Only positively identified connection
 /// loss, timeout or temporary HTTP/2 resets are unavailable. TLS admission and

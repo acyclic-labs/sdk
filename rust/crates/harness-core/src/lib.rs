@@ -34,6 +34,9 @@ pub use heap_layout::HeapLayout;
 
 pub mod agent;
 pub mod client_files;
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod clock;
 #[doc(hidden)]
 pub mod command_request;
 #[cfg(not(target_arch = "wasm32"))]
@@ -68,8 +71,6 @@ pub mod model;
 pub mod native_environment;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_host;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod native_settings;
 mod obs;
 /// Cached OIDC verification and admission through the existing workload authority.
 pub mod plugins;
@@ -203,5 +204,3 @@ pub mod build_metadata;
 /// File-driven, composable approval policy data and the tool admission gate.
 pub mod approvals;
 
-/// Shared HTTP and host-protected credential boundary.
-pub mod http;

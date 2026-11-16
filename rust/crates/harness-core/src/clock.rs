@@ -30,8 +30,8 @@ pub(super) async fn delay(duration: std::time::Duration) -> crate::Result<()> {
                 .ok()
         };
         let (Some(set), Some(clear)) = (function("setTimeout"), function("clearTimeout")) else {
-            return Err(super::super::invalid(
-                "browser platform timer is unavailable",
+            return Err(crate::Error::Invalid(
+                "browser platform timer is unavailable".into(),
             ));
         };
         let mut handle = JsValue::UNDEFINED;
@@ -52,7 +52,7 @@ pub(super) async fn delay(duration: std::time::Duration) -> crate::Result<()> {
         };
         let elapsed = JsFuture::from(promise).await;
         drop(timeout);
-        elapsed.map_err(|_| super::super::invalid("browser platform timer registration failed"))?;
+        elapsed.map_err(|_| crate::Error::Invalid("browser platform timer registration failed".into()))?;
         remaining -= u128::from(interval);
     }
     Ok(())

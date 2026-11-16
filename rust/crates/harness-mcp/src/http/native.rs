@@ -27,7 +27,7 @@ fn exchange_failure(
 
 fn transport_failure(operation: OperationId, read: bool, error: reqwest::Error) -> Error {
     let code = if read {
-        acyclic_harness_core::http::transport_failure(&error).0
+        acyclic_harness_http::transport_failure(&error).0
     } else {
         acyclic_harness_core::wire::ErrorCode::Indeterminate
     };
