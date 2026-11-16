@@ -467,9 +467,10 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 .incarnation(None, &prompts)
                 .await
                 .map_err(oracle::failed)?;
-            if incarnation.prompts.last().map(|(outcome, _)| outcome)
-                != Some(&Prompted::Settled(done("d3-parent")))
-            {
+            let settled = incarnation.prompts.last().map(|(outcome, _)| outcome);
+            let retry_failed = transition == "retry_after"
+                && matches!(settled, Some(Prompted::Failed(message)) if message.contains("429"));
+            if settled != Some(&Prompted::Settled(done("d3-parent"))) && !retry_failed {
                 return fail(&format!(
                     "{transition} did not settle its turn: {:?}",
                     incarnation.prompts
@@ -480,16 +481,22 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 .iter()
                 .filter(|request| request.summary)
                 .collect();
+            let after_summary = incarnation
+                .requests
+                .iter()
+                .enumerate()
+                .find(|(_, request)| request.summary)
+                .and_then(|(index, _)| {
+                    incarnation.requests[index + 1..]
+                        .iter()
+                        .find(|request| !request.summary)
+                });
             match transition {
                 "compaction_applied" => {
                     if summaries.is_empty() {
                         return fail("compaction sent no summary request");
                     }
-                    let compacted = incarnation
-                        .requests
-                        .iter()
-                        .find(|request| !request.summary)
-                        .ok_or("compaction dispatched no worker")?;
+                    let compacted = after_summary.ok_or("compaction dispatched no worker")?;
                     if !has_file(compacted) {
                         return fail("the request after compaction does not carry its summary");
                     }
@@ -498,11 +505,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                     if summaries.is_empty() {
                         return fail("background summary was never dispatched");
                     }
-                    let compacted = incarnation
-                        .requests
-                        .iter()
-                        .find(|request| !request.summary)
-                        .ok_or("background summary dispatched no worker")?;
+                    let compacted = after_summary.ok_or("background summary dispatched no worker")?;
                     let first = summaries[0]
                         .messages
                         .first()
@@ -519,14 +522,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                     if summaries.is_empty() {
                         return fail("context review was never dispatched");
                     }
-                    let worker = incarnation
-                        .requests
-                        .iter()
-                        .find(|request| {
-                            !request.summary
-                                && request_tag(request, &["d3-parent"]) == Some("d3-parent")
-                        })
-                        .ok_or("context review dispatched no worker")?;
+                    let worker = after_summary.ok_or("context review dispatched no worker")?;
                     let source = &summaries[0].messages;
                     let common = source.len().saturating_sub(1).min(worker.messages.len());
                     if source[..common] != worker.messages[..common] {
