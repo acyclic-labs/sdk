@@ -5601,7 +5601,7 @@ async fn file_stop_closes_the_whole_subtree() -> Result<()> {
     };
     assert!(!agents.state(&child).await.map_err(agent)?.closed);
     let conversation = Conversation::open(connection.clone());
-    let mut events = conversation.connection.supervision_own().await?;
+    let mut events = conversation.connection().supervision_own().await?;
     conversation
         .publish_files(
             FileRoot::Private {},
