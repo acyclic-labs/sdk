@@ -31,13 +31,19 @@ fn syntax_bundle() -> &'static SyntaxBundle {
             &std::fs::read(corpus.join("default.themedump")).unwrap()[..],
         )
         .expect("default.themedump must decode as ThemeSet");
-        let newlines =
-            syntect::dumps::from_uncompressed_data(&std::fs::read(corpus.join("default_newlines.packdump")).unwrap())
-                .expect("default_newlines.packdump must decode as SyntaxSet");
-        let nonewlines =
-            syntect::dumps::from_uncompressed_data(&std::fs::read(corpus.join("default_nonewlines.packdump")).unwrap())
-                .expect("default_nonewlines.packdump must decode as SyntaxSet");
-        SyntaxBundle { themes, newlines, nonewlines }
+        let newlines = syntect::dumps::from_uncompressed_data(
+            &std::fs::read(corpus.join("default_newlines.packdump")).unwrap(),
+        )
+        .expect("default_newlines.packdump must decode as SyntaxSet");
+        let nonewlines = syntect::dumps::from_uncompressed_data(
+            &std::fs::read(corpus.join("default_nonewlines.packdump")).unwrap(),
+        )
+        .expect("default_nonewlines.packdump must decode as SyntaxSet");
+        SyntaxBundle {
+            themes,
+            newlines,
+            nonewlines,
+        }
     })
 }
 
@@ -46,9 +52,7 @@ fn syntax_total() -> usize {
     bundle.newlines.syntaxes().len() + bundle.nonewlines.syntaxes().len()
 }
 
-fn highlight_syntax_partition(
-    assigned: Vec<usize>,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn highlight_syntax_partition(assigned: Vec<usize>) -> Result<(), Box<dyn std::error::Error>> {
     use syntect::easy::HighlightLines;
 
     let bundle = syntax_bundle();
