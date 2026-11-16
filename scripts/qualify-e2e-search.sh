@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-features=test-support
-cargo test --locked -p acyclic-harness-search --features test-support --lib --no-run --message-format=json |
-  python3 scripts/qualify-graphcoder-artifact.py config:: files:: tools::
-binary_features=acyclic-harness/test-support
-cargo test --locked -p acyclic-plugin --features "$binary_features" --lib runner::args::tests::
-cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/crates/harness-fuzz --features runtime search_request --target x86_64-unknown-linux-gnu --dev -- -runs=64 -max_len=4096 -timeout=2

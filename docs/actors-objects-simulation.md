@@ -74,14 +74,7 @@ Historical targets are the shared scheduling-shard composition fix
 `fe83ab67b5c` (GC-242; pre-fix `88ea479eabc9f73daaebc248cfdac5026b2a1720`) and
 the copied custody fix `829464b4df7` (no earlier revision compiles
 `acyclic-stream`, so its control reverts exactly that fix's `local.rs` hunk on
-the source). `bash scripts/qualify-actors-history.sh` runs each scenario on the
-fixed source, then on the pre-fix product with only the test module overlaid,
-and requires an executed failing test that names its seed; compiler failures
-and zero-test selections are rejected, and the output names both the product
-and the overlay revision. Both controls fail at seed 0 (`DST actors-composition
-failed at seed 0; reproduce with DST_SEED=0`: "composition changed the actor
-publication" on `88ea479e`; `DST actors-custody failed at seed 0` with the
-custody hunk reverted) and pass on the fixed source.
+the source).
 
 Seed selection, replay and failure reporting come from the shared core's
 `testing::sweep`. The drivers' small boundary adapters only release Schedule's
