@@ -517,8 +517,7 @@ fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
                 if !matches!(
                     incarnation.prompts.first(),
                     Some((Prompted::Settled(text), _)) if *text == done("root")
-                ) || mode == "reopened"
-                {
+                ) {
                     return Err(format!(
                         "{event}/{parent} root did not settle: {:?}",
                         incarnation.prompts
