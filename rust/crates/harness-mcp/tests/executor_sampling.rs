@@ -1,4 +1,6 @@
 //! MCP sampling over the ordinary executor and model boundary.
+acyclic_test_support::counting_allocator!();
+
 use acyclic_harness_core::{
     Capabilities, Error, OperationId, Result,
     context::{ContextPipeline, ModelContextCapacity},
