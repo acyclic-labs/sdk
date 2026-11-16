@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// choosing its site in [`HookEvent::site`] does not compile, and an event
 /// with a site runs wherever that site runs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum HookSite {
+pub enum HookSite {
     /// Model command preparation, before the first model request of a turn.
     Prompt,
     /// After a tool call is admitted and before it is dispatched.

@@ -59,12 +59,16 @@ pub enum McpTransport {
     },
 }
 
+/// The host declaration dialect that admitted a server.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Dialect {
+    /// Claude-style `mcpServers` declarations.
     Claude,
+    /// Codex-style `mcp_servers` declarations.
     Codex,
 }
 
+/// One raw server declaration before dialect normalization.
 #[derive(Default, Deserialize, acyclic_harness_core::HeapLayout)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImportedServer {
