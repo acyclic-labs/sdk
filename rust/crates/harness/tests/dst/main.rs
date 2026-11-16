@@ -22,6 +22,7 @@ mod coverage;
 mod digest;
 mod driver;
 mod family;
+mod filesystem;
 mod flushes;
 mod grants;
 mod oracle;
