@@ -623,15 +623,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cancellation,
             )?;
             let mut metadata = FileMetadata::default();
-            for attribute in attributes.iter().filter(|attribute| attribute.path == *name) {
+            for attribute in attributes
+                .iter()
+                .filter(|attribute| attribute.path == *name)
+            {
                 metadata = super::attributes::change_attribute(
                     &volume,
                     metadata,
                     &attribute.name,
-                    Some((
-                        attribute.value.as_ref(),
-                        NamedAttributeWriteMode::Create,
-                    )),
+                    Some((attribute.value.as_ref(), NamedAttributeWriteMode::Create)),
                     accounting,
                     cancellation,
                 )
