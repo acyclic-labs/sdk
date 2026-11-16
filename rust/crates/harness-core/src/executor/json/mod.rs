@@ -59,6 +59,12 @@ pub use identity::{
 /// The existing producer depth contract, also used by saved-record readers
 /// and literal model payloads.
 pub const RECORD_MAXIMUM_DEPTH: u32 = 256;
+/// How much deeper a selected model context nests a recorded tool call's
+/// members than the saved record does. The record nests metadata one level
+/// down; the context, its messages, the message and its tool-call part nest it
+/// four. Admission subtracts this from [`RECORD_MAXIMUM_DEPTH`], so every
+/// admitted record also projects and replays within the decoder's depth.
+pub const PROJECTION_NESTING_DEPTH: u32 = 3;
 mod diagnostics;
 pub(crate) use diagnostics::audited_serde_diagnostic_bytes;
 pub(crate) use diagnostics::json_typed_diagnostic_source_owned_bytes;
