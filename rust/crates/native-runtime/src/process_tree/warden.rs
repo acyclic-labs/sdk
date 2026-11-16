@@ -88,6 +88,12 @@ pub(super) fn enter(
         }
     };
     sys::close(admission);
+    // A warden forked from a multithreaded owner holds every descriptor the
+    // owner had, including other trees' pipe ends. Release them before the
+    // group move, so no other tree's peer outlives that tree's program
+    // because this one is still starting.
+    #[cfg(target_vendor = "apple")]
+    close_except([directory, record, watch, admit], warden);
     #[cfg(target_os = "linux")]
     let left = leave_group(home);
     #[cfg(target_vendor = "apple")]
@@ -574,7 +580,7 @@ pub(super) fn close_except<const N: usize>(mut keep: [Fd; N], _warden: Pid) {
 }
 
 #[cfg(target_vendor = "apple")]
-fn close_except(keep: [Fd; 3], warden: Pid) {
+fn close_except<const N: usize>(keep: [Fd; N], warden: Pid) {
     // SAFETY: plain fields; all-zero is a valid value.
     let mut listed: [libc::proc_fdinfo; 256] = unsafe { core::mem::zeroed() };
     let Ok(bytes) = libc::c_int::try_from(core::mem::size_of_val(&listed)) else {

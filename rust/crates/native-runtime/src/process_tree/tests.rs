@@ -175,8 +175,13 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
     let input = vec![b'x'; 1 << 20];
     let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
     meter.blocked_write = Some(Box::new(move || {
-        // SAFETY: the unreaped direct child reserves this pid.
-        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) }, 0);
+        // The program leads no group: the tree's group, which the unreaped
+        // warden's PID reserves, holds the program and never the warden.
+        // SAFETY: a signal to the tree's own process group.
+        assert_eq!(
+            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) },
+            0
+        );
         super::platform::await_exiting_id(pid, None, &mut None).expect("observe the killed child");
     }));
     let failure = tree

@@ -50,7 +50,13 @@ fn child() -> io::Result<()> {
         output.flush()?;
         std::process::exit(124);
     }
-    writeln!(std::io::stdout(), "CHILD={}", std::process::id())?;
+    // A Unix tree's direct child is its warden, the program's parent; a
+    // Windows tree's direct child is the program itself.
+    #[cfg(unix)]
+    let launcher = std::os::unix::process::parent_id();
+    #[cfg(windows)]
+    let launcher = std::process::id();
+    writeln!(std::io::stdout(), "CHILD={launcher}")?;
     std::io::stdout().flush()?;
     std::io::stderr().write_all(&[0, 255, 7])?;
     if mode == "phases" {

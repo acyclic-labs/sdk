@@ -774,14 +774,28 @@ fn cancelled_custodied_tree_leaves_no_descendant_outside_its_group() {
     assert_eq!(fs::read_dir(&processes).expect("records").count(), 0);
 }
 
-/// Negative control: the same cancellation without custody leaves the
-/// escaped descendant running.
+/// Negative control: the same escape from a plain process group outlives a
+/// kill of that group, the whole of a tree's cancellation without a warden.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_cancelled_uncustodied_tree_leaves_its_escaped_descendant() {
+fn a_killed_plain_group_leaves_its_escaped_descendant() {
+    use std::os::unix::process::CommandExt as _;
     let root = tempfile::tempdir().expect("root");
-    let tree = ProcessTree::spawn(&mut escaping_program(root.path())).expect("spawn");
-    let escaped = cancel_after_escape(tree);
+    let mut child = escaping_program(root.path())
+        .to_std()
+        .expect("plain command")
+        .process_group(0)
+        .spawn()
+        .expect("spawn");
+    let escaped = Watch::new(
+        read_published_pid(child.stdout.take().expect("escape publication pipe"))
+            .expect("original escaped descendant publication"),
+    )
+    .expect("running descendant");
+    let group = libc::pid_t::try_from(child.id()).expect("group");
+    // SAFETY: a signal to the group this child leads and its parent reaps.
+    assert_eq!(unsafe { libc::kill(-group, libc::SIGKILL) }, 0);
+    child.wait().expect("reap group leader");
     let survived = !escaped.exited();
     escaped.kill();
     assert!(survived, "the oracle cannot observe an escaped descendant");

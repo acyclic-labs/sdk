@@ -281,28 +281,47 @@ mod unix {
             #[cfg(not(target_os = "linux"))]
             {
                 use std::os::fd::AsRawFd as _;
-                use std::os::unix::process::CommandExt as _;
-                let boundary = command.boundary.take();
-                #[cfg(target_os = "macos")]
-                if let Some(boundary) = &boundary {
-                    boundary.validate_command(command)?;
-                }
-                let mut native = command.to_std()?;
-                let descriptor = directory.as_raw_fd();
-                let owner = libc::pid_t::try_from(std::process::id())
-                    .map_err(|_| io::ErrorKind::InvalidInput)?;
-                // SAFETY: the warden makes only async-signal-safe calls, and
-                // the custody directory stays open while the spawn runs.
-                unsafe {
-                    native.pre_exec(move || {
-                        super::super::warden::enter(descriptor, owner).map_err(Into::into)
-                    });
-                }
-                if let Some(boundary) = boundary {
-                    boundary.install(&mut native, command.unix.arg0.as_deref())?;
-                }
-                super::super::platform::spawn_controlled(&mut native, meter, retained)
+                Self::spawn_warded(command, directory.as_raw_fd(), meter, retained)
             }
+        }
+
+        /// Starts `command` with a warden as its tree's direct child, which
+        /// this owner forks. The warden records the tree in `directory`, or
+        /// records nothing when it is negative, and kills the whole tree when
+        /// this owner exits however it exits, so no tree outlives its owner
+        /// (Linux: the runner's warden does the same for every tree).
+        #[cfg(not(target_os = "linux"))]
+        pub(in crate::process_tree) fn spawn_warded(
+            command: &mut super::super::ProcessCommand,
+            directory: std::os::fd::RawFd,
+            meter: Option<&dyn crate::NativeReadMeter>,
+            retained: &mut Option<super::super::ProcessTree>,
+        ) -> io::Result<()> {
+            use std::os::unix::process::CommandExt as _;
+            let boundary = command.boundary.take();
+            #[cfg(target_os = "macos")]
+            if let Some(boundary) = &boundary {
+                boundary.validate_command(command)?;
+            }
+            if boundary.is_some() {
+                // The boundary installs its held directory in the child.
+                // Do not resolve the admitted path a second time in std.
+                command.cwd = None;
+            }
+            let mut native = command.to_std()?;
+            let owner = libc::pid_t::try_from(std::process::id())
+                .map_err(|_| io::ErrorKind::InvalidInput)?;
+            // SAFETY: the warden makes only async-signal-safe calls, and a
+            // custody directory stays open while the spawn runs.
+            unsafe {
+                native.pre_exec(move || {
+                    super::super::warden::enter(directory, owner).map_err(Into::into)
+                });
+            }
+            if let Some(boundary) = boundary {
+                boundary.install(&mut native, command.unix.arg0.as_deref())?;
+            }
+            super::super::platform::spawn_controlled(&mut native, meter, retained)
         }
     }
 
