@@ -127,16 +127,29 @@ fn reference(target: Family, provider: &str, records: &[Value]) -> Value {
             };
         inputs.push(serde_json::from_str::<Value>(stored.as_str().unwrap()).unwrap());
     }
-    let field = match target {
-        Family::Responses => "input",
-        Family::Gemini => "contents",
-        _ => "messages",
-    };
     let mut root = json!({"model":"target-model"});
     root.as_object_mut()
         .unwrap()
-        .insert(field.into(), Value::Array(inputs));
+        .insert(field(target).into(), Value::Array(inputs));
     root
+}
+
+fn field(target: Family) -> &'static str {
+    match target {
+        Family::Responses => "input",
+        Family::Gemini => "contents",
+        _ => "messages",
+    }
+}
+
+/// One schedule branch: its reopened records, then per target the rendered
+/// header and elements so far (without the tail) and the reference value.
+#[derive(Clone)]
+struct Branch {
+    items: Vec<WireItem>,
+    bodies: Vec<Vec<u8>>,
+    expected: Vec<Value>,
+    appended: bool,
 }
 
 proptest! {
@@ -153,36 +166,61 @@ proptest! {
         let targets: Vec<_> = FAMILIES.into_iter().flat_map(|family|
             ["producing-provider", "other-provider"].map(move |provider|
                 (family, provider, header_for(family, provider)))).collect();
-        let empty: Vec<_> = targets.iter().map(|(_, _, header)| rendered(header, &[])).collect();
-        let expected: Vec<_> = targets.iter().map(|(family, provider, _)| reference(*family, provider, &[])).collect();
+        // A complete render is exactly the header, each record's element bytes
+        // in append order and the tail, so no append rewrote an earlier
+        // segment, and it matches the reference. It runs once per branch
+        // state that would otherwise go unchecked, keeping the schedule linear.
+        let complete = |branch: &Branch| -> Result<(), TestCaseError> {
+            for ((_, _, header), (body, expected)) in targets.iter().zip(branch.bodies.iter().zip(&branch.expected)) {
+                let out = rendered(header, &branch.items);
+                prop_assert_eq!(out.strip_suffix(closing.bytes()), Some(&body[..]),
+                    "append changed an earlier segment");
+                prop_assert_eq!(&serde_json::from_slice::<Value>(&out).unwrap(), expected,
+                    "wire output differs from persisted reference");
+            }
+            Ok(())
+        };
+        let empty = Branch {
+            items: Vec::new(),
+            bodies: targets.iter().map(|(_, _, header)| header.bytes().to_vec()).collect(),
+            expected: targets.iter().map(|(family, provider, _)| reference(*family, provider, &[])).collect(),
+            appended: true,
+        };
         // A fork retains the independently checked semantic history and exact
-        // output of its parent. Only the new persisted record extends the oracle;
-        // every append still reopens and checks the entire rendered branch.
-        let mut branches = [(Vec::new(), empty.clone(), expected.clone()), (Vec::new(), empty, expected)];
+        // output of its parent. Each append renders only its new record, once
+        // per target, and checks it against the reference.
+        let mut branches = [empty.clone(), empty];
         for (family, kind, fork, child, other_provider, text) in schedule {
             let [parent, child_branch] = &mut branches;
-            if fork { *child_branch = parent.clone(); }
-            let (branch, previous, expected) = if child { child_branch } else { parent };
+            if fork {
+                if child_branch.appended { complete(&*child_branch)?; }
+                *child_branch = parent.clone();
+                child_branch.appended = false;
+            }
+            let branch = if child { child_branch } else { parent };
+            branch.appended = true;
             let kind = match kind { 0 => ItemKind::Message, 1 => ItemKind::Reasoning, _ => ItemKind::GuardedMessage };
-            branch.push(item_for(family, kind, &text, if other_provider { "other-provider" } else { "producing-provider" }));
+            let item = item_for(family, kind, &text, if other_provider { "other-provider" } else { "producing-provider" });
             // Serialization is the actual persisted representation. Reopening
             // validates the raw bytes again without normalizing them.
-            let stored = serde_json::to_vec(branch).unwrap();
-            let reopened: Vec<WireItem> = serde_json::from_slice(&stored).unwrap();
-            let records: Vec<Value> = serde_json::from_slice(&stored).unwrap();
-            let appended = std::slice::from_ref(records.last().unwrap());
-            for (((target, provider, header), previous), expected) in targets.iter().zip(previous).zip(expected) {
-                let field = match target { Family::Responses => "input", Family::Gemini => "contents", _ => "messages" };
-                let added = reference(*target, provider, appended);
-                expected[field].as_array_mut().unwrap().extend(added[field].as_array().unwrap().iter().cloned());
-                let out = rendered(header, &reopened);
-                prop_assert_eq!(&serde_json::from_slice::<Value>(&out).unwrap(), &*expected,
+            let stored = serde_json::to_vec(&item).unwrap();
+            let reopened: WireItem = serde_json::from_slice(&stored).unwrap();
+            let appended = [serde_json::from_slice::<Value>(&stored).unwrap()];
+            for (((target, provider, header), body), expected) in targets.iter().zip(&mut branch.bodies).zip(&mut branch.expected) {
+                let single = rendered(header, std::slice::from_ref(&reopened));
+                let added = reference(*target, provider, &appended);
+                prop_assert_eq!(&serde_json::from_slice::<Value>(&single).unwrap(), &added,
                     "wire output differs from persisted reference");
-                let prefix = previous.get(..previous.len() - closing.bytes().len()).unwrap();
-                prop_assert!(out.starts_with(prefix), "append changed an earlier segment");
-                *previous = out;
+                let element = single.get(header.bytes().len()..single.len() - closing.bytes().len()).unwrap();
+                if !element.is_empty() {
+                    if body.len() > header.bytes().len() { body.push(b','); }
+                    body.extend_from_slice(element);
+                }
+                expected[field(*target)].as_array_mut().unwrap().extend(added[field(*target)].as_array().unwrap().iter().cloned());
             }
+            branch.items.push(reopened);
         }
+        for branch in &branches { complete(branch)?; }
     }
 
     #[test]
@@ -249,9 +287,8 @@ proptest! {
                     let header = Header::new(changed, RENDERER_VERSION, &model_fields(), None).unwrap();
                     render(&header, [&reopened], &tail(), &mut output).unwrap();
                     let output: Value = serde_json::from_slice(&output).unwrap();
-                    let field = match target_family {Family::Responses => "input", Family::Gemini => "contents", _ => "messages"};
-                    prop_assert_eq!(output[field].as_array().unwrap().len(), 1);
-                    prop_assert_eq!(&output[field][0], &visible);
+                    prop_assert_eq!(output[field(target_family)].as_array().unwrap().len(), 1);
+                    prop_assert_eq!(&output[field(target_family)][0], &visible);
                 }
                 if target_family != family {
                     let changed = self::target(target_family, "producing-provider");
