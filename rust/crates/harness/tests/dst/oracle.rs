@@ -273,6 +273,7 @@ impl World {
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
             let directory = self.directory.path();
+            let limits = self.limits.clone();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
@@ -284,7 +285,7 @@ impl World {
                     )?
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
-                    .limits(self.limits.clone())
+                    .limits(limits)
                     .state_directory(directory.join("state"));
                     let harness = Arc::new(entry(LocalHarness::open(config)).await?);
                     for group in prompts {
