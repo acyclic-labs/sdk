@@ -544,6 +544,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-harness-hosting",
  "acyclic-harness-search",
  "acyclic-harness-tui",
  "acyclic-host-platform",
@@ -801,6 +802,29 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "which",
+]
+
+[[package]]
+name = "acyclic-harness-hosting"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
+ "acyclic-machines",
+ "acyclic-native-runtime",
+ "acyclic-objects",
+ "acyclic-stream",
+ "bytes",
+ "futures",
+ "prost",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
