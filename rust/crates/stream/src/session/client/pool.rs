@@ -166,6 +166,11 @@ impl Pool {
         Ok(())
     }
     pub(super) fn close_idle(&mut self) {
+        // The live-interest count and the close share one lock with every
+        // cursor increment and retirement, so a new interest cannot race a
+        // close and lose its link.
+        let lifetime = Arc::clone(&self.lifetime);
+        let _lifetime = lifetime.lock().unwrap_or_else(|error| error.into_inner());
         if self.active.load(Ordering::Acquire) == 0 {
             self.close_links();
         } else {

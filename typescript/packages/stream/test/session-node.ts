@@ -93,7 +93,7 @@ export class SessionNode {
   get outstandingFrames(): number { return this.connections.filter(connection => !connection.closed).reduce((sum, connection) => sum + StreamLimit.MAX_ITEMS - connection.credit.frames, 0); }
   receive(connection: Connection, input: wire.SessionFrame): void {
     this.spend();
-    if (connection.closed) throw new StreamError("unavailable", "test connection closed");
+    if (connection.closed) throw Object.assign(new StreamError("unavailable", "test connection closed"), { transient: true });
     this.received.push(input);
     switch (input.body.case) {
       case "hello":
