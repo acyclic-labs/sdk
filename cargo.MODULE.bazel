@@ -48,31 +48,53 @@ register_toolchains("//:windows_cc_toolchain_registration", "@rust_toolchains//:
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 
 crate.annotation(
-    crate = "rquickjs",
-    version = "=0.14.0",
-    deps = [
-        "@@//rust/vendor/rquickjs-core-0.14.0:rquickjs_core",
+    crate = "sha2",
+    rustc_flags = [
+        "-Copt-level=3",
     ],
 )
 
 crate.annotation(
-    crate = "ts-rs",
-    version = "=12.0.1",
-    proc_macro_deps = [
-        "@@//rust/vendor/ts-rs-macros-12.0.1:ts_rs_macros",
+    crate = "blake3",
+    rustc_flags = [
+        "-Copt-level=3",
     ],
+)
+
+crate.annotation(
+    crate = "loom",
+    rustc_flags = [
+        "-Copt-level=3",
+    ],
+)
+
+crate.annotation(
+    crate = "curve25519-dalek",
+    rustc_flags = [
+        "-Copt-level=3",
+    ],
+)
+
+crate.annotation(
+    crate = "rquickjs-core",
+    override_target_lib = "//rust/vendor/rquickjs-core-0.14.0:rquickjs_core",
+)
+
+crate.annotation(
+    crate = "ts-rs-macros",
+    override_target_proc_macro = "//rust/vendor/ts-rs-macros-12.0.1:ts_rs_macros",
 )
 
 crate.spec(
     package = "adler2",
     version = "=2.0.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "aead",
     version = "=0.6.1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
     ],
@@ -81,13 +103,13 @@ crate.spec(
 crate.spec(
     package = "aes",
     version = "=0.8.4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ahash",
     version = "=0.8.12",
-    default_features = True,
+    default_features = False,
     features = [
         "compile-time-rng",
         "const-random",
@@ -102,7 +124,7 @@ crate.spec(
 crate.spec(
     package = "aho-corasick",
     version = "=1.1.5",
-    default_features = True,
+    default_features = False,
     features = [
         "perf-literal",
         "std",
@@ -112,7 +134,7 @@ crate.spec(
 crate.spec(
     package = "alacritty_terminal",
     version = "=0.26.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "serde",
@@ -122,7 +144,7 @@ crate.spec(
 crate.spec(
     package = "allocator-api2",
     version = "=0.2.21",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -133,13 +155,13 @@ crate.spec(
 crate.spec(
     package = "ambient-authority",
     version = "=0.0.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "annotate-snippets",
     version = "=0.12.16",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -149,7 +171,7 @@ crate.spec(
 crate.spec(
     package = "anstream",
     version = "=1.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "auto",
         "default",
@@ -160,7 +182,7 @@ crate.spec(
 crate.spec(
     package = "anstyle",
     version = "=1.0.14",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -170,7 +192,7 @@ crate.spec(
 crate.spec(
     package = "anstyle-parse",
     version = "=1.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "utf8",
@@ -180,19 +202,19 @@ crate.spec(
 crate.spec(
     package = "anstyle-query",
     version = "=1.1.5",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "anstyle-wincon",
     version = "=3.0.11",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "anyhow",
     version = "=1.0.104",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -202,7 +224,7 @@ crate.spec(
 crate.spec(
     package = "approx",
     version = "=0.5.1",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -211,25 +233,25 @@ crate.spec(
 crate.spec(
     package = "arbitrary",
     version = "=1.5.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "arc-swap",
     version = "=1.9.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "arraydeque",
     version = "=0.5.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "arrayvec",
     version = "=0.7.8",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -239,31 +261,31 @@ crate.spec(
 crate.spec(
     package = "arrow-array",
     version = "=60.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "arrow-buffer",
     version = "=60.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "arrow-cmp",
     version = "=60.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "arrow-data",
     version = "=60.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "arrow-ipc",
     version = "=60.1.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -272,19 +294,19 @@ crate.spec(
 crate.spec(
     package = "arrow-schema",
     version = "=60.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "arrow-select",
     version = "=60.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "asn1-rs",
     version = "=0.7.2",
-    default_features = True,
+    default_features = False,
     features = [
         "datetime",
         "default",
@@ -296,31 +318,31 @@ crate.spec(
 crate.spec(
     package = "asn1-rs-derive",
     version = "=0.6.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "asn1-rs-impl",
     version = "=0.2.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "assoc",
     version = "=0.1.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "async-broadcast",
     version = "=0.7.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "async-lock",
     version = "=3.4.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -330,43 +352,43 @@ crate.spec(
 crate.spec(
     package = "async-stream",
     version = "=0.3.6",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "async-stream-impl",
     version = "=0.3.6",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "async-trait",
     version = "=0.1.92",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "atoi",
     version = "=3.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "atomic-waker",
     version = "=1.1.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "autocfg",
     version = "=1.5.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "axum",
     version = "=0.8.9",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "form",
@@ -385,7 +407,7 @@ crate.spec(
 crate.spec(
     package = "axum-core",
     version = "=0.5.6",
-    default_features = True,
+    default_features = False,
     features = [
         "tracing",
     ],
@@ -394,14 +416,14 @@ crate.spec(
 crate.spec(
     package = "base16ct",
     version = "=1.0.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "base64",
     version = "=0.22.1",
     package_alias = "base64-0_22_1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -413,7 +435,7 @@ crate.spec(
     package = "base64",
     version = "=0.23.1",
     package_alias = "base64-0_23_1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -425,7 +447,7 @@ crate.spec(
 crate.spec(
     package = "base64-simd",
     version = "=0.8.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -438,7 +460,7 @@ crate.spec(
     package = "bit-set",
     version = "=0.11.1",
     package_alias = "bit-set-0_11_1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -449,7 +471,7 @@ crate.spec(
     package = "bit-set",
     version = "=0.8.0",
     package_alias = "bit-set-0_8_0",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -459,7 +481,7 @@ crate.spec(
     package = "bit-vec",
     version = "=0.10.1",
     package_alias = "bit-vec-0_10_1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -470,7 +492,7 @@ crate.spec(
     package = "bit-vec",
     version = "=0.8.0",
     package_alias = "bit-vec-0_8_0",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -480,7 +502,7 @@ crate.spec(
     package = "bit-vec",
     version = "=0.9.1",
     package_alias = "bit-vec-0_9_1",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -490,7 +512,7 @@ crate.spec(
     package = "bitflags",
     version = "=1.3.2",
     package_alias = "bitflags-1_3_2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -500,7 +522,7 @@ crate.spec(
     package = "bitflags",
     version = "=2.13.2",
     package_alias = "bitflags-2_13_2",
-    default_features = True,
+    default_features = False,
     features = [
         "serde",
         "serde_core",
@@ -511,7 +533,7 @@ crate.spec(
 crate.spec(
     package = "bitvec",
     version = "=1.1.1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "atomic",
@@ -523,7 +545,7 @@ crate.spec(
 crate.spec(
     package = "blake3",
     version = "=1.8.7",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -534,20 +556,20 @@ crate.spec(
     package = "block-buffer",
     version = "=0.10.4",
     package_alias = "block-buffer-0_10_4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "block-buffer",
     version = "=0.12.1",
     package_alias = "block-buffer-0_12_1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "block-padding",
     version = "=0.3.3",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -556,7 +578,7 @@ crate.spec(
 crate.spec(
     package = "borrow-or-share",
     version = "=0.2.4",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
     ],
@@ -565,7 +587,7 @@ crate.spec(
 crate.spec(
     package = "borsh",
     version = "=1.8.1",
-    default_features = True,
+    default_features = False,
     features = [
         "borsh-derive",
         "derive",
@@ -576,7 +598,7 @@ crate.spec(
 crate.spec(
     package = "borsh-derive",
     version = "=1.8.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -585,7 +607,7 @@ crate.spec(
 crate.spec(
     package = "bumpalo",
     version = "=3.20.3",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -594,13 +616,13 @@ crate.spec(
 crate.spec(
     package = "by_address",
     version = "=1.2.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "bytecount",
     version = "=0.6.9",
-    default_features = True,
+    default_features = False,
     features = [
         "runtime-dispatch-simd",
     ],
@@ -609,7 +631,7 @@ crate.spec(
 crate.spec(
     package = "bytemuck",
     version = "=1.25.2",
-    default_features = True,
+    default_features = False,
     features = [
         "extern_crate_alloc",
     ],
@@ -618,7 +640,7 @@ crate.spec(
 crate.spec(
     package = "byteorder",
     version = "=1.5.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -628,7 +650,7 @@ crate.spec(
 crate.spec(
     package = "byteorder-lite",
     version = "=0.1.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -638,7 +660,7 @@ crate.spec(
 crate.spec(
     package = "bytes",
     version = "=1.12.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "serde",
@@ -649,13 +671,13 @@ crate.spec(
 crate.spec(
     package = "bytestring",
     version = "=1.5.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "camino",
     version = "=1.2.6",
-    default_features = True,
+    default_features = False,
     features = [
         "serde1",
     ],
@@ -664,7 +686,7 @@ crate.spec(
 crate.spec(
     package = "cap-fs-ext",
     version = "=4.0.3",
-    default_features = True,
+    default_features = False,
     features = [
         "cap-std",
         "default",
@@ -675,13 +697,13 @@ crate.spec(
 crate.spec(
     package = "cap-primitives",
     version = "=4.0.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "cap-std",
     version = "=4.0.3",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -690,13 +712,13 @@ crate.spec(
 crate.spec(
     package = "cargo-platform",
     version = "=0.3.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "cargo_metadata",
     version = "=0.23.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -705,13 +727,13 @@ crate.spec(
 crate.spec(
     package = "caseless",
     version = "=0.2.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "castaway",
     version = "=0.2.4",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
     ],
@@ -720,7 +742,7 @@ crate.spec(
 crate.spec(
     package = "cbc",
     version = "=0.1.2",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "block-padding",
@@ -731,7 +753,7 @@ crate.spec(
 crate.spec(
     package = "cc",
     version = "=1.10.0",
-    default_features = True,
+    default_features = False,
     features = [
         "parallel",
     ],
@@ -740,19 +762,19 @@ crate.spec(
 crate.spec(
     package = "cfg-if",
     version = "=1.0.5",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "cfg_aliases",
     version = "=0.2.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "chacha20",
     version = "=0.10.2",
-    default_features = True,
+    default_features = False,
     features = [
         "cipher",
         "rng",
@@ -763,7 +785,7 @@ crate.spec(
 crate.spec(
     package = "chacha20poly1305",
     version = "=0.11.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
     ],
@@ -772,7 +794,7 @@ crate.spec(
 crate.spec(
     package = "chrono",
     version = "=0.4.45",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "clock",
@@ -793,7 +815,7 @@ crate.spec(
     package = "cipher",
     version = "=0.4.4",
     package_alias = "cipher-0_4_4",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "block-padding",
@@ -804,7 +826,7 @@ crate.spec(
     package = "cipher",
     version = "=0.5.2",
     package_alias = "cipher-0_5_2",
-    default_features = True,
+    default_features = False,
     features = [
         "block-buffer",
         "stream-wrapper",
@@ -814,7 +836,7 @@ crate.spec(
 crate.spec(
     package = "clap",
     version = "=4.6.7",
-    default_features = True,
+    default_features = False,
     features = [
         "color",
         "default",
@@ -832,7 +854,7 @@ crate.spec(
 crate.spec(
     package = "clap_builder",
     version = "=4.6.7",
-    default_features = True,
+    default_features = False,
     features = [
         "color",
         "env",
@@ -848,7 +870,7 @@ crate.spec(
 crate.spec(
     package = "clap_derive",
     version = "=4.6.7",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -857,32 +879,32 @@ crate.spec(
 crate.spec(
     package = "clap_lex",
     version = "=1.1.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "cmov",
     version = "=0.5.4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "cobs",
     version = "=0.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "colorchoice",
     version = "=1.0.5",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "compact_str",
     version = "=0.10.0",
     package_alias = "compact_str-0_10_0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -893,7 +915,7 @@ crate.spec(
     package = "compact_str",
     version = "=0.9.1",
     package_alias = "compact_str-0_9_1",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -902,7 +924,7 @@ crate.spec(
 crate.spec(
     package = "compio-buf",
     version = "=0.8.3",
-    default_features = True,
+    default_features = False,
     features = [
         "bytes",
     ],
@@ -911,7 +933,7 @@ crate.spec(
 crate.spec(
     package = "compio-driver",
     version = "=0.12.5",
-    default_features = True,
+    default_features = False,
     features = [
         "io-uring",
         "linux-raw-sys",
@@ -921,19 +943,19 @@ crate.spec(
 crate.spec(
     package = "compio-log",
     version = "=0.2.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "compio-send-wrapper",
     version = "=0.7.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "concurrent-queue",
     version = "=2.5.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -943,37 +965,37 @@ crate.spec(
 crate.spec(
     package = "condtype",
     version = "=1.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "console",
     version = "=0.15.11",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "const-oid",
     version = "=0.10.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "const-random",
     version = "=0.1.18",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "const-random-macro",
     version = "=0.1.16",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "const-siphasher",
     version = "=1.0.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -983,7 +1005,7 @@ crate.spec(
 crate.spec(
     package = "constant_time_eq",
     version = "=0.4.2",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -993,20 +1015,20 @@ crate.spec(
     package = "convert_case",
     version = "=0.10.0",
     package_alias = "convert_case-0_10_0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "convert_case",
     version = "=0.12.0",
     package_alias = "convert_case-0_12_0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "core-foundation",
     version = "=0.10.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "link",
@@ -1016,7 +1038,7 @@ crate.spec(
 crate.spec(
     package = "core-foundation-sys",
     version = "=0.8.7",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "link",
@@ -1026,7 +1048,7 @@ crate.spec(
 crate.spec(
     package = "core_detect",
     version = "=1.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -1035,7 +1057,7 @@ crate.spec(
 crate.spec(
     package = "corosensei",
     version = "=0.3.4",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "default-stack",
@@ -1048,7 +1070,7 @@ crate.spec(
 crate.spec(
     package = "cow-utils",
     version = "=0.1.3",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -1057,27 +1079,27 @@ crate.spec(
 crate.spec(
     package = "cpubits",
     version = "=0.1.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "cpufeatures",
     version = "=0.2.17",
     package_alias = "cpufeatures-0_2_17",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "cpufeatures",
     version = "=0.3.1",
     package_alias = "cpufeatures-0_3_1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "crc-fast",
     version = "=1.10.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -1091,7 +1113,7 @@ crate.spec(
 crate.spec(
     package = "crc32fast",
     version = "=1.5.3",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -1100,7 +1122,7 @@ crate.spec(
 crate.spec(
     package = "crossbeam-queue",
     version = "=0.3.14",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -1111,7 +1133,7 @@ crate.spec(
 crate.spec(
     package = "crossbeam-utils",
     version = "=0.8.23",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -1120,7 +1142,7 @@ crate.spec(
 crate.spec(
     package = "crossterm",
     version = "=0.29.0",
-    default_features = True,
+    default_features = False,
     features = [
         "bracketed-paste",
         "default",
@@ -1134,13 +1156,13 @@ crate.spec(
 crate.spec(
     package = "crossterm_winapi",
     version = "=0.9.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "crunchy",
     version = "=0.2.4",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "limit_128",
@@ -1150,7 +1172,7 @@ crate.spec(
 crate.spec(
     package = "crypto-bigint",
     version = "=0.7.10",
-    default_features = True,
+    default_features = False,
     features = [
         "hybrid-array",
         "rand_core",
@@ -1163,7 +1185,7 @@ crate.spec(
     package = "crypto-common",
     version = "=0.1.7",
     package_alias = "crypto-common-0_1_7",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -1173,7 +1195,7 @@ crate.spec(
     package = "crypto-common",
     version = "=0.2.2",
     package_alias = "crypto-common-0_2_2",
-    default_features = True,
+    default_features = False,
     features = [
         "rand_core",
     ],
@@ -1182,13 +1204,13 @@ crate.spec(
 crate.spec(
     package = "ctor",
     version = "=1.0.13",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ctutils",
     version = "=0.4.8",
-    default_features = True,
+    default_features = False,
     features = [
         "subtle",
     ],
@@ -1197,13 +1219,13 @@ crate.spec(
 crate.spec(
     package = "cursor-icon",
     version = "=1.2.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "curve25519-dalek",
     version = "=5.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "digest",
         "precomputed-tables",
@@ -1214,13 +1236,13 @@ crate.spec(
 crate.spec(
     package = "curve25519-dalek-derive",
     version = "=0.1.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "darling",
     version = "=0.24.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "suggestions",
@@ -1230,7 +1252,7 @@ crate.spec(
 crate.spec(
     package = "darling_core",
     version = "=0.24.1",
-    default_features = True,
+    default_features = False,
     features = [
         "strsim",
         "suggestions",
@@ -1240,13 +1262,13 @@ crate.spec(
 crate.spec(
     package = "darling_macro",
     version = "=0.24.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "data-encoding",
     version = "=2.11.1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -1257,7 +1279,7 @@ crate.spec(
 crate.spec(
     package = "dbus",
     version = "=0.9.12",
-    default_features = True,
+    default_features = False,
     features = [
         "vendored",
     ],
@@ -1266,7 +1288,7 @@ crate.spec(
 crate.spec(
     package = "dbus-secret-service",
     version = "=4.1.0",
-    default_features = True,
+    default_features = False,
     features = [
         "crypto-rust",
         "vendored",
@@ -1276,7 +1298,7 @@ crate.spec(
 crate.spec(
     package = "defmt",
     version = "=1.1.1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
     ],
@@ -1285,19 +1307,19 @@ crate.spec(
 crate.spec(
     package = "defmt-macros",
     version = "=1.1.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "defmt-parser",
     version = "=1.0.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "der",
     version = "=0.8.3",
-    default_features = True,
+    default_features = False,
     features = [
         "oid",
         "zeroize",
@@ -1307,7 +1329,7 @@ crate.spec(
 crate.spec(
     package = "der-parser",
     version = "=10.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "bigint",
         "default",
@@ -1319,7 +1341,7 @@ crate.spec(
 crate.spec(
     package = "deranged",
     version = "=0.5.8",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -1328,7 +1350,7 @@ crate.spec(
 crate.spec(
     package = "derive_more",
     version = "=2.1.1",
-    default_features = True,
+    default_features = False,
     features = [
         "as_ref",
         "debug",
@@ -1345,7 +1367,7 @@ crate.spec(
 crate.spec(
     package = "derive_more-impl",
     version = "=2.1.1",
-    default_features = True,
+    default_features = False,
     features = [
         "as_ref",
         "debug",
@@ -1361,7 +1383,7 @@ crate.spec(
 crate.spec(
     package = "diffy",
     version = "=0.5.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -1371,7 +1393,7 @@ crate.spec(
     package = "digest",
     version = "=0.10.7",
     package_alias = "digest-0_10_7",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "block-buffer",
@@ -1387,7 +1409,7 @@ crate.spec(
     package = "digest",
     version = "=0.11.3",
     package_alias = "digest-0_11_3",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "block-api",
@@ -1400,19 +1422,19 @@ crate.spec(
 crate.spec(
     package = "dirs",
     version = "=7.0.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "dirs-sys",
     version = "=0.5.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "displaydoc",
     version = "=0.2.7",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -1422,7 +1444,7 @@ crate.spec(
 crate.spec(
     package = "divan",
     version = "=0.1.21",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "help",
@@ -1433,13 +1455,13 @@ crate.spec(
 crate.spec(
     package = "divan-macros",
     version = "=0.1.21",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "document-features",
     version = "=0.2.12",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -1448,7 +1470,7 @@ crate.spec(
 crate.spec(
     package = "dragonbox_ecma",
     version = "=0.1.12",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "ecma",
@@ -1458,13 +1480,13 @@ crate.spec(
 crate.spec(
     package = "dyn-clone",
     version = "=1.0.20",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ecdsa",
     version = "=0.17.0",
-    default_features = True,
+    default_features = False,
     features = [
         "algorithm",
         "der",
@@ -1475,13 +1497,13 @@ crate.spec(
 crate.spec(
     package = "ed25519",
     version = "=3.0.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ed25519-dalek",
     version = "=3.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "fast",
@@ -1492,7 +1514,7 @@ crate.spec(
 crate.spec(
     package = "either",
     version = "=1.19.0",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
         "use_std",
@@ -1502,7 +1524,7 @@ crate.spec(
 crate.spec(
     package = "elliptic-curve",
     version = "=0.14.3",
-    default_features = True,
+    default_features = False,
     features = [
         "arithmetic",
         "digest",
@@ -1515,7 +1537,7 @@ crate.spec(
 crate.spec(
     package = "email_address",
     version = "=0.2.9",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "serde",
@@ -1527,7 +1549,7 @@ crate.spec(
     package = "embedded-io",
     version = "=0.4.0",
     package_alias = "embedded-io-0_4_0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
     ],
@@ -1537,7 +1559,7 @@ crate.spec(
     package = "embedded-io",
     version = "=0.6.1",
     package_alias = "embedded-io-0_6_1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
     ],
@@ -1546,7 +1568,7 @@ crate.spec(
 crate.spec(
     package = "encode_unicode",
     version = "=1.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -1556,7 +1578,7 @@ crate.spec(
 crate.spec(
     package = "encoding_rs",
     version = "=0.8.42",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -1566,13 +1588,13 @@ crate.spec(
 crate.spec(
     package = "encoding_rs_io",
     version = "=0.1.8",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "endi",
     version = "=1.1.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -1582,7 +1604,7 @@ crate.spec(
 crate.spec(
     package = "enumflags2",
     version = "=0.7.12",
-    default_features = True,
+    default_features = False,
     features = [
         "serde",
     ],
@@ -1591,19 +1613,19 @@ crate.spec(
 crate.spec(
     package = "enumflags2_derive",
     version = "=0.7.12",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "equivalent",
     version = "=1.0.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "errno",
     version = "=0.3.14",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -1613,7 +1635,7 @@ crate.spec(
 crate.spec(
     package = "event-listener",
     version = "=5.4.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "parking",
@@ -1624,7 +1646,7 @@ crate.spec(
 crate.spec(
     package = "event-listener-strategy",
     version = "=0.5.4",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -1635,7 +1657,7 @@ crate.spec(
     package = "fallible-iterator",
     version = "=0.2.0",
     package_alias = "fallible-iterator-0_2_0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -1646,7 +1668,7 @@ crate.spec(
     package = "fallible-iterator",
     version = "=0.3.0",
     package_alias = "fallible-iterator-0_3_0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -1656,13 +1678,13 @@ crate.spec(
 crate.spec(
     package = "fallible-streaming-iterator",
     version = "=0.1.9",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "fancy-regex",
     version = "=0.20.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "perf",
@@ -1675,7 +1697,7 @@ crate.spec(
 crate.spec(
     package = "fastrand",
     version = "=2.5.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -1686,31 +1708,31 @@ crate.spec(
 crate.spec(
     package = "ff",
     version = "=0.14.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "filetime",
     version = "=0.2.29",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "find-msvc-tools",
     version = "=0.1.15",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "fixedbitset",
     version = "=0.5.7",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "flatbuffers",
     version = "=25.12.19",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -1720,7 +1742,7 @@ crate.spec(
 crate.spec(
     package = "flate2",
     version = "=1.1.10",
-    default_features = True,
+    default_features = False,
     features = [
         "any_impl",
         "default",
@@ -1733,7 +1755,7 @@ crate.spec(
 crate.spec(
     package = "fluent-uri",
     version = "=0.4.1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -1746,13 +1768,13 @@ crate.spec(
 crate.spec(
     package = "flume",
     version = "=0.12.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "fnv",
     version = "=1.0.7",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -1763,32 +1785,32 @@ crate.spec(
     package = "foldhash",
     version = "=0.1.5",
     package_alias = "foldhash-0_1_5",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "foldhash",
     version = "=0.2.0",
     package_alias = "foldhash-0_2_0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "foreign-types",
     version = "=0.3.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "foreign-types-shared",
     version = "=0.1.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "form_urlencoded",
     version = "=1.2.2",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -1799,7 +1821,7 @@ crate.spec(
 crate.spec(
     package = "fraction",
     version = "=0.17.0",
-    default_features = True,
+    default_features = False,
     features = [
         "num-bigint",
         "with-bigint",
@@ -1809,25 +1831,25 @@ crate.spec(
 crate.spec(
     package = "fs-set-times",
     version = "=0.20.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "funty",
     version = "=2.0.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "fuser",
     version = "=0.18.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "futures",
     version = "=0.3.34",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "async-await",
@@ -1841,7 +1863,7 @@ crate.spec(
 crate.spec(
     package = "futures-channel",
     version = "=0.3.34",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -1854,7 +1876,7 @@ crate.spec(
 crate.spec(
     package = "futures-core",
     version = "=0.3.34",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -1865,7 +1887,7 @@ crate.spec(
 crate.spec(
     package = "futures-executor",
     version = "=0.3.34",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -1874,7 +1896,7 @@ crate.spec(
 crate.spec(
     package = "futures-io",
     version = "=0.3.34",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -1884,13 +1906,13 @@ crate.spec(
 crate.spec(
     package = "futures-macro",
     version = "=0.3.34",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "futures-sink",
     version = "=0.3.34",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -1901,7 +1923,7 @@ crate.spec(
 crate.spec(
     package = "futures-task",
     version = "=0.3.34",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "std",
@@ -1911,7 +1933,7 @@ crate.spec(
 crate.spec(
     package = "futures-util",
     version = "=0.3.34",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "async-await",
@@ -1933,13 +1955,13 @@ crate.spec(
 crate.spec(
     package = "generator",
     version = "=0.8.10",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "generic-array",
     version = "=0.14.7",
-    default_features = True,
+    default_features = False,
     features = [
         "more_lengths",
     ],
@@ -1949,7 +1971,7 @@ crate.spec(
     package = "getrandom",
     version = "=0.2.17",
     package_alias = "getrandom-0_2_17",
-    default_features = True,
+    default_features = False,
     features = [
         "js",
         "js-sys",
@@ -1962,7 +1984,7 @@ crate.spec(
     package = "getrandom",
     version = "=0.3.4",
     package_alias = "getrandom-0_3_4",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
         "wasm_js",
@@ -1973,7 +1995,7 @@ crate.spec(
     package = "getrandom",
     version = "=0.4.3",
     package_alias = "getrandom-0_4_3",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
         "sys_rng",
@@ -1984,7 +2006,7 @@ crate.spec(
 crate.spec(
     package = "gloo-utils",
     version = "=0.2.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "serde",
@@ -1994,7 +2016,7 @@ crate.spec(
 crate.spec(
     package = "granit-parser",
     version = "=2.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "comments",
         "error_messages",
@@ -2005,19 +2027,19 @@ crate.spec(
 crate.spec(
     package = "group",
     version = "=0.14.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "h2",
     version = "=0.4.20",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "half",
     version = "=2.7.1",
-    default_features = True,
+    default_features = False,
     features = [
         "num-traits",
     ],
@@ -2026,14 +2048,14 @@ crate.spec(
 crate.spec(
     package = "hashbag",
     version = "=0.1.13",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "hashbrown",
     version = "=0.15.5",
     package_alias = "hashbrown-0_15_5",
-    default_features = True,
+    default_features = False,
     features = [
         "default-hasher",
         "inline-more",
@@ -2044,7 +2066,7 @@ crate.spec(
     package = "hashbrown",
     version = "=0.16.1",
     package_alias = "hashbrown-0_16_1",
-    default_features = True,
+    default_features = False,
     features = [
         "allocator-api2",
         "default",
@@ -2059,7 +2081,7 @@ crate.spec(
     package = "hashbrown",
     version = "=0.17.1",
     package_alias = "hashbrown-0_17_1",
-    default_features = True,
+    default_features = False,
     features = [
         "allocator-api2",
         "default",
@@ -2073,19 +2095,19 @@ crate.spec(
 crate.spec(
     package = "hashlink",
     version = "=0.12.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "heck",
     version = "=0.5.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "hex",
     version = "=0.4.3",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -2096,7 +2118,7 @@ crate.spec(
 crate.spec(
     package = "hex-simd",
     version = "=0.8.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -2108,27 +2130,27 @@ crate.spec(
 crate.spec(
     package = "hkdf",
     version = "=0.12.4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "hmac",
     version = "=0.12.1",
     package_alias = "hmac-0_12_1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "hmac",
     version = "=0.13.0",
     package_alias = "hmac-0_13_0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "hmac-sha1-compact",
     version = "=1.1.8",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -2137,13 +2159,13 @@ crate.spec(
 crate.spec(
     package = "home",
     version = "=0.5.12",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "http",
     version = "=1.5.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -2153,13 +2175,13 @@ crate.spec(
 crate.spec(
     package = "http-body",
     version = "=1.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "http-body-util",
     version = "=0.1.5",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -2168,7 +2190,7 @@ crate.spec(
 crate.spec(
     package = "httparse",
     version = "=1.10.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -2178,19 +2200,19 @@ crate.spec(
 crate.spec(
     package = "httpdate",
     version = "=1.0.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "humantime",
     version = "=2.4.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "hybrid-array",
     version = "=0.4.15",
-    default_features = True,
+    default_features = False,
     features = [
         "subtle",
         "zeroize",
@@ -2200,7 +2222,7 @@ crate.spec(
 crate.spec(
     package = "hyper",
     version = "=1.12.0",
-    default_features = True,
+    default_features = False,
     features = [
         "client",
         "default",
@@ -2213,7 +2235,7 @@ crate.spec(
 crate.spec(
     package = "hyper-rustls",
     version = "=0.27.10",
-    default_features = True,
+    default_features = False,
     features = [
         "http1",
         "http2",
@@ -2227,13 +2249,13 @@ crate.spec(
 crate.spec(
     package = "hyper-timeout",
     version = "=0.5.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "hyper-util",
     version = "=0.1.21",
-    default_features = True,
+    default_features = False,
     features = [
         "client",
         "client-legacy",
@@ -2251,7 +2273,7 @@ crate.spec(
 crate.spec(
     package = "iana-time-zone",
     version = "=0.1.65",
-    default_features = True,
+    default_features = False,
     features = [
         "fallback",
     ],
@@ -2260,7 +2282,7 @@ crate.spec(
 crate.spec(
     package = "icu_casemap",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
     features = [
         "compiled_data",
     ],
@@ -2269,13 +2291,13 @@ crate.spec(
 crate.spec(
     package = "icu_casemap_data",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "icu_collections",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
     ],
@@ -2284,7 +2306,7 @@ crate.spec(
 crate.spec(
     package = "icu_locale_core",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "zerovec",
@@ -2294,7 +2316,7 @@ crate.spec(
 crate.spec(
     package = "icu_locale_fallback",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
     features = [
         "compiled_data",
     ],
@@ -2303,13 +2325,13 @@ crate.spec(
 crate.spec(
     package = "icu_locale_fallback_data",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "icu_normalizer",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
     features = [
         "compiled_data",
     ],
@@ -2318,13 +2340,13 @@ crate.spec(
 crate.spec(
     package = "icu_normalizer_data",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "icu_properties",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
     features = [
         "compiled_data",
     ],
@@ -2333,13 +2355,13 @@ crate.spec(
 crate.spec(
     package = "icu_properties_data",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "icu_provider",
     version = "=2.3.1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "baked",
@@ -2349,7 +2371,7 @@ crate.spec(
 crate.spec(
     package = "icu_segmenter",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
     features = [
         "compiled_data",
     ],
@@ -2358,19 +2380,19 @@ crate.spec(
 crate.spec(
     package = "icu_segmenter_data",
     version = "=2.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ident_case",
     version = "=1.0.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "idna",
     version = "=1.1.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "compiled_data",
@@ -2381,7 +2403,7 @@ crate.spec(
 crate.spec(
     package = "idna_adapter",
     version = "=1.2.2",
-    default_features = True,
+    default_features = False,
     features = [
         "compiled_data",
     ],
@@ -2390,7 +2412,7 @@ crate.spec(
 crate.spec(
     package = "image",
     version = "=0.25.10",
-    default_features = True,
+    default_features = False,
     features = [
         "jpeg",
     ],
@@ -2399,7 +2421,7 @@ crate.spec(
 crate.spec(
     package = "indexmap",
     version = "=2.14.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "serde",
@@ -2410,26 +2432,26 @@ crate.spec(
 crate.spec(
     package = "indoc",
     version = "=2.0.8",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "inotify",
     version = "=0.11.5",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "inotify-sys",
     version = "=0.1.8",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "inout",
     version = "=0.1.4",
     package_alias = "inout-0_1_4",
-    default_features = True,
+    default_features = False,
     features = [
         "block-padding",
     ],
@@ -2439,19 +2461,19 @@ crate.spec(
     package = "inout",
     version = "=0.2.6",
     package_alias = "inout-0_2_6",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "instability",
     version = "=0.3.14",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "io-extras",
     version = "=0.19.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -2461,14 +2483,14 @@ crate.spec(
     package = "io-lifetimes",
     version = "=2.0.4",
     package_alias = "io-lifetimes-2_0_4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "io-lifetimes",
     version = "=3.0.1",
     package_alias = "io-lifetimes-3_0_1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -2477,13 +2499,13 @@ crate.spec(
 crate.spec(
     package = "io-uring",
     version = "=0.7.15",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ipnet",
     version = "=2.12.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -2493,7 +2515,7 @@ crate.spec(
 crate.spec(
     package = "is_terminal_polyfill",
     version = "=1.70.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -2503,7 +2525,7 @@ crate.spec(
     package = "itertools",
     version = "=0.14.0",
     package_alias = "itertools-0_14_0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "use_alloc",
@@ -2515,7 +2537,7 @@ crate.spec(
     package = "itertools",
     version = "=0.15.0",
     package_alias = "itertools-0_15_0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "use_alloc",
@@ -2526,13 +2548,13 @@ crate.spec(
 crate.spec(
     package = "itoa",
     version = "=1.0.18",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "jiff",
     version = "=0.2.37",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -2549,7 +2571,7 @@ crate.spec(
 crate.spec(
     package = "jiff-core",
     version = "=0.1.1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -2561,7 +2583,7 @@ crate.spec(
 crate.spec(
     package = "jiff-static",
     version = "=0.2.37",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "tz-fat",
@@ -2571,25 +2593,25 @@ crate.spec(
 crate.spec(
     package = "jiff-tzdb",
     version = "=0.1.8",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "jiff-tzdb-platform",
     version = "=0.1.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "jobserver",
     version = "=0.1.35",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "js-sys",
     version = "=0.3.94",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "futures",
@@ -2601,19 +2623,19 @@ crate.spec(
 crate.spec(
     package = "jsonschema",
     version = "=0.61.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "jsonschema-regex",
     version = "=0.61.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "jsonschema-value",
     version = "=0.61.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "serde_json",
@@ -2623,7 +2645,7 @@ crate.spec(
 crate.spec(
     package = "kasuari",
     version = "=0.4.12",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -2632,7 +2654,7 @@ crate.spec(
 crate.spec(
     package = "keyring",
     version = "=3.6.3",
-    default_features = True,
+    default_features = False,
     features = [
         "apple-native",
         "crypto-rust",
@@ -2645,25 +2667,25 @@ crate.spec(
 crate.spec(
     package = "kqueue",
     version = "=1.2.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "kqueue-sys",
     version = "=1.1.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "lazy_static",
     version = "=1.5.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "libc",
     version = "=0.2.191",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "extra_traits",
@@ -2674,7 +2696,7 @@ crate.spec(
 crate.spec(
     package = "libdbus-sys",
     version = "=0.2.7",
-    default_features = True,
+    default_features = False,
     features = [
         "cc",
         "default",
@@ -2686,7 +2708,7 @@ crate.spec(
 crate.spec(
     package = "libfuzzer-sys",
     version = "=0.4.13",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "link_libfuzzer",
@@ -2696,7 +2718,7 @@ crate.spec(
 crate.spec(
     package = "libloading",
     version = "=0.9.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -2706,7 +2728,7 @@ crate.spec(
 crate.spec(
     package = "libm",
     version = "=0.2.16",
-    default_features = True,
+    default_features = False,
     features = [
         "arch",
         "default",
@@ -2716,7 +2738,7 @@ crate.spec(
 crate.spec(
     package = "libsqlite3-sys",
     version = "=0.39.1",
-    default_features = True,
+    default_features = False,
     features = [
         "bundled",
         "bundled_bindings",
@@ -2731,13 +2753,13 @@ crate.spec(
 crate.spec(
     package = "line-clipping",
     version = "=0.3.8",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "linux-keyutils",
     version = "=0.2.5",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -2747,7 +2769,7 @@ crate.spec(
 crate.spec(
     package = "linux-raw-sys",
     version = "=0.12.1",
-    default_features = True,
+    default_features = False,
     features = [
         "auxvec",
         "default",
@@ -2770,7 +2792,7 @@ crate.spec(
 crate.spec(
     package = "litemap",
     version = "=0.8.3",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
     ],
@@ -2779,14 +2801,14 @@ crate.spec(
 crate.spec(
     package = "litrs",
     version = "=1.0.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "lock_api",
     version = "=0.4.14",
     package_alias = "lock_api-0_4_14",
-    default_features = True,
+    default_features = False,
     features = [
         "atomic_usize",
         "default",
@@ -2797,7 +2819,7 @@ crate.spec(
     package = "lock_api",
     version = "=0.5.0",
     package_alias = "lock_api-0_5_0",
-    default_features = True,
+    default_features = False,
     features = [
         "atomic_usize",
         "default",
@@ -2807,7 +2829,7 @@ crate.spec(
 crate.spec(
     package = "log",
     version = "=0.4.34",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "std",
@@ -2817,7 +2839,7 @@ crate.spec(
 crate.spec(
     package = "loom",
     version = "=0.7.3",
-    default_features = True,
+    default_features = False,
     features = [
         "checkpoint",
         "default",
@@ -2830,7 +2852,7 @@ crate.spec(
 crate.spec(
     package = "lru",
     version = "=0.18.5",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "hashbrown",
@@ -2840,19 +2862,19 @@ crate.spec(
 crate.spec(
     package = "lru-slab",
     version = "=0.1.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "matchers",
     version = "=0.2.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "matchit",
     version = "=0.8.4",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -2861,13 +2883,13 @@ crate.spec(
 crate.spec(
     package = "maybe-owned",
     version = "=0.3.4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "md-5",
     version = "=0.11.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -2878,7 +2900,7 @@ crate.spec(
 crate.spec(
     package = "memchr",
     version = "=2.8.3",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -2889,7 +2911,7 @@ crate.spec(
 crate.spec(
     package = "memoffset",
     version = "=0.9.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -2898,7 +2920,7 @@ crate.spec(
 crate.spec(
     package = "micromap",
     version = "=0.3.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -2907,13 +2929,13 @@ crate.spec(
 crate.spec(
     package = "mime",
     version = "=0.3.17",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "minimal-lexical",
     version = "=0.2.1",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -2922,7 +2944,7 @@ crate.spec(
 crate.spec(
     package = "miniz_oxide",
     version = "=0.9.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "simd",
@@ -2934,7 +2956,7 @@ crate.spec(
 crate.spec(
     package = "mio",
     version = "=1.2.4",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "log",
@@ -2947,19 +2969,19 @@ crate.spec(
 crate.spec(
     package = "miow",
     version = "=0.6.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "mod_use",
     version = "=0.2.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "moxcms",
     version = "=0.8.1",
-    default_features = True,
+    default_features = False,
     features = [
         "avx",
         "avx_luts",
@@ -2981,19 +3003,19 @@ crate.spec(
 crate.spec(
     package = "multimap",
     version = "=0.10.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "multiversion_no_op",
     version = "=1.0.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "napi-build",
     version = "=2.6.0",
-    default_features = True,
+    default_features = False,
     features = [
         "wasi-heap-sync",
     ],
@@ -3002,7 +3024,7 @@ crate.spec(
 crate.spec(
     package = "napi-derive",
     version = "=3.6.13",
-    default_features = True,
+    default_features = False,
     features = [
         "ctor",
         "default",
@@ -3014,7 +3036,7 @@ crate.spec(
 crate.spec(
     package = "napi-derive-backend",
     version = "=6.1.6",
-    default_features = True,
+    default_features = False,
     features = [
         "semver",
         "strict",
@@ -3025,7 +3047,7 @@ crate.spec(
 crate.spec(
     package = "napi-sys",
     version = "=3.4.1",
-    default_features = True,
+    default_features = False,
     features = [
         "dyn-symbols",
         "napi1",
@@ -3043,7 +3065,7 @@ crate.spec(
     package = "nix",
     version = "=0.29.0",
     package_alias = "nix-0_29_0",
-    default_features = True,
+    default_features = False,
     features = [
         "feature",
         "memoffset",
@@ -3057,7 +3079,7 @@ crate.spec(
     package = "nix",
     version = "=0.31.3",
     package_alias = "nix-0_31_3",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "event",
@@ -3077,7 +3099,7 @@ crate.spec(
 crate.spec(
     package = "nohash-hasher",
     version = "=0.2.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -3088,7 +3110,7 @@ crate.spec(
     package = "nom",
     version = "=7.1.3",
     package_alias = "nom-7_1_3",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -3100,7 +3122,7 @@ crate.spec(
     package = "nom",
     version = "=8.0.0",
     package_alias = "nom-8_0_0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -3111,7 +3133,7 @@ crate.spec(
 crate.spec(
     package = "nonmax",
     version = "=0.5.5",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -3121,7 +3143,7 @@ crate.spec(
 crate.spec(
     package = "notify",
     version = "=8.2.2",
-    default_features = True,
+    default_features = False,
     features = [
         "kqueue",
         "macos_kqueue",
@@ -3132,13 +3154,13 @@ crate.spec(
 crate.spec(
     package = "notify-types",
     version = "=2.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "nu-ansi-term",
     version = "=0.50.3",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -3148,7 +3170,7 @@ crate.spec(
 crate.spec(
     package = "num",
     version = "=0.4.3",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "num-bigint",
@@ -3160,7 +3182,7 @@ crate.spec(
     package = "num-bigint",
     version = "=0.4.8",
     package_alias = "num-bigint-0_4_8",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -3171,7 +3193,7 @@ crate.spec(
     package = "num-bigint",
     version = "=0.5.1",
     package_alias = "num-bigint-0_5_1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -3181,13 +3203,13 @@ crate.spec(
 crate.spec(
     package = "num-cmp",
     version = "=0.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "num-complex",
     version = "=0.4.6",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -3196,13 +3218,13 @@ crate.spec(
 crate.spec(
     package = "num-conv",
     version = "=0.2.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "num-integer",
     version = "=0.1.47",
-    default_features = True,
+    default_features = False,
     features = [
         "i128",
         "std",
@@ -3212,7 +3234,7 @@ crate.spec(
 crate.spec(
     package = "num-iter",
     version = "=0.1.46",
-    default_features = True,
+    default_features = False,
     features = [
         "i128",
         "std",
@@ -3222,7 +3244,7 @@ crate.spec(
 crate.spec(
     package = "num-rational",
     version = "=0.4.2",
-    default_features = True,
+    default_features = False,
     features = [
         "num-bigint",
         "num-bigint-std",
@@ -3233,7 +3255,7 @@ crate.spec(
 crate.spec(
     package = "num-traits",
     version = "=0.2.19",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "i128",
@@ -3245,7 +3267,7 @@ crate.spec(
 crate.spec(
     package = "num_enum",
     version = "=0.7.6",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -3255,7 +3277,7 @@ crate.spec(
 crate.spec(
     package = "num_enum_derive",
     version = "=0.7.6",
-    default_features = True,
+    default_features = False,
     features = [
         "proc-macro-crate",
         "std",
@@ -3265,25 +3287,25 @@ crate.spec(
 crate.spec(
     package = "num_threads",
     version = "=0.1.7",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "numeric_cast",
     version = "=0.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oauth2",
     version = "=5.0.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "objc2-core-foundation",
     version = "=0.3.2",
-    default_features = True,
+    default_features = False,
     features = [
         "CFArray",
         "CFDictionary",
@@ -3297,7 +3319,7 @@ crate.spec(
 crate.spec(
     package = "objc2-system-configuration",
     version = "=0.3.2",
-    default_features = True,
+    default_features = False,
     features = [
         "SCDynamicStore",
         "SCDynamicStoreCopySpecific",
@@ -3307,7 +3329,7 @@ crate.spec(
 crate.spec(
     package = "object_store",
     version = "=0.14.2",
-    default_features = True,
+    default_features = False,
     features = [
         "aws-base",
         "base64",
@@ -3332,7 +3354,7 @@ crate.spec(
 crate.spec(
     package = "oid-registry",
     version = "=0.8.1",
-    default_features = True,
+    default_features = False,
     features = [
         "crypto",
         "default",
@@ -3351,7 +3373,7 @@ crate.spec(
 crate.spec(
     package = "once_cell",
     version = "=1.21.4",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -3363,7 +3385,7 @@ crate.spec(
 crate.spec(
     package = "once_cell_polyfill",
     version = "=1.70.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3372,7 +3394,7 @@ crate.spec(
 crate.spec(
     package = "openssl",
     version = "=0.10.81",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "vendored",
@@ -3382,19 +3404,19 @@ crate.spec(
 crate.spec(
     package = "openssl-macros",
     version = "=0.1.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "openssl-probe",
     version = "=0.2.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "openssl-src",
     version = "=300.6.1+3.6.3",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "legacy",
@@ -3404,7 +3426,7 @@ crate.spec(
 crate.spec(
     package = "openssl-sys",
     version = "=0.9.117",
-    default_features = True,
+    default_features = False,
     features = [
         "openssl-src",
         "vendored",
@@ -3414,13 +3436,13 @@ crate.spec(
 crate.spec(
     package = "option-ext",
     version = "=0.2.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ordered-float",
     version = "=2.10.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -3430,25 +3452,25 @@ crate.spec(
 crate.spec(
     package = "ordered-stream",
     version = "=0.2.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "outref",
     version = "=0.5.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "owo-colors",
     version = "=4.4.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oxc-browserslist",
     version = "=5.0.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3457,7 +3479,7 @@ crate.spec(
 crate.spec(
     package = "oxc_allocator",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
     features = [
         "bitset",
     ],
@@ -3466,7 +3488,7 @@ crate.spec(
 crate.spec(
     package = "oxc_ast",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3475,13 +3497,13 @@ crate.spec(
 crate.spec(
     package = "oxc_ast_macros",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oxc_ast_visit",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3490,19 +3512,19 @@ crate.spec(
 crate.spec(
     package = "oxc_codegen",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oxc_compat",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oxc_data_structures",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
     features = [
         "assert_unchecked",
         "branch_hints",
@@ -3520,19 +3542,19 @@ crate.spec(
 crate.spec(
     package = "oxc_diagnostics",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oxc_ecmascript",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oxc_estree",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3541,7 +3563,7 @@ crate.spec(
 crate.spec(
     package = "oxc_index",
     version = "=5.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "nonmax",
         "serde",
@@ -3551,19 +3573,19 @@ crate.spec(
 crate.spec(
     package = "oxc_parser",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oxc_regular_expression",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oxc_semantic",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3572,7 +3594,7 @@ crate.spec(
 crate.spec(
     package = "oxc_span",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3581,7 +3603,7 @@ crate.spec(
 crate.spec(
     package = "oxc_str",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3590,7 +3612,7 @@ crate.spec(
 crate.spec(
     package = "oxc_syntax",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "to_js_string",
@@ -3600,19 +3622,19 @@ crate.spec(
 crate.spec(
     package = "oxc_transformer",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oxc_traverse",
     version = "=0.156.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oxilangtag",
     version = "=0.1.6",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -3622,13 +3644,13 @@ crate.spec(
 crate.spec(
     package = "oxiri",
     version = "=0.2.11",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "oxrdf",
     version = "=0.3.5",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3637,13 +3659,13 @@ crate.spec(
 crate.spec(
     package = "oxttl",
     version = "=0.2.5",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "p256",
     version = "=0.14.0",
-    default_features = True,
+    default_features = False,
     features = [
         "arithmetic",
         "digest",
@@ -3657,13 +3679,13 @@ crate.spec(
 crate.spec(
     package = "page_size",
     version = "=0.6.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "palette",
     version = "=0.7.7",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "libm",
@@ -3674,13 +3696,13 @@ crate.spec(
 crate.spec(
     package = "palette_derive",
     version = "=0.7.7",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "palette_math",
     version = "=0.7.7",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "libm",
@@ -3691,14 +3713,14 @@ crate.spec(
 crate.spec(
     package = "parking",
     version = "=2.2.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "parking_lot",
     version = "=0.12.5",
     package_alias = "parking_lot-0_12_5",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3708,7 +3730,7 @@ crate.spec(
     package = "parking_lot",
     version = "=0.13.0",
     package_alias = "parking_lot-0_13_0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3718,20 +3740,20 @@ crate.spec(
     package = "parking_lot_core",
     version = "=0.10.0",
     package_alias = "parking_lot_core-0_10_0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "parking_lot_core",
     version = "=0.9.12",
     package_alias = "parking_lot_core-0_9_12",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "parquet",
     version = "=60.1.0",
-    default_features = True,
+    default_features = False,
     features = [
         "arrow",
         "arrow-array",
@@ -3747,13 +3769,13 @@ crate.spec(
 crate.spec(
     package = "pastey",
     version = "=0.2.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "pem",
     version = "=4.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -3763,7 +3785,7 @@ crate.spec(
 crate.spec(
     package = "percent-encoding",
     version = "=2.3.2",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -3774,7 +3796,7 @@ crate.spec(
 crate.spec(
     package = "petgraph",
     version = "=0.8.3",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -3784,7 +3806,7 @@ crate.spec(
     package = "phf",
     version = "=0.13.1",
     package_alias = "phf-0_13_1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -3795,7 +3817,7 @@ crate.spec(
     package = "phf",
     version = "=0.14.0",
     package_alias = "phf-0_14_0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "macros",
@@ -3807,20 +3829,20 @@ crate.spec(
 crate.spec(
     package = "phf_generator",
     version = "=0.14.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "phf_macros",
     version = "=0.14.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "phf_shared",
     version = "=0.13.1",
     package_alias = "phf_shared-0_13_1",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -3830,7 +3852,7 @@ crate.spec(
     package = "phf_shared",
     version = "=0.14.0",
     package_alias = "phf_shared-0_14_0",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -3839,25 +3861,25 @@ crate.spec(
 crate.spec(
     package = "pin-project",
     version = "=1.1.13",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "pin-project-internal",
     version = "=1.1.13",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "pin-project-lite",
     version = "=0.2.17",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "piper",
     version = "=0.2.5",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "futures-io",
@@ -3868,25 +3890,25 @@ crate.spec(
 crate.spec(
     package = "pkg-config",
     version = "=0.3.34",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "polling",
     version = "=3.11.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "poly1305",
     version = "=0.9.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "portable-atomic",
     version = "=1.15.0",
-    default_features = True,
+    default_features = False,
     features = [
         "require-cas",
         "std",
@@ -3896,7 +3918,7 @@ crate.spec(
 crate.spec(
     package = "postcard",
     version = "=1.1.3",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
     ],
@@ -3905,7 +3927,7 @@ crate.spec(
 crate.spec(
     package = "postgres-protocol",
     version = "=0.6.12",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -3914,13 +3936,13 @@ crate.spec(
 crate.spec(
     package = "postgres-types",
     version = "=0.2.14",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "potential_utf",
     version = "=0.1.6",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "writeable",
@@ -3931,13 +3953,13 @@ crate.spec(
 crate.spec(
     package = "powerfmt",
     version = "=0.2.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ppv-lite86",
     version = "=0.2.21",
-    default_features = True,
+    default_features = False,
     features = [
         "simd",
         "std",
@@ -3948,38 +3970,38 @@ crate.spec(
     package = "prettyplease",
     version = "=0.2.37",
     package_alias = "prettyplease-0_2_37",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "prettyplease",
     version = "=0.3.0",
     package_alias = "prettyplease-0_3_0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "primefield",
     version = "=0.14.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "primeorder",
     version = "=0.14.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "proc-macro-crate",
     version = "=3.5.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "proc-macro2",
     version = "=1.0.107",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "proc-macro",
@@ -3989,7 +4011,7 @@ crate.spec(
 crate.spec(
     package = "proptest",
     version = "=1.12.0",
-    default_features = True,
+    default_features = False,
     features = [
         "bit-set",
         "default",
@@ -4005,7 +4027,7 @@ crate.spec(
 crate.spec(
     package = "prost",
     version = "=0.14.4",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "derive",
@@ -4016,7 +4038,7 @@ crate.spec(
 crate.spec(
     package = "prost-build",
     version = "=0.14.4",
-    default_features = True,
+    default_features = False,
     features = [
         "cleanup-markdown",
         "default",
@@ -4027,13 +4049,13 @@ crate.spec(
 crate.spec(
     package = "prost-derive",
     version = "=0.14.4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "prost-reflect",
     version = "=0.16.5",
-    default_features = True,
+    default_features = False,
     features = [
         "serde",
     ],
@@ -4042,7 +4064,7 @@ crate.spec(
 crate.spec(
     package = "prost-types",
     version = "=0.14.4",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -4052,55 +4074,55 @@ crate.spec(
 crate.spec(
     package = "protoc-bin-vendored-linux-aarch_64",
     version = "=3.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-linux-ppcle_64",
     version = "=3.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-linux-s390_64",
     version = "=3.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-linux-x86_32",
     version = "=3.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-linux-x86_64",
     version = "=3.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-macos-aarch_64",
     version = "=3.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-macos-x86_64",
     version = "=3.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "protoc-bin-vendored-win32",
     version = "=3.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "public-api",
     version = "=0.52.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "snapshot-testing",
@@ -4110,32 +4132,32 @@ crate.spec(
 crate.spec(
     package = "pulldown-cmark",
     version = "=0.13.6",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "pulldown-cmark-to-cmark",
     version = "=22.0.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "pxfm",
     version = "=0.1.30",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "quick-error",
     version = "=1.2.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "quick-xml",
     version = "=0.41.0",
     package_alias = "quick-xml-0_41_0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "overlapped-lists",
@@ -4148,7 +4170,7 @@ crate.spec(
     package = "quick-xml",
     version = "=0.42.0",
     package_alias = "quick-xml-0_42_0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "serde",
@@ -4159,7 +4181,7 @@ crate.spec(
 crate.spec(
     package = "quinn",
     version = "=0.11.12",
-    default_features = True,
+    default_features = False,
     features = [
         "ring",
         "runtime-tokio",
@@ -4171,7 +4193,7 @@ crate.spec(
 crate.spec(
     package = "quinn-proto",
     version = "=0.11.19",
-    default_features = True,
+    default_features = False,
     features = [
         "ring",
         "rustls-ring",
@@ -4181,7 +4203,7 @@ crate.spec(
 crate.spec(
     package = "quinn-udp",
     version = "=0.5.16",
-    default_features = True,
+    default_features = False,
     features = [
         "tracing",
     ],
@@ -4190,7 +4212,7 @@ crate.spec(
 crate.spec(
     package = "quote",
     version = "=1.0.47",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "proc-macro",
@@ -4200,14 +4222,14 @@ crate.spec(
 crate.spec(
     package = "radium",
     version = "=0.7.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "rand",
     version = "=0.10.3",
     package_alias = "rand-0_10_3",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -4222,7 +4244,7 @@ crate.spec(
     package = "rand",
     version = "=0.8.8",
     package_alias = "rand-0_8_8",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -4238,7 +4260,7 @@ crate.spec(
     package = "rand",
     version = "=0.9.5",
     package_alias = "rand-0_9_5",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -4254,7 +4276,7 @@ crate.spec(
     package = "rand_chacha",
     version = "=0.3.1",
     package_alias = "rand_chacha-0_3_1",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -4264,7 +4286,7 @@ crate.spec(
     package = "rand_chacha",
     version = "=0.9.0",
     package_alias = "rand_chacha-0_9_0",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -4274,14 +4296,14 @@ crate.spec(
     package = "rand_core",
     version = "=0.10.1",
     package_alias = "rand_core-0_10_1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "rand_core",
     version = "=0.6.4",
     package_alias = "rand_core-0_6_4",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "getrandom",
@@ -4293,7 +4315,7 @@ crate.spec(
     package = "rand_core",
     version = "=0.9.5",
     package_alias = "rand_core-0_9_5",
-    default_features = True,
+    default_features = False,
     features = [
         "os_rng",
         "std",
@@ -4304,26 +4326,26 @@ crate.spec(
     package = "rand_pcg",
     version = "=0.10.2",
     package_alias = "rand_pcg-0_10_2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "rand_pcg",
     version = "=0.3.1",
     package_alias = "rand_pcg-0_3_1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "rand_xorshift",
     version = "=0.5.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ratatui",
     version = "=0.30.2",
-    default_features = True,
+    default_features = False,
     features = [
         "crossterm",
         "std",
@@ -4333,7 +4355,7 @@ crate.spec(
 crate.spec(
     package = "ratatui-core",
     version = "=0.1.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -4344,7 +4366,7 @@ crate.spec(
 crate.spec(
     package = "ratatui-crossterm",
     version = "=0.1.2",
-    default_features = True,
+    default_features = False,
     features = [
         "crossterm_0_29",
         "default",
@@ -4355,7 +4377,7 @@ crate.spec(
 crate.spec(
     package = "ratatui-widgets",
     version = "=0.3.2",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -4364,7 +4386,7 @@ crate.spec(
 crate.spec(
     package = "rcgen",
     version = "=0.14.10",
-    default_features = True,
+    default_features = False,
     features = [
         "crypto",
         "default",
@@ -4376,19 +4398,19 @@ crate.spec(
 crate.spec(
     package = "ref-cast",
     version = "=1.0.27",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ref-cast-impl",
     version = "=1.0.27",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "referencing",
     version = "=0.61.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -4397,7 +4419,7 @@ crate.spec(
 crate.spec(
     package = "regex",
     version = "=1.13.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "perf",
@@ -4422,7 +4444,7 @@ crate.spec(
 crate.spec(
     package = "regex-automata",
     version = "=0.4.18",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -4458,7 +4480,7 @@ crate.spec(
 crate.spec(
     package = "regex-lite",
     version = "=0.1.9",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -4469,7 +4491,7 @@ crate.spec(
 crate.spec(
     package = "regex-syntax",
     version = "=0.8.11",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -4487,7 +4509,7 @@ crate.spec(
 crate.spec(
     package = "relative-path",
     version = "=2.0.3",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "std",
@@ -4498,7 +4520,7 @@ crate.spec(
     package = "reqwest",
     version = "=0.12.28",
     package_alias = "reqwest-0_12_28",
-    default_features = True,
+    default_features = False,
     features = [
         "__rustls",
         "__rustls-ring",
@@ -4517,7 +4539,7 @@ crate.spec(
     package = "reqwest",
     version = "=0.13.5",
     package_alias = "reqwest-0_13_5",
-    default_features = True,
+    default_features = False,
     features = [
         "__rustls",
         "__tls",
@@ -4531,13 +4553,13 @@ crate.spec(
 crate.spec(
     package = "rfc6979",
     version = "=0.6.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ring",
     version = "=0.17.14",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -4550,7 +4572,7 @@ crate.spec(
 crate.spec(
     package = "rmcp",
     version = "=3.9.0",
-    default_features = True,
+    default_features = False,
     features = [
         "__reqwest",
         "auth",
@@ -4563,7 +4585,7 @@ crate.spec(
 crate.spec(
     package = "rmp",
     version = "=0.8.15",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -4573,13 +4595,13 @@ crate.spec(
 crate.spec(
     package = "rmp-serde",
     version = "=1.3.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ropey",
     version = "=1.6.1",
-    default_features = True,
+    default_features = False,
     features = [
         "cr_lines",
         "default",
@@ -4591,7 +4613,7 @@ crate.spec(
 crate.spec(
     package = "rquickjs",
     version = "=0.14.0",
-    default_features = True,
+    default_features = False,
     features = [
         "futures",
         "parallel",
@@ -4602,7 +4624,7 @@ crate.spec(
 crate.spec(
     package = "rusqlite",
     version = "=0.41.0",
-    default_features = True,
+    default_features = False,
     features = [
         "bundled",
         "cache",
@@ -4616,7 +4638,7 @@ crate.spec(
 crate.spec(
     package = "rustc-hash",
     version = "=2.1.3",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -4626,14 +4648,14 @@ crate.spec(
 crate.spec(
     package = "rustc_version",
     version = "=0.4.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "rustdoc-types",
     version = "=0.59.0",
     package_alias = "rustdoc-types-0_59_0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -4643,7 +4665,7 @@ crate.spec(
     package = "rustdoc-types",
     version = "=0.60.0",
     package_alias = "rustdoc-types-0_60_0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -4652,13 +4674,13 @@ crate.spec(
 crate.spec(
     package = "rusticata-macros",
     version = "=4.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "rustix",
     version = "=1.1.6",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -4680,7 +4702,7 @@ crate.spec(
 crate.spec(
     package = "rustix-linux-procfs",
     version = "=0.1.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -4690,13 +4712,13 @@ crate.spec(
 crate.spec(
     package = "rustix-openpty",
     version = "=0.2.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "rustls",
     version = "=0.23.46",
-    default_features = True,
+    default_features = False,
     features = [
         "log",
         "logging",
@@ -4709,13 +4731,13 @@ crate.spec(
 crate.spec(
     package = "rustls-native-certs",
     version = "=0.8.4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "rustls-pki-types",
     version = "=1.15.1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -4728,13 +4750,13 @@ crate.spec(
 crate.spec(
     package = "rustls-platform-verifier",
     version = "=0.7.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "rustls-webpki",
     version = "=0.103.16",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "ring",
@@ -4745,13 +4767,13 @@ crate.spec(
 crate.spec(
     package = "rustversion",
     version = "=1.0.23",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "rusty-fork",
     version = "=0.3.1",
-    default_features = True,
+    default_features = False,
     features = [
         "timeout",
         "wait-timeout",
@@ -4761,7 +4783,7 @@ crate.spec(
 crate.spec(
     package = "ruzstd",
     version = "=0.9.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "hash",
@@ -4772,49 +4794,49 @@ crate.spec(
 crate.spec(
     package = "ryu",
     version = "=1.0.23",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "s3s",
     version = "=0.17.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "s3s-multipart",
     version = "=0.17.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "s3s-rfc2047",
     version = "=0.17.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "s3s-sigv2",
     version = "=0.17.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "s3s-sigv4",
     version = "=0.17.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "same-file",
     version = "=1.0.6",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "schemars",
     version = "=1.2.3",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "derive",
@@ -4826,25 +4848,25 @@ crate.spec(
 crate.spec(
     package = "schemars_derive",
     version = "=1.2.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "scoped-tls",
     version = "=1.0.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "scopeguard",
     version = "=1.2.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "sec1",
     version = "=0.8.1",
-    default_features = True,
+    default_features = False,
     features = [
         "ctutils",
         "default",
@@ -4858,7 +4880,7 @@ crate.spec(
 crate.spec(
     package = "secret-service",
     version = "=4.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "crypto-rust",
     ],
@@ -4867,7 +4889,7 @@ crate.spec(
 crate.spec(
     package = "security-framework",
     version = "=3.7.0",
-    default_features = True,
+    default_features = False,
     features = [
         "OSX_10_14",
         "alpn",
@@ -4879,7 +4901,7 @@ crate.spec(
 crate.spec(
     package = "security-framework-sys",
     version = "=2.17.0",
-    default_features = True,
+    default_features = False,
     features = [
         "OSX_10_10",
         "OSX_10_11",
@@ -4893,13 +4915,13 @@ crate.spec(
 crate.spec(
     package = "self_cell",
     version = "=1.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "semver",
     version = "=1.0.28",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "serde",
@@ -4910,13 +4932,13 @@ crate.spec(
 crate.spec(
     package = "seq-macro",
     version = "=0.3.6",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "serde",
     version = "=1.0.229",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -4930,7 +4952,7 @@ crate.spec(
 crate.spec(
     package = "serde-saphyr",
     version = "=2.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "comments",
         "default",
@@ -4942,19 +4964,19 @@ crate.spec(
 crate.spec(
     package = "serde-value",
     version = "=0.7.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "serde-wasm-bindgen",
     version = "=0.6.5",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "serde_bytes",
     version = "=0.11.19",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -4964,7 +4986,7 @@ crate.spec(
 crate.spec(
     package = "serde_core",
     version = "=1.0.229",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -4977,7 +4999,7 @@ crate.spec(
 crate.spec(
     package = "serde_derive",
     version = "=1.0.229",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -4987,20 +5009,20 @@ crate.spec(
     package = "serde_derive_internals",
     version = "=0.29.1",
     package_alias = "serde_derive_internals-0_29_1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "serde_derive_internals",
     version = "=0.30.0",
     package_alias = "serde_derive_internals-0_30_0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "serde_json",
     version = "=1.0.154",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -5014,19 +5036,19 @@ crate.spec(
 crate.spec(
     package = "serde_path_to_error",
     version = "=0.1.20",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "serde_repr",
     version = "=0.1.21",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "serde_spanned",
     version = "=1.1.1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "serde",
@@ -5037,14 +5059,14 @@ crate.spec(
 crate.spec(
     package = "serde_urlencoded",
     version = "=0.7.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "sha1",
     version = "=0.10.7",
     package_alias = "sha1-0_10_7",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -5055,7 +5077,7 @@ crate.spec(
     package = "sha1",
     version = "=0.11.0",
     package_alias = "sha1-0_11_0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -5067,7 +5089,7 @@ crate.spec(
     package = "sha2",
     version = "=0.10.9",
     package_alias = "sha2-0_10_9",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -5078,7 +5100,7 @@ crate.spec(
     package = "sha2",
     version = "=0.11.1",
     package_alias = "sha2-0_11_1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -5089,13 +5111,13 @@ crate.spec(
 crate.spec(
     package = "sharded-slab",
     version = "=0.1.7",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "shell-words",
     version = "=1.1.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -5105,7 +5127,7 @@ crate.spec(
 crate.spec(
     package = "shlex",
     version = "=2.0.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -5115,7 +5137,7 @@ crate.spec(
 crate.spec(
     package = "shuttle",
     version = "=0.9.8",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -5124,7 +5146,7 @@ crate.spec(
 crate.spec(
     package = "shuttle-engine",
     version = "=0.1.6",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -5133,13 +5155,13 @@ crate.spec(
 crate.spec(
     package = "shuttle-schedulers",
     version = "=0.1.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "shuttle-std",
     version = "=0.1.4",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -5149,7 +5171,7 @@ crate.spec(
     package = "signal-hook",
     version = "=0.3.18",
     package_alias = "signal-hook-0_3_18",
-    default_features = True,
+    default_features = False,
     features = [
         "channel",
         "default",
@@ -5161,7 +5183,7 @@ crate.spec(
     package = "signal-hook",
     version = "=0.4.5",
     package_alias = "signal-hook-0_4_5",
-    default_features = True,
+    default_features = False,
     features = [
         "channel",
         "default",
@@ -5172,7 +5194,7 @@ crate.spec(
 crate.spec(
     package = "signal-hook-mio",
     version = "=0.2.5",
-    default_features = True,
+    default_features = False,
     features = [
         "mio-1_0",
         "support-v1_0",
@@ -5182,13 +5204,13 @@ crate.spec(
 crate.spec(
     package = "signal-hook-registry",
     version = "=1.4.8",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "signature",
     version = "=3.0.0",
-    default_features = True,
+    default_features = False,
     features = [
         "digest",
         "rand_core",
@@ -5198,13 +5220,13 @@ crate.spec(
 crate.spec(
     package = "simd-adler32",
     version = "=0.3.10",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "simdutf8",
     version = "=0.1.5",
-    default_features = True,
+    default_features = False,
     features = [
         "aarch64_neon",
         "default",
@@ -5216,7 +5238,7 @@ crate.spec(
 crate.spec(
     package = "similar",
     version = "=2.7.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "inline",
@@ -5227,13 +5249,13 @@ crate.spec(
 crate.spec(
     package = "similar-asserts",
     version = "=1.7.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "siphasher",
     version = "=1.0.4",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -5243,7 +5265,7 @@ crate.spec(
 crate.spec(
     package = "slab",
     version = "=0.4.12",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -5253,7 +5275,7 @@ crate.spec(
 crate.spec(
     package = "smallvec",
     version = "=1.16.2",
-    default_features = True,
+    default_features = False,
     features = [
         "const_generics",
         "const_new",
@@ -5265,19 +5287,19 @@ crate.spec(
 crate.spec(
     package = "smawk",
     version = "=0.3.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "snapshot-testing",
     version = "=0.1.8",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "socket2",
     version = "=0.6.5",
-    default_features = True,
+    default_features = False,
     features = [
         "all",
     ],
@@ -5287,7 +5309,7 @@ crate.spec(
     package = "spin",
     version = "=0.10.1",
     package_alias = "spin-0_10_1",
-    default_features = True,
+    default_features = False,
     features = [
         "mutex",
         "once",
@@ -5300,7 +5322,7 @@ crate.spec(
     package = "spin",
     version = "=0.9.9",
     package_alias = "spin-0_9_9",
-    default_features = True,
+    default_features = False,
     features = [
         "barrier",
         "default",
@@ -5317,7 +5339,7 @@ crate.spec(
 crate.spec(
     package = "sse-stream",
     version = "=0.3.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "memchr",
@@ -5328,7 +5350,7 @@ crate.spec(
 crate.spec(
     package = "stable_deref_trait",
     version = "=1.2.1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
     ],
@@ -5337,13 +5359,13 @@ crate.spec(
 crate.spec(
     package = "static_assertions",
     version = "=1.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "std-next",
     version = "=0.1.9",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -5354,7 +5376,7 @@ crate.spec(
 crate.spec(
     package = "str_indices",
     version = "=0.4.4",
-    default_features = True,
+    default_features = False,
     features = [
         "simd",
     ],
@@ -5363,19 +5385,19 @@ crate.spec(
 crate.spec(
     package = "stringprep",
     version = "=0.1.5",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "strsim",
     version = "=0.11.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "strum",
     version = "=0.28.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "derive",
@@ -5387,13 +5409,13 @@ crate.spec(
 crate.spec(
     package = "strum_macros",
     version = "=0.28.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "subtle",
     version = "=2.6.1",
-    default_features = True,
+    default_features = False,
     features = [
         "const-generics",
         "default",
@@ -5406,7 +5428,7 @@ crate.spec(
     package = "syn",
     version = "=2.0.119",
     package_alias = "syn-2_0_119",
-    default_features = True,
+    default_features = False,
     features = [
         "clone-impls",
         "default",
@@ -5426,7 +5448,7 @@ crate.spec(
     package = "syn",
     version = "=3.0.9",
     package_alias = "syn-3_0_9",
-    default_features = True,
+    default_features = False,
     features = [
         "clone-impls",
         "default",
@@ -5445,7 +5467,7 @@ crate.spec(
 crate.spec(
     package = "sync_wrapper",
     version = "=1.0.2",
-    default_features = True,
+    default_features = False,
     features = [
         "futures",
         "futures-core",
@@ -5455,7 +5477,7 @@ crate.spec(
 crate.spec(
     package = "synchrony",
     version = "=0.1.9",
-    default_features = True,
+    default_features = False,
     features = [
         "waker_slot",
     ],
@@ -5465,7 +5487,7 @@ crate.spec(
     package = "synstructure",
     version = "=0.13.2",
     package_alias = "synstructure-0_13_2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "proc-macro",
@@ -5476,7 +5498,7 @@ crate.spec(
     package = "synstructure",
     version = "=0.14.0",
     package_alias = "synstructure-0_14_0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "proc-macro",
@@ -5486,13 +5508,13 @@ crate.spec(
 crate.spec(
     package = "tap",
     version = "=1.0.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "tar",
     version = "=0.4.46",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "xattr",
@@ -5502,7 +5524,7 @@ crate.spec(
 crate.spec(
     package = "tempfile",
     version = "=3.27.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "getrandom",
@@ -5512,19 +5534,19 @@ crate.spec(
 crate.spec(
     package = "termcolor",
     version = "=1.4.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "terminal_size",
     version = "=0.4.4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "textwrap",
     version = "=0.16.4",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "icu_segmenter",
@@ -5538,7 +5560,7 @@ crate.spec(
 crate.spec(
     package = "thin-cell",
     version = "=0.2.1",
-    default_features = True,
+    default_features = False,
     features = [
         "weak",
     ],
@@ -5548,14 +5570,14 @@ crate.spec(
     package = "thiserror",
     version = "=1.0.69",
     package_alias = "thiserror-1_0_69",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "thiserror",
     version = "=2.0.21",
     package_alias = "thiserror-2_0_21",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -5566,26 +5588,26 @@ crate.spec(
     package = "thiserror-impl",
     version = "=1.0.69",
     package_alias = "thiserror-impl-1_0_69",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "thiserror-impl",
     version = "=2.0.21",
     package_alias = "thiserror-impl-2_0_21",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "thread_local",
     version = "=1.1.10",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "time",
     version = "=0.3.55",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -5600,13 +5622,13 @@ crate.spec(
 crate.spec(
     package = "time-core",
     version = "=0.1.9",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "time-macros",
     version = "=0.2.32",
-    default_features = True,
+    default_features = False,
     features = [
         "formatting",
         "parsing",
@@ -5616,7 +5638,7 @@ crate.spec(
 crate.spec(
     package = "tiny-keccak",
     version = "=2.0.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "shake",
@@ -5626,7 +5648,7 @@ crate.spec(
 crate.spec(
     package = "tinystr",
     version = "=0.8.4",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "zerovec",
@@ -5636,7 +5658,7 @@ crate.spec(
 crate.spec(
     package = "tinyvec",
     version = "=1.13.3",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -5646,7 +5668,7 @@ crate.spec(
 crate.spec(
     package = "tokio",
     version = "=1.54.1",
-    default_features = True,
+    default_features = False,
     features = [
         "bytes",
         "default",
@@ -5675,13 +5697,13 @@ crate.spec(
 crate.spec(
     package = "tokio-macros",
     version = "=2.7.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "tokio-postgres",
     version = "=0.7.18",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "runtime",
@@ -5691,7 +5713,7 @@ crate.spec(
 crate.spec(
     package = "tokio-rustls",
     version = "=0.26.6",
-    default_features = True,
+    default_features = False,
     features = [
         "logging",
         "ring",
@@ -5702,7 +5724,7 @@ crate.spec(
 crate.spec(
     package = "tokio-stream",
     version = "=0.1.19",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "net",
@@ -5713,7 +5735,7 @@ crate.spec(
 crate.spec(
     package = "tokio-tungstenite",
     version = "=0.29.0",
-    default_features = True,
+    default_features = False,
     features = [
         "connect",
         "default",
@@ -5725,7 +5747,7 @@ crate.spec(
 crate.spec(
     package = "tokio-util",
     version = "=0.7.20",
-    default_features = True,
+    default_features = False,
     features = [
         "codec",
         "default",
@@ -5739,7 +5761,7 @@ crate.spec(
 crate.spec(
     package = "toml",
     version = "=1.1.6+spec-1.1.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "display",
@@ -5752,7 +5774,7 @@ crate.spec(
 crate.spec(
     package = "toml_datetime",
     version = "=1.1.1+spec-1.1.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -5764,7 +5786,7 @@ crate.spec(
 crate.spec(
     package = "toml_edit",
     version = "=0.25.15+spec-1.1.0",
-    default_features = True,
+    default_features = False,
     features = [
         "parse",
     ],
@@ -5773,7 +5795,7 @@ crate.spec(
 crate.spec(
     package = "toml_parser",
     version = "=1.1.3+spec-1.1.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -5784,7 +5806,7 @@ crate.spec(
 crate.spec(
     package = "toml_writer",
     version = "=1.1.2+spec-1.1.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "std",
@@ -5794,7 +5816,7 @@ crate.spec(
 crate.spec(
     package = "tonic",
     version = "=0.14.9",
-    default_features = True,
+    default_features = False,
     features = [
         "_tls-any",
         "channel",
@@ -5813,7 +5835,7 @@ crate.spec(
 crate.spec(
     package = "tonic-build",
     version = "=0.14.6",
-    default_features = True,
+    default_features = False,
     features = [
         "transport",
     ],
@@ -5822,13 +5844,13 @@ crate.spec(
 crate.spec(
     package = "tonic-prost",
     version = "=0.14.6",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "tonic-prost-build",
     version = "=0.14.6",
-    default_features = True,
+    default_features = False,
     features = [
         "cleanup-markdown",
         "default",
@@ -5839,13 +5861,13 @@ crate.spec(
 crate.spec(
     package = "tonic-web",
     version = "=0.14.6",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "tower",
     version = "=0.5.3",
-    default_features = True,
+    default_features = False,
     features = [
         "balance",
         "buffer",
@@ -5874,7 +5896,7 @@ crate.spec(
 crate.spec(
     package = "tower-http",
     version = "=0.6.11",
-    default_features = True,
+    default_features = False,
     features = [
         "cors",
         "default",
@@ -5887,19 +5909,19 @@ crate.spec(
 crate.spec(
     package = "tower-layer",
     version = "=0.3.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "tower-service",
     version = "=0.3.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "tracing",
     version = "=0.1.44",
-    default_features = True,
+    default_features = False,
     features = [
         "attributes",
         "default",
@@ -5912,13 +5934,13 @@ crate.spec(
 crate.spec(
     package = "tracing-attributes",
     version = "=0.1.31",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "tracing-core",
     version = "=0.1.36",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "once_cell",
@@ -5929,7 +5951,7 @@ crate.spec(
 crate.spec(
     package = "tracing-log",
     version = "=0.2.0",
-    default_features = True,
+    default_features = False,
     features = [
         "log-tracer",
         "std",
@@ -5939,7 +5961,7 @@ crate.spec(
 crate.spec(
     package = "tracing-subscriber",
     version = "=0.3.23",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "ansi",
@@ -5962,19 +5984,19 @@ crate.spec(
 crate.spec(
     package = "transform-stream",
     version = "=0.3.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "try-lock",
     version = "=0.2.5",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "ts-rs",
     version = "=12.0.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "serde-compat",
@@ -5984,7 +6006,7 @@ crate.spec(
 crate.spec(
     package = "tsify",
     version = "=0.5.8",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "js",
@@ -5996,7 +6018,7 @@ crate.spec(
 crate.spec(
     package = "tsify-macros",
     version = "=0.5.8",
-    default_features = True,
+    default_features = False,
     features = [
         "js",
         "json",
@@ -6007,7 +6029,7 @@ crate.spec(
 crate.spec(
     package = "tungstenite",
     version = "=0.29.0",
-    default_features = True,
+    default_features = False,
     features = [
         "data-encoding",
         "handshake",
@@ -6020,7 +6042,7 @@ crate.spec(
 crate.spec(
     package = "twox-hash",
     version = "=2.1.5",
-    default_features = True,
+    default_features = False,
     features = [
         "xxhash64",
     ],
@@ -6029,7 +6051,7 @@ crate.spec(
 crate.spec(
     package = "typenum",
     version = "=1.20.1",
-    default_features = True,
+    default_features = False,
     features = [
         "const-generics",
     ],
@@ -6038,19 +6060,19 @@ crate.spec(
 crate.spec(
     package = "unarray",
     version = "=0.1.4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "unicase",
     version = "=2.10.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "unicode-bidi",
     version = "=0.3.18",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "hardcoded-data",
@@ -6061,25 +6083,25 @@ crate.spec(
 crate.spec(
     package = "unicode-general-category",
     version = "=1.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "unicode-id-start",
     version = "=1.5.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "unicode-ident",
     version = "=1.0.26",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "unicode-normalization",
     version = "=0.1.26",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -6089,7 +6111,7 @@ crate.spec(
 crate.spec(
     package = "unicode-properties",
     version = "=0.1.4",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "emoji",
@@ -6100,13 +6122,13 @@ crate.spec(
 crate.spec(
     package = "unicode-segmentation",
     version = "=1.13.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "unicode-truncate",
     version = "=2.0.1",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -6115,7 +6137,7 @@ crate.spec(
 crate.spec(
     package = "unicode-width",
     version = "=0.2.2",
-    default_features = True,
+    default_features = False,
     features = [
         "cjk",
         "default",
@@ -6125,7 +6147,7 @@ crate.spec(
 crate.spec(
     package = "unicode-xid",
     version = "=0.2.6",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -6134,19 +6156,19 @@ crate.spec(
 crate.spec(
     package = "universal-hash",
     version = "=0.6.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "untrusted",
     version = "=0.9.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "url",
     version = "=2.5.8",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "serde",
@@ -6157,19 +6179,19 @@ crate.spec(
 crate.spec(
     package = "urlencoding",
     version = "=2.1.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "utf8_iter",
     version = "=1.0.4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "utf8parse",
     version = "=0.2.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
     ],
@@ -6178,7 +6200,7 @@ crate.spec(
 crate.spec(
     package = "uuid",
     version = "=1.29.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "fast-rng",
@@ -6194,7 +6216,7 @@ crate.spec(
 crate.spec(
     package = "uuid-simd",
     version = "=0.8.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "detect",
@@ -6205,19 +6227,19 @@ crate.spec(
 crate.spec(
     package = "vcpkg",
     version = "=0.2.15",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "version_check",
     version = "=0.9.5",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "vhost",
     version = "=0.18.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "vhost-user",
@@ -6229,19 +6251,19 @@ crate.spec(
 crate.spec(
     package = "virtio-bindings",
     version = "=0.2.7",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "virtio-queue",
     version = "=0.18.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "vm-memory",
     version = "=0.18.0",
-    default_features = True,
+    default_features = False,
     features = [
         "backend-mmap",
         "default",
@@ -6252,13 +6274,13 @@ crate.spec(
 crate.spec(
     package = "vmm-sys-util",
     version = "=0.15.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "vsimd",
     version = "=0.8.0",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "detect",
@@ -6269,7 +6291,7 @@ crate.spec(
 crate.spec(
     package = "vte",
     version = "=0.15.0",
-    default_features = True,
+    default_features = False,
     features = [
         "ansi",
         "bitflags",
@@ -6284,25 +6306,25 @@ crate.spec(
 crate.spec(
     package = "wait-timeout",
     version = "=0.2.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "walkdir",
     version = "=2.5.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "want",
     version = "=0.3.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "wasm-bindgen",
     version = "=0.2.117",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -6312,7 +6334,7 @@ crate.spec(
 crate.spec(
     package = "wasm-bindgen-futures",
     version = "=0.4.67",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -6322,25 +6344,25 @@ crate.spec(
 crate.spec(
     package = "wasm-bindgen-macro",
     version = "=0.2.117",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "wasm-bindgen-macro-support",
     version = "=0.2.117",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "wasm-bindgen-shared",
     version = "=0.2.117",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "web-sys",
     version = "=0.3.94",
-    default_features = True,
+    default_features = False,
     features = [
         "AbortController",
         "AbortSignal",
@@ -6429,19 +6451,19 @@ crate.spec(
 crate.spec(
     package = "web-time",
     version = "=1.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "webpki-roots",
     version = "=1.0.10",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "which",
     version = "=8.0.6",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "real-sys",
@@ -6451,7 +6473,7 @@ crate.spec(
 crate.spec(
     package = "whoami",
     version = "=2.1.3",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -6463,7 +6485,7 @@ crate.spec(
 crate.spec(
     package = "winapi",
     version = "=0.3.9",
-    default_features = True,
+    default_features = False,
     features = [
         "consoleapi",
         "errhandlingapi",
@@ -6481,13 +6503,13 @@ crate.spec(
 crate.spec(
     package = "winapi-util",
     version = "=0.1.11",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "windows",
     version = "=0.62.2",
-    default_features = True,
+    default_features = False,
     features = [
         "Wdk",
         "Wdk_Foundation",
@@ -6519,7 +6541,7 @@ crate.spec(
 crate.spec(
     package = "windows-collections",
     version = "=0.3.2",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -6528,7 +6550,7 @@ crate.spec(
 crate.spec(
     package = "windows-core",
     version = "=0.62.2",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -6538,7 +6560,7 @@ crate.spec(
 crate.spec(
     package = "windows-future",
     version = "=0.3.2",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -6547,25 +6569,25 @@ crate.spec(
 crate.spec(
     package = "windows-implement",
     version = "=0.60.2",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "windows-interface",
     version = "=0.59.3",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "windows-link",
     version = "=0.2.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "windows-numerics",
     version = "=0.3.1",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -6574,7 +6596,7 @@ crate.spec(
 crate.spec(
     package = "windows-result",
     version = "=0.4.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -6584,7 +6606,7 @@ crate.spec(
 crate.spec(
     package = "windows-strings",
     version = "=0.5.1",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -6594,7 +6616,7 @@ crate.spec(
     package = "windows-sys",
     version = "=0.59.0",
     package_alias = "windows-sys-0_59_0",
-    default_features = True,
+    default_features = False,
     features = [
         "Win32",
         "Win32_Foundation",
@@ -6628,7 +6650,7 @@ crate.spec(
     package = "windows-sys",
     version = "=0.60.2",
     package_alias = "windows-sys-0_60_2",
-    default_features = True,
+    default_features = False,
     features = [
         "Win32",
         "Win32_Foundation",
@@ -6646,7 +6668,7 @@ crate.spec(
     package = "windows-sys",
     version = "=0.61.2",
     package_alias = "windows-sys-0_61_2",
-    default_features = True,
+    default_features = False,
     features = [
         "Wdk",
         "Wdk_Foundation",
@@ -6699,40 +6721,40 @@ crate.spec(
     package = "windows-targets",
     version = "=0.52.6",
     package_alias = "windows-targets-0_52_6",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "windows-targets",
     version = "=0.53.5",
     package_alias = "windows-targets-0_53_5",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "windows-threading",
     version = "=0.2.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "windows_x86_64_msvc",
     version = "=0.52.6",
     package_alias = "windows_x86_64_msvc-0_52_6",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "windows_x86_64_msvc",
     version = "=0.53.1",
     package_alias = "windows_x86_64_msvc-0_53_1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "winnow",
     version = "=1.0.4",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "ascii",
@@ -6746,19 +6768,19 @@ crate.spec(
 crate.spec(
     package = "winx",
     version = "=0.36.4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "wnaf",
     version = "=0.14.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "writeable",
     version = "=0.6.4",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -6768,13 +6790,13 @@ crate.spec(
 crate.spec(
     package = "wyz",
     version = "=0.5.1",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "x509-parser",
     version = "=0.18.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "ring",
@@ -6785,7 +6807,7 @@ crate.spec(
 crate.spec(
     package = "xattr",
     version = "=1.6.1",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "unsupported",
@@ -6795,13 +6817,13 @@ crate.spec(
 crate.spec(
     package = "xdg-home",
     version = "=1.3.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "xxhash-rust",
     version = "=0.8.18",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
         "xxh3",
@@ -6812,7 +6834,7 @@ crate.spec(
 crate.spec(
     package = "yasna",
     version = "=0.6.0",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "std",
@@ -6823,7 +6845,7 @@ crate.spec(
 crate.spec(
     package = "yoke",
     version = "=0.8.3",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "derive",
@@ -6834,31 +6856,31 @@ crate.spec(
 crate.spec(
     package = "yoke-derive",
     version = "=0.8.4",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "zbus",
     version = "=4.4.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "zbus_macros",
     version = "=4.4.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "zbus_names",
     version = "=3.0.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "zerocopy",
     version = "=0.8.60",
-    default_features = True,
+    default_features = False,
     features = [
         "derive",
         "simd",
@@ -6869,13 +6891,13 @@ crate.spec(
 crate.spec(
     package = "zerocopy-derive",
     version = "=0.8.60",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "zerofrom",
     version = "=0.1.8",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "derive",
@@ -6885,13 +6907,13 @@ crate.spec(
 crate.spec(
     package = "zerofrom-derive",
     version = "=0.1.8",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "zeroize",
     version = "=1.9.1",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "default",
@@ -6903,13 +6925,13 @@ crate.spec(
 crate.spec(
     package = "zeroize_derive",
     version = "=1.5.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "zerotrie",
     version = "=0.2.5",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "yoke",
@@ -6920,7 +6942,7 @@ crate.spec(
 crate.spec(
     package = "zerovec",
     version = "=0.11.8",
-    default_features = True,
+    default_features = False,
     features = [
         "alloc",
         "derive",
@@ -6931,13 +6953,13 @@ crate.spec(
 crate.spec(
     package = "zerovec-derive",
     version = "=0.11.6",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "zlib-rs",
     version = "=0.6.8",
-    default_features = True,
+    default_features = False,
     features = [
         "rust-allocator",
         "std",
@@ -6947,13 +6969,13 @@ crate.spec(
 crate.spec(
     package = "zmij",
     version = "=1.0.23",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "zune-core",
     version = "=0.5.3",
-    default_features = True,
+    default_features = False,
     features = [
         "std",
     ],
@@ -6962,7 +6984,7 @@ crate.spec(
 crate.spec(
     package = "zune-jpeg",
     version = "=0.5.15",
-    default_features = True,
+    default_features = False,
     features = [
         "default",
         "neon",
@@ -6974,7 +6996,7 @@ crate.spec(
 crate.spec(
     package = "zvariant",
     version = "=4.2.0",
-    default_features = True,
+    default_features = False,
     features = [
         "enumflags2",
     ],
@@ -6983,18 +7005,19 @@ crate.spec(
 crate.spec(
     package = "zvariant_derive",
     version = "=4.2.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.spec(
     package = "zvariant_utils",
     version = "=2.1.0",
-    default_features = True,
+    default_features = False,
 )
 
 crate.from_specs(
     name = "sdk_crates",
     lockfile = "//:cargo-bazel-lock.json",
+    cargo_lockfile = "//:cargo-bazel.Cargo.lock",
     supported_platform_triples = [
         "x86_64-unknown-linux-gnu",
         "aarch64-apple-darwin",
