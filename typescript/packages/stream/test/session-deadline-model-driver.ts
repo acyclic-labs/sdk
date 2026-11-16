@@ -160,6 +160,9 @@ async function command(action: string): Promise<unknown> {
         await new Promise<void>(resolve => { releaseReconnect = resolve; });
       };
       peer.disconnect();
+      // The physical interruption travels through the real WASM session before
+      // it asks for the next transport; the model observes that actual attempt.
+      await peer.until(() => connecting);
       break;
     case "releaseReconnect": peer.beforeConnect = undefined; releaseReconnect?.(); break;
     case "cleanup": cleanup = true; stoppedAt ??= seen; cancel.abort(); break;
