@@ -1264,7 +1264,7 @@ mod tests {
     }
 }
 
-use crate::{AgentPageRequest, AgentReply};
+use crate::AgentReply;
 use acyclic_harness_core::agent::Error as AgentError;
 use acyclic_stream::StreamError;
 

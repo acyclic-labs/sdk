@@ -32,7 +32,7 @@ mod command;
 pub use acyclic_harness_core::conversation::DirectoryTarget;
 pub use command::{
     AgentCommand, AgentPageRequest, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
-    MAX_READ_BYTES, PreparedCommand, ReadTarget, SessionsScope,
+    MAX_READ_BYTES, PageCredit, PreparedCommand, ReadTarget, SessionsScope, page_json_bytes,
 };
 mod reply;
 pub use reply::{
