@@ -199,6 +199,7 @@ fn rate_refusal_paces_its_waiters_across_the_provider_window() -> Result<()> {
                 assert!(response.next().now_or_never().is_none());
             }
             assert_eq!(transport.log.lock().unwrap().len(), accepted + 1);
+            tokio::time::advance(Duration::from_nanos(1)).await;
             let interval = RETRY_AFTER / WAITERS;
             for index in 0..WAITERS {
                 if index > 0 {
