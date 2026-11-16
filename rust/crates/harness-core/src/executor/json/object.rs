@@ -4,10 +4,10 @@ use std::fmt;
 
 /// Struct derives also accept positional arrays. This seed forwards only a map
 /// to the same derive, borrowing its original keys and values without buffering.
-pub(crate) struct JsonObject<S>(pub S);
+pub struct JsonObject<S>(pub S);
 
 /// Decode one complete typed object without a JSON tree or trailing input.
-pub(crate) fn decode_object<'de, T: serde::Deserialize<'de>>(
+pub fn decode_object<'de, T: serde::Deserialize<'de>>(
     bytes: &'de [u8],
 ) -> serde_json::Result<T> {
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
@@ -17,7 +17,7 @@ pub(crate) fn decode_object<'de, T: serde::Deserialize<'de>>(
 }
 
 /// Field adapter over the same seed, with the field's original value layout.
-pub(crate) fn deserialize_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+pub fn deserialize_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: serde::Deserialize<'de>,
