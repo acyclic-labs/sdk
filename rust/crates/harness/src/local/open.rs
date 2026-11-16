@@ -348,7 +348,7 @@ impl Opening {
         let provider_ref = owner.project.provider();
         let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?
             .with_changes(filesystem.stream_provider())?;
-        let issuer = AuthorityRoot::bootstrap(
+        let issuer = AuthorityRoot::bootstrap_with_clock(
             "acyclic.local",
             &owner.key_ref,
             custody,
@@ -356,6 +356,7 @@ impl Opening {
                 kind: AggregateKind::Task,
                 id: owner.task.to_string(),
             },
+            self.config.clock.clone(),
         )?;
         // Related session-volume and seed frames share one existing provider drain.
         // The boundary precedes workspace/root observations of those references.

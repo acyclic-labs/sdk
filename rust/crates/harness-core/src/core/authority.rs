@@ -365,6 +365,24 @@ impl AuthorityRoot {
             .map_err(|error| Error::Unauthorized(error.to_string()))
     }
 
+    /// Bootstrap a native authority whose issuance and admission share `clock`.
+    /// The clock cannot be replaced after publication or supplied by a guest
+    /// request.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn bootstrap_with_clock(
+        id: impl Into<String>,
+        reference: &acyclic_native_runtime::signing_key::SigningKeyReference,
+        custody: acyclic_native_runtime::signing_key::SigningCustody<'_>,
+        audience: Authority,
+        clock: std::sync::Arc<dyn acyclic_stream::UnixMillisClock>,
+    ) -> Result<Self> {
+        reference
+            .with_seed(custody, move |seed| {
+                Self::with_clock(id, *seed, audience, clock)
+            })
+            .map_err(|error| Error::Unauthorized(error.to_string()))
+    }
+
     /// Creates an issuer from host-managed key material.
     #[must_use]
     pub fn new(id: impl Into<String>, key: [u8; 32], audience: Authority) -> Self {
