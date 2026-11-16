@@ -168,6 +168,10 @@ fn directory(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
 
+fn display_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 async fn populate<A, O>(
     host: &FilesystemHost<A, O>,
     verifier: &AuthorityVerifier,
@@ -204,7 +208,7 @@ where
         path,
         b"declared\n",
         "text/plain",
-        path,
+        display_name(path),
         Some(64),
         &IdempotencyKey::new(format!("populate:{path}"))?,
         None,
@@ -319,7 +323,7 @@ where
                     path,
                     b"declared\n",
                     "text/plain",
-                    path,
+                    display_name(path),
                     Some(64),
                     &IdempotencyKey::new(format!("check:{label}")).map_err(|error| format!("{label}: key: {error}"))?,
                     None,
@@ -380,7 +384,7 @@ where
                 path,
                 b"declared\n",
                 "text/plain",
-                path,
+                display_name(path),
                 Some(64),
                 &IdempotencyKey::new(format!("check:{label}")).map_err(|error| format!("{label}: key: {error}"))?,
                 None,
@@ -564,7 +568,6 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 }
                 _ => {
                     let custody_dir = directory.path().join("signing");
-                    std::fs::create_dir(&custody_dir).map_err(oracle::failed)?;
                     let signing = SigningCustody::PrivateFile(&custody_dir);
                     let reference = SigningKeyReference::create(signing)
                         .map_err(oracle::failed)?
