@@ -62,6 +62,11 @@ proptest! {
         if change == 1 { actual_root[0] ^= 1; }
         let result = completed(&journal, NativeRootIdentity::from_bytes(actual_root), if change == 2 { mutate(from) } else { from }, if change == 3 { mutate(to) } else { to });
         prop_assert_eq!(result.is_ok(), change == 0);
+        if let Err(error) = &result {
+            // A publication refusal is model feedback, never a handler
+            // failure that ends the owner.
+            prop_assert!(error.is_tool_failure());
+        }
         if let Ok(applied) = result { prop_assert_eq!(applied, phase == 3); }
         // Negative control: checking the phase alone acknowledges a foreign root
         // or transition. The production binding check must reject that shape.
@@ -1212,6 +1217,40 @@ async fn prepared_adapter_resumes_original_checkout_and_preserves_acknowledged_e
         .await?
         .assert_resume_and_acknowledgement(Adapter::Prepared)
         .await
+}
+
+#[tokio::test]
+async fn applied_publication_is_acknowledged_after_the_logical_head_advances() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let operation = OperationId::new();
+    fixture
+        .publish(Adapter::Prepared, operation, &fixture.from)
+        .await?;
+    // Another writer advances the logical head after this operation was
+    // acknowledged. Retrying the same operation must resume its original
+    // transition, not refuse it against the newer head.
+    let workspace = fixture.to.workspace();
+    workspace.write_text("/later", "later").await?;
+    let later = workspace
+        .head(&fixture.work, fixture.work.cancellation())
+        .await?;
+    let publication = fixture.publication(operation)?;
+    let options = MaterializeOptions::native(publication.directory().join("target"));
+    publication
+        .publish(
+            &later,
+            &later,
+            &fixture.state,
+            &options,
+            (&fixture.work, None),
+            || std::future::ready(Ok(())),
+        )
+        .await?;
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join("note"))?,
+        "candidate"
+    );
+    Ok(())
 }
 
 #[tokio::test]

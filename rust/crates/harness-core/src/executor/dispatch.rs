@@ -697,6 +697,7 @@ impl StockExecution<'_> {
         let step = dispatch.step;
         let purpose_key = model_purpose_key(purpose);
         let io = self.io;
+        let mut progress = super::model_progress::Progress::default();
         // Every failure to consume or record the live stream leaves through the
         // one recorder below, after this block has released the journal writer.
         let consumed = async {
@@ -728,6 +729,9 @@ impl StockExecution<'_> {
                     break;
                 };
                 let event = event?;
+                if purpose == ModelPurpose::Response {
+                    progress.observe(&event)?;
+                }
                 clock.observe(&event);
                 let latency_ns = matches!(event, ModelEvent::Completed { .. })
                     .then(|| clock.elapsed_ns())

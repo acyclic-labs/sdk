@@ -1,4 +1,8 @@
 use super::*;
+
+/// Full-tree materializations performed in this process, for cost tests.
+#[cfg(feature = "test-support")]
+pub static EXACTIFY_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 impl<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
@@ -15,6 +19,8 @@ impl<
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
+        #[cfg(feature = "test-support")]
+        EXACTIFY_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let lookup = self.inspect(root, ctx).await?;
         let directory = lookup.0.stat().kind == SourceNodeKind::Directory;
         self.retire_lookup(lookup, ctx)?;

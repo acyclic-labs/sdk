@@ -24,8 +24,10 @@ pub(super) struct Generator {
 /// Every class generator.
 pub(super) const GENERATORS: &[&Generator] = &[
     &super::settlement::GENERATOR,
+    &super::compaction::GENERATOR,
     &super::redelivery::GENERATOR,
     &super::containment::GENERATOR,
+    &super::grants::GENERATOR,
 ];
 
 impl Generator {

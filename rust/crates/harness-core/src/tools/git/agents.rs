@@ -13,10 +13,12 @@ where
         current: GitTreeRef,
         stat: bool,
     ) -> crate::Result<super::Output<P, O>> {
-        let (target, target_view) = self.agent_view(branch, current).await?;
+        let (target, target_view) = self.agent_view(branch, current.clone()).await?;
         // Both sides must include the same inherited source namespace before
-        // attributing parent changes against the refined common ancestor.
-        let parent_tree = self.lazy_current.tree(true, self.permit).await?;
+        // attributing parent changes against the refined common ancestor. The
+        // command's own tree is already exact; materializing it again would
+        // scan the whole checkout for every diff.
+        let parent_tree = current;
         let target_tree = target_view
             .view()
             .tree(

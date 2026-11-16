@@ -272,7 +272,6 @@ fn start_inner(
             && unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0
     });
     let (reply, reply_end) = pipe()?;
-    let report = command.boundary.as_ref().map(|_| pipe()).transpose()?;
     // Granted launches reuse this original descriptor role for the held cwd.
     // Trusted launches retain the owner's cwd, followed by their path change.
     // A path descriptor is enough for fchdir and needs no read access.
@@ -287,7 +286,6 @@ fn start_inner(
         directory.unwrap_or(directory_handle).as_raw_fd(),
         reply_end.as_raw_fd(),
         directory_handle.as_raw_fd(),
-        -1,
         -1,
         -1,
         -1,
@@ -319,11 +317,6 @@ fn start_inner(
         *descriptors
             .get_mut(count)
             .ok_or(io::ErrorKind::InvalidInput)? = boundary;
-        count += 1;
-        let (_, report_end) = report.as_ref().ok_or(io::ErrorKind::InvalidInput)?;
-        *descriptors
-            .get_mut(count)
-            .ok_or(io::ErrorKind::InvalidInput)? = report_end.as_raw_fd();
         count += 1;
     }
     if let Some(activity) = activity {
@@ -378,10 +371,6 @@ fn start_inner(
     // Only the runner and its clone hold the child's ends now.
     drop(theirs);
     drop(reply_end);
-    let report = report.map(|(read, write)| {
-        drop(write);
-        File::from(read)
-    });
     drop(here);
     let mut replied = Vec::new();
     if activity.is_some() {
@@ -412,13 +401,12 @@ fn start_inner(
         }));
     };
     let [stdin, stdout, stderr] = ours;
-    let mut child = Child::new(
+    let child = Child::new(
         pid,
         stdin.map(Into::into),
         stdout.map(Into::into),
         stderr.map(Into::into),
     );
-    child.completion_report = report;
     Ok((child, failure.map_or(Ok(()), Err)))
 }
 

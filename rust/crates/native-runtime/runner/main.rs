@@ -333,8 +333,7 @@ fn warden(spec: &Spec) -> ! {
     report(spec.reply, STARTED, sys::getpid());
     // Still the runner's group, which the warden returns to.
     let home = sys::getpgrp();
-    let Errno(error) = match warden::enter(spec.directory, spec.owner, home, spec.completion_report)
-    {
+    let Errno(error) = match warden::enter(spec.directory, spec.owner, home) {
         Ok(()) => exec(spec),
         Err(error) => error,
     };

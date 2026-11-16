@@ -98,7 +98,7 @@ impl FileTool {
         )?;
 
         if matches!(self, Self::Write) && super::record::selected(invocation) {
-            return super::record::prepare(context, invocation, work);
+            return super::record::run(context, invocation, work).await;
         }
 
         let file = match self {
@@ -382,7 +382,7 @@ impl ToolExecutor for FileTool {
         Ok((matches!(self, Self::Write)
             && invocation.name == "write"
             && super::record::selected(invocation)
-            && result.value.get("report").is_some())
+            && result.value.get("reports").is_some())
         .then_some(crate::executor::ToolRecordKind::Feedback))
     }
 
@@ -424,10 +424,9 @@ impl ToolExecutor for FileTool {
             return Err(unauthorized());
         }
         let (file, _custody) = self.preflight(scope, context, invocation, work)?;
-        if super::record::selected(invocation) {
+        if matches!(self, Self::Write) && super::record::selected(invocation) {
             let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
-            if !matches!(self, Self::Write)
-                || context.and_then(|context| context.agent()).is_none()
+            if context.and_then(|context| context.agent()).is_none()
                 || !scope.grants().contains("tool:call:write")
                 || input
                     .0
@@ -584,9 +583,10 @@ impl ToolExecutor for FileTool {
                 ));
             }
             if matches!(self, Self::Write) && super::record::selected(invocation) {
-                let (result, custody) = super::record::prepare(context, invocation, Some(work))?;
+                let (result, custody) =
+                    super::record::reconcile(context, invocation, Some(work)).await?;
                 return Ok((
-                    Some(result),
+                    result,
                     custody.ok_or(rejection(Some(work), "record result lacks native custody"))?,
                 ));
             }

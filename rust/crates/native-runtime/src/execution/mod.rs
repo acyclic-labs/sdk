@@ -96,20 +96,6 @@ impl std::fmt::Display for ExecutionRefusal {
 
 impl std::error::Error for ExecutionRefusal {}
 
-/// Root exit left unfinished or failed descendants in the command tree.
-#[derive(Debug)]
-pub struct ExecutionIncomplete;
-
-impl std::fmt::Display for ExecutionIncomplete {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(
-            "sandbox command left unfinished or failed descendants; command tree cleaned up",
-        )
-    }
-}
-
-impl std::error::Error for ExecutionIncomplete {}
-
 #[derive(Debug)]
 struct Grant {
     workspace: BoundPath,

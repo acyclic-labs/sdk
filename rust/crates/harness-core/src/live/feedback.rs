@@ -33,6 +33,14 @@ pub enum Kind {
 /// The self-scoped file whose writes append ordinary execution observations.
 pub const PATH: &str = "live/agents/self/feedback.jsonl";
 
+/// Whether `path` names the one feedback sink under any workspace volume
+/// qualifier. The relative path is reserved: `live/agents/self/feedback.jsonl`
+/// and `volume:///<name>/live/agents/self/feedback.jsonl` both select it.
+#[must_use]
+pub fn is_sink(path: &str) -> bool {
+    crate::workspace::split_address(path).is_ok_and(|(_, relative)| relative == PATH)
+}
+
 /// Agent estimates, not measured usage or billing facts.
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,

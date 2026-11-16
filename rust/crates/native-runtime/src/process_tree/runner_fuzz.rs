@@ -128,7 +128,7 @@ fn fields(spec: &request::Spec, received: &request::Received, bytes: &[u8]) -> C
         .ok_or("decoded request has no stream slots")?;
     let sent = slots.iter().filter(|&&slot| slot == 1).count();
     require(
-        received.count == 3 + sent + 2 * usize::from(flags & 8 != 0) + usize::from(flags & 16 != 0),
+        received.count == 3 + sent + usize::from(flags & 8 != 0) + usize::from(flags & 16 != 0),
         "descriptor roles did not consume every original descriptor",
     )?;
     require(
@@ -188,11 +188,7 @@ fn fields(spec: &request::Spec, received: &request::Received, bytes: &[u8]) -> C
     }
     if let Some(policy) = spec.boundary.as_ref() {
         require(policy.ruleset == descriptor, "ruleset descriptor changed")?;
-        require(
-            spec.completion_report == descriptor + 1,
-            "report descriptor changed",
-        )?;
-        descriptor += 2;
+        descriptor += 1;
     }
     require(
         spec.activity == (flags & 16 != 0).then_some(descriptor),

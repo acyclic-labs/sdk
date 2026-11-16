@@ -15,12 +15,14 @@ use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
 mod clocks;
+mod compaction;
 mod containment;
 mod coverage;
 mod digest;
 mod driver;
 mod family;
 mod flushes;
+mod grants;
 mod oracle;
 mod recovery;
 mod redelivery;
