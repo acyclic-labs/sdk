@@ -1262,7 +1262,7 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         Some("lazy-v1")
     );
     assert!(initial_ui.entries.iter().any(|entry| entry.name == "title"));
-    let (input, started_position, local_started) = {
+    let (started_position, local_started) = {
         let ui_wait = ui_query(Some(initial_ui.generation.clone()));
         let ui_changed = remote_connection.execute(&ui_wait);
         tokio::pin!(ui_changed);
@@ -1279,7 +1279,7 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
             return Err(Error::Conflict("remote computed UI event reply".into()));
         };
         assert_ne!(changed_ui.generation, initial_ui.generation);
-        (input, started_position, local_started)
+        (started_position, local_started)
     };
     let local_cut = local_feed.root_cut().await?;
     let remote_cut = remote_feed.root_cut().await?;

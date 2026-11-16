@@ -160,12 +160,6 @@ impl LocalHarness {
     ) -> acyclic_stream::BoxProviderFuture<'static, Result<PreparedLocalHarness>> {
         Box::pin(open::prepare(config))
     }
-    #[cfg(any(test, not(target_arch = "wasm32")))]
-    fn agent(&self) -> Result<&(Model, Arc<dyn ModelProvider>)> {
-        self.agent.as_ref().ok_or_else(|| {
-            Error::Unsupported("native hosts own their agent loop and tool execution".into())
-        })
-    }
     /// Opens durable local state and assembles the agent host's bindings.
     pub fn open(
         config: LocalHarnessConfig,

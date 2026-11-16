@@ -12,7 +12,6 @@ use crate::{
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock, wire};
 use acyclic_fs::{EmbeddedCapabilities, LogicalObjectStore};
 use acyclic_harness_client::{AgentControlFailure, PreparedCommand, decode_agent_reply};
-use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{MemoryStream, session::Client, testing::Counted};
 use prost::Message as _;
 use std::sync::atomic::{AtomicBool, Ordering};

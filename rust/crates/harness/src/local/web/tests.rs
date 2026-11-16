@@ -507,10 +507,6 @@ async fn search_provider_http_failure_is_a_schema_valid_refusal_for_the_next_mod
     Ok(())
 }
 
-async fn serve(content: String) -> Result<(String, tokio::task::JoinHandle<Result<()>>)> {
-    serve_response(200, "Content-Type: text/plain; charset=utf-8\r\n", content).await
-}
-
 async fn serve_response(
     status: u16,
     headers: &str,

@@ -42,7 +42,7 @@ impl Cursor {
         // directory as capture discovers it.
         options.recursive = cfg!(any(target_os = "macos", windows));
         #[cfg(not(target_os = "macos"))]
-        let mut watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
+        let watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
             .map_err(storage)?;
         // FSEvents' held-source adapter requires retained native custody. Linux
         // selects its held source for a nonrecursive watch, Windows always.
