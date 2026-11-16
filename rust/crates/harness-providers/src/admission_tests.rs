@@ -530,7 +530,7 @@ fn cancelling_an_observed_admission_releases_original_queue_custody() {
             assert!(waiting.next().now_or_never().is_none());
             if at_finish {
                 tokio::time::advance(RETRY_AFTER).await;
-                held.waited();
+                held.waited(transport.now());
                 assert!(matches!(
                     waiting.next().await,
                     Some(Ok(Event::Wait(ModelWait::AdmissionFinished { .. })))
@@ -541,7 +541,7 @@ fn cancelling_an_observed_admission_releases_original_queue_custody() {
                 drop(waiting);
                 assert_eq!(work.live_allocation_bytes(), baseline);
                 tokio::time::advance(RETRY_AFTER).await;
-                held.waited();
+                held.waited(transport.now());
             }
             assert_eq!(work.live_allocation_bytes(), baseline);
             assert!(gate.lock().waiters.is_empty());

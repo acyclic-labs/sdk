@@ -180,15 +180,19 @@ impl HttpTransport for Bounded {
 
 /// The typed failure of an explicitly selected request deadline.
 fn timeout(native: bool, millis: u64, first_byte: bool) -> Error {
-    acyclic_harness_provider_response::transport_failure(
-        native,
-        ModelTransportFailure::Timeout,
-        if first_byte {
-            format_args!("no response headers within {millis} ms")
-        } else {
-            format_args!("exchange exceeded {millis} ms")
-        },
-    )
+    if first_byte {
+        acyclic_harness_provider_response::transport_failure(
+            native,
+            ModelTransportFailure::Timeout,
+            format_args!("no response headers within {millis} ms"),
+        )
+    } else {
+        acyclic_harness_provider_response::transport_failure(
+            native,
+            ModelTransportFailure::Timeout,
+            format_args!("exchange exceeded {millis} ms"),
+        )
+    }
 }
 
 /// A platform timer: portable, or admitted on the native ledger.
