@@ -85,7 +85,7 @@ impl CredentialInputs {
         };
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.state.read(select).map(|(_, credential)| credential)
+            self.state.read(false, select).map(|(_, credential)| credential)
         }
         #[cfg(target_arch = "wasm32")]
         {

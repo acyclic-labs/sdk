@@ -1,5 +1,5 @@
 use crate::{
-    Adapter, Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel, invalid,
+    Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedModel, invalid,
 };
 use acyclic_harness_core::{Result, model::Model};
 use std::{collections::BTreeMap, sync::Arc};

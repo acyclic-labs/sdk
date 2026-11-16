@@ -38,7 +38,7 @@ fn model(broken: bool, failed: bool) {
             let (snapshot, reads) = (snapshot.clone(), reads.clone());
             tasks.push(loom::thread::spawn(move || {
                 snapshot
-                    .read(|value| {
+                    .read(false, |value| {
                         let value = value.get_or_insert_with(|| {
                             reads.fetch_add(1, Ordering::SeqCst);
                             loom::thread::yield_now();
@@ -59,14 +59,14 @@ fn model(broken: bool, failed: bool) {
             "credential sources observed twice"
         );
         let (old, _) = snapshot
-            .read(|value| {
+            .read(false, |value| {
                 assert_eq!(*value, Some(expected));
                 Ok(())
             })
             .unwrap();
         revision.store(1, Ordering::SeqCst);
         let (new, _) = snapshot
-            .read(|value| {
+            .read(false, |value| {
                 assert_eq!(*value, None, "stale credential generation");
                 Ok(())
             })
@@ -74,14 +74,14 @@ fn model(broken: bool, failed: bool) {
         assert_ne!(old, new);
         snapshot.publish(old, Some(expected)).unwrap();
         snapshot
-            .read(|value| {
+            .read(false, |value| {
                 assert_eq!(*value, None, "stale publication won");
                 Ok(())
             })
             .unwrap();
         snapshot.publish(new, Some(Ok((3, 4)))).unwrap();
         snapshot
-            .read(|value| {
+            .read(false, |value| {
                 assert_eq!(*value, Some(Ok((3, 4))));
                 Ok(())
             })
