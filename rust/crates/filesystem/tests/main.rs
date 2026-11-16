@@ -13,10 +13,14 @@ mod native_watch_events;
 #[cfg(not(loom))]
 acyclic_test_support::counting_allocator!();
 
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+mod computed_folds;
 #[cfg(not(loom))]
 mod core_group_commit;
 #[cfg(not(loom))]
 mod distributed;
+#[cfg(all(not(loom), not(target_arch = "wasm32"), feature = "test-support"))]
+mod hosted_sources;
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(loom))]
 mod linux_ext4_perf;
