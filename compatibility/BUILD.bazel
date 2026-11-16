@@ -21,7 +21,7 @@ cargo_build_script(
         "src/place.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + select({"//:linux-x86_64":["@crates__protoc-bin-vendored-linux-x86_64-3.3.0//:bin/protoc","@crates__protoc-bin-vendored-linux-x86_64-3.3.0//:include"],"//:macos-aarch64":["@crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:bin/protoc","@crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:include"]}, no_match_error = "acyclic-proto-build: build-script-env names no file for this platform"),
+    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + select({"//:linux-x86_64":["@crates__protoc-bin-vendored-linux-x86_64-3.3.0//:bin/protoc","@crates__protoc-bin-vendored-linux-x86_64-3.3.0//:include"],"//:macos-aarch64":["@crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:bin/protoc","@crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:include"],"//:windows-x86_64":["@crates__protoc-bin-vendored-win32-3.3.0//:bin/protoc.exe","@crates__protoc-bin-vendored-win32-3.3.0//:include"]}, no_match_error = "acyclic-proto-build: build-script-env names no file for this platform"),
     pkg_name = "acyclic-proto-build",
     edition = "2024",
     version = "0.2.0",
@@ -35,7 +35,7 @@ cargo_build_script(
         "--check-cfg=cfg(kani)",
     ],
     lint_config = ":lints",
-    build_script_env = PACKAGE_ENV | select({"//:linux-x86_64":{"PROTOC":"$(execpath @crates__protoc-bin-vendored-linux-x86_64-3.3.0//:bin/protoc)","PROTOC_INCLUDE":"$(execpath @crates__protoc-bin-vendored-linux-x86_64-3.3.0//:include)"},"//:macos-aarch64":{"PROTOC":"$(execpath @crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:bin/protoc)","PROTOC_INCLUDE":"$(execpath @crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:include)"}}, no_match_error = "acyclic-proto-build: build-script-env names no file for this platform"),
+    build_script_env = PACKAGE_ENV | select({"//:linux-x86_64":{"PROTOC":"$(execpath @crates__protoc-bin-vendored-linux-x86_64-3.3.0//:bin/protoc)","PROTOC_INCLUDE":"$(execpath @crates__protoc-bin-vendored-linux-x86_64-3.3.0//:include)"},"//:macos-aarch64":{"PROTOC":"$(execpath @crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:bin/protoc)","PROTOC_INCLUDE":"$(execpath @crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:include)"},"//:windows-x86_64":{"PROTOC":"$(execpath @crates__protoc-bin-vendored-win32-3.3.0//:bin/protoc.exe)","PROTOC_INCLUDE":"$(execpath @crates__protoc-bin-vendored-win32-3.3.0//:include)"}}, no_match_error = "acyclic-proto-build: build-script-env names no file for this platform"),
     deps = [
         "@crates//protoc-bin-vendored-linux-aarch_64-3.3.0",
         "@crates//protoc-bin-vendored-linux-ppcle_64-3.3.0",

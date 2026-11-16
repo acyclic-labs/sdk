@@ -9,7 +9,9 @@ bazel_dep(name = "toolchains_musl", version = "0.2.0")
 # rules_rust, patched:
 # - rust_check_aspect type-checks crates to metadata, as cargo check does;
 # - rustc compiles the main repository's crates incrementally into the directory a host names with
-#   --@rules_rust//rust/settings:incremental_dir.
+#   --@rules_rust//rust/settings:incremental_dir;
+# - build scripts see the toolchain's extra rustc flags in CARGO_ENCODED_RUSTFLAGS and CARGO_CFG_*, as
+#   Cargo's do with RUSTFLAGS, so cc-rs compiles C for the static CRT a crt-static target links.
 single_version_override(
     module_name = "rules_rust",
     patch_strip = 1,

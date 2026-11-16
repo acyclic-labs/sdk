@@ -221,7 +221,10 @@ const rule = (kind, attrs) => `${kind}(\n${attrs.filter(([, v]) => v !== undefin
 // Files of third-party build dependencies that a build script reads, per platform, from
 // [package.metadata.bazel.build-script-env.<os>-<cpu>]: VARIABLE = "package/path". Each file is
 // exported from the package's crate universe repository and named to the script by its execution
-// path. A platform the table does not name fails to configure, never builds with another's files.
+// path. The platform is the crate's target platform: a build script bundles these files into the crate
+// (acyclic-proto-build embeds the protoc its crate runs), so a Windows crate gets the Windows protoc. A
+// crate built as a build dependency targets the execution platform, so the protoc a build script runs is
+// the host's. A platform the table does not name fails to configure, never builds with another's files.
 const staged = new Map();
 function stagedFile(spec) {
   const [, name, file] = /^([^/]+)\/(.+)$/.exec(spec) ?? [];

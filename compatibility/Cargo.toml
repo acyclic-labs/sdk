@@ -36,6 +36,10 @@ PROTOC_INCLUDE = "protoc-bin-vendored-linux-x86_64/include"
 PROTOC = "protoc-bin-vendored-macos-aarch_64/bin/protoc"
 PROTOC_INCLUDE = "protoc-bin-vendored-macos-aarch_64/include"
 
+[package.metadata.bazel.build-script-env.windows-x86_64]
+PROTOC = "protoc-bin-vendored-win32/bin/protoc.exe"
+PROTOC_INCLUDE = "protoc-bin-vendored-win32/include"
+
 [lints]
 workspace = true
 

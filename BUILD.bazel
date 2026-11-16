@@ -38,6 +38,15 @@ config_setting(
     ],
 )
 
+
+config_setting(
+    name = "windows-x86_64",
+    constraint_values = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
 platform(
     name = "windows",
     constraint_values = [
