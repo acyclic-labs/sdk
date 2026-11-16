@@ -4,8 +4,9 @@
 //! The Bazel `isolated_test` rule supplies, relative to the runfiles workspace directory:
 //! `ACYCLIC_TEST_BINARY` (the libtest executable), `ACYCLIC_TEST_ID` (its nextest binary id),
 //! `ACYCLIC_TEST_PACKAGE` (the Cargo package directory, each case's working directory as under
-//! Cargo) and `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case limit). Bazel's `--test_filter` arrives as
-//! `TESTBRIDGE_TEST_ONLY` and selects cases as `cargo test <filter>` does.
+//! Cargo) and `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case limit). Cases are selected as libtest
+//! selects them, from Bazel's `--test_filter` (which arrives as `TESTBRIDGE_TEST_ONLY`) followed by
+//! every `--test_arg`, as `cargo test -- <args>` selects them.
 //!
 //! Each outcome is reported as nextest reports it, `STATUS [ seconds] <binary id> <case>`, so a
 //! case keeps one identity whichever runner ran it. Ignored cases are reported as skipped and
@@ -13,6 +14,7 @@
 //! owned process tree, so a case past its limit is stopped with every process it started.
 
 use std::env;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::num::NonZero;
@@ -95,17 +97,20 @@ fn run() -> Result<usize, String> {
         logs: PathBuf::from(setting("TEST_TMPDIR")?),
         limit: Duration::from_secs(limit),
     };
-    let filter = env::var("TESTBRIDGE_TEST_ONLY").ok();
-    run_suite(&suite, filter.as_deref(), &mut io::stdout().lock())
+    let selection: Vec<OsString> = env::var_os("TESTBRIDGE_TEST_ONLY")
+        .into_iter()
+        .chain(env::args_os().skip(1))
+        .collect();
+    run_suite(&suite, &selection, &mut io::stdout().lock())
 }
 
-/// The cases `filter` selects, with `--ignored` only the ignored ones.
-fn list(suite: &Suite, filter: Option<&str>, ignored: bool) -> Result<Vec<String>, String> {
+/// The cases libtest's `selection` arguments select, with `--ignored` only the ignored ones.
+fn list(suite: &Suite, selection: &[OsString], ignored: bool) -> Result<Vec<String>, String> {
     let mut command = Command::new(&suite.binary);
     command
         .args(["--list", "--format", "terse"])
         .args(ignored.then_some("--ignored"))
-        .args(filter)
+        .args(selection)
         .env("ACYCLIC_TEST_SOURCE_ROOT", &suite.source);
     for setting in SETTINGS {
         command.env_remove(setting);
@@ -129,18 +134,21 @@ fn list(suite: &Suite, filter: Option<&str>, ignored: bool) -> Result<Vec<String
         .collect())
 }
 
-/// Runs each case `filter` selects in its own process and reports every outcome to `out`.
+/// Runs each case `selection` selects in its own process and reports every outcome to `out`.
 /// Ignored cases are reported as skipped. Returns how many cases did not pass.
-fn run_suite(suite: &Suite, filter: Option<&str>, out: &mut dyn Write) -> Result<usize, String> {
-    let ignored = list(suite, filter, true)?;
+fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Result<usize, String> {
+    let ignored = list(suite, selection, true)?;
     for name in &ignored {
         writeln!(out, "{:>12} [         ] {} {name}", "SKIP", suite.id)
             .map_err(|error| format!("report: {error}"))?;
     }
-    let cases: Vec<String> = list(suite, filter, false)?
+    let cases: Vec<String> = list(suite, selection, false)?
         .into_iter()
         .filter(|name| !ignored.contains(name))
         .collect();
+    if !selection.is_empty() && cases.is_empty() && ignored.is_empty() {
+        return Err(format!("{selection:?} selects no case of {}", suite.id));
+    }
     // Every case tree is held in custody, so a timeout stops descendants that left its process
     // group (setsid, nested trees) too.
     let custody = ProcessCustody::acquire(&suite.logs.join("processes"))
@@ -381,7 +389,12 @@ mod tests {
                 limit: Duration::from_secs(10),
             };
             let mut out = Vec::new();
-            let failed = run_suite(&suite, Some("tests::environment_case"), &mut out).unwrap();
+            let failed = run_suite(
+                &suite,
+                &["tests::environment_case".into(), "--exact".into()],
+                &mut out,
+            )
+            .unwrap();
             let out = String::from_utf8(out).unwrap();
             assert_eq!((failed, out.lines().count()), (0, 1), "{out}");
         }
@@ -423,16 +436,17 @@ mod tests {
         }
     }
 
-    fn report(suite: &Suite, filter: &str) -> (usize, String) {
+    fn report(suite: &Suite, selection: &[&str]) -> (usize, String) {
+        let selection: Vec<OsString> = selection.iter().map(OsString::from).collect();
         let mut out = Vec::new();
-        let failed = run_suite(suite, Some(filter), &mut out).unwrap();
+        let failed = run_suite(suite, &selection, &mut out).unwrap();
         fs::remove_dir_all(&suite.package).unwrap();
         (failed, String::from_utf8(out).unwrap())
     }
 
     #[test]
     fn reports_each_outcome_and_counts_failures() {
-        let (failed, out) = report(&suite("outcomes"), "tests::fixture_");
+        let (failed, out) = report(&suite("outcomes"), &["tests::fixture_"]);
         assert_eq!(failed, 2, "{out}");
         let status = |status: &str, case: &str| {
             let rest = format!("acyclic-test-runner tests::{case}");
@@ -495,9 +509,32 @@ mod tests {
         );
     }
 
+    /// The filter and every argument after it select as libtest does: `--skip` here leaves only
+    /// the passing and ignored fixtures of the four `tests::fixture_` cases.
     #[test]
-    fn filter_selects_cases() {
-        let (failed, out) = report(&suite("filter"), "tests::fixture_pass");
-        assert_eq!((failed, out.lines().count()), (0, 1), "{out}");
+    fn libtest_arguments_select_cases() {
+        let (failed, out) = report(
+            &suite("selection"),
+            &[
+                "tests::fixture_",
+                "--skip",
+                "fixture_hang",
+                "--skip",
+                "fixture_fail",
+            ],
+        );
+        assert_eq!((failed, out.lines().count()), (0, 2), "{out}");
+    }
+
+    /// A selection that names no case fails the run instead of passing with nothing run.
+    #[test]
+    fn a_selection_matching_no_case_is_refused() {
+        let suite = suite("unmatched");
+        let refused = run_suite(&suite, &["tests::no_such_case".into()], &mut Vec::new());
+        fs::remove_dir_all(&suite.package).unwrap();
+        assert_eq!(
+            refused,
+            Err(r#"["tests::no_such_case"] selects no case of acyclic-test-runner"#.into())
+        );
     }
 }
