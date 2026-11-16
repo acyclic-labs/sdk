@@ -43,7 +43,7 @@ pub(super) const GENERATOR: Generator = Generator {
 acyclic_test_support::cases! {
     module = every_record_kind_decodes_in_every_public_reader,
     values: u64,
-    runner: super::run,
+    runner = super::run,
     cases = [
         seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3,
         seed_4 => 4, seed_5 => 5, seed_6 => 6,
