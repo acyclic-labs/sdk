@@ -359,7 +359,6 @@ test("native qualification rejects build input identity mutations", () => {
     ["linker target", value => { value.linker.actual.target = "x86_64-unknown-linux-gnu"; }, /linker invocation target differs from build input target/],
     ["environment", value => { value.environment.RUSTFLAGS = "-C opt-level=3"; }, /build input attestation differs/],
     ["profile", value => { value.profile.name = "dev"; }, /native build profile is not release/],
-    ["incremental policy", value => { Object.assign(value.profile, { cargo_incremental: "0" }); }, /native build disables incremental compilation/],
     ["generator cargo options", value => { value.generator.options.cargo_options = ["--offline"]; }, /generator cargo options are invalid/],
     ["cache", value => { Object.assign(value.cache, { wrapper: 42 }); }, /native build input cache\.wrapper is invalid/],
   ];
@@ -393,6 +392,22 @@ test("native qualification rejects build input identity mutations", () => {
   assert.equal(darwinLinker.configured.target, "/usr/bin/clang");
   assert.equal(darwinLinker.environment.DYLD_LIBRARY_PATH, "/rust/sysroot/lib");
   assert.equal(darwinLinker.environment.SDKROOT, "/Applications/Xcode.app/SDKs/MacOSX.sdk");
+});
+
+test("native qualification requires incremental compilation for development but admits release artifacts", () => {
+  const release = validBuildInputs();
+  Object.assign(release.profile, { cargo_incremental: "0", release_incremental: "false" });
+  assertBuildInputs(release);
+
+  const development = validBuildInputs();
+  development.schema += ".development-only";
+  development.generator.options.release = false;
+  development.profile.name = "dev";
+  Object.assign(development.profile, { cargo_incremental: "0" });
+  assert.throws(() => assertBuildInputs(development, { qualificationDev: true }), /native build disables incremental compilation/);
+  development.profile.cargo_incremental = null;
+  development.profile.release_incremental = "false";
+  assert.throws(() => assertBuildInputs(development, { qualificationDev: true }), /native build disables incremental compilation/);
 });
 
 test("native qualification normalizes host paths in published build inputs", () => {

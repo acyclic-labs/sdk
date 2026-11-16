@@ -814,7 +814,7 @@ function assertBuildInputs(value, { qualificationDev = false } = {}) {
   if (value.profile.name !== policy.profile) throw new Error(`native build profile is not ${policy.profile}`);
   for (const field of ["manifest_sha256", "config_sha256"]) assertDigest(profile[field], `profile.${field}`);
   assertNullableStringFields(profile, ["cargo_incremental", "release_incremental"], "profile");
-  if (profile.cargo_incremental === "0" || profile.release_incremental === "false") throw new Error("native build disables incremental compilation");
+  if (policy.profile !== "release" && (profile.cargo_incremental === "0" || profile.release_incremental === "false")) throw new Error("native build disables incremental compilation");
   assertNullableStringFields(value.environment, ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_TARGET_DIR"], "environment");
   const cache = assertNullableStringFields(value.cache, ["wrapper", "directory", "size"], "cache");
   if (cache.wrapper_version !== null) assertStringFields(cache.wrapper_version, ["output"], "cache.wrapper_version");

@@ -2,11 +2,26 @@ import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
 import {copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {dirname, join, resolve} from 'node:path';
+import {dirname, join, relative, resolve} from 'node:path';
 import {promisify} from 'node:util';
 import test, {describe} from 'node:test';
 
 const execute = promisify(execFile);
+
+// Copy the entry point and every relative module it imports, recursively, so a
+// new import can never be missing from the isolated fixture.
+function copyModule(root, file, seen = new Set()) {
+ const absolute = resolve(file);
+ if (seen.has(absolute)) return;
+ seen.add(absolute);
+ const target = join(root, 'scripts', relative(resolve('scripts'), absolute));
+ mkdirSync(dirname(target), {recursive: true});
+ copyFileSync(absolute, target);
+ const source = readFileSync(absolute, 'utf8');
+ for (const match of source.matchAll(/\b(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g)) {
+  if (match[1].startsWith('.')) copyModule(root, resolve(dirname(absolute), match[1]), seen);
+ }
+}
 
 async function fixture(body) {
  const root = mkdtempSync(join(tmpdir(), 'sdk-release-static-'));
@@ -54,11 +69,8 @@ async function fixture(body) {
   }
  };
  try {
-  mkdirSync(join(root, 'scripts/vendor'), {recursive: true});
   copyFileSync(resolve('.gitattributes'), join(root, '.gitattributes'));
-  for (const name of ['static-ci.mjs', 'static-policy.mjs', 'javascript-syntax.mjs', 'vendor/yaml.cjs']) {
-   copyFileSync(resolve('scripts', name), join(root, 'scripts', name));
-  }
+  copyModule(root, resolve('scripts/static-ci.mjs'));
   commit('baseline');
   await body({root, tag, commit, check});
  } finally {

@@ -110,10 +110,9 @@ pub(super) fn rustc() -> PathBuf {
 
 pub(super) fn configure(command: &mut Command) {
     // These controls inspect API/source identity and execute unoptimized code.
-    // Debug symbol files and incremental compiler state are unused fixtures.
+    // Debug symbol files are unused fixtures; dev builds stay incremental.
     command
         .env("CARGO_PROFILE_DEV_DEBUG", "0")
-        .env("CARGO_PROFILE_DEV_INCREMENTAL", "false")
         // Private fixtures do not inherit this checkout's static-CRT flags.
         // Resolver/lock configuration is still discovered by the real Cargo.
         .env(

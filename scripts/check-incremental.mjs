@@ -16,8 +16,13 @@ const cargoFile = file =>
   file === 'Cargo.toml' || file.endsWith('/Cargo.toml') ||
   file === '.cargo/config.toml' || file.endsWith('/.cargo/config.toml');
 
+// The variable name in any setting form: an assignment or [env] table entry,
+// a quoted argument to .env(...)/set_var(...), or bracketed process.env access.
+const name = String.raw`CARGO_(?:PROFILE_[A-Z0-9_]+_)?INCREMENTAL`;
 const disabled = [
-  [/\bCARGO_(?:PROFILE_[A-Z0-9_]+_)?INCREMENTAL\s*[:=]\s*["']?(?:0|false)\b/, 'sets CARGO_INCREMENTAL to 0'],
+  [new RegExp(String.raw`\b${name}\b\s*[:=]\s*["']?(?:0|false)\b`), 'sets CARGO_INCREMENTAL to 0'],
+  [new RegExp(String.raw`["']${name}["']\s*,\s*["']?(?:0|false)\b`), 'sets CARGO_INCREMENTAL to 0'],
+  [new RegExp(String.raw`\b${name}\b["']?\s*\]\s*[:=]\s*["']?(?:0|false)\b`), 'sets CARGO_INCREMENTAL to 0'],
   [/-C\s*incremental\s*=\s*(?:no|off|false|0)\b/, 'passes -C ' + 'incremental=no'],
 ];
 const strip = /-C\s*incremental/;
