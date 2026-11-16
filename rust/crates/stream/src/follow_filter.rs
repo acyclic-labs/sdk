@@ -664,6 +664,7 @@ mod tests {
         assert!(candidates.matches(&headers(b"watched/nested/file", b"caller")));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn measure<T>(
         run: impl FnOnce() -> T,
     ) -> Result<(T, acyclic_test_support::AllocationInfo, usize, usize), Box<dyn std::error::Error>>
@@ -681,6 +682,7 @@ mod tests {
         ))
     }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn check_filters(
     filters: &[FollowFilter],
     record: &crate::Record,

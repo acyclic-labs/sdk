@@ -9,15 +9,26 @@ pub(crate) use job::inspection::{Cut, Probe, observe};
 #[cfg(loom)]
 pub(crate) mod model;
 
+// The test observation hands a snapshot's lock to a `Waker`, which is always
+// `Send + Sync`; browser snapshots are otherwise free to stay thread-affine.
+#[cfg(all(test, target_arch = "wasm32"))]
+pub(crate) trait SnapshotSend: Send {}
+#[cfg(all(test, target_arch = "wasm32"))]
+impl<T: Send + ?Sized> SnapshotSend for T {}
+#[cfg(not(all(test, target_arch = "wasm32")))]
+pub(crate) trait SnapshotSend {}
+#[cfg(not(all(test, target_arch = "wasm32")))]
+impl<T: ?Sized> SnapshotSend for T {}
+
 // Implementations acquire locks first, then synchronously update their cursor.
 // Cancellation before readiness must leave the cursor unchanged. This module is
 // the only place stream snapshots are polled. Portable snapshots restart pending
 // acquisitions under independent ownership; native snapshots keep them directly
 // in the caller-owned frame so its retirement proves cancellation quiescence.
-pub(crate) trait Snapshot: crate::ProviderTask + 'static {
+pub(crate) trait Snapshot: crate::ProviderTask + SnapshotSend + 'static {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     const OBSERVE: bool = false;
-    type Output: crate::ProviderTask + 'static;
+    type Output: crate::ProviderTask + SnapshotSend + 'static;
     /// The original caller owns the entire pending acquisition and can cancel
     /// it by destroying this frame. No independently retained producer exists.
     fn caller_retains_pending(&self) -> bool {

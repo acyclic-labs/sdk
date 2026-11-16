@@ -233,7 +233,7 @@ impl<J: CommandJournal> Replicated<J> {
         self
     }
 
-    #[cfg(any(not(target_arch = "wasm32"), test))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_failed(&self) -> bool {
         self.failed
     }

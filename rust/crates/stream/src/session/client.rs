@@ -459,7 +459,7 @@ impl Client {
             released: Arc::clone(&release_sender),
             release_sender,
         };
-        Arc::clone(&pool.executor).spawn(Box::pin(async move {
+        std::sync::Arc::clone(&pool.executor).spawn(Box::pin(async move {
             let result = {
                 let running = pool.run();
                 let running = core::pin::pin!(running);
