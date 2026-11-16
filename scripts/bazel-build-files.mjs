@@ -596,6 +596,7 @@ function windowsToolchain() {
   return `
 ${rule("cc_toolchain_config", [
     ["name", q("windows_cc_config")],
+    ["visibility", q(["//:__pkg__"])],
     // x64_windows with clang-cl selects the MSVC actions: lld-link links and llvm-lib archives.
     ["cpu", q("x64_windows")],
     ["compiler", q("clang-cl")],
@@ -622,27 +623,33 @@ ${rule("cc_toolchain_config", [
     ["supports_parse_showincludes", "False"],
     ["win32_winnt_flag", q("/D_WIN32_WINNT=0x0A00")],
 ])}
-${rule("cc_toolchain", [
-    ["name", q("windows_cc_toolchain")],
-    ["toolchain_config", q(":windows_cc_config")],
-    ["all_files", q(":windows_cc_files")],
-    ["ar_files", q(":windows_cc_files")],
-    ["compiler_files", q(":windows_cc_files")],
-    ["linker_files", q(":windows_cc_files")],
-    ["dwp_files", q(":windows_cc_files")],
-    ["objcopy_files", q(":windows_cc_files")],
-    ["strip_files", q(":windows_cc_files")],
-])}
 ${rule("filegroup", [
     ["name", q("windows_cc_files")],
+    ["visibility", q(["//:__pkg__"])],
     ["srcs", q(["@xwin//:sysroot", "@llvm_toolchain_llvm//:bin"])],
 ])}
 ${rule("toolchain", [
     ["name", q("windows_cc_toolchain_registration")],
-    ["toolchain", q(":windows_cc_toolchain")],
+    ["toolchain", q("//:windows_cc_toolchain")],
     ["toolchain_type", q("@bazel_tools//tools/cpp:toolchain_type")],
     ["exec_compatible_with", list(["@platforms//os:linux", "@platforms//cpu:x86_64"])],
     ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
+])}
+`;
+}
+
+// The C toolchain resolves its tool paths from its own package, and the Windows paths are relative to
+// the exec root, so it stays in the root package. Its config and files read the LLVM and xwin
+// repositories, which only the root module creates, so they live in the Windows toolchain package; a
+// module that depends on this one never analyses this target.
+function windowsCcToolchain() {
+  const files = `//${WINDOWS_TOOLCHAIN_PACKAGE}:windows_cc_files`;
+  return `
+${rule("cc_toolchain", [
+    ["name", q("windows_cc_toolchain")],
+    ["toolchain_config", q(`//${WINDOWS_TOOLCHAIN_PACKAGE}:windows_cc_config`)],
+    ...["all", "ar", "compiler", "linker", "dwp", "objcopy", "strip"].map(kind => [`${kind}_files`, q(files)]),
+    ["visibility", q([`//${WINDOWS_TOOLCHAIN_PACKAGE}:__pkg__`])],
 ])}
 `;
 }
@@ -741,7 +748,7 @@ for (const id of members) {
   if (missing.length || extra.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} renders a different target set than cargo test --all-features (missing: ${missing.join(", ") || "none"}; extra: ${extra.join(", ") || "none"})`);
 }
 const WINDOWS_TOOLCHAIN_PACKAGE = "toolchains/windows";
-const windowsLoads = `load("@rules_cc//cc:defs.bzl", "cc_toolchain")\nload("@rules_cc//cc/private/toolchain:windows_cc_toolchain_config.bzl", "cc_toolchain_config")\nload("//:windows_paths.bzl", "WINDOWS_LLVM", "WINDOWS_XWIN")\n`;
+const windowsLoads = `load("@rules_cc//cc/private/toolchain:windows_cc_toolchain_config.bzl", "cc_toolchain_config")\nload("//:windows_paths.bzl", "WINDOWS_LLVM", "WINDOWS_XWIN")\n`;
 const windowsPlatform = rule("platform", [["name", q("windows")], ["constraint_values", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])]]);
 const libcConstraints = `
 ${rule("constraint_setting", [["name", q("libc")], ["visibility", q(["//visibility:public"])]])}
@@ -754,10 +761,11 @@ ${rule("platform", [["name", q("linux_musl")], ["constraint_values", list(["@pla
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
   ["BUILD.bazel", `${HEADER}
+load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 exports_files(${list(["Cargo.lock", "Cargo.toml", ...(fs.existsSync(path.join(root, "clippy.toml")) ? ["clippy.toml"] : [])])})
-${libcConstraints}${platformRules}${windowsPlatform}${linuxMusl}${sourcesRule}${exportsRule("")}`],
-  // The Windows C toolchain runs from repositories only the root module creates, so it is its own
-  // package: a module that depends on this one loads the root package without ever loading this one.
+${libcConstraints}${platformRules}${windowsPlatform}${linuxMusl}${windowsCcToolchain()}${sourcesRule}${exportsRule("")}`],
+  // The Windows C toolchain's config and files read repositories only the root module creates, so
+  // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}
 ${windowsLoads}${windowsToolchain()}`],
 ]);
