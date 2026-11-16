@@ -137,15 +137,23 @@ impl MemoryStream {
         Ok(self.clone())
     }
 
+    /// Hands a result's claim back to the writer: the caller, not the store,
+    /// keeps what a write returns, whether or not the write lands.
+    fn hand_back(&self, _output: &mut Allocation) -> Result<(), StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(work), Some(custody), Some(output)) = (&self.work, &self.custody, _output) {
+            work.record(output.leave_custody(&custody.owner))?;
+        }
+        Ok(())
+    }
+
     /// Reserves store capacity for everything this write's custody owns, after
     /// its last allocation and before publication. `output` is handed back to
-    /// the writer first: the caller, not the store, keeps it.
-    fn reserve_custody(&self, _output: &mut Allocation) -> Result<Retention, StreamError> {
+    /// the writer first.
+    fn reserve_custody(&self, output: &mut Allocation) -> Result<Retention, StreamError> {
+        self.hand_back(output)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let (Some(work), Some(custody)) = (&self.work, &self.custody) {
-            if let Some(output) = _output {
-                work.record(output.leave_custody(&custody.owner))?;
-            }
             return match custody.owner.reserve(&self.capacity) {
                 Err(error) if error.kind() == std::io::ErrorKind::StorageFull => {
                     Err(StreamError::Capacity)

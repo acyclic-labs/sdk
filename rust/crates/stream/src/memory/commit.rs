@@ -186,7 +186,8 @@ impl MemoryStream {
             let mut records = records;
             if let Some(work) = &self.work {
                 for record in &mut records {
-                    record.headers = work.record(record.headers.bind_native(&work.meter))?;
+                    record.headers =
+                        work.record(record.headers.bind_native(self.allocation_meter(work)))?;
                 }
             }
             records
@@ -562,6 +563,7 @@ impl MemoryStream {
             };
             let (receipt, mut claim) = self.replayed(request, result, self.revisions.at(index))?;
             let envelope = self.selected_envelope(result, accepted, &mut claim)?;
+            self.hand_back(&mut claim)?;
             // A saved success owns its selection and durability. Conditions
             // and lease ownership may have changed since that publication.
             return Ok(Decision::Returned {
@@ -628,6 +630,8 @@ impl MemoryStream {
             } else {
                 crate::WriteOutcome::Commit(result)
             };
+            let mut output_claim = output_claim;
+            self.hand_back(&mut output_claim)?;
             return Ok(Decision::Returned {
                 result: (result, output_claim),
                 ephemeral: false,

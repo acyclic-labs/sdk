@@ -378,12 +378,22 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
             let (send, receive) = tokio::sync::oneshot::channel();
             let persist =
                 std::pin::pin!(async { receive.await.map_err(|_| StreamError::Unavailable) });
+            let kept = core.capacity.held();
             let pending = core.apply_durable(&canonical, None, persist);
             let mut pending = std::pin::pin!(pending);
             assert!(futures::poll!(pending.as_mut()).is_pending());
+            assert!(
+                core.capacity.held() > kept,
+                "planning reserves store capacity"
+            );
             drop(send);
             assert!(
                 matches!(pending.await, Err(error) if error.category() == StreamCategory::Unavailable)
+            );
+            assert_eq!(
+                core.capacity.held(),
+                kept,
+                "an abandoned write returns its reserved capacity"
             );
             assert!(core.inspect_idempotency(key).await?.is_none());
             assert_eq!(

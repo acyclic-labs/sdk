@@ -162,7 +162,8 @@ impl MemoryStream {
         )?;
         let namespace = self.namespace_reserve(&append(&plan.result).path)?;
         let conflict = self.vector(2)?;
-        let prototype = self.copy_envelope(&plan.envelope)?;
+        let mut prototype = self.copy_envelope(&plan.envelope)?;
+        self.hand_back(&mut prototype.1)?;
         let effect = request.effects.pop().ok_or(StreamError::InvalidArgument)?;
         let conditions: [CommitCondition; 2] = effect
             .conditions
