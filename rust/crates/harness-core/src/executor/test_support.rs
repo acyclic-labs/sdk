@@ -78,7 +78,7 @@ impl Journal {
     }
 }
 
-pub(crate) struct ChangingContextSource(AtomicUsize);
+pub(crate) struct ChangingContextSource(pub(crate) AtomicUsize);
 
 impl crate::context::ContextSource for ChangingContextSource {
     fn load<'a>(
@@ -473,7 +473,7 @@ impl crate::conversation::ContentResidencyVerifier for Journal {
     }
 }
 
-pub(crate) struct OnceStage(AtomicUsize);
+pub(crate) struct OnceStage(pub(crate) AtomicUsize);
 
 impl crate::context::ContextStage for OnceStage {
     fn name(&self) -> &str {
