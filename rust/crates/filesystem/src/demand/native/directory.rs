@@ -8,11 +8,11 @@ struct DirectoryState {
     directory: NamespacePath,
     version: SourceVersion,
     entries: HostStatReader,
-    pending: Option<(HostListedEntry, u64)>,
+    pending: Option<(HostListedEntry, u64, Option<SourcePayloadOwnership>)>,
     replay: Option<Arc<Owned<Vec<SourceDirectoryEntry>>>>,
     offset: usize,
     eof: bool,
-    ownership: SourcePayloadOwnership,
+    _ownership: SourcePayloadOwnership,
 }
 impl DirectoryState {
     fn has_next(&self, end: usize) -> bool {
@@ -22,7 +22,11 @@ impl DirectoryState {
                 .as_ref()
                 .is_some_and(|entries| end < entries.value.len())
     }
-    fn read(&mut self, work: &mut CallbackWork) -> Result<(), DemandError> {
+    fn read(
+        &mut self,
+        work: &mut CallbackWork,
+        page: &SourcePayloadOwnership,
+    ) -> Result<(), DemandError> {
         if self.pending.is_none() && !self.eof {
             work.check()?;
             work.admit(WorkCounters {
@@ -32,8 +36,8 @@ impl DirectoryState {
             match self.entries.next(work)? {
                 None => self.eof = true,
                 Some((entry, bytes)) => {
-                    self.ownership.retain(bytes, work)?;
-                    self.pending = Some((entry, bytes));
+                    page.retain(bytes, work)?;
+                    self.pending = Some((entry, bytes, None));
                     work.record(WorkCounters {
                         source_entries_visited: 1,
                         ..WorkCounters::UNCHARGED
@@ -203,7 +207,7 @@ impl NativeDemandSource {
             replay: None,
             offset: 0,
             eof: false,
-            ownership,
+            _ownership: ownership,
         })
     }
     fn next_entry(
@@ -271,6 +275,7 @@ impl NativeDemandSource {
         }
         state.replay.take();
         state.offset = 0;
+        let page_ownership = SourcePayloadOwnership::new(work)?;
         let mut page = account_source(work, |accounting, _| {
             let entries = Owned::allocate(maximum, accounting).map_err(DemandError::from)?;
             SourceDirectoryPage::stateless(entries, None, state.version, accounting)
@@ -279,14 +284,18 @@ impl NativeDemandSource {
         let (relative, bytes) = self.relative(&state.directory, work)?;
         let result = (|| {
             for _ in 0..maximum {
-                state.read(work)?;
-                let Some((entry, _)) = &state.pending else {
+                state.read(work, &page_ownership)?;
+                let Some((entry, _, _)) = &state.pending else {
                     break;
                 };
                 let converted = self.next_entry(&relative, entry, backing, work)?;
-                let (entry, bytes) = state.pending.take().ok_or(DemandError::StaleCursor)?;
+                let (entry, bytes, carried) =
+                    state.pending.take().ok_or(DemandError::StaleCursor)?;
                 drop(entry);
-                state.ownership.retire(bytes)?;
+                match carried {
+                    Some(ownership) => ownership.retire(bytes)?,
+                    None => page_ownership.retire(bytes)?,
+                }
                 if !work.is_native_original() {
                     work.release(bytes)?;
                 }
@@ -296,12 +305,17 @@ impl NativeDemandSource {
                     backing.value.push(entry);
                 }
             }
-            state.read(work)
+            state.read(work, &page_ownership)
         })();
         drop(relative);
         let released = work.release(bytes);
         page.entries.range.end = backing.value.len();
         state.replay = Some(page.entries.backing.clone());
+        if let Some((_, _, carried)) = &mut state.pending
+            && carried.is_none()
+        {
+            *carried = Some(page_ownership);
+        }
         result.and(released)?;
         Ok(page.entries)
     }
