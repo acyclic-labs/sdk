@@ -22,7 +22,7 @@ use acyclic_harness::{
     context::{CapacityCompaction, CompactionPolicy, ModelContextCapacity},
     contract::{Capabilities, capability},
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef, wire::Notice},
-    executor::Executor,
+    executor::{Executor, ModelPurpose, ModelUsageRecord},
     filesystem::{
         PRIVATE_VOLUME, Tasks, TurnAuthority, TurnExecutors, TurnLimits,
         hosting::{Bound, Placement, RootRequest, RootSubmission, Turns},
@@ -69,6 +69,10 @@ struct Sent {
 /// completion usage reports the emulated provider cache.
 struct Scripted {
     path: &'static str,
+    /// Whether capacity summaries answer themselves (summary_rewrite) ahead of
+    /// the script. Off, a summary request takes the next scripted reply like any
+    /// other, so a test that scripts its own summary receives it.
+    summaries: bool,
     state: Mutex<(&'static str, VecDeque<Step>, Vec<Sent>)>,
     cache: Mutex<harness_mock_model::PromptCache>,
 }
@@ -92,13 +96,17 @@ impl Scripted {
             .observe(self.path, &value, 1);
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let agent = state.0;
+        let step = self
+            .summaries
+            .then(|| summary_rewrite(&request.body))
+            .flatten()
+            .unwrap_or_else(|| state.1.pop_front().unwrap_or_else(|| text("ok")));
         state.2.push(Sent {
             url: request.url,
             agent,
             body: request.body,
             cached,
         });
-        let step = state.1.pop_front().unwrap_or_else(|| text("ok"));
         let frames = harness_mock_model::events_with_cache(self.path, &step, tokens, cached)
             .ok_or_else(|| acyclic_harness::Error::Invalid("unscripted reply".into()))?;
         Ok(Bytes::from(frames.concat()))
@@ -161,6 +169,21 @@ fn text(answer: &str) -> Step {
         text: vec![answer.into()],
         ..Step::default()
     }
+}
+
+/// A capacity summary names the supplied source count. Drop the entire supplied
+/// prefix so the retained current input and instructions fit the next request.
+fn summary_rewrite(body: &[u8]) -> Option<Step> {
+    let body = std::str::from_utf8(body).ok()?;
+    let start = body.find("Source count: ")? + "Source count: ".len();
+    let digits: String = body[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let source: u32 = digits.parse().ok()?;
+    Some(text(&format!(
+        r#"{{"version":1,"drop_through":{source},"summary":"pressure history summarized"}}"#
+    )))
 }
 
 /// The stock feedback plugin asks for a retrospective after every settled
@@ -389,6 +412,87 @@ fn extends(family: &str, what: &str, earlier: &[u8], later: &[u8]) -> TestResult
     .into())
 }
 
+/// The bytes before the protocol's message array, which carry the cached
+/// system prefix.
+fn before_messages<'a>(body: &'a [u8], messages: &[u8]) -> Option<&'a [u8]> {
+    body.windows(messages.len())
+        .position(|window| window == messages)
+        .map(|at| &body[..at])
+}
+
+/// The pressure turn's contract: one summary inference and the ordinary
+/// response calls. The summary shares the cached system prefix, so it must
+/// read the same prefix bytes as the turn's first request.
+fn pressure_calls(
+    family: &str,
+    messages: &[u8],
+    observed: &[ModelUsageRecord],
+    reported: &[Sent],
+) -> TestResult {
+    assert_eq!(
+        observed.len(),
+        reported.len(),
+        "{family}: committed usage lost a call"
+    );
+    let mut summaries = 0_u64;
+    let mut next_part = 0_u64;
+    let mut responses = 0_u64;
+    let mut summary_started = false;
+    let mut summary_closed = false;
+    for (record, sent) in observed.iter().zip(reported) {
+        match record.purpose {
+            ModelPurpose::Summary => {
+                assert!(responses > 0, "{family}: summary precedes its response");
+                assert!(!summary_started, "{family}: duplicate summary");
+                summary_started = true;
+                summaries = 1;
+                next_part = 1;
+            }
+            ModelPurpose::SummaryPart(part) => {
+                assert!(summary_started, "{family}: summary part without summary");
+                assert!(!summary_closed, "{family}: summary part follows a response");
+                assert_eq!(part, next_part, "{family}: summary part sequence");
+                next_part = part.checked_add(1).ok_or("summary part overflow")?;
+            }
+            ModelPurpose::Response => {
+                if summary_started {
+                    summary_closed = true;
+                }
+                responses += 1;
+            }
+            purpose => return Err(format!("{family}: pressure turn issued {purpose:?}").into()),
+        }
+        assert_eq!(
+            record.tokens.cached,
+            Some(sent.cached.read.min(sent.body.len() as u64)),
+            "{family}: cache-hit usage was lost or changed"
+        );
+    }
+    assert_eq!(summaries, 1, "{family}: pressure turn summary requests");
+    assert_eq!(responses, 3, "{family}: pressure turn response requests");
+    let summary = observed
+        .iter()
+        .zip(reported)
+        .find(|(record, _)| {
+            matches!(
+                record.purpose,
+                ModelPurpose::Summary | ModelPurpose::SummaryPart(_)
+            )
+        })
+        .ok_or_else(|| format!("{family}: pressure turn has no summary"))?;
+    let response = observed
+        .iter()
+        .zip(reported)
+        .find(|(record, _)| record.purpose == ModelPurpose::Response)
+        .ok_or_else(|| format!("{family}: pressure turn has no response"))?;
+    assert_eq!(
+        before_messages(&summary.1.body, messages),
+        before_messages(&response.1.body, messages),
+        "{family}: summary request changed the cached system prefix"
+    );
+    Ok(())
+}
+
 /// Every request after the first reads a prefix an earlier request wrote, and
 /// a request that byte-extends its agent's previous one reads strictly further.
 fn hits<'a>(family: &str, sent: impl IntoIterator<Item = &'a Sent>) -> TestResult {
@@ -454,6 +558,7 @@ async fn run(
     messages: &[u8],
 ) -> TestResult {
     let transport = Arc::new(Scripted {
+        summaries: true,
         cache: Mutex::new(
             if adapter == Adapter::Chat && prompt_cache == PromptCache::Native {
                 harness_mock_model::PromptCache::default().with_implicit_chat()
@@ -712,6 +817,9 @@ async fn run(
     // bytes drive both local admission bounds and the remote count, so the
     // overflow remains reachable when no count request is necessary.
     let pressure = "x".repeat(CONTEXT_TOKENS as usize * 3 / 5);
+    // The positions of the pressure turns' response calls; their summaries
+    // are checked by `pressure_calls` and the cache-hit pass below.
+    let mut responses = Vec::new();
     for name in ["m12", "m13"] {
         let start = {
             let mut state = transport.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -744,21 +852,14 @@ async fn run(
             }
         }
         let state = transport.state.lock().unwrap_or_else(|p| p.into_inner());
-        // The turn's call, its answer and the settlement's retrospective.
         let reported = &state.2[start..];
-        assert_eq!(reported.len(), 3, "{family}: pressure turn requests");
-        assert_eq!(
-            observed.len(),
-            reported.len(),
-            "{family}: committed usage lost a call"
+        pressure_calls(family, messages, &observed, reported)?;
+        responses.extend(
+            (start..)
+                .zip(&observed)
+                .filter(|(_, record)| record.purpose == ModelPurpose::Response)
+                .map(|(at, _)| at),
         );
-        for (record, sent) in observed.iter().zip(reported) {
-            assert_eq!(
-                record.tokens.cached,
-                Some(sent.cached.read.min(sent.body.len() as u64)),
-                "{family}: cache-hit usage was lost or changed"
-            );
-        }
     }
     let tight = std::mem::take(&mut transport.state.lock().unwrap_or_else(|p| p.into_inner()).2);
     // The provider cache serves every request after the first: extensions,
@@ -888,7 +989,7 @@ async fn run(
     assert!(departure(&controls, parent[1]).is_none());
     assert!(departure(b"{\"messages\":[]}", parent[1]).is_some());
 
-    let tight: Vec<&Bytes> = tight.iter().map(|sent| &sent.body).collect();
+    let tight: Vec<&Bytes> = responses.iter().map(|&at| &tight[at].body).collect();
     let [near, before, retrospect, evicted, continued, last] = tight[..] else {
         return Err(format!("{family}: {} requests near the window", tight.len()).into());
     };

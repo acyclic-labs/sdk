@@ -1,5 +1,46 @@
 use super::*;
 
+/// The summary request reads the response's cached prefix: `prefix` replaces
+/// `source`'s leading system messages and every other message is kept. The
+/// summary's identity stays on the pre-stage `source`, so its cut still names
+/// pre-stage history.
+pub(super) fn with_request_prefix(
+    mut source: crate::context::Context,
+    prefix: &[ModelMessage],
+    io: Option<&PreparationIo>,
+) -> Result<crate::context::Context> {
+    if prefix.is_empty() {
+        return Ok(source);
+    }
+    let leading = source
+        .messages
+        .iter()
+        .take_while(|message| message.role == crate::model::ModelRole::System)
+        .count();
+    let (messages, _) = with_history_io(io, |work| {
+        crate::context::clone_messages(prefix, None, &source.messages[leading..], work)
+    })?;
+    source.messages = messages;
+    source.current_input_index = source
+        .current_input_index
+        .map(|index| {
+            index
+                .checked_sub(u32::try_from(leading).ok()?)?
+                .checked_add(u32::try_from(prefix.len()).ok()?)
+        })
+        .map(|index| {
+            index.ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "summary input precedes its system header",
+                )
+            })
+        })
+        .transpose()?;
+    Ok(source)
+}
+
 impl StockExecution<'_> {
     pub(super) async fn summarize(
         &self,
@@ -22,11 +63,15 @@ impl StockExecution<'_> {
         .await
     }
 
+    /// The one summary session, for admission probes and dispatch alike, so a
+    /// window admitted without the request's header can never be sent with it.
     fn summary_executor(
         &self,
         source: crate::context::Context,
+        prefix: &[ModelMessage],
         revision: String,
     ) -> Result<StockExecution<'_>> {
+        let source = with_request_prefix(source, prefix, self.io)?;
         Ok(StockExecution {
             stock: self.stock,
             selected: self.selected.clone(),
@@ -49,7 +94,7 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32),
-        source: crate::context::Context,
+        (source, prefix): (crate::context::Context, &[ModelMessage]),
         instruction: ModelContent,
         purpose: ModelPurpose,
     ) -> Result<()> {
@@ -68,7 +113,7 @@ impl StockExecution<'_> {
                 work,
             )
         })?;
-        let executor = self.summary_executor(source, revision)?;
+        let executor = self.summary_executor(source, prefix, revision)?;
         let input = TurnInput {
             operation_id: turn.0.operation_id,
             input: instruction,
@@ -96,6 +141,7 @@ impl StockExecution<'_> {
             operation_id,
             step,
             material,
+            &[],
             phase,
             purpose,
         )
@@ -114,6 +160,7 @@ impl StockExecution<'_> {
         operation_id: OperationId,
         step: u32,
         material: (crate::context::Context, ModelContent),
+        prefix: &[ModelMessage],
         phase: &mut DispatchPhase,
         purpose: ModelPurpose,
     ) -> Result<std::result::Result<(crate::context::ContextSummary, String), &'static str>> {
@@ -139,7 +186,7 @@ impl StockExecution<'_> {
                 work,
             )
         })?;
-        let executor = self.summary_executor(source, revision)?;
+        let executor = self.summary_executor(source, prefix, revision)?;
         let input = TurnInput {
             max_steps: Some(1),
             operation_id,

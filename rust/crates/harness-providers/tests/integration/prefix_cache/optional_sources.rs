@@ -21,6 +21,7 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
         (Adapter::Gemini, "models/model:streamGenerateContent"),
     ] {
         let transport = Arc::new(Scripted {
+            summaries: false,
             path,
             state: Mutex::new(("parent", VecDeque::new(), Vec::new())),
             cache: Mutex::new(harness_mock_model::PromptCache::default().with_implicit_chat()),

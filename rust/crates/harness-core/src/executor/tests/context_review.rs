@@ -152,11 +152,17 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
             ))
         }
     }
-    for (replace, change_source, tokenized) in [
-        (false, false, true),
-        (true, false, true),
-        (true, true, true),
-        (true, false, false),
+    let instructions = ModelMessage {
+        role: ModelRole::System,
+        content: ModelContent::Text("Follow the house rules.".into()),
+    };
+    for (replace, change_source, tokenized, staged) in [
+        (false, false, true, false),
+        (true, false, true, false),
+        (true, true, true, false),
+        (true, false, false, false),
+        // A stage prepends the system header the worker's requests carry.
+        (true, false, true, true),
     ] {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -218,6 +224,19 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
         )
         .with_compaction_policy(crate::context::CompactionPolicy::default())
         .with_automatic_compaction()?;
+        let executor = if staged {
+            executor.with_context_stage(Arc::new(crate::context::SourceStage::new(
+                "instructions",
+                "1",
+                Arc::new(crate::context::Context {
+                    messages: vec![instructions.clone()],
+                    ..Default::default()
+                }),
+                crate::context::ContextPlacement::Prepend,
+            )))?
+        } else {
+            executor
+        };
         let mut execution = StockExecution::ordinary(&executor);
         execution.selected = Some(Arc::clone(&selected));
         let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
@@ -307,6 +326,25 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
                 assert!(after.messages.iter().any(
                     |message| message.content == ModelContent::Text("New observation.".into())
                 ));
+                // The summary reads the worker's header and every reviewed
+                // message; the compacted base is staged once, not twice.
+                let summary = provider.request(1).unwrap();
+                assert!(summary.summary);
+                assert_eq!(summary.messages.first() == Some(&instructions), staged);
+                assert!(
+                    summary
+                        .messages
+                        .iter()
+                        .any(|message| message.content == initial_prior[0].content)
+                );
+                assert_eq!(
+                    after
+                        .messages
+                        .iter()
+                        .filter(|message| **message == instructions)
+                        .count(),
+                    usize::from(staged)
+                );
             } else if !change_source {
                 assert!(after.messages.starts_with(&during.messages));
             } else {

@@ -23,6 +23,7 @@ impl Routes {
 
 fn scripted(path: &'static str, steps: Vec<Step>) -> Arc<Scripted> {
     Arc::new(Scripted {
+        summaries: false,
         path,
         state: Mutex::new(("agent", steps.into(), Vec::new())),
         cache: Mutex::default(),

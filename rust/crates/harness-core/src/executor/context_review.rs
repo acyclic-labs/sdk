@@ -59,6 +59,7 @@ struct Observation {
 struct Job<'a> {
     step: u32,
     source: crate::context::Context,
+    prefix: Vec<ModelMessage>,
     selected: Option<Arc<StepBinding>>,
     observation: Observation,
     _hold: Option<crate::conversation::ContentHold<'a>>,
@@ -139,6 +140,39 @@ pub(in crate::executor) struct Background<'a> {
     pub(super) completed: Notify,
     stop: Notify,
     _custody: Option<crate::filesystem::PreparationCustody>,
+}
+
+/// The pre-stage history through `through`, which the summary covers and the
+/// receipt's cut names, and the leading system messages of the request the
+/// step sent, which only the summary request carries so it reads the
+/// response's cached prefix.
+fn review_source(
+    base: &crate::context::Context,
+    sent: Option<&[ModelMessage]>,
+    through: usize,
+    io: Option<&PreparationIo>,
+) -> Result<(crate::context::Context, Vec<ModelMessage>, u64)> {
+    let (source, bytes) = with_history_io(io, |work| {
+        crate::context::clone_context(base, Some(through), work)
+    })?;
+    let header = sent.map_or(&[][..], |sent| {
+        let count = sent
+            .iter()
+            .take_while(|message| message.role == crate::model::ModelRole::System)
+            .count();
+        &sent[..count]
+    });
+    let (prefix, prefix_bytes) = with_history_io(io, |work| {
+        crate::context::clone_messages(header, None, &[], work)
+    })?;
+    let bytes = bytes.checked_add(prefix_bytes).ok_or_else(|| {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "review source bytes overflow",
+        )
+    })?;
+    Ok((source, prefix, bytes))
 }
 
 impl<'a> StockExecution<'a> {
@@ -294,9 +328,30 @@ impl<'a> StockExecution<'a> {
         let Some((through, _)) = budget else {
             return Ok(());
         };
-        let (source, bytes) = with_history_io(self.io, |work| {
-            crate::context::clone_context(&base, Some(through), work)
-        })?;
+        // A step that staged no separate projection sent the pre-stage header.
+        let projection = match response
+            .iter()
+            .rev()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ContextPrepared {
+                    step: recorded,
+                    projection,
+                    ..
+                } if *recorded == step => Some(projection),
+                _ => None,
+            }) {
+            Some(reference) => Some(self.load_response_projection(journal, reference).await?.1),
+            None => None,
+        };
+        let (source, prefix, bytes) = review_source(
+            &base,
+            projection
+                .as_ref()
+                .map(|prepared| prepared.request().messages.as_slice()),
+            through,
+            self.io,
+        )?;
+        drop(projection);
         #[cfg(all(test, not(target_arch = "wasm32")))]
         acyclic_test_support::differential::record((
             "context review source messages",
@@ -306,6 +361,7 @@ impl<'a> StockExecution<'a> {
         let job = Job {
             step,
             source,
+            prefix,
             selected: self.selected.clone(),
             observation,
             _hold: hold,
@@ -317,7 +373,7 @@ impl<'a> StockExecution<'a> {
                 .evaluate_context_review(
                     journal,
                     input,
-                    (job.source, job.selected),
+                    (job.source, job.prefix, job.selected),
                     step,
                     observation,
                     &mut phase,
@@ -360,6 +416,8 @@ impl<'a> StockExecution<'a> {
             return Ok(None);
         };
         let (input, step, prior) = turn;
+        // The receipt's cut names the pre-stage history; the stages run again
+        // on the compacted base below.
         let (_, source, _) = self.response_base(journal, input, step, prior).await?;
         let through = receipt.summary.source_messages as usize;
         if through >= source.messages.len()
@@ -440,12 +498,16 @@ impl<'a> StockExecution<'a> {
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
-        source: (crate::context::Context, Option<Arc<StepBinding>>),
+        source: (
+            crate::context::Context,
+            Vec<ModelMessage>,
+            Option<Arc<StepBinding>>,
+        ),
         step: u32,
         observation: Observation,
         phase: &mut DispatchPhase,
     ) -> Result<Option<Receipt<'a>>> {
-        let (source, selected) = source;
+        let (source, prefix, selected) = source;
         let files = self.rewrite_files(journal, (input, step)).await?;
         let files_hold = files
             .as_ref()
@@ -479,7 +541,7 @@ impl<'a> StockExecution<'a> {
                 journal,
                 (input, step),
                 &source,
-                (source.messages.len(), Some(&instruction)),
+                (source.messages.len(), Some(&instruction), &prefix),
                 (0, None, digest),
             )
             .await
@@ -503,6 +565,7 @@ impl<'a> StockExecution<'a> {
                 input.operation_id,
                 step,
                 material,
+                &prefix,
                 phase,
                 ModelPurpose::Summary,
             )
@@ -672,7 +735,7 @@ impl<'a> StockExecution<'a> {
             let review = self.evaluate_context_review(
                 journal,
                 input,
-                (job.source, job.selected),
+                (job.source, job.prefix, job.selected),
                 step,
                 job.observation,
                 &mut phase,
@@ -815,6 +878,7 @@ mod tests {
             state.queued = Some(Job {
                 step: 0,
                 source: crate::context::Context::default(),
+                prefix: Vec::new(),
                 selected: None,
                 observation: Observation {
                     tokens: ModelTokenUsage::default(),
@@ -864,6 +928,141 @@ mod tests {
         );
         assert_eq!(provider.request_count(), 0);
         assert!(!execution.review.state.lock().await.active);
+        Ok(())
+    }
+
+    /// The summary window is chosen with the header its request carries. A
+    /// history that fits alone but not under the header skips the review
+    /// before any paid admission, instead of failing the worker.
+    #[tokio::test]
+    async fn a_review_that_fits_only_without_its_header_is_skipped() -> Result<()> {
+        use crate::model::{ModelMessage, ModelRole};
+        let provider = Arc::new(
+            crate::test_support::ScriptedModelProvider::new([
+                crate::test_support::ScriptedTurn::Text(
+                    serde_json::json!({"version": 1, "summary": null, "review_at_input_tokens": 8_000})
+                        .to_string(),
+                ),
+            ])
+            .with_context_capacity(crate::context::ModelContextCapacity {
+                context_tokens: 8192,
+                output_tokens: Some(512),
+                output_shares_context: false,
+            })
+            .with_token_counter(|request| {
+                Ok(crate::context::ModelTokenCount::from_upper_bounds(
+                    request.request_digest(),
+                    u32::try_from(request.bytes().len())
+                        .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
+                    vec![0; request.request().messages.len()],
+                ))
+            }),
+        );
+        let stock = StockExecutor::new(
+            Model::new("fixture".into(), "selected".into(), "1".into())?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_automatic_compaction()?;
+        let storage =
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        let journal = storage.journal();
+        let execution = StockExecution::ordinary(&stock);
+        let source = crate::context::Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("history ".repeat(400)),
+            }],
+            ..Default::default()
+        };
+        let header = vec![ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text("rules ".repeat(1_200)),
+        }];
+        let observation = Observation {
+            tokens: ModelTokenUsage::default(),
+            input_tokens: 4096,
+            latency_ns: None,
+        };
+        let review = |prefix: Vec<ModelMessage>| {
+            let input = TurnInput {
+                operation_id: OperationId::new(),
+                max_steps: None,
+                input: ModelContent::Text("Continue.".into()),
+                selected_context: None,
+            };
+            let source = source.clone();
+            let execution = &execution;
+            let journal = journal.as_ref();
+            async move {
+                execution
+                    .evaluate_context_review(
+                        journal,
+                        &input,
+                        (source, prefix, None),
+                        0,
+                        observation,
+                        &mut DispatchPhase::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.is_some())
+            }
+        };
+        assert!(matches!(review(header).await, Ok(false)));
+        assert_eq!(provider.request_count(), 0);
+        // Control: the same history without the header fits and is reviewed.
+        review(Vec::new()).await?;
+        assert_eq!(provider.request_count(), 1);
+        Ok(())
+    }
+
+    /// The summary request carries the selected header and every reviewed
+    /// message, while the cut it authorizes stays on the pre-stage history.
+    #[test]
+    fn review_source_keeps_the_cut_pre_stage_and_every_reviewed_message() -> Result<()> {
+        use crate::model::{ModelContent, ModelMessage, ModelRole};
+        let message = |role, text: &str| ModelMessage {
+            role,
+            content: ModelContent::Text(text.into()),
+        };
+        let conversation = [
+            message(ModelRole::User, "earlier request"),
+            message(ModelRole::Assistant, "earlier answer"),
+            message(ModelRole::User, "current request"),
+        ];
+        let header = [
+            message(ModelRole::System, "prepended instructions"),
+            message(ModelRole::System, "selected instructions"),
+        ];
+        // A replaced header, and a stage that prepends instructions to a base
+        // without one.
+        for base_header in [&[message(ModelRole::System, "old instructions")][..], &[]] {
+            let base = crate::context::Context {
+                messages: base_header.iter().chain(&conversation).cloned().collect(),
+                current_input_index: Some(2 + u32::from(!base_header.is_empty())),
+                ..Default::default()
+            };
+            let projection = crate::context::Context {
+                messages: header.iter().chain(&conversation).cloned().collect(),
+                current_input_index: Some(4),
+                ..Default::default()
+            };
+            let through = base_header.len() + 2;
+            let (source, prefix, _) =
+                review_source(&base, Some(&projection.messages), through, None)?;
+            assert_eq!(source.messages, base.messages[..through]);
+            let request = crate::executor::summary::with_request_prefix(source, &prefix, None)?;
+            let reviewed: Vec<_> = header.iter().chain(&conversation[..2]).cloned().collect();
+            assert_eq!(request.messages, reviewed);
+            // Without a staged projection the request keeps the base header.
+            let (source, prefix, _) = review_source(&base, None, through, None)?;
+            assert!(prefix.is_empty());
+            assert_eq!(
+                crate::executor::summary::with_request_prefix(source, &prefix, None)?.messages,
+                base.messages[..through]
+            );
+        }
         Ok(())
     }
 }

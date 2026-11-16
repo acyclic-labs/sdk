@@ -61,6 +61,7 @@ async fn mixed_provider_catalog_executes_every_route_and_rejects_a_swapped_adapt
     let mut document = BTreeMap::new();
     for (name, adapter, path) in providers {
         let transport = Arc::new(Scripted {
+            summaries: false,
             path,
             state: Mutex::new(("agent", VecDeque::new(), Vec::new())),
             cache: Mutex::default(),

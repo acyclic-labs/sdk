@@ -46,6 +46,7 @@ fn selected(messages: Vec<ModelMessage>) -> SelectedModelContext {
 fn transport(path: &'static str) -> Arc<Scripted> {
     Arc::new(Scripted {
         path,
+        summaries: false,
         state: Mutex::new(("agent", VecDeque::new(), Vec::new())),
         cache: Mutex::new(harness_mock_model::PromptCache::default().with_implicit_chat()),
     })

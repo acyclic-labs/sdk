@@ -73,11 +73,11 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32),
         context: &crate::context::Context,
-        selection: (usize, Option<&ModelContent>),
+        selection: (usize, Option<&ModelContent>, &[ModelMessage]),
         progress: (u64, Option<&crate::context::ContextSummary>, [u8; 32]),
     ) -> Result<usize> {
         let (input, step) = turn;
-        let (eligible, instruction) = selection;
+        let (eligible, instruction, prefix) = selection;
         let (part, previous, digest) = progress;
         let start = previous.map_or(0, |summary| summary.source_messages as usize);
         let key = with_history_io(self.io, |work| {
@@ -119,7 +119,7 @@ impl StockExecution<'_> {
             let session = self.preparing(scope.io());
             let material = session.manager_material(context, start..end, previous, instruction)?;
             let admitted = session
-                .admit_summary_window(journal, turn, material.0, material.1, purpose)
+                .admit_summary_window(journal, turn, (material.0, prefix), material.1, purpose)
                 .await;
             drop(session);
             scope.finish(0)?;
@@ -171,7 +171,7 @@ impl StockExecution<'_> {
         let (part, previous, _) = progress;
         let start = previous.map_or(0, |summary| summary.source_messages as usize);
         let end = self
-            .manager_window(journal, turn, context, (eligible, None), progress)
+            .manager_window(journal, turn, context, (eligible, None, &[]), progress)
             .await?;
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
         let session = self.preparing(scope.io());
