@@ -34,8 +34,8 @@ impl Driver {
         Self::from_scope(Schedule::seeded_unrecorded(seed), cut, false).refuse_processes()
     }
 
-    pub fn without_entropy(seed: u64) -> Self {
-        Self::from_scope(Schedule::without_entropy(seed), None, true).refuse_processes()
+    pub fn without_entropy(seed: u64, cut: Option<(usize, DurableFault)>) -> Self {
+        Self::from_scope(Schedule::without_entropy(seed), cut, true).refuse_processes()
     }
 
     fn from_scope(

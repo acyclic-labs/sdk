@@ -219,10 +219,30 @@ pub(super) struct World {
     pub service: ScriptedModelProvider,
     pub seed: u64,
     incarnations: u64,
+    entropy: bool,
 }
 
 impl World {
     pub fn new(seed: u64, files: &[(&str, &str)], service: ScriptedModelProvider) -> Result<Self> {
+        Self::with_entropy(seed, files, service, true)
+    }
+
+    /// The same world with the scheduler's entropy source erased, so a trace
+    /// that still matches the seeded one proves the seed never reached it.
+    pub fn without_entropy(
+        seed: u64,
+        files: &[(&str, &str)],
+        service: ScriptedModelProvider,
+    ) -> Result<Self> {
+        Self::with_entropy(seed, files, service, false)
+    }
+
+    fn with_entropy(
+        seed: u64,
+        files: &[(&str, &str)],
+        service: ScriptedModelProvider,
+        entropy: bool,
+    ) -> Result<Self> {
         let directory = tempfile::Builder::new()
             .prefix("sdk-dst-world-")
             .tempdir()
@@ -241,6 +261,7 @@ impl World {
             service,
             seed,
             incarnations: 0,
+            entropy,
         })
     }
 
@@ -257,7 +278,11 @@ impl World {
             // Each incarnation is an independent scheduler over the same files.
             let scheduler = self.seed ^ self.incarnations.wrapping_mul(0x9e37_79b9_7f4a_7c15);
             self.incarnations += 1;
-            let mut driver = Driver::world(scheduler, cut);
+            let mut driver = if self.entropy {
+                Driver::world(scheduler, cut)
+            } else {
+                Driver::without_entropy(scheduler, cut)
+            };
             let schedule = driver.schedule.clone();
             let counter = schedule.clone();
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));
