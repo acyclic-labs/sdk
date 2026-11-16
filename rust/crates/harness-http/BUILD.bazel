@@ -65,6 +65,7 @@ rust_test(
     deps = [
         "//rust/crates/test-support:acyclic_test_support",
         "@crates//proptest-1.12.0",
+        "@crates//zeroize-1.9.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
