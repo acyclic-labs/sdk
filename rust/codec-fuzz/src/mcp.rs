@@ -1,12 +1,10 @@
 //! Semantic service and callback admission after the shared JSON boundary.
 use acyclic_harness_core::{
-    OperationId, contract,
-    mcp::{
-        callbacks::{McpCallbackPolicy, McpCallbackRequest},
-        services,
-    },
-    test_support::error_observation,
-    wire::ErrorCode,
+    OperationId, contract, test_support::error_observation, wire::ErrorCode,
+};
+use acyclic_harness_mcp::{
+    callbacks::{McpCallbackPolicy, McpCallbackRequest},
+    services,
 };
 use serde_json::Value;
 

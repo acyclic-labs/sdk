@@ -33,12 +33,10 @@ pub fn semantic_seeds(
 /// External captures must reach their recorded successful service or callback
 /// admission; chunk-equivalent refusal alone cannot qualify a positive seed.
 pub fn admit_external(codec: &str, method: &str, bytes: &[u8]) -> Result<(), String> {
-    use acyclic_harness_core::{
-        OperationId, contract,
-        mcp::{
-            callbacks::{McpCallbackPolicy, McpCallbackRequest},
-            services,
-        },
+    use acyclic_harness_core::{OperationId, contract};
+    use acyclic_harness_mcp::{
+        callbacks::{McpCallbackPolicy, McpCallbackRequest},
+        services,
     };
     let result = match codec {
         "stdio" => {
