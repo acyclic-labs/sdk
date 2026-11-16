@@ -243,10 +243,7 @@ impl World {
         service: ScriptedModelProvider,
         entropy: bool,
     ) -> Result<Self> {
-        let directory = tempfile::Builder::new()
-            .prefix("sdk-dst-world-")
-            .tempdir()
-            .map_err(storage)?;
+        let directory = temporary_directory().map_err(storage)?;
         let checkout = directory.path().join("checkout");
         std::fs::create_dir(&checkout).map_err(storage)?;
         for (path, body) in files {
@@ -283,6 +280,17 @@ impl World {
             } else {
                 Driver::without_entropy(scheduler, cut)
             };
+            // Native timestamps are fixture inputs, not host facts: a world
+            // replayed from the same seed must not depend on when it ran.
+            driver.schedule.set_native_times_provider(|input| {
+                const TIME_NS: i64 = 1_700_000_000_000_000_000;
+                acyclic_native_runtime::testing::NativeTimes {
+                    created_ns: input.times.created_ns.map(|_| TIME_NS),
+                    modified_ns: input.times.modified_ns.map(|_| TIME_NS),
+                    accessed_ns: input.times.accessed_ns.map(|_| TIME_NS),
+                    changed_ns: input.times.changed_ns.map(|_| TIME_NS),
+                }
+            });
             let schedule = driver.schedule.clone();
             let counter = schedule.clone();
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));

@@ -44,6 +44,16 @@ fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 
+/// A DST world's files live in memory-backed storage, so a simulated world
+/// never waits on the host's persistent disk journal.
+fn temporary_directory() -> std::io::Result<tempfile::TempDir> {
+    #[cfg(target_os = "linux")]
+    if Path::new("/dev/shm").is_dir() {
+        return tempfile::tempdir_in("/dev/shm");
+    }
+    tempfile::tempdir()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Trace {
     polls: Vec<(u64, &'static str)>,
@@ -314,7 +324,7 @@ fn replay_with_directory_times(
                 input.times
             }
         });
-        let directory = tempfile::tempdir().map_err(storage)?;
+        let directory = temporary_directory().map_err(storage)?;
         let result = driver.run(scenario(directory.path())).await;
         let driver::Outcome::Completed(result) = result else {
             panic!("uncut replay crashed");
