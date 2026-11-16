@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -151,4 +151,13 @@ test("the gate passes a clean tree and fails drift planted in any crate shape", 
       assert.match(output.replaceAll("\\", "/"), new RegExp(`${path}:\\d+:`), path);
     } finally { rmSync(root, { recursive: true, force: true }); }
   }
+});
+
+test("write mode formats drift and leaves the check clean", async () => {
+  const root = fixture({ "member/src/hidden.rs": drift });
+  try {
+    assert.deepEqual(await qualifyRustfmt(root, { write: true }), { status: 0, output: "" });
+    assert.equal(readFileSync(join(root, "member/src/hidden.rs"), "utf8"), clean);
+    assert.deepEqual(await qualifyRustfmt(root), { status: 0, output: "" });
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

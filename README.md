@@ -24,7 +24,7 @@ qualification evidence.
 Run all implemented checks:
 
 ```sh
-cargo fmt --all -- --check
+node scripts/qualify-rustfmt.mjs
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 bun install --frozen-lockfile

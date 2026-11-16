@@ -269,7 +269,6 @@ fn invoke_rejects_only_the_existing_actor_id_presence_violation() {
     );
 }
 
-
 #[test]
 fn response_digest_keeps_the_nonzero_admission_rule() {
     let observation = wire::ActorObservation {

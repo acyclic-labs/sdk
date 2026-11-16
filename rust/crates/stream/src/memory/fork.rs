@@ -5,10 +5,7 @@ impl MemoryStream {
         &'a self,
         state: &mut State,
         request: &'a ForkRequest,
-    ) -> Result<
-        ForkDecision<impl Install<'a, ForkReceipt>>,
-        StreamError,
-    > {
+    ) -> Result<ForkDecision<impl Install<'a, ForkReceipt>>, StreamError> {
         let digest = fork_digest(request)?;
         let scope = state.ephemeral.fork_scope(&state.paths, request)?;
         if let Some(result) = self.replay_fork(state, &request.idempotency_key, digest)? {

@@ -1,8 +1,10 @@
-// Formatting gate for every tracked Rust file: root-workspace members and the
-// standalone fuzz, proof, model and binding crates that `cargo fmt --all` never
-// visits. Each file is checked under the edition of its nearest Cargo.toml, as
-// `cargo fmt` would. Vendored crates and hash-bound historical source captures
-// are data, not current source: formatting them would invalidate their receipts.
+// The one formatting mechanism for every tracked Rust file: root-workspace
+// members and the standalone fuzz, proof, model and binding crates that
+// `cargo fmt --all` never visits, including files reached only through
+// `include!`. Each file is checked or written under the edition of its nearest
+// Cargo.toml, as `cargo fmt` would. Vendored crates and hash-bound historical
+// source captures are data, not current source: formatting them would
+// invalidate their receipts.
 import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
@@ -73,12 +75,13 @@ export function filesByEdition(root) {
   return groups;
 }
 
-// Checks every file exactly once: `skip_children` stops a crate root from
-// re-formatting its whole module tree, and the files are spread over one batch
-// per CPU (at most 200 paths each, within the Windows command-line limit).
-// rustfmt reads the nearest rustfmt.toml of each file. Resolves to
-// {status, output}; status is 0 only when every batch exits 0 and prints nothing.
-export async function qualifyRustfmt(root) {
+// Checks (or, with write, rewrites) every file exactly once: `skip_children`
+// stops a crate root from re-formatting its whole module tree, and the files
+// are spread over one batch per CPU (at most 200 paths each, within the Windows
+// command-line limit). rustfmt reads the nearest rustfmt.toml of each file.
+// Resolves to {status, output}; status is 0 only when every batch exits 0 and
+// prints nothing.
+export async function qualifyRustfmt(root, { write = false } = {}) {
   const groups = filesByEdition(root);
   const total = [...groups.values()].reduce((sum, files) => sum + files.length, 0);
   if (total === 0) return { status: 1, output: "no tracked Rust files found\n" };
@@ -86,7 +89,11 @@ export async function qualifyRustfmt(root) {
   const jobs = [];
   for (const [edition, files] of groups) {
     for (let i = 0; i < files.length; i += size) {
-      jobs.push(["--check", "--color", "never", "--edition", edition, "--config", "skip_children=true", ...files.slice(i, i + size)]);
+      jobs.push([
+        ...(write ? [] : ["--check"]),
+        "--color", "never", "--edition", edition, "--config", "skip_children=true",
+        ...files.slice(i, i + size),
+      ]);
     }
   }
   let status = 0, output = "", next = 0;
@@ -110,7 +117,10 @@ export async function qualifyRustfmt(root) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const { status, output } = await qualifyRustfmt(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
+  const { status, output } = await qualifyRustfmt(
+    resolve(dirname(fileURLToPath(import.meta.url)), ".."),
+    { write: process.argv.includes("--write") },
+  );
   process.stdout.write(output);
   process.exitCode = status;
 }

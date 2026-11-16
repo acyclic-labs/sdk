@@ -142,14 +142,7 @@ impl MemoryStream {
         window: FollowWindow,
     ) -> Result<crate::FollowStream, StreamError> {
         let (snapshot, selection, interest, cursor) = self
-            .prepare_follow(
-                &path,
-                from,
-                anchor,
-                when_absent,
-                filter.clone(),
-                window,
-            )
+            .prepare_follow(&path, from, anchor, when_absent, filter.clone(), window)
             .await?;
         let anchor = selection.preceding;
         #[cfg(not(target_arch = "wasm32"))]

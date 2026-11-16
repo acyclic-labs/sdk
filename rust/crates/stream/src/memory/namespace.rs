@@ -205,10 +205,7 @@ fn retire_namespace(initial: [Option<NamespaceRetirement>; 3], allocation: &mut 
         let Some(slot) = work.get_mut(cursor) else {
             break;
         };
-        let item = std::mem::replace(
-            slot,
-            NamespaceRetirement::Funding { _allocation: None },
-        );
+        let item = std::mem::replace(slot, NamespaceRetirement::Funding { _allocation: None });
         let replacement = NamespaceRetirement::Funding {
             _allocation: retire(item, &mut work),
         };
