@@ -151,6 +151,7 @@ rust_library(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/observability:acyclic_observability",
         "//rust/crates/stream:acyclic_stream",
+        "//rust/crates/test-support:acyclic_test_support",
         "@crates//arrayvec-0.7.8",
         "@crates//async-stream-0.3.6",
         "@crates//base64_0_23_1-0.23.1",
