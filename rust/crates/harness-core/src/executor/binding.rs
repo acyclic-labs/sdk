@@ -114,7 +114,10 @@ impl StockExecution<'_> {
             after_hooks: &'a [crate::plugins::AfterHook],
             inherited_prefix: Option<&'a FileRef>,
             compaction: &'a crate::context::CompactionPolicy,
+            /// Provider capacity is configuration, not turn identity: a
+            /// reopened owner keeps the capacity its journal bound.
             model_capacity: Option<crate::context::ModelContextCapacity>,
+            single_request: bool,
             #[serde(skip_serializing_if = "Option::is_none")]
             task_context: Option<IssuedContext<'a>>,
         }
@@ -172,11 +175,12 @@ impl StockExecution<'_> {
                 #[cfg(not(target_arch = "wasm32"))]
                 after_hooks: self.selected_after_hooks(),
                 compaction: self.compaction_policy()?,
-                model_capacity: if self.unchecked()? {
+                model_capacity: if self.summary.is_none() || self.unchecked()? {
                     None
                 } else {
                     Some(self.model_capacity()?)
                 },
+                single_request: self.single_request,
                 task_context,
             },
             io,

@@ -24,12 +24,8 @@ async fn save_unaccounted_request(
         "inherited_prefix": null,
         "compaction": crate::context::CompactionPolicy::Disabled,
         "model_capacity": null,
+        "single_request": single_request,
     });
-    if single_request {
-        binding["model_capacity"] =
-            serde_json::to_value(executor.provider.context_capacity(&executor.model)?)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-    }
     let sampling = execution.sampling()?;
     if !sampling.is_default() {
         binding["sampling"] =
@@ -322,5 +318,38 @@ async fn independent_nonzero_model_step_stages_a_new_prefix_and_replays() -> Res
         stored["request"],
         serde_json::to_value(request).map_err(|error| Error::Invalid(error.to_string()))?
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn resumed_turn_keeps_its_identity_when_provider_capacity_changes() -> Result<()> {
+    let journal = Journal::default();
+    let (original, _) = counted_model(4_096, None, [ScriptedTurn::Text("done".into())], []);
+    let executor = uncompacted_executor(
+        Model::new("test".into(), "capacity".into(), "1".into())?,
+        original,
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        max_steps: Some(1),
+        input: ModelContent::Text("input".into()),
+        selected_context: None,
+    };
+    StockExecution {
+        single_request: true,
+        ..StockExecution::ordinary(&executor)
+    }
+    .ensure_started(&journal, &input)
+    .await?;
+    let (reopened, _) = counted_model(8_192, None, [ScriptedTurn::Text("done".into())], []);
+    let executor = uncompacted_executor(
+        Model::new("test".into(), "capacity".into(), "1".into())?,
+        reopened,
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    assert_eq!(executor.infer(&journal, &input, None).await?.text(), "done");
     Ok(())
 }
