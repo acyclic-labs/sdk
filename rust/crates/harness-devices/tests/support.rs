@@ -2,7 +2,7 @@
 use acyclic_harness_core::{Error, Result, machines::MachinesHost, resources::ProviderRef};
 use acyclic_machines::{Image, MachineId, MachineObservation};
 use std::sync::Arc;
-async fn workspace_fixture() -> Result<(
+pub(crate) async fn workspace_fixture() -> Result<(
     acyclic_harness_core::core::AuthorityRoot,
     acyclic_harness_core::core::Scope,
     acyclic_harness_core::machines::MachinesWorkspace,
@@ -18,7 +18,7 @@ async fn workspace_fixture() -> Result<(
     workspace_fixture_for_volume(volume).await
 }
 
-async fn workspace_fixture_for_volume(
+pub(crate) async fn workspace_fixture_for_volume(
     volume: acyclic_harness_core::conversation::VolumeRef,
 ) -> Result<(
     acyclic_harness_core::core::AuthorityRoot,
@@ -28,7 +28,7 @@ async fn workspace_fixture_for_volume(
     workspace_fixture_for_mode(volume, false).await
 }
 
-async fn workspace_fixture_for_mode(
+pub(crate) async fn workspace_fixture_for_mode(
     volume: acyclic_harness_core::conversation::VolumeRef,
     copied: bool,
 ) -> Result<(

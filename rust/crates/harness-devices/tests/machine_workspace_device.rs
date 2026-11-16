@@ -1,6 +1,6 @@
+//! Real Machine execution over the same authenticated Actor socket and journal.
 mod support;
 
-//! Real Machine execution over the same authenticated Actor socket and journal.
 use acyclic_actors::{
     addressing::ActorReference,
     domain::ActorLimits,

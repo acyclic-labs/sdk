@@ -29,6 +29,7 @@ tokio = { version = "1.48.0", default-features = false, features = ["macros", "r
 
 [dev-dependencies]
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+tempfile = "3.27.0"
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util", "process", "io-util"] }
