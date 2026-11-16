@@ -295,7 +295,7 @@ impl ContentResidencyVerifier for BrowserReader {
             'a,
             Option<(
                 FileRef,
-                acyclic_stream::OwnedBytes,
+                crate::conversation::Custody,
                 Option<ContentHold<'io>>,
             )>,
         >,
@@ -335,7 +335,11 @@ impl ContentResidencyVerifier for BrowserReader {
             let file =
                 from_js(Reflect::get(&result, &JsValue::from_str("file")).map_err(platform_error)?)
                     .map_err(platform_error)?;
-            Ok(Some((file, bytes.into(), None)))
+            Ok(Some((
+                file,
+                crate::conversation::Custody::Unmetered(bytes.into()),
+                None,
+            )))
         })
     }
 }
@@ -400,7 +404,10 @@ pub async fn read_pinned_context_path(
         .read(&reader, u64::from(maximum_bytes))
         .await
         .map_err(js_error)?;
-    let body = ContextPathResult { file, bytes };
+    let body = ContextPathResult {
+        file,
+        bytes: bytes.bytes().clone(),
+    };
     let result = js_sys::Object::new();
     Reflect::set(
         &result,

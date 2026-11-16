@@ -8,8 +8,7 @@ impl BrowserStream {
         anchor: Option<CommitId>,
         when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
-        bootstrap_head: bool,
-        until: Option<u64>,
+        window: crate::memory::FollowWindow,
     ) -> Result<crate::FollowStream, StreamError> {
         let changed = self
             .inner
@@ -19,7 +18,14 @@ impl BrowserStream {
         let (snapshot, selection, _, cursor) = self
             .with_provider(async |memory| {
                 memory
-                    .prepare_progress(&path, from, anchor, when_absent, bootstrap_head, until)
+                    .prepare_progress(
+                        &path,
+                        from,
+                        anchor,
+                        when_absent,
+                        window.bootstrap_head,
+                        window.until,
+                    )
                     .await
             })
             .await?;
@@ -73,15 +79,21 @@ impl BrowserStream {
         anchor: Option<CommitId>,
         when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
-        bootstrap_head: bool,
-        until: Option<u64>,
+        window: crate::memory::FollowWindow,
     ) -> Result<crate::FollowStream, StreamError> {
         // The publication index survives replay-cache replacement. Registration
         // and the initial cursor are captured under the same cache lock as writes.
         let (snapshot, selection, changed, cursor, registration) = self
             .with_provider(async |memory| {
                 let (snapshot, selection, _, cursor) = memory
-                    .prepare_progress(&path, from, anchor, when_absent, bootstrap_head, until)
+                    .prepare_progress(
+                        &path,
+                        from,
+                        anchor,
+                        when_absent,
+                        window.bootstrap_head,
+                        window.until,
+                    )
                     .await?;
                 let registration = self.inner.publications.follow_index(&path)?;
                 let index = registration.value();

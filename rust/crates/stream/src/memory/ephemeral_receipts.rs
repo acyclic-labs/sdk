@@ -225,26 +225,25 @@ impl acyclic_collections::IndexWork for ReceiptInsertWork<'_> {
         Ok(())
     }
     fn claim(&mut self, bytes: u64) -> Result<Allocation, Self::Error> {
-        let Some(allocation) = self.allocation.as_mut() else {
-            let _ = bytes;
-            return Ok(None);
-        };
-        // The wasm reservation is a unit: a node's share of it is the unit.
         #[cfg(target_arch = "wasm32")]
-        let claimed = {
-            let () = *allocation;
+        {
+            // The wasm reservation is a unit: a node's share of it is the unit.
             let _ = bytes;
-        };
+            Ok(Some(()))
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        let claimed = {
+        {
+            let Some(allocation) = self.allocation.as_mut() else {
+                let _ = bytes;
+                return Ok(None);
+            };
             let bytes = usize::try_from(bytes).unwrap_or_else(|_| {
                 unreachable!("a physical index node has a representable layout")
             });
-            allocation.split(bytes).unwrap_or_else(|_| {
+            Ok(Some(allocation.split(bytes).unwrap_or_else(|_| {
                 unreachable!("two fixed-index insertions fit their admitted backing bound")
-            })
-        };
-        Ok(Some(claimed))
+            })))
+        }
     }
 }
 
