@@ -10,7 +10,13 @@ async fn connection_observers_end_when_the_original_pool_driver_is_dropped() -> 
     struct Executor(Mutex<Option<BoxProviderFuture<'static, ()>>>);
     impl crate::runtime::Executor for Executor {
         fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
-            assert!(self.0.lock().unwrap_or_else(|poison| poison.into_inner()).replace(future).is_none());
+            assert!(
+                self.0
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .replace(future)
+                    .is_none()
+            );
         }
         fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
             crate::runtime::Executor::sleep(&crate::runtime::PlatformExecutor, milliseconds)
@@ -43,7 +49,8 @@ async fn connection_observers_end_when_the_original_pool_driver_is_dropped() -> 
         drop(cancelled);
         let mut driver = executor
             .0
-            .lock().unwrap_or_else(|poison| poison.into_inner())
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
             .take()
             .ok_or("missing pool driver")?;
         if started {
@@ -99,7 +106,8 @@ impl transport::Transport for ReplacedNode {
                 return Err(StreamError::InvalidArgument.into());
             };
             self.destinations
-                .lock().unwrap_or_else(|poison| poison.into_inner())
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
                 .push(value.destination_node.clone());
             let node = if self.replacement.load(Ordering::Acquire) == 0 {
                 "old"
@@ -161,7 +169,13 @@ async fn same_client_discovers_replacement_after_idle_close() -> TestResult {
             .map_ok(crate::records_only)
             .await?;
         assert_eq!(next(&mut second).await?.sequence, 0);
-        assert_eq!(*endpoint.destinations.lock().unwrap_or_else(|poison| poison.into_inner()), ["", ""]);
+        assert_eq!(
+            *endpoint
+                .destinations
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()),
+            ["", ""]
+        );
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     })
     .await
@@ -308,7 +322,10 @@ async fn empty_session_reconnects_keep_spacing_until_current_data_progresses() -
             crate::runtime::Executor::spawn(&crate::runtime::PlatformExecutor, future);
         }
         fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
-            self.0.lock().unwrap_or_else(|poison| poison.into_inner()).push(milliseconds);
+            self.0
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .push(milliseconds);
             Box::pin(future::ready(()))
         }
     }

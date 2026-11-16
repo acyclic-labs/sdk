@@ -230,20 +230,15 @@ fn decode<T: Message + Default>(
     })
 }
 
-fn encode<T: Message>(
-    value: &T,
-    operation: &str,
-) -> std::result::Result<Buffer, OperationError> {
+fn encode<T: Message>(value: &T, operation: &str) -> std::result::Result<Buffer, OperationError> {
     let mut bytes = Vec::with_capacity(value.encoded_len());
-    value
-        .encode(&mut bytes)
-        .map_err(|error| {
-            OperationError::from(NativeStreamErrorMetadata {
-                code: "unavailable".to_owned(),
-                message: format!("{operation} response could not be encoded: {error}"),
-                ..Default::default()
-            })
-        })?;
+    value.encode(&mut bytes).map_err(|error| {
+        OperationError::from(NativeStreamErrorMetadata {
+            code: "unavailable".to_owned(),
+            message: format!("{operation} response could not be encoded: {error}"),
+            ..Default::default()
+        })
+    })?;
     Ok(Buffer::from(bytes))
 }
 

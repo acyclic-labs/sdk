@@ -202,7 +202,8 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 1).await?;
     let fixture = Fixture::open(provider, "node").await?;
-    let bearer = "Bearer fixture".parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()?;
+    let bearer =
+        "Bearer fixture".parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()?;
     let client = || {
         Client::open(
             fixture._channel.clone(),

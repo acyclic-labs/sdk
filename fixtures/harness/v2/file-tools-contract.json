@@ -876,11 +876,11 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "description": "Directory child names at one immutable generation, with an independent continuation.",
                   "properties": {
                     "after": {
                       "default": null,
-                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "description": "Opaque next cursor from a previous page of this directory.",
                       "type": [
                         "string",
                         "null"
@@ -1162,7 +1162,7 @@
                   "type": "string"
                 },
                 "version": {
-                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "description": "Opaque namespace version for reading this entry.",
                   "type": "string"
                 }
               },
@@ -1186,6 +1186,46 @@
                   "const": "dir",
                   "description": "Child directory.",
                   "type": "string"
+                },
+                {
+                  "const": "symlink",
+                  "description": "Symbolic link, without following its target.",
+                  "type": "string"
+                },
+                {
+                  "const": "fifo",
+                  "description": "Named pipe.",
+                  "type": "string"
+                },
+                {
+                  "const": "socket",
+                  "description": "Local socket.",
+                  "type": "string"
+                },
+                {
+                  "const": "character_device",
+                  "description": "Character device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "block_device",
+                  "description": "Block device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "reparse_point",
+                  "description": "Windows reparse point other than a symbolic link.",
+                  "type": "string"
+                },
+                {
+                  "const": "mount_boundary",
+                  "description": "Another mount's root, which the listing does not cross.",
+                  "type": "string"
+                },
+                {
+                  "const": "unsupported",
+                  "description": "A kind this host does not report.",
+                  "type": "string"
                 }
               ]
             },
@@ -1200,14 +1240,17 @@
                   },
                   "type": "array"
                 },
-                "hasMore": {
-                  "description": "Continue from the last returned entry's version.",
-                  "type": "boolean"
+                "next": {
+                  "description": "Opaque continuation for this directory at the same immutable selection.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "entries",
-                "hasMore"
+                "next"
               ],
               "type": "object"
             },
@@ -1245,7 +1288,7 @@
             },
             "FilePathSelection": {
               "additionalProperties": false,
-              "description": "An immutable authored file selection. This identifies the selected generation\nand path; it makes no whole-file digest or native snapshot completeness claim.",
+              "description": "An immutable file selection at a provider-owned namespace generation.\nLazy generations include the authored generation and complete source cut;\nthis selection makes no whole-file digest claim.",
               "properties": {
                 "byte_length": {
                   "description": "Length obtained by that producer's original stat.",
@@ -1292,7 +1335,7 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "The exact authored generation selected by the original range reader.",
+                  "description": "The exact namespace generation selected by the original range reader.",
                   "properties": {
                     "authored": {
                       "$ref": "#/$defs/FilePathSelection"
@@ -1546,11 +1589,11 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "description": "Directory child names at one immutable generation, with an independent continuation.",
                   "properties": {
                     "after": {
                       "default": null,
-                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "description": "Opaque next cursor from a previous page of this directory.",
                       "type": [
                         "string",
                         "null"
@@ -1959,7 +2002,7 @@
                   "type": "string"
                 },
                 "version": {
-                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "description": "Opaque namespace version for reading this entry.",
                   "type": "string"
                 }
               },
@@ -1983,6 +2026,46 @@
                   "const": "dir",
                   "description": "Child directory.",
                   "type": "string"
+                },
+                {
+                  "const": "symlink",
+                  "description": "Symbolic link, without following its target.",
+                  "type": "string"
+                },
+                {
+                  "const": "fifo",
+                  "description": "Named pipe.",
+                  "type": "string"
+                },
+                {
+                  "const": "socket",
+                  "description": "Local socket.",
+                  "type": "string"
+                },
+                {
+                  "const": "character_device",
+                  "description": "Character device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "block_device",
+                  "description": "Block device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "reparse_point",
+                  "description": "Windows reparse point other than a symbolic link.",
+                  "type": "string"
+                },
+                {
+                  "const": "mount_boundary",
+                  "description": "Another mount's root, which the listing does not cross.",
+                  "type": "string"
+                },
+                {
+                  "const": "unsupported",
+                  "description": "A kind this host does not report.",
+                  "type": "string"
                 }
               ]
             },
@@ -1997,14 +2080,17 @@
                   },
                   "type": "array"
                 },
-                "hasMore": {
-                  "description": "Continue from the last returned entry's version.",
-                  "type": "boolean"
+                "next": {
+                  "description": "Opaque continuation for this directory at the same immutable selection.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "entries",
-                "hasMore"
+                "next"
               ],
               "type": "object"
             },
@@ -2462,38 +2548,38 @@
         "revision": "portable-14"
       },
       "definition_digest": [
-        112,
+        151,
         163,
-        171,
-        249,
-        18,
-        117,
-        169,
-        249,
-        165,
-        215,
-        56,
-        24,
-        147,
-        1,
-        1,
+        5,
         194,
-        91,
-        7,
-        135,
-        108,
-        247,
-        234,
-        228,
-        220,
-        43,
-        57,
-        214,
-        21,
-        230,
-        125,
-        52,
-        134
+        104,
+        67,
+        232,
+        249,
+        129,
+        25,
+        192,
+        185,
+        3,
+        3,
+        98,
+        169,
+        168,
+        221,
+        198,
+        178,
+        154,
+        195,
+        233,
+        128,
+        217,
+        254,
+        237,
+        175,
+        131,
+        92,
+        238,
+        52
       ],
       "variant": "exact_read_full"
     },
@@ -2541,11 +2627,11 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "description": "Directory child names at one immutable generation, with an independent continuation.",
                   "properties": {
                     "after": {
                       "default": null,
-                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "description": "Opaque next cursor from a previous page of this directory.",
                       "type": [
                         "string",
                         "null"
@@ -2827,7 +2913,7 @@
                   "type": "string"
                 },
                 "version": {
-                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "description": "Opaque namespace version for reading this entry.",
                   "type": "string"
                 }
               },
@@ -2851,6 +2937,46 @@
                   "const": "dir",
                   "description": "Child directory.",
                   "type": "string"
+                },
+                {
+                  "const": "symlink",
+                  "description": "Symbolic link, without following its target.",
+                  "type": "string"
+                },
+                {
+                  "const": "fifo",
+                  "description": "Named pipe.",
+                  "type": "string"
+                },
+                {
+                  "const": "socket",
+                  "description": "Local socket.",
+                  "type": "string"
+                },
+                {
+                  "const": "character_device",
+                  "description": "Character device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "block_device",
+                  "description": "Block device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "reparse_point",
+                  "description": "Windows reparse point other than a symbolic link.",
+                  "type": "string"
+                },
+                {
+                  "const": "mount_boundary",
+                  "description": "Another mount's root, which the listing does not cross.",
+                  "type": "string"
+                },
+                {
+                  "const": "unsupported",
+                  "description": "A kind this host does not report.",
+                  "type": "string"
                 }
               ]
             },
@@ -2865,14 +2991,17 @@
                   },
                   "type": "array"
                 },
-                "hasMore": {
-                  "description": "Continue from the last returned entry's version.",
-                  "type": "boolean"
+                "next": {
+                  "description": "Opaque continuation for this directory at the same immutable selection.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "entries",
-                "hasMore"
+                "next"
               ],
               "type": "object"
             },
@@ -2910,7 +3039,7 @@
             },
             "FilePathSelection": {
               "additionalProperties": false,
-              "description": "An immutable authored file selection. This identifies the selected generation\nand path; it makes no whole-file digest or native snapshot completeness claim.",
+              "description": "An immutable file selection at a provider-owned namespace generation.\nLazy generations include the authored generation and complete source cut;\nthis selection makes no whole-file digest claim.",
               "properties": {
                 "byte_length": {
                   "description": "Length obtained by that producer's original stat.",
@@ -2957,7 +3086,7 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "The exact authored generation selected by the original range reader.",
+                  "description": "The exact namespace generation selected by the original range reader.",
                   "properties": {
                     "authored": {
                       "$ref": "#/$defs/FilePathSelection"
@@ -3211,11 +3340,11 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "description": "Directory child names at one immutable generation, with an independent continuation.",
                   "properties": {
                     "after": {
                       "default": null,
-                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "description": "Opaque next cursor from a previous page of this directory.",
                       "type": [
                         "string",
                         "null"
@@ -3624,7 +3753,7 @@
                   "type": "string"
                 },
                 "version": {
-                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "description": "Opaque namespace version for reading this entry.",
                   "type": "string"
                 }
               },
@@ -3648,6 +3777,46 @@
                   "const": "dir",
                   "description": "Child directory.",
                   "type": "string"
+                },
+                {
+                  "const": "symlink",
+                  "description": "Symbolic link, without following its target.",
+                  "type": "string"
+                },
+                {
+                  "const": "fifo",
+                  "description": "Named pipe.",
+                  "type": "string"
+                },
+                {
+                  "const": "socket",
+                  "description": "Local socket.",
+                  "type": "string"
+                },
+                {
+                  "const": "character_device",
+                  "description": "Character device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "block_device",
+                  "description": "Block device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "reparse_point",
+                  "description": "Windows reparse point other than a symbolic link.",
+                  "type": "string"
+                },
+                {
+                  "const": "mount_boundary",
+                  "description": "Another mount's root, which the listing does not cross.",
+                  "type": "string"
+                },
+                {
+                  "const": "unsupported",
+                  "description": "A kind this host does not report.",
+                  "type": "string"
                 }
               ]
             },
@@ -3662,14 +3831,17 @@
                   },
                   "type": "array"
                 },
-                "hasMore": {
-                  "description": "Continue from the last returned entry's version.",
-                  "type": "boolean"
+                "next": {
+                  "description": "Opaque continuation for this directory at the same immutable selection.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "entries",
-                "hasMore"
+                "next"
               ],
               "type": "object"
             },
@@ -4148,38 +4320,38 @@
         "revision": "portable-14"
       },
       "definition_digest": [
-        53,
-        246,
-        122,
-        188,
-        234,
-        144,
-        130,
-        52,
-        93,
+        253,
+        141,
+        210,
+        91,
+        156,
+        245,
         186,
-        225,
-        36,
-        215,
-        142,
-        181,
-        86,
-        131,
-        4,
-        170,
-        56,
-        202,
-        112,
-        151,
-        157,
-        153,
-        119,
-        224,
+        120,
+        35,
+        228,
+        239,
+        129,
+        68,
+        180,
+        236,
+        250,
+        87,
+        171,
+        196,
+        65,
+        44,
+        230,
+        239,
+        217,
+        45,
+        7,
         82,
-        125,
-        182,
-        199,
-        242
+        135,
+        88,
+        111,
+        117,
+        235
       ],
       "variant": "exact_read_reference"
     },
@@ -4374,13 +4546,23 @@
               "additionalProperties": false,
               "description": "Authored payload retained by the original tool completion. Provenance is\nprojected from its authenticated execution record, never from this payload.",
               "properties": {
-                "report": {
-                  "$ref": "#/$defs/Report",
-                  "description": "Original validated authored report."
+                "reports": {
+                  "description": "Original validated authored reports, in their publication order.",
+                  "items": {
+                    "$ref": "#/$defs/Report"
+                  },
+                  "type": "array"
+                },
+                "version": {
+                  "description": "Persisted publication schema version, currently one.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
-                "report"
+                "version",
+                "reports"
               ],
               "type": "object"
             },
@@ -4666,38 +4848,38 @@
         "revision": "portable-8"
       },
       "definition_digest": [
-        24,
-        63,
-        124,
+        182,
+        58,
+        7,
+        109,
+        175,
+        20,
+        229,
+        133,
+        190,
+        71,
         198,
-        185,
-        96,
-        24,
-        45,
-        158,
-        102,
-        252,
-        50,
-        70,
-        101,
-        242,
-        82,
-        201,
-        50,
-        167,
-        136,
-        26,
-        26,
-        225,
+        117,
+        3,
+        62,
         83,
-        19,
+        252,
         31,
-        253,
-        129,
-        128,
-        104,
-        152,
-        192
+        147,
+        217,
+        159,
+        243,
+        7,
+        202,
+        34,
+        184,
+        42,
+        227,
+        225,
+        121,
+        249,
+        96,
+        109
       ],
       "variant": "write_full"
     },
@@ -4892,13 +5074,23 @@
               "additionalProperties": false,
               "description": "Authored payload retained by the original tool completion. Provenance is\nprojected from its authenticated execution record, never from this payload.",
               "properties": {
-                "report": {
-                  "$ref": "#/$defs/Report",
-                  "description": "Original validated authored report."
+                "reports": {
+                  "description": "Original validated authored reports, in their publication order.",
+                  "items": {
+                    "$ref": "#/$defs/Report"
+                  },
+                  "type": "array"
+                },
+                "version": {
+                  "description": "Persisted publication schema version, currently one.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
-                "report"
+                "version",
+                "reports"
               ],
               "type": "object"
             },
@@ -5340,38 +5532,38 @@
         "revision": "portable-8"
       },
       "definition_digest": [
-        175,
-        174,
-        28,
-        94,
-        128,
-        224,
-        35,
-        29,
-        23,
-        44,
-        119,
-        70,
-        169,
-        193,
-        234,
-        218,
-        223,
-        129,
-        41,
-        171,
-        50,
-        176,
-        165,
-        127,
-        216,
-        113,
-        123,
-        21,
+        42,
+        222,
+        16,
+        236,
+        99,
         77,
-        19,
-        6,
-        246
+        88,
+        42,
+        189,
+        247,
+        71,
+        92,
+        151,
+        16,
+        168,
+        126,
+        185,
+        205,
+        233,
+        65,
+        132,
+        192,
+        183,
+        46,
+        106,
+        247,
+        25,
+        15,
+        186,
+        230,
+        228,
+        11
       ],
       "variant": "write_reference"
     },
@@ -6553,11 +6745,11 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "description": "Directory child names at one immutable generation, with an independent continuation.",
                   "properties": {
                     "after": {
                       "default": null,
-                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "description": "Opaque next cursor from a previous page of this directory.",
                       "type": [
                         "string",
                         "null"
@@ -6839,7 +7031,7 @@
                   "type": "string"
                 },
                 "version": {
-                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "description": "Opaque namespace version for reading this entry.",
                   "type": "string"
                 }
               },
@@ -6863,6 +7055,46 @@
                   "const": "dir",
                   "description": "Child directory.",
                   "type": "string"
+                },
+                {
+                  "const": "symlink",
+                  "description": "Symbolic link, without following its target.",
+                  "type": "string"
+                },
+                {
+                  "const": "fifo",
+                  "description": "Named pipe.",
+                  "type": "string"
+                },
+                {
+                  "const": "socket",
+                  "description": "Local socket.",
+                  "type": "string"
+                },
+                {
+                  "const": "character_device",
+                  "description": "Character device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "block_device",
+                  "description": "Block device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "reparse_point",
+                  "description": "Windows reparse point other than a symbolic link.",
+                  "type": "string"
+                },
+                {
+                  "const": "mount_boundary",
+                  "description": "Another mount's root, which the listing does not cross.",
+                  "type": "string"
+                },
+                {
+                  "const": "unsupported",
+                  "description": "A kind this host does not report.",
+                  "type": "string"
                 }
               ]
             },
@@ -6877,14 +7109,17 @@
                   },
                   "type": "array"
                 },
-                "hasMore": {
-                  "description": "Continue from the last returned entry's version.",
-                  "type": "boolean"
+                "next": {
+                  "description": "Opaque continuation for this directory at the same immutable selection.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "entries",
-                "hasMore"
+                "next"
               ],
               "type": "object"
             },
@@ -6922,7 +7157,7 @@
             },
             "FilePathSelection": {
               "additionalProperties": false,
-              "description": "An immutable authored file selection. This identifies the selected generation\nand path; it makes no whole-file digest or native snapshot completeness claim.",
+              "description": "An immutable file selection at a provider-owned namespace generation.\nLazy generations include the authored generation and complete source cut;\nthis selection makes no whole-file digest claim.",
               "properties": {
                 "byte_length": {
                   "description": "Length obtained by that producer's original stat.",
@@ -6969,7 +7204,7 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "The exact authored generation selected by the original range reader.",
+                  "description": "The exact namespace generation selected by the original range reader.",
                   "properties": {
                     "authored": {
                       "$ref": "#/$defs/FilePathSelection"
@@ -7223,11 +7458,11 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "description": "Directory child names at one immutable generation, with an independent continuation.",
                   "properties": {
                     "after": {
                       "default": null,
-                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "description": "Opaque next cursor from a previous page of this directory.",
                       "type": [
                         "string",
                         "null"
@@ -7636,7 +7871,7 @@
                   "type": "string"
                 },
                 "version": {
-                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "description": "Opaque namespace version for reading this entry.",
                   "type": "string"
                 }
               },
@@ -7660,6 +7895,46 @@
                   "const": "dir",
                   "description": "Child directory.",
                   "type": "string"
+                },
+                {
+                  "const": "symlink",
+                  "description": "Symbolic link, without following its target.",
+                  "type": "string"
+                },
+                {
+                  "const": "fifo",
+                  "description": "Named pipe.",
+                  "type": "string"
+                },
+                {
+                  "const": "socket",
+                  "description": "Local socket.",
+                  "type": "string"
+                },
+                {
+                  "const": "character_device",
+                  "description": "Character device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "block_device",
+                  "description": "Block device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "reparse_point",
+                  "description": "Windows reparse point other than a symbolic link.",
+                  "type": "string"
+                },
+                {
+                  "const": "mount_boundary",
+                  "description": "Another mount's root, which the listing does not cross.",
+                  "type": "string"
+                },
+                {
+                  "const": "unsupported",
+                  "description": "A kind this host does not report.",
+                  "type": "string"
                 }
               ]
             },
@@ -7674,14 +7949,17 @@
                   },
                   "type": "array"
                 },
-                "hasMore": {
-                  "description": "Continue from the last returned entry's version.",
-                  "type": "boolean"
+                "next": {
+                  "description": "Opaque continuation for this directory at the same immutable selection.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "entries",
-                "hasMore"
+                "next"
               ],
               "type": "object"
             },
@@ -8139,38 +8417,38 @@
         "revision": "portable-14"
       },
       "definition_digest": [
-        112,
+        151,
         163,
-        171,
-        249,
-        18,
-        117,
-        169,
-        249,
-        165,
-        215,
-        56,
-        24,
-        147,
-        1,
-        1,
+        5,
         194,
-        91,
-        7,
-        135,
-        108,
-        247,
-        234,
-        228,
-        220,
-        43,
-        57,
-        214,
-        21,
-        230,
-        125,
-        52,
-        134
+        104,
+        67,
+        232,
+        249,
+        129,
+        25,
+        192,
+        185,
+        3,
+        3,
+        98,
+        169,
+        168,
+        221,
+        198,
+        178,
+        154,
+        195,
+        233,
+        128,
+        217,
+        254,
+        237,
+        175,
+        131,
+        92,
+        238,
+        52
       ],
       "variant": "range_read_full"
     },
@@ -8218,11 +8496,11 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "description": "Directory child names at one immutable generation, with an independent continuation.",
                   "properties": {
                     "after": {
                       "default": null,
-                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "description": "Opaque next cursor from a previous page of this directory.",
                       "type": [
                         "string",
                         "null"
@@ -8504,7 +8782,7 @@
                   "type": "string"
                 },
                 "version": {
-                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "description": "Opaque namespace version for reading this entry.",
                   "type": "string"
                 }
               },
@@ -8528,6 +8806,46 @@
                   "const": "dir",
                   "description": "Child directory.",
                   "type": "string"
+                },
+                {
+                  "const": "symlink",
+                  "description": "Symbolic link, without following its target.",
+                  "type": "string"
+                },
+                {
+                  "const": "fifo",
+                  "description": "Named pipe.",
+                  "type": "string"
+                },
+                {
+                  "const": "socket",
+                  "description": "Local socket.",
+                  "type": "string"
+                },
+                {
+                  "const": "character_device",
+                  "description": "Character device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "block_device",
+                  "description": "Block device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "reparse_point",
+                  "description": "Windows reparse point other than a symbolic link.",
+                  "type": "string"
+                },
+                {
+                  "const": "mount_boundary",
+                  "description": "Another mount's root, which the listing does not cross.",
+                  "type": "string"
+                },
+                {
+                  "const": "unsupported",
+                  "description": "A kind this host does not report.",
+                  "type": "string"
                 }
               ]
             },
@@ -8542,14 +8860,17 @@
                   },
                   "type": "array"
                 },
-                "hasMore": {
-                  "description": "Continue from the last returned entry's version.",
-                  "type": "boolean"
+                "next": {
+                  "description": "Opaque continuation for this directory at the same immutable selection.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "entries",
-                "hasMore"
+                "next"
               ],
               "type": "object"
             },
@@ -8587,7 +8908,7 @@
             },
             "FilePathSelection": {
               "additionalProperties": false,
-              "description": "An immutable authored file selection. This identifies the selected generation\nand path; it makes no whole-file digest or native snapshot completeness claim.",
+              "description": "An immutable file selection at a provider-owned namespace generation.\nLazy generations include the authored generation and complete source cut;\nthis selection makes no whole-file digest claim.",
               "properties": {
                 "byte_length": {
                   "description": "Length obtained by that producer's original stat.",
@@ -8634,7 +8955,7 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "The exact authored generation selected by the original range reader.",
+                  "description": "The exact namespace generation selected by the original range reader.",
                   "properties": {
                     "authored": {
                       "$ref": "#/$defs/FilePathSelection"
@@ -8888,11 +9209,11 @@
                 },
                 {
                   "additionalProperties": false,
-                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "description": "Directory child names at one immutable generation, with an independent continuation.",
                   "properties": {
                     "after": {
                       "default": null,
-                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "description": "Opaque next cursor from a previous page of this directory.",
                       "type": [
                         "string",
                         "null"
@@ -9301,7 +9622,7 @@
                   "type": "string"
                 },
                 "version": {
-                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "description": "Opaque namespace version for reading this entry.",
                   "type": "string"
                 }
               },
@@ -9325,6 +9646,46 @@
                   "const": "dir",
                   "description": "Child directory.",
                   "type": "string"
+                },
+                {
+                  "const": "symlink",
+                  "description": "Symbolic link, without following its target.",
+                  "type": "string"
+                },
+                {
+                  "const": "fifo",
+                  "description": "Named pipe.",
+                  "type": "string"
+                },
+                {
+                  "const": "socket",
+                  "description": "Local socket.",
+                  "type": "string"
+                },
+                {
+                  "const": "character_device",
+                  "description": "Character device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "block_device",
+                  "description": "Block device node.",
+                  "type": "string"
+                },
+                {
+                  "const": "reparse_point",
+                  "description": "Windows reparse point other than a symbolic link.",
+                  "type": "string"
+                },
+                {
+                  "const": "mount_boundary",
+                  "description": "Another mount's root, which the listing does not cross.",
+                  "type": "string"
+                },
+                {
+                  "const": "unsupported",
+                  "description": "A kind this host does not report.",
+                  "type": "string"
                 }
               ]
             },
@@ -9339,14 +9700,17 @@
                   },
                   "type": "array"
                 },
-                "hasMore": {
-                  "description": "Continue from the last returned entry's version.",
-                  "type": "boolean"
+                "next": {
+                  "description": "Opaque continuation for this directory at the same immutable selection.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "entries",
-                "hasMore"
+                "next"
               ],
               "type": "object"
             },
@@ -9825,38 +10189,38 @@
         "revision": "portable-14"
       },
       "definition_digest": [
-        53,
-        246,
-        122,
-        188,
-        234,
-        144,
-        130,
-        52,
-        93,
+        253,
+        141,
+        210,
+        91,
+        156,
+        245,
         186,
-        225,
-        36,
-        215,
-        142,
-        181,
-        86,
-        131,
-        4,
-        170,
-        56,
-        202,
-        112,
-        151,
-        157,
-        153,
-        119,
-        224,
+        120,
+        35,
+        228,
+        239,
+        129,
+        68,
+        180,
+        236,
+        250,
+        87,
+        171,
+        196,
+        65,
+        44,
+        230,
+        239,
+        217,
+        45,
+        7,
         82,
-        125,
-        182,
-        199,
-        242
+        135,
+        88,
+        111,
+        117,
+        235
       ],
       "variant": "range_read_reference"
     },

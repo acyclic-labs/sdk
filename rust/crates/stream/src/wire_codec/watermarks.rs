@@ -2,7 +2,9 @@ use crate::{StreamError, StreamWatermarks, wire};
 
 /// Decodes an explicit accepted observation, rejecting legacy peers and
 /// impossible persistence claims instead of inferring durability from acceptance.
-pub fn watermarks_from_wire(response: &wire::TailResponse) -> Result<StreamWatermarks, StreamError> {
+pub fn watermarks_from_wire(
+    response: &wire::TailResponse,
+) -> Result<StreamWatermarks, StreamError> {
     let durable = response.durable.ok_or(StreamError::Unsupported)?;
     if durable > response.tail {
         return Err(StreamError::Unavailable);

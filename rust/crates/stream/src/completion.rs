@@ -140,9 +140,7 @@ type Prepared<T, H> = (Completion<T, H>, Producer<T, H>);
 
 /// Admits one bounded result slot before allocation. There is one producer,
 /// one allocation and no queue, retry, timer or registration allocation.
-pub fn channel<T, H, E>(
-    admit: impl FnOnce(usize) -> Result<H, E>,
-) -> Result<Prepared<T, H>, E> {
+pub fn channel<T, H, E>(admit: impl FnOnce(usize) -> Result<H, E>) -> Result<Prepared<T, H>, E> {
     let storage = admit(Completion::<T, H>::allocation_bytes())?;
     Ok(Completion::prepare((), storage))
 }

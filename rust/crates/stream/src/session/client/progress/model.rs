@@ -86,10 +86,19 @@ pub fn verify_latest_progress(broken: bool) {
         let consumer = loom::thread::spawn(move || {
             if broken {
                 // Mutant reads generation outside the lock that advances the cut.
-                let old = applying.state.lock().unwrap_or_else(|poison| poison.into_inner()).generation;
+                let old = applying
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .generation;
                 loom::thread::yield_now();
                 if old == 1 {
-                    applying.state.lock().unwrap_or_else(|poison| poison.into_inner()).position.next = 8;
+                    applying
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .position
+                        .next = 8;
                     true
                 } else {
                     false

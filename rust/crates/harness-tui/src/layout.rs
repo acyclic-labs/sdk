@@ -292,10 +292,7 @@ mod tests {
                 editor.paste("one\n👩‍💻", index);
                 editor.insert(" tail\n", index);
             }
-            assert_eq!(
-                editor.collapsed_pastes().len(),
-                usize::try_from(count)?
-            );
+            assert_eq!(editor.collapsed_pastes().len(), usize::try_from(count)?);
             // Undo/redo restores the original ordered fold metadata as well as
             // text; layout must use the restored source, not a private index.
             let source = editor.text().to_owned();

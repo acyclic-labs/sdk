@@ -471,7 +471,10 @@ impl StreamProvider for BrowserStream {
                 preceding,
                 when_absent,
                 filter,
-                crate::memory::FollowWindow { bootstrap_head, until },
+                crate::memory::FollowWindow {
+                    bootstrap_head,
+                    until,
+                },
             )
             .await
         } else {
@@ -481,7 +484,10 @@ impl StreamProvider for BrowserStream {
                 preceding,
                 when_absent,
                 filter,
-                crate::memory::FollowWindow { bootstrap_head, until },
+                crate::memory::FollowWindow {
+                    bootstrap_head,
+                    until,
+                },
             )
             .await
         }

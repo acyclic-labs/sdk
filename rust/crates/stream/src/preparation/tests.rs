@@ -322,10 +322,7 @@ fn settling_reports_hard_conflicts_or_skips_soft_effects_and_views_the_rest_in_p
         Vec::with_capacity(hard_conditions(&request)),
         Vec::with_capacity(soft(&request)),
     )?;
-    assert_eq!(
-        conflicts,
-        [crate::CommitConflict::Missing { path: b }]
-    );
+    assert_eq!(conflicts, [crate::CommitConflict::Missing { path: b }]);
     assert!(skipped.is_empty());
     Ok(())
 }

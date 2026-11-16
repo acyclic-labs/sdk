@@ -10,7 +10,12 @@ impl crate::runtime::Executor for BackoffEvent {
     }
 
     fn sleep(&self, milliseconds: u32) -> crate::BoxProviderFuture<'static, ()> {
-        if let Some(event) = self.0.lock().unwrap_or_else(|poison| poison.into_inner()).take() {
+        if let Some(event) = self
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+        {
             let _ = event.send(milliseconds);
         }
         Box::pin(futures::future::pending())

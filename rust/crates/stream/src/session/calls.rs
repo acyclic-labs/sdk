@@ -246,8 +246,7 @@ impl InputProducer {
                 sender: Some(sender),
                 terminal: Some(terminal),
                 credit: wire::SessionWindow {
-                    frames: u32::try_from(RECEIVE_FRAMES)
-                        .map_err(|_| StreamError::Capacity)?,
+                    frames: u32::try_from(RECEIVE_FRAMES).map_err(|_| StreamError::Capacity)?,
                     bytes: RECEIVE_FRAMES as u64 * DATA_FRAME_BYTES as u64,
                 },
                 next: 0,

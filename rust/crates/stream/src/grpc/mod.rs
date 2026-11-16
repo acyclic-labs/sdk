@@ -467,14 +467,13 @@ impl Client {
                             credential_failure("credential source unavailable", error)
                         })?;
                 }
-                if result.is_ok() && let Some(lease) = &lease {
+                if result.is_ok()
+                    && let Some(lease) = &lease
+                {
                     crate::transport_credential::check(lease)
                         .await
                         .map_err(|error| {
-                            credential_failure(
-                                "credential source unavailable or changed",
-                                error,
-                            )
+                            credential_failure("credential source unavailable or changed", error)
                         })?;
                 }
                 result

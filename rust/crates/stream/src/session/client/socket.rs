@@ -145,7 +145,10 @@ impl SocketInbound for ForwardInput {
         if self.progress.cancelled() || self.progress.ended() {
             return Err(StreamError::Unavailable);
         }
-        let result = self.results.try_reserve().map_err(|error| queue_error(&error))?;
+        let result = self
+            .results
+            .try_reserve()
+            .map_err(|error| queue_error(&error))?;
         let completion = self.client.renew_credential(self.credential, credential)?;
         result.send(completion);
         Ok(())
@@ -158,7 +161,10 @@ impl SocketInbound for ForwardInput {
         if self.progress.cancelled() || self.progress.ended() {
             return Err(StreamError::Unavailable);
         }
-        let result = self.results.try_reserve().map_err(|error| queue_error(&error))?;
+        let result = self
+            .results
+            .try_reserve()
+            .map_err(|error| queue_error(&error))?;
         let (sent, completion) = oneshot::channel();
         self.client
             .pool

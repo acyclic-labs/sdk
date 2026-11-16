@@ -417,205 +417,206 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     let original = Bytes::from(vec![7; crate::MAX_RECORD_BYTES]);
     let second_original = Bytes::from(vec![9; 1024]);
     let input_credit = async {
-    let (mut upload, replies) = client.actor_call_input(&invocation, 0, Some(128)).await?;
-    let mut replies = core::pin::pin!(replies);
-    // Dispatch happens with NO input or EOF. The old whole-request collector
-    // cannot produce this original handler event.
-    let (mut input, answer) = dispatches.recv().await.ok_or("handler was not admitted")?;
-    upload.send(original.clone()).await?;
-    upload.send(second_original.clone()).await?;
-    let first = input.next_chunk().await?.ok_or("missing first input")?;
-    let second = input.next_chunk().await?.ok_or("missing second input")?;
-    assert_eq!(first.as_ref().as_ptr(), original.as_ptr());
-    assert_eq!(second.as_ref().as_ptr(), second_original.as_ptr());
-    let copied = Bytes::copy_from_slice(first.as_ref());
-    assert_ne!(
-        copied.as_ptr(),
-        original.as_ptr(),
-        "full-copy negative control"
-    );
-    let third_original = Bytes::from_static(b"third");
-    let mut blocked = Box::pin(upload.send(third_original.clone()));
-    assert!(
-        futures::poll!(blocked.as_mut()).is_pending(),
-        "both original frame credits are held"
-    );
-    drop(first);
-    blocked.await?;
-    let third = input
-        .next_chunk()
-        .await?
-        .ok_or("release did not fund the next input")?;
-    assert_eq!(third.as_ref().as_ptr(), third_original.as_ptr());
-    // Reply credit is independent of the exhausted input window. An original
-    // result is available while EOF is still withheld and two inputs are held.
-    answer
-        .send(Bytes::from_static(b"before EOF"))
-        .map_err(|_| "handler result was lost")?;
-    assert_eq!(
-        replies.next().await.ok_or("no early reply")??.1.as_ref(),
-        b"before EOF"
-    );
-    assert!(
-        replies.next().await.is_none(),
-        "complete reply must retire only the reply half"
-    );
-    // The old cursor-only lifetime cancelled the original input here. Keep
-    // sending after the complete reply and its cursor have both retired.
-    let fourth_original = Bytes::from_static(b"after reply EOF");
-    let mut blocked = Box::pin(upload.send(fourth_original.clone()));
-    assert!(futures::poll!(blocked.as_mut()).is_pending());
-    drop(second);
-    blocked.await?;
-    let fourth = input
-        .next_chunk()
-        .await?
-        .ok_or("complete reply cancelled the input half")?;
-    assert_eq!(fourth.as_ref().as_ptr(), fourth_original.as_ptr());
-    let trailers = vec![wire::SessionHeader {
-        name: Bytes::from_static(b"digest"),
-        value: Bytes::from_static(b"original terminal"),
-    }];
-    let mut finish = Box::pin(upload.finish(trailers.clone()));
-    assert!(futures::poll!(finish.as_mut()).is_pending());
-    let release = terminals
-        .recv()
-        .await
-        .ok_or("transport did not reach EOF")?;
-    assert!(
-        futures::poll!(finish.as_mut()).is_pending(),
-        "queue acceptance must not retire the final route before transport EOF"
-    );
-    release
-        .send(())
-        .map_err(|_| "EOF transport was discarded")?;
-    finish.await?;
-    assert!(
-        input.next_chunk().await?.is_none(),
-        "EOF must not need a returned data credit"
-    );
-    assert_eq!(input.trailers(), Some(trailers.as_slice()));
-    assert_eq!(third.as_ref(), third_original.as_ref());
-    assert_eq!(fourth.as_ref(), fourth_original.as_ref());
-    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        let (mut upload, replies) = client.actor_call_input(&invocation, 0, Some(128)).await?;
+        let mut replies = core::pin::pin!(replies);
+        // Dispatch happens with NO input or EOF. The old whole-request collector
+        // cannot produce this original handler event.
+        let (mut input, answer) = dispatches.recv().await.ok_or("handler was not admitted")?;
+        upload.send(original.clone()).await?;
+        upload.send(second_original.clone()).await?;
+        let first = input.next_chunk().await?.ok_or("missing first input")?;
+        let second = input.next_chunk().await?.ok_or("missing second input")?;
+        assert_eq!(first.as_ref().as_ptr(), original.as_ptr());
+        assert_eq!(second.as_ref().as_ptr(), second_original.as_ptr());
+        let copied = Bytes::copy_from_slice(first.as_ref());
+        assert_ne!(
+            copied.as_ptr(),
+            original.as_ptr(),
+            "full-copy negative control"
+        );
+        let third_original = Bytes::from_static(b"third");
+        let mut blocked = Box::pin(upload.send(third_original.clone()));
+        assert!(
+            futures::poll!(blocked.as_mut()).is_pending(),
+            "both original frame credits are held"
+        );
+        drop(first);
+        blocked.await?;
+        let third = input
+            .next_chunk()
+            .await?
+            .ok_or("release did not fund the next input")?;
+        assert_eq!(third.as_ref().as_ptr(), third_original.as_ptr());
+        // Reply credit is independent of the exhausted input window. An original
+        // result is available while EOF is still withheld and two inputs are held.
+        answer
+            .send(Bytes::from_static(b"before EOF"))
+            .map_err(|_| "handler result was lost")?;
+        assert_eq!(
+            replies.next().await.ok_or("no early reply")??.1.as_ref(),
+            b"before EOF"
+        );
+        assert!(
+            replies.next().await.is_none(),
+            "complete reply must retire only the reply half"
+        );
+        // The old cursor-only lifetime cancelled the original input here. Keep
+        // sending after the complete reply and its cursor have both retired.
+        let fourth_original = Bytes::from_static(b"after reply EOF");
+        let mut blocked = Box::pin(upload.send(fourth_original.clone()));
+        assert!(futures::poll!(blocked.as_mut()).is_pending());
+        drop(second);
+        blocked.await?;
+        let fourth = input
+            .next_chunk()
+            .await?
+            .ok_or("complete reply cancelled the input half")?;
+        assert_eq!(fourth.as_ref().as_ptr(), fourth_original.as_ptr());
+        let trailers = vec![wire::SessionHeader {
+            name: Bytes::from_static(b"digest"),
+            value: Bytes::from_static(b"original terminal"),
+        }];
+        let mut finish = Box::pin(upload.finish(trailers.clone()));
+        assert!(futures::poll!(finish.as_mut()).is_pending());
+        let release = terminals
+            .recv()
+            .await
+            .ok_or("transport did not reach EOF")?;
+        assert!(
+            futures::poll!(finish.as_mut()).is_pending(),
+            "queue acceptance must not retire the final route before transport EOF"
+        );
+        release
+            .send(())
+            .map_err(|_| "EOF transport was discarded")?;
+        finish.await?;
+        assert!(
+            input.next_chunk().await?.is_none(),
+            "EOF must not need a returned data credit"
+        );
+        assert_eq!(input.trailers(), Some(trailers.as_slice()));
+        assert_eq!(third.as_ref(), third_original.as_ref());
+        assert_eq!(fourth.as_ref(), fourth_original.as_ref());
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     };
     input_credit.await?;
 
     // Incomplete reply retirement is cancellation, even when the original
     // upload producer and two escaped data owners remain alive.
     let cancellation = async {
-    let (mut cancelled, cancelled_reply) =
-        client.actor_call_input(&invocation, 0, Some(128)).await?;
-    let (mut input, _answer) = dispatches.recv().await.ok_or("no cancellable handler")?;
-    cancelled.send(original.clone()).await?;
-    cancelled.send(second_original.clone()).await?;
-    let cancelled_first = input
-        .next_chunk()
-        .await?
-        .ok_or("no first cancelled input")?;
-    let cancelled_second = input
-        .next_chunk()
-        .await?
-        .ok_or("no second cancelled input")?;
-    let mut pending = Box::pin(cancelled.send(Bytes::from_static(b"blocked")));
-    assert!(futures::poll!(pending.as_mut()).is_pending());
-    drop(cancelled_reply);
-    assert_eq!(
-        pending.await.map_err(|error| error.category()),
-        Err(StreamCategory::Unavailable)
-    );
-    assert!(matches!(
-        input.next_chunk().await,
-        Err(error) if error.category() == StreamCategory::Unavailable
-    ));
-    assert_eq!(cancelled_first.as_ref().as_ptr(), original.as_ptr());
-    assert_eq!(cancelled_second.as_ref().as_ptr(), second_original.as_ptr());
-    drop(cancelled);
-    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        let (mut cancelled, cancelled_reply) =
+            client.actor_call_input(&invocation, 0, Some(128)).await?;
+        let (mut input, _answer) = dispatches.recv().await.ok_or("no cancellable handler")?;
+        cancelled.send(original.clone()).await?;
+        cancelled.send(second_original.clone()).await?;
+        let cancelled_first = input
+            .next_chunk()
+            .await?
+            .ok_or("no first cancelled input")?;
+        let cancelled_second = input
+            .next_chunk()
+            .await?
+            .ok_or("no second cancelled input")?;
+        let mut pending = Box::pin(cancelled.send(Bytes::from_static(b"blocked")));
+        assert!(futures::poll!(pending.as_mut()).is_pending());
+        drop(cancelled_reply);
+        assert_eq!(
+            pending.await.map_err(|error| error.category()),
+            Err(StreamCategory::Unavailable)
+        );
+        assert!(matches!(
+            input.next_chunk().await,
+            Err(error) if error.category() == StreamCategory::Unavailable
+        ));
+        assert_eq!(cancelled_first.as_ref().as_ptr(), original.as_ptr());
+        assert_eq!(cancelled_second.as_ref().as_ptr(), second_original.as_ptr());
+        drop(cancelled);
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     };
     cancellation.await?;
 
     // Authorization is the original call admission, before body or handler
     // disclosure. No separate socket authority or buffered fallback is used.
     let authorization = async {
-    assert!(matches!(
-        client.actor_call_input(&invocation, 1, Some(128)).await,
-        Err(error) if error.category() == StreamCategory::AccessDenied
-    ));
-    assert!(dispatches.try_recv().is_err());
+        assert!(matches!(
+            client.actor_call_input(&invocation, 1, Some(128)).await,
+            Err(error) if error.category() == StreamCategory::AccessDenied
+        ));
+        assert!(dispatches.try_recv().is_err());
 
-    let (mut abandoned, abandoned_reply) =
-        client.actor_call_input(&invocation, 0, Some(128)).await?;
-    let (mut input, _abandoned_answer) = dispatches.recv().await.ok_or("no consumer to retire")?;
-    abandoned.send(original.clone()).await?;
-    abandoned.send(second_original.clone()).await?;
-    let escaped = input.next_chunk().await?.ok_or("no escaped input")?;
-    let escaped_second = input.next_chunk().await?.ok_or("no second escaped input")?;
-    let mut pending = Box::pin(abandoned.send(Bytes::from_static(b"blocked")));
-    assert!(futures::poll!(pending.as_mut()).is_pending());
-    drop(input);
-    assert_eq!(
-        pending.await.map_err(|error| error.category()),
-        Err(StreamCategory::Unavailable),
-        "consumer loss must wake without escaped credit returning"
-    );
-    let mut abandoned_reply = core::pin::pin!(abandoned_reply);
-    assert_reply_failure(abandoned_reply.next().await, &StreamError::Unavailable)?;
-    assert_eq!(escaped.as_ref().as_ptr(), original.as_ptr());
-    assert_eq!(escaped_second.as_ref().as_ptr(), second_original.as_ptr());
+        let (mut abandoned, abandoned_reply) =
+            client.actor_call_input(&invocation, 0, Some(128)).await?;
+        let (mut input, _abandoned_answer) =
+            dispatches.recv().await.ok_or("no consumer to retire")?;
+        abandoned.send(original.clone()).await?;
+        abandoned.send(second_original.clone()).await?;
+        let escaped = input.next_chunk().await?.ok_or("no escaped input")?;
+        let escaped_second = input.next_chunk().await?.ok_or("no second escaped input")?;
+        let mut pending = Box::pin(abandoned.send(Bytes::from_static(b"blocked")));
+        assert!(futures::poll!(pending.as_mut()).is_pending());
+        drop(input);
+        assert_eq!(
+            pending.await.map_err(|error| error.category()),
+            Err(StreamCategory::Unavailable),
+            "consumer loss must wake without escaped credit returning"
+        );
+        let mut abandoned_reply = core::pin::pin!(abandoned_reply);
+        assert_reply_failure(abandoned_reply.next().await, &StreamError::Unavailable)?;
+        assert_eq!(escaped.as_ref().as_ptr(), original.as_ptr());
+        assert_eq!(escaped_second.as_ref().as_ptr(), second_original.as_ptr());
 
-    let (mut stopped, lost) = client.actor_call_input(&invocation, 0, Some(128)).await?;
-    let (mut input, _answer) = dispatches
-        .recv()
-        .await
-        .ok_or("second handler was not admitted")?;
-    stopped.send(original.clone()).await?;
-    stopped.send(second_original.clone()).await?;
-    let held = input.next_chunk().await?.ok_or("no held input")?;
-    let held_second = input.next_chunk().await?.ok_or("no second held input")?;
-    assert_eq!(held_second.as_ref().as_ptr(), second_original.as_ptr());
-    drop(held_second);
-    stopped
-        .send(Bytes::from_static(b"queued before source loss"))
-        .await?;
-    let mut finish = Box::pin(stopped.finish(Vec::new()));
-    assert!(futures::poll!(finish.as_mut()).is_pending());
-    let _withheld = terminals
-        .recv()
-        .await
-        .ok_or("no blocked terminal before host loss")?;
-    drop(host);
-    assert_eq!(
-        finish.await.map_err(|error| error.category()),
-        Err(StreamCategory::Unavailable)
-    );
-    let mut lost = core::pin::pin!(lost);
-    assert_reply_failure(lost.next().await, &StreamError::Unavailable)?;
-    // The held EOF followed the queued data on the same ordered transport.
-    // Once source loss is observed, a data-first adapter would disclose that
-    // data instead of the original failure. Return the cause exactly once.
-    assert!(
-        matches!(input.next_chunk().await, Err(error) if error.category() == StreamCategory::Unavailable),
-        "producer loss must win over queued data"
-    );
-    assert!(input.next_chunk().await?.is_none());
-    assert!(input.trailers().is_none());
-    assert_eq!(held.as_ref().as_ptr(), original.as_ptr());
+        let (mut stopped, lost) = client.actor_call_input(&invocation, 0, Some(128)).await?;
+        let (mut input, _answer) = dispatches
+            .recv()
+            .await
+            .ok_or("second handler was not admitted")?;
+        stopped.send(original.clone()).await?;
+        stopped.send(second_original.clone()).await?;
+        let held = input.next_chunk().await?.ok_or("no held input")?;
+        let held_second = input.next_chunk().await?.ok_or("no second held input")?;
+        assert_eq!(held_second.as_ref().as_ptr(), second_original.as_ptr());
+        drop(held_second);
+        stopped
+            .send(Bytes::from_static(b"queued before source loss"))
+            .await?;
+        let mut finish = Box::pin(stopped.finish(Vec::new()));
+        assert!(futures::poll!(finish.as_mut()).is_pending());
+        let _withheld = terminals
+            .recv()
+            .await
+            .ok_or("no blocked terminal before host loss")?;
+        drop(host);
+        assert_eq!(
+            finish.await.map_err(|error| error.category()),
+            Err(StreamCategory::Unavailable)
+        );
+        let mut lost = core::pin::pin!(lost);
+        assert_reply_failure(lost.next().await, &StreamError::Unavailable)?;
+        // The held EOF followed the queued data on the same ordered transport.
+        // Once source loss is observed, a data-first adapter would disclose that
+        // data instead of the original failure. Return the cause exactly once.
+        assert!(
+            matches!(input.next_chunk().await, Err(error) if error.category() == StreamCategory::Unavailable),
+            "producer loss must win over queued data"
+        );
+        assert!(input.next_chunk().await?.is_none());
+        assert!(input.trailers().is_none());
+        assert_eq!(held.as_ref().as_ptr(), original.as_ptr());
 
-    // Exact generation-local sequence and input/reply grammar are disjoint.
-    let data = wire::SessionData {
-        after: Some(cursor(1)),
-        accepted: 0,
-        durable: 0,
-        item: Some(Item::ActorCall(Bytes::from_static(b"input"))),
-    };
-    assert_eq!(wire_codec::session::input_sequence(0, &data)?, 1);
-    assert_eq!(
-        wire_codec::session::input_sequence(1, &data).map_err(|error| error.category()),
-        Err(StreamCategory::InvalidArgument)
-    );
-    assert!(wire_codec::session::actor_call_sequence(0, &[], &data).is_err());
-    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        // Exact generation-local sequence and input/reply grammar are disjoint.
+        let data = wire::SessionData {
+            after: Some(cursor(1)),
+            accepted: 0,
+            durable: 0,
+            item: Some(Item::ActorCall(Bytes::from_static(b"input"))),
+        };
+        assert_eq!(wire_codec::session::input_sequence(0, &data)?, 1);
+        assert_eq!(
+            wire_codec::session::input_sequence(1, &data).map_err(|error| error.category()),
+            Err(StreamCategory::InvalidArgument)
+        );
+        assert!(wire_codec::session::actor_call_sequence(0, &[], &data).is_err());
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     };
     authorization.await?;
     Ok(())

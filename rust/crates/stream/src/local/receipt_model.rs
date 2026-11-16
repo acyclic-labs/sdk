@@ -25,7 +25,12 @@ pub(crate) fn verify(broken: bool) {
         newer.join().unwrap();
         assert!(older.is_some(), "flushed snapshot lost its receipt");
         assert_eq!(
-            stream.inner.durable_tails.lock().unwrap_or_else(|poison| poison.into_inner()).get(&path),
+            stream
+                .inner
+                .durable_tails
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .get(&path),
             Some(&2)
         );
         assert!(
@@ -53,7 +58,11 @@ pub(crate) fn verify_barrier(broken: bool) {
             set_fault(Fault::BarrierAsFlushed);
         }
         {
-            let mut journal = stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
+            let mut journal = stream
+                .inner
+                .journal
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
             stream
                 .inner
                 .publish_synced(&mut journal, 1, SyncCompletion::Ordered);
@@ -72,11 +81,20 @@ pub(crate) fn verify_barrier(broken: bool) {
         // A native ordering operation owns the device outside the model. Race
         // its real completion publication against the full-flush wait: the
         // waiter must wake, see that ordering is insufficient, and lead a flush.
-        stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner()).syncing = true;
+        stream
+            .inner
+            .journal
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .syncing = true;
         let ordering = loom::thread::spawn({
             let stream = stream.clone();
             move || {
-                let mut journal = stream.inner.journal.lock().unwrap_or_else(|poison| poison.into_inner());
+                let mut journal = stream
+                    .inner
+                    .journal
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
                 journal.syncing = false;
                 stream
                     .inner

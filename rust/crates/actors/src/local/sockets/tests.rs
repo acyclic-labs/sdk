@@ -930,7 +930,8 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 assert_eq!(records.len(), 2);
                 assert_eq!(crate::sockets::input_kind(&records[1]), Some("close"));
             }
-            Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound && !committed => {}
+            Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound && !committed => {
+            }
             _ => return Err("recovery lost an Open or delivered a refused Open".into()),
         }
     }

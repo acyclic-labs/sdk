@@ -224,8 +224,8 @@ impl<F: std::future::Future, E> std::future::Future for Accompany<'_, F, E> {
         if let Admission::Child(_) = this.admission
             && let Admission::Child(request) = std::mem::replace(this.admission, Admission::Settled)
         {
-            *this.admission =
-                super::context::child(&request).map_or(Admission::Settled, Admission::StartingChild);
+            *this.admission = super::context::child(&request)
+                .map_or(Admission::Settled, Admission::StartingChild);
         }
         let started = match this.admission {
             Admission::StartingChild(start) => start.as_mut().poll(cx).map(Result::ok),

@@ -29,7 +29,10 @@ impl State {
         })
     }
     pub(in crate::session) fn publish(&self, trust: signed::Snapshot, now: u64) {
-        *self.trust.write().unwrap_or_else(|poison| poison.into_inner()) = Arc::new(trust);
+        *self
+            .trust
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner()) = Arc::new(trust);
         self.clock.store(now, Ordering::SeqCst);
         let _ = self.published.send_replace(Ok(()));
         let _ = self.clock_events.send_replace(Ok(()));
@@ -1250,7 +1253,10 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
             use std::error::Error as _;
             assert!(
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let _held = state.trust.write().unwrap_or_else(|poison| poison.into_inner());
+                    let _held = state
+                        .trust
+                        .write()
+                        .unwrap_or_else(|poison| poison.into_inner());
                     panic!("original trust owner failed");
                 }))
                 .is_err()

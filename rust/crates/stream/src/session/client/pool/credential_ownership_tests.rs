@@ -9,7 +9,6 @@ async fn custody_cycle(
     credential: &Bytes,
     broken: bool,
 ) -> Result {
-
     let mut pending = Box::pin(client.with_credential(credential.clone()));
     assert!(futures::poll!(pending.as_mut()).is_pending());
     pool.command(commands.recv().await.ok_or("admission producer lost")?)?;

@@ -611,11 +611,9 @@ mod wait_tests {
         let expected = vec![("test.wait".to_owned(), "7".to_owned())];
 
         let wait = request(Mechanism::Wait);
-        let mut pending = Box::pin(observe_value(
-            &wait,
-            std::future::pending::<()>(),
-            |()| None,
-        ));
+        let mut pending = Box::pin(observe_value(&wait, std::future::pending::<()>(), |()| {
+            None
+        }));
         assert!(pending.as_mut().now_or_never().is_none());
         assert_eq!(reported(), expected);
         drop(pending);

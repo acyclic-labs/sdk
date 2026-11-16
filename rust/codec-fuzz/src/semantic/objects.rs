@@ -425,11 +425,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                     let canonical = manifest()
                         .encode()
                         .expect("default manifest encodes within its limits");
-                    publication(
-                        put,
-                        &original,
-                        (Digest::of(&canonical), BODY.len() as u64),
-                    );
+                    publication(put, &original, (Digest::of(&canonical), BODY.len() as u64));
                 })
             });
         }

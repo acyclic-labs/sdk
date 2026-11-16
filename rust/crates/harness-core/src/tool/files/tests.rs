@@ -613,10 +613,15 @@ async fn feedback_sink_resolves_every_path_form_is_appended_and_readable() -> Re
             .ok_or_else(|| Error::Invalid("feedback read returned no text".into()))?;
         let reports: Vec<crate::live::feedback::Report> = text
             .lines()
-            .map(|line| serde_json::from_str(line).map_err(|error| Error::Invalid(error.to_string())))
+            .map(|line| {
+                serde_json::from_str(line).map_err(|error| Error::Invalid(error.to_string()))
+            })
             .collect::<Result<_>>()?;
         assert_eq!(reports.len(), 2);
-        assert_eq!(reports[0].what, "The canonical relative path reaches the sink.");
+        assert_eq!(
+            reports[0].what,
+            "The canonical relative path reaches the sink."
+        );
         assert_eq!(
             reports[1].what,
             "The volume-qualified path reaches the same sink."
@@ -625,6 +630,10 @@ async fn feedback_sink_resolves_every_path_form_is_appended_and_readable() -> Re
     let page = project
         .list_private_directory("live/agents/self", None, None, 8)
         .await?;
-    assert!(page.entries.iter().any(|entry| entry.name == "feedback.jsonl"));
+    assert!(
+        page.entries
+            .iter()
+            .any(|entry| entry.name == "feedback.jsonl")
+    );
     Ok(())
 }

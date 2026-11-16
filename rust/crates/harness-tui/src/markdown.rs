@@ -190,8 +190,7 @@ mod tests {
                 && style.add_modifier.contains(Modifier::BOLD)
         }));
         assert!(links.iter().any(|(range, target)| {
-            shown.get(range.clone()) == Some("next")
-                && target.as_ref() == "https://example.com/b"
+            shown.get(range.clone()) == Some("next") && target.as_ref() == "https://example.com/b"
         }));
     }
 }

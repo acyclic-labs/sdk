@@ -23,18 +23,16 @@ fn ended_sibling(
         revisions: Arc::default(),
         credential: 0,
     };
-    let a = client
-        .cursor(
-            1,
-            Arc::clone(&pool.routes.get(&1).ok_or("missing route")?.progress),
-            receiver_a,
-        )?;
-    let b = client
-        .cursor(
-            3,
-            Arc::clone(&pool.routes.get(&3).ok_or("missing route")?.progress),
-            receiver_b,
-        )?;
+    let a = client.cursor(
+        1,
+        Arc::clone(&pool.routes.get(&1).ok_or("missing route")?.progress),
+        receiver_a,
+    )?;
+    let b = client.cursor(
+        3,
+        Arc::clone(&pool.routes.get(&3).ok_or("missing route")?.progress),
+        receiver_b,
+    )?;
     // Their Open commands have already been dispatched into the fixture routes.
     pool.admissions.remove(1)?;
     pool.admissions.remove(3)?;
@@ -66,11 +64,15 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
     let observed = called.clone();
     let credential = grpc::CredentialProvider::new(move || {
         observed.fetch_add(1, Ordering::Relaxed);
-        let held = held.lock().unwrap_or_else(|poison| poison.into_inner()).take().map(|(held, calling)| {
-            // The test still owns the receiver until this first request.
-            let _ = calling.send(());
-            held
-        });
+        let held = held
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+            .map(|(held, calling)| {
+                // The test still owns the receiver until this first request.
+                let _ = calling.send(());
+                held
+            });
         async move {
             held.ok_or(grpc::CredentialError::Invalid)?
                 .await

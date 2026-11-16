@@ -9,13 +9,7 @@ pub(super) fn empty_session(
     let authority = testing::authority();
     let slots = testing::slots()?;
     let binding = authority
-        .bind(
-            &slots,
-            0,
-            &StreamPath::new("model")?,
-            Default::default(),
-            1,
-        )
+        .bind(&slots, 0, &StreamPath::new("model")?, Default::default(), 1)
         .map_err(|_| StreamError::AccessDenied)?
         .0;
     Ok(Session {
@@ -149,22 +143,20 @@ fn exercise_admission(operations: &[u8], broken: bool) -> Result<(), Box<dyn std
     for operation in operations {
         match operation % 4 {
             0 => {
-                session
-                    .record(
-                        wire::SessionChannel {
-                            channel_id: 1,
-                            generation: 1,
-                        },
-                        Ok(Event::Record(Record {
-                            headers: Default::default(),
-                            sequence,
-                            value: vec![0].into(),
-                            commit_id: CommitId::from_bytes([1; 32]),
-                            committed_at_micros: 0,
-                            origin: crate::StreamPath::new("origin")?,
-                        })),
-                    )
-                    ?;
+                session.record(
+                    wire::SessionChannel {
+                        channel_id: 1,
+                        generation: 1,
+                    },
+                    Ok(Event::Record(Record {
+                        headers: Default::default(),
+                        sequence,
+                        value: vec![0].into(),
+                        commit_id: CommitId::from_bytes([1; 32]),
+                        committed_at_micros: 0,
+                        origin: crate::StreamPath::new("origin")?,
+                    })),
+                )?;
                 sequence += 1;
             }
             1 => session.receive(super::window(1))?,

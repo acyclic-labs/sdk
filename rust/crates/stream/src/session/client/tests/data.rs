@@ -194,7 +194,8 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
             if fixture
                 .counts
                 .resumes
-                .lock().unwrap_or_else(|poison| poison.into_inner())
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
                 .iter()
                 .any(|(_, generation, next)| *generation == 2 && *next == 8)
             {

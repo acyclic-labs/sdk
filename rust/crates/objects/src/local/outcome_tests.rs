@@ -505,7 +505,11 @@ async fn assert_reopened(
     let reopened = LocalMedium::open(root, LocalObjectsLimits::default(), None).await?;
     assert_eq!(reopened.read("key", None).await?.as_deref(), expected);
     assert_eq!(
-        reopened.read("kept", None).await?.ok_or("kept absent")?.as_ref(),
+        reopened
+            .read("kept", None)
+            .await?
+            .ok_or("kept absent")?
+            .as_ref(),
         b"kept"
     );
     Ok(())
@@ -557,7 +561,11 @@ async fn compacting_mutation(
     };
     assert_eq!(medium.read("key", None).await?.as_deref(), expected);
     assert_eq!(
-        medium.read("kept", None).await?.ok_or("kept absent")?.as_ref(),
+        medium
+            .read("kept", None)
+            .await?
+            .ok_or("kept absent")?
+            .as_ref(),
         b"kept"
     );
     assert_cut_stopped(&medium, &schedule, cut).await?;

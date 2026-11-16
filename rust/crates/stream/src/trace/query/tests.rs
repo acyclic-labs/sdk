@@ -790,10 +790,7 @@ async fn last_owner_interest_revokes_inherited_producer_during_original_work()
     let first = registry.subscribe(owner.clone(), &source)?;
     let last = registry.subscribe(owner, &source)?;
     let other_source = crate::StreamPath::new("agents/other/trace")?;
-    let _other = registry.subscribe(
-        crate::StreamPath::new("agents/other")?,
-        &other_source,
-    )?;
+    let _other = registry.subscribe(crate::StreamPath::new("agents/other")?, &other_source)?;
     let recorder: Arc<Recorder<_>> = registry
         .recorder("agents/worker")?
         .ok_or("owner interest missing")?;

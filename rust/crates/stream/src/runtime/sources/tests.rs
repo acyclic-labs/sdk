@@ -217,8 +217,7 @@ fn keyed_readers_keep_independent_wakes_and_share_ready_delivery() {
     });
 }
 
-fn late_cancelled_wakes_cannot_disarm_a_live_source()
--> Result<(), Box<dyn std::error::Error>> {
+fn late_cancelled_wakes_cannot_disarm_a_live_source() -> Result<(), Box<dyn std::error::Error>> {
     use crate::FollowRequest;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Waker;
@@ -262,11 +261,8 @@ fn late_cancelled_wakes_cannot_disarm_a_live_source()
                 .wake
                 .clone();
             sources.remove(0);
-            let mut records = crate::records_only(
-                provider
-                    .follow(FollowRequest::new(path.clone(), 1))
-                    .await?,
-            );
+            let mut records =
+                crate::records_only(provider.follow(FollowRequest::new(path.clone(), 1)).await?);
             let mut late = Some(cancelled);
             sources.register(
                 wire::SessionChannel {

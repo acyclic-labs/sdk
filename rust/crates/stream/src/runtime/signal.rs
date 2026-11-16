@@ -97,7 +97,11 @@ impl<T> Signal<T> {
     }
     #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
     pub(crate) fn pending(&self) -> usize {
-        self.state.lock().unwrap_or_else(|poison| poison.into_inner()).0.len()
+        self.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .0
+            .len()
     }
 }
 

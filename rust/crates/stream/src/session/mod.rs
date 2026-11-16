@@ -202,7 +202,10 @@ struct Session<P: ?Sized> {
 }
 
 enum ServingSession<P: ?Sized> {
-    Active(Box<Session<P>>, Option<crate::BoxProviderFuture<'static, ()>>),
+    Active(
+        Box<Session<P>>,
+        Option<crate::BoxProviderFuture<'static, ()>>,
+    ),
     Closing(
         std::collections::btree_map::IntoIter<u64, Channel>,
         std::collections::vec_deque::IntoIter<Frame>,
@@ -399,24 +402,24 @@ fn serve_on_with_products<
                     if let Some(frame) = next {
                         frame
                     } else {
-                            // Drop input, calls and follows before publishing closure.
-                            // Socket owners must see shutdown even if the peer stops
-                            // reading before the queued terminal responses drain.
-                            for channel in session.channels.values_mut() {
-                                channel.socket.take();
-                                if let Some(input) = &mut channel.input {
-                                    let _ = input.finish(Err(StreamError::Unavailable));
-                                }
+                        // Drop input, calls and follows before publishing closure.
+                        // Socket owners must see shutdown even if the peer stops
+                        // reading before the queued terminal responses drain.
+                        for channel in session.channels.values_mut() {
+                            channel.socket.take();
+                            if let Some(input) = &mut channel.input {
+                                let _ = input.finish(Err(StreamError::Unavailable));
                             }
-                            // Preserve terminal responses for channels already removed.
-                            // Reuse both collections without allocating a shutdown queue.
-                            session
-                                .controls
-                                .retain(|frame| matches!(frame.wire().body, Some(Body::Closed(_))));
-                            return Ok(ServingSession::close(
-                                session.channels.into_iter(),
-                                session.controls.into_iter(),
-                            ));
+                        }
+                        // Preserve terminal responses for channels already removed.
+                        // Reuse both collections without allocating a shutdown queue.
+                        session
+                            .controls
+                            .retain(|frame| matches!(frame.wire().body, Some(Body::Closed(_))));
+                        return Ok(ServingSession::close(
+                            session.channels.into_iter(),
+                            session.controls.into_iter(),
+                        ));
                     }
                 } else {
                     session.next_frame().await?

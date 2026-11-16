@@ -585,7 +585,11 @@ async fn ambiguous_revival_stops_at_its_original_conditional_write()
             .medium()
             .inner
             .read(
-                &format!("{}/e/{}/{hex}", Digest::of(b"revival").to_hex(), digest.hex_prefix()),
+                &format!(
+                    "{}/e/{}/{hex}",
+                    Digest::of(b"revival").to_hex(),
+                    digest.hex_prefix()
+                ),
                 None,
             )
             .await?
@@ -1552,7 +1556,11 @@ async fn collection_revives_a_kept_blob_whose_deleter_crashed()
         .ok_or("unknown")?
         .digest;
     let hex = child.to_hex();
-    let key = format!("{}/e/{}/{hex}", Digest::of(b"acct").to_hex(), child.hex_prefix());
+    let key = format!(
+        "{}/e/{}/{hex}",
+        Digest::of(b"acct").to_hex(),
+        child.hex_prefix()
+    );
     let live = store.medium().observe(key).await?.ok_or("absent")?;
     let mut marked = crate::blob::Envelope::decode(&live.bytes)?;
     marked.dying = Some([7; 16]);
@@ -2692,9 +2700,9 @@ impl Medium for Crashing {
             }
             Some(range) if self.short_reads => {
                 let end = bytes.len();
-                Ok(Some(bytes.slice(
-                    at(range.start)?.min(end)..at(range.end)?.min(end),
-                )))
+                Ok(Some(
+                    bytes.slice(at(range.start)?.min(end)..at(range.end)?.min(end)),
+                ))
             }
             Some(_) => Err(MediumError::Failed(std::io::ErrorKind::InvalidInput.into())),
         }

@@ -175,13 +175,22 @@ impl<C> std::fmt::Display for Error<C> {
                 write!(formatter, "actor stream provider failed: {error}")
             }
             Self::Unknown { source, .. } => {
-                write!(formatter, "actor publication acknowledgement is unknown: {source}")
+                write!(
+                    formatter,
+                    "actor publication acknowledgement is unknown: {source}"
+                )
             }
             Self::InvocationDurabilityUnknown { source, .. } => {
-                write!(formatter, "actor invocation durability is unknown: {source}")
+                write!(
+                    formatter,
+                    "actor invocation durability is unknown: {source}"
+                )
             }
             Self::PublicationDurabilityUnknown { source, .. } => {
-                write!(formatter, "actor publication durability is unknown: {source}")
+                write!(
+                    formatter,
+                    "actor publication durability is unknown: {source}"
+                )
             }
             Self::Settlement { source, .. } => {
                 write!(formatter, "actor participant settlement failed: {source}")
@@ -194,7 +203,10 @@ impl<C> std::fmt::Display for Error<C> {
                 "composed transaction precondition refused again with no external change",
             ),
             Self::UndecidedUnchanged(failure) => {
-                write!(formatter, "handler failure undecided again on redelivery: {failure}")
+                write!(
+                    formatter,
+                    "handler failure undecided again on redelivery: {failure}"
+                )
             }
             Self::Paused => formatter.write_str("actor is paused"),
             Self::Handler(failure) => failure.fmt(formatter),
@@ -202,7 +214,10 @@ impl<C> std::fmt::Display for Error<C> {
                 write!(formatter, "actor invocation failed: {source}")
             }
             Self::AlarmNotDue { authority_unix_ms } => {
-                write!(formatter, "alarm not yet due at authority time {authority_unix_ms}")
+                write!(
+                    formatter,
+                    "alarm not yet due at authority time {authority_unix_ms}"
+                )
             }
             Self::Deleted => formatter.write_str("actor is deleted"),
             Self::AdmissionClosed(_) => {

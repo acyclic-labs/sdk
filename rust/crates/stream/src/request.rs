@@ -669,7 +669,9 @@ impl<'a, 'b> Iterator for MutationPaths<'a, 'b> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Single(paths) => paths.next().map(|mutation| CommitMutation::path(mutation).as_str()),
+            Self::Single(paths) => paths
+                .next()
+                .map(|mutation| CommitMutation::path(mutation).as_str()),
             Self::Indexed(paths) => paths.next().map(|index| index.path),
         }
     }
@@ -695,14 +697,9 @@ impl<'a, A> MutationView<'a, A> {
         }
         let (mut index, allocation) = allocate(request.mutations().count())?;
         for effect in &request.effects {
-            index.extend(
-                effect
-                    .mutations
-                    .iter()
-                    .map(|mutation| MutationIndex {
-                        path: CommitMutation::path(mutation).as_str(),
-                    }),
-            );
+            index.extend(effect.mutations.iter().map(|mutation| MutationIndex {
+                path: CommitMutation::path(mutation).as_str(),
+            }));
         }
         index.sort_unstable_by_key(|entry| entry.path);
         if index

@@ -1036,7 +1036,10 @@ mod isolation_tests {
         let stale = observation(&medium, "kept").await;
         assert!(
             medium
-                .create("hot", vec![7; usize::try_from(COMPACTION_CHUNK).unwrap()].into())
+                .create(
+                    "hot",
+                    vec![7; usize::try_from(COMPACTION_CHUNK).unwrap()].into()
+                )
                 .await
                 .unwrap()
         );
@@ -1246,7 +1249,8 @@ mod isolation_tests {
             async || LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await;
         let medium = open().await.unwrap();
         assert!(medium.create("a/x", bytes(b"first")).await.unwrap());
-        let first = usize::try_from(std::fs::metadata(root.path().join(LOG)).unwrap().len()).unwrap();
+        let first =
+            usize::try_from(std::fs::metadata(root.path().join(LOG)).unwrap().len()).unwrap();
         assert!(medium.create("a/y", bytes(b"second")).await.unwrap());
         assert_eq!(medium.close().await.unwrap(), LocalClose::Released);
         let written = std::fs::read(root.path().join(LOG)).unwrap();

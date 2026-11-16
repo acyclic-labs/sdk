@@ -296,8 +296,10 @@ fn forced_ansi_code_has_contrast_against_opposite_terminal_defaults() -> io::Res
 
 #[test]
 fn views_match_terminal_goldens() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = std::env::var_os("GOLDEN_OUTPUT")
-        .map_or_else(|| acyclic_test_support::crate_path!("tests/golden"), PathBuf::from);
+    let directory = std::env::var_os("GOLDEN_OUTPUT").map_or_else(
+        || acyclic_test_support::crate_path!("tests/golden"),
+        PathBuf::from,
+    );
     let update = std::env::var_os("UPDATE_GOLDEN").is_some();
     for view in VIEWS {
         for (mode, background) in [("dark", [0; 3]), ("light", [255; 3])] {

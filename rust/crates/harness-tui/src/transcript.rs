@@ -79,9 +79,7 @@ impl Block {
             if let Some((columns, parser)) = &mut self.parsed
                 && *columns != width
             {
-                parser.set_width(
-                    u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
-                );
+                parser.set_width(u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX));
                 *columns = width;
             }
             let parsed = self
@@ -298,9 +296,7 @@ impl TranscriptRows {
             if let Some((columns, parser)) = &mut self.tail_parser
                 && *columns != width
             {
-                parser.set_width(
-                    u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
-                );
+                parser.set_width(u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX));
                 *columns = width;
             }
             let delta = if let Some(delta) = self
@@ -347,16 +343,13 @@ impl TranscriptRows {
         if query.is_empty() {
             return None;
         }
-        self.lines
-            .iter()
-            .take(before)
-            .rposition(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-                    .contains(query)
-            })
+        self.lines.iter().take(before).rposition(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+                .contains(query)
+        })
     }
 
     /// Display rows, including the transient prompts and tail.

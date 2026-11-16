@@ -770,8 +770,7 @@ async fn agent_diff_exactifies_only_its_authorized_target() -> Result<()> {
     );
     // Only the child target is materialized; the command's own exact tree is
     // reused. A full scan of the parent as well is the fixed diff floor.
-    acyclic_fs::lazy_workspace::EXACTIFY_CALLS
-        .store(0, std::sync::atomic::Ordering::Relaxed);
+    acyclic_fs::lazy_workspace::EXACTIFY_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
     let output = git::run(
         git::Workspace {
             access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,

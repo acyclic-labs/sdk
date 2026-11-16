@@ -150,7 +150,10 @@ async fn grpc_provider_frames_survive_transport_chunks_and_reject_lost_producers
     Ok(())
 }
 
-fn assert_failure<T>(result: Result<T, StreamError>, category: &StreamError) -> Result<(), StreamError> {
+fn assert_failure<T>(
+    result: Result<T, StreamError>,
+    category: &StreamError,
+) -> Result<(), StreamError> {
     let Err(error) = result else {
         return Err(StreamError::InvalidArgument);
     };

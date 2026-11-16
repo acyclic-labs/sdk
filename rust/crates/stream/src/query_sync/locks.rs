@@ -146,7 +146,11 @@ impl Drop for Registration<'_> {
             return;
         };
         let wakes = {
-            let mut access = self.gate.0.lock().unwrap_or_else(|poison| poison.into_inner());
+            let mut access = self
+                .gate
+                .0
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
             if let Some(position) = access.waiters.iter().position(|waiter| waiter.id == id) {
                 access.waiters.remove(position);
             } else {
