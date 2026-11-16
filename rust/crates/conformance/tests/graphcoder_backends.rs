@@ -473,7 +473,11 @@ fn interactive_output_child() -> io::Result<()> {
 async fn interactive_capture_preserves_bytes_and_reports_original_eof() -> io::Result<()> {
     let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
-        .args(["--exact", "interactive_output_child", "--nocapture"])
+        .args([
+            "--exact",
+            "graphcoder_backends::interactive_output_child",
+            "--nocapture",
+        ])
         .env("ACYCLIC_CONFORMANCE_OUTPUT_CHILD", "1")
         .stdin(ProcessStdio::piped())
         .stdout(ProcessStdio::piped())

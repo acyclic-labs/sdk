@@ -86,7 +86,3 @@ workspace = true
 [[test]]
 name = "main"
 path = "tests/main.rs"
-
-[[test]]
-name = "live-cache"
-path = "tests/live_cache.rs"

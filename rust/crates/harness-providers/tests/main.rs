@@ -7,6 +7,7 @@
 #![recursion_limit = "112"]
 use acyclic_harness_providers::Adapter;
 mod benchmark_catalog;
+mod live_cache;
 #[cfg(loom)]
 #[path = "../src/sync.rs"]
 mod sync;

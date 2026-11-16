@@ -51,6 +51,14 @@ mod revision_frontier_loom;
 #[cfg(all(not(loom), target_arch = "wasm32", feature = "wasm"))]
 mod credential_javascript;
 
+#[cfg(all(
+    not(loom),
+    target_arch = "wasm32",
+    feature = "wasm",
+    feature = "conformance"
+))]
+mod read_selectors;
+
 #[cfg(not(loom))]
 mod session_framing;
 

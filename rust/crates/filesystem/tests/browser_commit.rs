@@ -7,7 +7,6 @@ use indexed_db_futures::database::Database;
 use indexed_db_futures::prelude::*;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::*;
-wasm_bindgen_test_configure!(run_in_browser);
 #[cfg(feature = "conformance")]
 #[path = "browser_commit/conformance.rs"]
 mod conformance;

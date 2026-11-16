@@ -33,14 +33,10 @@ futures.workspace = true
 proptest.workspace = true
 loom = "0.7.3"
 
-[[test]]
-name = "model"
-path = "tests/model.rs"
-required-features = ["model-checking"]
 
 [[test]]
-name = "window_state"
-path = "tests/window_state.rs"
+name = "main"
+path = "tests/main.rs"
 
 [[bin]]
 name = "access"

@@ -37,9 +37,9 @@ reports model names, call counts and cache counters, suppressing raw errors.
 Compile on a native build host, then explicitly run:
 
 ```sh
-cargo test --locked -p acyclic-harness-providers --test live-cache --no-run
-cargo test --locked -p acyclic-harness-providers --test live-cache -- \
-  --ignored --exact real_provider_cache_reads_match_recorded_usage --nocapture
+cargo test --locked -p acyclic-harness-providers --test main --no-run
+cargo test --locked -p acyclic-harness-providers --test main live_cache -- \
+  --ignored --exact live_cache::real_provider_cache_reads_match_recorded_usage --nocapture
 ```
 
 Provider contracts:

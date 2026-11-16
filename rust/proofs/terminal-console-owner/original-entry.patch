@@ -35,7 +35,7 @@ index cc002eb8260..113508d142d 100644
 -            io::Error::new(
 -                error.kind(),
 -                format!(
--                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --features tui --test terminal_frames -E 'test(=real_terminal_frame_cost)'"
+-                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --test main -E 'test(=terminal_frames::real_terminal_frame_cost)'"
 -                ),
 -            )
 -        });

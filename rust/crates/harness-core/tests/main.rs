@@ -6,6 +6,9 @@ mod agent_model;
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod git_executor;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod computed_ui_records;
+
 pub use acyclic_harness_core::Error;
 #[cfg(all(loom, feature = "model-checking"))]
 pub use acyclic_harness_core::{ProcessError, Result};

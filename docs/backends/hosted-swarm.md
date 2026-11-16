@@ -91,7 +91,7 @@ This sends a model request and retains its effects in the served tree.
 The deterministic integration check is:
 
 ```sh
-cargo test -p acyclic-conformance --features actors-hosting --test hosted_actors
+cargo test -p acyclic-conformance --features actors-hosting --test main hosted_actors
 ```
 
 It runs the public endpoint vectors through the GraphCoder composition and a

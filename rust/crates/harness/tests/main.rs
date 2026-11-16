@@ -23,6 +23,8 @@ mod history_selection;
 #[cfg(feature = "test-support")]
 #[cfg(not(loom))]
 mod model_tool_call;
+#[cfg(not(loom))]
+mod native_receipt;
 #[cfg(feature = "test-support")]
 #[cfg(not(loom))]
 mod portable_text_tools;

@@ -113,6 +113,11 @@ mod native_source_watch_custody;
 #[cfg(not(loom))]
 mod session_fs;
 
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+mod browser_blob_custody;
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+mod browser_commit;
+
 // Included production regressions use these crate-root API imports.
 #[cfg(all(windows, not(target_arch = "wasm32")))]
 #[cfg(not(loom))]

@@ -368,7 +368,7 @@ The browser adapter uses real `BrowserStream` and `IndexedDbObjectStore` provide
 ```sh
 bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-fs \
   --no-default-features --features browser,conformance \
-  --target wasm32-unknown-unknown --test browser_commit conformance::browser_public_conformance_benchmark
+  --target wasm32-unknown-unknown --test main browser_commit::conformance::browser_public_conformance_benchmark
 ```
 
 The existing `storage::indexed_db_object_batches_commit_all_or_nothing`
@@ -393,7 +393,7 @@ bindgen=$(bash scripts/ensure-wasm-bindgen.sh)
 export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="$(dirname "$(command -v "$bindgen")")/wasm-bindgen-test-runner"
 unset WASM_BINDGEN_USE_BROWSER
 cargo test --locked -p acyclic-fs --no-default-features --features browser \
-  --target wasm32-unknown-unknown --test browser_blob_custody
+  --target wasm32-unknown-unknown --test main browser_blob_custody
 ```
 
 This checks the shared byte materialization path; the browser provider suite

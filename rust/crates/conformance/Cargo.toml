@@ -58,11 +58,6 @@ rusqlite = { version = "0.41", features = ["bundled"], optional = true }
 notify = { workspace = true, optional = true }
 s3s = { workspace = true, optional = true }
 
-[[test]]
-name = "graphcoder_backends"
-path = "tests/graphcoder_backends.rs"
-required-features = ["graphcoder-backends"]
-
 [[bin]]
 name = "graphcoder-seams"
 test = false
@@ -161,7 +156,3 @@ path = "tests/main.rs"
 name = "client-fixture-conformance"
 test = false
 required-features = ["client-session"]
-
-[[test]]
-name = "hosted_actors"
-required-features = ["actors-hosting"]

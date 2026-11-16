@@ -3,6 +3,12 @@
 
 acyclic_test_support::counting_allocator!();
 
+#[path = "terminal_negotiation.rs"]
+mod terminal_negotiation;
+
+#[path = "terminal_frames.rs"]
+mod terminal_frames;
+
 #[path = "cases/completion.rs"]
 mod completion;
 

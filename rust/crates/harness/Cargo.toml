@@ -16,10 +16,6 @@ documentation = "https://docs.rs/acyclic-harness"
 name = "main"
 path = "tests/main.rs"
 
-[[test]]
-name = "native_receipt"
-path = "tests/native_receipt.rs"
-
 [[bin]]
 name = "acyclic-virtiofsd"
 path = "src/bin/virtiofsd.rs"
