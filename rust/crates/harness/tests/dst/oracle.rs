@@ -108,7 +108,7 @@ pub(super) fn tag(tag: &str) -> String {
 
 /// How a prompt appears in a request: inline, or as the content digest of
 /// the input file the host stored it in.
-fn appears(tag_text: &str) -> [String; 2] {
+pub(super) fn appears(tag_text: &str) -> [String; 2] {
     use sha2::Digest as _;
     let digest: [u8; 32] = sha2::Sha256::digest(tag_text.as_bytes()).into();
     [
@@ -216,6 +216,7 @@ pub(super) struct World {
     pub service: ScriptedModelProvider,
     pub seed: u64,
     incarnations: u64,
+    limits: acyclic_harness::conversation::Limits,
 }
 
 impl World {
@@ -234,7 +235,15 @@ impl World {
             service,
             seed,
             incarnations: 0,
+            limits: acyclic_harness::conversation::Limits::default(),
         })
+    }
+
+    /// Selects the content and projection bounds this world opens with.
+    #[must_use]
+    pub fn with_limits(mut self, limits: acyclic_harness::conversation::Limits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// Opens a host on the world's files and sends each group of prompts,
@@ -275,6 +284,7 @@ impl World {
                     )?
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
+                    .limits(self.limits.clone())
                     .state_directory(directory.join("state"));
                     let harness = Arc::new(entry(LocalHarness::open(config)).await?);
                     for group in prompts {
