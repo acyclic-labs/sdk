@@ -1,0 +1,449 @@
+use super::*;
+use acyclic_harness_core::{
+    OperationId,
+    mcp::{McpTransport, config::Dialect},
+};
+use futures::TryStreamExt;
+use std::collections::BTreeSet;
+
+enum Connection {
+    #[cfg(not(target_arch = "wasm32"))]
+    Stdio(super::super::stdio::StdioMcpTransport),
+    #[cfg(not(target_arch = "wasm32"))]
+    Http(super::super::http::HttpMcpTransport),
+}
+
+pub(super) async fn connect(
+    server: &McpServer,
+    workspace: &Path,
+    limits: McpClientLimits,
+    secrets: &dyn acyclic_harness_core::secrets::SecretSource,
+) -> Result<Connected> {
+    let (connection, binding) = match &server.transport {
+        #[cfg(not(target_arch = "wasm32"))]
+        McpTransport::Stdio { env_vars, .. } => {
+            let credentials = credentials_for(env_vars.iter(), secrets).await?;
+            let child = command_for(
+                server,
+                workspace,
+                acyclic_harness_core::native_environment::variable,
+                &credentials,
+            )?;
+            let binding = command_binding(&child, server);
+            (
+                Connection::Stdio(
+                    super::super::stdio::StdioMcpTransport::spawn(
+                        child,
+                        None,
+                        limits.frame_bytes,
+                        server.startup_timeout_ms,
+                    )
+                    .await?,
+                ),
+                binding,
+            )
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        McpTransport::Http {
+            url,
+            headers,
+            env_headers,
+            bearer_token_env_var,
+        } => {
+            use super::super::http::{HttpMcpTransport, McpHttpProvider, NativeMcpHttpProvider};
+            let environment = acyclic_harness_core::native_environment::variable;
+            let credentials =
+                credentials_for(env_headers.values().chain(bearer_token_env_var), secrets).await?;
+            let headers = headers_for(
+                headers,
+                env_headers,
+                bearer_token_env_var.as_deref(),
+                server.dialect == Dialect::Claude,
+                environment,
+                &credentials,
+            )?;
+            let url = expand(url, server.dialect == Dialect::Claude, environment)?;
+            let binding = http_binding(&url, &headers);
+            let provider = Arc::new(NativeMcpHttpProvider::new(headers)?);
+            let transport = HttpMcpTransport::new(
+                provider.clone(),
+                url.into_owned(),
+                None,
+                limits.frame_bytes,
+                server.startup_timeout_ms,
+                None,
+            )?;
+            let operation = OperationId::new();
+            let request = transport.initialization_request(
+                operation,
+                "acyclic-harness",
+                acyclic_harness_core::build_metadata::PACKAGE_VERSION,
+            )?;
+            let response = provider.exchange(operation, request).await?;
+            let (mut transport, capabilities, initialized) =
+                transport.accept_initialization(operation, response).await?;
+            let response = provider.exchange(OperationId::new(), initialized).await?;
+            if !matches!(response.status, 202 | 204) {
+                return Err(Error::Invalid(
+                    "MCP initialized notification was rejected".into(),
+                ));
+            }
+            if capabilities
+                .pointer("/capabilities/tools/listChanged")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                transport.watch_tools()?;
+            }
+            (Connection::Http(transport), binding)
+        }
+        #[cfg(target_arch = "wasm32")]
+        _ => {
+            return Err(Error::Unsupported(
+                "configured MCP transport feature is disabled".into(),
+            ));
+        }
+    };
+    let generation = match &connection {
+        Connection::Stdio(transport) => transport.tools_generation(),
+        Connection::Http(transport) => transport.tools_generation(),
+    };
+    // Eager schema exposure deliberately materializes the catalog. The shared
+    // page stream itself fetches only when its consumer requests another page.
+    let tools = discover(limits.discovery, selection(server), |cursor| {
+        connection.list(cursor)
+    })
+    .await?;
+    let transport = match connection {
+        #[cfg(not(target_arch = "wasm32"))]
+        Connection::Stdio(transport) => {
+            Arc::new(transport.with_tool_limits(limits.tool_bytes, server.tool_timeout_ms)?)
+                as Arc<dyn McpToolTransport>
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        Connection::Http(transport) => {
+            Arc::new(transport.with_tool_limits(limits.tool_bytes, server.tool_timeout_ms)?)
+                as Arc<dyn McpToolTransport>
+        }
+    };
+    Ok(Connected {
+        transport,
+        tools,
+        binding,
+        generation,
+    })
+}
+
+fn binding_hasher(kind: &[u8]) -> blake3::Hasher {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic-harness/mcp-binding/v1");
+    hash_part(&mut hasher, super::super::PROTOCOL_VERSION.as_bytes());
+    hash_part(&mut hasher, kind);
+    hasher
+}
+
+fn hash_part(hasher: &mut blake3::Hasher, value: &[u8]) {
+    hasher.update(&(value.len() as u64).to_le_bytes());
+    hasher.update(value);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn command_binding(
+    command: &acyclic_native_runtime::ProcessCommand,
+    server: &McpServer,
+) -> [u8; 32] {
+    let McpTransport::Stdio { env, env_vars, .. } = &server.transport else {
+        unreachable!("stdio binding")
+    };
+    let explicit: BTreeSet<_> = env.keys().chain(env_vars).map(String::as_str).collect();
+    let mut hasher = binding_hasher(b"stdio");
+    hash_part(
+        &mut hasher,
+        if server.dialect == Dialect::Claude {
+            b"inherit"
+        } else {
+            b"clear"
+        },
+    );
+    hash_part(&mut hasher, command.get_program().as_encoded_bytes());
+    hash_part(
+        &mut hasher,
+        &(command.get_args().len() as u64).to_le_bytes(),
+    );
+    for argument in command.get_args() {
+        hash_part(&mut hasher, b"argument");
+        hash_part(&mut hasher, argument.as_encoded_bytes());
+    }
+    hash_part(&mut hasher, b"environment");
+    for (name, value) in command.get_envs() {
+        // Ambient environment is deliberately not part of a restart-stable identity.
+        if !name.to_str().is_some_and(|name| explicit.contains(name)) {
+            continue;
+        }
+        hash_part(&mut hasher, name.as_encoded_bytes());
+        hash_part(
+            &mut hasher,
+            if value.is_some() { b"set" } else { b"remove" },
+        );
+        if let Some(value) = value {
+            hash_part(&mut hasher, value.as_encoded_bytes());
+        }
+    }
+    hash_part(&mut hasher, b"cwd");
+    if let Some(cwd) = command.get_current_dir() {
+        hash_part(&mut hasher, cwd.as_os_str().as_encoded_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn http_binding(url: &str, headers: &reqwest::header::HeaderMap) -> [u8; 32] {
+    let mut hasher = binding_hasher(b"http");
+    hash_part(&mut hasher, url.as_bytes());
+    let mut headers: Vec<_> = headers.iter().collect();
+    headers.sort_unstable_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+    for (name, value) in headers {
+        hash_part(&mut hasher, name.as_str().as_bytes());
+        hash_part(&mut hasher, value.as_bytes());
+    }
+    *hasher.finalize().as_bytes()
+}
+
+impl Connection {
+    async fn list(&self, cursor: Option<String>) -> Result<rmcp::model::ListToolsResult> {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Stdio(transport) => transport.list_tools(OperationId::new(), cursor).await,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Http(transport) => transport.list_tools(OperationId::new(), cursor).await,
+        }
+    }
+}
+
+/// Materializes the shared page stream for an eagerly exposed catalog.
+pub(super) async fn discover<F, Fut>(
+    limits: McpDiscoveryLimits,
+    selected: impl FnMut(&str) -> bool,
+    list: F,
+) -> Result<Vec<McpToolDefinition>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<rmcp::model::ListToolsResult>>,
+{
+    super::super::tool_pages(list, limits, selected)?
+        .try_fold(Vec::new(), |mut tools, page| async move {
+            tools.extend(page);
+            Ok(tools)
+        })
+        .await
+}
+/// Resolved credentials of one server, held only by the host, zeroed on drop.
+pub(super) type Credentials = std::collections::BTreeMap<String, zeroize::Zeroizing<String>>;
+
+/// Resolves every credential variable of one server through the host's
+/// source before any connection. These are explicit native configuration names,
+/// not immutable published SecretRef identities.
+pub(super) async fn credentials_for<'a>(
+    names: impl Iterator<Item = &'a String>,
+    secrets: &dyn acyclic_harness_core::secrets::SecretSource,
+) -> Result<Credentials> {
+    let mut resolved = Credentials::new();
+    for name in names {
+        if resolved.contains_key(name) {
+            continue;
+        }
+        let Some(value) = secrets.secret(name).await? else {
+            continue;
+        };
+        let text = std::str::from_utf8(value.expose())
+            .map_err(|_| Error::Invalid("secret is not UTF-8".into()))?;
+        resolved.insert(name.clone(), zeroize::Zeroizing::new(text.to_owned()));
+    }
+    Ok(resolved)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn headers_for(
+    headers: &std::collections::BTreeMap<String, String>,
+    env_headers: &std::collections::BTreeMap<String, String>,
+    bearer: Option<&str>,
+    expand_variables: bool,
+    environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+    credentials: &Credentials,
+) -> Result<reqwest::header::HeaderMap> {
+    let invalid = || Error::Invalid("invalid MCP HTTP header configuration".into());
+    let mut result = reqwest::header::HeaderMap::new();
+    for (name, value) in headers {
+        let value = expand(value, expand_variables, &environment)?;
+        let mut value = reqwest::header::HeaderValue::from_str(&value).map_err(|_| invalid())?;
+        value.set_sensitive(true);
+        result.insert(
+            reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid())?,
+            value,
+        );
+    }
+    for (name, variable) in env_headers {
+        let value = credentials
+            .get(variable)
+            .ok_or_else(|| Error::Invalid("MCP HTTP credential is missing".into()))?;
+        let mut value = reqwest::header::HeaderValue::from_str(value).map_err(|_| invalid())?;
+        value.set_sensitive(true);
+        result.insert(
+            reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid())?,
+            value,
+        );
+    }
+    if let Some(variable) = bearer {
+        let value = credentials
+            .get(variable)
+            .ok_or_else(|| Error::Invalid("MCP bearer credential is missing".into()))?
+            .as_str();
+        if value.trim().is_empty() || result.contains_key(reqwest::header::AUTHORIZATION) {
+            return Err(invalid());
+        }
+        let mut value = reqwest::header::HeaderValue::from_str(&format!("Bearer {value}"))
+            .map_err(|_| invalid())?;
+        value.set_sensitive(true);
+        result.insert(reqwest::header::AUTHORIZATION, value);
+    }
+    Ok(result)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn command_for(
+    server: &McpServer,
+    workspace: &Path,
+    environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+    credentials: &Credentials,
+) -> Result<acyclic_native_runtime::ProcessCommand> {
+    let McpTransport::Stdio {
+        command,
+        args,
+        env,
+        env_vars,
+        cwd,
+    } = &server.transport
+    else {
+        return Err(Error::Invalid("expected MCP stdio configuration".into()));
+    };
+    let expand_variables = server.dialect == Dialect::Claude;
+    let command = expand(command, expand_variables, &environment)?;
+    let cwd = cwd
+        .as_ref()
+        .map_or_else(|| workspace.to_owned(), |cwd| workspace.join(cwd));
+    let configured_path = env
+        .iter()
+        .find(|(name, _)| {
+            if cfg!(windows) {
+                name.eq_ignore_ascii_case("PATH")
+            } else {
+                name.as_str() == "PATH"
+            }
+        })
+        .map(|(_, value)| expand(value, expand_variables, &environment))
+        .transpose()?;
+    let search_path = configured_path
+        .map(|value| std::ffi::OsString::from(value.as_ref()))
+        .or_else(|| environment("PATH"));
+    let search_extensions = env
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("PATHEXT"))
+        .map(|(_, value)| expand(value, expand_variables, &environment))
+        .transpose()?
+        .map(|value| std::ffi::OsString::from(value.as_ref()))
+        .or_else(|| environment("PATHEXT"));
+    // Resolve once, then spawn this absolute executable; do not search PATH again at spawn.
+    let search = acyclic_native_runtime::ExecutableSearch::from_environment(&cwd, |name| {
+        if name == "PATH" {
+            search_path.clone()
+        } else {
+            search_extensions.clone()
+        }
+    });
+    let program = search.resolve(command.as_ref()).map_err(|error| {
+        Error::process_io(std::io::Error::new(error.kind(), format!("MCP {error}")))
+    })?;
+    let mut child = acyclic_native_runtime::ProcessCommand::new(program);
+    if server.dialect == Dialect::Codex {
+        child.env_clear();
+        for name in [
+            "HOME",
+            "LOGNAME",
+            "PATH",
+            "SHELL",
+            "USER",
+            "__CF_USER_TEXT_ENCODING",
+            "LANG",
+            "LC_ALL",
+            "TERM",
+            "TMPDIR",
+            "TZ",
+            "SYSTEMROOT",
+            "COMSPEC",
+            "PATHEXT",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+        ] {
+            if let Some(value) = environment(name) {
+                child.env(name, value);
+            }
+        }
+    }
+    for argument in args {
+        child.arg(expand(argument, expand_variables, &environment)?.as_ref());
+    }
+    for name in env_vars {
+        if let Some(value) = credentials.get(name) {
+            child.env(name, value.as_str());
+        }
+    }
+    for (name, value) in env {
+        child.env(
+            name,
+            expand(value, expand_variables, &environment)?.as_ref(),
+        );
+    }
+    child.current_dir(cwd).env("CLAUDE_PROJECT_DIR", workspace);
+    Ok(child)
+}
+
+fn expand<'a>(
+    value: &'a str,
+    enabled: bool,
+    environment: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<std::borrow::Cow<'a, str>> {
+    if !enabled || !value.contains("${") {
+        return Ok(std::borrow::Cow::Borrowed(value));
+    }
+    let expanded = acyclic_native_runtime::expand_environment(value, |reference| {
+        let reference =
+            reference.ok_or_else(|| Error::Invalid("invalid MCP environment reference".into()))?;
+        environment(reference.name)
+            .or_else(|| reference.fallback.map(std::ffi::OsString::from))
+            .map(Some)
+            .ok_or_else(|| Error::Invalid("MCP environment reference is missing".into()))
+    })?;
+    match expanded {
+        std::borrow::Cow::Borrowed(_) => Ok(std::borrow::Cow::Borrowed(value)),
+        std::borrow::Cow::Owned(value) => value
+            .into_string()
+            .map(std::borrow::Cow::Owned)
+            .map_err(|_| Error::Invalid("MCP environment reference is not UTF-8".into())),
+    }
+}
+
+/// Select advertised tools before retaining their schemas.
+pub(super) fn selection(server: &McpServer) -> impl FnMut(&str) -> bool + '_ {
+    move |name| {
+        server
+            .enabled_tools
+            .as_ref()
+            .is_none_or(|names| names.iter().any(|selected| selected == name))
+            && !server
+                .disabled_tools
+                .iter()
+                .any(|disabled| disabled == name)
+    }
+}

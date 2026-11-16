@@ -109,7 +109,8 @@ pub use native_access::{
     local_owner_mount_options, local_owner_workspace, local_owner_workspace_access,
 };
 pub use native_contract::{
-    NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult, NativeProcessStop,
+    McpStdioRequest, NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult,
+    NativeProcessStop,
     NativeProcessStopKind, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
     NativeVolumeNamespace,
 };

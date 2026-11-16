@@ -1,5 +1,5 @@
 use super::*;
-use crate::mcp::McpTransport;
+use acyclic_harness_mcp::McpTransport;
 use serde_json::json;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]

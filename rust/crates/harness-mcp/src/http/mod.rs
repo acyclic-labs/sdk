@@ -1,0 +1,463 @@
+//! Streamable HTTP over one host-supplied provider with optional byte policies.
+
+use super::{
+    McpToolTransport, PROTOCOL_VERSION,
+    callbacks::{McpCallbackPolicy, McpRuntimeCallbacks},
+    rpc::{initialization, request},
+};
+use acyclic_harness_core::{Error, OperationId, Result, runtime::ToolContext};
+use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+use bytes::Bytes;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, sync::Arc};
+
+mod body;
+pub use body::ResponseByteFrontier;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod codec_fuzz;
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+mod response;
+mod sse;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::NativeMcpHttpProvider;
+
+/// One portable HTTP request with independently selected byte and time policies.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, acyclic_harness_core::HeapLayout)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
+pub struct McpHttpRequest {
+    /// Pinned endpoint.
+    pub endpoint: String,
+    /// Protocol HTTP method.
+    pub method: String,
+    /// Lowercase protocol headers.
+    pub headers: BTreeMap<String, String>,
+    /// UTF-8 JSON-RPC message, or empty GET/DELETE body.
+    pub body: Vec<u8>,
+    /// Optional whole-exchange deadline.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint | null"))]
+    pub timeout_ms: Option<u64>,
+    /// Optional total response body allowance; `None` is unbounded.
+    pub maximum_response_bytes: Option<u32>,
+}
+
+/// Bounded streaming HTTP response.
+pub struct McpHttpResponse {
+    /// HTTP status.
+    pub status: u16,
+    /// Lowercase response headers.
+    pub headers: BTreeMap<String, String>,
+    /// Bounded response stream, cancelled when dropped.
+    pub body: BoxProviderStream<'static, Result<Bytes>>,
+}
+
+/// Platform I/O for admitted HTTP operations.
+pub trait McpHttpProvider: acyclic_stream::ProviderPlatform {
+    /// Performs one exchange with the original selected policies.
+    /// A read's positively classified transient transport failure is Unavailable;
+    /// other read failures are terminal. Possible write effects retain their uncertainty.
+    fn exchange<'a>(
+        &'a self,
+        operation: OperationId,
+        request: McpHttpRequest,
+    ) -> BoxProviderFuture<'a, Result<McpHttpResponse>>;
+    /// Reads the retained response without POST.
+    fn reconcile<'a>(
+        &'a self,
+        operation: OperationId,
+    ) -> BoxProviderFuture<'a, Result<Option<McpHttpResponse>>>;
+}
+
+/// Immutable endpoint, session and exchange bounds.
+#[derive(Clone)]
+pub struct HttpMcpTransport {
+    provider: Arc<dyn McpHttpProvider>,
+    endpoint: String,
+    session: Option<String>,
+    maximum_bytes: Option<u32>,
+    timeout_ms: Option<u64>,
+    callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
+    tools_generation: Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(not(target_arch = "wasm32"))]
+    notifications: Option<Arc<NotificationWatch>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NotificationWatch {
+    task: tokio::task::JoinHandle<()>,
+    failure: Arc<std::sync::OnceLock<(OperationId, Arc<Error>)>>,
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for NotificationWatch {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl HttpMcpTransport {
+    /// Selects independent tool-exchange bounds after catalog discovery.
+    pub fn with_tool_limits(
+        mut self,
+        maximum_bytes: impl Into<Option<u32>>,
+        timeout_ms: impl Into<Option<u64>>,
+    ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
+        let timeout_ms = timeout_ms.into();
+        if maximum_bytes == Some(0) || timeout_ms == Some(0) {
+            return Err(Error::Invalid(
+                "MCP request deadline must be positive".into(),
+            ));
+        }
+        self.timeout_ms = timeout_ms;
+        self.maximum_bytes = maximum_bytes;
+        Ok(self)
+    }
+
+    /// Lists one typed catalog page at the transport's validation boundary.
+    pub async fn list_tools(
+        &self,
+        operation: OperationId,
+        cursor: Option<String>,
+    ) -> Result<rmcp::model::ListToolsResult> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((operation, error)) = self
+            .notifications
+            .as_ref()
+            .and_then(|watch| watch.failure.get())
+        {
+            return Err(Error::shared_for_request(error.clone(), *operation));
+        }
+        let params = cursor.map_or_else(|| json!({}), |cursor| json!({"cursor":cursor}));
+        let request = self.request("POST", request(operation, "tools/list", params)?)?;
+        let response = self.provider.exchange(operation, request).await?;
+        serde_json::from_value(self.response(operation, response, None).await?)
+            .map_err(|error| Error::Invalid(error.to_string()))
+    }
+
+    /// Binds a host-selected endpoint and optional session.
+    pub fn new(
+        provider: Arc<dyn McpHttpProvider>,
+        endpoint: String,
+        session: Option<String>,
+        maximum_bytes: impl Into<Option<u32>>,
+        timeout_ms: impl Into<Option<u64>>,
+        callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
+    ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
+        let timeout_ms = timeout_ms.into();
+        let uri = endpoint
+            .parse::<::http::Uri>()
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        if !uri.scheme_str().is_some_and(|scheme| {
+            scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+        }) || uri.authority().is_none_or(|authority| {
+            authority.host().is_empty()
+                || authority.as_str().contains('@')
+                || (authority.port().is_some() && authority.port_u16().is_none())
+        }) || endpoint.contains('#')
+            || maximum_bytes == Some(0)
+            || timeout_ms == Some(0)
+            || session.as_ref().is_some_and(|value| !valid_session(value))
+        {
+            return Err(Error::Invalid(
+                "invalid MCP HTTP binding or allowance".into(),
+            ));
+        }
+        if let Some((policy, _)) = &callbacks {
+            policy.validate()?;
+            if session.is_some() {
+                return Err(Error::Conflict(
+                    "MCP callback policy requires fresh negotiation".into(),
+                ));
+            }
+        }
+        Ok(Self {
+            provider,
+            endpoint,
+            session,
+            maximum_bytes,
+            timeout_ms,
+            callbacks,
+            tools_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[cfg(not(target_arch = "wasm32"))]
+            notifications: None,
+        })
+    }
+
+    /// One GET event stream per connection, shared by every installed tool.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn watch_tools(&mut self) -> Result<()> {
+        let request = self.request("GET", Vec::new())?;
+        let provider = self.provider.clone();
+        let generation = self.tools_generation.clone();
+        let failure = Arc::new(std::sync::OnceLock::new());
+        let terminal = failure.clone();
+        self.notifications = Some(Arc::new(NotificationWatch {
+            failure,
+            task: tokio::spawn(async move {
+                let [a, b, c, d, ..] = OperationId::new().into_bytes();
+                let schedule = || {
+                    acyclic_auth::operation::Backoff::new(
+                        100,
+                        5_000,
+                        u32::from_le_bytes([a, b, c, d]),
+                    )
+                };
+                let mut backoff = schedule();
+                loop {
+                    let operation = OperationId::new();
+                    let mut progressed = false;
+                    let result = async {
+                        let response = provider.exchange(operation, request.clone()).await?;
+                        if response.status == 405 {
+                            return Ok(false);
+                        }
+                        match response.status {
+                            200 => {}
+                            408 | 425 | 429 | 500 | 502 | 503 | 504 => {
+                                return Err(Error::Boundary {
+                                    code: acyclic_harness_core::wire::ErrorCode::Unavailable,
+                                    reason: "MCP notification endpoint temporarily unavailable",
+                                });
+                            }
+                            401 | 403 => {
+                                return Err(Error::Unauthorized(format!(
+                                    "MCP notifications refused HTTP {}",
+                                    response.status
+                                )));
+                            }
+                            404 | 410 => {
+                                return Err(Error::NotFound(format!(
+                                    "MCP notifications refused HTTP {}",
+                                    response.status
+                                )));
+                            }
+                            _ => {
+                                return Err(Error::Invalid(format!(
+                                    "MCP notification response HTTP {}",
+                                    response.status
+                                )));
+                            }
+                        }
+                        if response.headers.get("content-type").is_none_or(|value| {
+                            !value
+                                .split(';')
+                                .next()
+                                .unwrap_or("")
+                                .trim()
+                                .eq_ignore_ascii_case("text/event-stream")
+                        }) {
+                            return Err(Error::Invalid(
+                                "MCP notifications require an event stream".into(),
+                            ));
+                        }
+                        // Discovery may have refreshed during the disconnected
+                        // interval. Revalidate after subscribing to close that gap.
+                        generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                        sse::notifications(
+                            response.body,
+                            operation,
+                            request.maximum_response_bytes,
+                            &generation,
+                            &mut progressed,
+                        )
+                        .await?;
+                        Ok(true)
+                    }
+                    .await;
+                    match result {
+                        Ok(false) => return,
+                        Err(error) if error.code() != acyclic_harness_core::wire::ErrorCode::Unavailable => {
+                            let _ = terminal.set((operation, Arc::new(error)));
+                            generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                            return;
+                        }
+                        Ok(true) | Err(_) => {}
+                    }
+                    if progressed {
+                        backoff = schedule();
+                    }
+                    // EOF is a disconnected notification transport too. Invalidate
+                    // before reconnecting so events lost across the gap are read.
+                    generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    tokio::time::sleep(std::time::Duration::from_millis(u64::from(
+                        backoff.delay_ms(),
+                    )))
+                    .await;
+                }
+            }),
+        }));
+        Ok(())
+    }
+
+    /// Constructs initialization for separate host admission.
+    pub fn initialization_request(
+        &self,
+        operation: OperationId,
+        name: &str,
+        version: &str,
+    ) -> Result<McpHttpRequest> {
+        if self.session.is_some() {
+            return Err(Error::Conflict(
+                "MCP initialization cannot reuse a session".into(),
+            ));
+        }
+        self.request("POST", request(operation, "initialize", json!({
+            "protocolVersion":PROTOCOL_VERSION,
+            "capabilities":self.callbacks.as_ref().map(|(policy, _)| policy.capabilities()).transpose()?.unwrap_or_else(|| json!({})),
+            "clientInfo":{"name":name,"version":version},
+        }))?)
+    }
+
+    /// Accepts initialization and returns the separately admitted readiness request.
+    pub async fn accept_initialization(
+        self,
+        operation: OperationId,
+        response: McpHttpResponse,
+    ) -> Result<(Self, Value, McpHttpRequest)> {
+        if self.session.is_some() {
+            return Err(Error::Conflict("MCP session already bound".into()));
+        }
+        let session = response.headers.get("mcp-session-id").cloned();
+        if session.as_ref().is_some_and(|value| !valid_session(value)) {
+            return Err(Error::Invalid(
+                "MCP initialization session header invalid".into(),
+            ));
+        }
+        let result = self.response(operation, response, None).await?;
+        initialization(&result, None)?;
+        let binding = Self { session, ..self };
+        let notification = binding.request(
+            "POST",
+            br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_vec(),
+        )?;
+        Ok((binding, result, notification))
+    }
+
+    /// Constructs the exact request for separate host admission.
+    pub fn request(&self, method: &str, body: Vec<u8>) -> Result<McpHttpRequest> {
+        if !matches!(method, "POST" | "GET" | "DELETE")
+            || self
+                .maximum_bytes
+                .is_some_and(|maximum| body.len() as u64 > u64::from(maximum))
+        {
+            return Err(Error::Invalid("invalid MCP HTTP request".into()));
+        }
+        let mut headers = BTreeMap::from([
+            (
+                "accept".into(),
+                "application/json, text/event-stream".into(),
+            ),
+            ("mcp-protocol-version".into(), PROTOCOL_VERSION.into()),
+        ]);
+        if method == "POST" {
+            headers.insert("content-type".into(), "application/json".into());
+        }
+        if let Some(session) = &self.session {
+            headers.insert("mcp-session-id".into(), session.clone());
+        }
+        Ok(McpHttpRequest {
+            endpoint: self.endpoint.clone(),
+            method: method.into(),
+            headers,
+            body,
+            timeout_ms: self.timeout_ms,
+            maximum_response_bytes: self.maximum_bytes,
+        })
+    }
+
+    async fn response(
+        &self,
+        operation: OperationId,
+        response: McpHttpResponse,
+        context: Option<ToolContext>,
+    ) -> Result<Value> {
+        response::decode(
+            response,
+            operation,
+            self.maximum_bytes,
+            context.map(|context| (self, context)),
+            &self.tools_generation,
+        )
+        .await
+    }
+
+    /// Exchanges an admitted request with optional enclosing task authority.
+    pub async fn rpc(
+        &self,
+        operation: OperationId,
+        method: &str,
+        params: Value,
+        context: Option<ToolContext>,
+    ) -> Result<Value> {
+        super::validate_operation_context(operation, context.as_ref())?;
+        super::services::validate_params(method, &params, None)?;
+        let request = self.request("POST", request(operation, method, params)?)?;
+        let response = self.provider.exchange(operation, request).await?;
+        super::services::validate_result(
+            method,
+            self.response(operation, response, context).await?,
+            None,
+        )
+    }
+}
+
+impl McpToolTransport for HttpMcpTransport {
+    fn tools_generation(&self) -> u64 {
+        self.tools_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn list<'a>(
+        &'a self,
+        cursor: Option<String>,
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::ListToolsResult>> {
+        Box::pin(self.list_tools(OperationId::new(), cursor))
+    }
+    fn callback_policy(&self) -> Option<&McpCallbackPolicy> {
+        self.callbacks.as_ref().map(|(policy, _)| policy)
+    }
+
+    fn call<'a>(
+        &'a self,
+        operation: OperationId,
+        name: &'a str,
+        arguments: Value,
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::CallToolResult>> {
+        Box::pin(async move {
+            super::validate_operation_context(operation, context.as_ref())?;
+            let params = json!({"name":name,"arguments":arguments});
+            super::services::validate_params("tools/call", &params, None)?;
+            let request = self.request("POST", request(operation, "tools/call", params)?)?;
+            let response = self.provider.exchange(operation, request).await?;
+            super::services::tool_result(self.response(operation, response, context).await?)
+        })
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        operation: OperationId,
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<Option<rmcp::model::CallToolResult>>> {
+        Box::pin(async move {
+            super::validate_operation_context(operation, context.as_ref())?;
+            match self.provider.reconcile(operation).await? {
+                Some(response) => {
+                    super::services::tool_result(self.response(operation, response, None).await?)
+                        .map(Some)
+                }
+                None => Ok(None),
+            }
+        })
+    }
+}
+
+fn valid_session(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
+#[cfg(test)]
+mod tests;

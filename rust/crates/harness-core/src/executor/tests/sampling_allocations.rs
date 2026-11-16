@@ -1,5 +1,5 @@
 use super::*;
-use crate::mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
+use acyclic_harness_mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
 
 fn catalog(count: usize) -> Result<ToolRegistry> {
     let template = crate::tool::files::read()?;

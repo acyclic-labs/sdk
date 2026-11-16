@@ -1,0 +1,84 @@
+use acyclic_harness_core::{OperationId, Result, runtime::ToolContext};
+use acyclic_stream::BoxProviderFuture;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub use acyclic_mcp::PROTOCOL_VERSION;
+
+/// Remote tool contract.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, acyclic_harness_core::HeapLayout)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolDefinition {
+    /// Server-local tool name.
+    pub name: String,
+    /// Human-facing title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Server-provided description.
+    #[serde(default)]
+    pub description: String,
+    /// Argument schema.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonSchema"))]
+    pub input_schema: Value,
+    /// Structured output schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonSchema"))]
+    pub output_schema: Option<Value>,
+}
+
+impl From<rmcp::model::Tool> for McpToolDefinition {
+    fn from(tool: rmcp::model::Tool) -> Self {
+        Self {
+            name: tool.name.into_owned(),
+            title: tool.title,
+            description: tool
+                .description
+                .map_or_else(String::new, |value| value.into_owned()),
+            input_schema: Value::Object(std::sync::Arc::unwrap_or_clone(tool.input_schema)),
+            output_schema: tool
+                .output_schema
+                .map(|schema| Value::Object(std::sync::Arc::unwrap_or_clone(schema))),
+        }
+    }
+}
+
+/// Pinned transport for admitted operations and optional task authority.
+pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
+    /// Monotone source revision advanced by catalog changes or notification
+    /// transport invalidation, including a retained terminal failure.
+    fn tools_generation(&self) -> u64 {
+        0
+    }
+    /// Discover one page after a source event.
+    fn list<'a>(
+        &'a self,
+        _cursor: Option<String>,
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::ListToolsResult>> {
+        Box::pin(async {
+            Err(acyclic_harness_core::Error::Unsupported(
+                "MCP catalog discovery is unavailable".into(),
+            ))
+        })
+    }
+    /// Installed callback policy.
+    fn callback_policy(&self) -> Option<&super::callbacks::McpCallbackPolicy> {
+        None
+    }
+
+    /// Calls one admitted operation with its task context when available.
+    fn call<'a>(
+        &'a self,
+        operation: OperationId,
+        name: &'a str,
+        arguments: Value,
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::CallToolResult>>;
+
+    /// Queries the exact prior operation without redispatching it.
+    fn reconcile<'a>(
+        &'a self,
+        operation: OperationId,
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<Option<rmcp::model::CallToolResult>>>;
+}

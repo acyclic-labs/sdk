@@ -2,10 +2,7 @@
 //! Both instrumented modules below are production source.
 #![cfg(loom)]
 
-pub(crate) mod mcp {
-    pub(crate) use crate::sync;
-}
-#[path = "../src/mcp/install/cancellation.rs"]
+#[path = "../../harness-mcp/src/install/cancellation.rs"]
 mod cancellation;
 #[path = "../../mcp/src/codec.rs"]
 mod codec;

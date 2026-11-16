@@ -1,0 +1,397 @@
+use acyclic_harness_core::sync::Arc;
+use acyclic_harness_core::{Error, OperationId, Result, mcp::McpToolTransport, runtime::ToolContext};
+use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree, run_blocking_io};
+use acyclic_stream::BoxProviderFuture;
+use futures::StreamExt as _;
+use rmcp::{
+    RoleClient, ServiceExt as _,
+    model::{
+        CallToolRequest, CallToolRequestParams, ClientConfig, ClientJsonRpcMessage, ClientRequest,
+        Implementation, ProtocolVersion, ServerJsonRpcMessage, ServerResult,
+    },
+    service::{PeerRequestOptions, RunningService, RunningServiceCancellationToken},
+};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::codec::{FramedRead, FramedWrite};
+
+use acyclic_mcp::{BoundedCodec, FrameBytePolicy};
+pub use acyclic_mcp::{
+    JsonLineReader, ServeError, Settled, ToolCall, ToolProvider, ToolServer, Wake,
+};
+
+/// One initialized, bounded MCP connection and its owned native process tree.
+pub struct StdioMcpTransport {
+    service: RunningService<RoleClient, ClientConfig>,
+    timeout: Option<Duration>,
+    maximum_bytes: Arc<FrameBytePolicy>,
+    tools_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    _process: Option<ProcessOwner>,
+}
+
+impl StdioMcpTransport {
+    /// Selects the independent tool-exchange bounds after catalog discovery.
+    pub fn with_tool_limits(
+        mut self,
+        maximum_bytes: impl Into<Option<u32>>,
+        timeout_ms: impl Into<Option<u64>>,
+    ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
+        let timeout_ms = timeout_ms.into();
+        validate_bounds(maximum_bytes, timeout_ms)?;
+        self.maximum_bytes.set(maximum_bytes);
+        self.timeout = timeout_ms.map(Duration::from_millis);
+        Ok(self)
+    }
+
+    /// Lists one typed catalog page without an intermediate JSON representation.
+    pub async fn list_tools(
+        &self,
+        operation: OperationId,
+        cursor: Option<String>,
+    ) -> Result<rmcp::model::ListToolsResult> {
+        let request = rmcp::model::ListToolsRequest::with_param(
+            rmcp::model::PaginatedRequestParams::default().with_cursor(cursor),
+        );
+        match self
+            .exchange(
+                operation,
+                "tools/list",
+                ClientRequest::ListToolsRequest(request),
+            )
+            .await?
+        {
+            ServerResult::ListToolsResult(result) => Ok(result),
+            _ => Err(Error::Invalid(
+                "MCP tools/list returned another result type".into(),
+            )),
+        }
+    }
+
+    /// Starts one host-selected executable and keeps it for the connection's lifetime.
+    /// Arguments, environment, workspace and stderr are supplied through `command`.
+    /// Piped stderr is refused before launch: this transport consumes only stdout.
+    /// A caller-owned stderr descriptor must retain its own live consumer.
+    /// A grant must come from authenticated host approval, never server configuration
+    /// or tool arguments. `None` retains ordinary native execution. A supplied grant
+    /// is enforced by the original process launch owner, with no unrestricted retry.
+    /// Confined commands require an explicit environment and workspace cwd; stderr
+    /// must also satisfy that owner's descriptor policy (for example, null).
+    pub async fn spawn(
+        mut command: ProcessCommand,
+        grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
+        maximum_bytes: impl Into<Option<u32>>,
+        timeout_ms: impl Into<Option<u64>>,
+    ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
+        let timeout_ms = timeout_ms.into();
+        validate_bounds(maximum_bytes, timeout_ms)?;
+        if command.get_stderr().is_some_and(ProcessStdio::is_piped) {
+            return Err(Error::Invalid(
+                "MCP spawn rejected piped stderr: no stderr reader; recovery: command.stderr(ProcessStdio::null())".into(),
+            ));
+        }
+        acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+        let timeout = timeout_ms.map(Duration::from_millis);
+        let runtime = tokio::runtime::Handle::current();
+        super::super::deadline::until(super::super::deadline::after(timeout)?, async move {
+            let mut process = run_blocking_io(
+                move || {
+                    command
+                        .stdin(ProcessStdio::piped())
+                        .stdout(ProcessStdio::piped());
+                    let tree = match grant {
+                        Some(grant) => ProcessTree::spawn_granted(command, &grant, None),
+                        None => ProcessTree::spawn(&mut command),
+                    };
+                    tree.map(|tree| ProcessOwner {
+                        tree: std::sync::Mutex::new(Some(tree)),
+                        runtime,
+                    })
+                },
+                None,
+            )
+            .map_err(Error::process_io)?
+            .await
+            .map_err(Error::process_io)?
+            .map_err(Error::process_io)?;
+            let tree = process
+                .tree
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_mut()
+                .ok_or_else(|| Error::Invalid("MCP child missing".into()))?;
+            let input = tree
+                .take_stdin()
+                .ok_or_else(|| Error::Invalid("MCP stdin pipe missing".into()))?;
+            #[cfg(unix)]
+            let output = tree
+                .take_stdout()
+                .ok_or_else(|| Error::Invalid("MCP stdout pipe missing".into()))?;
+            #[cfg(unix)]
+            let input = tokio::process::ChildStdin::from_std(input).map_err(Error::process_io)?;
+            #[cfg(windows)]
+            let input = acyclic_native_runtime::ProcessPipeWriter::from_stdin(input)
+                .map_err(Error::process_io)?;
+            #[cfg(unix)]
+            let output =
+                tokio::process::ChildStdout::from_std(output).map_err(Error::process_io)?;
+            #[cfg(windows)]
+            let output = acyclic_native_runtime::ProcessPipeReader::take_stdout(tree)
+                .map_err(Error::process_io)?;
+            Self::bind(output, input, maximum_bytes, timeout, Some(process)).await
+        })
+        .await
+        .map_err(|_| {
+            Error::Process(acyclic_harness_core::ProcessError::Timeout {
+                exit_code: None,
+                message: "MCP initialization deadline elapsed".into(),
+            })
+        })?
+    }
+
+    async fn bind<R, W>(
+        read: R,
+        write: W,
+        maximum_bytes: Option<u32>,
+        timeout: Option<Duration>,
+        process: Option<ProcessOwner>,
+    ) -> Result<Self>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let maximum_bytes = Arc::new(FrameBytePolicy::new(maximum_bytes));
+        let tools_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let changed = tools_generation.clone();
+        let read = FramedRead::new(
+            read,
+            BoundedCodec::<ServerJsonRpcMessage>::new(Arc::clone(&maximum_bytes)),
+        )
+        .take_while(|message| std::future::ready(message.is_ok()))
+        .filter_map(|message| std::future::ready(message.ok()))
+        .inspect(move |message| {
+            if matches!(message, ServerJsonRpcMessage::Notification(notification)
+                if matches!(notification.notification, rmcp::model::ServerNotification::ToolListChangedNotification(_))) {
+                changed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        });
+        let write = FramedWrite::new(
+            write,
+            BoundedCodec::<ClientJsonRpcMessage>::new(Arc::clone(&maximum_bytes)),
+        );
+        let client = ClientConfig::new(
+            Default::default(),
+            Implementation::new("acyclic-harness", acyclic_harness_core::build_metadata::PACKAGE_VERSION),
+        )
+        .with_protocol_version(ProtocolVersion::V_2025_11_25);
+        let service = client
+            .serve((write, read))
+            .await
+            .map_err(|error| Error::Invalid(format!("MCP initialization: {error}")))?;
+        if service
+            .peer_info()
+            .is_none_or(|info| info.protocol_version != ProtocolVersion::V_2025_11_25)
+        {
+            return Err(Error::Unsupported(
+                "MCP protocol version differs from the selected binding".into(),
+            ));
+        }
+        Ok(Self {
+            service,
+            timeout,
+            maximum_bytes,
+            tools_generation,
+            _process: process,
+        })
+    }
+
+    /// Exchanges a supported service request without reconnecting or retrying it.
+    pub async fn rpc(
+        &self,
+        operation: OperationId,
+        method: &str,
+        params: Value,
+        context: Option<ToolContext>,
+    ) -> Result<Value> {
+        crate::validate_operation_context(operation, context.as_ref())?;
+        let request = requests::request(method, params)?;
+        let result = self.exchange(operation, method, request).await?;
+        requests::result(method, result)
+    }
+
+    async fn exchange(
+        &self,
+        operation: OperationId,
+        method: &str,
+        request: ClientRequest,
+    ) -> Result<ServerResult> {
+        let deadline = super::super::deadline::after(self.timeout)?;
+        let mut cancellation = CancelOnDrop {
+            service: Some(self.service.cancellation_token()),
+            process: self._process.as_ref(),
+        };
+        let options = self.timeout.map_or_else(
+            PeerRequestOptions::no_options,
+            PeerRequestOptions::with_timeout,
+        );
+        let mut handle = super::super::deadline::until(
+            deadline,
+            self.service.send_request_with_option(request, options),
+        )
+        .await
+        .map_err(|_| Error::Indeterminate(operation))?
+        .map_err(|_| Error::Indeterminate(operation))?;
+        handle.options.timeout = deadline
+            .map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now()));
+        // rmcp sends notifications/cancelled and retires its pending responder.
+        // If notification delivery stalls, close the connection within a bounded grace period.
+        let cleanup_deadline = deadline
+            .zip(self.timeout)
+            .map(|(deadline, timeout)| {
+                deadline
+                    .checked_add(timeout.min(Duration::from_millis(100)))
+                    .ok_or_else(|| {
+                        Error::Invalid("MCP cleanup deadline exceeds the platform clock".into())
+                    })
+            })
+            .transpose()?;
+        let result = super::super::deadline::until(cleanup_deadline, handle.await_response())
+            .await
+            .map_err(|_| Error::Indeterminate(operation))?;
+        if result.is_ok()
+            || matches!(
+                &result,
+                Err(rmcp::ServiceError::Timeout { .. } | rmcp::ServiceError::McpError(_))
+            )
+        {
+            cancellation.service.take();
+        }
+        result.map_err(|error| match error {
+            rmcp::ServiceError::McpError(error) => Error::Invalid(format!("MCP {method}: {error}")),
+            _ => Error::Indeterminate(operation),
+        })
+    }
+}
+
+impl McpToolTransport for StdioMcpTransport {
+    fn tools_generation(&self) -> u64 {
+        self.tools_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn list<'a>(
+        &'a self,
+        cursor: Option<String>,
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::ListToolsResult>> {
+        Box::pin(self.list_tools(OperationId::new(), cursor))
+    }
+    fn call<'a>(
+        &'a self,
+        operation: OperationId,
+        name: &'a str,
+        arguments: Value,
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::CallToolResult>> {
+        Box::pin(async move {
+            crate::validate_operation_context(operation, context.as_ref())?;
+            let Value::Object(arguments) = arguments else {
+                return Err(Error::Invalid(
+                    "MCP tool arguments must be an object".into(),
+                ));
+            };
+            let request = CallToolRequest::new(
+                CallToolRequestParams::new(name.to_owned()).with_arguments(arguments),
+            );
+            match self
+                .exchange(
+                    operation,
+                    "tools/call",
+                    ClientRequest::CallToolRequest(request),
+                )
+                .await?
+            {
+                ServerResult::CallToolResult(result) => Ok(result),
+                _ => Err(Error::Invalid(
+                    "MCP tools/call returned another result type".into(),
+                )),
+            }
+        })
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        operation: OperationId,
+        context: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<Option<rmcp::model::CallToolResult>>> {
+        Box::pin(async move {
+            crate::validate_operation_context(operation, context.as_ref())?;
+            // A protocol request ID is not a durable server receipt.
+            Ok(None)
+        })
+    }
+}
+
+struct CancelOnDrop<'a> {
+    service: Option<RunningServiceCancellationToken>,
+    process: Option<&'a ProcessOwner>,
+}
+impl Drop for CancelOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(token) = self.service.take() {
+            token.cancel();
+            if let Some(process) = self.process {
+                process.close();
+            }
+        }
+    }
+}
+
+struct ProcessOwner {
+    tree: std::sync::Mutex<Option<ProcessTree>>,
+    runtime: tokio::runtime::Handle,
+}
+impl ProcessOwner {
+    fn close(&self) {
+        let tree = self
+            .tree
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(tree) = tree {
+            drop_on_worker(&self.runtime, tree);
+        }
+    }
+}
+impl Drop for ProcessOwner {
+    fn drop(&mut self) {
+        if let Some(tree) = self
+            .tree
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            drop_on_worker(&self.runtime, tree);
+        }
+    }
+}
+
+fn drop_on_worker<T: Send + 'static>(runtime: &tokio::runtime::Handle, value: T) {
+    drop(runtime.spawn_blocking(move || drop(value)));
+}
+
+mod requests;
+
+fn validate_bounds(maximum_bytes: Option<u32>, timeout_ms: Option<u64>) -> Result<()> {
+    if maximum_bytes == Some(0) || timeout_ms == Some(0) {
+        return Err(Error::Invalid(
+            "MCP stdio requires positive configured allowances".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

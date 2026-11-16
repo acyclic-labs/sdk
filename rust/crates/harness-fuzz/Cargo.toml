@@ -144,7 +144,7 @@ graphcoder = ["dep:acyclic-plugin", "acyclic-plugin/test-support"]
 code-mode = ["core", "dep:tokio"]
 native-arguments = ["core"]
 native-skill-records = ["core"]
-native-settings = ["core", "dep:tempfile"]
+native-settings = ["core", "dep:tempfile", "dep:acyclic-harness-mcp"]
 client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
 native-input = ["dep:acyclic-plugin", "dep:acyclic-harness", "dep:tempfile"]
 runtime = ["bounded-json", "native-settings", "graphcoder", "command-result", "native-input", "acyclic-harness/test-support", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
@@ -156,6 +156,7 @@ acyclic-mcp = { path = "../mcp", features = ["stdio"], optional = true }
 ed25519-dalek = { version = "3.0.0", optional = true }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"], optional = true }
 acyclic-harness-core = { path = "../harness-core", default-features = false, features = ["test-support"], optional = true }
+acyclic-harness-mcp = { path = "../harness-mcp", features = ["test-support"], optional = true }
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
 blake3.workspace = true

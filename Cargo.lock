@@ -545,6 +545,7 @@ dependencies = [
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-harness-devices",
+ "acyclic-harness-mcp",
  "acyclic-harness-search",
  "acyclic-harness-tui",
  "acyclic-host-platform",
@@ -684,9 +685,9 @@ dependencies = [
  "acyclic-differential",
  "acyclic-fs",
  "acyclic-harness-devices",
+ "acyclic-harness-mcp",
  "acyclic-host-platform",
  "acyclic-machines",
- "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -793,6 +794,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-harness-mcp",
  "acyclic-mcp",
  "acyclic-native-runtime",
  "acyclic-plugin",
@@ -822,6 +824,31 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "which",
+]
+
+[[package]]
+name = "acyclic-harness-mcp"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-harness-core",
+ "acyclic-mcp",
+ "acyclic-native-runtime",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "base64 0.23.1",
+ "bytes",
+ "futures",
+ "proptest",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tsify",
+ "uuid",
 ]
 
 [[package]]

@@ -21,6 +21,8 @@ acyclic_test_support::counting_allocator!();
 // Everything below the client and host compositions lives in
 // `acyclic-harness-core`; its public items keep their paths here.
 pub use acyclic_harness_core::*;
+/// MCP clients over the ordinary tool, execution and interaction owners.
+pub use acyclic_harness_mcp as mcp;
 #[cfg(not(target_arch = "wasm32"))]
 /// Attached devices: a user's machine runs the `shell` commands agents dispatch to it.
 pub use acyclic_harness_devices as devices;
