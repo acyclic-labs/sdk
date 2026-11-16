@@ -16,6 +16,7 @@ use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
 mod clocks;
 mod compaction;
+mod configuration;
 mod containment;
 mod coverage;
 mod digest;

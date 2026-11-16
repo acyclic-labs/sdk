@@ -20,6 +20,11 @@ pub(super) fn gather(
     let task_cwd = cwd.map(|_| Path::new("."));
     let mut facts: crate::context::EnvironmentFacts =
         crate::native_environment::checkout(task_cwd, now_unix_millis, platform).into();
+    if cwd.is_some() {
+        // The seed prompt promises private scratch wherever a bound checkout
+        // exists; the fact does not depend on native process discovery.
+        facts.scratch = Some(SCRATCH.into());
+    }
     if let (Some(cwd), crate::native_environment::PlatformPolicy::Native) = (cwd, platform) {
         let environment =
             crate::native_environment::tool_environment(acyclic_native_runtime::platform_shell)
@@ -46,7 +51,6 @@ pub(super) fn gather(
                 .collect::<Vec<_>>()
                 .join(", "),
         );
-        facts.scratch = Some(SCRATCH.into());
     }
     Ok(facts)
 }
