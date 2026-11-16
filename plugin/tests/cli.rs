@@ -45,6 +45,23 @@ async fn physical_private_state_needs_no_global_mount_registry() {
     model.close().await;
 }
 
+#[test]
+fn graphcoder_version_flags_name_the_graphcoder_product() {
+    for flag in ["--version", "-V"] {
+        let output = std::process::Command::new(acyclic_test_support::cargo_binary!("graphcoder"))
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "graphcoder {flag}: {output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            stdout.trim().split_once(' ').map(|(product, _)| product),
+            Some("graphcoder"),
+            "graphcoder {flag}: {stdout:?}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn explicit_schema_links_are_refused_before_model_dispatch() {
