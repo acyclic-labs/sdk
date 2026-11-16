@@ -226,6 +226,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let config = initialization.config;
         validate_volume_capabilities(config, self.inner.capabilities)?;
         let proven_at = self.inner.objects.collection_sweeps();
+        let operation_id = creation.as_ref().map(|creation| creation.operation_id);
         let generation_root = self
             .initial_generation_root(
                 volume_id,
@@ -235,7 +236,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cancellation,
             )
             .await?;
-        let operation_id = creation.map(|creation| creation.operation_id);
         let proof = self
             .publication_proof(generation_root, proven_at, volume_id, config, accounting)
             .await?;
