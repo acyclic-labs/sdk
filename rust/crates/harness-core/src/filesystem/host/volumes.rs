@@ -112,8 +112,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let forked = io.sdk(
             workspace
                 .with_stable_policy(io, io.cancellation(), || async {
-                    super::volume_access::authorize_fork(&workspace, grant, pinned.id(), io)
-                        .await?;
+                    super::volume_access::authorize_fork(
+                        &workspace,
+                        grant,
+                        pinned.id(),
+                        io,
+                        host.access_now()?,
+                    )
+                    .await?;
                     let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
                     let options = match paths {
                         Some(paths) => options.inherit_paths(paths),
@@ -213,6 +219,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map(|receipt| receipt.value)
             .map_err(|failure| map_error(failure.error))?;
         let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let now = self.access_now()?;
         let source_access = super::volume_access::compile(
             &source_workspace,
             source_grant,
@@ -223,6 +230,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 acyclic_fs::access::Action::List,
             ],
             &io,
+            now,
         )
         .await?;
         let destination_access = super::volume_access::compile(
@@ -232,6 +240,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             VolumeOperation::Write,
             &[acyclic_fs::access::Action::MergeInto],
             &io,
+            now,
         )
         .await?;
         let plan = source_workspace

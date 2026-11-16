@@ -88,6 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let root = self.open(&reference, Some(io)).await?;
             let opened = self.select_current_workspace(&root, io).await?;
             let payload = change_payload(grant.policy_scope(), volume, io)?;
+            let now = self.access_now()?;
             let root_view = if root.id() != opened.id() {
                 Some(
                     access::access_view(
@@ -97,6 +98,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         payload,
                         access.ceiling,
                         io,
+                        now,
                     )
                     .await?,
                 )
@@ -110,6 +112,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 payload,
                 access.ceiling,
                 io,
+                now,
             )
             .await?;
             // Authorize the complete batch before inspecting any destination.
@@ -186,6 +189,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 return Err(io.invalid("unsupported conditional publication receipt"));
             }
             let payload = change_payload(grant.policy_scope(), volume, io)?;
+            let now = self.access_now()?;
             let view = access::access_view(
                 &opened,
                 grant.policy_scope(),
@@ -193,6 +197,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 payload,
                 access.ceiling,
                 io,
+                now,
             )
             .await?;
             let root_view = if root.id() != opened.id() {
@@ -204,6 +209,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         payload,
                         access.ceiling,
                         io,
+                        now,
                     )
                     .await?,
                 )
@@ -398,10 +404,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None => (self.select_current_workspace(&root, io).await?, None),
             };
             let payload = change_payload(grant.policy_scope(), volume, io)?;
+            let now = self.access_now()?;
             let root_view = if opened.id() != root.id() || needs_binding {
                 Some(
-                    access::access_view(&root, grant.policy_scope(), None, payload, ceiling, io)
-                        .await?,
+                    access::access_view(
+                        &root,
+                        grant.policy_scope(),
+                        None,
+                        payload,
+                        ceiling,
+                        io,
+                        now,
+                    )
+                    .await?,
                 )
             } else {
                 None
@@ -432,9 +447,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 None
             };
-            let view =
-                access::access_view(&opened, grant.policy_scope(), None, payload, ceiling, io)
-                    .await?;
+            let view = access::access_view(
+                &opened,
+                grant.policy_scope(),
+                None,
+                payload,
+                ceiling,
+                io,
+                now,
+            )
+            .await?;
             for change in changes {
                 let action = change.action();
                 if let Some(check) = check {

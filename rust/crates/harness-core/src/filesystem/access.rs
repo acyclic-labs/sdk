@@ -26,6 +26,7 @@ pub(in crate::filesystem) async fn selected_data_access<
     scope: &Scope,
     ceiling: Option<&crate::Capabilities>,
     io: &'a PreparationIo,
+    now: u64,
 ) -> Result<Option<(Workspace<A, O>, CompiledAccess<'a>)>> {
     if generation.workspace_id() == root.id() {
         return Ok(None);
@@ -40,6 +41,7 @@ pub(in crate::filesystem) async fn selected_data_access<
         capability_payload(label, VolumeOperation::Read, io)?,
         ceiling,
         io,
+        now,
     )
     .await?;
     Ok(Some((workspace, view)))
@@ -235,6 +237,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             capability_payload(label, VolumeOperation::Read, io)?,
             ceiling,
             io,
+            self.access_now()?,
         )
         .await?;
         self.require(&compiled.0, Action::Read, reference.path(), io)?;
@@ -275,6 +278,7 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
     payload: &[u8],
     ceiling: Option<&crate::Capabilities>,
     io: &'a PreparationIo,
+    now: u64,
 ) -> Result<CompiledAccess<'a>> {
     let reference = workspace.name().as_str();
     bound_access_view(
@@ -285,6 +289,7 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
         payload,
         ceiling,
         io,
+        now,
     )
     .await
 }
@@ -302,6 +307,7 @@ pub(crate) async fn bound_access_view<'a, A: AsyncAuthorityStore, O: AsyncObject
     payload: &[u8],
     ceiling: Option<&crate::Capabilities>,
     io: &'a PreparationIo,
+    now: u64,
 ) -> Result<CompiledAccess<'a>> {
     crate::conversation::BoundedContentFuture::new(Some(io), || async move {
         let capability = intersect_capabilities(payload, ceiling, io)?;
@@ -333,7 +339,7 @@ pub(crate) async fn bound_access_view<'a, A: AsyncAuthorityStore, O: AsyncObject
                         facts: acyclic_fs::access::AuthenticatedFacts::IdentityAndRoles,
                         generation,
                         context: Context {
-                            now: access_now()?,
+                            now,
                             approvals: 0,
                         },
                     },

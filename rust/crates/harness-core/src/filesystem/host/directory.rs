@@ -175,6 +175,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             scope.capabilities(),
             &mut Some(&mut io.history_io()),
         )?;
+        let now = self.access_now()?;
         let view = crate::filesystem::access::access_view(
             &workspace,
             scope,
@@ -182,20 +183,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             super::super::access::capability_payload(label, VolumeOperation::Read, io)?,
             request.ceiling,
             io,
+            now,
         )
         .await?;
         guard().await?;
-        super::super::access::require_at(&view.0, Action::List, request.path, io, self.access_now()?)?;
+        super::super::access::require_at(&view.0, Action::List, request.path, io, now)?;
         let data_access = super::super::access::selected_data_access(
             &workspace,
             generation,
             scope,
             request.ceiling,
             io,
+            now,
         )
         .await?;
         if let Some((_, view)) = &data_access {
-            super::super::access::require_at(&view.0, Action::List, request.path, io, self.access_now()?)?;
+            super::super::access::require_at(&view.0, Action::List, request.path, io, now)?;
         }
         Ok(DirectorySelection {
             workspace,

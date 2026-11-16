@@ -76,7 +76,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(label) => access::capability_payload(Some(label), VolumeOperation::Write, io)?,
                 None => access::whole_volume_payload(acyclic_fs::access::ActionSet::Owner)?,
             };
-            let view = access::access_view(&workspace, scope, None, payload, None, io).await?;
+            let view = access::access_view(
+                &workspace,
+                scope,
+                None,
+                payload,
+                None,
+                io,
+                self.access_now()?,
+            )
+            .await?;
             // The access view selects the policy revision once. If another
             // admission repaired it meanwhile, use that same revision for the
             // comparison and transaction instead of mixing two heads.
