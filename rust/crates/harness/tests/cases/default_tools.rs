@@ -8,7 +8,7 @@ use acyclic_harness::{
     tools::parse_command,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::sync::Arc;
 
 #[path = "../default_tools/command.rs"]

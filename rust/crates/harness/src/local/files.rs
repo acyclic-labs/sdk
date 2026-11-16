@@ -227,6 +227,21 @@ impl LocalHarness {
         ))
     }
 
+    /// Publisher of this harness's prompt inputs on its private journal volume.
+    #[cfg(test)]
+    pub(super) fn input_publisher_with_limit(
+        &self,
+        maximum_bytes: impl Into<Option<u64>>,
+    ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {
+        FilesystemContentPublisher::new(
+            self.files.clone(),
+            &self.journal,
+            &self.verifier,
+            &self.signed,
+            maximum_bytes,
+            None,
+        )
+    }
 }
 
 #[cfg(any(test, not(target_arch = "wasm32")))]

@@ -8,7 +8,7 @@ use super::{
     scenario::Scenario,
     scenario_data,
 };
-use acyclic_stream::{MemoryStream, StreamProvider, grpc::Client};
+use acyclic_stream::{MemoryStream, grpc::Client};
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
