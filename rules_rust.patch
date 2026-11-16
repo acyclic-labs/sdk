@@ -1,6 +1,6 @@
 diff -ruN a/cargo/private/cargo_build_script.bzl b/cargo/private/cargo_build_script.bzl
---- a/cargo/private/cargo_build_script.bzl	2026-11-16 09:34:55.478526830 +0000
-+++ b/cargo/private/cargo_build_script.bzl	2026-11-16 09:34:55.492063488 +0000
+--- a/cargo/private/cargo_build_script.bzl
++++ b/cargo/private/cargo_build_script.bzl
 @@ -534,11 +534,9 @@
          cc_c_args, cc_cxx_args, cc_env = get_cc_compile_args_and_env(cc_toolchain, feature_configuration)
          include = cc_env.get("INCLUDE")
@@ -16,6 +16,45 @@ diff -ruN a/cargo/private/cargo_build_script.bzl b/cargo/private/cargo_build_scr
  
          toolchain_tools.append(cc_toolchain.all_files)
  
+@@ -569,14 +567,15 @@
+         # that doing so is more likely to hurt than help. If you need to change
+         # ARFLAGS, make changes to cc-rs.
+ 
+-    # Inform build scripts of rustc flags
++    # Inform build scripts of rustc flags, the toolchain's own extra flags included, as Cargo does
++    # with RUSTFLAGS: a build script then sees the target features rustc compiles with (crt-static).
+     # https://github.com/rust-lang/cargo/issues/9600
+     env["CARGO_ENCODED_RUSTFLAGS"] = "\\x1f".join([
+         # Allow build scripts to locate the generated sysroot
+         "--sysroot=${{pwd}}/{}".format(toolchain.sysroot),
+         # Keep build scripts from baking the exec root into their output
+         "--remap-path-prefix=${pwd}=.",
+-    ] + ctx.attr.rustc_flags)
++    ] + toolchain.extra_rustc_flags + ctx.attr.rustc_flags)
+ 
+     for f in ctx.attr.crate_features:
+         env["CARGO_FEATURE_" + f.upper().replace("-", "_")] = "1"
+diff -ruN a/cargo/private/cargo_build_script_runner/bin.rs b/cargo/private/cargo_build_script_runner/bin.rs
+--- a/cargo/private/cargo_build_script_runner/bin.rs
++++ b/cargo/private/cargo_build_script_runner/bin.rs
+@@ -528,8 +528,16 @@
+ }
+ 
+ fn get_target_env_vars<P: AsRef<Path>>(rustc: &P) -> Result<BTreeMap<String, String>, String> {
+-    // As done by Cargo when constructing a cargo::core::compiler::build_context::target_info::TargetInfo.
++    // As done by Cargo when constructing a cargo::core::compiler::build_context::target_info::TargetInfo:
++    // the cfgs reflect the rustc flags the crate compiles with (CARGO_CFG_TARGET_FEATURE has
++    // crt-static under -Ctarget-feature=+crt-static). The sysroot and path remapping name the
++    // exec root, and neither changes a cfg.
++    let flags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
++    let flags = flags
++        .split("\\x1f")
++        .filter(|flag| !flag.is_empty() && !flag.starts_with("--sysroot=") && !flag.starts_with("--remap-path-prefix="));
+     let output = Command::new(rustc.as_ref())
++        .args(flags)
+         .arg("--print=cfg")
+         .arg(format!(
+             "--target={}",
 diff -ruN a/rust/defs.bzl b/rust/defs.bzl
 --- a/rust/defs.bzl
 +++ b/rust/defs.bzl
