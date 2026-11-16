@@ -350,6 +350,21 @@ impl Formatter for Format<'_, '_, '_> {
         })
     }
 }
+fn output_prefix(bytes: &&mut Vec<u8>) -> usize {
+    bytes.len()
+}
+
+fn finish_index(writer: &Writer<'_, '_, '_, '_, '_>, prefix: usize) -> Option<Result<()>> {
+    writer
+        .output
+        .as_ref()
+        .map(|output| writer.index.finish(&output[..prefix]))
+}
+
+fn scope_error(scope: &mut Scope<'_>, error: serde_json::Error) -> Error {
+    scope.error(error)
+}
+
 fn write<T: Serialize + ?Sized>(
     value: &T,
     scope: &mut Scope<'_>,
@@ -362,7 +377,7 @@ fn write<T: Serialize + ?Sized>(
     let admitted_items = scope.lexical.items;
     scope.lexical = admission::Lexical::default();
     let state = RefCell::new(&mut *scope);
-    let prefix = output.as_ref().map_or(0, |bytes| bytes.len());
+    let prefix = output.as_ref().map_or(0, output_prefix);
     let mut writer = Writer {
         state: &state,
         admitted_items,
@@ -387,15 +402,14 @@ fn write<T: Serialize + ?Sized>(
     let written = writer.written;
     // Never construct an index diagnostic after the original typed denial.
     let indexed = if result.is_ok() && state.borrow().failed.is_none() {
-        writer
-            .output
-            .as_ref()
-            .map(|output| writer.index.finish(&output[..prefix]))
+        finish_index(&writer, prefix)
     } else {
         None
     };
     drop(writer);
-    result.map_err(|error| scope.error(error))?;
+    if let Err(error) = result {
+        return Err(scope_error(scope, error));
+    }
     if let Some(error) = scope.failed.take() {
         return Err(error);
     }
