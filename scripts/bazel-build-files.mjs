@@ -30,6 +30,7 @@ const NOT_LIB = ["tests/**", "benches/**", "examples/**"];
 const CASE_LIMIT_SECONDS = 10;
 const LOADS = {
   cargo_build_script: "@rules_rust//cargo:defs.bzl",
+  extract_cargo_lints: "@rules_rust//cargo:defs.bzl",
   isolated_test: "//rust/crates/test-runner:isolated_test.bzl",
   rust_binary: "@rules_rust//rust:defs.bzl",
   rust_library: "@rules_rust//rust:defs.bzl",
@@ -39,30 +40,33 @@ const LOADS = {
 };
 const q = JSON.stringify;
 
-// The flat `key = value` entries of each TOML table: the profile, config and toolchain keys read here.
-function tables(file) {
-  const out = { "": {} };
-  let table = out[""];
-  for (const raw of fs.readFileSync(path.join(root, file), "utf8").split("\n")) {
-    const line = raw.trim();
-    const header = /^\[([^[\]]+)\]$/.exec(line);
-    if (header) table = out[header[1]] ??= {};
-    const entry = /^([\w.'"-]+)\s*=\s*(.+)$/.exec(line);
-    if (entry) table[entry[1]] = entry[2];
-  }
-  return out;
+// A TOML file, parsed by a real TOML parser (Python's tomllib): strings, arrays and inline tables
+// keep their exact values, whatever quotes or nesting they use.
+const parsed = new Map();
+function toml(file) {
+  if (!parsed.has(file)) parsed.set(file, JSON.parse(execFileSync("python3", ["-I", "-c", "import json, sys, tomllib; json.dump(tomllib.load(open(sys.argv[1], 'rb')), sys.stdout)", path.join(root, file)], { encoding: "utf8" })));
+  return parsed.get(file);
 }
-const value = (table, key) => (table?.[key] === undefined ? undefined : JSON.parse(table[key]));
+
+// Cargo's [lints.rust] check-cfg entries. rules_rust's extract_cargo_lints carries the lint
+// levels into its lint files but not these, so they are emitted as rustc flags on every target
+// of the package. A member that inherits its lints reads the workspace table.
+function checkCfgFlags(manifest, features) {
+  const own = toml(manifest);
+  const table = own.lints?.workspace === true ? toml("Cargo.toml").workspace?.lints?.rust ?? {} : own.lints?.rust ?? {};
+  // Cargo itself always passes these two for a manifest build, before the [lints.rust] table: the
+  // package's declared features are the feature values it expects.
+  return ["--check-cfg=cfg(docsrs,test)", `--check-cfg=cfg(feature, values(${features.map(f => q(f)).join(", ")}))`,
+    ...Object.values(table).flatMap(lint => lint["check-cfg"] ?? []).map(cfg => `--check-cfg=${cfg}`)];
+}
 
 // .cargo/config.toml's [env], as Cargo gives it to every compile and build script. A relative
 // value is resolved against the repository root, which is the execution root of a Bazel action.
-const configEnv = Object.fromEntries(Object.entries(tables(".cargo/config.toml").env ?? {}).map(([name, raw]) => {
-  const table = /^\{(.*)\}$/.exec(raw.trim());
-  if (!table) return [name, JSON.parse(raw)];
-  const fields = Object.fromEntries([...table[1].matchAll(/(\w+)\s*=\s*("[^"]*"|true|false)/g)].map(([, key, v]) => [key, JSON.parse(v)]));
-  const relative = path.posix.normalize(fields.value);
+const configEnv = Object.fromEntries(Object.entries(toml(".cargo/config.toml").env ?? {}).map(([name, entry]) => {
+  if (typeof entry === "string") return [name, entry];
+  const relative = path.posix.normalize(entry.value);
   // rules_rust's process wrapper replaces ${pwd} with the execution root; $$ escapes make expansion.
-  return [name, fields.relative ? (relative === "." ? "$${pwd}" : `$\${pwd}/${relative}`) : fields.value];
+  return [name, entry.relative ? (relative === "." ? "$${pwd}" : `$\${pwd}/${relative}`) : entry.value];
 }));
 
 // Every target builds with every feature on, as `cargo test --all-features` does. crate_universe
@@ -267,9 +271,9 @@ const exportsRule = owner => (exported.has(owner) ? `\nexports_files(${list([...
     ["visibility", q(["//visibility:public"])],
   ])}`).join("");
 
-const cargo = tables("Cargo.toml");
-const dev = cargo["profile.dev"] ?? {};
-const packageOpt = name => value(cargo[`profile.dev.package.${name}`], "opt-level");
+const cargo = toml("Cargo.toml");
+const dev = cargo.profile?.dev ?? {};
+const packageOpt = name => dev.package?.[name]?.["opt-level"];
 
 // One value per triple, rendered once when every triple agrees.
 function perTriple(values, render) {
@@ -321,6 +325,9 @@ function edges(p, kinds) {
 
 function buildFile(p) {
   const lib = libOf(p), script = p.targets.find(t => t.kind.includes("custom-build"));
+  const manifest = path.relative(root, p.manifest_path).replaceAll("\\", "/");
+  const inheritedLints = toml(manifest).lints?.workspace === true;
+  const checkCfg = checkCfgFlags(manifest, Object.keys(p.features).sort());
   const features = nodes.map(byId => [...(byId.get(p.id)?.features ?? [])].sort());
   // A source path relative to the package, or the label of a file another package owns.
   const local = file => {
@@ -346,7 +353,8 @@ function buildFile(p) {
     ["version", q(p.version)],
     ["crate_features", "FEATURES"],
     ["rustc_env", "PACKAGE_ENV"],
-    ["rustc_flags", opt === undefined ? undefined : list([`-Copt-level=${opt}`])],
+    ["rustc_flags", opt === undefined && !checkCfg.length ? undefined : list([...(opt === undefined ? [] : [`-Copt-level=${opt}`]), ...checkCfg])],
+    ["lint_config", q(":lints")],
   ];
   // Rendered dependencies of one target.
   const deps = (kinds, extra = [], extraMacros = []) => {
@@ -358,6 +366,12 @@ function buildFile(p) {
     ];
   };
   const rules = [], ownDeps = script ? [":build_script"] : [];
+  // Cargo's [lints] section, read by rules_rust from the same manifest (and workspace) Cargo reads.
+  rules.push(["extract_cargo_lints", [
+    ["name", q("lints")],
+    ["manifest", q("Cargo.toml")],
+    ["workspace", inheritedLints ? q("//:Cargo.toml") : undefined],
+  ]]);
   // Targets that use the package's own library: a proc-macro library is a macro dependency.
   const ownLib = lib && !lib.kind.includes("proc-macro") ? [`:${crateName(lib)}`] : [];
   const ownMacro = lib?.kind.includes("proc-macro") ? [`:${crateName(lib)}`] : [];
@@ -585,25 +599,23 @@ ${rule("toolchain", [
 }
 
 function rustcFlags() {
-  const config = tables(".cargo/config.toml");
-  const rustflags = value(config["target.'cfg(all())'"], "rustflags") ?? [];
-  return [...rustflags, ...(value(dev, "codegen-units") ? [`-Ccodegen-units=${value(dev, "codegen-units")}`] : []), ...(value(dev, "lto") === "off" ? ["-Clto=off"] : [])];
+  const rustflags = toml(".cargo/config.toml").target?.["cfg(all())"]?.rustflags ?? [];
+  return [...rustflags, ...(dev["codegen-units"] ? [`-Ccodegen-units=${dev["codegen-units"]}`] : []), ...(dev.lto === "off" ? ["-Clto=off"] : [])];
 }
 
 function moduleFile() {
   const flags = rustcFlags();
-  const thirdParty = Object.keys(cargo).flatMap(t => {
-    const name = /^profile\.dev\.package\.(.+)$/.exec(t)?.[1];
-    return name && ![...members].some(id => packages.get(id).name === name) && packageOpt(name) !== undefined ? [[name, packageOpt(name)]] : [];
-  });
+  const thirdParty = Object.keys(dev.package ?? {}).flatMap(name =>
+    ![...members].some(id => packages.get(id).name === name) && packageOpt(name) !== undefined ? [[name, packageOpt(name)]] : []);
   return [
     HEADER,
     `rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")\n`,
     rule("rust.toolchain", [
-      ["versions", list([value(tables("rust-toolchain.toml").toolchain, "channel")])],
+      ["versions", list([toml("rust-toolchain.toml").toolchain.channel])],
       ["extra_target_triples", list([WINDOWS_TRIPLE])],
-      ["edition", q(value(cargo["workspace.package"], "edition"))],
-      ["opt_level", q({ dbg: "0", fastbuild: String(value(dev, "opt-level") ?? 0), opt: "3" })],
+      // [workspace.package] is optional; every target carries its own package's edition.
+      ["edition", cargo.workspace?.package?.edition === undefined ? undefined : q(cargo.workspace.package.edition)],
+      ["opt_level", q({ dbg: "0", fastbuild: String(dev["opt-level"] ?? 0), opt: "3" })],
       ["extra_rustc_flags_triples", q(Object.fromEntries(TRIPLES.map(t => [t, t === WINDOWS_TRIPLE ? [...flags, ...WINDOWS_RUSTC_FLAGS] : flags])))],
       ["extra_exec_rustc_flags_triples", q(Object.fromEntries(TRIPLES.map(t => [t, flags])))],
     ]),
@@ -664,7 +676,9 @@ const windowsLoads = `load("@rules_cc//cc:defs.bzl", "cc_toolchain")\nload("@rul
 const windowsPlatform = rule("platform", [["name", q("windows")], ["constraint_values", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])]]);
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
-  ["BUILD.bazel", `${HEADER}\n${windowsLoads}exports_files(${list(["Cargo.lock", "Cargo.toml"])})\n${platformRules}${windowsPlatform}${windowsToolchain()}${sourcesRule}${exportsRule("")}`],
+  ["BUILD.bazel", `${HEADER}
+${windowsLoads}exports_files(${list(["Cargo.lock", "Cargo.toml", ...(fs.existsSync(path.join(root, "clippy.toml")) ? ["clippy.toml"] : [])])})
+${platformRules}${windowsPlatform}${windowsToolchain()}${sourcesRule}${exportsRule("")}`],
 ]);
 for (const [owner, body] of bodies) files.set(`${owner}/BUILD.bazel`, body + exportsRule(owner));
 // Every file ends in exactly one newline, cut once here; check then fails on any other ending.

@@ -6,6 +6,7 @@ load("//:windows_paths.bzl", "WINDOWS_LLVM", "WINDOWS_XWIN")
 exports_files([
         "Cargo.lock",
         "Cargo.toml",
+        "clippy.toml",
     ])
 
 config_setting(
