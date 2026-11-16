@@ -207,10 +207,25 @@ async fn auto_staging_commit_and_machine_readable_history() {
             .execute(command, tree(2))
             .await
             .expect("restore from HEAD");
-        assert!(matches!(output,
-            GitCommandOutput::Action(GitFilesystemAction::RestorePaths { tree: source, paths })
-                if source == tree(1) && paths == vec!["tracked.txt".to_owned()]
-        ));
+        // A restore changes the workspace, so it is prepared as a transition.
+        let GitCommandOutput::Prepared {
+            transition,
+            action:
+                GitFilesystemAction::RestorePaths {
+                    tree: source,
+                    paths,
+                },
+        } = output
+        else {
+            panic!("expected a prepared restore, got {output:?}");
+        };
+        assert_eq!(source, tree(1));
+        assert_eq!(paths, ["tracked.txt"]);
+        // Nothing ran it; the next restore needs no transition pending.
+        repository
+            .abort_transition(transition)
+            .await
+            .expect("abort the unexecuted restore");
     }
 }
 
