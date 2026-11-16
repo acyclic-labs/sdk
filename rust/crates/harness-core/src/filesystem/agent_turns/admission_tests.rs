@@ -111,6 +111,34 @@ async fn child_activity_verifies_under_the_admission_that_signed_it() -> Result<
             .is_some()
     );
 
+    // A child spawned under the host's local root signs under its own
+    // conversation. A later admission of the same parent must still verify
+    // that checkpoint, not the admission's audience.
+    let local_operation = OperationId::new();
+    query_journal(&stream, &host, &issuer, &TurnAdmission::LocalRoot, &state)
+        .await?
+        .with_turn(local_operation, local_operation)
+        .append(
+            local_operation,
+            "start",
+            &crate::executor::ExecutionEvent::Started {
+                request_digest: [2; 32],
+            },
+            None,
+        )?
+        .await?;
+    let observed = query_activity_journal(&stream, &host, &issuer, &admission, &state)
+        .await?
+        .ok_or_else(|| Error::Storage("native host lost child activity authority".into()))?
+        .with_turn(local_operation, local_operation);
+    assert!(
+        observed
+            .activity(local_operation, &acyclic_actors::local::SystemClock)
+            .await?
+            .is_some(),
+        "a later admission rejected the child's original checkpoint"
+    );
+
     for (scope, expected) in [(scope, false), (broad, true)] {
         let (_producer, stopped) = futures::channel::oneshot::channel::<()>();
         let context = acyclic_auth::operation::Context::from_stopped(

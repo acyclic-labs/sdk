@@ -125,6 +125,10 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
+    /// Signs this journal's execution checkpoints under its current custody.
+    execution_checkpoint_verifier: AuthorityVerifier,
+    /// The other custody identity the same journal may have signed under.
+    execution_checkpoint_alternate: Option<AuthorityVerifier>,
     scope: Scope,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     /// The one model context an agent turn may dispatch, built by its turn host

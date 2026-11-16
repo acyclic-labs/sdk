@@ -199,6 +199,37 @@ impl AuthorityVerifier {
         })
     }
 
+    /// The verifier that signs this agent journal's execution checkpoints and
+    /// the alternate identity that verifies a checkpoint written under the
+    /// other custody. Native custody signs under the journal owner's
+    /// conversation, so a checkpoint survives a host admission change;
+    /// platform custody signs under the admitted caller. A journal may be
+    /// opened under either custody later, so verification accepts both
+    /// identities for the same signed state.
+    pub(crate) fn execution_checkpoint_verifiers(
+        &self,
+        owner: AgentId,
+        quota: &mut CodecQuota<'_, '_>,
+    ) -> Result<(Self, Option<Self>)> {
+        let native = matches!(
+            self.admission,
+            runtime_signing::AdmissionPort::Native(_)
+        );
+        let owner_audience = Authority {
+            kind: AggregateKind::Conversation,
+            id: owner.to_string(),
+        };
+        let mut primary = self.copy_in_quota(quota)?;
+        let mut alternate = self.copy_in_quota(quota)?;
+        if native {
+            primary.audience = copying::copy_authority(&owner_audience, quota)?;
+        } else {
+            alternate.audience = copying::copy_authority(&owner_audience, quota)?;
+        }
+        let alternate = (alternate.audience != primary.audience).then_some(alternate);
+        Ok((primary, alternate))
+    }
+
     /// Verifies issuer identity and the complete immutable grant.
     pub fn verify(&self, scope: &Scope, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         self.verify_scope_for_with_work(&self.audience, scope, work)
