@@ -128,6 +128,7 @@ function nativeTokens(source, file) {
  const powershell = file.endsWith('.ps1');
  const shell = /\.(?:sh|bash)$/.test(file);
  const yaml = /\.ya?ml$/.test(file);
+ const csharp = file.endsWith('.cs');
  const whitespace = yaml ? /^[ \t\r\n]+/ : /^\s+/;
  const wordComments = powershell || shell;
  const escape = powershell ? '`' : shell ? '\\' : undefined;
@@ -185,6 +186,17 @@ function nativeTokens(source, file) {
    const end = source.indexOf(close, at + raw[0].length);
    if (end < 0) throw malformed('unterminated raw string');
    emit(end + close.length, 'literal'); continue;
+  }
+  const verbatim = csharp && tail.match(/^(?:@|\$@|@\$)"/);
+  if (verbatim) {
+   let end = at + verbatim[0].length;
+   while (end < source.length) {
+    if (source[end] === '"' && source[end + 1] === '"') { end += 2; continue; }
+    if (source[end] === '"') break;
+    end++;
+   }
+   if (end >= source.length) throw malformed('unterminated verbatim string');
+   emit(end + 1, 'literal'); continue;
   }
   const here = powershell && tail.match(/^@(['"])\r?\n/);
   if (here) {
