@@ -815,6 +815,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-harness-mcp",
  "acyclic-harness-native-settings",
+ "acyclic-harness-oidc",
  "acyclic-mcp",
  "acyclic-native-runtime",
  "acyclic-plugin",

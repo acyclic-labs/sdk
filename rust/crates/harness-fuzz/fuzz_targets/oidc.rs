@@ -1,7 +1,8 @@
 //! Public OIDC admission over the unchanged captured Dex key and signed token.
 #![no_main]
 
-use acyclic_harness_core::{Result, oidc};
+use acyclic_harness_core::Result;
+use acyclic_harness_oidc as oidc;
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
