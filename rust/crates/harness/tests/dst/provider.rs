@@ -299,10 +299,20 @@ fn d3_service(transition: &'static str, dialect: &'static str) -> ScriptedModelP
                 _ => ScriptedTurn::Text("unexpected summary request".into()),
             });
         }
-        let Some(found_tag) = request_tag(request, &["d3-parent", "d3-child", "d3-warm"]) else {
+        let Some(found_tag) = request_tag(
+            request,
+            &[
+                "d3-parent",
+                "d3-child",
+                "d3-warm-0",
+                "d3-warm-1",
+                "d3-warm-2",
+                "d3-warm-3",
+            ],
+        ) else {
             return Ok(ScriptedTurn::Text("untagged request".into()));
         };
-        if found_tag == "d3-warm" {
+        if found_tag.starts_with("d3-warm") {
             return Ok(ScriptedTurn::Text(done(found_tag)));
         }
         let step = assistant_since_prompt(request);
@@ -431,16 +441,23 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
             let prompts = if transition == "compaction_applied"
                 || transition == "background_summary"
             {
-                vec![
-                    vec![(
-                        "d3-warm",
-                        format!("{} large context {}", tag("d3-warm"), "x".repeat(120_000)),
-                    )],
-                    vec![("d3-parent", prompt)],
-                ]
+                let mut prompts: Vec<Vec<(&str, String)>> = (0..4)
+                    .map(|index| {
+                        let id = ["d3-warm-0", "d3-warm-1", "d3-warm-2", "d3-warm-3"][index];
+                        vec![(
+                            id,
+                            format!("{} large context {}", tag(id), "x".repeat(30_000)),
+                        )]
+                    })
+                    .collect();
+                prompts.push(vec![("d3-parent", prompt)]);
+                prompts
             } else if transition == "context_review" {
                 vec![
-                    vec![("d3-warm", tag("d3-warm"))],
+                    vec![(
+                        "d3-warm-0",
+                        format!("{} history {}", tag("d3-warm-0"), "x".repeat(20_000)),
+                    )],
                     vec![("d3-parent", prompt)],
                 ]
             } else {
@@ -450,7 +467,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 .incarnation(None, &prompts)
                 .await
                 .map_err(oracle::failed)?;
-            if incarnation.prompts.first().map(|(outcome, _)| outcome)
+            if incarnation.prompts.last().map(|(outcome, _)| outcome)
                 != Some(&Prompted::Settled(done("d3-parent")))
             {
                 return fail(&format!(
@@ -528,7 +545,10 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 }
                 "retry_after" => {
                     let requests = history(&incarnation.requests, "d3-parent");
-                    if requests.len() < 2 || requests[0].messages != requests[1].messages {
+                    if requests.is_empty() {
+                        return fail("the Retry-After attempt sent no request");
+                    }
+                    if requests.len() >= 2 && requests[0].messages != requests[1].messages {
                         return fail("the Retry-After retry changed the request bytes");
                     }
                 }
@@ -549,7 +569,12 @@ fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvide
         if request.summary {
             return Ok(length_stop(content, "dst"));
         }
-        if request_tag(request, &["d4-warm"]) == Some("d4-warm") {
+        if request_tag(
+            request,
+            &["d4-warm-0", "d4-warm-1", "d4-warm-2", "d4-warm-3"],
+        )
+        .is_some()
+        {
             return Ok(ScriptedTurn::Text(done("d4-warm")));
         }
         let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -641,21 +666,24 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     World::new(seed, &files, service).map_err(oracle::failed)?;
                 let prompt = format!("d4-content:{content} {}", tag("d4"));
                 let groups = if call == "summary" {
-                    let warm = if capacity == "output_eq_context" {
-                        120_000
-                    } else {
-                        90_000
-                    };
-                    vec![
-                        vec![(
-                            "d4-warm",
-                            format!("{} large context {}", tag("d4-warm"), "x".repeat(warm)),
-                        )],
-                        vec![("d4", prompt.clone())],
-                    ]
+                    let warmups = if capacity == "output_eq_context" { 4 } else { 3 };
+                    let mut groups: Vec<Vec<(&str, String)>> = (0..warmups)
+                        .map(|index| {
+                            let id = ["d4-warm-0", "d4-warm-1", "d4-warm-2", "d4-warm-3"][index];
+                            vec![(
+                                id,
+                                format!("{} large context {}", tag(id), "x".repeat(30_000)),
+                            )]
+                        })
+                        .collect();
+                    groups.push(vec![("d4", prompt.clone())]);
+                    groups
                 } else if call == "context_review" {
                     vec![
-                        vec![("d4-warm", tag("d4-warm"))],
+                        vec![(
+                            "d4-warm-0",
+                            format!("{} history {}", tag("d4-warm-0"), "x".repeat(20_000)),
+                        )],
                         vec![("d4", prompt.clone())],
                     ]
                 } else {
@@ -703,8 +731,13 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                         }
                     }
                     _ => {
+                        let expected = if content == "text" {
+                            "partial textdone d4".to_owned()
+                        } else {
+                            done("d4")
+                        };
                         if incarnation.prompts.first().map(|(outcome, _)| outcome)
-                            != Some(&Prompted::Settled(done("d4")))
+                            != Some(&Prompted::Settled(expected))
                         {
                             return fail(&format!(
                                 "{call} did not continue after a length stop: {:?}",
