@@ -41,8 +41,6 @@ const LOADS = {
   rust_shared_library: "@rules_rust//rust:defs.bzl",
   rust_test: "@rules_rust//rust:defs.bzl",
 };
-// Rules Bazel defines in every BUILD file; they need no load.
-const NATIVE = new Set(["alias", "filegroup"]);
 const q = JSON.stringify;
 
 // A TOML file, parsed by a real TOML parser (Python's tomllib): strings, arrays and inline tables
@@ -223,9 +221,10 @@ const rule = (kind, attrs) => `${kind}(\n${attrs.filter(([, v]) => v !== undefin
 // Files of third-party build dependencies that a build script reads, per platform, from
 // [package.metadata.bazel.build-script-env.<os>-<cpu>]: VARIABLE = "package/path". Each file is
 // exported from the package's crate universe repository and named to the script by its execution
-// path. The platform is the one the script runs on (the execution platform), not the crate's target: a
-// cross build runs the host's protoc. A platform the table does not name fails to configure, never
-// builds with another's files.
+// path. The platform is the crate's target platform: a build script bundles these files into the crate
+// (acyclic-proto-build embeds the protoc its crate runs), so a Windows crate gets the Windows protoc. A
+// crate built as a build dependency targets the execution platform, so the protoc a build script runs is
+// the host's. A platform the table does not name fails to configure, never builds with another's files.
 const staged = new Map();
 function stagedFile(spec) {
   const [, name, file] = /^([^/]+)\/(.+)$/.exec(spec) ?? [];
@@ -245,11 +244,8 @@ const scriptEnv = new Map([...members].map(id => {
     return [platform, Object.entries(variables).map(([variable, spec]) => [variable, stagedFile(spec)])];
   })];
 }));
-// select() of one variable's file over the platforms a package names. rules_rust also hands a build
-// script's tools to the script binary as data, in the crate's target configuration, where no file is
-// run: there the default is an empty group. On an execution platform the table does not name,
-// $(execpath) of that empty group fails the build script's analysis.
-const platformSelect = (id, variable) => `select(${q({ ...Object.fromEntries(scriptEnv.get(id).flatMap(([platform, vars]) => vars.filter(([v]) => v === variable).map(([, file]) => [`//:${platform}`, file]))), "//conditions:default": ":build_script_env_none" })})`;
+// select() over the platforms a package names, with no default.
+const platformSelect = (id, render) => `select(${q(Object.fromEntries(scriptEnv.get(id).map(([platform, vars]) => [`//:${platform}`, render(vars)])))}, no_match_error = ${q(`${packages.get(id).name}: build-script-env names no file for this platform`)})`;
 const platformRules = [...scriptPlatforms].sort().map(platform => {
   const [os, cpu] = platform.split("-");
   return `\n${rule("config_setting", [["name", q(platform)], ["constraint_values", list([`@platforms//os:${os}`, `@platforms//cpu:${cpu}`])]])}\n`;
@@ -420,26 +416,18 @@ function buildFile(p) {
     // A build script compiles from its own module closure and runs over every package file.
     // Its non-Rust package files are already in the compile_data glob.
     const extra = extras(script, file => !file.endsWith(".rs") && !TEST_DIRS.test(file));
-    const envTools = [...new Set(scriptEnv.get(p.id).flatMap(([, vars]) => vars.map(([variable]) => variable)))].sort()
-      .map(variable => [variable, `build_script_env_${variable}`]);
     rules.push(["cargo_build_script", [
       ["name", q("build_script")],
       ["crate_root", q(local(script.src_path))],
       ["srcs", list(extra.srcs)],
       ["compile_data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel", ...NOT_LIB]), list(extra.data))],
-      ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list([...(readsRepository(p) ? repositorySources : []), ...scriptData(p)]))],
-      ["tools", list(envTools.map(([, name]) => `:${name}`))],
+      ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list([...(readsRepository(p) ? repositorySources : []), ...scriptData(p)]), scriptEnv.get(p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
       ...common(script),
-      ["build_script_env", envTools.length ? `PACKAGE_ENV | ${q(Object.fromEntries(envTools.map(([variable, name]) => [variable, `$(execpath :${name})`])))}` : "PACKAGE_ENV"],
+      ["build_script_env", scriptEnv.get(p.id).length ? `PACKAGE_ENV | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$(execpath ${file})`])))}` : "PACKAGE_ENV"],
       ...deps(["build"]),
     ]]);
-    // The build script runs on the execution platform, so each file it is named is the one for that platform:
-    // a tool resolves its select() in the exec configuration, whatever platform the crate targets.
-    // Manual: a pattern such as :all never configures one for a target platform, where it names nothing.
-    for (const [variable, name] of envTools) rules.push(["alias", [["name", q(name)], ["actual", platformSelect(p.id, variable)], ["tags", q(["manual"])]]]);
-    if (envTools.length) rules.push(["filegroup", [["name", q("build_script_env_none")], ["srcs", "[]"], ["tags", q(["manual"])]]]);
   }
   // A cdylib output, such as a Node addon, builds as a shared library; beside an rlib it takes a suffix.
   const shared = p.targets.find(t => t.kind.includes("cdylib"));
@@ -522,7 +510,7 @@ function buildFile(p) {
     covered.add(`build example ${example.name}`);
     rules.push(["rust_binary", [["name", q(name)], ...separate(example)]]);
   }
-  const loads = Map.groupBy([...new Set(rules.map(([kind]) => kind))].filter(kind => !NATIVE.has(kind)).sort(), kind => LOADS[kind]);
+  const loads = Map.groupBy([...new Set(rules.map(([kind]) => kind))].sort(), kind => LOADS[kind]);
   const header = [
     HEADER,
     ...[...loads].sort().map(([file, kinds]) => `load(${q(file)}, ${kinds.map(q).join(", ")})\n`),
@@ -565,10 +553,6 @@ function windowsToolchain() {
   const xwin = dir => `WINDOWS_XWIN + ${q(`/${dir}`)}`;
   const env = dirs => `";".join([${dirs.map(xwin).join(", ")}])`;
   const includes = ["crt/include", "sdk/include/ucrt", "sdk/include/um", "sdk/include/shared", "sdk/include/winrt"];
-  // The system headers are INCLUDE, the one variable every MSVC compiler reads whatever flags a build
-  // script sets (rquickjs-sys replaces CFLAGS). rules_rust makes each entry absolute for build scripts,
-  // split on ";" as clang-cl splits it (rules_rust.patch).
-  const compileFlags = list([`--target=${WINDOWS_TRIPLE}`]);
   return `
 ${rule("cc_toolchain_config", [
     ["name", q("windows_cc_config")],
@@ -590,7 +574,7 @@ ${rule("cc_toolchain_config", [
     ["msvc_env_path", `WINDOWS_LLVM + "/bin"`],
     ["msvc_env_tmp", q("/tmp")],
     ["cxx_builtin_include_directories", `[${[...includes.map(d => `"%workspace%/" + ${xwin(d)}`), `"%workspace%/" + WINDOWS_LLVM + "/lib/clang/22/include"`].join(", ")}]`],
-    ["default_compile_flags", compileFlags],
+    ["default_compile_flags", list([`--target=${WINDOWS_TRIPLE}`])],
     ["cxx_flags", list(["/std:c++17"])],
     ["conly_flags", list([])],
     ["archiver_flags", list(["/nologo"])],

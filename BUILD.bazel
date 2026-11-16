@@ -9,18 +9,6 @@ exports_files([
         "clippy.toml",
     ])
 
-constraint_setting(
-    name = "libc",
-    visibility = ["//visibility:public"],
-)
-
-constraint_value(
-    name = "libc_musl",
-    constraint_setting = ":libc",
-    visibility = ["//visibility:public"],
-)
-
-
 config_setting(
     name = "linux-x86_64",
     constraint_values = [
@@ -38,6 +26,15 @@ config_setting(
     ],
 )
 
+
+config_setting(
+    name = "windows-x86_64",
+    constraint_values = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
 platform(
     name = "windows",
     constraint_values = [
@@ -45,25 +42,6 @@ platform(
         "@platforms//cpu:x86_64",
     ],
 )
-
-config_setting(
-    name = "linux-musl",
-    constraint_values = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-        ":libc_musl",
-    ],
-)
-
-platform(
-    name = "linux_musl",
-    constraint_values = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-        ":libc_musl",
-    ],
-)
-
 
 cc_toolchain_config(
     name = "windows_cc_config",
