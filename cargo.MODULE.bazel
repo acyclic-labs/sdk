@@ -4,24 +4,20 @@ rust.toolchain(
     versions = [
         "1.98.1",
     ],
+    extra_target_triples = [
+        "x86_64-pc-windows-msvc",
+    ],
     edition = "2024",
     opt_level = {"dbg":"0","fastbuild":"1","opt":"3"},
-    extra_rustc_flags = [
-        "--cfg",
-        "tokio_unstable",
-        "-Ccodegen-units=64",
-        "-Clto=off",
-    ],
-    extra_exec_rustc_flags = [
-        "--cfg",
-        "tokio_unstable",
-        "-Ccodegen-units=64",
-        "-Clto=off",
-    ],
+    extra_rustc_flags_triples = {"x86_64-unknown-linux-gnu":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off"],"aarch64-apple-darwin":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off"],"x86_64-pc-windows-msvc":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off","-Ctarget-feature=+crt-static","-Clink-arg=-nodefaultlib:ucrt","-Clink-arg=-defaultlib:libucrt"]},
+    extra_exec_rustc_flags_triples = {"x86_64-unknown-linux-gnu":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off"],"aarch64-apple-darwin":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off"],"x86_64-pc-windows-msvc":["--cfg","tokio_unstable","-Ccodegen-units=64","-Clto=off"]},
 )
 use_repo(rust, "rust_toolchains")
 
-register_toolchains("@rust_toolchains//:all")
+xwin = use_repo_rule("//:xwin_repo.bzl", "xwin_repository")
+xwin(name = "xwin")
+
+register_toolchains("//:windows_cc_toolchain_registration", "@rust_toolchains//:all")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 
@@ -687,6 +683,16 @@ crate.spec(
 )
 
 crate.spec(
+    package = "concurrent-queue",
+    version = "=2.5.0",
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate.spec(
     package = "const-siphasher",
     version = "=1.0.2",
     default_features = False,
@@ -702,6 +708,26 @@ crate.spec(
     default_features = False,
     features = [
         "std",
+    ],
+)
+
+crate.spec(
+    package = "core-foundation-sys",
+    version = "=0.8.7",
+    default_features = False,
+    features = [
+        "default",
+        "link",
+    ],
+)
+
+crate.spec(
+    package = "core-foundation",
+    version = "=0.10.1",
+    default_features = False,
+    features = [
+        "default",
+        "link",
     ],
 )
 
@@ -1130,6 +1156,16 @@ crate.spec(
     default_features = False,
     features = [
         "alloc",
+    ],
+)
+
+crate.spec(
+    package = "encode_unicode",
+    version = "=1.0.0",
+    default_features = False,
+    features = [
+        "default",
+        "std",
     ],
 )
 
@@ -2439,6 +2475,30 @@ crate.spec(
 )
 
 crate.spec(
+    package = "objc2-core-foundation",
+    version = "=0.3.2",
+    default_features = False,
+    features = [
+        "CFArray",
+        "CFDictionary",
+        "CFError",
+        "CFRunLoop",
+        "CFString",
+        "bitflags",
+    ],
+)
+
+crate.spec(
+    package = "objc2-system-configuration",
+    version = "=0.3.2",
+    default_features = False,
+    features = [
+        "SCDynamicStore",
+        "SCDynamicStoreCopySpecific",
+    ],
+)
+
+crate.spec(
     package = "object_store",
     version = "=0.14.2",
     default_features = False,
@@ -2491,6 +2551,15 @@ crate.spec(
         "default",
         "race",
         "std",
+    ],
+)
+
+crate.spec(
+    package = "once_cell_polyfill",
+    version = "=1.70.2",
+    default_features = False,
+    features = [
+        "default",
     ],
 )
 
@@ -2805,6 +2874,17 @@ crate.spec(
     package_alias = "phf_shared-0_14_0",
     default_features = False,
     features = [
+        "std",
+    ],
+)
+
+crate.spec(
+    package = "piper",
+    version = "=0.2.5",
+    default_features = False,
+    features = [
+        "default",
+        "futures-io",
         "std",
     ],
 )
@@ -3512,6 +3592,32 @@ crate.spec(
     default_features = False,
     features = [
         "crypto-rust",
+    ],
+)
+
+crate.spec(
+    package = "security-framework-sys",
+    version = "=2.17.0",
+    default_features = False,
+    features = [
+        "OSX_10_10",
+        "OSX_10_11",
+        "OSX_10_12",
+        "OSX_10_13",
+        "OSX_10_9",
+        "default",
+    ],
+)
+
+crate.spec(
+    package = "security-framework",
+    version = "=3.7.0",
+    default_features = False,
+    features = [
+        "OSX_10_14",
+        "alpn",
+        "default",
+        "session-tickets",
     ],
 )
 
@@ -4726,6 +4832,217 @@ crate.spec(
 )
 
 crate.spec(
+    package = "winapi",
+    version = "=0.3.9",
+    default_features = False,
+    features = [
+        "consoleapi",
+        "errhandlingapi",
+        "handleapi",
+        "impl-default",
+        "processenv",
+        "synchapi",
+        "sysinfoapi",
+        "winbase",
+        "winerror",
+        "winuser",
+    ],
+)
+
+crate.spec(
+    package = "windows-collections",
+    version = "=0.3.2",
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate.spec(
+    package = "windows-core",
+    version = "=0.62.2",
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate.spec(
+    package = "windows-future",
+    version = "=0.3.2",
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate.spec(
+    package = "windows-numerics",
+    version = "=0.3.1",
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate.spec(
+    package = "windows-result",
+    version = "=0.4.1",
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate.spec(
+    package = "windows-strings",
+    version = "=0.5.1",
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate.spec(
+    package = "windows-sys",
+    version = "=0.59.0",
+    package_alias = "windows-sys-0_59_0",
+    default_features = False,
+    features = [
+        "Win32",
+        "Win32_Foundation",
+        "Win32_Security",
+        "Win32_Storage",
+        "Win32_Storage_FileSystem",
+        "Win32_System",
+        "Win32_System_Com",
+        "Win32_System_Console",
+        "Win32_System_Diagnostics",
+        "Win32_System_Diagnostics_Debug",
+        "Win32_System_IO",
+        "Win32_System_Ioctl",
+        "Win32_System_Kernel",
+        "Win32_System_LibraryLoader",
+        "Win32_System_Memory",
+        "Win32_System_Performance",
+        "Win32_System_SystemInformation",
+        "Win32_System_SystemServices",
+        "Win32_System_Threading",
+        "Win32_System_WindowsProgramming",
+        "Win32_UI",
+        "Win32_UI_Input",
+        "Win32_UI_Input_KeyboardAndMouse",
+        "Win32_UI_Shell",
+        "default",
+    ],
+)
+
+crate.spec(
+    package = "windows-sys",
+    version = "=0.60.2",
+    package_alias = "windows-sys-0_60_2",
+    default_features = False,
+    features = [
+        "Win32",
+        "Win32_Foundation",
+        "Win32_Networking",
+        "Win32_Networking_WinSock",
+        "Win32_Security",
+        "Win32_Security_Credentials",
+        "Win32_System",
+        "Win32_System_Console",
+        "default",
+    ],
+)
+
+crate.spec(
+    package = "windows-sys",
+    version = "=0.61.2",
+    package_alias = "windows-sys-0_61_2",
+    default_features = False,
+    features = [
+        "Wdk",
+        "Wdk_Foundation",
+        "Wdk_Storage",
+        "Wdk_Storage_FileSystem",
+        "Wdk_System",
+        "Wdk_System_IO",
+        "Wdk_System_Threading",
+        "Win32",
+        "Win32_Foundation",
+        "Win32_Globalization",
+        "Win32_Networking",
+        "Win32_Networking_WinSock",
+        "Win32_Security",
+        "Win32_Security_Authentication",
+        "Win32_Security_Authentication_Identity",
+        "Win32_Security_Credentials",
+        "Win32_Security_Cryptography",
+        "Win32_Storage",
+        "Win32_Storage_FileSystem",
+        "Win32_Storage_Packaging",
+        "Win32_Storage_Packaging_Appx",
+        "Win32_System",
+        "Win32_System_Com",
+        "Win32_System_Console",
+        "Win32_System_Diagnostics",
+        "Win32_System_Diagnostics_Debug",
+        "Win32_System_Diagnostics_ToolHelp",
+        "Win32_System_IO",
+        "Win32_System_Ioctl",
+        "Win32_System_JobObjects",
+        "Win32_System_Kernel",
+        "Win32_System_LibraryLoader",
+        "Win32_System_Memory",
+        "Win32_System_Pipes",
+        "Win32_System_Power",
+        "Win32_System_ProcessStatus",
+        "Win32_System_SystemInformation",
+        "Win32_System_SystemServices",
+        "Win32_System_Threading",
+        "Win32_System_WindowsProgramming",
+        "Win32_UI",
+        "Win32_UI_Shell",
+        "Win32_UI_WindowsAndMessaging",
+        "default",
+    ],
+)
+
+crate.spec(
+    package = "windows",
+    version = "=0.62.2",
+    default_features = False,
+    features = [
+        "Wdk",
+        "Wdk_Foundation",
+        "Wdk_Storage",
+        "Wdk_Storage_FileSystem",
+        "Win32",
+        "Win32_Foundation",
+        "Win32_Globalization",
+        "Win32_Security",
+        "Win32_Security_Authorization",
+        "Win32_Storage",
+        "Win32_Storage_FileSystem",
+        "Win32_Storage_ProjectedFileSystem",
+        "Win32_System",
+        "Win32_System_Com",
+        "Win32_System_Environment",
+        "Win32_System_IO",
+        "Win32_System_Ioctl",
+        "Win32_System_SystemServices",
+        "Win32_System_Threading",
+        "Win32_System_WindowsProgramming",
+        "Win32_UI",
+        "Win32_UI_Shell",
+        "default",
+        "std",
+    ],
+)
+
+crate.spec(
     package = "winnow",
     version = "=1.0.4",
     default_features = False,
@@ -4906,6 +5223,8 @@ crate.from_cargo(
     ],
     supported_platform_triples = [
         "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
     ],
 )
 crate.annotation(
