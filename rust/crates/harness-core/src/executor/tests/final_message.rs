@@ -1214,8 +1214,11 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
         .is_ok()
     );
     let mut totals = super::super::ModelUsageTotals::unpriced();
+    let estimate = usage
+        .estimate(None)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     totals
-        .push(&usage.estimate(None)?)
+        .push(&estimate)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(totals.calls, 1);
     assert_eq!(totals.attempts, 2, "the restarted attempt is counted");
