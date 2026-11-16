@@ -27,10 +27,7 @@ fn sandbox_policy() {
     #[cfg(windows)]
     std::os::windows::fs::symlink_file(&outside, workspace.join("escape")).unwrap();
     #[cfg(target_os = "linux")]
-    {
-        linux_boundary_probes(&outside, false, true);
-        std::fs::copy("/bin/true", workspace.join("copied-true")).unwrap();
-    }
+    linux_boundary_probes(&outside, false, true);
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let executable = std::env::current_exe().unwrap();
@@ -237,22 +234,6 @@ fn sandbox_policy_probe() {
                 .lines()
                 .any(|line| line == "readable")
         );
-        let numbered = shell("cat -n readable");
-        assert!(numbered.status.success(), "cat -n failed: {numbered:?}");
-        let sorted = shell("printf 'b\\na\\n' | sort");
-        assert!(sorted.status.success(), "sort failed: {sorted:?}");
-        assert_eq!(sorted.stdout, b"a\nb\n");
-        let copied = std::process::Command::new("./copied-true").status().unwrap();
-        assert!(copied.success(), "copied executable failed: {copied:?}");
-        let login = std::process::Command::new(std::env::var_os("ACYCLIC_POLICY_SHELL").unwrap())
-            .args(["-lc", "true"])
-            .output()
-            .unwrap();
-        assert!(login.status.success(), "login shell failed: {login:?}");
-        assert!(
-            !String::from_utf8_lossy(&login.stderr).contains("Permission denied"),
-            "login shell profile was denied: {login:?}"
-        );
     }
     allowed(std::fs::write("inside", b"inside"), primary_write);
     allowed(
@@ -268,6 +249,88 @@ fn sandbox_policy_probe() {
         std::net::TcpStream::connect(std::env::var("ACYCLIC_POLICY_DESTINATION").unwrap())
             .map(|_| ()),
         !confined,
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sandbox_userland_commands() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(workspace.join("readable"), b"workspace data").unwrap();
+    std::fs::copy("/bin/true", workspace.join("copied-true")).unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let grant = ExecutionGrant::workspace_default(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [],
+        [executable.clone()],
+    )
+    .unwrap();
+    let mut command = Command::new(&executable);
+    command
+        .args([
+            "--exact",
+            "execution::tests::sandbox_userland_probe",
+            "--nocapture",
+        ])
+        .current_dir(&workspace)
+        .env_clear()
+        .env("ACYCLIC_USERLAND_PROBE", "1")
+        .env("ACYCLIC_POLICY_SHELL", crate::platform_shell().unwrap())
+        .env("HOME", &workspace)
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut tree = ProcessTree::spawn_granted(command, &grant, None).unwrap();
+    let output = tree
+        .wait_with_output(
+            crate::CaptureSchedule::Unbounded,
+            1 << 20,
+            None,
+            || Ok(()),
+            |_| Ok(Default::default()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sandbox_userland_probe() {
+    if std::env::var_os("ACYCLIC_USERLAND_PROBE").is_none() {
+        return;
+    }
+    let shell = std::env::var_os("ACYCLIC_POLICY_SHELL").unwrap();
+    let run = |source: &str| {
+        std::process::Command::new(&shell)
+            .args(acyclic_host_platform::shell::PLATFORM.arguments)
+            .arg(source)
+            .output()
+            .unwrap()
+    };
+    let numbered = run("cat -n readable");
+    assert!(numbered.status.success(), "cat -n failed: {numbered:?}");
+    let sorted = run("printf 'b\\na\\n' | sort");
+    assert!(sorted.status.success(), "sort failed: {sorted:?}");
+    assert_eq!(sorted.stdout, b"a\nb\n");
+    let copied = std::process::Command::new("./copied-true")
+        .status()
+        .unwrap();
+    assert!(copied.success(), "copied executable failed: {copied:?}");
+    let login = std::process::Command::new(&shell)
+        .args(["-lc", "true"])
+        .output()
+        .unwrap();
+    assert!(login.status.success(), "login shell failed: {login:?}");
+    assert!(
+        !String::from_utf8_lossy(&login.stderr).contains("Permission denied"),
+        "login shell profile was denied: {login:?}"
     );
 }
 
