@@ -292,21 +292,28 @@ async fn wait_case(
             }
             world.clear_registered();
             let reopened = world.open().await.map_err(oracle::failed)?;
-            drain(&reopened).await?;
+            reopened.agents().await.map_err(oracle::failed)?;
             let recovered = world.registered(deadline).await?;
             if recovered != deadline {
                 return Err(format!(
                     "{timer} reopened: recovered deadline {recovered} differs from {deadline}"
                 ));
             }
+            let connection = reopened.connect().await.map_err(oracle::failed)?;
+            let conversation = Conversation::open(connection);
             world.advance(deadline)?;
-            drain(&reopened).await?;
-            let conversation = Conversation::open(reopened.connect().await.map_err(oracle::failed)?);
-            let mut observer = conversation
-                .observe(None)
-                .await
-                .map_err(oracle::failed)?;
-            let (sequence, entry) = settled(&mut observer, inbox).await?;
+            let (sequence, entry) = loop {
+                match conversation.reply(&id, inbox).await.map_err(oracle::failed)? {
+                    acyclic_harness::agent::Reply::Answered { sequence, entry, .. } => {
+                        break (sequence, entry);
+                    }
+                    acyclic_harness::agent::Reply::Dropped => {
+                        return Err(format!("{timer} reopened: wait was dropped"));
+                    }
+                    acyclic_harness::agent::Reply::Pending
+                    | acyclic_harness::agent::Reply::Continuing { .. } => {}
+                }
+            };
             let text = output(&conversation, sequence, &entry).await?;
             if text != done(if timer == "call_deadline" { "parent" } else { "wait" }) {
                 return Err(format!("{timer} reopened: wait answered {text:?}"));
