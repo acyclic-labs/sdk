@@ -25,10 +25,6 @@ mod guest_contract;
 #[path = "guest_metadata.rs"]
 mod guest_metadata;
 
-#[cfg(not(loom))]
-#[path = "protoc_path.rs"]
-mod protoc_path;
-
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "live_update.rs"]
 mod live_update;

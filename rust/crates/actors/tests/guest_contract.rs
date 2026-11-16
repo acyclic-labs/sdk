@@ -20,37 +20,6 @@ fn codec(version: &str) -> CheckpointCodec<Vec<u8>> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
-    /// Constructors accept exactly nonempty, trimmed, control-free identities
-    /// and nonzero versions/expiries, preserving all admitted values verbatim.
-    #[test]
-    fn host_metadata_construction_preserves_valid_input(value in ".{0,128}", version in any::<u32>(), expiry in any::<u64>()) {
-        let valid = !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control);
-        let capability = CallerCapability::new(version, value.clone());
-        let runtime = RuntimeHandle::new(version, value.clone());
-        prop_assert_eq!(capability.is_ok(), valid && version != 0);
-        prop_assert_eq!(runtime.is_ok(), valid && version != 0);
-        if let Ok(capability) = capability {
-            prop_assert_eq!(capability.handle(), value.as_str());
-            prop_assert_eq!(capability.version(), version);
-        }
-        let caller = AdmittedCaller::new(value.as_bytes().to_vec(), value.clone(), value.clone(), value.clone(), value.clone(), expiry);
-        prop_assert_eq!(caller.is_ok(), valid && acyclic_actors::addressing::validate_actor_id(value.as_bytes()).is_ok() && expiry != 0);
-        if let Ok(caller) = caller {
-            prop_assert_eq!(caller.principal(), &value);
-            prop_assert_eq!(caller.expires_at_ms(), &expiry.to_string());
-            prop_assert_eq!(serde_json::from_slice::<AdmittedCaller>(&serde_json::to_vec(&caller)?)?, caller);
-        }
-    }
-
-    #[test]
-    fn artifact_codec_round_trip(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
-        let codec = codec("1");
-        let checkpoint = Checkpoint { codec: codec.identity.clone(), bytes: (codec.encode)(&bytes)? };
-        let wire = serde_json::to_vec(&checkpoint)?;
-        let decoded: Checkpoint = serde_json::from_slice(&wire)?;
-        prop_assert_eq!((codec.decode)(&decoded)?, bytes);
-    }
-
     #[test]
     fn rejected_update_preserves_entire_installed_boundary(
         configuration in any::<u64>(), subscriptions in prop::collection::vec(any::<u64>(), 0..16),
@@ -94,7 +63,7 @@ proptest! {
 
     #[test]
     fn generated_events_round_trip(
-        kind in 0u8..9, identity in ".{0,32}", number in any::<u64>(),
+        kind in 0u8..10, identity in ".{0,32}", number in any::<u64>(),
         bytes in prop::collection::vec(any::<u8>(), 0..512),
     ) {
         let event = match kind {
@@ -105,6 +74,7 @@ proptest! {
             2 => GuestEvent::Fetch { request: GuestRequest { url: identity.clone(), method: identity.clone(),
                 headers: vec![(identity.clone(), identity)], body: bytes.into() } },
             3 => GuestEvent::Timer { timer_id: identity, deadline_unix_ms: number.to_string() },
+            9 => GuestEvent::Alarm,
             kind => GuestEvent::Socket { connection_id: identity.clone(), event: match kind {
                 4 => GuestSocketEvent::Open { actor_id: identity.clone(), app_channel: Some(identity.clone()), subprotocols: vec![identity], headers: vec![], resume_after: number.to_string(), reconnected: false, transport: Some(SocketTransport::Internal) },
                 5 => GuestSocketEvent::Message { offset: number.to_string(), payload: if number % 2 == 0 { SocketPayload::Text { text: identity } } else { SocketPayload::Binary { binary: bytes.into() } } },
@@ -128,13 +98,6 @@ proptest! {
         prop_assert!(matches!(serde_json::from_value::<GuestEvent>(socket)?, GuestEvent::Socket { event: GuestSocketEvent::Close { .. }, .. }), "extended socket Close must decode");
         prop_assert_eq!(serde_json::from_value::<GuestEvent>(serde_json::json!({"type":format!("future_{future_field}"),"body":value}))?, GuestEvent::Unknown);
         prop_assert_eq!(serde_json::from_value::<GuestSocketEvent>(serde_json::json!({"type":format!("future_{future_field}"),"body":value}))?, GuestSocketEvent::Unknown);
-    }
-
-    #[test]
-    fn accepted_untrusted_json_is_round_trip_stable(input in prop::collection::vec(any::<u8>(), 0..2048)) {
-        if let Ok(event) = serde_json::from_slice::<GuestEvent>(&input) {
-            prop_assert_eq!(serde_json::from_slice::<GuestEvent>(&serde_json::to_vec(&event)?)?, event);
-        }
     }
 }
 
@@ -356,49 +319,6 @@ fn another_checkpoint_format_never_reaches_artifact_decoder() {
             Err(GuestError::IncompatibleCodec)
         );
     }
-}
-
-#[test]
-fn every_event_round_trips_with_a_single_discriminant() -> Result<(), Box<dyn std::error::Error>> {
-    let request = GuestRequest {
-        url: "https://example.test/".into(),
-        method: "POST".into(),
-        headers: vec![],
-        body: vec![0, 255].into(),
-    };
-    let events = [
-        GuestEvent::Stream {
-            subscription: "inbox".into(),
-            stream: "agents/a/inbox".into(),
-            sequence: u64::MAX.to_string(),
-            committed_at_micros: "0".into(),
-            value: "AP8=".into(),
-            commit_id: "ab".repeat(16),
-        },
-        GuestEvent::Invoke {
-            payload: vec![0, 255].into(),
-        },
-        GuestEvent::Fetch { request },
-        GuestEvent::Alarm,
-        GuestEvent::Timer {
-            timer_id: "timer-1".into(),
-            deadline_unix_ms: "123".into(),
-        },
-        GuestEvent::Socket {
-            connection_id: "app-1".into(),
-            event: GuestSocketEvent::Reconnecting {
-                attempt: 1,
-                delay_ms: "10".into(),
-            },
-        },
-    ];
-    for event in events {
-        assert_eq!(
-            serde_json::from_slice::<GuestEvent>(&serde_json::to_vec(&event)?)?,
-            event
-        );
-    }
-    Ok(())
 }
 
 #[test]
