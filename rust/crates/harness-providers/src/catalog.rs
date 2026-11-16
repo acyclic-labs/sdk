@@ -346,7 +346,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     token_counter: counters.get(&adapter).cloned().flatten(),
                     max_event_bytes: None,
                     retry: crate::RetrySpec::DEFAULT,
-                    timeouts: crate::TimeoutSpec::FIRST_BYTE,
+                    timeouts: crate::TimeoutSpec::DEFAULT,
                     prompt_cache: if id == "openrouter" {
                         crate::PromptCache::Routed
                     } else {
