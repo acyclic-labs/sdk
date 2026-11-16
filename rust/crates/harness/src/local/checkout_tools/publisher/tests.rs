@@ -262,6 +262,7 @@ async fn open_fixture_shared(
                 native_mounts: false,
                 mounting: crate::local::WorkspaceMounting::Native,
                 native_mount_probe: &Default::default(),
+                source_entropy: acyclic_fs::demand::native::os_source_entropy(),
                 authority: None,
             },
             acyclic_fs::hold_root(directory).map_err(storage)?,

@@ -402,6 +402,7 @@ pub(super) struct Attach<'a> {
     pub(super) native_mounts: bool,
     pub(super) mounting: WorkspaceMounting,
     pub(super) native_mount_probe: &'a acyclic_fs::NativeMountProbe,
+    pub(super) source_entropy: acyclic_fs::demand::native::SourceEntropy,
 }
 
 impl Attach<'_> {
@@ -624,6 +625,7 @@ async fn lazy_view(
         original.as_ref().map(|state| state.source.clone()),
         &work,
         &cancellation,
+        attach.source_entropy.clone(),
     )
     .await?;
     let fresh = original.is_none();
@@ -668,10 +670,11 @@ async fn held_source(
     reference: Option<acyclic_fs::demand::SourceReference>,
     work: &NativeMaterializationWork,
     cancellation: &acyclic_fs::CancellationToken,
+    source_entropy: acyclic_fs::demand::native::SourceEntropy,
 ) -> Result<Arc<NativeDemandSource>> {
     let identity = root.identity();
     let (path, _custody) = work.path(root.path(), None)?;
-    let source = NativeDemandSource::open_held(
+    let source = NativeDemandSource::open_held_with_entropy(
         root,
         config.profile,
         config.limits,
@@ -679,6 +682,7 @@ async fn held_source(
         None,
         work,
         cancellation,
+        source_entropy,
     )
     .await
     .map_err(storage)?;
