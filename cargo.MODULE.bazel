@@ -1217,21 +1217,7 @@ crate.spec(
 
 crate.spec(
     package = "fancy-regex",
-    version = "=0.16.2",
-    package_alias = "fancy-regex-0_16_2",
-    default_features = False,
-    features = [
-        "default",
-        "perf",
-        "std",
-        "unicode",
-    ],
-)
-
-crate.spec(
-    package = "fancy-regex",
     version = "=0.20.2",
-    package_alias = "fancy-regex-0_20_2",
     default_features = False,
     features = [
         "default",
@@ -4292,23 +4278,13 @@ crate.spec(
 crate.spec(
     package = "tower-http",
     version = "=0.6.11",
-    package_alias = "tower-http-0_6_11",
-    default_features = False,
-    features = [
-        "follow-redirect",
-        "futures-util",
-        "tower",
-    ],
-)
-
-crate.spec(
-    package = "tower-http",
-    version = "=0.7.1",
-    package_alias = "tower-http-0_7_1",
     default_features = False,
     features = [
         "cors",
         "default",
+        "follow-redirect",
+        "futures-util",
+        "tower",
     ],
 )
 
@@ -4924,7 +4900,7 @@ crate.spec(
 
 crate.from_cargo(
     name = "crates",
-    cargo_lockfile = "//:Cargo.lock",
+    cargo_lockfile = "@cargo_lock//:Cargo.lock",
     manifests = [
         "//:Cargo.toml",
     ],

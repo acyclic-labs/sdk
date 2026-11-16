@@ -4,6 +4,9 @@
 # Actions see a fixed PATH and no job environment, so every job directory and host shares keys.
 common --incompatible_strict_action_env
 common --experimental_convenience_symlinks=ignore
+# Every machine keeps a local disk cache of action results. A build host that shares a remote cache
+# replaces it from its own bazelrc, loaded after this one.
+common --disk_cache=~/.cache/bazel-disk
 build --remote_cache_compression
 build --nobuild_runfile_links
 build --verbose_failures

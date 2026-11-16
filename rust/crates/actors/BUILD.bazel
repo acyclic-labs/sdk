@@ -172,7 +172,6 @@ rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
     srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
-        "src/codegen/path.rs",
         "src/guest/state.rs",
     ],
     compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
