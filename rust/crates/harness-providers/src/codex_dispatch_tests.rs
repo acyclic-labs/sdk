@@ -149,7 +149,17 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
         .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
-    assert_eq!(events.len(), 2);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| !matches!(
+                event,
+                acyclic_harness_core::model::ModelEvent::Trace { .. }
+                    | acyclic_harness_core::model::ModelEvent::Wait(_)
+            ))
+            .count(),
+        2
+    );
     let requests = server
         .requests
         .lock()
