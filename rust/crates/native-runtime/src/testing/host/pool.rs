@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) struct Pool {
     threads: usize,
+    started: AtomicUsize,
     unavailable: AtomicUsize,
     progress: Mutex<()>,
     changed: Condvar,
@@ -17,14 +18,25 @@ impl Pool {
     pub(crate) fn new(threads: usize) -> Arc<Self> {
         Arc::new(Self {
             threads,
+            started: AtomicUsize::new(0),
             unavailable: AtomicUsize::new(0),
             progress: Mutex::new(()),
             changed: Condvar::new(),
         })
     }
 
+    /// Records one worker this pool actually started. A seeded world starts
+    /// only the workers its poller needs, so saturation is measured against
+    /// the started width, never the host's maximum.
+    pub(super) fn started(&self) {
+        let started = self.started.fetch_add(1, Ordering::SeqCst) + 1;
+        debug_assert!(started <= self.threads, "worker pool exceeded its width");
+        self.changed();
+    }
+
     pub(super) fn park(&self) -> bool {
-        self.unavailable.fetch_add(1, Ordering::SeqCst) + 1 == self.threads
+        let started = self.started.load(Ordering::SeqCst);
+        started != 0 && self.unavailable.fetch_add(1, Ordering::SeqCst) + 1 == started
     }
 
     pub(super) fn resume(&self) {
@@ -53,7 +65,7 @@ impl Pool {
             let state = host.lock().unwrap_or_else(PoisonError::into_inner);
             if state.phase != Phase::Starting
                 || state.io_ready
-                || self.unavailable.load(Ordering::SeqCst) == self.threads
+                || self.unavailable.load(Ordering::SeqCst) == self.started.load(Ordering::SeqCst)
             {
                 drop(progress);
                 return state;

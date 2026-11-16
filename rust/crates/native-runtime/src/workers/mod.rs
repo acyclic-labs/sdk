@@ -41,10 +41,14 @@ impl Drop for Running {
 
 impl NativeWorkers {
     fn start(&self, admission: &mut AdmissionState) -> io::Result<()> {
+        let demand = admission.running_jobs + admission.queued_jobs + 1;
+        self.start_to(admission, demand)
+    }
+
+    fn start_to(&self, admission: &mut AdmissionState, demand: usize) -> io::Result<()> {
         let Some(service) = &self.service else {
             return Ok(());
         };
-        let demand = admission.running_jobs + admission.queued_jobs + 1;
         while admission.started_workers < demand.min(self.threads) {
             let receiver = Arc::clone(&service.receiver);
             let shared_admission = Arc::clone(&self.admission);
@@ -62,6 +66,8 @@ impl NativeWorkers {
                         wake_capacity_waiter(waker);
                     }
                 })?;
+            #[cfg(feature = "test-support")]
+            self.host_pool.started();
             admission.started_workers += 1;
         }
         Ok(())
@@ -143,6 +149,49 @@ pub(crate) static PROCESS_WORKERS: LazyLock<io::Result<NativeWorkers>> =
 
 pub(crate) static IO_SERVICES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+/// Seeded worlds currently open in this process. Each world needs at most two
+/// host workers: one for its blocking call and one for a nested child call.
+#[cfg(feature = "test-support")]
+static SEEDED_WORLDS: AtomicUsize = AtomicUsize::new(0);
+
+/// Starts the host workers a new seeded world needs, growing the shared pool
+/// for every world already open instead of shrinking it for everyone.
+#[cfg(feature = "test-support")]
+pub(crate) fn start_seeded_world() {
+    let active = SEEDED_WORLDS.fetch_add(1, Ordering::SeqCst) + 1;
+    start_world_demand(active * 2);
+}
+
+/// Records that a seeded world closed. Its workers stay available to the
+/// shared pool; the next world starts only what it needs.
+#[cfg(feature = "test-support")]
+pub(crate) fn finish_seeded_world() {
+    SEEDED_WORLDS.fetch_sub(1, Ordering::SeqCst);
+}
+
+#[cfg(feature = "test-support")]
+fn seeded_demand() -> Option<usize> {
+    let active = SEEDED_WORLDS.load(Ordering::SeqCst);
+    (active > 0).then(|| active * 2)
+}
+
+#[cfg(feature = "test-support")]
+fn start_world_demand(demand: usize) {
+    let demand = demand.min(parallelism());
+    for slot in [&NATIVE_WORKERS, &BLOCKING_WORKERS] {
+        let Ok(workers) = workers(slot, false) else {
+            continue;
+        };
+        let mut admission = workers
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(error) = workers.start_to(&mut admission, demand) {
+            tracing::error!(%error, "seeded world worker start failed");
+        }
+    }
+}
+
 /// Initializes the existing native and host I/O services before measured requests are admitted.
 pub fn initialize_native_io_services() -> io::Result<()> {
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
@@ -153,7 +202,11 @@ pub fn initialize_native_io_services() -> io::Result<()> {
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        workers.start(&mut admission)?;
+        #[cfg(feature = "test-support")]
+        let demand = seeded_demand().unwrap_or(workers.threads);
+        #[cfg(not(feature = "test-support"))]
+        let demand = workers.threads;
+        workers.start_to(&mut admission, demand)?;
     }
     IO_SERVICES_INITIALIZED.store(true, Ordering::Release);
     Ok(())
