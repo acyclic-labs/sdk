@@ -330,7 +330,8 @@ impl Opening {
         let options = acyclic_fs::LocalOptions::new(match &self.config.project {
             LocalProject::Workspace(_) => directory.join("filesystem"),
             LocalProject::Volume { directory, .. } => directory.clone(),
-        });
+        })
+        .clock(self.config.clock.clone());
         let state_owner = self.config.test_state.clone();
         let filesystem = match &state_owner {
             Some(owner) if matches!(&self.config.project, LocalProject::Workspace(_)) => {
@@ -356,6 +357,7 @@ impl Opening {
                 kind: AggregateKind::Task,
                 id: owner.task.to_string(),
             },
+            self.config.clock.clone(),
         )?;
         // Related session-volume and seed frames share one existing provider drain.
         // The boundary precedes workspace/root observations of those references.

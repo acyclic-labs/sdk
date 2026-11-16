@@ -55,6 +55,7 @@ fn explicit_file_custody_reopens_store_owned_seeds_without_native_fallback() -> 
             &owner.key_ref,
             custody,
             audience.clone(),
+            std::sync::Arc::new(acyclic_stream::SystemUnixMillisClock),
         )
     };
     bootstrap(custody)?;
