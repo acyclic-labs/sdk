@@ -5,11 +5,14 @@
 use super::*;
 use acyclic_harness::{
     conversation::{DirectoryTarget, PrivateDirectoryEntryKind},
-    local::WorkspaceMounting,
+    executor::ExecutionRecord,
+    local::{WorkspaceMounting, agent_conversation::Conversation},
     model::{ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall, ToolResultContent},
     test_support::{ScriptedEvent, model_visible_messages},
 };
-use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
+use acyclic_harness_client::{
+    AgentCommand, AgentPageRequest, AgentReply, ExecutionPosition, ReadTarget,
+};
 use acyclic_native_runtime::testing::{DurableFault, InjectedStorageFault};
 use driver::{Driver, Outcome};
 use std::sync::Mutex;
@@ -210,6 +213,8 @@ pub(super) struct Incarnation {
     /// Durable operations the whole incarnation performed.
     pub durable: usize,
     pub crashed: Option<InjectedStorageFault>,
+    /// The root agent's committed execution records, in journal order.
+    pub records: Vec<ExecutionRecord>,
 }
 
 /// A seeded world on disk. Incarnations share only its files and the model
@@ -270,10 +275,12 @@ impl World {
                 Box::pin(async { Ok(()) })
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
+            let records = Arc::new(Mutex::new(Vec::new()));
             let directory = self.directory.path();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
+                let records = Arc::clone(&records);
                 entry(async move {
                     let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
                     let config = local_harness_config(
@@ -312,6 +319,21 @@ impl World {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
                     }
+                    let conversation = Conversation::open(Box::pin(harness.connect()).await?);
+                    let mut position = ExecutionPosition::default();
+                    loop {
+                        let query = conversation
+                            .execution_page(position.input, position.after, false)
+                            .await?;
+                        position = query.continuation().map_err(failed)?;
+                        let Some(page) = query.page else {
+                            break;
+                        };
+                        records
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .extend(page.items);
+                    }
                     Ok::<_, Error>(())
                 })
             };
@@ -332,12 +354,18 @@ impl World {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
+            let records = std::mem::take(
+                &mut *records
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
             Ok(Incarnation {
                 prompts,
                 requests: provider.requests(),
                 dispatched_at,
                 durable: counter.durable_write_count(),
                 crashed,
+                records,
             })
         })
     }
