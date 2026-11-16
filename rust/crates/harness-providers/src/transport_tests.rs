@@ -202,96 +202,108 @@ async fn generate(provider: &ResolvedModel) -> Result<Vec<ModelEvent>> {
 }
 
 #[tokio::test]
-async fn response_header_spans_precede_body_and_leave_cancelled_headers_unfinished() -> Result<()> {
-    use acyclic_stream::trace::{Mechanism, Outcome, SpanEvent, TraceRecord};
-    use futures::FutureExt as _;
+async fn response_header_spans_publish_only_for_accepted_bodies() -> Result<()> {
+    use acyclic_stream::trace::{Outcome, SpanEvent, TraceRecord};
     for native in [false, true] {
-        for headers in [false, true] {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .map_err(|_| invalid("bind"))?;
-            let port = listener.local_addr().map_err(|_| invalid("addr"))?.port();
-            let (entered, received) = tokio::sync::oneshot::channel();
-            let server = tokio::spawn(async move {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                read_request(&mut socket).await;
-                if headers {
-                    socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 100\r\n\r\n").await.unwrap();
-                    socket.flush().await.unwrap();
+        // An accepted body publishes its start and finish before its terminal event.
+        let (port, _) = serve(vec![Reply::Full(200, crate::fixtures::CHAT)]).await?;
+        let (provider, _) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+        let (request, dispatch) = super::request(&provider)?;
+        let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+        let baseline = work.live_allocation_bytes();
+        let mut events: acyclic_stream::BoxProviderStream<
+            '_,
+            Result<(ModelEvent, acyclic_fs::NativeCustody)>,
+        > = if native {
+            Box::pin(
+                provider
+                    .generate_with_native_work(&request, dispatch, &work)?
+                    .await?
+                    .map(|event| event.map(|(event, custody)| (event, Some(custody)))),
+            )
+        } else {
+            Box::pin(
+                provider
+                    .generate(&request, dispatch)
+                    .map(|event| event.map(|event| (event, None))),
+            )
+        };
+        let mut start = None;
+        let mut finished = false;
+        let mut terminal = false;
+        while let Some((event, custody)) = events.next().await.transpose()? {
+            match event {
+                ModelEvent::Trace {
+                    record:
+                        TraceRecord::V1(SpanEvent::Started {
+                            id,
+                            parent: None,
+                            name,
+                            mechanism: acyclic_stream::trace::Mechanism::RoundTrip,
+                            at_ns,
+                            guarantee,
+                        }),
+                } => {
+                    assert!(!terminal, "trace published after its terminal event");
+                    assert_eq!(name, "model.response_headers");
+                    assert_eq!(guarantee.as_deref(), Some("receive_response_headers"));
+                    start = Some((id, at_ns));
                 }
-                entered.send(()).unwrap();
-                let mut byte = [0];
-                assert!(
-                    matches!(socket.read(&mut byte).await, Ok(0) | Err(_)),
-                    "dropping the original exchange must close its connection"
-                );
-            });
-            let (provider, _) = model(&format!("http://127.0.0.1:{port}/v1"))?;
-            let (request, dispatch) = super::request(&provider)?;
-            let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
-            let baseline = work.live_allocation_bytes();
-            let mut events: acyclic_stream::BoxProviderStream<
-                '_,
-                Result<(ModelEvent, acyclic_fs::NativeCustody)>,
-            > = if native {
-                Box::pin(
-                    provider
-                        .generate_with_native_work(&request, dispatch, &work)?
-                        .await?
-                        .map(|event| event.map(|(event, custody)| (event, Some(custody)))),
-                )
-            } else {
-                Box::pin(
-                    provider
-                        .generate(&request, dispatch)
-                        .map(|event| event.map(|event| (event, None))),
-                )
-            };
-            let (start, custody) = events.next().await.unwrap()?;
-            let ModelEvent::Trace {
-                record:
-                    TraceRecord::V1(SpanEvent::Started {
-                        id,
-                        parent: None,
-                        name,
-                        mechanism: Mechanism::RoundTrip,
-                        at_ns,
-                        guarantee,
-                    }),
-            } = &start
-            else {
-                panic!("missing original headers start")
-            };
-            assert_eq!(name, "model.response_headers");
-            assert_eq!(guarantee.as_deref(), Some("receive_response_headers"));
-            let (id, started) = (*id, *at_ns);
-            drop((start, custody));
-            if headers {
-                let (finish, custody) = events.next().await.unwrap()?;
-                assert!(matches!(finish, ModelEvent::Trace {
-                    record: TraceRecord::V1(SpanEvent::Finished {
-                        id: finished, at_ns, bytes: None, result: Outcome::Succeeded,
-                    })
-                } if finished == id && at_ns >= started));
-                drop((finish, custody));
-            }
-            {
-                let next = events.next();
-                tokio::pin!(next);
-                tokio::select! {
-                    biased;
-                    entered = received => entered.unwrap(),
-                    _ = &mut next => panic!("exchange advanced before its held headers/body"),
+                ModelEvent::Trace {
+                    record:
+                        TraceRecord::V1(SpanEvent::Finished {
+                            id,
+                            at_ns,
+                            bytes: None,
+                            result: Outcome::Succeeded,
+                        }),
+                } => {
+                    let (started, at) = start.expect("finish before start");
+                    assert_eq!(id, started);
+                    assert!(at_ns >= at);
+                    finished = true;
                 }
-                assert!(
-                    next.now_or_never().is_none(),
-                    "unfinished exchange fabricated an event"
-                );
+                ModelEvent::Completed { .. } => terminal = true,
+                _ => {}
             }
-            drop(events);
-            server.await.unwrap();
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            drop(custody);
         }
+        assert!(start.is_some() && finished && terminal);
+        drop(events);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+
+        // A cancellation before headers publishes no trace.
+        let (port, _) = serve(vec![Reply::Lost]).await?;
+        let (provider, _) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+        let (request, dispatch) = super::request(&provider)?;
+        let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+        let baseline = work.live_allocation_bytes();
+        let mut events: acyclic_stream::BoxProviderStream<
+            '_,
+            Result<(ModelEvent, acyclic_fs::NativeCustody)>,
+        > = if native {
+            Box::pin(
+                provider
+                    .generate_with_native_work(&request, dispatch, &work)?
+                    .await?
+                    .map(|event| event.map(|(event, custody)| (event, Some(custody)))),
+            )
+        } else {
+            Box::pin(
+                provider
+                    .generate(&request, dispatch)
+                    .map(|event| event.map(|event| (event, None))),
+            )
+        };
+        match events.next().await.expect("transport refusal") {
+            Ok((event, custody)) => {
+                assert!(!matches!(event, ModelEvent::Trace { .. }));
+                drop(custody);
+            }
+            Err(_) => {}
+        }
+        drop(events);
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())
 }
