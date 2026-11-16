@@ -152,7 +152,6 @@ acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = fa
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support"] }
 rcgen = "0.14.10"
 serde-saphyr = { version = "=2.0.0", default-features = false, features = ["serialize"] }
-shuttle = "=0.9.8"
 tracing-subscriber.workspace = true
 loom = { version = "0.7.3", features = ["futures"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
