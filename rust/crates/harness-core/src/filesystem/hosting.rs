@@ -340,12 +340,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Bound<P, O> {
     pub const fn volumes(&self) -> &Arc<Host<P, O>> {
         &self.volumes
     }
-
-    /// The original clock shared by actor deadlines and session authorization.
-    #[must_use]
-    pub const fn clock(&self) -> &Arc<dyn Clock> {
-        &self.clock
-    }
 }
 
 impl<P, O> Bound<P, O>

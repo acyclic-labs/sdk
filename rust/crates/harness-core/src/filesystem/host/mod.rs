@@ -167,6 +167,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             native_skills: self.native_skills.clone(),
             project_family: self.project_family.clone(),
+            clock: self.clock.clone(),
             _native_custody: None,
         }))
     }
