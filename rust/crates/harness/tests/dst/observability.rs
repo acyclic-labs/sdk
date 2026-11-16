@@ -2,6 +2,7 @@
 use super::*;
 use acyclic_harness::executor::ExecutionEvent;
 use family::{Generator, Variant};
+use oracle::{Plan, World, failed};
 
 pub(super) const GENERATOR: Generator = Generator {
     class: "O1",

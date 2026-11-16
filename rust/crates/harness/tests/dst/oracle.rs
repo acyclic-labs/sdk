@@ -325,7 +325,7 @@ impl World {
                         let query = conversation
                             .execution_page(position.input, position.after, false)
                             .await?;
-                        position = query.continuation().map_err(failed)?;
+                        position = query.continuation().map_err(storage)?;
                         let Some(page) = query.page else {
                             break;
                         };
