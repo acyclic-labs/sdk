@@ -39,26 +39,36 @@ fn valid_record_is_admitted_and_projects_with_exact_metadata() {
     input::assert_replay(record, Limits::default());
 }
 
+fn nested(containers: u32) -> Value {
+    (1..containers).fold(json!([]), |inner, _| json!([inner]))
+}
+
 #[test]
 fn complete_depth_and_numeric_bounds_apply_before_recording() {
-    let mut boundary = json!([]);
-    // The envelope occupies depth zero; metadata begins at depth one.
-    for _ in 1..crate::executor::json::RECORD_MAXIMUM_DEPTH {
-        boundary = json!([boundary]);
+    use crate::executor::json::{PROJECTION_NESTING_DEPTH, RECORD_MAXIMUM_DEPTH};
+    // The envelope occupies depth zero; metadata begins at depth one, the
+    // arguments at two and their members at three. Admission leaves room for
+    // projection's nesting.
+    let limit = RECORD_MAXIMUM_DEPTH - PROJECTION_NESTING_DEPTH;
+    for admitted in [
+        record(json!({}), nested(limit)),
+        record(json!({ "n": nested(limit - 2) }), Value::Null),
+    ] {
+        assert!(
+            admitted
+                .invocation
+                .validate_recorded(&admitted.metadata, Limits::default(), None)
+                .is_ok()
+        );
+        input::assert_envelope(&admitted);
+        // `assert_replay` fails unless the admitted record projects and
+        // replays under the decoder's own depth bound.
+        input::assert_replay(admitted, Limits::default());
     }
-    let admitted = record(json!({}), boundary.clone());
-    assert!(
-        admitted
-            .invocation
-            .validate_recorded(&admitted.metadata, Limits::default(), None)
-            .is_ok()
-    );
-    input::assert_envelope(&admitted);
-    // One more metadata container crosses the complete envelope's bound.
-    // The invocation object adds that same extra depth to arguments.
+    // One more container in either member is refused at admission.
     for record in [
-        record(json!({}), json!([boundary.clone()])),
-        record(boundary, Value::Null),
+        record(json!({}), nested(limit + 1)),
+        record(json!({ "n": nested(limit - 1) }), Value::Null),
         record(json!({}), json!(u64::MAX)),
         record(json!({"value":u64::MAX}), Value::Null),
     ] {

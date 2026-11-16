@@ -123,7 +123,8 @@ fn validate<I: Serialize>(
                 .into_iter()
                 .chain(limits.render_bytes)
                 .min(),
-            crate::executor::json::RECORD_MAXIMUM_DEPTH,
+            crate::executor::json::RECORD_MAXIMUM_DEPTH
+                - crate::executor::json::PROJECTION_NESTING_DEPTH,
             work,
         )?;
         ToolInvocation::validate_identity(call_id, Some(name), work)?;
