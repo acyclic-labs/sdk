@@ -368,7 +368,7 @@ pub const GIT_COMPAT_NESTED_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ),
     (
         "GitLazySource",
-        r#"export interface GitLazySource { readonly identity: Uint8Array; readonly epoch: bigint; }"#,
+        r#"export interface GitLazySource { readonly identity: Uint8Array; readonly epoch: bigint; readonly components: Uint8Array; }"#,
     ),
     (
         "GitTreeRef",
