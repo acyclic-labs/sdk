@@ -834,7 +834,8 @@ impl Error {
     }
 
     /// Converts a fixed boundary diagnostic without substituting its wire class.
-    pub(crate) fn from_code(code: crate::wire::ErrorCode, reason: &'static str) -> Self {
+    /// Builds an error from a wire code and a static reason.
+    pub fn from_code(code: crate::wire::ErrorCode, reason: &'static str) -> Self {
         use crate::wire::ErrorCode;
         match code {
             ErrorCode::Invalid => Self::Invalid(reason.into()),
@@ -1497,7 +1498,8 @@ impl Error {
 
     /// Observe a shared producer failure without erasing its original cause.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn shared_for_request(source: std::sync::Arc<Self>, operation: OperationId) -> Self {
+    /// Wraps a shared request failure with its operation identity.
+    pub fn shared_for_request(source: std::sync::Arc<Self>, operation: OperationId) -> Self {
         let classification = source.classification();
         Self::Command(Box::new(CommandFailure {
             operation,
@@ -1508,7 +1510,8 @@ impl Error {
 
     /// Retain a foreign I/O cause with the request owner's semantic decision.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn external_for_request(
+    /// Wraps an external request failure with its operation identity.
+    pub fn external_for_request(
         operation: OperationId,
         classification: ErrorClassification,
         source: impl std::error::Error + Send + Sync + 'static,

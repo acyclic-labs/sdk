@@ -1,5 +1,5 @@
 //! The actual finite stdio exchange, with no process or readiness substitute.
-use super::{McpStdioRequest, codec, services};
+use super::{McpStdioRequest, McpStdioRequestExt as _, codec, services};
 use acyclic_harness_core::{OperationId, test_support::error_observation};
 use serde_json::Value;
 

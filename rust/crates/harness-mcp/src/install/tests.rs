@@ -1,4 +1,5 @@
 use super::*;
+use super::McpConfigInstall as _;
 use acyclic_harness_core::{
     OperationId,
     conversation::Limits,

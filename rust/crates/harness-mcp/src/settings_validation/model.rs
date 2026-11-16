@@ -13,7 +13,7 @@ fn replay(files: &Files, bytes: &[u8]) {
     write(&files.codex.join("config.toml"), bytes);
     match (
         config(files, u32::MAX.into()).configured_model(),
-        selection::parse(bytes),
+        acyclic_harness_native_settings::test_support::parse_model_selection(bytes),
     ) {
         (Ok(actual), Ok(expected)) => {
             assert_eq!(actual, expected, "model file must preserve parser identity")

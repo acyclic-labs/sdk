@@ -599,7 +599,8 @@ impl PreparationIo {
             ..Default::default()
         })
     }
-    pub(crate) fn reserve_decode(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
+    /// Reserves decode capacity on this boundary.
+    pub fn reserve_decode(&self, bytes: u64) -> Result<DecodeReservation<'_>> {
         match self.account(|accounting| accounting.claim_owned(bytes, 0))? {
             KernelOwnedAllocation::Standalone => Ok(DecodeReservation {
                 io: self,

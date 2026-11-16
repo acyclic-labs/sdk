@@ -3,6 +3,7 @@ use super::*;
 use acyclic_harness_core::tool::ToolSource;
 use acyclic_harness_input_watch::InputWatch;
 use acyclic_harness_native_settings::{NativeSettings, SettingsConfig};
+use super::McpConfigInstall as _;
 
 struct WatchedConfig {
     watch: InputWatch,
@@ -15,9 +16,21 @@ struct WatchedConfig {
     removed: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
-impl McpConfig {
+/// Installs a shared MCP catalog that follows trusted settings files.
+pub trait McpConfigWatchExt {
     /// Install a shared catalog which follows trusted config files and MCP events.
-    pub async fn install_watched(
+    async fn install_watched(
+        tools: ToolRegistry,
+        settings: Arc<SettingsConfig>,
+        workspace: &Path,
+        limits: McpClientLimits,
+        secrets: Arc<dyn acyclic_harness_core::secrets::SecretSource>,
+    ) -> Result<McpInstallation>;
+}
+
+impl McpConfigWatchExt for McpConfig {
+    /// Install a shared catalog which follows trusted config files and MCP events.
+    async fn install_watched(
         tools: ToolRegistry,
         settings: Arc<SettingsConfig>,
         workspace: &Path,
@@ -43,7 +56,7 @@ impl McpConfig {
             removed: std::sync::Mutex::new(Default::default()),
         });
         let mut capabilities = installed.capabilities;
-        capabilities.0.insert("mcp:configured".into());
+        capabilities.insert("mcp:configured".into());
         Ok(McpInstallation {
             tools: tools.with_source(source),
             capabilities,

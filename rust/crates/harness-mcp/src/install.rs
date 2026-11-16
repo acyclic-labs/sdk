@@ -60,11 +60,35 @@ struct Connected {
     generation: u64,
 }
 
-impl McpConfig {
+/// Connects configured MCP servers through the ordinary tool registry.
+pub(crate) trait McpConfigInstall {
     /// Connects configured servers and adds their tools without replacing caller tools.
     /// `workspace` must be the absolute project root. Required failures reject startup.
     /// Credential references resolve only through the host's `secrets`.
-    pub async fn install(
+    async fn install(
+        self,
+        tools: ToolRegistry,
+        workspace: &Path,
+        limits: McpClientLimits,
+        secrets: Arc<dyn acyclic_harness_core::secrets::SecretSource>,
+    ) -> Result<McpInstallation>;
+
+    /// Connects configured servers with the supplied per-server connector.
+    async fn install_with<F>(
+        self,
+        tools: ToolRegistry,
+        limits: McpClientLimits,
+        connect: F,
+    ) -> Result<McpInstallation>
+    where
+        F: for<'a> Fn(&'a McpServer) -> BoxProviderFuture<'a, Result<Connected>>;
+}
+
+impl McpConfigInstall for McpConfig {
+    /// Connects configured servers and adds their tools without replacing caller tools.
+    /// `workspace` must be the absolute project root. Required failures reject startup.
+    /// Credential references resolve only through the host's `secrets`.
+    async fn install(
         self,
         tools: ToolRegistry,
         workspace: &Path,
@@ -154,7 +178,7 @@ impl McpConfig {
             match result {
                 Ok((additional, grants)) => {
                     tools.extend(additional)?;
-                    capabilities.0.extend(grants.0);
+                    capabilities.extend(&grants);
                 }
                 Err(error) if required => return Err(error),
                 Err(error) => diagnostics.push(McpServerFailure {
@@ -259,9 +283,7 @@ fn register(
             .iter()
             .map(|tool| format!("tool:call:mcp.{}.{}", catalog.server, tool.name)),
     );
-    capabilities
-        .0
-        .insert(format!("mcp:call:{}", catalog.server));
+    capabilities.insert(format!("mcp:call:{}", catalog.server));
     Ok((tools, capabilities))
 }
 

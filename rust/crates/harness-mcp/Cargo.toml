@@ -10,7 +10,7 @@ description = "MCP clients behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-mcp"
 
 [features]
-test-support = ["acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-stream/test-support", "dep:tempfile"]
+test-support = ["acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-stream/test-support", "acyclic-harness-native-settings/test-support", "dep:tempfile"]
 wasm = ["acyclic-harness-core/wasm", "dep:tsify"]
 
 [dependencies]

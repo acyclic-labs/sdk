@@ -224,7 +224,8 @@ impl ToolRegistry {
         }
         Ok(None)
     }
-    pub(crate) fn was_removed(&self, name: &str) -> Result<bool> {
+    /// Whether the named tool was removed from this registry.
+    pub fn was_removed(&self, name: &str) -> Result<bool> {
         for source in self.sources() {
             if source.was_removed(name)? {
                 return Ok(true);
@@ -238,7 +239,8 @@ impl ToolRegistry {
         self
     }
 
-    pub(crate) fn retain_sources(&mut self, mut keep: impl FnMut(&dyn ToolSource) -> bool) {
+    /// Retains only the sources selected by `keep`.
+    pub fn retain_sources(&mut self, mut keep: impl FnMut(&dyn ToolSource) -> bool) {
         if let Some(sources) = &mut self.sources {
             Arc::make_mut(sources).retain(|source| keep(source.as_ref()));
         }
@@ -264,7 +266,8 @@ impl ToolRegistry {
         Ok(selected)
     }
 
-    pub(crate) async fn refresh(&self) -> Result<()> {
+    /// Refreshes every registered source.
+    pub async fn refresh(&self) -> Result<()> {
         for source in self.sources() {
             source.refresh().await?;
         }

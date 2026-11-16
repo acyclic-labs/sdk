@@ -291,7 +291,8 @@ impl StockExecutor {
     }
 
     /// Removes fresh tool-call grants while preserving the pinned catalog and admitted versions.
-    pub(crate) fn without_tool_authority(mut self) -> Self {
+    /// Removes the tool authority from this executor.
+    pub fn without_tool_authority(mut self) -> Self {
         self.tools.restrict_sources(&[]);
         self.tool_scope
             .grants
