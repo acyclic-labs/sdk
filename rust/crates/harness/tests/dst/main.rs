@@ -259,6 +259,9 @@ fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u
                 (model.clone(), provider.clone()),
             )?
             .without_user_settings()
+            // The finite script measures reopen bytes, not the optional
+            // feedback retrospective settlement turn.
+            .feedback_plugin(false)
             .volume(volume.clone())
             .state_directory(directory.join("state")))
         };

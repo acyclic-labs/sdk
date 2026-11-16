@@ -88,6 +88,9 @@ fn local_turn<'a>(
         let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
         let config = local_harness_config(directory.join("checkout"), (model, provider))?
             .without_user_settings()
+            // The finite script measures reopen bytes, not the optional
+            // feedback retrospective settlement turn.
+            .feedback_plugin(false)
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
         if matches!(cut, Some(Cut::FirstTurnWrite)) {
