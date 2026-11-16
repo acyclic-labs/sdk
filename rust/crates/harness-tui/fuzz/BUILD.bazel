@@ -35,9 +35,9 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-tui:acyclic_harness_tui",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//unicode-segmentation-1.13.3",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde_json-1.0.154",
+        "@crates//unicode-segmentation-1.13.3",
     ],
     visibility = ["//visibility:public"],
 )
@@ -64,9 +64,9 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-tui:acyclic_harness_tui",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//unicode-segmentation-1.13.3",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde_json-1.0.154",
+        "@crates//unicode-segmentation-1.13.3",
     ],
     visibility = ["//visibility:public"],
 )
@@ -93,9 +93,9 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-tui:acyclic_harness_tui",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//unicode-segmentation-1.13.3",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde_json-1.0.154",
+        "@crates//unicode-segmentation-1.13.3",
     ],
     visibility = ["//visibility:public"],
 )
@@ -122,9 +122,9 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-tui:acyclic_harness_tui",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//unicode-segmentation-1.13.3",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde_json-1.0.154",
+        "@crates//unicode-segmentation-1.13.3",
     ],
     visibility = ["//visibility:public"],
 )
@@ -151,9 +151,9 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-tui:acyclic_harness_tui",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//unicode-segmentation-1.13.3",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde_json-1.0.154",
+        "@crates//unicode-segmentation-1.13.3",
     ],
     visibility = ["//visibility:public"],
 )
@@ -180,9 +180,9 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-tui:acyclic_harness_tui",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//unicode-segmentation-1.13.3",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde_json-1.0.154",
+        "@crates//unicode-segmentation-1.13.3",
     ],
     visibility = ["//visibility:public"],
 )
@@ -207,9 +207,9 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-tui:acyclic_harness_tui",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//unicode-segmentation-1.13.3",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde_json-1.0.154",
+        "@crates//unicode-segmentation-1.13.3",
     ],
     visibility = ["//visibility:public"],
 )
@@ -236,9 +236,9 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-tui:acyclic_harness_tui",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//unicode-segmentation-1.13.3",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde_json-1.0.154",
+        "@crates//unicode-segmentation-1.13.3",
     ],
     visibility = ["//visibility:public"],
 )
@@ -265,9 +265,9 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-tui:acyclic_harness_tui",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//unicode-segmentation-1.13.3",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde_json-1.0.154",
+        "@crates//unicode-segmentation-1.13.3",
     ],
     visibility = ["//visibility:public"],
 )
@@ -292,9 +292,9 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-tui:acyclic_harness_tui",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//unicode-segmentation-1.13.3",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde_json-1.0.154",
+        "@crates//unicode-segmentation-1.13.3",
     ],
     visibility = ["//visibility:public"],
 )

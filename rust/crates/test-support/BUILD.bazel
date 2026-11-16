@@ -52,7 +52,7 @@ rust_library(
         ":build_script",
     ] + [
         "//rust/crates/differential:acyclic_differential",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//tokio-1.54.1",
     ],
     visibility = ["//visibility:public"],
 )
@@ -69,9 +69,9 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
-        "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//tempfile-3.27.0",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//proptest-1.12.0",
+        "@crates//tempfile-3.27.0",
+        "@crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -115,9 +115,9 @@ rust_test(
         ":build_script",
     ] + [
         "//rust/crates/differential:acyclic_differential",
-        "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//tempfile-3.27.0",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//proptest-1.12.0",
+        "@crates//tempfile-3.27.0",
+        "@crates//tokio-1.54.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],

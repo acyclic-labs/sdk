@@ -31,10 +31,10 @@ rust_proc_macro(
     ],
     lint_config = ":lints",
     deps = [
-        "@sdk_crates//proc-macro2-1.0.107",
-        "@sdk_crates//quote-1.0.47",
-        "@sdk_crates//syn_2_0_119-2.0.119",
-        "@sdk_crates//termcolor-1.4.1",
+        "@crates//proc-macro2-1.0.107",
+        "@crates//quote-1.0.47",
+        "@crates//syn_2_0_119-2.0.119",
+        "@crates//termcolor-1.4.1",
     ],
     visibility = ["//visibility:public"],
 )

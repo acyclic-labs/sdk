@@ -35,7 +35,7 @@ rust_shared_library(
     deps = [
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//futures-0.3.34",
+        "@crates//futures-0.3.34",
     ],
     visibility = ["//visibility:public"],
 )
@@ -61,7 +61,7 @@ rust_library(
     deps = [
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//futures-0.3.34",
+        "@crates//futures-0.3.34",
     ],
     visibility = ["//visibility:public"],
 )

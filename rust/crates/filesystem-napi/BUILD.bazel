@@ -37,7 +37,7 @@ cargo_build_script(
     lint_config = ":lints",
     build_script_env = PACKAGE_ENV,
     deps = [
-        "@sdk_crates//napi-build-2.6.0",
+        "@crates//napi-build-2.6.0",
     ],
 )
 
@@ -65,13 +65,13 @@ rust_shared_library(
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/vendor/napi-3.15.0:napi",
-        "@sdk_crates//bytes-1.12.1",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//bytes-1.12.1",
+        "@crates//napi-3.15.0",
+        "@crates//serde_json-1.0.154",
+        "@crates//tokio-1.54.1",
     ],
     proc_macro_deps = [
-        "@sdk_crates//napi-derive-3.6.13",
+        "@crates//napi-derive-3.6.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -100,13 +100,13 @@ rust_library(
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness:acyclic_harness",
         "//rust/crates/native-runtime:acyclic_native_runtime",
-        "//rust/vendor/napi-3.15.0:napi",
-        "@sdk_crates//bytes-1.12.1",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//bytes-1.12.1",
+        "@crates//napi-3.15.0",
+        "@crates//serde_json-1.0.154",
+        "@crates//tokio-1.54.1",
     ],
     proc_macro_deps = [
-        "@sdk_crates//napi-derive-3.6.13",
+        "@crates//napi-derive-3.6.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -127,7 +127,7 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
-        "@sdk_crates//tempfile-3.27.0",
+        "@crates//tempfile-3.27.0",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],

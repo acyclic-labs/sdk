@@ -36,7 +36,7 @@ cargo_build_script(
     lint_config = ":lints",
     build_script_env = PACKAGE_ENV,
     deps = [
-        "@sdk_crates//napi-build-2.6.0",
+        "@crates//napi-build-2.6.0",
     ],
 )
 
@@ -61,11 +61,11 @@ rust_shared_library(
     deps = [
         ":build_script",
     ] + [
-        "//rust/vendor/napi-3.15.0:napi",
-        "@sdk_crates//futures-0.3.34",
+        "@crates//futures-0.3.34",
+        "@crates//napi-3.15.0",
     ],
     proc_macro_deps = [
-        "@sdk_crates//napi-derive-3.6.13",
+        "@crates//napi-derive-3.6.13",
     ],
     visibility = ["//visibility:public"],
 )

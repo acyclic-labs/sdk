@@ -39,9 +39,9 @@ rust_library(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",
-        "@sdk_crates//reqwest_0_12_28-0.12.28",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//reqwest_0_12_28-0.12.28",
+        "@crates//serde_json-1.0.154",
+        "@crates//tokio-1.54.1",
     ],
     visibility = ["//visibility:public"],
 )
@@ -114,9 +114,9 @@ rust_binary(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",
-        "@sdk_crates//reqwest_0_12_28-0.12.28",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//reqwest_0_12_28-0.12.28",
+        "@crates//serde_json-1.0.154",
+        "@crates//tokio-1.54.1",
     ],
 )
 
@@ -146,9 +146,9 @@ rust_binary(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",
-        "@sdk_crates//reqwest_0_12_28-0.12.28",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//reqwest_0_12_28-0.12.28",
+        "@crates//serde_json-1.0.154",
+        "@crates//tokio-1.54.1",
     ],
 )
 
@@ -178,9 +178,9 @@ rust_binary(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",
-        "@sdk_crates//reqwest_0_12_28-0.12.28",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//reqwest_0_12_28-0.12.28",
+        "@crates//serde_json-1.0.154",
+        "@crates//tokio-1.54.1",
     ],
 )
 
@@ -210,9 +210,9 @@ rust_binary(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",
-        "@sdk_crates//reqwest_0_12_28-0.12.28",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//reqwest_0_12_28-0.12.28",
+        "@crates//serde_json-1.0.154",
+        "@crates//tokio-1.54.1",
     ],
 )
 
@@ -242,9 +242,9 @@ rust_binary(
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/workers:acyclic_workers",
-        "@sdk_crates//reqwest_0_12_28-0.12.28",
-        "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//tokio-1.54.1",
+        "@crates//reqwest_0_12_28-0.12.28",
+        "@crates//serde_json-1.0.154",
+        "@crates//tokio-1.54.1",
     ],
 )
 

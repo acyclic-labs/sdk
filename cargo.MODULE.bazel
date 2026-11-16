@@ -44,7 +44,7 @@ use_repo(rust, "rust_toolchains")
 xwin = use_repo_rule("//:xwin_repo.bzl", "xwin_repository")
 xwin(name = "xwin")
 
-register_toolchains("//toolchains/windows:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__x86_64-unknown-linux-musl__stable", "@rust_toolchains//:all", dev_dependency = True)
+register_toolchains("//:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__x86_64-unknown-linux-musl__stable", "@rust_toolchains//:all")
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 

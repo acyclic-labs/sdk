@@ -35,8 +35,8 @@ rust_binary(
     deps = [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/manifest:acyclic_manifest",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde_json-1.0.154",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde_json-1.0.154",
     ],
     visibility = ["//visibility:public"],
 )

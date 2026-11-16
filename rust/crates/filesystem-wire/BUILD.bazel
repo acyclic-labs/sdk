@@ -65,9 +65,9 @@ rust_library(
         ":build_script",
     ] + [
         "//rust/crates/auth-action:acyclic_auth_action",
-        "@sdk_crates//prost-0.14.4",
-        "@sdk_crates//tonic-0.14.9",
-        "@sdk_crates//tonic-prost-0.14.6",
+        "@crates//prost-0.14.4",
+        "@crates//tonic-0.14.9",
+        "@crates//tonic-prost-0.14.6",
     ],
     visibility = ["//visibility:public"],
 )
@@ -90,7 +90,7 @@ rust_test(
     lint_config = ":lints",
     deps = [
         "//compatibility:acyclic_proto_build",
-        "@sdk_crates//prost-types-0.14.4",
+        "@crates//prost-types-0.14.4",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
@@ -140,10 +140,10 @@ rust_binary(
     ] + [
         "//compatibility:acyclic_proto_build",
         "//rust/crates/auth-action:acyclic_auth_action",
-        "@sdk_crates//prost-0.14.4",
-        "@sdk_crates//prost-types-0.14.4",
-        "@sdk_crates//tonic-0.14.9",
-        "@sdk_crates//tonic-prost-0.14.6",
+        "@crates//prost-0.14.4",
+        "@crates//prost-types-0.14.4",
+        "@crates//tonic-0.14.9",
+        "@crates//tonic-prost-0.14.6",
     ],
 )
 

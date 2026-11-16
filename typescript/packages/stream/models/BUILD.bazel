@@ -39,9 +39,9 @@ rust_test(
     lint_config = ":lints",
     deps = [
         "//rust/crates/test-support:acyclic_test_support",
-        "@sdk_crates//loom-0.7.3",
-        "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//serde_json-1.0.154",
+        "@crates//loom-0.7.3",
+        "@crates//proptest-1.12.0",
+        "@crates//serde_json-1.0.154",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:typescript/packages/stream/test/session-deadline-model-driver.ts",

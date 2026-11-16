@@ -50,7 +50,7 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
-        "@sdk_crates//proptest-1.12.0",
+        "@crates//proptest-1.12.0",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],

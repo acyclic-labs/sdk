@@ -38,7 +38,7 @@ rust_library(
     lint_config = ":lints",
     deps = [
         "//rust/crates/host-platform:acyclic_host_platform",
-        "@sdk_crates//dirs-7.0.0",
+        "@crates//dirs-7.0.0",
     ],
     visibility = ["//visibility:public"],
 )

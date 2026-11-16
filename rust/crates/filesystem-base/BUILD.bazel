@@ -50,7 +50,7 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
-        "@sdk_crates//diffy-0.5.2",
+        "@crates//diffy-0.5.2",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],

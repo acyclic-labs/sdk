@@ -34,7 +34,7 @@ rust_library(
     ],
     lint_config = ":lints",
     deps = [
-        "@sdk_crates//hex-0.4.3",
+        "@crates//hex-0.4.3",
     ],
     visibility = ["//visibility:public"],
 )

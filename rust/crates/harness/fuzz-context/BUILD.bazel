@@ -35,9 +35,9 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness:acyclic_harness",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//serde-1.0.229",
-        "@sdk_crates//serde_json-1.0.154",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//serde-1.0.229",
+        "@crates//serde_json-1.0.154",
     ],
     visibility = ["//visibility:public"],
 )

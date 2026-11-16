@@ -41,14 +41,19 @@ wasm_bindgen_ext = use_extension("@rules_rust_wasm_bindgen//:extensions.bzl", "r
 use_repo(wasm_bindgen_ext, "chrome", "chromedriver", "firefox", "geckodriver")
 register_toolchains("//:wasm_bindgen_toolchain_registration")
 
-wasm_bindgen_ext = use_extension("@rules_rust_wasm_bindgen//:extensions.bzl", "rust_ext")
-use_repo(wasm_bindgen_ext, "chrome", "chromedriver", "firefox", "geckodriver")
-register_toolchains("//:wasm_bindgen_toolchain_registration")
+# crate_universe resolves against a copy of Cargo.lock, so it never rewrites the source.
+cargo_lock = use_repo_rule("//:cargo_lock.bzl", "cargo_lock")
+
+cargo_lock(
+    name = "cargo_lock",
+    src = "//:Cargo.lock",
+)
 
 # The Node.js runtime tests start, from the official release for the host platform. It is this
 # module's own test setup, so a module that depends on this one fetches no Node.js.
 node = use_extension("//:node_repo.bzl", "node", dev_dependency = True)
 node.node(version = "24.22.2")
 use_repo(node, "nodejs")
+
 # The Rust toolchain, rustc flags and crate universe, generated from the Cargo configuration.
 include("//:cargo.MODULE.bazel")

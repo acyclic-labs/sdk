@@ -56,7 +56,7 @@ rust_library(
     deps = [
         ":build_script",
     ] + [
-        "@sdk_crates//loom-0.7.3",
+        "@crates//loom-0.7.3",
     ],
     visibility = ["//visibility:public"],
 )
@@ -130,7 +130,7 @@ rust_test(
         ":sdk_fixture_verification",
         ":build_script",
     ] + [
-        "@sdk_crates//loom-0.7.3",
+        "@crates//loom-0.7.3",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//rust/crates/sdk-docs:src/concrete_versions.rs",

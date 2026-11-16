@@ -33,7 +33,7 @@ rust_binary(
     ],
     lint_config = ":lints",
     deps = [
-        "@sdk_crates//libfuzzer-sys-0.4.13",
+        "@crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
 )

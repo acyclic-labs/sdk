@@ -32,10 +32,10 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/sdk-docs:sdk_docs",
-        "@sdk_crates//cargo_metadata-0.23.1",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//rustdoc_types_0_60_0-0.60.0",
-        "@sdk_crates//serde_json-1.0.154",
+        "@crates//cargo_metadata-0.23.1",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//rustdoc_types_0_60_0-0.60.0",
+        "@crates//serde_json-1.0.154",
     ],
     visibility = ["//visibility:public"],
 )
@@ -63,10 +63,10 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/sdk-docs:sdk_docs",
-        "@sdk_crates//cargo_metadata-0.23.1",
-        "@sdk_crates//libfuzzer-sys-0.4.13",
-        "@sdk_crates//rustdoc_types_0_60_0-0.60.0",
-        "@sdk_crates//serde_json-1.0.154",
+        "@crates//cargo_metadata-0.23.1",
+        "@crates//libfuzzer-sys-0.4.13",
+        "@crates//rustdoc_types_0_60_0-0.60.0",
+        "@crates//serde_json-1.0.154",
     ],
     visibility = ["//visibility:public"],
 )
