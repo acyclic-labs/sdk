@@ -958,8 +958,7 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
         serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
     catalog[root_provider] = catalog["fixture"].clone();
     catalog[root_provider]["authentication"] = json!("api_key");
-    catalog[root_provider]["models"][root_model] =
-        catalog["fixture"]["models"]["tiny"].clone();
+    catalog[root_provider]["models"][root_model] = catalog["fixture"]["models"]["tiny"].clone();
     catalog["alternate"] = catalog["fixture"].clone();
     catalog["alternate"]["authentication"] = json!("api_key");
     std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
