@@ -91,6 +91,7 @@ struct ClockWorld {
     _directory: tempfile::TempDir,
     checkout: PathBuf,
     state: PathBuf,
+    base: u64,
     clock: Arc<ControlledClock>,
     control: Mutex<ClockControl>,
     service: ScriptedModelProvider,
@@ -105,11 +106,19 @@ impl ClockWorld {
         let checkout = directory.path().join("checkout");
         std::fs::create_dir(&checkout).map_err(oracle::failed)?;
         let state = directory.path().join("state");
-        let (clock, control) = ControlledClock::new(100);
+        // The authority root is issued on the host wall clock; the simulated
+        // clock must start inside that admission window, then move only by us.
+        let base = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(oracle::failed)?
+            .as_millis();
+        let base = u64::try_from(base).map_err(|_| "host clock overflow".to_owned())?;
+        let (clock, control) = ControlledClock::new(base);
         Ok(Self {
             _directory: directory,
             checkout,
             state,
+            base,
             clock: Arc::new(clock),
             control: Mutex::new(control),
             service: service(plans),
@@ -272,9 +281,10 @@ async fn wait_case(
     };
     let (mut conversation, mut observer, inbox, deadline) =
         parked(&harness, &id, &prompt_tag).await?;
-    if deadline != 120 {
+    let expected_deadline = world.base.saturating_add(20);
+    if deadline != expected_deadline {
         return Err(format!(
-            "{timer} {state}: deadline {deadline} did not use the world clock (100 + 20)"
+            "{timer} {state}: deadline {deadline} did not use the world clock ({expected_deadline})"
         ));
     }
     match state {
@@ -509,12 +519,20 @@ async fn provider_exchange(
     let provider = provider(transport, timeouts, retry)?;
     let (prepared, dispatch) = request(&provider)?;
     let mut stream = provider.generate(&prepared, dispatch);
-    let mut first_event = {
+    let mut waits = Vec::new();
+    let mut first_event = loop {
         let mut next = stream.next();
         tokio::pin!(next);
         let duration = tokio::select! {
             delay = delays.recv() => delay.ok_or_else(|| "provider timer was never registered".to_owned())?,
-            event = &mut next => return Err(format!("{timer} {state}: exchange ended before its timer: {event:?}")),
+            event = &mut next => {
+                match event {
+                    Some(Ok(ModelEvent::Wait(wait))) => { waits.push(wait); continue; }
+                    Some(Ok(_)) => continue,
+                    Some(Err(error)) => return Err(format!("{timer} {state}: exchange failed: {error}")),
+                    None => return Err(format!("{timer} {state}: exchange ended before its timer")),
+                }
+            }
         };
         let expected = Duration::from_millis(20);
         if duration != expected {
@@ -544,9 +562,8 @@ async fn provider_exchange(
                 .map_err(|error| error.to_string())?,
             _ => return Err(format!("{timer} {state}: provider reopen is not this case")),
         }
-        next.await
+        break next.await;
     };
-    let mut waits = Vec::new();
     loop {
         match first_event {
             Some(Ok(ModelEvent::Wait(wait))) => waits.push(wait),
@@ -612,17 +629,23 @@ async fn provider_case(
         let provider = provider(transport, timeouts, RetrySpec { base_delay_ms: 0, max_delay_ms: 0 })?;
         let (prepared, dispatch) = request(&provider)?;
         let mut stream = provider.generate(&prepared, dispatch);
-        let mut next = stream.next();
-        tokio::pin!(next);
-        tokio::select! {
-            delay = delays.recv() => {
-                if delay != Some(Duration::from_millis(20)) {
-                    return Err(format!("{timer} reopened: first timer was not registered"));
+        loop {
+            let mut next = stream.next();
+            tokio::pin!(next);
+            tokio::select! {
+                delay = delays.recv() => {
+                    if delay != Some(Duration::from_millis(20)) {
+                        return Err(format!("{timer} reopened: first timer was not registered"));
+                    }
+                    break;
                 }
+                event = &mut next => match event {
+                    Some(Ok(_)) => continue,
+                    Some(Err(error)) => return Err(format!("{timer} reopened: first exchange failed: {error}")),
+                    None => return Err(format!("{timer} reopened: first exchange ended")),
+                },
             }
-            event = &mut next => return Err(format!("{timer} reopened: first exchange ended: {event:?}")),
         }
-        drop(next);
         drop(stream);
         drop(provider);
         let (delays_tx, mut delays) = mpsc::unbounded_channel();
