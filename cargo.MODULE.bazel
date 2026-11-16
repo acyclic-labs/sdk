@@ -5233,4 +5233,10 @@ crate.annotation(
     additive_build_file_content = "exports_files([\"bin/protoc\",\"include\"])\n",
 )
 
-use_repo(crate, "crates", "crates__protoc-bin-vendored-linux-x86_64-3.3.0")
+crate.annotation(
+    crate = "protoc-bin-vendored-macos-aarch_64",
+    version = "=3.3.0",
+    additive_build_file_content = "exports_files([\"bin/protoc\",\"include\"])\n",
+)
+
+use_repo(crate, "crates", "crates__protoc-bin-vendored-linux-x86_64-3.3.0", "crates__protoc-bin-vendored-macos-aarch_64-3.3.0")
