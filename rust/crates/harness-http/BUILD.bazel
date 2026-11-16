@@ -37,7 +37,13 @@ rust_library(
         "//rust/crates/stream:acyclic_stream",
         "@crates//bytes-1.12.1",
         "@crates//futures-0.3.34",
+        "@crates//h2-0.4.20",
         "@crates//http-1.5.0",
+        "@crates//httpdate-1.0.3",
+        "@crates//humantime-2.4.0",
+        "@crates//hyper-1.12.0",
+        "@crates//reqwest_0_12_28-0.12.28",
+        "@crates//rustls-0.23.46",
     ],
     visibility = ["//visibility:public"],
 )
