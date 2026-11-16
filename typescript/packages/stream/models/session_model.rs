@@ -297,6 +297,7 @@ fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result
         let ready = driver.call(&json!({"action":"ready"}))?;
         assert_eq!(*field(&ready, "active")?, 2);
         let mut terminal = None;
+        let mut reconnected = false;
         for action in trace {
             let state = driver.call(&json!({"action":action}))?;
             if action == "expire" || action == "cleanup" {
@@ -322,6 +323,7 @@ fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result
             }
             if action == "reconnect" {
                 if terminal.is_none() {
+                    reconnected = true;
                     assert_eq!(
                         *field(&state, "connecting")?,
                         true,
@@ -340,7 +342,7 @@ fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result
         assert_eq!(*field(&state, "settled")?, true);
         assert_eq!(
             *field(&state, "connections")?,
-            if events.contains(&"reconnect") { 2 } else { 1 },
+            if reconnected { 2 } else { 1 },
             "a logical deadline must not close the shared connection"
         );
         assert_eq!(
