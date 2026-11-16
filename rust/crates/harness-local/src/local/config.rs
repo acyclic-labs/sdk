@@ -635,8 +635,6 @@ impl LocalHarnessConfig {
         self.mcp_limits = limits;
         self
     }
-    /// Selects the clock used by durable admission and leases.
-    #[must_use]
     /// Supplies fresh source identities from `entropy` instead of OS randomness.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
@@ -647,6 +645,8 @@ impl LocalHarnessConfig {
         self.source_entropy = Some(entropy);
         self
     }
+    /// Selects the clock used by durable admission and leases.
+    #[must_use]
     pub fn clock(mut self, clock: Arc<dyn acyclic_stream::UnixMillisClock>) -> Self {
         self.clock = clock;
         self

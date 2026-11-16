@@ -373,6 +373,17 @@ impl World {
                     bytes
                 })
             };
+            // The checkout's root identity is a host file handle. A replay
+            // supplies its own fixture identity so the owner record and every
+            // later capture are a function of the seed alone.
+            let checkout_identity = {
+                let mut object = [0; 16];
+                object.copy_from_slice(
+                    &blake3::hash(format!("dst-object:{scheduler}").as_bytes()).as_bytes()[..16],
+                );
+                let handle = *blake3::hash(format!("dst-handle:{scheduler}").as_bytes()).as_bytes();
+                (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
+            };
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));
             let observed = Arc::clone(&dispatched_at);
             let provider = Arc::new(self.service.reopened().with_dispatch_observer(move |_| {
@@ -389,6 +400,10 @@ impl World {
                 let results = Arc::clone(&results);
                 entry(async move {
                     let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
+                    acyclic_harness::test_support::inject_checkout_identity(
+                        checkout_identity.0,
+                        checkout_identity.1,
+                    );
                     let config = local_harness_config(
                         directory.join("checkout"),
                         (model, provider.clone()),
@@ -426,6 +441,13 @@ impl World {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
                     }
+                    // Retire every native mount and worker before the next
+                    // replay can reuse this world's deterministic path.
+                    let harness = Arc::try_unwrap(harness).map_err(|_| {
+                        Error::Invalid("world harness still has live connections".into())
+                    })?;
+                    harness.disconnect().await?;
+                    acyclic_harness::test_support::clear_checkout_identity();
                     Ok::<_, Error>(())
                 })
             };
