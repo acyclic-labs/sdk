@@ -269,7 +269,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 || bound.cursor != sequence
                 || record.sequence != sequence
             {
-                return Err(Error::Record("descendant status delivery differs from its wait"));
+                return Err(Error::Record(
+                    "descendant status delivery differs from its wait",
+                ));
             }
             let status = StatusRecord::decode(&record.value)?;
             if !matches!(
@@ -302,11 +304,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             } else {
                 state.transition(Vec::new(), false)?
             };
-            transition
-                .subscriptions
-                .push(SubscriptionChange::Remove {
-                    id: subscription.to_owned(),
-                });
+            transition.subscriptions.push(SubscriptionChange::Remove {
+                id: subscription.to_owned(),
+            });
             return Ok(transition);
         }
         let mut retired = subscription == CLOSED;
@@ -480,8 +480,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                             )
                             .await?;
                         if descendant_subscriptions.is_empty() {
-                            lifecycle
-                                .push(crate::supervision::Lifecycle::Stopped { signal: None });
+                            lifecycle.push(crate::supervision::Lifecycle::Stopped { signal: None });
                             retired = true;
                         }
                     } else {

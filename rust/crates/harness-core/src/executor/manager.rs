@@ -209,7 +209,8 @@ impl StockExecution<'_> {
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
         let session = self.preparing(scope.io());
         let invalid = |reason| stock_boundary(session.io, crate::wire::ErrorCode::Invalid, reason);
-        let (source, instruction) = session.manager_material(context, start..end, previous, None)?;
+        let (source, instruction) =
+            session.manager_material(context, start..end, previous, None)?;
         // The request replaces the source's leading system messages with the
         // recorded worker prefix, so its message count is the prefix plus the
         // source after those leading messages.
