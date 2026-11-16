@@ -1,4 +1,49 @@
-fn version(metadata: &HostStat) -> SourceVersion {
+fn path_key(path: &NamespacePath) -> Vec<u8> {
+    let mut key = Vec::new();
+    for name in path.components() {
+        key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
+        key.extend_from_slice(name.as_bytes());
+    }
+    key
+}
+
+fn child_path_key(parent: &NamespacePath, name: &crate::kernel::LogicalName) -> Vec<u8> {
+    let mut key = path_key(parent);
+    key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
+    key.extend_from_slice(name.as_bytes());
+    key
+}
+
+#[cfg(feature = "test-support")]
+fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing::NativeTimes> {
+    use acyclic_native_runtime::testing::{NativeMetadataInput, NativeTimes, capture_native_times};
+    let identity = metadata.identity();
+    let nanos = |time: Option<i128>| time.and_then(|time| i64::try_from(time).ok());
+    let times = NativeTimes {
+        created_ns: nanos(metadata.birth_time().and_then(system_time_nanos)),
+        modified_ns: nanos(metadata.modified().ok().and_then(system_time_nanos)),
+        accessed_ns: nanos(metadata.accessed().ok().and_then(system_time_nanos)),
+        changed_ns: nanos(source_metadata(metadata).changed_ns),
+    };
+    capture_native_times(NativeMetadataInput {
+        device: identity.device,
+        object: identity.object,
+        directory: metadata.is_dir(),
+        times,
+    })
+}
+
+fn version(path: &[u8], metadata: &HostStat) -> SourceVersion {
+    #[cfg(feature = "test-support")]
+    if let Some(times) = fixture_times(metadata) {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic-fs-native-source-version-v1\0");
+        hash.update(&metadata.len().to_le_bytes());
+        hash.update(path);
+        hash.update(&times.modified_ns.unwrap_or_default().to_le_bytes());
+        hash.update(&times.changed_ns.unwrap_or_default().to_le_bytes());
+        return SourceVersion(*hash.finalize().as_bytes());
+    }
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-version-v1\0");
     hash.update(&metadata.len().to_le_bytes());

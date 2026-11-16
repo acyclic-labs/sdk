@@ -212,6 +212,7 @@ impl NativeDemandSource {
     }
     fn next_entry(
         &self,
+        logical: &NamespacePath,
         directory: &DemandPath,
         entry: &HostListedEntry,
         backing: &mut Owned<Vec<SourceDirectoryEntry>>,
@@ -254,10 +255,8 @@ impl NativeDemandSource {
                 .map_err(DemandError::from)?;
         }
         let name = LogicalName::new(encoding, bytes).map_err(|_| DemandError::InvalidRequest)?;
-        Ok(Some(SourceDirectoryEntry {
-            name,
-            node: Self::node(stat),
-        }))
+        let node = Self::node(&child_path_key(logical, &name), stat);
+        Ok(Some(SourceDirectoryEntry { name, node }))
     }
     fn page_entries(
         &self,
@@ -288,7 +287,8 @@ impl NativeDemandSource {
                 let Some((entry, _, _)) = &state.pending else {
                     break;
                 };
-                let converted = self.next_entry(&relative, entry, backing, work)?;
+                let converted =
+                    self.next_entry(&state.directory, &relative, entry, backing, work)?;
                 let (entry, bytes, carried) =
                     state.pending.take().ok_or(DemandError::StaleCursor)?;
                 drop(entry);
