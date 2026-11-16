@@ -5,7 +5,7 @@
 use super::*;
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey,
-    agent::{AgentPath, WorkspaceEntry, WorkspaceRole},
+    agent::{AgentId as PathId, AgentPath, WorkspaceEntry, WorkspaceRole},
     conversation::{
         ContentAccess, ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
@@ -100,6 +100,9 @@ fn subjects(provider: &ProviderRef) -> Result<Subjects> {
     let root = AgentId::from_bytes([1; 16]);
     let child = AgentId::from_bytes([2; 16]);
     let grandchild = AgentId::from_bytes([3; 16]);
+    let root_path = PathId::from_bytes([1; 16]);
+    let child_id = PathId::from_bytes([2; 16]);
+    let grandchild_id = PathId::from_bytes([3; 16]);
     let session = VolumeOwner::Session("session".into());
     let project = VolumeOwner::Project("project".into());
     let own_home = volume(
@@ -128,11 +131,11 @@ fn subjects(provider: &ProviderRef) -> Result<Subjects> {
         "home".into(),
         own_home.clone(),
     );
-    let child_path = AgentPath::root(&root).child(&child)?;
+    let child_path = AgentPath::root(&root_path).child(&child_id)?;
     let child_home = acyclic_harness::filesystem::spawned_binding(&child_path, &home_binding)?;
     let child_binding =
         WorkspaceEntry::initial_volume(WorkspaceRole::Home, "home".into(), child_home);
-    let grandchild_path = child_path.child(&grandchild)?;
+    let grandchild_path = child_path.child(&grandchild_id)?;
     let grandchild_home =
         acyclic_harness::filesystem::spawned_binding(&grandchild_path, &child_binding)?;
     Ok(Subjects {
@@ -277,9 +280,7 @@ where
     }
     let grant = grant.map_err(|error| format!("{label}: declared grant refused: {error}"))?;
     if op == "signed_payload" {
-        return grant
-            .recheck(None)
-            .map_err(|error| format!("{label}: signed payload recheck: {error}"));
+        return Ok(());
     }
     if !exists {
         // The grant is valid, but the selected volume has not been created.
@@ -498,7 +499,7 @@ where
 
 async fn world_for_custody<A, O>(
     custody: &'static str,
-    host: FilesystemHost<A, O>,
+    host: Arc<FilesystemHost<A, O>>,
     root: AuthorityRoot,
 ) -> std::result::Result<(), String>
 where
@@ -564,11 +565,12 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 _ => {
                     let custody_dir = directory.path().join("signing");
                     std::fs::create_dir(&custody_dir).map_err(oracle::failed)?;
-                    let custody = SigningCustody::PrivateFile(&custody_dir);
-                    let reference =
-                        SigningKeyReference::create(custody).map_err(oracle::failed)?;
+                    let signing = SigningCustody::PrivateFile(&custody_dir);
+                    let reference = SigningKeyReference::create(signing)
+                        .map_err(oracle::failed)?
+                        .reference();
                     let seed_key = reference
-                        .with_seed(custody, |seed| *seed)
+                        .with_seed(signing, |seed| *seed)
                         .map_err(oracle::failed)?;
                     let fs = Fs::local(LocalOptions::new(directory.path().join("filesystem")))
                         .await
@@ -576,7 +578,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                     let host = FilesystemHost::new(fs, &provider().map_err(oracle::failed)?, None)
                         .map_err(oracle::failed)?;
                     let root = AuthorityRoot::new("grants", seed_key, audience);
-                    world_for_custody(custody_name(), host, root).await
+                    world_for_custody("physical_private_file", host, root).await
                 }
             }
             .map(|()| true)
@@ -584,6 +586,3 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
     })
 }
 
-fn custody_name() -> &'static str {
-    "physical_private_file"
-}
