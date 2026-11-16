@@ -161,22 +161,7 @@ fn runnable(candidate: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn fixture_executable(path: &Path) {
-        #[cfg(windows)]
-        if path.extension().is_some_and(|extension| extension == "cmd") {
-            std::fs::write(path, []).unwrap();
-        } else {
-            std::fs::copy(std::env::current_exe().unwrap(), path).unwrap();
-        }
-        #[cfg(not(windows))]
-        std::fs::write(path, []).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-    }
+    use acyclic_test_support::executable_file as fixture_executable;
 
     #[test]
     fn search_preserves_directory_then_extension_order_and_literal_paths() {
