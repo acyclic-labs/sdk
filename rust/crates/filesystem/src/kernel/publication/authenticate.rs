@@ -21,6 +21,7 @@ pub(super) async fn prove<O: crate::AsyncObjectStore>(
         let mut frame = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let meter = ProofMeter::from_accounting(frame.accounting())?;
         ProofContext::new(objects, limits, meter)
+            .publication_order()
             .prove_cached_from(root, cache, authority_root)
             .await?
     };

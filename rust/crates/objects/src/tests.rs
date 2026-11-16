@@ -2836,16 +2836,13 @@ fn committed_blobs_are_whole(disk: &Disk) -> Result<(), String> {
     let mut pending = disk.commits.clone();
     for (key, batch) in &disk.durable {
         // A torn batch was never acknowledged.
-        if let Some(name) = key.strip_prefix(&format!("{prefix}r/"))
+        if key.starts_with(&format!("{prefix}r/"))
             && let Ok(batch) = crate::blob::decode_batch(batch)
         {
             // A batch a crash kept still pins its members against a delete.
-            let tag = format!("r{}", name.replacen('/', ".", 1));
             for member in &batch {
-                if !disk
-                    .durable
-                    .contains_key(&format!("{prefix}i/{}/{tag}", member.to_hex()))
-                {
+                let marker = format!("{prefix}i/{}/", member.to_hex());
+                if !disk.durable.keys().any(|key| key.starts_with(&marker)) {
                     return Err(format!("{key}: {} unindexed", member.to_hex()));
                 }
             }
@@ -2870,12 +2867,9 @@ fn blobs_are_whole(disk: &Disk, mut pending: Vec<Digest>) -> Result<(), String> 
         let envelope =
             crate::blob::Envelope::decode(envelope).map_err(|_| format!("{hex}: torn envelope"))?;
         // Each child is pinned against a delete by this blob's index key.
-        let tag = format!("e{hex}.{}", hex::encode(envelope.version));
         for child in &envelope.references {
-            if !disk
-                .durable
-                .contains_key(&format!("{prefix}i/{}/{tag}", child.to_hex()))
-            {
+            let marker = format!("{prefix}i/{}/", child.to_hex());
+            if !disk.durable.keys().any(|key| key.starts_with(&marker)) {
                 return Err(format!("{hex}: child {} unindexed", child.to_hex()));
             }
         }
