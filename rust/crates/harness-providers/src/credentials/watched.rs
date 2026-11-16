@@ -98,26 +98,24 @@ impl<T: Default> Watched<T> {
         Ok(())
     }
 
-    pub(crate) fn read<R>(&self, read: impl FnOnce(&mut T) -> Result<R>) -> Result<(u64, R)> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| Error::Invalid("credential resolver lock poisoned".into()))?;
-        self.observe(&mut state)?;
-        Ok((state.revision, read(&mut state.value)?))
-    }
-
     /// A source owner's explicit rejection invalidates the same observation as
     /// its watch. The next read rearms before loading; old publishers lose their
     /// revision, including when the native notification has not arrived yet.
-    pub(crate) fn invalidate(&self) -> Result<()> {
+    pub(crate) fn read<R>(
+        &self,
+        rejected: bool,
+        read: impl FnOnce(&mut T) -> Result<R>,
+    ) -> Result<(u64, R)> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| Error::Invalid("credential resolver lock poisoned".into()))?;
-        state.value = T::default();
-        state.watch = None;
-        Ok(())
+        if rejected {
+            state.value = T::default();
+            state.watch = None;
+        }
+        self.observe(&mut state)?;
+        Ok((state.revision, read(&mut state.value)?))
     }
 
     pub(crate) fn publish(&self, revision: u64, value: T) -> Result<()> {

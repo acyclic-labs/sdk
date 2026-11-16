@@ -235,6 +235,7 @@ impl CodexLogin {
     }
 
     /// `root/auth.json` when it exists; the file is read only on first use.
+    #[cfg(test)]
     pub(crate) fn in_home(root: &Path) -> Option<Self> {
         let path = root.join("auth.json");
         path.is_file().then(|| Self::from_path(path))
@@ -276,12 +277,11 @@ impl CodexLogin {
         failure: &mut Option<RefreshFailure>,
     ) -> Result<(String, Option<String>)> {
         let path = self.path.clone();
-        if rejected.is_some() {
-            // HTTP 401 is authoritative invalidation even before a pending
-            // file event. Recover from the current source, never cached tokens.
-            self.document.invalidate()?;
-        }
-        let (generation, cached) = self.document.read(|auth| Ok(auth.clone()))?;
+        // HTTP 401 is authoritative invalidation even before a pending file
+        // event. Recover from the current source, never cached tokens.
+        let (generation, cached) = self
+            .document
+            .read(rejected.is_some(), |auth| Ok(auth.clone()))?;
         let mut auth = match cached {
             Some(auth) => auth,
             None => std::sync::Arc::new(io.blocking(permit, move |io| load(&path, io)).await?.1),
