@@ -3,7 +3,7 @@ use crate::{
     addressing::ActorReference,
     domain::{ActorLimits, CodeSha256},
     hosting::Host,
-    local::{Clock, PreparedPublish, RuntimeLimits, Store, SystemClock},
+    local::{PreparedPublish, RuntimeLimits, Store, SystemClock},
 };
 use acyclic_stream::UnixMillisClock as _;
 use acyclic_stream::{IdempotencyKey, MemoryStream, StreamPath};
