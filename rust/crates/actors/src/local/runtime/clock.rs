@@ -77,6 +77,8 @@ impl Clock for SystemClock {
 /// One shared event retains time; only actual deadline waiters own futures.
 pub struct ControlledClock {
     time: watch::Receiver<u64>,
+    registered: watch::Sender<Option<u64>>,
+    registrations: watch::Receiver<Option<u64>>,
 }
 
 /// Sole advancement producer for a [`ControlledClock`]. Dropping it ends
@@ -84,13 +86,42 @@ pub struct ControlledClock {
 /// Already reached deadlines succeed, including after this producer is dropped.
 pub struct ClockControl {
     time: watch::Sender<u64>,
+    registered: watch::Sender<Option<u64>>,
 }
 
 impl ControlledClock {
     /// Create one clock and its sole advancement producer at `unix_ms`.
     pub fn new(unix_ms: u64) -> (Self, ClockControl) {
         let (producer, time) = watch::channel(unix_ms);
-        (Self { time }, ClockControl { time: producer })
+        let (registered, registrations) = watch::channel(None);
+        (
+            Self {
+                time,
+                registered: registered.clone(),
+                registrations,
+            },
+            ClockControl {
+                time: producer,
+                registered,
+            },
+        )
+    }
+
+    /// Resolves once a deadline has been registered on this clock, returning
+    /// that deadline. A world advances time only after this event, never on a
+    /// scheduler tick that might still be preparing the wait.
+    pub fn registered(&self) -> BoxProviderFuture<'static, u64> {
+        let mut registrations = self.registrations.clone();
+        Box::pin(async move {
+            loop {
+                if let Some(deadline) = *registrations.borrow_and_update() {
+                    return deadline;
+                }
+                if registrations.changed().await.is_err() {
+                    return std::future::pending().await;
+                }
+            }
+        })
     }
 }
 
@@ -98,6 +129,10 @@ impl ClockControl {
     /// Publish a monotonic time change to the original deadline waiters.
     /// Equal time is a no-op; reversal refuses without changing time or waking.
     /// Work is constant plus notification of actual registered waiters.
+    pub fn clear_registered(&mut self) {
+        self.registered.send_replace(None);
+    }
+
     pub fn advance_to(&mut self, unix_ms: u64) -> Result<(), ClockError> {
         let mut result = Ok(());
         self.time.send_if_modified(|current| {
@@ -127,7 +162,16 @@ impl Clock for ControlledClock {
         deadline_unix_ms: u64,
     ) -> BoxProviderFuture<'static, Result<(), ClockError>> {
         let mut time = self.time.clone();
+        let registered = self.registered.clone();
         Box::pin(async move {
+            registered.send_if_modified(|current| {
+                if current.is_none() {
+                    *current = Some(deadline_unix_ms);
+                    true
+                } else {
+                    false
+                }
+            });
             loop {
                 if *time.borrow_and_update() >= deadline_unix_ms {
                     return Ok(());

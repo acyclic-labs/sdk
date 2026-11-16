@@ -152,50 +152,16 @@ impl ClockWorld {
     fn service_requests(&self) -> usize {
         self.service.request_count()
     }
-}
 
-/// A prompt's wait is parked with this absolute deadline.
-async fn parked(
-    harness: &Arc<LocalHarness>,
-    id: &str,
-    prompt: &str,
-) -> std::result::Result<
-    (
-        Arc<Conversation>,
-        acyclic_harness::local::Observer,
-        u64,
-        u64,
-    ),
-    String,
-> {
-    let conversation = Conversation::open(harness.connect().await.map_err(oracle::failed)?);
-    let mut observer = conversation
-        .observe(None)
-        .await
-        .map_err(oracle::failed)?;
-    let inbox = conversation
-        .send(id, prompt)
-        .await
-        .map_err(oracle::failed)?;
-    loop {
-        match observer.next().await.map_err(oracle::failed)? {
-            Event::Status(status) => {
-                if let Phase::Waiting {
-                    deadline_unix_ms: Some(deadline),
-                    ..
-                } = status.phase
-                {
-                    return Ok((conversation, observer, inbox, deadline));
-                }
-                if matches!(status.phase, Phase::Done { .. }) {
-                    return Err(format!("{id} ended before its wait parked"));
-                }
-            }
-            Event::Turn { entry, .. } if entry.inbox == inbox => {
-                return Err(format!("{id} settled before its wait parked"));
-            }
-            _ => {}
-        }
+    fn registered(&self) -> EntryFuture<'_, std::result::Result<u64, String>> {
+        entry(async move { Ok(self.clock.registered().await) })
+    }
+
+    fn clear_registered(&self) {
+        self.control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear_registered();
     }
 }
 
@@ -281,8 +247,16 @@ async fn wait_case(
     } else {
         tag("wait")
     };
-    let (conversation, mut observer, inbox, deadline) =
-        parked(&harness, &id, &prompt_tag).await?;
+    let conversation = Conversation::open(harness.connect().await.map_err(oracle::failed)?);
+    let mut observer = conversation
+        .observe(None)
+        .await
+        .map_err(oracle::failed)?;
+    let inbox = conversation
+        .send(&id, &prompt_tag)
+        .await
+        .map_err(oracle::failed)?;
+    let deadline = world.registered().await?;
     let expected_deadline = world.base.saturating_add(20);
     if deadline != expected_deadline {
         return Err(format!(
@@ -293,9 +267,9 @@ async fn wait_case(
         "paused" => {
             world.advance(deadline - 1)?;
             drain(&harness).await?;
-            if !matches!(
+            if matches!(
                 conversation.phase().await.map_err(oracle::failed)?,
-                Phase::Waiting { deadline_unix_ms: Some(at), .. } if at == deadline
+                Phase::Done { .. }
             ) {
                 return Err(format!("{timer} paused: wait left before its deadline"));
             }
@@ -314,8 +288,15 @@ async fn wait_case(
             drop(observer);
             drop(conversation);
             drop(harness);
+            world.clear_registered();
             let reopened = world.open().await.map_err(oracle::failed)?;
             drain(&reopened).await?;
+            let recovered = world.registered().await?;
+            if recovered != deadline {
+                return Err(format!(
+                    "{timer} reopened: recovered deadline {recovered} differs from {deadline}"
+                ));
+            }
             world.advance(deadline)?;
             drain(&reopened).await?;
             let conversation = Conversation::open(reopened.connect().await.map_err(oracle::failed)?);
