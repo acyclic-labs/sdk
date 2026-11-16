@@ -351,12 +351,10 @@ mod tests {
     fn reports_each_outcome_and_counts_failures() {
         let (failed, out) = report(&suite("outcomes"), "tests::fixture_");
         assert_eq!(failed, 2, "{out}");
-        // Each status line is nextest's: `STATUS [ seconds] <binary id> <case>`.
         let status = |status: &str, case: &str| {
-            out.lines().any(|line| {
-                line.trim_start().starts_with(&format!("{status} ["))
-                    && line.ends_with(&format!("] acyclic-test-runner tests::{case}"))
-            })
+            let rest = format!("acyclic-test-runner tests::{case}");
+            out.lines()
+                .any(|line| nextest_line(line) == Some((status, rest.as_str())))
         };
         assert!(status("PASS", "fixture_pass"), "{out}");
         assert!(
@@ -372,6 +370,45 @@ mod tests {
         assert!(
             status("SKIP", "fixture_ignored") && !out.contains("ignored fixture ran"),
             "{out}"
+        );
+    }
+
+    /// A status line exactly as nextest prints it, `{status:>12} [{seconds:>8.3}s] <id> <case>`
+    /// (a skip's bracket is blank), as its status and `<id> <case>`; anything else is refused.
+    fn nextest_line(line: &str) -> Option<(&str, &str)> {
+        let status = line.get(..12)?.trim_start();
+        let rest = line.get(12..)?.strip_prefix(" [")?;
+        let (duration, rest) = (rest.get(..9)?, rest.get(9..)?.strip_prefix("] ")?);
+        let seconds = |text: &str| {
+            let digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
+            text.strip_suffix('s')
+                .and_then(|text| text.trim_start().split_once('.'))
+                .is_some_and(|(whole, fraction)| {
+                    !whole.is_empty() && digits(whole) && fraction.len() == 3 && digits(fraction)
+                })
+        };
+        let timed = if status == "SKIP" {
+            duration.bytes().all(|byte| byte == b' ')
+        } else {
+            seconds(duration)
+        };
+        (!status.is_empty() && status.bytes().all(|byte| byte.is_ascii_uppercase()) && timed)
+            .then_some((status, rest))
+    }
+
+    #[test]
+    fn status_lines_parse_only_as_nextest_prints_them() {
+        let line = |bracket: &str| format!("{:>12} [{bracket}] id case", "PASS");
+        assert_eq!(nextest_line(&line("   0.027s")), Some(("PASS", "id case")));
+        for refused in ["invalid", "  0.027s ", "   0.02s", "   0.0275", "         "] {
+            assert_eq!(nextest_line(&line(refused)), None, "[{refused}]");
+        }
+        let skip = format!("{:>12} [         ] id case", "SKIP");
+        assert_eq!(nextest_line(&skip), Some(("SKIP", "id case")));
+        assert_eq!(
+            nextest_line("PASS [   0.027s] id case"),
+            None,
+            "unaligned status"
         );
     }
 
