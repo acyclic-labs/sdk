@@ -619,43 +619,83 @@ async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_
                 trace.follow(0, Default::default()).await?,
                 Default::default(),
             );
-            let mut completed = 0;
-            let mut succeeded = 0;
-            let mut unsettled = 0;
-            while completed < 3 {
-                if let Some(Observation::Completed {
+            let mut completed = Vec::new();
+            while let Some(observation) = query.next().await? {
+                if let Observation::Completed {
                     id,
                     start,
                     bytes,
                     result,
                     ..
-                }) = query.next().await?
+                } = observation
                 {
-                    completed += 1;
-                    if id == parent {
-                        assert_eq!(result, Outcome::Succeeded);
-                        continue;
-                    }
-                    assert_eq!(start.parent, Some(parent));
-                    assert_eq!(start.mechanism, Mechanism::RoundTrip);
-                    assert_eq!(start.name, "stream.grpc.request");
-                    assert_eq!(
-                        start.guarantee.as_deref(),
-                        Some("authenticated_rpc_reply_validated_at_original_call")
-                    );
-                    assert_eq!(bytes, None);
-                    match result {
-                        Outcome::Succeeded => succeeded += 1,
-                        Outcome::Unsettled => unsettled += 1,
-                        _ => {
-                            return Err(
-                                "original RPC result was replaced with an invented outcome".into(),
-                            );
-                        }
+                    completed.push((id, start, bytes, result));
+                    if completed.len() == 5 {
+                        break;
                     }
                 }
             }
-            assert_eq!((succeeded, unsettled), (1, 1));
+            let append_ids: Vec<_> = completed
+                .iter()
+                .filter(|(_, start, ..)| start.name == "stream.append")
+                .map(|(id, ..)| *id)
+                .collect();
+            assert_eq!(append_ids.len(), 2);
+            for (_, start, bytes, _) in completed
+                .iter()
+                .filter(|(_, start, ..)| start.name == "stream.append")
+            {
+                assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.mechanism, Mechanism::Commit);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("atomic_contiguous_append_decision")
+                );
+                assert_eq!(*bytes, None);
+            }
+            for (_, start, bytes, _) in completed
+                .iter()
+                .filter(|(_, start, ..)| start.name == "stream.grpc.request")
+            {
+                assert!(start.parent.is_some_and(|id| append_ids.contains(&id)));
+                assert_eq!(start.mechanism, Mechanism::RoundTrip);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("authenticated_rpc_reply_validated_at_original_call")
+                );
+                assert_eq!(*bytes, None);
+            }
+            let count = |name: &str, result: Outcome| {
+                completed
+                    .iter()
+                    .filter(|(_, start, _, actual)| start.name == name && *actual == result)
+                    .count()
+            };
+            assert_eq!(
+                (
+                    count("stream.append", Outcome::Succeeded),
+                    count("stream.append", Outcome::Unsettled)
+                ),
+                (1, 1)
+            );
+            assert_eq!(
+                (
+                    count("stream.grpc.request", Outcome::Succeeded),
+                    count("stream.grpc.request", Outcome::Unsettled)
+                ),
+                (1, 1)
+            );
+            assert_eq!(
+                completed.iter().filter(|(id, ..)| *id == parent).count(),
+                1
+            );
+            assert_eq!(
+                completed
+                    .iter()
+                    .find(|(id, ..)| *id == parent)
+                    .map(|(_, _, _, result)| result),
+                Some(&Outcome::Succeeded)
+            );
         }
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         let observation = provider
