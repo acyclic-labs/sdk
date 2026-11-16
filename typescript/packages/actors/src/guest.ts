@@ -54,6 +54,11 @@ export class GuestStepError extends Error {
 const typed = (error: unknown) => error instanceof DependencyUnavailableError || error instanceof GuestStepError ||
   typeof error === "object" && error !== null && ["AbortError", "TimeoutError"].includes((error as { name?: unknown }).name as string);
 
+/** A promise of any realm, or any other object or function with a callable `then`. */
+const thenable = (value: unknown): value is PromiseLike<unknown> =>
+  (typeof value === "object" || typeof value === "function") && value !== null &&
+  typeof (value as PromiseLike<unknown>).then === "function";
+
 /** `run()`'s result, or its throw or rejection raised as `fail(cause)`: the
  * typed failure of the one readiness step it is. Cancellation and an already
  * typed failure pass unchanged, so the innermost step names the failure. */
@@ -61,7 +66,7 @@ export function readinessStep<T>(fail: (cause: unknown) => Error, run: () => T):
   const raise = (error: unknown): never => { throw typed(error) ? error : fail(error); };
   let result: T;
   try { result = run(); } catch (error) { return raise(error); }
-  return result instanceof Promise ? result.catch(raise) as T : result;
+  return thenable(result) ? Promise.resolve(result).catch(raise) as T : result;
 }
 
 /** The binding `name` of `env`, or a {@link DependencyUnavailableError} naming it. */
@@ -83,8 +88,7 @@ export function dependencyBinding<T extends object>(name: string, value: T): T {
   const call = (member: (...args: unknown[]) => unknown, self: unknown, args: unknown[]): unknown => {
     let result: unknown;
     try { result = Reflect.apply(member, self, args); } catch (error) { return fail(error); }
-    return result !== null && typeof result === "object" && typeof (result as PromiseLike<unknown>).then === "function"
-      ? Promise.resolve(result).catch(fail) : result;
+    return thenable(result) ? Promise.resolve(result).catch(fail) : result;
   };
   return new Proxy(value, {
     apply: (target, self, args) => call(target as (...args: unknown[]) => unknown, self, args),

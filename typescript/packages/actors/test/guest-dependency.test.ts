@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DependencyUnavailableError, dependencyBinding, requireBinding } from "../src/guest.js";
+import { DependencyUnavailableError, GuestStepError, dependencyBinding, readinessStep, requireBinding } from "../src/guest.js";
 
 const wire = (error: DependencyUnavailableError) => JSON.stringify({ type: error.type, detail: error.detail });
 
@@ -36,6 +36,16 @@ describe("guest dependency failures", () => {
     const resolve = dependencyBinding("modelFetch", (fail: boolean) => { if (fail) throw original; return 7; });
     expect(resolve(false)).toBe(7);
     expect(() => resolve(true)).toThrow(DependencyUnavailableError);
+  });
+
+  test("a readiness step names a rejected thenable that is not a native Promise", async () => {
+    const original = new Error("connection reset");
+    const foreign: PromiseLike<never> = { then: (_resolve, reject) => { reject?.(original); return foreign as never; } };
+    const error = await Promise.resolve(readinessStep(cause => new GuestStepError("harness.open", { cause }), () => foreign))
+      .then(() => undefined, (error: unknown) => error) as GuestStepError;
+    expect(error).toBeInstanceOf(GuestStepError);
+    expect(error.detail.step).toBe("harness.open");
+    expect(error.cause).toBe(original);
   });
 
   test("cancellation is not a dependency failure", async () => {
