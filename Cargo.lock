@@ -880,6 +880,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-native-runtime",
  "notify",
+ "tempfile",
  "tokio",
 ]
 
