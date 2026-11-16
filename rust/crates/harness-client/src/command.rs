@@ -1263,3 +1263,92 @@ mod tests {
         Ok(())
     }
 }
+
+use acyclic_stream::StreamError;
+
+pub fn page_json_bytes(value: &impl serde::Serialize) -> Result<u64, Error> {
+    crate::executor::json::json_byte_length(value, None, &mut None)
+        .map_err(|_| Error::Record("agent page encoding failed"))
+}
+
+/// Count each bounded row once, then reserve its actual canonical wire envelope.
+/// Cursor content is counted separately from its quotes in the empty envelope.
+pub struct PageCredit {
+    end_envelope: u64,
+    next_envelope: u64,
+    bytes: u64,
+    items: usize,
+    maximum: u64,
+}
+
+impl PageCredit {
+    pub fn new(
+        page: &AgentPageRequest,
+        empty: impl Fn(Option<String>) -> AgentReply,
+    ) -> Result<Self, Error> {
+        Self::from_envelopes(page, &empty(None), &empty(Some(String::new())))
+    }
+
+    pub fn from_envelopes<C>(
+        page: &AgentPageRequest<C>,
+        end: &impl serde::Serialize,
+        next: &impl serde::Serialize,
+    ) -> Result<Self, Error> {
+        let end_envelope = page_json_bytes(end)?;
+        let maximum = u64::from(page.bytes());
+        if !crate::encoded_agent_reply_size(end_envelope)
+            .is_ok_and(|encoded| encoded <= maximum)
+        {
+            return Err(Error::Stream(StreamError::Capacity));
+        }
+        Ok(Self {
+            end_envelope,
+            next_envelope: page_json_bytes(next)?,
+            bytes: 0,
+            items: 0,
+            maximum,
+        })
+    }
+
+    pub fn accept(
+        &mut self,
+        item: &impl serde::Serialize,
+        next_bytes: Option<u64>,
+    ) -> Result<bool, Error> {
+        let Some(bytes) = self.admits(item, next_bytes)? else {
+            return if self.items == 0 {
+                Err(Error::Stream(StreamError::Capacity))
+            } else {
+                Ok(false)
+            };
+        };
+        self.bytes = bytes;
+        self.items += 1;
+        Ok(true)
+    }
+
+    pub fn accept_boundary(&self, next_bytes: Option<u64>) -> Result<bool, Error> {
+        let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
+        let accepted = crate::encoded_agent_reply_size(self.bytes + envelope)
+            .is_ok_and(|encoded| encoded <= self.maximum);
+        if !accepted && self.items == 0 {
+            return Err(Error::Stream(StreamError::Capacity));
+        }
+        Ok(accepted)
+    }
+    /// The page's row bytes with `item` appended, or `None` when it would
+    /// exceed the requested credit.
+    pub fn admits(
+        &self,
+        item: &impl serde::Serialize,
+        next_bytes: Option<u64>,
+    ) -> Result<Option<u64>, Error> {
+        let bytes = self.bytes + page_json_bytes(item)? + u64::from(self.items != 0);
+        let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
+        Ok(
+            crate::encoded_agent_reply_size(bytes + envelope)
+                .is_ok_and(|encoded| encoded <= self.maximum)
+                .then_some(bytes),
+        )
+    }
+}
