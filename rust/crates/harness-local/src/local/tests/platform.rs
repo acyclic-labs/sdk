@@ -98,7 +98,12 @@ impl Mode {
             kind: AggregateKind::Task,
             id: "agent-conformance".into(),
         };
-        let issuer = AuthorityRoot::new("agent-conformance", [37; 32], audience.clone());
+        let issuer = AuthorityRoot::with_clock(
+            "agent-conformance",
+            [37; 32],
+            audience.clone(),
+            clock.clone(),
+        );
         let filesystem = crate::resources::ProviderRef::new(
             "conformance".into(),
             "filesystem".into(),
@@ -274,7 +279,7 @@ async fn gc_wait_waits_resume_on_the_original_platform_clock(mode: Mode) -> Resu
                     crate::model::ToolCall::new(
                         "original-alarm".into(),
                         "wait".into(),
-                        serde_json::json!({"input":true,"timeout_ms":20}),
+                        serde_json::json!({"input":true,"timeout_ms":10_000}),
                     ),
                 )),
                 ScriptedEvent::Event(crate::model::ModelEvent::Completed {
@@ -319,12 +324,18 @@ async fn gc_wait_waits_resume_on_the_original_platform_clock(mode: Mode) -> Resu
             _ => {}
         }
     };
-    assert_eq!(deadline, Some(120), "wait used a different platform clock");
+    let deadline = deadline.expect("wait published no alarm deadline");
     assert_eq!(provider.request_count(), 1);
     let mut settlement = Box::pin(observed.settled_at(input));
     assert!(futures::poll!(settlement.as_mut()).is_pending());
-    control.advance_to(120).map_err(super::super::storage)?;
-    let (sequence, entry) = settlement.await?;
+    control
+        .advance_to(deadline)
+        .map_err(super::super::storage)?;
+    // Advancing the configured clock must fire the actor alarm. A host that
+    // ignores it waits for the real ten-second deadline instead.
+    let (sequence, entry) = tokio::time::timeout(std::time::Duration::from_secs(2), settlement)
+        .await
+        .map_err(|_| super::super::Error::Storage("wait did not use the platform clock".into()))??;
     assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
     assert_eq!(
         conversation.output_text_at(sequence, &entry).await?,
