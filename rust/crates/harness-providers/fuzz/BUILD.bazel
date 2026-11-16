@@ -31,7 +31,7 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-providers:acyclic_harness_providers",
-        "@crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -55,7 +55,7 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-providers:acyclic_harness_providers",
-        "@crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -79,7 +79,7 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-providers:acyclic_harness_providers",
-        "@crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -103,7 +103,7 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-providers:acyclic_harness_providers",
-        "@crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -127,7 +127,7 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-providers:acyclic_harness_providers",
-        "@crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -151,7 +151,7 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-providers:acyclic_harness_providers",
-        "@crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
 )
@@ -175,7 +175,7 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-providers:acyclic_harness_providers",
-        "@crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
 )
