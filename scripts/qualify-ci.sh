@@ -434,6 +434,7 @@ case "$lane" in
     # The same generated-Bazel freshness step SDK Static runs, so a change that
     # leaves a BUILD.bazel stale fails qualification before it can land.
     node scripts/bazel-build-files.mjs check
+    cargo metadata --format-version 1 >/dev/null && git diff --exit-code -- Cargo.lock
     node --test scripts/test-publish-cargo-crates.mjs
     node --test scripts/test-publish-npm-packages.mjs
     node --experimental-vm-modules --test scripts/static-policy.test.mjs scripts/static-ci.test.mjs scripts/javascript-syntax.test.mjs scripts/check-boundaries.test.mjs
