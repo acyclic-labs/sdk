@@ -396,7 +396,7 @@ impl NativeDemandSource {
         }
     }
 
-    fn node(path: &NamespacePath, metadata: &HostStat) -> SourceNode {
+    fn node(path: &[u8], metadata: &HostStat) -> SourceNode {
         let kind = metadata.file_type();
         SourceNode {
             kind,
@@ -406,7 +406,7 @@ impl NativeDemandSource {
             logical_bytes: (kind == SourceNodeKind::RegularFile
                 || cfg!(unix) && kind == SourceNodeKind::SymbolicLink)
                 .then_some(metadata.len()),
-            version: version(&path_key(path), metadata),
+            version: version(path, metadata),
             metadata: source_metadata(metadata),
         }
     }

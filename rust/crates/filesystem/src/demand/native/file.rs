@@ -3,6 +3,7 @@ struct NativeDemandFile {
     provider: NativeDemandSource,
     source: SourceReference,
     relative: DemandPath,
+    path_key: Vec<u8>,
     expected: SourceVersion,
     logical_bytes: u64,
     #[cfg(windows)]
@@ -60,13 +61,15 @@ impl NativeDemandFile {
         if opened.file_type() != crate::demand::SourceNodeKind::RegularFile {
             return Err(DemandError::NotRegularFile);
         }
-        if version(&opened) != expected {
+        let path_key = path_key(path);
+        if version(&path_key, &opened) != expected {
             return Err(DemandError::StaleVersion);
         }
         Ok(Self {
             provider,
             source,
             relative,
+            path_key,
             _ownership: Arc::new(ownership),
             expected,
             logical_bytes: opened.len(),
@@ -286,8 +289,12 @@ impl NativeDemandFile {
             .root
             .held(context)
             .and_then(|root| root.stat(&self.relative, context));
-        if version(&held) != self.expected
-            || named.as_ref().map(version).ok() != Some(self.expected)
+        if version(&self.path_key, &held) != self.expected
+            || named
+                .as_ref()
+                .map(|metadata| version(&self.path_key, metadata))
+                .ok()
+                != Some(self.expected)
         {
             self.provider.check(&self.source, context)?;
             return Err(DemandError::StaleVersion);
