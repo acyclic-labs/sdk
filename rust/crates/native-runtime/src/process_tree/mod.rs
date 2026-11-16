@@ -139,6 +139,8 @@ pub use prepared::PreparedClosedProcess;
 mod custody_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod execution_boundary_tests;
+#[cfg(test)]
+mod owner_exit_tests;
 #[cfg(unix)]
 #[path = "unix.rs"]
 mod platform;
@@ -154,6 +156,18 @@ mod tests;
 #[cfg(test)]
 #[cfg(windows)]
 mod wait_tests;
+
+/// Whether this process is a member of a tree under its warden. The warden
+/// leaves its tree's group, and its live PID keeps naming that group, so a
+/// group whose ID names a live process outside it is a warded tree's.
+#[cfg(unix)]
+pub(crate) fn within_warded_tree() -> bool {
+    // SAFETY: getpgid only reads the named process's group.
+    let group = unsafe { libc::getpgid(0) };
+    // SAFETY: as above, for the process that the group's ID names.
+    let leader = unsafe { libc::getpgid(group) };
+    group > 0 && leader > 0 && leader != group
+}
 
 /// One child and descendants that remain in its operating-system containment.
 pub struct ProcessTree {
@@ -407,30 +421,17 @@ impl ProcessTree {
         custody: &mut Option<Self>,
     ) -> io::Result<()> {
         Self::spawn_metered(command, meter, custody, |command, slot| {
-            // Every Linux tree runs under its warden, the child subreaper that
-            // kills and reaps each remaining descendant before it exits, so
-            // terminating the tree joins every member, not only its leader.
+            // Every Unix tree runs under its warden, which kills each
+            // remaining descendant before it exits and kills the whole tree
+            // when its owner exits, on every exit path including SIGKILL: a
+            // tree never outlives the process that started it.
             #[cfg(target_os = "linux")]
             {
                 platform::adopt(meter, slot, || runner::start_unrecorded(command))
             }
             #[cfg(all(unix, not(target_os = "linux")))]
             {
-                let boundary = command.boundary.take();
-                #[cfg(target_os = "macos")]
-                if let Some(boundary) = &boundary {
-                    boundary.validate_command(command)?;
-                }
-                if boundary.is_some() {
-                    // The boundary installs its held directory in the child.
-                    // Do not resolve the admitted path a second time in std.
-                    command.cwd = None;
-                }
-                let mut native = command.to_std()?;
-                if let Some(boundary) = boundary {
-                    boundary.install(&mut native, command.unix.arg0.as_deref())?;
-                }
-                platform::spawn_controlled(&mut native, meter, slot)
+                ProcessCustody::spawn_warded(command, -1, meter, slot)
             }
             #[cfg(windows)]
             platform::spawn_controlled(command, meter, slot)

@@ -201,7 +201,12 @@ pub fn spawn_service_process(
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::null());
-                command.process_group(0);
+                // A service leaves a terminal's job, never a warded tree: the
+                // tree ends it with the tree, as the Linux subreaper and the
+                // Windows Job do, so no service outlives the tree that started it.
+                if !crate::process_tree::within_warded_tree() {
+                    command.process_group(0);
+                }
                 for name in obs::LAUNCH_ENVIRONMENT {
                     command.env_remove(name);
                 }

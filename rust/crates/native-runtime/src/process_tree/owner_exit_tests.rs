@@ -1,0 +1,223 @@
+//! A tree never outlives the process that started it, however that owner
+//! exits, and a service started inside a tree stays in the tree. The same
+//! program started without a tree demonstrably survives the same kill.
+#![cfg(unix)]
+
+use super::{ProcessCommand, ProcessStdio, ProcessTree};
+use std::io::{BufRead as _, BufReader};
+use std::process::{Command, Stdio};
+use std::thread;
+
+const MODE: &str = "ACYCLIC_OWNER_EXIT_TEST_MODE";
+const HELPER: &str = "process_tree::owner_exit_tests::owner_exit_helper";
+
+#[test]
+fn owner_exit_helper() {
+    let Ok(mode) = std::env::var(MODE) else {
+        return;
+    };
+    if mode == "member" {
+        println!(
+            "\nACYCLIC_MEMBER={} {}",
+            std::process::id(),
+            super::within_warded_tree()
+        );
+        loop {
+            thread::park();
+        }
+    }
+    let exe = std::env::current_exe().expect("test executable");
+    let args = ["--exact", HELPER, "--nocapture"];
+    let mut tree = None;
+    let mut plain = None;
+    let output: Box<dyn std::io::Read> = if mode == "tree-owner" {
+        let mut command = ProcessCommand::new(&exe);
+        command
+            .args(args)
+            .env(MODE, "member")
+            .stdin(ProcessStdio::null())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::null());
+        let spawned = tree.insert(ProcessTree::spawn(&mut command).expect("spawn tree"));
+        Box::new(spawned.take_stdout().expect("member output"))
+    } else {
+        let spawned = plain.insert(
+            Command::new(&exe)
+                .args(args)
+                .env(MODE, "member")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn plain child"),
+        );
+        Box::new(spawned.stdout.take().expect("member output"))
+    };
+    println!("\n{}", member_line(output));
+    loop {
+        thread::park();
+    }
+}
+
+/// The member's publication line, forwarded unchanged by its owner.
+fn member_line(output: impl std::io::Read) -> String {
+    BufReader::new(output)
+        .lines()
+        .map(|line| line.expect("publication"))
+        .find(|line| line.starts_with("ACYCLIC_MEMBER="))
+        .expect("member published before exit")
+}
+
+/// Starts an owner, kills it with SIGKILL once its member runs, and returns
+/// a watch on that member and whether the member saw itself in a tree.
+fn kill_owner(mode: &str) -> (Watch, bool) {
+    let mut owner = Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", HELPER, "--nocapture"])
+        .env(MODE, mode)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("owner");
+    let line = member_line(owner.stdout.take().expect("owner output"));
+    let (pid, warded) = line
+        .trim_start_matches("ACYCLIC_MEMBER=")
+        .split_once(' ')
+        .expect("pid and containment");
+    let watch = Watch::new(pid.parse().expect("numeric pid")).expect("running member");
+    owner.kill().expect("kill owner");
+    owner.wait().expect("reap owner");
+    (watch, warded == "true")
+}
+
+#[test]
+fn a_tree_and_its_services_die_with_a_killed_owner() {
+    let (member, warded) = kill_owner("tree-owner");
+    assert!(
+        warded,
+        "a tree member would start its services outside the tree"
+    );
+    // Returns only once the member is gone: its warden saw the owner exit.
+    member.wait();
+}
+
+/// Negative control: the same member outside a tree survives the same kill
+/// and would start its services detached.
+#[test]
+fn a_plain_child_outlives_its_killed_owner() {
+    let (member, warded) = kill_owner("plain-owner");
+    let survived = !member.exited();
+    member.kill();
+    assert!(survived, "the oracle cannot observe a surviving member");
+    assert!(!warded, "a plain child claimed tree membership");
+}
+
+/// An exit watch on one process, independent of its parentage.
+struct Watch {
+    fd: std::os::fd::OwnedFd,
+    pid: libc::pid_t,
+}
+
+impl Watch {
+    fn new(pid: libc::pid_t) -> Option<Self> {
+        use std::os::fd::FromRawFd as _;
+        #[cfg(target_os = "linux")]
+        // SAFETY: pidfd_open takes a PID and zero flags.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        #[cfg(not(target_os = "linux"))]
+        // SAFETY: kqueue has no preconditions.
+        let fd = libc::c_long::from(unsafe { libc::kqueue() });
+        let fd = libc::c_int::try_from(fd).expect("descriptor");
+        assert!(fd >= 0, "watch: {}", std::io::Error::last_os_error());
+        // SAFETY: the descriptor the call above just returned.
+        let watch = Self {
+            fd: unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) },
+            pid,
+        };
+        #[cfg(not(target_os = "linux"))]
+        {
+            use std::os::fd::AsRawFd as _;
+            let change = libc::kevent {
+                ident: usize::try_from(pid).expect("pid"),
+                filter: libc::EVFILT_PROC,
+                flags: libc::EV_ADD,
+                fflags: libc::NOTE_EXIT,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            };
+            // SAFETY: one initialized change and no event output.
+            let added = unsafe {
+                libc::kevent(
+                    watch.fd.as_raw_fd(),
+                    &raw const change,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            if added != 0 {
+                let error = std::io::Error::last_os_error();
+                assert_eq!(error.raw_os_error(), Some(libc::ESRCH), "kevent: {error}");
+                return None;
+            }
+        }
+        Some(watch)
+    }
+
+    /// Whether the process has exited, waiting at most `timeout`.
+    fn ready(&self, timeout: Option<&libc::timespec>) -> bool {
+        use std::os::fd::AsRawFd as _;
+        #[cfg(target_os = "linux")]
+        {
+            let mut ready = libc::pollfd {
+                fd: self.fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let timeout = timeout.map_or(-1, |_| 0);
+            // SAFETY: one initialized pollfd.
+            let polled = unsafe { libc::poll(&raw mut ready, 1, timeout) };
+            assert!(polled >= 0, "poll: {}", std::io::Error::last_os_error());
+            polled == 1
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // SAFETY: plain fields; all-zero is a valid output value.
+            let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+            // SAFETY: no changes and one writable event.
+            let ready = unsafe {
+                libc::kevent(
+                    self.fd.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    &raw mut event,
+                    1,
+                    timeout.map_or(std::ptr::null(), std::ptr::from_ref),
+                )
+            };
+            assert!(ready >= 0, "kevent: {}", std::io::Error::last_os_error());
+            ready == 1
+        }
+    }
+
+    /// Whether the process has exited, without waiting.
+    fn exited(&self) -> bool {
+        self.ready(Some(&libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        }))
+    }
+
+    /// Blocks until the process has exited.
+    fn wait(&self) {
+        assert!(self.ready(None), "the watch ended before the exit");
+    }
+
+    fn kill(&self) {
+        // SAFETY: the watched process has not been seen to exit, so its
+        // reparented PID still names it until its new parent reaps it.
+        unsafe { libc::kill(self.pid, libc::SIGKILL) };
+        self.wait();
+    }
+}
