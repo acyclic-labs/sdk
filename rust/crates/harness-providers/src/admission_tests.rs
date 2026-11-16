@@ -209,15 +209,23 @@ fn rate_refusal_paces_its_waiters_across_the_provider_window() -> Result<()> {
                     if position < index as usize {
                         continue;
                     }
+                    let event = loop {
+                        match response.next().now_or_never() {
+                            Some(Some(Ok(ModelEvent::Wait(ModelWait::AdmissionChanged {
+                                ..
+                            })))) => continue,
+                            event => break event,
+                        }
+                    };
                     if position == index as usize {
                         let waited_for = RETRY_AFTER + interval * index;
-                        assert!(matches!(response.next().now_or_never(), Some(Some(Ok(
+                        assert!(matches!(event, Some(Some(Ok(
                             ModelEvent::Wait(ModelWait::AdmissionFinished { waited_for: actual, .. })
                         ))) if actual == waited_for));
                         received_headers(response);
                         assert!(response.next().now_or_never().is_none());
                     } else {
-                        assert!(response.next().now_or_never().is_none());
+                        assert!(event.is_none());
                     }
                 }
             }
