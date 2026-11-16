@@ -106,15 +106,13 @@ impl ClockWorld {
         let checkout = directory.path().join("checkout");
         std::fs::create_dir(&checkout).map_err(oracle::failed)?;
         let state = directory.path().join("state");
-        // The authority root is issued on the host wall clock; the simulated
-        // clock must start inside that admission window, then move only by us.
+        // The authority root is issued on this world clock; its admission
+        // and every measured deadline move only by us.
         let base = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(oracle::failed)?
             .as_millis();
-        let base = u64::try_from(base)
-            .map_err(|_| "host clock overflow".to_owned())?
-            .saturating_add(60_000);
+        let base = u64::try_from(base).map_err(|_| "host clock overflow".to_owned())?;
         let (clock, control) = ControlledClock::new(base);
         Ok(Self {
             _directory: directory,
@@ -267,9 +265,9 @@ async fn wait_case(
         "paused" => {
             world.advance(deadline - 1)?;
             drain(&harness).await?;
-            if matches!(
+            if !matches!(
                 conversation.phase().await.map_err(oracle::failed)?,
-                Phase::Done { .. }
+                Phase::Waiting { deadline_unix_ms: Some(at), .. } if at == deadline
             ) {
                 return Err(format!("{timer} paused: wait left before its deadline"));
             }
