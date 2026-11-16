@@ -268,10 +268,12 @@ async fn waits_resume_on_the_original_platform_clock(mode: Mode) -> Result<()> {
     use crate::test_support::ScriptedEvent;
     // Ahead of the wall clock that signed this platform's admission, so the
     // controlled clock never evaluates a fresh capability before its issue.
+    // One second is enough for the signing clock to reach the same instant.
+    const LEAD_MS: u64 = 1_000;
     let start = acyclic_stream::UnixMillisClock::now_unix_millis(
         &acyclic_stream::SystemUnixMillisClock,
     )
-    .saturating_add(1_000);
+    .saturating_add(LEAD_MS);
     let (clock, mut control) = acyclic_actors::local::ControlledClock::new(start);
     let provider = Arc::new(
         ScriptedModelProvider::new([
