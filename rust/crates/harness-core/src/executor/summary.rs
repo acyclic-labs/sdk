@@ -1,5 +1,19 @@
 use super::*;
 
+/// The number of leading system messages `with_request_prefix` replaces with
+/// the recorded request prefix. An empty prefix replaces nothing, so the
+/// source's own leading messages stay in the request and in its cut.
+pub(super) fn replaced_leading(source: &crate::context::Context, prefix: &[ModelMessage]) -> usize {
+    if prefix.is_empty() {
+        return 0;
+    }
+    source
+        .messages
+        .iter()
+        .take_while(|message| message.role == crate::model::ModelRole::System)
+        .count()
+}
+
 /// The summary request reads the response's cached prefix: `prefix` replaces
 /// `source`'s leading system messages and every other message is kept. The
 /// summary's identity stays on the pre-stage `source`, so its cut still names
@@ -12,11 +26,7 @@ pub(super) fn with_request_prefix(
     if prefix.is_empty() {
         return Ok(source);
     }
-    let leading = source
-        .messages
-        .iter()
-        .take_while(|message| message.role == crate::model::ModelRole::System)
-        .count();
+    let leading = replaced_leading(&source, prefix);
     let (messages, _) = with_history_io(io, |work| {
         crate::context::clone_messages(prefix, None, &source.messages[leading..], work)
     })?;
@@ -57,6 +67,7 @@ impl StockExecution<'_> {
             operation_id,
             step,
             material,
+            &[],
             phase,
             ModelPurpose::Summary,
         )
@@ -132,6 +143,7 @@ impl StockExecution<'_> {
         operation_id: OperationId,
         step: u32,
         material: (crate::context::Context, ModelContent),
+        prefix: &[ModelMessage],
         phase: &mut DispatchPhase,
         purpose: ModelPurpose,
     ) -> Result<(crate::context::ContextSummary, String)> {
@@ -141,7 +153,7 @@ impl StockExecution<'_> {
             operation_id,
             step,
             material,
-            &[],
+            prefix,
             phase,
             purpose,
         )

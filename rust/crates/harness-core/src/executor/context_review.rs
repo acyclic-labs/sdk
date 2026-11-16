@@ -559,6 +559,7 @@ impl<'a> StockExecution<'a> {
             }
             Err(error) => return Err(error),
         };
+        let prefix = session.response_prefix(journal, input, step, &source).await?;
         let material = session.manager_material(&source, 0..end, None, Some(&instruction))?;
         let output = session
             .summarize_output(

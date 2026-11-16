@@ -530,16 +530,18 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                         return fail("the background call was never dispatched");
                     }
                     let worker = before_summary.ok_or("the background call has no worker request")?;
-                    let first = summaries[0]
-                        .messages
-                        .first()
-                        .ok_or("the summary request has no header")?;
-                    if !worker
+                    let source_prefix: Vec<_> = summaries[0]
                         .messages
                         .iter()
-                        .any(|message| message.role == ModelRole::System && message == first)
-                    {
-                        return fail("the background call did not reuse the agent header");
+                        .take_while(|message| message.role == ModelRole::System)
+                        .collect();
+                    let worker_prefix: Vec<_> = worker
+                        .messages
+                        .iter()
+                        .take_while(|message| message.role == ModelRole::System)
+                        .collect();
+                    if source_prefix.is_empty() || source_prefix != worker_prefix {
+                        return fail("the background call did not reuse the agent prefix");
                     }
                 }
                 "length_continuation" => {
@@ -665,11 +667,11 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
     let (_, call) = call(base);
     let capacity = capacity(base);
     let content = length_content(seed);
-    oracle::simulate(seed, move || {
+    oracle::simulate(base, move || {
         entry(async move {
             let files = [("a.txt", "alpha\n")];
             let service = d4_service(call, content).with_context_capacity(d4_capacity(capacity));
-            let mut world = World::new(seed, &files, service).map_err(oracle::failed)?;
+            let mut world = World::new(base, &files, service).map_err(oracle::failed)?;
             let prompt = format!("d4-content:{content} {}", tag("d4"));
             let groups = if call == "summary" {
                 let (warmups, size) = if capacity == "output_eq_context" {
