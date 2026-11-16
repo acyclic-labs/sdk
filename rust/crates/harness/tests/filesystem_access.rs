@@ -3,8 +3,6 @@
 mod compilation;
 #[path = "filesystem_access_reads.rs"]
 mod reads;
-#[path = "volume_composition.rs"]
-mod volume_composition;
 use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
 use acyclic_harness::{
     Capabilities,
