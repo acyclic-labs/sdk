@@ -125,7 +125,7 @@ impl StockExecution<'_> {
             crate::executor::preparation_format(format_args!("context:{step}:prepared"), work)
         })?;
         let _writer = self.journal_writes.lock().await;
-        let (tail, _) = self
+        let (tail, records) = self
             .model_records(journal, input.operation_id, step, ModelPurpose::Response)
             .await?;
         if !journal
@@ -147,9 +147,30 @@ impl StockExecution<'_> {
         {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        drop(_writer);
-        self.ensure_prompt_record(journal, input, step, &reference)
-            .await?;
+        if step == 0
+            && !records
+                .iter()
+                .any(|record| matches!(record.event, ExecutionEvent::Prompt { .. }))
+        {
+            let prompt_key = with_history_io(self.io, |work| {
+                preparation_format(format_args!("prompt:{step}"), work)
+            })?;
+            if !journal
+                .append_if_tail(
+                    input.operation_id,
+                    tail + 1,
+                    &prompt_key,
+                    &ExecutionEvent::Prompt {
+                        step,
+                        projection: reference,
+                    },
+                    self.io,
+                )?
+                .await?
+            {
+                return Err(Error::Indeterminate(input.operation_id));
+            }
+        }
         Ok((projection, accounting, prepared))
     }
 

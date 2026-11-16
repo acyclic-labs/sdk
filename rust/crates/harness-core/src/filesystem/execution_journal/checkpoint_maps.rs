@@ -386,8 +386,7 @@ where
             | ExecutionEvent::Started { .. }
             | ExecutionEvent::Progress { .. }
             | ExecutionEvent::NativeCapture { .. }
-            | ExecutionEvent::ConversationItem { .. }
-            | ExecutionEvent::Prompt { .. } => {}
+            | ExecutionEvent::ConversationItem { .. } => {}
         }
         Ok(roots)
     }
