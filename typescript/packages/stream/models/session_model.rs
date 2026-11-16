@@ -321,11 +321,19 @@ fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result
                 );
             }
             if action == "reconnect" {
-                assert_eq!(
-                    *field(&state, "connecting")?,
-                    true,
-                    "the model must pause the real reconnection await"
-                );
+                if terminal.is_none() {
+                    assert_eq!(
+                        *field(&state, "connecting")?,
+                        true,
+                        "the model must pause the real reconnection await"
+                    );
+                } else {
+                    assert_eq!(
+                        *field(&state, "connecting")?,
+                        false,
+                        "a settled follow must not reconnect"
+                    );
+                }
             }
         }
         let state = driver.call(&json!({"action":"finish"}))?;
