@@ -549,7 +549,7 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
                         if upper.minimum <= key {
                             cursor = high;
                         } else {
-                            candidate = Some((high, before, value_before));
+                            candidate = Some((high, before.clone(), value_before));
                             cursor = low;
                         }
                     } else {
