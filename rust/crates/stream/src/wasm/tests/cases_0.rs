@@ -2,7 +2,8 @@ use crate::OwnedBytes as Bytes;
 
 use super::*;
 use crate::{
-    CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey, StreamPath,
+    CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey, StreamCategory,
+    StreamPath,
 };
 
 #[test]

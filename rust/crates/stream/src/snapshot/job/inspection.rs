@@ -15,7 +15,10 @@ pub(super) struct Observation {
 }
 
 /// Inspects the original job mutex without retaining the job or its state.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct Probe(Box<dyn Fn() -> bool + Send + Sync>);
+#[cfg(target_arch = "wasm32")]
+pub(crate) struct Probe(Box<dyn Fn() -> bool>);
 impl Probe {
     pub(crate) fn unlocked(&self) -> bool {
         (self.0)()
