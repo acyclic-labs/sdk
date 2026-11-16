@@ -4,7 +4,7 @@
 //! C1 is a pure control state machine, so its world checks the production
 //! kernel over every waiter/trigger pair rather than sampling a host scenario. C5 drives the shipping local composition: both a direct
 //! child (depth 1) and a grandchild through a worker (depth 2) settle for each
-//! event and parent state, and the parent's next request must carry the
+//! event and parent state, and the parent's next request must carry that
 //! settlement.
 use super::*;
 use acyclic_harness::{
