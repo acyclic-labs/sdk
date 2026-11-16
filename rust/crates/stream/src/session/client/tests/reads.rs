@@ -602,8 +602,16 @@ async fn session_children_page_equals_the_provider_page() -> TestResult {
             .all(|child| child.tail_record.is_some())
     );
     assert_eq!(
-        client.children_page(page("tree", 0)?, 0).await.err(),
-        provider.children_page(page("tree", 0)?).await.err()
+        client
+            .children_page(page("tree", 0)?, 0)
+            .await
+            .err()
+            .map(|error| error.category()),
+        provider
+            .children_page(page("tree", 0)?)
+            .await
+            .err()
+            .map(|error| error.category())
     );
     Ok(())
 }

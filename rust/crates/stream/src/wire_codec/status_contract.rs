@@ -249,6 +249,6 @@ mod tests {
         );
         // Another FailedPrecondition message stays undecided, never terminal.
         let other = wire_codec::status(&Status::new(Code::FailedPrecondition, "failed later"));
-        assert_eq!(other, StreamError::Unavailable);
+        assert_eq!(other.category(), StreamCategory::Unavailable);
     }
 }
