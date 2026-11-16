@@ -107,14 +107,17 @@ impl ControlledClock {
         )
     }
 
-    /// Resolves once a deadline has been registered on this clock, returning
-    /// that deadline. A world advances time only after this event, never on a
-    /// scheduler tick that might still be preparing the wait.
-    pub fn registered(&self) -> BoxProviderFuture<'static, u64> {
+    /// Resolves once a deadline at or after `at_least` has been registered on
+    /// this clock, returning that deadline. A world advances time only after
+    /// this event, never on a scheduler tick that might still be preparing the
+    /// wait. An earlier deadline that is already due does not satisfy it.
+    pub fn registered_at_least(&self, at_least: u64) -> BoxProviderFuture<'static, u64> {
         let mut registrations = self.registrations.clone();
         Box::pin(async move {
             loop {
-                if let Some(deadline) = *registrations.borrow_and_update() {
+                if let Some(deadline) = *registrations.borrow_and_update()
+                    && deadline >= at_least
+                {
                     return deadline;
                 }
                 if registrations.changed().await.is_err() {
@@ -164,14 +167,7 @@ impl Clock for ControlledClock {
         let mut time = self.time.clone();
         let registered = self.registered.clone();
         Box::pin(async move {
-            registered.send_if_modified(|current| {
-                if current.is_none() {
-                    *current = Some(deadline_unix_ms);
-                    true
-                } else {
-                    false
-                }
-            });
+            registered.send_replace(Some(deadline_unix_ms));
             loop {
                 if *time.borrow_and_update() >= deadline_unix_ms {
                     return Ok(());

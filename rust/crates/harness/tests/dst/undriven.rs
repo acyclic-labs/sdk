@@ -151,8 +151,8 @@ impl ClockWorld {
         self.service.request_count()
     }
 
-    fn registered(&self) -> EntryFuture<'_, std::result::Result<u64, String>> {
-        entry(async move { Ok(self.clock.registered().await) })
+    fn registered(&self, at_least: u64) -> EntryFuture<'_, std::result::Result<u64, String>> {
+        entry(async move { Ok(self.clock.registered_at_least(at_least).await) })
     }
 
     fn clear_registered(&self) {
@@ -250,12 +250,12 @@ async fn wait_case(
         .observe(None)
         .await
         .map_err(oracle::failed)?;
+    let expected_deadline = world.base.saturating_add(20);
     let inbox = conversation
         .send(&id, &prompt_tag)
         .await
         .map_err(oracle::failed)?;
-    let deadline = world.registered().await?;
-    let expected_deadline = world.base.saturating_add(20);
+    let deadline = world.registered(expected_deadline).await?;
     if deadline != expected_deadline {
         return Err(format!(
             "{timer} {state}: deadline {deadline} did not use the world clock ({expected_deadline})"
@@ -289,7 +289,7 @@ async fn wait_case(
             world.clear_registered();
             let reopened = world.open().await.map_err(oracle::failed)?;
             drain(&reopened).await?;
-            let recovered = world.registered().await?;
+            let recovered = world.registered(deadline).await?;
             if recovered != deadline {
                 return Err(format!(
                     "{timer} reopened: recovered deadline {recovered} differs from {deadline}"
