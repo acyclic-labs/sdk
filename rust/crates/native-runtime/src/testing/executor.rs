@@ -30,6 +30,7 @@ struct State {
     driver: Option<Arc<Waker>>,
     root_drivers: BTreeMap<u64, Arc<Waker>>,
     random: blake3::OutputReader,
+    record_trace: bool,
     trace: Vec<(u64, &'static str)>,
 }
 
@@ -75,6 +76,16 @@ pub(super) struct Executor(Mutex<State>);
 
 impl Executor {
     pub(super) fn new(seed: u64) -> Arc<Self> {
+        Self::with_trace(seed, true)
+    }
+
+    /// A seeded executor whose poll order is kept but whose diagnostic poll
+    /// trace is not: a world that only replays has no reader for it.
+    pub(super) fn unrecorded(seed: u64) -> Arc<Self> {
+        Self::with_trace(seed, false)
+    }
+
+    fn with_trace(seed: u64, record_trace: bool) -> Arc<Self> {
         let mut hash = blake3::Hasher::new_derive_key("acyclic.dst.poll-order.v1");
         hash.update(&seed.to_le_bytes());
         Arc::new(Self(Mutex::new(State {
@@ -88,6 +99,7 @@ impl Executor {
             driver: None,
             root_drivers: BTreeMap::new(),
             random: hash.finalize_xof(),
+            record_trace,
             trace: Vec::new(),
         })))
     }
@@ -242,7 +254,9 @@ impl Executor {
     fn polled(&self, id: u64, pending: Option<Work>, phase: &'static str) {
         let (discard, driver) = {
             let mut state = lock(&self.0);
-            state.trace.push((id, phase));
+            if state.record_trace {
+                state.trace.push((id, phase));
+            }
             let discard = if state.closed || state.cancelled.contains(&id) {
                 state.live.remove(&id);
                 state.ready.remove(&id);
