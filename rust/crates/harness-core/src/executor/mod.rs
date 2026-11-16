@@ -405,6 +405,14 @@ pub enum ExecutionEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         configuration: Option<crate::model::ConfigurationUpdate>,
     },
+    /// Pins the effective system and root prompt before the first model request.
+    Prompt {
+        /// Zero-based response step.
+        step: u32,
+        /// Exact prepared context containing the effective prompt.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+        projection: FileRef,
+    },
     /// Pins a verified compacted projection before response admission.
     ContextCompacted {
         /// Zero-based response step.

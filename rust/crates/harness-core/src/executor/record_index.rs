@@ -51,6 +51,7 @@ impl ExecutionEvent {
             Self::Started { .. } | Self::Progress { .. } | Self::NativeCapture { .. } => None,
             Self::ConversationItem { step, .. }
             | Self::ContextPrepared { step, .. }
+            | Self::Prompt { step, .. }
             | Self::ContextCompacted { step, .. }
             | Self::ModelStarted { step, .. }
             | Self::Model { step, .. }
@@ -99,6 +100,10 @@ impl ExecutionEvent {
                 projection: file(projection)?,
                 steering: *steering,
                 configuration: *configuration,
+            },
+            Prompt { step, projection } => Prompt {
+                step: *step,
+                projection: file(projection)?,
             },
             ContextCompacted {
                 step,

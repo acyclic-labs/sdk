@@ -94,6 +94,7 @@ impl ExecutionPayloadField {
             (
                 Self::Projection,
                 ExecutionEvent::ContextPrepared { projection, .. }
+                | ExecutionEvent::Prompt { projection, .. }
                 | ExecutionEvent::ContextCompacted { projection, .. }
                 | ExecutionEvent::ToolCompleted { projection, .. },
             ) => Some(projection),
