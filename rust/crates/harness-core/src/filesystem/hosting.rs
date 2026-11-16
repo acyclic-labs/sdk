@@ -1497,9 +1497,9 @@ where
             crate::conversation::journal_volume(self.volumes.provider.clone(), &request.agent)
                 .map_err(turn)?;
         authority.authorize_host_volume(&journal).map_err(turn)?;
-        if self.issuer.native().is_none()
-            && let TurnAdmission::Admitted { scope, .. } = &self.admission
-        {
+        // One rule whoever signs: an admitted caller authorizes creating the
+        // agent's journal, though the host creates it under its own custody.
+        if let TurnAdmission::Admitted { scope, .. } = &self.admission {
             self.volumes
                 .authorize_volume_creation(scope, &journal)
                 .map_err(turn)?;
