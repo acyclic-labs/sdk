@@ -25,7 +25,7 @@ diff -ruN a/rust/defs.bzl b/rust/defs.bzl
 diff -ruN a/rust/private/check.bzl b/rust/private/check.bzl
 --- a/rust/private/check.bzl
 +++ b/rust/private/check.bzl
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,111 @@
 +"""`cargo check` for Bazel: rust_check_aspect."""
 +
 +load("@rules_cc//cc:find_cc_toolchain.bzl", "use_cc_toolchain")
@@ -108,6 +108,11 @@ diff -ruN a/rust/private/check.bzl b/rust/private/check.bzl
 +    fragments = ["cpp"],
 +    attrs = {
 +        "_error_format": attr.label(default = "//rust/settings:error_format"),
++        "_extra_exec_rustc_env": attr.label(default = Label("//rust/settings:extra_exec_rustc_env")),
++        "_extra_exec_rustc_flag": attr.label(default = Label("//rust/settings:extra_exec_rustc_flag")),
++        "_extra_exec_rustc_flags": attr.label(default = Label("//rust/settings:extra_exec_rustc_flags")),
++        "_extra_rustc_env": attr.label(default = Label("//rust/settings:extra_rustc_env")),
++        "_extra_rustc_flags": attr.label(default = Label("//rust/settings:extra_rustc_flags")),
 +        "_extra_rustc_flag": attr.label(default = Label("//rust/settings:extra_rustc_flag")),
 +        "_per_crate_rustc_flag": attr.label(default = Label("//rust/settings:per_crate_rustc_flag")),
 +        "_process_wrapper": attr.label(
