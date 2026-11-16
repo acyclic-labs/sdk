@@ -52,9 +52,8 @@ The case uses the ordinary process owner and retirement barrier on every OS.
 The Windows fixture requires symlink creation (Developer Mode or the test
 account's native symlink privilege), as well as PSEC 1.1. Fixture failure is not
 an ignored test. Linux requires `rg` in the test parent's search path. macOS uses
-its installed native toolchain with `CARGO_INCREMENTAL=0`. Give each invocation
-its own `CARGO_TARGET_DIR` and retain its source, staged executables and terminal
-receipts until native qualification completes.
+its installed native toolchain. Retain each invocation's source, staged
+executables and terminal receipts until native qualification completes.
 
 ## Evidence status
 

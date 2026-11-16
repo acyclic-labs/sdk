@@ -394,22 +394,6 @@ test("native qualification rejects build input identity mutations", () => {
   assert.equal(darwinLinker.environment.SDKROOT, "/Applications/Xcode.app/SDKs/MacOSX.sdk");
 });
 
-test("native qualification requires incremental compilation for development but admits release artifacts", () => {
-  const release = validBuildInputs();
-  Object.assign(release.profile, { cargo_incremental: "0", release_incremental: "false" });
-  assertBuildInputs(release);
-
-  const development = validBuildInputs();
-  development.schema += ".development-only";
-  development.generator.options.release = false;
-  development.profile.name = "dev";
-  Object.assign(development.profile, { cargo_incremental: "0" });
-  assert.throws(() => assertBuildInputs(development, { qualificationDev: true }), /native build disables incremental compilation/);
-  development.profile.cargo_incremental = null;
-  development.profile.release_incremental = "false";
-  assert.throws(() => assertBuildInputs(development, { qualificationDev: true }), /native build disables incremental compilation/);
-});
-
 test("native qualification normalizes host paths in published build inputs", () => {
   const original = validBuildInputs();
   original.invocation.args.push("--output", "C:/runner/_work/native-bundle", "--target-dir", "C:/runner/_work/target-stream-native");
@@ -532,36 +516,24 @@ test("native qualification preserves Windows separators in plain Rustflags", () 
 test("native qualification restores Rustflags when setup fails", async () => {
   const priorRustflags = process.env.RUSTFLAGS;
   const priorEncoded = process.env.CARGO_ENCODED_RUSTFLAGS;
-  const priorIncremental = process.env.CARGO_INCREMENTAL;
-  const priorReleaseIncremental = process.env.CARGO_PROFILE_RELEASE_INCREMENTAL;
   process.env.RUSTFLAGS = "-C opt-level=2";
   delete process.env.CARGO_ENCODED_RUSTFLAGS;
-  process.env.CARGO_INCREMENTAL = "1";
-  process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = "1";
   await assert.rejects(
     withDeterministicRustflags("C:/src", "C:/target", undefined, async () => {
       assert.equal(process.env.RUSTFLAGS, undefined);
       const encodedRustflags = process.env.CARGO_ENCODED_RUSTFLAGS;
       assert.ok(encodedRustflags);
       assert.match(encodedRustflags, /__acyclic_stream_source/u);
-      assert.equal(process.env.CARGO_INCREMENTAL, "1");
-      assert.equal(process.env.CARGO_PROFILE_RELEASE_INCREMENTAL, "1");
       throw new Error("capture setup failed");
     }),
     /capture setup failed/,
   );
   assert.equal(process.env.RUSTFLAGS, "-C opt-level=2");
   assert.equal(process.env.CARGO_ENCODED_RUSTFLAGS, undefined);
-  assert.equal(process.env.CARGO_INCREMENTAL, "1");
-  assert.equal(process.env.CARGO_PROFILE_RELEASE_INCREMENTAL, "1");
   if (priorRustflags === undefined) delete process.env.RUSTFLAGS;
   else process.env.RUSTFLAGS = priorRustflags;
   if (priorEncoded === undefined) delete process.env.CARGO_ENCODED_RUSTFLAGS;
   else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncoded;
-  if (priorIncremental === undefined) delete process.env.CARGO_INCREMENTAL;
-  else process.env.CARGO_INCREMENTAL = priorIncremental;
-  if (priorReleaseIncremental === undefined) delete process.env.CARGO_PROFILE_RELEASE_INCREMENTAL;
-  else process.env.CARGO_PROFILE_RELEASE_INCREMENTAL = priorReleaseIncremental;
 });
 
 test("native qualification restores Darwin Apple linker environment", () => {
@@ -621,8 +593,6 @@ test("native qualification forwards spaces and shell metacharacters through its 
   const rustcSource = resolve(directory, "rustc.mjs");
   const rustcCommand = resolve(directory, process.platform === "win32" ? "rustc.cmd" : "rustc");
   const driverCommand = resolve(directory, "driver.cmd");
-  const priorWrapper = process.env.RUSTC_WRAPPER;
-  delete process.env.RUSTC_WRAPPER;
   const args = [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", "--remap-path-prefix=C:/Program Files/SDK=/__source", "-C", "link-arg=C:/a&b/x.dll", "-C", "link-arg=C:/a!b/y.dll"];
   try {
     await writeFile(rustcSource, `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));\n`);
@@ -642,8 +612,6 @@ test("native qualification forwards spaces and shell metacharacters through its 
       await capture.close();
     }
   } finally {
-    if (priorWrapper === undefined) delete process.env.RUSTC_WRAPPER;
-    else process.env.RUSTC_WRAPPER = priorWrapper;
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -729,7 +697,6 @@ test("native capture invokes the exact rustc executable when no nested wrapper i
 // workspace delegate because forwarding cannot attest its final compiler argv.
 test("capture helper forwards and restores nested wrappers and PATH", async () => {
   const prior = {
-    RUSTC_WRAPPER: process.env.RUSTC_WRAPPER,
     RUSTC_WORKSPACE_WRAPPER: process.env.RUSTC_WORKSPACE_WRAPPER,
     PATH: process.env.PATH,
   };
@@ -739,7 +706,6 @@ test("capture helper forwards and restores nested wrappers and PATH", async () =
       else process.env[name] = value;
     }
   };
-  process.env.RUSTC_WRAPPER = "outer-global-wrapper";
   process.env.RUSTC_WORKSPACE_WRAPPER = "outer-workspace-wrapper";
   try {
     const capture = await createRustcInvocationCapture();
@@ -747,7 +713,6 @@ test("capture helper forwards and restores nested wrappers and PATH", async () =
     assert.equal(invoked, process.platform === "win32" ? "capture.cmd" : "capture");
     assert.notEqual(process.env.PATH, prior.PATH);
     await capture.close();
-    assert.equal(process.env.RUSTC_WRAPPER, "outer-global-wrapper");
     assert.equal(process.env.RUSTC_WORKSPACE_WRAPPER, "outer-workspace-wrapper");
     assert.equal(process.env.PATH, prior.PATH);
 
@@ -766,7 +731,6 @@ test("capture helper forwards and restores nested wrappers and PATH", async () =
     } finally {
       await failing.close();
     }
-    assert.equal(process.env.RUSTC_WRAPPER, "outer-global-wrapper");
     assert.equal(process.env.RUSTC_WORKSPACE_WRAPPER, "outer-workspace-wrapper");
     assert.equal(process.env.PATH, prior.PATH);
   } finally {

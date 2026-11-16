@@ -155,7 +155,7 @@ proptest! {
 }
 
 #[test]
-fn closed_owner_metadata_rechecks_both_concrete_tools_context_and_wrappers() {
+fn closed_owner_metadata_rechecks_both_concrete_tools_and_context() {
     let directory = tempfile::tempdir().unwrap();
     let cargo = directory.path().join("cargo");
     let rustc = directory
@@ -164,10 +164,7 @@ fn closed_owner_metadata_rechecks_both_concrete_tools_context_and_wrappers() {
     fs::write(&cargo, "concrete Cargo").unwrap();
     fs::write(&rustc, "concrete compiler").unwrap();
     let mut command = std::process::Command::new(&cargo);
-    command
-        .env("RUSTC", &rustc)
-        .env_remove("RUSTC_WRAPPER")
-        .env_remove("RUSTC_WORKSPACE_WRAPPER");
+    command.env("RUSTC", &rustc);
     let calls = Cell::new(0);
     sdk_docs::with_command_environment(&command, || {
         let query = |context: &str| {
@@ -202,29 +199,6 @@ fn closed_owner_metadata_rechecks_both_concrete_tools_context_and_wrappers() {
             sdk_docs::with_command_environment(&command, || {
                 assert_eq!(query("source/config/environment-a"), "5");
                 assert_eq!(query("source/config/environment-a"), "6");
-            });
-            calls.set(4);
-        }
-        for key in [
-            "RUSTC_WRAPPER",
-            "RUSTC_WORKSPACE_WRAPPER",
-            "CARGO_BUILD_RUSTC_WRAPPER",
-            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
-        ] {
-            let mut command = std::process::Command::new(&cargo);
-            command.env(key, "external-wrapper");
-            sdk_docs::with_command_environment(&command, || {
-                assert_eq!(query("source/config/environment-a"), "5");
-                // A wrapper must query afresh even within the same command.
-                assert_eq!(
-                    owner_metadata(&cargo, "source/config/environment-a", || {
-                        calls.set(calls.get() + 1);
-                        Ok(calls.get().to_string())
-                    })
-                    .unwrap(),
-                    "6"
-                );
-                assert_eq!(query("source/config/environment-a"), "7");
             });
             calls.set(4);
         }

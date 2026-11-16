@@ -89,7 +89,7 @@ for (const outcome of [0, 7, "throw", "missing-module"]) {
 test("product cache invocation preserves compiler settings and dist output", t => {
   for (const productName of ["acyclic", "graphcoder"]) {
   const dir = workspace(t);
-  const env = { ...cacheEnv(dir, 0), CARGO: "fixture-cargo", RUSTC_WRAPPER: "fixture-sccache",
+  const env = { ...cacheEnv(dir, 0), CARGO: "fixture-cargo",
     CARGO_TARGET_DIR: join(dir, "target"), CARGO_BUILD_TARGET: "x86_64-pc-windows-msvc",
     RUSTFLAGS: "", CARGO_ENCODED_RUSTFLAGS: "" };
   const result = run(product, [productName], { cwd: dir, env });
@@ -98,7 +98,6 @@ test("product cache invocation preserves compiler settings and dist output", t =
   const invocation = JSON.parse(readFileSync(env.RELEASE_TEST_INVOCATION, "utf8"));
   assert.equal(invocation.command, env.CARGO);
   assert.equal(invocation.cwd, resolve(root));
-  assert.equal(invocation.env.RUSTC_WRAPPER, env.RUSTC_WRAPPER);
   assert.equal(invocation.env.CARGO_TARGET_DIR, env.CARGO_TARGET_DIR);
   assert.equal(invocation.context, env.SDK_RELEASE_BUILD_CONTEXT);
   assert.deepEqual(invocation.args.slice(0, 8), ["build", "--locked", "--profile", "dist", "-p", "acyclic-plugin", "--bin", productName]);

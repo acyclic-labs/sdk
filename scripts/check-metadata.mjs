@@ -16,7 +16,6 @@ const documents = [
   ["provenance/manifest.json", "compatibility/schemas/provenance.schema.json"],
   ["languages/package-names.json", "compatibility/schemas/package-names.schema.json"],
   ["compatibility/manifest.json", "compatibility/schemas/compatibility.schema.json"],
-  [".github/qualification-lanes.json", "compatibility/schemas/qualification-lanes.schema.json"],
   ["release/cargo-crates.json", "compatibility/schemas/release-cargo-crates.schema.json"],
   ["release/cargo-equivalent-archives.json", "compatibility/schemas/release-cargo-equivalent-archives.schema.json"],
   ["release/npm-packages.json", "compatibility/schemas/release-npm-packages.schema.json"],
@@ -27,15 +26,6 @@ for (const [documentPath, schemaPath] of documents) {
   const document = await load(documentPath);
   if (!validate(document)) throw new Error(`${documentPath}: ${ajv.errorsText(validate.errors)}`);
   checkedDocuments.set(documentPath, document);
-  if (documentPath === ".github/qualification-lanes.json") {
-    const lanes = /** @type {Record<string, unknown>[]} */ (document);
-    const { cache_size, ...withoutLimit } = lanes[0];
-    const fixtures = [[withoutLimit], ...["", "0M", "-1M", "1.5M", "1G", "01M", 384]
-      .map(value => [{ ...lanes[0], cache_size: value }])];
-    for (const fixture of fixtures) {
-      if (validate(fixture)) throw new Error("qualification cache limit schema accepted an invalid fixture");
-    }
-  }
 }
 const retiredFindings = retiredRuntimeFindings(checkedDocuments);
 if (retiredFindings.length) throw new Error(retiredFindings.join("\nerror: "));

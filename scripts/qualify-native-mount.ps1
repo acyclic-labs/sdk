@@ -31,34 +31,26 @@ $artifactDir = if ($env:SDK_ARTIFACT_DIR) {
     Join-Path $env:TEMP 'acyclic-native-mount'
 }
 New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
-$releaseExecutable = if ($env:ACYCLIC_RELEASE_EXECUTABLE) {
-    $env:ACYCLIC_RELEASE_EXECUTABLE
-} else {
-    $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repository 'target' }
-    cargo build --locked -p acyclic-plugin --release
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
-    Join-Path $targetDir 'release\acyclic.exe'
+$releaseExecutable = $env:ACYCLIC_RELEASE_EXECUTABLE
+if (-not $releaseExecutable) {
+    throw 'ACYCLIC_RELEASE_EXECUTABLE is required'
 }
 if (-not (Test-Path -LiteralPath $releaseExecutable -PathType Leaf)) {
     throw "release executable is unavailable: $releaseExecutable"
 }
-$arguments = @(
+$qualifierExecutable = $env:ACYCLIC_QUALIFIER_EXECUTABLE
+if (-not $qualifierExecutable) {
+    throw 'ACYCLIC_QUALIFIER_EXECUTABLE is required'
+}
+if (-not (Test-Path -LiteralPath $qualifierExecutable -PathType Leaf)) {
+    throw "qualification executable is unavailable: $qualifierExecutable"
+}
+& $qualifierExecutable @(
     '--require-kind', $Backend,
     '--release-executable', $releaseExecutable,
     '--checkout-root', $repository,
     '--output', (Join-Path $artifactDir "$Backend.json")
 )
-if ($env:ACYCLIC_QUALIFIER_EXECUTABLE) {
-    if (-not (Test-Path -LiteralPath $env:ACYCLIC_QUALIFIER_EXECUTABLE -PathType Leaf)) {
-        throw "qualification executable is unavailable: $env:ACYCLIC_QUALIFIER_EXECUTABLE"
-    }
-    & $env:ACYCLIC_QUALIFIER_EXECUTABLE @arguments
-} else {
-    cargo run --locked -p acyclic-conformance --features local-runner `
-        --bin native-mount-qualify -- @arguments
-}
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

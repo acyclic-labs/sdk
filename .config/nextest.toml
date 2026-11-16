@@ -73,7 +73,7 @@ filter = 'test(/(^|::)(fs_concurrency_bench|queue_scaling|scale_tests)::/) | tes
 priority = 100
 
 # CI test profile: flags slow tests in the log and records per-test timings
-# as JUnit for the job summary (scripts/ci-summary.mjs).
+# as JUnit for the job summary.
 [profile.ci]
 # Descendants retaining output must fail independently. The per-test limit is
 # inherited from the default profile.

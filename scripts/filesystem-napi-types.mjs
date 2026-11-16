@@ -27,10 +27,7 @@ export async function renderTypes(root, family, crates) {
   ], { cwd: root, stdio: "inherit", env: {
     ...process.env,
     NAPI_TYPE_DEF_TMP_FOLDER: typeDefDir,
-    // Compiler caches retain Rust artifacts, not napi-derive's external files.
-    // Cargo still reuses the target directory's up-to-date dependencies.
-    RUSTC_WRAPPER: "",
-    RUSTC_WORKSPACE_WRAPPER: "",
+    // Cargo reuses the target directory's up-to-date dependencies.
     ...rebuild,
   } });
   if (generated.status !== 0) {

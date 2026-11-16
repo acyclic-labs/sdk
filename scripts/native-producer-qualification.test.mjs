@@ -12,10 +12,6 @@ function developmentInputs() {
   const inputs = structuredClone(captured.raw_build_inputs);
   inputs.schema += ".development-only";
   inputs.profile.name = "dev";
-  // Release artifacts may be built without incremental state; development
-  // evidence must be incremental, so a dev input cannot inherit that setting.
-  inputs.profile.cargo_incremental = null;
-  inputs.profile.release_incremental = null;
   inputs.generator.options.release = false;
   return inputs;
 }

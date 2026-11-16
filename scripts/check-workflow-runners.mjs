@@ -39,18 +39,7 @@ for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name)).
   }
 }
 
-// Qualification lanes are scheduled from data rather than workflow YAML; each
-// lane runs one worker per vCPU of its runner.
-const laneRunnerCpus = new Map([["kaizen-linux", 8], ["ubuntu-24.04-arm", 4], ["macos-15", 3], ["windows-2025", 4]]);
-for (const lane of JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"))) {
-  if (laneRunnerCpus.get(lane.runner) !== lane.workers) {
-    throw new Error(`qualification lane ${lane.lane} must run one worker per vCPU on a known runner, not ${lane.workers} on ${lane.runner}`);
-  }
-}
-
 const expected = [
-  ".github\\workflows\\agent-host-qualification.yml:macos-15",
-  ".github\\workflows\\agent-host-qualification.yml:windows-2025",
   ".github\\workflows\\publish-crate.yml:ubuntu-24.04",
   ".github\\workflows\\publish-npm.yml:ubuntu-24.04",
   ".github\\workflows\\readme-guard.yml:ubuntu-latest",

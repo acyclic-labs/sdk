@@ -41,23 +41,14 @@ export function validBuildInputs(family = "stream") {
     },
     profile: {
       name: "release",
-      cargo_incremental: null,
-      release_incremental: null,
       manifest_sha256: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       config_sha256: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     },
     environment: {
       RUSTFLAGS: "-C target-feature=+crt-static",
       CARGO_ENCODED_RUSTFLAGS: null,
-      RUSTC_WRAPPER: null,
       RUSTC_WORKSPACE_WRAPPER: null,
       CARGO_TARGET_DIR: null,
-    },
-    cache: {
-      wrapper: null,
-      wrapper_version: null,
-      directory: null,
-      size: null,
     },
   };
 }

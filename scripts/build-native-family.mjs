@@ -685,7 +685,6 @@ function buildInputsReceipt(raw, published, { qualificationDev = false } = {}) {
 async function buildInputs(target, targetDir, outputDir, packageName, { qualificationDev = false } = {}) {
   const policy = qualificationPolicy(qualificationDev);
   if (typeof target !== "string" || target.length === 0) throw new Error("native build inputs require a target");
-  const wrapper = envValue("RUSTC_WRAPPER");
   const maintainedBun = await maintainedBunVersion();
   const bunIdentity = typeof process.versions.bun === "string"
     ? maintainedBunIdentity(maintainedBun)
@@ -729,23 +728,14 @@ async function buildInputs(target, targetDir, outputDir, packageName, { qualific
     linker: linkerInputs(target),
     profile: {
       name: policy.profile,
-      cargo_incremental: envValue("CARGO_INCREMENTAL"),
-      release_incremental: envValue("CARGO_PROFILE_RELEASE_INCREMENTAL"),
       manifest_sha256: digest(await readFile(resolve(root, "Cargo.toml"))),
       config_sha256: digest(configBytes),
     },
     environment: {
       RUSTFLAGS: envValue("RUSTFLAGS"),
       CARGO_ENCODED_RUSTFLAGS: envValue("CARGO_ENCODED_RUSTFLAGS"),
-      RUSTC_WRAPPER: wrapper,
       RUSTC_WORKSPACE_WRAPPER: envValue("RUSTC_WORKSPACE_WRAPPER"),
       CARGO_TARGET_DIR: envValue("CARGO_TARGET_DIR"),
-    },
-    cache: {
-      wrapper,
-      wrapper_version: wrapper === null ? null : optionalCommandIdentity(wrapper, ["--version"]),
-      directory: envValue("SCCACHE_DIR"),
-      size: envValue("SCCACHE_CACHE_SIZE"),
     },
   };
 }
@@ -813,11 +803,7 @@ function assertBuildInputs(value, { qualificationDev = false } = {}) {
   const profile = assertStringFields(value.profile, ["name", "manifest_sha256", "config_sha256"], "profile");
   if (value.profile.name !== policy.profile) throw new Error(`native build profile is not ${policy.profile}`);
   for (const field of ["manifest_sha256", "config_sha256"]) assertDigest(profile[field], `profile.${field}`);
-  assertNullableStringFields(profile, ["cargo_incremental", "release_incremental"], "profile");
-  if (policy.profile !== "release" && (profile.cargo_incremental === "0" || profile.release_incremental === "false")) throw new Error("native build disables incremental compilation");
-  assertNullableStringFields(value.environment, ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_TARGET_DIR"], "environment");
-  const cache = assertNullableStringFields(value.cache, ["wrapper", "directory", "size"], "cache");
-  if (cache.wrapper_version !== null) assertStringFields(cache.wrapper_version, ["output"], "cache.wrapper_version");
+  assertNullableStringFields(value.environment, ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WORKSPACE_WRAPPER", "CARGO_TARGET_DIR"], "environment");
   const linker = assertObject(value.linker, "linker");
   if (value.target.endsWith("-apple-darwin") && linker.apple == null) {
     throw new Error("Darwin native build inputs are missing Apple tool identity");

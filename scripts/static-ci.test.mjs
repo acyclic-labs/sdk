@@ -144,15 +144,6 @@ process.env.STATIC_CI_TEST_DEPTH = String(depth + 1);
   const result = await check(); assert.notEqual(result.status, 0); assert.match(result.stdout, /earlier\.txt.*trailing whitespace/);
  }));
 
- test('release policy fetches complete history and docs describe only release diagnostics', () => {
-  const workflow = readFileSync('.github/workflows/qualification.yml', 'utf8');
-  assert.match(workflow, /fetch-depth: \$\{\{ matrix\.lane == 'policy' && '0' \|\| '1' \}\}/);
-  assert.match(workflow, /fetch-tags: \$\{\{ matrix\.lane == 'policy' \}\}/);
-  const docs = readFileSync('docs/ci-releases.md', 'utf8');
-  assert.match(docs, /publish=false/); assert.match(docs, /no independent manual triggers/);
-  assert.doesNotMatch(docs, /Manual diagnostic qualification remains available|native-mount-qualification\.yml|five-minute job/);
- });
-
  test('release whitespace preserves byte-exact transport artifacts and generated declarations', () => fixture(async ({root, tag, commit, check}) => {
   tag('acyclic-v0.1.0');
   const artifacts = {

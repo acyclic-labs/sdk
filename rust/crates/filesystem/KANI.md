@@ -12,7 +12,6 @@ The harnesses compile only under `cfg(kani)`. The build script registers that cf
 Use Kani 0.68.0, CBMC 6.11.0, Rust nightly-2026-08-21 and CaDiCaL 3.0.0 on Linux, with offline dependencies and one solver job. From the repository root:
 
 ```sh
-export RUSTC_WRAPPER=
 export CARGO_NET_OFFLINE=true
 cargo +nightly-2026-08-21 kani --package acyclic-fs --harness kani_proofs::exact_u32_from_f64_all_bits --jobs 1
 cargo +nightly-2026-08-21 kani --package acyclic-fs --harness operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero --jobs 1

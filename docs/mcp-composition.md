@@ -813,7 +813,7 @@ cargo clippy -p acyclic-harness --no-default-features --all-targets --locked -- 
 bun scripts/build-wasm.mjs harness
 bun test typescript/packages/harness/test
 bun run --cwd typescript/packages/harness test:browser:mcp
-bash scripts/check-harness-package.sh /tmp/harness-mcp-qualified
+bazel test //rust/crates/harness:all
 ```
 
 The package output must be an absent absolute path. The required native CI lane

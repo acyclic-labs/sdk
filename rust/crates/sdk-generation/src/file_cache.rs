@@ -117,18 +117,7 @@ pub(super) fn owner_metadata(
     };
     let configured =
         crate::command_var_os("RUSTC").and_then(|path| PathBuf::from(path).canonicalize().ok());
-    if !is_resolved_cargo(cargo)
-        || configured.is_none()
-        || configured.as_ref() != Some(&compiler)
-        || [
-            "RUSTC_WRAPPER",
-            "RUSTC_WORKSPACE_WRAPPER",
-            "CARGO_BUILD_RUSTC_WRAPPER",
-            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
-        ]
-        .iter()
-        .any(|key| crate::command_var_os(key).is_some_and(|value| !value.is_empty()))
-    {
+    if !is_resolved_cargo(cargo) || configured.is_none() || configured.as_ref() != Some(&compiler) {
         return query();
     }
     METADATA.with(|values| {
