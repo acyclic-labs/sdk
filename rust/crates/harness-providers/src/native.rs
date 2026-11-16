@@ -216,7 +216,7 @@ pub(crate) fn generate<'a>(
                     let _name_custody = name_custody;
                     let mut attempt = dispatch::GenerationAttempt::new(provider.config.retry, dispatch_id);
                     loop {
-                    let response_body = {
+                    let (response_body, traces) = {
                         let exchange = attempt.exchange(provider, &body, dispatch_id, &mut auth,
                             Some(&mut auth_custody), Some(work));
                         let mut exchange = core::pin::pin!(exchange);
@@ -226,13 +226,15 @@ pub(crate) fn generate<'a>(
                                     let custody = work.claim(event.logical_owned_bytes()?, 1, WorkCounters::UNCHARGED)?;
                                     yield (event, custody);
                                 }
-                                Some(Ok(dispatch::Exchange::Accepted(response))) => break response,
+                                Some(Ok(dispatch::Exchange::Accepted(response, traces))) => break (response, traces),
                                 Some(Err(error)) => Err(error)?,
                                 None => Err(crate::invalid("model exchange ended without an accepted response"))?,
                             }
                         }
                     };
                     let retry_after = response_body.retry_after;
+                    let mut traces = traces.into_iter();
+                    let mut traces_yielded = false;
                     let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
                     let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
                     let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
@@ -247,10 +249,18 @@ pub(crate) fn generate<'a>(
                         let mut events = core::pin::pin!(events);
                         while let Some(event) = events.next().await {
                             match event {
-                                Ok(event) => {
+                                Ok((event, custody)) => {
+                                    if matches!(event, ModelEvent::Completed { .. }) && !traces_yielded {
+                                        for record in traces.by_ref() {
+                                            let event = ModelEvent::Trace { record };
+                                            let custody = work.claim(event.logical_owned_bytes()?, 1, WorkCounters::UNCHARGED)?;
+                                            yield (event, custody);
+                                        }
+                                        traces_yielded = true;
+                                    }
                                     // The provider has finished serving this request.
-                                    if matches!(event.0, ModelEvent::Completed { .. }) { attempt.held = None; }
-                                    yield event
+                                    if matches!(event, ModelEvent::Completed { .. }) { attempt.held = None; }
+                                    yield (event, custody)
                                 }
                                 Err(error) => {failure = Some(error); break;}
                             }

@@ -316,13 +316,14 @@ fn exchange_count<'a>(
             headers: exchange.headers.clone(),
             body: exchange.body.clone(),
         };
+        let mut traces = Vec::new();
         let sent = {
             let events = crate::admission::send(provider, attempt, work, &mut held);
             let mut events = core::pin::pin!(events);
             loop {
                 match events.next().await {
                     Some(Ok(Event::Wait(wait))) => yield Event::Wait(wait),
-                    Some(Ok(Event::Trace(record))) => yield Event::Trace(record),
+                    Some(Ok(Event::Trace(record))) => traces.push(record),
                     Some(Ok(Event::Ready(response))) => break Ok(response),
                     Some(Err(error)) => break Err(error),
                     None => break Err(crate::invalid("count send ended without a response")),
@@ -335,7 +336,11 @@ fn exchange_count<'a>(
         let (failure, retry_after) = match sent {
             Ok(response) if (200..300).contains(&response.status) => {
                 match read_count(provider, response, work).await {
-                    Ok(count) => { yield Event::Ready(count); return; },
+                    Ok(count) => {
+                        for record in traces { yield Event::Trace(record); }
+                        yield Event::Ready(count);
+                        return;
+                    },
                     Err(failure) => (failure, None),
                 }
             }

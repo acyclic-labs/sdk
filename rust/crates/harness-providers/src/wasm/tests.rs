@@ -278,12 +278,15 @@ async fn registry_drives_every_adapter_through_fetch_with_accounting_and_public_
         assert_eq!(field(&fixture, "calls")?.as_f64(), Some(0.0));
         let iterator = prepared.generate(dispatch()?)?;
         let events: Vec<Value> = from_js(JsFuture::from(collect_model(iterator)).await?)?;
-        assert_eq!(events[0]["kind"], "trace");
-        assert_eq!(events[1]["kind"], "trace");
+        let start_index = events
+            .iter()
+            .position(|event| event["kind"] == "trace")
+            .expect("trace start");
+        assert_eq!(events[start_index + 1]["kind"], "trace");
         let start: acyclic_stream::trace::TraceRecord =
-            serde_json::from_value(events[0]["record"].clone()).unwrap();
+            serde_json::from_value(events[start_index]["record"].clone()).unwrap();
         let finish: acyclic_stream::trace::TraceRecord =
-            serde_json::from_value(events[1]["record"].clone()).unwrap();
+            serde_json::from_value(events[start_index + 1]["record"].clone()).unwrap();
         let acyclic_stream::trace::TraceRecord::V1(acyclic_stream::trace::SpanEvent::Started {
             id,
             at_ns,
@@ -299,8 +302,12 @@ async fn registry_drives_every_adapter_through_fetch_with_accounting_and_public_
         assert!(matches!(finish, acyclic_stream::trace::TraceRecord::V1(
             acyclic_stream::trace::SpanEvent::Finished { id: finished, at_ns: ended, .. }
         ) if id == finished && ended >= at_ns));
-        assert_eq!(events[2]["kind"], "content");
-        assert_eq!(events[2]["delta"], "hé");
+        let content = events
+            .iter()
+            .position(|event| event["kind"] == "content")
+            .expect("content");
+        assert!(content < start_index, "trace must follow its accepted body");
+        assert_eq!(events[content]["delta"], "hé");
         let call = events
             .iter()
             .find(|event| event["kind"] == "tool_call")

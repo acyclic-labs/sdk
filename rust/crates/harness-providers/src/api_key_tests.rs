@@ -324,6 +324,12 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                     }),
                 });
             } else {
+                let events: Vec<_> = events
+                    .into_iter()
+                    .filter(|event| {
+                        !matches!(event, ModelEvent::Trace { .. } | ModelEvent::Wait(_))
+                    })
+                    .collect();
                 assert_eq!(
                     events[0],
                     ModelEvent::Content {

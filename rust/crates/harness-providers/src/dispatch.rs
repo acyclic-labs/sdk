@@ -44,20 +44,22 @@ pub(crate) fn generate_encoded<'a>(
         let mut auth = auth;
         let mut attempt = GenerationAttempt::new(provider.config.retry, dispatch);
         loop {
-            let response_body = {
+            let (response_body, traces) = {
                 let exchange = attempt.exchange(provider, &body, dispatch, &mut auth,
                     #[cfg(not(target_arch = "wasm32"))] None, None);
                 let mut exchange = core::pin::pin!(exchange);
                 loop {
                     match exchange.next().await {
                         Some(Ok(Exchange::Observation(event))) => yield event,
-                        Some(Ok(Exchange::Accepted(response))) => break response,
+                        Some(Ok(Exchange::Accepted(response, traces))) => break (response, traces),
                         Some(Err(error)) => Err(error)?,
                         None => Err(invalid("model exchange ended without an accepted response"))?,
                     }
                 }
             };
             let retry_after = response_body.retry_after;
+            let mut traces = traces.into_iter();
+            let mut traces_yielded = false;
             let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
             let cache = cache.map(|cache| acyclic_harness_core::executor::ModelCacheObservation {
                 credential_scope: origin.credential_scope, ..cache
@@ -69,6 +71,10 @@ pub(crate) fn generate_encoded<'a>(
                 let mut events = core::pin::pin!(events);
                 while let Some(event) = events.next().await {
                     let mut event = match event { Ok(event) => event, Err(error) => { failure = Some(crate::diagnostic::rejection(error)); break; } };
+                    if matches!(event, ModelEvent::Completed { .. }) && !traces_yielded {
+                        for record in traces.by_ref() { yield ModelEvent::Trace { record }; }
+                        traces_yielded = true;
+                    }
                     if let ModelEvent::Completed { metadata } = &mut event {
                         projection::cache::attach(metadata, cache)?;
                         provider.observe(request, input_bytes, metadata)?;
@@ -291,7 +297,7 @@ pub(crate) struct GenerationAttempt {
 /// One shared exchange's original observations, followed by its accepted body.
 pub(crate) enum Exchange {
     Observation(ModelEvent),
-    Accepted(HttpResponse),
+    Accepted(HttpResponse, Vec<acyclic_stream::trace::TraceRecord>),
 }
 
 impl GenerationAttempt {
@@ -317,6 +323,7 @@ impl GenerationAttempt {
     ) -> impl futures::Stream<Item = Result<Exchange>> + acyclic_stream::ProviderTask + 'a {
         async_stream::try_stream! {
         loop {
+            let mut traces = Vec::new();
             let response = {
                 let events = send(provider, body.clone(), dispatch,
                     auth.0.as_deref(), auth.1.as_deref(), work, &mut self.held);
@@ -326,7 +333,7 @@ impl GenerationAttempt {
                         Some(Ok(crate::admission::Event::Wait(wait))) =>
                             yield Exchange::Observation(ModelEvent::Wait(wait)),
                         Some(Ok(crate::admission::Event::Trace(record))) =>
-                            yield Exchange::Observation(ModelEvent::Trace { record }),
+                            traces.push(record),
                         Some(Ok(crate::admission::Event::Ready(response))) => break Ok(response),
                         Some(Err(error)) => break Err(error),
                         None => break Err(invalid("model send ended without a response")),
@@ -336,7 +343,7 @@ impl GenerationAttempt {
             let (error, retry_after) = match response {
                 Ok(response) if (200..300).contains(&response.status) => {
                     self.attempt.observe(response.status);
-                    yield Exchange::Accepted(response);
+                    yield Exchange::Accepted(response, traces);
                     break;
                 }
                 Ok(response) => {
