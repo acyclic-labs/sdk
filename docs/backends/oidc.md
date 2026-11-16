@@ -50,22 +50,7 @@ forgery, expiry, audience, subject, algorithm confusion, rotation/removal, stale
 keys, mixed signing families and uses, bounded refresh and last-good preservation.
 Invalid tokens perform zero
 turn-provider reads/writes and no executor calls; cached admission performs no
-JWKS I/O. A disposable local Dex issuer additionally exercises real RS256
-verification and admitted scope expiry against the same host implementation.
-
-Run on Linux:
-
-```powershell
-bash scripts/qualify-oidc.sh
-```
-
-Dex binds only 127.0.0.1:15482 (OIDC) and 127.0.0.1:15483 (telemetry), uses memory
-storage and a public disposable test account, and stops on script exit. Raw
-responses, hashes, capture time and container image provenance are retained in
-`rust/crates/harness/fixtures/conformance/identity/dex`. Its short-lived test token is
-validated during capture; later executions start a fresh issuer and recapture.
-This proves local integration; it does not qualify a particular production IdP's
-configuration, discovery service, user interface or account lifecycle.
+JWKS I/O.
 
 Recorded Linux qualification: complete native and guest-wire suite 2.96 seconds;
 complete host suite plus real Dex admission and scope deadline 2.403 seconds.
