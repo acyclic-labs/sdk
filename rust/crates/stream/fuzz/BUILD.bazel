@@ -33,10 +33,10 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/stream:acyclic_stream",
-        "@crates//bytes-1.12.1",
-        "@crates//futures-0.3.34",
-        "@crates//libfuzzer-sys-0.4.13",
-        "@crates//prost-0.14.4",
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//prost-0.14.4",
     ],
     visibility = ["//visibility:public"],
 )
@@ -60,10 +60,10 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/stream:acyclic_stream",
-        "@crates//bytes-1.12.1",
-        "@crates//futures-0.3.34",
-        "@crates//libfuzzer-sys-0.4.13",
-        "@crates//prost-0.14.4",
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//prost-0.14.4",
     ],
     visibility = ["//visibility:public"],
 )
@@ -87,10 +87,10 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/stream:acyclic_stream",
-        "@crates//bytes-1.12.1",
-        "@crates//futures-0.3.34",
-        "@crates//libfuzzer-sys-0.4.13",
-        "@crates//prost-0.14.4",
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//prost-0.14.4",
     ],
     visibility = ["//visibility:public"],
 )
@@ -116,10 +116,10 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/stream:acyclic_stream",
-        "@crates//bytes-1.12.1",
-        "@crates//futures-0.3.34",
-        "@crates//libfuzzer-sys-0.4.13",
-        "@crates//prost-0.14.4",
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//prost-0.14.4",
     ],
     visibility = ["//visibility:public"],
 )
@@ -143,10 +143,10 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/stream:acyclic_stream",
-        "@crates//bytes-1.12.1",
-        "@crates//futures-0.3.34",
-        "@crates//libfuzzer-sys-0.4.13",
-        "@crates//prost-0.14.4",
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//libfuzzer-sys-0.4.13",
+        "@sdk_crates//prost-0.14.4",
     ],
     visibility = ["//visibility:public"],
 )

@@ -34,13 +34,5 @@ register_toolchains("@musl_toolchains_hub//:all")
 
 register_toolchains("@llvm_toolchain//:all")
 
-# crate_universe resolves against a copy of Cargo.lock, so it never rewrites the source.
-cargo_lock = use_repo_rule("//:cargo_lock.bzl", "cargo_lock")
-
-cargo_lock(
-    name = "cargo_lock",
-    src = "//:Cargo.lock",
-)
-
 # The Rust toolchain, rustc flags and crate universe, generated from the Cargo configuration.
 include("//:cargo.MODULE.bazel")
