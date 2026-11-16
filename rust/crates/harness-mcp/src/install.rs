@@ -54,7 +54,7 @@ pub struct McpInstallation {
     pub diagnostics: Vec<McpServerFailure>,
 }
 
-struct Connected {
+pub(crate) struct Connected {
     transport: Arc<dyn McpToolTransport>,
     tools: Vec<McpToolDefinition>,
     binding: [u8; 32],

@@ -18,24 +18,25 @@ struct WatchedConfig {
 /// Installs a shared MCP catalog that follows trusted settings files.
 pub trait McpConfigWatchExt {
     /// Install a shared catalog which follows trusted config files and MCP events.
-    async fn install_watched(
+    fn install_watched(
         tools: ToolRegistry,
         settings: Arc<SettingsConfig>,
         workspace: &Path,
         limits: McpClientLimits,
         secrets: Arc<dyn acyclic_harness_core::secrets::SecretSource>,
-    ) -> Result<McpInstallation>;
+    ) -> impl std::future::Future<Output = Result<McpInstallation>> + Send;
 }
 
 impl McpConfigWatchExt for McpConfig {
     /// Install a shared catalog which follows trusted config files and MCP events.
-    async fn install_watched(
+    fn install_watched(
         tools: ToolRegistry,
         settings: Arc<SettingsConfig>,
         workspace: &Path,
         limits: McpClientLimits,
         secrets: Arc<dyn acyclic_harness_core::secrets::SecretSource>,
-    ) -> Result<McpInstallation> {
+    ) -> impl std::future::Future<Output = Result<McpInstallation>> + Send {
+        async move {
         let watch = InputWatch::new(settings.mcp_paths())?;
         let revision = watch.revision();
         watch.arm()?;
@@ -61,6 +62,7 @@ impl McpConfigWatchExt for McpConfig {
             capabilities,
             diagnostics: installed.diagnostics,
         })
+        }
     }
 }
 
