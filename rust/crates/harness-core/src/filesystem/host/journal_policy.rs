@@ -136,7 +136,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?;
             io.sdk(
                 transaction
-                    .observe_policy_fence(fence, io, io.cancellation())
+                    .observe_policy_fence(fence, self.access_now()?, io, io.cancellation())
                     .await,
             )?;
             io.sdk(

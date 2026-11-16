@@ -94,7 +94,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?;
             io.sdk(
                 transaction
-                    .observe_policy_fence(authorization.0, io, io.cancellation())
+                    .observe_policy_fence(
+                        authorization.0,
+                        self.access_now()?,
+                        io,
+                        io.cancellation(),
+                    )
                     .await,
             )?;
             // The ordinary publication receipt decides this binding. A conflict or
