@@ -167,7 +167,6 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_exact_file(Some(reference), io)?;
             if self
                 .maximum_bytes
                 .is_some_and(|maximum| range.length > maximum)
@@ -182,39 +181,22 @@ where
                     "range exceeds source or provider credit",
                 ));
             }
-            crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
-            let grant = crate::executor::with_history_io(io, |work| {
-                ContentGrant::verify_read_with_work(
-                    self.authority.verifier(),
-                    self.authority.scope(),
-                    reference,
-                    work,
-                )
-            })?;
-            let _grant_hold = io
-                .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
-                .transpose()?;
-            let generation = self.host.file_generation(reference, io)?;
-            let (bytes, selected, byte_length) = self
-                .host
-                .read_private_range(
-                    reference.volume(),
-                    &grant,
-                    reference.path(),
-                    Some(&generation),
-                    range,
-                    crate::conversation::ContentAccess { ceiling, io },
-                )
+            let unmeasured;
+            let io = match io {
+                Some(io) => io,
+                None => {
+                    unmeasured =
+                        PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                    &unmeasured
+                }
+            };
+            let bytes = self
+                .select_reference(reference, ceiling, io)
+                .await?
+                .read_range(range)
                 .await?;
-            if selected != generation || byte_length != reference.descriptor().byte_length() {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Conflict,
-                    "range reader returned another selection",
-                ));
-            }
-            crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
-            Ok(bytes)
+            self.authority.recheck(&mut Some(&mut io.history_io()))?;
+            Ok(bytes.into_custody())
         })
     }
 
@@ -262,16 +244,7 @@ where
                 owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
                 &owned
             };
-            self.verify_exact_file(Some(reference), Some(io))?;
-            self.authority.recheck(&mut Some(&mut io.history_io()))?;
-            self.host
-                .read_selection_with_access(
-                    self.authority.scope(),
-                    reference,
-                    self.exact_file.is_some(),
-                    None,
-                    io,
-                )
+            self.select_reference(reference, None, io)
                 .await?
                 .confirm_publication()
                 .await?;
@@ -752,52 +725,64 @@ where
         Ok(())
     }
 
-    pub(in crate::filesystem) async fn read_file<'io>(
+    /// Selects exactly the file `reference` names: the cut its version names
+    /// (authored or private) and Read access to its path there. A pinned
+    /// reference is its own identity, so no reader re-derives another
+    /// `FileRef` from path metadata to compare against it; the bytes are
+    /// verified against the reference's own descriptor.
+    async fn select_reference<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        ceiling: Option<&crate::Capabilities>,
+        io: &'a PreparationIo,
+    ) -> Result<crate::filesystem::access::ReadObservation<'a, A, O>> {
+        self.verify_exact_file(Some(reference), Some(io))?;
+        self.authority.recheck(&mut Some(&mut io.history_io()))?;
+        self.host
+            .read_selection_with_access(
+                self.authority.scope(),
+                reference,
+                self.exact_file.is_some(),
+                ceiling,
+                io,
+            )
+            .await
+    }
+
+    pub(in crate::filesystem) async fn read_file(
         &self,
         reference: &FileRef,
         maximum_bytes: u64,
         ceiling: Option<&crate::Capabilities>,
-        io: Option<&'io PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<crate::conversation::Custody> {
-        self.verify_exact_file(Some(reference), io)?;
-        crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
-        let grant = crate::executor::with_history_io(io, |work| {
-            ContentGrant::verify_read_with_work(
-                self.authority.verifier(),
-                self.authority.scope(),
-                reference,
-                work,
-            )
-        })?;
-        let _grant_hold = io
-            .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
-            .transpose()?;
-        let generation = self.host.file_generation(reference, io)?;
         let maximum_bytes = self
             .maximum_bytes
             .map_or(maximum_bytes, |maximum| maximum.min(maximum_bytes));
-        let (actual, bytes) = self
-            .host
-            .read_private_path(
-                reference.volume(),
-                &grant,
-                reference.path(),
-                Some(&generation),
-                maximum_bytes,
-                crate::conversation::ContentAccess { ceiling, io },
-            )
-            .await?;
-        if actual != *reference {
+        if reference.descriptor().byte_length() > maximum_bytes {
             return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Conflict,
-                "path reader returned another file",
+                crate::wire::ErrorCode::Invalid,
+                "complete content exceeds its byte credit",
             ));
         }
-        crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
+        let unmeasured;
+        let io = match io {
+            Some(io) => io,
+            None => {
+                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &unmeasured
+            }
+        };
+        let bytes = self
+            .select_reference(reference, ceiling, io)
+            .await?
+            .read_file(maximum_bytes)
+            .await?;
+        self.authority.recheck(&mut Some(&mut io.history_io()))?;
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(("resolved content body", bytes.len() as u64));
-        Ok(bytes)
+        Ok(bytes.into_custody())
     }
 
     /// Lazily lists another agent's private directory under this reader's signed, owner-delegated subtree grant.
