@@ -134,15 +134,6 @@ pub(crate) fn require_unrestricted_at(
     }
 }
 
-pub(in crate::filesystem) fn require(
-    view: &PathTrie,
-    action: Action,
-    path: &str,
-    io: &PreparationIo,
-) -> Result<()> {
-    require_at(view, action, path, io, access_now()?)
-}
-
 pub(in crate::filesystem) fn require_at(
     view: &PathTrie,
     action: Action,
@@ -246,7 +237,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             io,
         )
         .await?;
-        require(&compiled.0, Action::Read, reference.path(), io)?;
+        self.require(&compiled.0, Action::Read, reference.path(), io)?;
         let mut observation =
             ReadObservation::new(self, workspace.clone(), selected, compiled, reference, io);
         if observation.data_workspace_id() != workspace.id() {

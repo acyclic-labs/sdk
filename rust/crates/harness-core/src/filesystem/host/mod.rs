@@ -43,15 +43,6 @@ impl<A, O> FilesystemHost<A, O> {
         super::access::require_at(view, action, path, io, self.access_now()?)
     }
 
-    pub(in crate::filesystem) fn require_unrestricted(
-        &self,
-        view: &acyclic_fs::access::PathTrie,
-        actions: &[acyclic_fs::access::Action],
-        surface: &'static str,
-    ) -> Result<()> {
-        super::access::require_unrestricted_at(view, actions, surface, self.access_now()?)
-    }
-
     /// Binds a deployment and funds its shared descriptor on the optional ledger.
     pub fn new(
         filesystem: Fs<A, O>,

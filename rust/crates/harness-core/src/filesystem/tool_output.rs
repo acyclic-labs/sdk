@@ -151,7 +151,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                         acyclic_fs::access::Action::List,
                         acyclic_fs::access::Action::Read,
                     ],
-                    super::access::access_now()?,
+                    self.access_now()?,
                 ) {
                     return Err(Error::Unauthorized(
                         "an observation needs list and read on all of the tool output".into(),
