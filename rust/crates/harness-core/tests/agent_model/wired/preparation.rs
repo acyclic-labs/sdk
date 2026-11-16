@@ -606,9 +606,11 @@ async fn dropped_answer(
     let Some(Error::Actor(error)) = error.downcast_ref::<Error>() else {
         return Err("answer producer loss lost its actor error class".into());
     };
-    assert!(matches!(&**error, acyclic_actors::local::Error::Handler(error)
+    assert!(
+        matches!(&**error, acyclic_actors::local::Error::Handler(error)
         if matches!(error.as_ref(), acyclic_actors::guest::GuestError::Handler(message)
-            if message.contains("original answer producer dropped"))));
+            if message.contains("original answer producer dropped")))
+    );
     assert_eq!(probe.reads.load(Ordering::SeqCst), 1);
     Ok(())
 }
