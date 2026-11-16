@@ -958,6 +958,48 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
 }
 
 #[cfg(target_os = "linux")]
+#[test]
+fn a_successful_root_is_not_a_sandbox_failure_when_a_background_descendant_remains() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let grant = ExecutionGrant::new(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        system_read_roots(),
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    let grant = match grant.compile_native() {
+        Ok(grant) => grant,
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => return,
+        Err(error) => panic!("native policy compilation: {error}"),
+    };
+    let mut command = Command::new("/bin/sh");
+    command
+        .args(["-c", "/bin/sleep 30 & exit 0"])
+        .env_clear()
+        .current_dir(&workspace)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut tree = ProcessTree::spawn_granted(command, &grant, None).unwrap();
+    let output = tree
+        .wait_with_output(
+            crate::CaptureSchedule::Unbounded,
+            4096,
+            None,
+            || Ok(()),
+            |_| Ok(Default::default()),
+            None,
+            None,
+            None,
+        )
+        .expect("a successful root is not a sandbox failure");
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[cfg(target_os = "linux")]
 fn retained_policy_preparation(root: &Path) {
     use std::sync::atomic::Ordering::Acquire;
     let workspace = root.join("retained");
