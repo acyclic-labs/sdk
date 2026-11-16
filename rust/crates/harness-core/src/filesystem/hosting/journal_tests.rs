@@ -214,6 +214,94 @@ async fn a_private_cut_read_names_its_cut_and_rereads_the_same_bytes() -> TestRe
     Ok(())
 }
 
+// A pinned reference is its own identity. A file committed without a
+// publication index (as a root's approval policy is) carries presentation
+// fields its bytes cannot reproduce, and still reads by its reference. Bytes
+// that differ from the reference's descriptor are refused.
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn a_pinned_reference_reads_without_a_publication_index() -> TestResult {
+    use crate::conversation::{ContentResidencyVerifier as _, FileDescriptor, FileRef};
+    use crate::filesystem::FilesystemContentVerifier;
+    use std::sync::Arc;
+    let (bound, root) = binding().await?;
+    let state = bound.agents().state(&root).await?;
+    let private = state
+        .volumes
+        .iter()
+        .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
+        .ok_or("missing private binding")?
+        .volume()?;
+    let (scope, verifier) = bound.volume_scope(&root).await?;
+    let bytes = br#"{"seeded":true}"#;
+    let workspace = workspace_ref(
+        private.provider().clone(),
+        &private.storage_name(&mut None)?,
+    )?;
+    let generation = bound
+        .volumes()
+        .apply(
+            &workspace,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: "/seeded.json".into(),
+                bytes: bytes.to_vec().into(),
+            }],
+            &crate::IdempotencyKey::new("unindexed-seed")?,
+        )
+        .await?;
+    let pinned = |descriptor: FileDescriptor| {
+        FileRef::new(
+            private.clone(),
+            "seeded.json".into(),
+            crate::filesystem::bounded_io::file_version(&generation, None)?,
+            descriptor,
+            "seed".into(),
+            &mut None,
+        )
+    };
+    let reference = pinned(FileDescriptor::from_bytes(
+        bytes,
+        "application/json",
+        &mut None,
+    )?)?;
+    let reader =
+        FilesystemContentVerifier::new(Arc::clone(bound.volumes()), &verifier, &scope, None, None)?;
+    let read = reader
+        .read(&reference, reference.descriptor().byte_length(), None, None)?
+        .await?;
+    assert_eq!(read.as_ref(), bytes);
+    let range = reader
+        .read_range(
+            &reference,
+            acyclic_fs::ByteRange {
+                offset: 2,
+                length: 6,
+            },
+            None,
+            None,
+        )?
+        .await?;
+    assert_eq!(range.as_ref(), &bytes[2..8]);
+
+    let other = pinned(FileDescriptor::from_bytes(
+        br#"{"seeded":false}"#,
+        "application/json",
+        &mut None,
+    )?)?;
+    assert!(
+        async {
+            reader
+                .read(&other, other.descriptor().byte_length(), None, None)?
+                .await
+        }
+        .await
+        .is_err(),
+        "bytes that differ from the reference's descriptor were admitted"
+    );
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn production_private_views_route_evaluations_beside_ui() -> TestResult {
