@@ -119,7 +119,7 @@ fn measure(replies: [ScriptedTurn; 7]) -> Result<Windows> {
     let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
-        let directory = tempfile::tempdir().map_err(storage)?;
+        let directory = temporary_directory().map_err(storage)?;
         let mut driver = driver::Driver::new(71, None);
         let driver::Outcome::Completed(cuts) = driver
             .run(turns(driver.schedule.clone(), directory.path(), replies))
@@ -229,7 +229,7 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
 fn negative_control_native_drains_are_counted() -> Result<()> {
     use acyclic_fs::{LocalCoreStateStore, WorkspaceLineageRecord, WorkspaceLineageStore};
 
-    let directory = tempfile::tempdir().map_err(storage)?;
+    let directory = temporary_directory().map_err(storage)?;
     let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     let workspace_id = acyclic_fs::WorkspaceId::from_bytes([1; 16]);
     let generation = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([2; 32]));

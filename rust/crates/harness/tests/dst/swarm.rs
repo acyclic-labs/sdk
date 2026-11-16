@@ -543,7 +543,7 @@ fn run_world(seed: u64, plan: &[Step], seen: &Seen) -> std::result::Result<(), S
         acyclic_native_runtime::testing::seeded_runtime(seed).map_err(|e| e.to_string())?;
     runtime.block_on(async {
         tokio::time::pause();
-        let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let directory = temporary_directory().map_err(|e| e.to_string())?;
         let mut driver = driver::Driver::new(seed, None);
         // The driver's simulated deadline fails a swarm that stops making
         // progress, instead of hanging.
