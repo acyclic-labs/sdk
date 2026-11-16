@@ -264,7 +264,7 @@ impl Platform {
     }
 }
 
-async fn waits_resume_on_the_original_platform_clock(mode: Mode) -> Result<()> {
+async fn gc_wait_waits_resume_on_the_original_platform_clock(mode: Mode) -> Result<()> {
     use crate::test_support::ScriptedEvent;
     // Ahead of the wall clock that signed this platform's admission, so the
     // controlled clock never evaluates a fresh capability before its issue.
@@ -620,7 +620,7 @@ macro_rules! dual_mode {
 }
 
 dual_mode! {
-    waits_resume_on_the_original_platform_clock,
+    gc_wait_waits_resume_on_the_original_platform_clock,
     summaries_remain_readable,
     cancelled_input_remains_in_context,
     cancelling_current_input_preserves_a_newer_queued_prompt,
