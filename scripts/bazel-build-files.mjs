@@ -708,6 +708,10 @@ function moduleFile() {
     rule("crate.from_specs", [
       ["name", q(HUB)],
       ["lockfile", q("//:cargo-bazel-lock.json")],
+      // The workspace Cargo.lock seeds the splice, so the universe resolves Cargo's own versions;
+      // it is Cargo's file, never written back.
+      ["cargo_lockfile", q("//:Cargo.lock")],
+      ["skip_cargo_lockfile_overwrite", "True"],
       ["supported_platform_triples", list(TRIPLES)],
     ]),
     ...[...staged].sort().map(([, { name, version, files }]) => `${rule("crate.annotation", [
@@ -728,7 +732,7 @@ for (const id of members) {
   for (const t of workspace.has(id) ? p.targets : [libOf(p)].filter(Boolean)) {
     // Each output kind of a target is its own rendered rule; one that is not rendered fails the check.
     if (!t.kind.some(k => k === "test" || k === "bench" || k === "custom-build")) for (const kind of t.kind) expected.add(`build ${kind} ${t.name}`);
-    if (t.test && (t.kind.some(k => ["bin", "test", "example", "bench"].includes(k)) || t === libOf(p))) expected.add(`test ${t.kind[0]} ${t.name}`);
+    if (t.test && workspace.has(id) && (t.kind.some(k => ["bin", "test", "example", "bench"].includes(k)) || t === libOf(p))) expected.add(`test ${t.kind[0]} ${t.name}`);
   }
   const have = rendered.get(id);
   const missing = [...expected].filter(t => !have.has(t)), extra = [...have].filter(t => !expected.has(t));
