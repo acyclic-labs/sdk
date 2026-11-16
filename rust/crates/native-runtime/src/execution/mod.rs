@@ -936,6 +936,9 @@ pub(crate) fn refused(reason: impl std::fmt::Display) -> io::Error {
     )
 }
 
+/// The refusal of a boundary the host cannot provide. macOS's boundary
+/// refuses nothing as unavailable, so only the other platforms compile it.
+#[cfg(not(target_os = "macos"))]
 fn unavailable(reason: impl std::fmt::Display) -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
