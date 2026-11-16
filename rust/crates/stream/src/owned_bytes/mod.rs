@@ -416,6 +416,22 @@ impl OwnedBytes {
             other => Err(other),
         }
     }
+    /// Gives these bytes to the ledger `meter` funds. Bytes another ledger
+    /// funds are copied once, so whoever keeps them pays for them; unmetered
+    /// bytes and bytes `meter` already funds are shared without a copy.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn bind_native(&self, meter: &Arc<dyn NativeReadMeter>) -> io::Result<Self> {
+        if self.data.meter().is_none() || self.matches_meter(meter) {
+            return Ok(self.clone());
+        }
+        let claim = ReadAllocation::new(meter, self.len())?;
+        Self::from_vec_with_guard(self.as_slice().to_vec(), claim, Arc::clone(meter)).map_err(
+            |failure| match failure.into_error() {
+                PreparedOwnedBytesError::Admission(error) => error,
+                PreparedOwnedBytesError::NotFullyInitialized => io::ErrorKind::InvalidData.into(),
+            },
+        )
+    }
     /// Compares the original allocation-owner identity.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]

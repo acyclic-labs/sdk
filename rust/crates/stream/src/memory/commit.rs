@@ -185,9 +185,10 @@ impl MemoryStream {
         let records = {
             let mut records = records;
             if let Some(work) = &self.work {
+                let meter = self.allocation_meter(work);
                 for record in &mut records {
-                    record.headers =
-                        work.record(record.headers.bind_native(self.allocation_meter(work)))?;
+                    record.value = work.record(record.value.bind_native(meter))?;
+                    record.headers = work.record(record.headers.bind_native(meter))?;
                 }
             }
             records

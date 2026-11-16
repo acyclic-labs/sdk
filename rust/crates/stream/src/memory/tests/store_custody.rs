@@ -63,3 +63,35 @@ async fn a_write_past_store_capacity_is_refused_before_publication() -> TestResu
     writer.assert_refunded();
     Ok(())
 }
+
+// Without the copy, the store keeps sharing the caller's buffer and the
+// caller's ledger stays charged for as long as the store keeps the record.
+#[tokio::test]
+async fn a_kept_body_funded_by_its_caller_leaves_the_callers_ledger() -> TestResult<()> {
+    let provider = MemoryStream::default();
+    let path = path("custody/body")?;
+    let caller = Arc::new(Meter::default());
+    let body = Bytes::copy_from_slice(b"value").with_guard((), caller.original())?;
+    assert!(caller.held.load(Ordering::SeqCst) > 0);
+    let writer = Arc::new(Meter::default());
+    let mut write = request(&path, 0);
+    write.records = vec![body.into()];
+    drop(provider.native_append(write, writer.original()).await??);
+    assert_eq!(caller.held.load(Ordering::SeqCst), 0);
+    assert_eq!(writer.held.load(Ordering::SeqCst), 0);
+    let records = provider
+        .read(ReadRequest {
+            key: None,
+            path,
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(records[0].value.as_slice(), b"value");
+    Ok(())
+}
