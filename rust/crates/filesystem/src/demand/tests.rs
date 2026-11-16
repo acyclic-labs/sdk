@@ -448,6 +448,60 @@ async fn native_provider_reads_do_not_visit_unrelated_content() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn native_directory_pages_use_each_pages_own_work() -> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    for name in ["first", "second", "third", "fourth"] {
+        std::fs::write(root.path().join(name), b"body")?;
+    }
+    let source = native_source(root.path()).await?;
+    let reference = source_reference(&source).await?;
+    let cancellation = CancellationToken::new();
+    let first_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut first = source
+        .list_page(
+            reference.clone(),
+            &path("/")?,
+            None,
+            2,
+            &first_work,
+            &cancellation,
+        )
+        .await?;
+    first
+        .publication
+        .as_mut()
+        .ok_or("publication absent")?
+        .accept(&mut crate::kernel::KernelAccounting::native(
+            &first_work,
+            &cancellation,
+        ))?;
+    let cursor = first.next.take().ok_or("second root entry missing")?;
+    let second_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut second = source
+        .list_page(
+            reference,
+            &path("/")?,
+            Some(cursor),
+            2,
+            &second_work,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(second.entries.len(), 2);
+    second
+        .publication
+        .as_mut()
+        .ok_or("publication absent")?
+        .accept(&mut crate::kernel::KernelAccounting::native(
+            &second_work,
+            &cancellation,
+        ))?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join("directory"))?;
