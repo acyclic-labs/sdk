@@ -111,8 +111,20 @@ isolated_test(
     name = "acyclic_conformance_test",
     binary = ":acyclic_conformance_test_cases",
     id = "acyclic-conformance",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_conformance_test_full-cloud",
+    binary = ":acyclic_conformance_test_cases",
+    id = "acyclic-conformance",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_binary(
@@ -593,8 +605,20 @@ isolated_test(
     name = "native_mount_qualify_test",
     binary = ":native_mount_qualify_test_cases",
     id = "acyclic-conformance::bin/native-mount-qualify",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "native_mount_qualify_test_full-cloud",
+    binary = ":native_mount_qualify_test_cases",
+    id = "acyclic-conformance::bin/native-mount-qualify",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_binary(
@@ -1072,8 +1096,21 @@ isolated_test(
     binary = ":graphcoder_backends_cases",
     binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
     id = "acyclic-conformance::graphcoder_backends",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "graphcoder_backends_full-cloud",
+    binary = ":graphcoder_backends_cases",
+    binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
+    id = "acyclic-conformance::graphcoder_backends",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_test(
@@ -1145,8 +1182,21 @@ isolated_test(
     binary = ":hosted_actors_cases",
     binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
     id = "acyclic-conformance::hosted_actors",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "hosted_actors_full-cloud",
+    binary = ":hosted_actors_cases",
+    binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
+    id = "acyclic-conformance::hosted_actors",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_test(
@@ -1223,8 +1273,21 @@ isolated_test(
     binary = ":main_cases",
     binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
     id = "acyclic-conformance::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {":client-conformance":"client-conformance",":client-fixture-conformance":"client-fixture-conformance",":dependency_vectors":"dependency_vectors",":graphcoder-seams":"graphcoder-seams",":harness-conformance":"harness-conformance",":inference-qualify":"inference-qualify",":native-mount-qualify":"native-mount-qualify",":qualify":"qualify",":s3-fixture":"s3-fixture",":storage-conformance":"storage-conformance",":targeted_interaction_corpus":"targeted_interaction_corpus",":workload_corpus":"workload_corpus",":workload_manifest":"workload_manifest",":workload_select":"workload_select"},
+    id = "acyclic-conformance::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 filegroup(

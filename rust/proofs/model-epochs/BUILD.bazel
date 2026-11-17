@@ -53,7 +53,19 @@ isolated_test(
     name = "model_epoch_proofs_test",
     binary = ":model_epoch_proofs_test_cases",
     id = "model-epoch-proofs",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "model_epoch_proofs_test_full-cloud",
+    binary = ":model_epoch_proofs_test_cases",
+    id = "model-epoch-proofs",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

@@ -413,8 +413,20 @@ isolated_test(
     name = "acyclic_fs_test",
     binary = ":acyclic_fs_test_cases",
     id = "acyclic-fs",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_fs_test_full-cloud",
+    binary = ":acyclic_fs_test_cases",
+    id = "acyclic-fs",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_test(
@@ -679,8 +691,20 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     id = "acyclic-fs::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    id = "acyclic-fs::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_test(
@@ -917,8 +941,20 @@ isolated_test(
     name = "browser_commit",
     binary = ":browser_commit_cases",
     id = "acyclic-fs::browser_commit",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "browser_commit_full-cloud",
+    binary = ":browser_commit_cases",
+    id = "acyclic-fs::browser_commit",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_test(
@@ -1155,8 +1191,20 @@ isolated_test(
     name = "browser_blob_custody",
     binary = ":browser_blob_custody_cases",
     id = "acyclic-fs::browser_blob_custody",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "browser_blob_custody_full-cloud",
+    binary = ":browser_blob_custody_cases",
+    id = "acyclic-fs::browser_blob_custody",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_binary(

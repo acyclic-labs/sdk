@@ -345,8 +345,20 @@ isolated_test(
     name = "acyclic_harness_test",
     binary = ":acyclic_harness_test_cases",
     id = "acyclic-harness",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_harness_test_full-cloud",
+    binary = ":acyclic_harness_test_cases",
+    id = "acyclic-harness",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_binary(
@@ -847,8 +859,20 @@ isolated_test(
     name = "acyclic_virtiofsd_test",
     binary = ":acyclic_virtiofsd_test_cases",
     id = "acyclic-harness::bin/acyclic-virtiofsd",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_virtiofsd_test_full-cloud",
+    binary = ":acyclic_virtiofsd_test_cases",
+    id = "acyclic-harness::bin/acyclic-virtiofsd",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_test(
@@ -1164,8 +1188,21 @@ isolated_test(
     binary = ":main_cases",
     binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
     id = "acyclic-harness::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
+    id = "acyclic-harness::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_test(
@@ -1432,8 +1469,21 @@ isolated_test(
     binary = ":native_receipt_cases",
     binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
     id = "acyclic-harness::native_receipt",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "native_receipt_full-cloud",
+    binary = ":native_receipt_cases",
+    binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
+    id = "acyclic-harness::native_receipt",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_binary(

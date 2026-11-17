@@ -61,7 +61,19 @@ isolated_test(
     name = "acyclic_fs_control_layout_proof_test",
     binary = ":acyclic_fs_control_layout_proof_test_cases",
     id = "acyclic-fs-control-layout-proof",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_fs_control_layout_proof_test_full-cloud",
+    binary = ":acyclic_fs_control_layout_proof_test_cases",
+    id = "acyclic-fs-control-layout-proof",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

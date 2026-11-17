@@ -186,7 +186,19 @@ isolated_test(
     name = "acyclic_harness_tui_test",
     binary = ":acyclic_harness_tui_test_cases",
     id = "acyclic-harness-tui",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_harness_tui_test_full-cloud",
+    binary = ":acyclic_harness_tui_test_cases",
+    id = "acyclic-harness-tui",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -329,7 +341,19 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     id = "acyclic-harness-tui::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    id = "acyclic-harness-tui::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -436,7 +460,19 @@ isolated_test(
     name = "terminal_negotiation",
     binary = ":terminal_negotiation_cases",
     id = "acyclic-harness-tui::terminal_negotiation",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "terminal_negotiation_full-cloud",
+    binary = ":terminal_negotiation_cases",
+    id = "acyclic-harness-tui::terminal_negotiation",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -545,7 +581,19 @@ isolated_test(
     name = "terminal_frames",
     binary = ":terminal_frames_cases",
     id = "acyclic-harness-tui::terminal_frames",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "terminal_frames_full-cloud",
+    binary = ":terminal_frames_cases",
+    id = "acyclic-harness-tui::terminal_frames",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

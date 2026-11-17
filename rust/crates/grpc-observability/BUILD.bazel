@@ -86,7 +86,19 @@ isolated_test(
     name = "acyclic_grpc_observability_test",
     binary = ":acyclic_grpc_observability_test_cases",
     id = "acyclic-grpc-observability",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_grpc_observability_test_full-cloud",
+    binary = ":acyclic_grpc_observability_test_cases",
+    id = "acyclic-grpc-observability",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

@@ -96,7 +96,19 @@ isolated_test(
     name = "publication",
     binary = ":publication_cases",
     id = "acyclic-stream-publication-models::publication",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "publication_full-cloud",
+    binary = ":publication_cases",
+    id = "acyclic-stream-publication-models::publication",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

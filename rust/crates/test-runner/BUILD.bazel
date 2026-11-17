@@ -66,7 +66,19 @@ isolated_test(
     name = "acyclic_test_runner_test",
     binary = ":acyclic_test_runner_test_cases",
     id = "acyclic-test-runner::bin/acyclic-test-runner",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_test_runner_test_full-cloud",
+    binary = ":acyclic_test_runner_test_cases",
+    id = "acyclic-test-runner::bin/acyclic-test-runner",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -99,7 +111,20 @@ isolated_test(
     binary = ":arguments_cases",
     binaries = {":acyclic-test-runner":"acyclic-test-runner"},
     id = "acyclic-test-runner::arguments",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "arguments_full-cloud",
+    binary = ":arguments_cases",
+    binaries = {":acyclic-test-runner":"acyclic-test-runner"},
+    id = "acyclic-test-runner::arguments",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

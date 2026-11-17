@@ -306,6 +306,35 @@ const exportsRule = owner => (exported.has(owner) ? `\nexports_files(${list([...
     ["visibility", q(["//visibility:public"])],
   ])}`).join("");
 
+// .config/nextest.toml's capability profiles, `[package(=<name>) & ]test(<pattern>)`: under nextest the default
+// profile filters their cases out and each profile runs only its own. Each test target leaves them to a manual
+// `<target>_<profile>` target that runs them alone; any other filter shape is refused, never guessed.
+const nextest = fs.existsSync(path.join(root, ".config/nextest.toml")) ? toml(".config/nextest.toml") : {};
+const PROFILES = Object.entries(nextest.profile ?? {}).flatMap(([profile, settings]) => {
+  const filter = settings["default-filter"];
+  if (profile === "default" || filter === undefined) return [];
+  const refuse = why => { throw new Error(`STEP_FAILED bazel-build-files: nextest profile ${profile} ${why}`); };
+  const match = /^(?:package\(=([\w-]+)\) & )?test\(([^()&|]+)\)$/.exec(filter);
+  // test(x) and test(~x) match names containing x, as the runner's selection does; nextest's exact (=), regex (/…/)
+  // and glob (#) forms would be matched differently, so they are refused too.
+  if (!match || /^[=/#]/.test(match[2])) refuse(`filter ${filter} is not [package(=name) & ]test(substring); recovery: narrow the profile's default-filter`);
+  return [{ profile, package: match[1], pattern: match[2].replace(/^~/, ""), ...profileWrapper(profile, settings, filter, refuse) }];
+});
+// The run wrapper nextest starts each of a profile's cases under (a fresh service per case, say), as its target's
+// `wrapper`: a script of this repository, with the siblings it runs as `$(dirname -- "${BASH_SOURCE[0]}")/<file>`.
+// A wrapper over only some of the profile's cases, or a command that is not one tracked script, is refused.
+function profileWrapper(profile, settings, filter, refuse) {
+  const wrapped = (settings.scripts ?? []).filter(script => script["run-wrapper"] !== undefined);
+  if (!wrapped.length) return {};
+  if (wrapped.length > 1 || wrapped[0].filter !== filter) refuse(`wraps cases by a filter other than its default-filter ${filter}; recovery: wrap every case of the profile with one run-wrapper`);
+  const name = wrapped[0]["run-wrapper"], command = nextest.scripts?.wrapper?.[name]?.command;
+  const line = typeof command === "string" ? command : command?.["command-line"];
+  if (typeof line !== "string" || (typeof command === "object" && command["relative-to"] !== "workspace-root") || !trackedSet.has(line)) refuse(`run-wrapper ${name} is not one tracked script relative to the workspace root; recovery: name the script alone, relative-to = "workspace-root"`);
+  const here = path.posix.dirname(line), text = fs.readFileSync(path.join(root, line), "utf8");
+  const siblings = [...text.matchAll(/\$\(dirname -- "\$\{BASH_SOURCE\[0\]\}"\)\/([\w./-]+)/g)].map(([, file]) => path.posix.join(here, file));
+  for (const file of siblings) if (!trackedSet.has(file)) refuse(`run-wrapper ${name} runs ${file}, which is not tracked; recovery: track it or stop running it`);
+  return { wrapper: line, wrapperData: [...new Set(siblings)].sort() };
+}
 const cargo = toml("Cargo.toml");
 const dev = cargo.profile?.dev ?? {};
 // rules_rust (patched) builds fastbuild and dbg as Cargo's dev profile, with debug assertions and overflow checks
@@ -456,13 +485,18 @@ function buildFile(p) {
   // Each isolated test reports its cases under the executable's nextest binary id, so a case has one
   // identity whichever runner ran it: `<package>` for the library, `<package>::bin/<name>` for a
   // binary, `<package>::<name>` for an integration test, `<package>::<kind>/<name>` for the rest.
+  const profiles = PROFILES.filter(entry => entry.package === undefined || entry.package === p.name);
   const test = (wanted, attrs, reads, binaries, id) => {
     let name = wanted;
-    while (names.has(name) || names.has(`${name}_cases`)) name += "_test";
+    while (names.has(name) || names.has(`${name}_cases`) || profiles.some(({ profile }) => names.has(`${name}_${profile}`))) name += "_test";
     names.add(name).add(`${name}_cases`);
+    for (const { profile } of profiles) names.add(`${name}_${profile}`);
+    const tags = reachesMount(p.id, [null, "dev"]) ? ["no-sandbox"] : [];
+    const isolated = (target, selection, extra) => ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(binaries).length ? q(binaries) : undefined], ["id", q(id)], ...selection, ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
     rules.push(
       ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
-      ["isolated_test", [["name", q(name)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(binaries).length ? q(binaries) : undefined], ["id", q(id)], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["tags", reachesMount(p.id, [null, "dev"]) ? q(["no-sandbox"]) : undefined]]],
+      isolated(name, [["exclude", profiles.length ? q(profiles.map(({ pattern }) => pattern)) : undefined]], []),
+      ...profiles.map(({ profile, pattern, wrapper, wrapperData }) => isolated(`${name}_${profile}`, [["only", q(pattern)], ["wrapper", wrapper && q(fileLabel(wrapper))], ["wrapper_data", wrapperData?.length ? q(wrapperData.map(fileLabel)) : undefined]], ["manual"])),
     );
   };
   if (script) {

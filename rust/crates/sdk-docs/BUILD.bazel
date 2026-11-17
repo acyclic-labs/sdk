@@ -108,7 +108,19 @@ isolated_test(
     name = "sdk_docs_test",
     binary = ":sdk_docs_test_cases",
     id = "sdk-docs",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "sdk_docs_test_full-cloud",
+    binary = ":sdk_docs_test_cases",
+    id = "sdk-docs",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

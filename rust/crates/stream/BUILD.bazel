@@ -234,7 +234,28 @@ isolated_test(
     name = "acyclic_stream_test",
     binary = ":acyclic_stream_test_cases",
     id = "acyclic-stream",
+    exclude = ["::full_cloud::","postgres::capability::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_stream_test_full-cloud",
+    binary = ":acyclic_stream_test_cases",
+    id = "acyclic-stream",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "acyclic_stream_test_postgres",
+    binary = ":acyclic_stream_test_cases",
+    id = "acyclic-stream",
+    only = "postgres::capability::",
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(
@@ -444,7 +465,30 @@ isolated_test(
     binary = ":read-selectors_cases",
     binaries = {":stream-http-contract":"stream-http-contract",":stream-rpc-inventory":"stream-rpc-inventory"},
     id = "acyclic-stream::read-selectors",
+    exclude = ["::full_cloud::","postgres::capability::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "read-selectors_full-cloud",
+    binary = ":read-selectors_cases",
+    binaries = {":stream-http-contract":"stream-http-contract",":stream-rpc-inventory":"stream-rpc-inventory"},
+    id = "acyclic-stream::read-selectors",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "read-selectors_postgres",
+    binary = ":read-selectors_cases",
+    binaries = {":stream-http-contract":"stream-http-contract",":stream-rpc-inventory":"stream-rpc-inventory"},
+    id = "acyclic-stream::read-selectors",
+    only = "postgres::capability::",
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -547,7 +591,30 @@ isolated_test(
     binary = ":main_cases",
     binaries = {":stream-http-contract":"stream-http-contract",":stream-rpc-inventory":"stream-rpc-inventory"},
     id = "acyclic-stream::main",
+    exclude = ["::full_cloud::","postgres::capability::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {":stream-http-contract":"stream-http-contract",":stream-rpc-inventory":"stream-rpc-inventory"},
+    id = "acyclic-stream::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "main_postgres",
+    binary = ":main_cases",
+    binaries = {":stream-http-contract":"stream-http-contract",":stream-rpc-inventory":"stream-rpc-inventory"},
+    id = "acyclic-stream::main",
+    only = "postgres::capability::",
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(

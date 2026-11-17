@@ -69,7 +69,19 @@ isolated_test(
     name = "sdk_file_identity_test",
     binary = ":sdk_file_identity_test_cases",
     id = "sdk-file-identity",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "sdk_file_identity_test_full-cloud",
+    binary = ":sdk_file_identity_test_cases",
+    id = "sdk-file-identity",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

@@ -149,7 +149,19 @@ isolated_test(
     name = "acyclic_stream_napi_test",
     binary = ":acyclic_stream_napi_test_cases",
     id = "acyclic-stream-napi",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_stream_napi_test_full-cloud",
+    binary = ":acyclic_stream_napi_test_cases",
+    id = "acyclic-stream-napi",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

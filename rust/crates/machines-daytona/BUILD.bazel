@@ -80,8 +80,20 @@ isolated_test(
     name = "acyclic_machines_daytona_test",
     binary = ":acyclic_machines_daytona_test_cases",
     id = "acyclic-machines-daytona",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_machines_daytona_test_full-cloud",
+    binary = ":acyclic_machines_daytona_test_cases",
+    id = "acyclic-machines-daytona",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_test(
@@ -130,8 +142,20 @@ isolated_test(
     name = "conformance",
     binary = ":conformance_cases",
     id = "acyclic-machines-daytona::conformance",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "conformance_full-cloud",
+    binary = ":conformance_cases",
+    id = "acyclic-machines-daytona::conformance",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 filegroup(

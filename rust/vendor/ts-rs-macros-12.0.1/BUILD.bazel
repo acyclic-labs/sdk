@@ -58,7 +58,19 @@ isolated_test(
     name = "ts_rs_macros_test",
     binary = ":ts_rs_macros_test_cases",
     id = "ts-rs-macros",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "ts_rs_macros_test_full-cloud",
+    binary = ":ts_rs_macros_test_cases",
+    id = "ts-rs-macros",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

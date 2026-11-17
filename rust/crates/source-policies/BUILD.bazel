@@ -295,7 +295,19 @@ isolated_test(
     name = "acyclic_source_policies_test",
     binary = ":acyclic_source_policies_test_cases",
     id = "acyclic-source-policies",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_source_policies_test_full-cloud",
+    binary = ":acyclic_source_policies_test_cases",
+    id = "acyclic-source-policies",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

@@ -192,7 +192,28 @@ isolated_test(
     name = "acyclic_objects_test",
     binary = ":acyclic_objects_test_cases",
     id = "acyclic-objects",
+    exclude = ["::full_cloud::","s3::capability::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_objects_test_full-cloud",
+    binary = ":acyclic_objects_test_cases",
+    id = "acyclic-objects",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "acyclic_objects_test_s3",
+    binary = ":acyclic_objects_test_cases",
+    id = "acyclic-objects",
+    only = "s3::capability::",
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(
@@ -451,7 +472,30 @@ isolated_test(
     binary = ":binary_cases",
     binaries = {":objects-rpc-inventory":"objects-rpc-inventory"},
     id = "acyclic-objects::binary",
+    exclude = ["::full_cloud::","s3::capability::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "binary_full-cloud",
+    binary = ":binary_cases",
+    binaries = {":objects-rpc-inventory":"objects-rpc-inventory"},
+    id = "acyclic-objects::binary",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
+)
+
+isolated_test(
+    name = "binary_s3",
+    binary = ":binary_cases",
+    binaries = {":objects-rpc-inventory":"objects-rpc-inventory"},
+    id = "acyclic-objects::binary",
+    only = "s3::capability::",
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(

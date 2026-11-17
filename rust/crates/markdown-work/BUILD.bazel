@@ -59,7 +59,19 @@ isolated_test(
     name = "acyclic_markdown_work_test",
     binary = ":acyclic_markdown_work_test_cases",
     id = "acyclic-markdown-work",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_markdown_work_test_full-cloud",
+    binary = ":acyclic_markdown_work_test_cases",
+    id = "acyclic-markdown-work",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

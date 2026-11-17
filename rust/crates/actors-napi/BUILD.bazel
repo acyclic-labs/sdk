@@ -134,7 +134,19 @@ isolated_test(
     name = "acyclic_actors_napi_test",
     binary = ":acyclic_actors_napi_test_cases",
     id = "acyclic-actors-napi",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_actors_napi_test_full-cloud",
+    binary = ":acyclic_actors_napi_test_cases",
+    id = "acyclic-actors-napi",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

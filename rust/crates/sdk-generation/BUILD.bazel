@@ -116,7 +116,19 @@ isolated_test(
     name = "sdk_generation_test",
     binary = ":sdk_generation_test_cases",
     id = "sdk-generation",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "sdk_generation_test_full-cloud",
+    binary = ":sdk_generation_test_cases",
+    id = "sdk-generation",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(
@@ -256,7 +268,20 @@ isolated_test(
     binary = ":main_cases",
     binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation"},
     id = "sdk-generation::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation"},
+    id = "sdk-generation::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

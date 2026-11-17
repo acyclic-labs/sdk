@@ -72,8 +72,20 @@ isolated_test(
     name = "sdk_service_examples_test",
     binary = ":sdk_service_examples_test_cases",
     id = "sdk-service-examples",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "sdk_service_examples_test_full-cloud",
+    binary = ":sdk_service_examples_test_cases",
+    id = "sdk-service-examples",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_binary(

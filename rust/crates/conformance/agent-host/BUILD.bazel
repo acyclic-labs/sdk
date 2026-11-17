@@ -76,8 +76,20 @@ isolated_test(
     name = "acyclic_agent_host_conformance_test",
     binary = ":acyclic_agent_host_conformance_test_cases",
     id = "acyclic-agent-host-conformance",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_agent_host_conformance_test_full-cloud",
+    binary = ":acyclic_agent_host_conformance_test_cases",
+    id = "acyclic-agent-host-conformance",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_binary(
@@ -157,8 +169,21 @@ isolated_test(
     binary = ":main_cases",
     binaries = {":oidc-qualify":"oidc-qualify"},
     id = "acyclic-agent-host-conformance::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {":oidc-qualify":"oidc-qualify"},
+    id = "acyclic-agent-host-conformance::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 filegroup(

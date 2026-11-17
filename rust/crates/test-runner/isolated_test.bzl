@@ -13,6 +13,13 @@ def _isolated_test_impl(ctx):
         "ACYCLIC_TEST_LIMIT_SECONDS": str(ctx.attr.limit_seconds),
         "ACYCLIC_TEST_PACKAGE": ctx.label.package,
     }
+    if ctx.attr.only:
+        environment["ACYCLIC_TEST_ONLY"] = ctx.attr.only
+    if ctx.attr.exclude:
+        environment["ACYCLIC_TEST_EXCLUDE"] = "\n".join(ctx.attr.exclude)
+    if ctx.file.wrapper:
+        environment["ACYCLIC_TEST_WRAPPER"] = ctx.file.wrapper.short_path
+        runfiles = runfiles.merge(ctx.runfiles(files = [ctx.file.wrapper] + ctx.files.wrapper_data))
 
     # Cargo's CARGO_BIN_EXE_<name>, relative to the runfiles root; the runner makes it absolute.
     for target, name in ctx.attr.binaries.items():
@@ -32,6 +39,13 @@ isolated_test = rule(
         "binaries": attr.label_keyed_string_dict(cfg = "target"),
         # The executable's nextest binary id, which names each of its cases in the report.
         "id": attr.string(mandatory = True),
+        # A nextest profile's cases (`test(<pattern>)`): `only` runs them alone, `exclude` leaves them.
+        "only": attr.string(),
+        "exclude": attr.string_list(),
+        # The profile's nextest run wrapper, which runs each case as `<wrapper> <binary> <arguments>`,
+        # and the files it runs beside it.
+        "wrapper": attr.label(allow_single_file = True),
+        "wrapper_data": attr.label_list(allow_files = True),
         "limit_seconds": attr.int(mandatory = True),
         "_runner": attr.label(
             default = "//rust/crates/test-runner:acyclic-test-runner",

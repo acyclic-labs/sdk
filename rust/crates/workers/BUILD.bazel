@@ -76,7 +76,19 @@ isolated_test(
     name = "acyclic_workers_test",
     binary = ":acyclic_workers_test_cases",
     id = "acyclic-workers",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_workers_test_full-cloud",
+    binary = ":acyclic_workers_test_cases",
+    id = "acyclic-workers",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -124,7 +136,19 @@ isolated_test(
     name = "entry_attachment",
     binary = ":entry_attachment_cases",
     id = "acyclic-workers::entry_attachment",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "entry_attachment_full-cloud",
+    binary = ":entry_attachment_cases",
+    id = "acyclic-workers::entry_attachment",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(

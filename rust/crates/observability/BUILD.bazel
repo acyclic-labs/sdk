@@ -72,7 +72,19 @@ isolated_test(
     name = "acyclic_observability_test",
     binary = ":acyclic_observability_test_cases",
     id = "acyclic-observability",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_observability_test_full-cloud",
+    binary = ":acyclic_observability_test_cases",
+    id = "acyclic-observability",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -113,7 +125,19 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     id = "acyclic-observability::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    id = "acyclic-observability::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

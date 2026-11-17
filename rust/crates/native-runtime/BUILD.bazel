@@ -192,7 +192,19 @@ isolated_test(
     name = "acyclic_native_runtime_test",
     binary = ":acyclic_native_runtime_test_cases",
     id = "acyclic-native-runtime",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_native_runtime_test_full-cloud",
+    binary = ":acyclic_native_runtime_test_cases",
+    id = "acyclic-native-runtime",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(
@@ -451,7 +463,20 @@ isolated_test(
     binary = ":main_cases",
     binaries = {":acyclic-process-host":"acyclic-process-host"},
     id = "acyclic-native-runtime::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {":acyclic-process-host":"acyclic-process-host"},
+    id = "acyclic-native-runtime::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -596,7 +621,20 @@ isolated_test(
     binary = ":wake_loom_cases",
     binaries = {":acyclic-process-host":"acyclic-process-host"},
     id = "acyclic-native-runtime::wake_loom",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "wake_loom_full-cloud",
+    binary = ":wake_loom_cases",
+    binaries = {":acyclic-process-host":"acyclic-process-host"},
+    id = "acyclic-native-runtime::wake_loom",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -738,7 +776,20 @@ isolated_test(
     binary = ":retained_submission_loom_cases",
     binaries = {":acyclic-process-host":"acyclic-process-host"},
     id = "acyclic-native-runtime::retained_submission_loom",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "retained_submission_loom_full-cloud",
+    binary = ":retained_submission_loom_cases",
+    binaries = {":acyclic-process-host":"acyclic-process-host"},
+    id = "acyclic-native-runtime::retained_submission_loom",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -883,7 +934,20 @@ isolated_test(
     binary = ":device_flush_loom_cases",
     binaries = {":acyclic-process-host":"acyclic-process-host"},
     id = "acyclic-native-runtime::device_flush_loom",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "device_flush_loom_full-cloud",
+    binary = ":device_flush_loom_cases",
+    binaries = {":acyclic-process-host":"acyclic-process-host"},
+    id = "acyclic-native-runtime::device_flush_loom",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -1030,7 +1094,20 @@ isolated_test(
     binary = ":process_signal_loom_cases",
     binaries = {":acyclic-process-host":"acyclic-process-host"},
     id = "acyclic-native-runtime::process_signal_loom",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "process_signal_loom_full-cloud",
+    binary = ":process_signal_loom_cases",
+    binaries = {":acyclic-process-host":"acyclic-process-host"},
+    id = "acyclic-native-runtime::process_signal_loom",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -1173,7 +1250,20 @@ isolated_test(
     binary = ":owner_count_loom_cases",
     binaries = {":acyclic-process-host":"acyclic-process-host"},
     id = "acyclic-native-runtime::owner_count_loom",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "owner_count_loom_full-cloud",
+    binary = ":owner_count_loom_cases",
+    binaries = {":acyclic-process-host":"acyclic-process-host"},
+    id = "acyclic-native-runtime::owner_count_loom",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(

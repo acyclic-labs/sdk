@@ -57,8 +57,20 @@ isolated_test(
     name = "acyclic_id_codec_proofs_test",
     binary = ":acyclic_id_codec_proofs_test_cases",
     id = "acyclic-id-codec-proofs",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_id_codec_proofs_test_full-cloud",
+    binary = ":acyclic_id_codec_proofs_test_cases",
+    id = "acyclic-id-codec-proofs",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 filegroup(

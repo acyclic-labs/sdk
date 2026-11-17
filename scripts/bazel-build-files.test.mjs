@@ -81,3 +81,47 @@ test("every toolchain builds the dev profile's opt-level, and a profile Bazel ca
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a nextest capability profile's cases leave the default target for a manual one, and an unknown filter is refused", () => {
+  const { root, run } = fixture();
+  try {
+    mkdirSync(join(root, ".config"));
+    writeFileSync(join(root, ".config/nextest.toml"), '[profile.default]\n\n[profile.pg]\ndefault-filter = "package(=member) & test(pg::capability::)"\n');
+    assert.equal(run("write").status, 0);
+    const build = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
+    assert.match(build, /name = "member_test",[^)]*exclude = \["pg::capability::"\]/s);
+    assert.match(build, /name = "member_test_pg",[^)]*only = "pg::capability::",[^)]*tags = \["manual"\]/s);
+    // Negative controls: a filter the targets cannot express, or would match differently, is refused, never approximated.
+    for (const filter of ["test(a) | test(b)", "test(=pg::capability::exact)", "test(/pg::.*/)", "test(#pg::*)"]) {
+      writeFileSync(join(root, ".config/nextest.toml"), `[profile.pg]\ndefault-filter = "${filter}"\n`);
+      const refused = run("write");
+      assert.notEqual(refused.status, 0, filter);
+      assert.match(refused.stderr, /STEP_FAILED bazel-build-files: nextest profile pg filter/, filter);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a profile's run wrapper starts each of its target's cases, with the siblings it runs; a partial wrapper is refused", () => {
+  const { root, run } = fixture();
+  const profile = wrapped => `[profile.cloud]\ndefault-filter = "test(::cloud::)"\n\n[scripts.wrapper.cloud]\ncommand = { command-line = "scripts/cloud.sh", relative-to = "workspace-root" }\n\n[[profile.cloud.scripts]]\nfilter = "${wrapped}"\nrun-wrapper = "cloud"\n`;
+  try {
+    mkdirSync(join(root, ".config"));
+    writeFileSync(join(root, "scripts/cloud.sh"), '#!/usr/bin/env bash\nnode "$(dirname -- "${BASH_SOURCE[0]}")/start.mjs" -- "$@"\n');
+    writeFileSync(join(root, "scripts/start.mjs"), "\n");
+    writeFileSync(join(root, ".config/nextest.toml"), profile("test(::cloud::)"));
+    execFileSync("git", ["add", "-A"], { cwd: root });
+    assert.equal(run("write").status, 0);
+    const build = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
+    assert.match(build, /name = "member_test_cloud",[^)]*only = "::cloud::",\n {4}wrapper = "\/\/:scripts\/cloud\.sh",\n {4}wrapper_data = \["\/\/:scripts\/start\.mjs"\],/s);
+    assert.doesNotMatch(build.slice(build.indexOf('name = "member_test",'), build.indexOf('name = "member_test_cloud",')), /wrapper/, "the default target runs its cases directly");
+    // Negative control: a wrapper over only some of the profile's cases has no target to run under.
+    writeFileSync(join(root, ".config/nextest.toml"), profile("test(::cloud::one)"));
+    const refused = run("write");
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /STEP_FAILED bazel-build-files: nextest profile cloud wraps cases by a filter other than its default-filter/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

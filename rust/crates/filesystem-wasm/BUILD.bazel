@@ -102,8 +102,20 @@ isolated_test(
     name = "acyclic_fs_wasm_test",
     binary = ":acyclic_fs_wasm_test_cases",
     id = "acyclic-fs-wasm",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_fs_wasm_test_full-cloud",
+    binary = ":acyclic_fs_wasm_test_cases",
+    id = "acyclic-fs-wasm",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 filegroup(

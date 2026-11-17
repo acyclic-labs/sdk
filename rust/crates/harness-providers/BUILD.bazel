@@ -287,8 +287,20 @@ isolated_test(
     name = "acyclic_harness_providers_test",
     binary = ":acyclic_harness_providers_test_cases",
     id = "acyclic-harness-providers",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_harness_providers_test_full-cloud",
+    binary = ":acyclic_harness_providers_test_cases",
+    id = "acyclic-harness-providers",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_test(
@@ -377,8 +389,20 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     id = "acyclic-harness-providers::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    id = "acyclic-harness-providers::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_test(
@@ -446,8 +470,20 @@ isolated_test(
     name = "live-cache",
     binary = ":live-cache_cases",
     id = "acyclic-harness-providers::live-cache",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "live-cache_full-cloud",
+    binary = ":live-cache_cases",
+    id = "acyclic-harness-providers::live-cache",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 rust_binary(

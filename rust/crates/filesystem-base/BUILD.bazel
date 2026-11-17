@@ -60,7 +60,19 @@ isolated_test(
     name = "acyclic_fs_base_test",
     binary = ":acyclic_fs_base_test_cases",
     id = "acyclic-fs-base",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_fs_base_test_full-cloud",
+    binary = ":acyclic_fs_base_test_cases",
+    id = "acyclic-fs-base",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(

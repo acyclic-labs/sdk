@@ -80,7 +80,19 @@ isolated_test(
     name = "acyclic_manifest_test",
     binary = ":acyclic_manifest_test_cases",
     id = "acyclic-manifest",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_manifest_test_full-cloud",
+    binary = ":acyclic_manifest_test_cases",
+    id = "acyclic-manifest",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -132,7 +144,19 @@ isolated_test(
     name = "manifest_contract",
     binary = ":manifest_contract_cases",
     id = "acyclic-manifest::manifest_contract",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "manifest_contract_full-cloud",
+    binary = ":manifest_contract_cases",
+    id = "acyclic-manifest::manifest_contract",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_binary(

@@ -65,7 +65,19 @@ isolated_test(
     name = "acyclic_protobuf_json_test",
     binary = ":acyclic_protobuf_json_test_cases",
     id = "acyclic-protobuf-json",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_protobuf_json_test_full-cloud",
+    binary = ":acyclic_protobuf_json_test_cases",
+    id = "acyclic-protobuf-json",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -102,7 +114,19 @@ isolated_test(
     name = "codec",
     binary = ":codec_cases",
     id = "acyclic-protobuf-json::codec",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "codec_full-cloud",
+    binary = ":codec_cases",
+    id = "acyclic-protobuf-json::codec",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
