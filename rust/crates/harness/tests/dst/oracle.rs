@@ -707,3 +707,18 @@ pub(super) fn simulate<T>(
 pub(super) fn failed(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
+
+#[test]
+fn world_directories_name_their_process() {
+    let directory = WorldDirectory::new(0).expect("world directory");
+    let name = directory
+        .path()
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .expect("world directory name");
+    let process = format!("-{}-", std::process::id());
+    assert!(
+        name.contains(&process),
+        "world directory {name} does not name process {process}"
+    );
+}
