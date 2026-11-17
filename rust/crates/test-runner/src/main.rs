@@ -727,6 +727,24 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// A pre-created entry at the old predictable lock path in the shared root is ignored: the
+    /// lock lives in a directory only this user can write, so another user cannot block a runner
+    /// by claiming a name there.
+    #[cfg(unix)]
+    #[test]
+    fn a_foreign_entry_at_the_old_lock_path_does_not_block_a_runner() {
+        let root = env::temp_dir().join(format!("acyclic-lock-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let user = acyclic_native_runtime::private_file::effective_user();
+        let old = root.join(format!("{RUNNER_PREFIX}{user}.lock"));
+        // A directory is not a file of the user, so the old lock would refuse it.
+        fs::create_dir(&old).unwrap();
+        let runner = RunnerDirectory::claim(&root).unwrap();
+        assert!(runner.path.is_dir());
+        runner.release().unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     /// The innermost mount decides, and only its own `noexec` refuses execution.
     #[test]
     fn a_noexec_mount_is_refused_by_its_innermost_entry() {
