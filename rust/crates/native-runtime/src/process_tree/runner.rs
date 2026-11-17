@@ -784,10 +784,14 @@ pub(super) fn start_packet_device_host(
     // The child runs on this stack until exec replaces it. Keep the storage
     // in place until the status pipe reports the exec outcome.
     let mut stack = vec![0_u8; 64 * 1024];
-    let top = stack
-        .as_mut_ptr()
-        .add(stack.len())
-        .cast::<libc::c_void>();
+    // SAFETY: the top is one past this live allocation, which the child uses
+    // as its downward-growing stack until exec replaces it.
+    let top = unsafe {
+        stack
+            .as_mut_ptr()
+            .add(stack.len())
+            .cast::<libc::c_void>()
+    };
     // SAFETY: the child entry takes only the parent-owned record and stack;
     // CLONE_PARENT makes the host a sibling of this owner.
     let pid = unsafe {
