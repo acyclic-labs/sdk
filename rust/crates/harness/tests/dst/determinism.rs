@@ -2,7 +2,7 @@
 //! and erasing the scheduler's entropy source changes that trace.
 use super::*;
 use family::{Generator, Variant};
-use oracle::{Plan, World, call, failed, service, tag};
+use oracle::{Plan, Prompted, World, call, failed, service, tag};
 use serde_json::json;
 
 /// The X1 world dimension, in `classes.json` order.
@@ -249,6 +249,60 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             }
             println!("DST_X1_DIGEST={class} {}", first.digest);
             Ok(true)
+        })
+    })
+}
+
+#[test]
+fn two_incarnations_reopen_the_same_state() -> std::result::Result<(), String> {
+    oracle::simulate(0, || {
+        entry(async move {
+            let plans = vec![
+                Plan {
+                    tag: "write-state",
+                    steps: vec![vec![call(
+                        "write-state",
+                        "write",
+                        json!({
+                            "path": "kept.txt",
+                            "content": "kept\n",
+                            "ifVersion": "absent",
+                        }),
+                    )]],
+                    fail_once: None,
+                },
+                Plan {
+                    tag: "read-state",
+                    steps: vec![vec![call(
+                        "read-state",
+                        "read",
+                        json!({ "path": "kept.txt" }),
+                    )]],
+                    fail_once: None,
+                },
+            ];
+            let mut world = World::new(0, &FILES, service(plans)).map_err(failed)?;
+            let first = world
+                .incarnation(None, &[vec![("write-state", tag("write-state"))]])
+                .await
+                .map_err(failed)?;
+            if !matches!(first.prompts.as_slice(), [(Prompted::Settled(_), _)]) {
+                return Err(format!(
+                    "first incarnation did not settle: {:?}",
+                    first.prompts
+                ));
+            }
+            let second = world
+                .incarnation(None, &[vec![("read-state", tag("read-state"))]])
+                .await
+                .map_err(failed)?;
+            if !matches!(second.prompts.as_slice(), [(Prompted::Settled(_), _)]) {
+                return Err(format!(
+                    "second incarnation did not reopen the same state: {:?}",
+                    second.prompts
+                ));
+            }
+            Ok(())
         })
     })
 }

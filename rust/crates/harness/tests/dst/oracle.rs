@@ -297,6 +297,22 @@ impl WorldDirectory {
     fn path(&self) -> &Path {
         &self.path
     }
+
+    /// The checkout identity is a function of the world's case and seed, not
+    /// of the scheduler incarnation, so every incarnation reopens the same
+    /// state.
+    fn identity(&self) -> ([u8; 16], acyclic_fs::NativeRootGeneration) {
+        let mut object = [0; 16];
+        object.copy_from_slice(
+            &blake3::hash(format!("dst-object:{}:{}", self.key.0, self.key.1).as_bytes())
+                .as_bytes()[..16],
+        );
+        let handle = *blake3::hash(
+            format!("dst-handle:{}:{}", self.key.0, self.key.1).as_bytes(),
+        )
+        .as_bytes();
+        (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
+    }
 }
 
 impl Drop for WorldDirectory {
@@ -403,15 +419,9 @@ impl World {
             };
             // The checkout's root identity is a host file handle. A replay
             // supplies its own fixture identity so the owner record and every
-            // later capture are a function of the seed alone.
-            let checkout_identity = {
-                let mut object = [0; 16];
-                object.copy_from_slice(
-                    &blake3::hash(format!("dst-object:{scheduler}").as_bytes()).as_bytes()[..16],
-                );
-                let handle = *blake3::hash(format!("dst-handle:{scheduler}").as_bytes()).as_bytes();
-                (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
-            };
+            // later capture are a function of the world's case and seed alone,
+            // and every incarnation reopens the same state.
+            let checkout_identity = self.directory.identity();
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));
             let observed = Arc::clone(&dispatched_at);
             let provider = Arc::new(self.service.reopened().with_dispatch_observer(move |_| {
