@@ -95,9 +95,10 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
             .checked_add(paths.get(index).depth())
             .ok_or(WorkError::Overflow)?;
     }
+    // Size the cache exactly as a single path's: by every component's frontier.
+    // Its slots grow on demand, so this bounds entries without reserving them.
     let cache_entries = maximum_cache_entries_for_components(total_components, config)
-        .map_err(|failure| crate::FsError::Path(failure.error))?
-        .min(4096);
+        .map_err(|failure| crate::FsError::Path(failure.error))?;
     let initial_scratch = standalone_scratch(accounting)?;
     let result = {
         let mut frame_guard = None;
