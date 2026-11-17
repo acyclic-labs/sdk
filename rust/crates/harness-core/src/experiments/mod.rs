@@ -23,10 +23,8 @@ pub enum Error {
     )]
     Analysis(&'static str),
     /// An invalid or unrepresentable assignment declaration.
-    #[error(
-        "plan experiment assignments: {0}; recovery: correct the positive arm count and representable arm-by-replicate count, then call plan::AssignmentPlan::new again"
-    )]
-    Plan(&'static str),
+    #[error(transparent)]
+    Plan(#[from] plan::PlanError),
     /// Original observation decoder failure.
     #[error(
         "decode observation: {0}; recovery: correct the version-2 JSON object and call Observation::decode"
