@@ -48,6 +48,8 @@ impl Groups {
         let start = self.next;
         let first = key(start)?;
         let mut next = start + 1;
+        // Equal keys advance; a greater key becomes the next group's first key.
+        // Thus each position after the first is compared exactly once.
         while next < self.end {
             match compare(first, key(next)?)? {
                 std::cmp::Ordering::Equal => next += 1,
@@ -182,7 +184,10 @@ mod tests {
         })]
         #[test]
         fn groups_cover_original_positions_with_linear_comparisons(
-            mut keys in proptest::collection::vec(0u16..64, 0..256),
+            mut keys in prop_oneof![
+                Just((0u16..64).collect::<Vec<_>>()),
+                proptest::collection::vec(0u16..64, 0..256),
+            ],
             offset in 0usize..16,
         ) {
             keys.sort_unstable();
@@ -210,35 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn groups_refuse_terminally_and_reject_prior_name_scan_cost() {
-        let keys: Vec<_> = (0..64).collect();
-        let mut cursor = Groups::new(0..keys.len());
-        let mut comparisons = 0;
-        while cursor
-            .select(
-                |position| keys.get(position).ok_or("missing"),
-                |left, right| {
-                    comparisons += 1;
-                    Ok(left.cmp(right))
-                },
-                || "invalid",
-            )
-            .expect("ordered keys")
-            .is_some()
-        {}
-        assert_eq!(comparisons, keys.len() - 1);
-        // The former name deduplication compared every preceding mutation.
-        let mut prior_comparisons = 0;
-        for (position, key) in keys.iter().enumerate() {
-            for prior in keys.iter().take(position) {
-                prior_comparisons += 1;
-                if prior == key {
-                    break;
-                }
-            }
-        }
-        assert!(prior_comparisons > keys.len());
-
+    fn groups_refuse_terminally() {
         for (start, end) in [(3, 2), (0, 1)] {
             let range = start..end;
             let failure = if range.start > range.end {
