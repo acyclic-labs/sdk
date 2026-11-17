@@ -66,7 +66,7 @@ async fn provider_scenarios() -> TestResult {
     assert!(!paths.is_empty());
     futures::stream::iter(paths)
         .map(|path| run_scenario(root.clone(), path))
-        .buffer_unordered(4)
+        .buffer_unordered(8)
         .try_collect::<Vec<_>>()
         .await?;
     Ok(())

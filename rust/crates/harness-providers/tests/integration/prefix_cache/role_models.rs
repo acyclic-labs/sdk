@@ -98,6 +98,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         Budgets::AutomaticUnknown => None,
         _ => Some(1024),
     };
+    model.capacity.output_shares_context = budgets == Budgets::AutomaticUnknown;
     spec.models.insert("luna".into(), model);
     catalog.register("workers".into(), spec)?;
     let routes = Arc::new(Routes {
