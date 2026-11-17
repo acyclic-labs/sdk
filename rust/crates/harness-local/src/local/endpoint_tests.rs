@@ -139,7 +139,8 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 .map_err(storage)?;
             assert!(matches!(
                 observer_commands.execute(&root_request).await,
-                Err(AgentExchangeError::Session(StreamError::AccessDenied))
+                Err(AgentExchangeError::Session(error))
+                if error.category() == acyclic_stream::StreamCategory::AccessDenied
             ));
             for all in [false, true] {
                 eprintln!("remote tree: observing {intent}, all={all}");
