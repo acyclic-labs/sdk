@@ -183,6 +183,20 @@ function readsOf(crateDir, rootFile) {
 }
 // Every directory that holds a tracked file, at any depth.
 const trackedDirs = new Set(tracked.flatMap(file => file.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))));
+// Cargo discovers .cargo/config.toml from a test's working directory, so a test that carries the
+// config also reads every tracked file the config names (the linker wrapper, for instance).
+const cargoConfigInputs = (() => {
+  const found = new Set();
+  const visit = value => {
+    if (typeof value === "string") {
+      const named = path.posix.normalize(value);
+      if (!named.startsWith("..") && !named.startsWith("/") && trackedSet.has(named)) found.add(named);
+    } else if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === "object") Object.values(value).forEach(visit);
+  };
+  visit(toml(".cargo/config.toml"));
+  return found;
+})();
 // A directory's tracked files, as one filegroup in each package that owns some of them: a glob
 // cannot cross a package boundary, so a directory spanning nested packages has one per package.
 const trees = new Map();
@@ -430,6 +444,7 @@ function buildFile(p) {
   const runtimeData = target => {
     const all = [readsOf(dir(p), repoRelative(target)), ...[...(lib ? [p] : []), ...devLibraries(p)].map(other => readsOf(dir(other), repoRelative(libOf(other))))];
     const files = new Set(all.flatMap(reads => [...reads.files])), dirs = new Set(all.flatMap(reads => [...reads.dirs]));
+    if (files.has(".cargo/config.toml")) for (const file of cargoConfigInputs) files.add(file);
     const labels = new Set([...dirs].flatMap(treeLabels));
     for (const file of files) {
       const owner = ownerOf(file);

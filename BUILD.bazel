@@ -103,6 +103,7 @@ exports_files([
         "rust/README.md",
         "scripts/benchmarks/contracts.py",
         "scripts/graphcoder-e2e/cases/installed-pi-recursive.json",
+        "scripts/mold-linker.sh",
         "scripts/test-terminal-signals.ps1",
         "typescript/packages/actors/test/grpc-conformance.mjs",
         "typescript/packages/sdk/test/process.test.mjs",

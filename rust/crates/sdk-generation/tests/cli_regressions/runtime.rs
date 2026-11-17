@@ -243,13 +243,17 @@ pub(super) fn tool_output(command: &Command) -> Option<std::process::Output> {
 }
 
 pub(super) fn binary(name: &str) -> PathBuf {
-    std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    std::env::var_os(format!("CARGO_BIN_EXE_{name}"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+        })
 }
 
 struct Timing(std::time::Instant, String);

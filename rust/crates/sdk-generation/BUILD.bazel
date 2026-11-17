@@ -82,6 +82,7 @@ rust_test(
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:.cargo/config.toml",
         "//:release/cargo-crates.json",
+        "//:scripts/mold-linker.sh",
         "//compatibility:Cargo.toml",
         "//compatibility:descriptors/actors-v1.bin",
         "//compatibility:descriptors/auth-v1.bin",
@@ -218,6 +219,7 @@ rust_test(
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:.cargo/config.toml",
         "//:release/cargo-crates.json",
+        "//:scripts/mold-linker.sh",
         "//compatibility:Cargo.toml",
         "//compatibility:descriptors/actors-v1.bin",
         "//compatibility:descriptors/auth-v1.bin",

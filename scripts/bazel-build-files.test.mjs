@@ -12,11 +12,12 @@ function fixture() {
   cpSync("scripts/bazel-build-files.mjs", join(root, "scripts/bazel-build-files.mjs"));
   cpSync("rust-toolchain.toml", join(root, "rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));
-  writeFileSync(join(root, ".cargo/config.toml"), "[env]\n");
+  writeFileSync(join(root, ".cargo/config.toml"), '[target.x86_64-unknown-linux-gnu]\nlinker = "scripts/mold-linker.sh"\n\n[env]\n');
+  writeFileSync(join(root, "scripts/mold-linker.sh"), "#!/bin/sh\n");
   writeFileSync(join(root, "Cargo.toml"), '[workspace]\nmembers = ["member"]\nresolver = "3"\n\n[profile.dev]\nopt-level = 1\n');
   mkdirSync(join(root, "member/src"), { recursive: true });
   writeFileSync(join(root, "member/Cargo.toml"), '[package]\nname = "member"\nversion = "0.1.0"\nedition = "2024"\n');
-  writeFileSync(join(root, "member/src/lib.rs"), "pub fn one() -> u8 {\n    1\n}\n");
+  writeFileSync(join(root, "member/src/lib.rs"), "pub fn one() -> u8 {\n    1\n}\n\n#[test]\nfn reads_cargo_config() {\n    assert!(std::path::Path::new(\"member/../.cargo/config.toml\").is_file());\n}\n");
   execFileSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, stdio: "ignore" });
   execFileSync("git", ["init", "-q"], { cwd: root });
   execFileSync("git", ["add", "-A"], { cwd: root });
@@ -33,6 +34,8 @@ test("check accepts the generated files and fails on a stale BUILD file", () => 
     assert.equal(clean.status, 0, clean.stderr);
     // The musl platform carries its libc constraint, and its toolchain is registered before the
     // hub so it wins over the gnu toolchain that rules_rust also considers compatible.
+    const memberBuild = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
+    assert.match(memberBuild, /"\/\/:scripts\/mold-linker\.sh"/, "a test that carries Cargo's config also carries the linker it names");
     const buildFile = readFileSync(join(root, "BUILD.bazel"), "utf8");
     const platformStart = buildFile.indexOf('platform(\n    name = "linux_musl",');
     assert.notEqual(platformStart, -1, "linux_musl platform is generated");
