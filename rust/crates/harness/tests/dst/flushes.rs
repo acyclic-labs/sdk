@@ -181,25 +181,26 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
         "fresh open flushes changed: {observed:?}"
     );
     assert_eq!(observed.reopen, (1, 5), "reopen flushes changed");
-    // Cold root setup adds policy, roster, epoch manifest and the shared
-    // request header, plus two namespace ordering barriers. Their publication
-    // cuts remain durable before the first reply; WAL drains may coalesce.
+    // Cold root setup adds policy, its content metadata, roster, epoch
+    // manifest and the shared request header, plus namespace ordering
+    // barriers. Their publication cuts remain durable before the first reply;
+    // WAL drains may coalesce.
     assert_eq!(
-        observed.first.0, 15,
+        observed.first.0, 19,
         "first-turn barriers changed: {observed:?}"
     );
     assert!(
-        observed.first.1 <= 19,
+        observed.first.1 <= 30,
         "first-turn drains changed: {observed:?}"
     );
     assert_eq!(
-        observed.reopened_first.0, 10,
+        observed.reopened_first.0, 11,
         "reopened ordering barriers changed: {observed:?}"
     );
     // Recovery and first publication can join an already-flushed WAL target.
     // Requiring the redundant drain would reject valid group commit.
-    assert!(
-        (11..=12).contains(&observed.reopened_first.1),
+    assert_eq!(
+        observed.reopened_first.1, 14,
         "reopened physical drains changed: {observed:?}"
     );
     // Reopening pays its placement cost once. A later reply must use the
@@ -209,15 +210,16 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
         "reopened steady reply adds publication work: {observed:?}"
     );
     // Includes input publication through committed actor settlement. This
-    // absolute budget rejects uniform added or missing work. Nine publications
-    // own input, hooks, request messages and manifest, projection, three model
-    // event/usage payloads, and settled output. The segmented manifest replaces
-    // the old flat-request budget; the shared header is not republished.
-    // Thirty extra content parts need thirty extra ordering barriers, but no
-    // additional physical drains. Independent commits still need their own.
+    // absolute budget rejects uniform added or missing work. Ten publications
+    // own input, hooks, request messages and manifest, projection, the policy
+    // content metadata, three model event/usage payloads, and settled output.
+    // The segmented manifest replaces the old flat-request budget; the shared
+    // header is not republished. Thirty extra content parts need thirty extra
+    // ordering barriers, but no additional physical drains. Independent commits
+    // still need their own.
     assert_eq!(
         observed.replies,
-        [(9, 10), (9, 10), (10, 10), (40, 10), (0, 1)],
+        [(10, 12), (10, 12), (11, 12), (41, 12), (0, 1)],
         "settled reply publication budget changed"
     );
     Ok(())
