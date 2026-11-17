@@ -549,11 +549,19 @@ mod regular_file_tests {
 #[cfg(all(not(loom), any(test, feature = "fuzzing")))]
 #[doc(hidden)]
 pub fn check_prepared_ascii_leaf<const N: usize>(bytes: [u8; N]) {
+    let result = check_prepared_ascii_leaf_inner(bytes);
+    assert!(result.is_ok(), "native leaf check failed: {result:?}");
+}
+
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+fn check_prepared_ascii_leaf_inner<const N: usize>(
+    bytes: [u8; N],
+) -> Result<(), NativeTreeMaterializationError> {
     let work = NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
-    .unwrap_or_else(|(error, _)| panic!("native leaf work: {error}"));
+    .map_err(|(error, _)| error)?;
     let before = work.receipt();
     let live = work.live_allocation_bytes();
     let result = prepare_ascii_leaf(bytes, &work);
@@ -583,13 +591,20 @@ pub fn check_prepared_ascii_leaf<const N: usize>(bytes: [u8; N]) {
     assert_eq!(after.allocation_operations, before.allocation_operations);
     assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
     assert_eq!(work.live_allocation_bytes(), live);
+    Ok(())
 }
 
 #[cfg(all(not(loom), any(test, feature = "fuzzing")))]
 #[doc(hidden)]
 pub fn check_native_root_name_prefix(name: &str) {
+    let result = check_native_root_name_prefix_inner(name);
+    assert!(result.is_ok(), "native root check failed: {result:?}");
+}
+
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+fn check_native_root_name_prefix_inner(name: &str) -> Result<(), NativeTreeMaterializationError> {
     let Some(prefix) = name.split_once('\0').map(|(prefix, _)| prefix) else {
-        return;
+        return Ok(());
     };
     #[cfg(unix)]
     let (examined, encoded) = (prefix.len() as u64 + 1, 0);
@@ -599,7 +614,7 @@ pub fn check_native_root_name_prefix(name: &str) {
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
-    .unwrap_or_else(|(error, _)| panic!("native root work: {error}"));
+    .map_err(|(error, _)| error)?;
     let live = work.live_allocation_bytes();
     let before = work.receipt();
     assert!(matches!(
@@ -635,13 +650,14 @@ pub fn check_native_root_name_prefix(name: &str) {
         },
         &crate::CancellationToken::new(),
     )
-    .unwrap_or_else(|(error, _)| panic!("native root work: {error}"));
+    .map_err(|(error, _)| error)?;
     assert!(matches!(
         denied.root_identity(Path::new(name)),
         Err(NativeTreeMaterializationError::Work(_))
     ));
     assert_eq!(denied.receipt().items_examined, 0);
     assert_eq!(denied.receipt().backend_read_operations, 0);
+    Ok(())
 }
 
 #[cfg(all(test, not(loom)))]

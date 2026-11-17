@@ -98,7 +98,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             let _phase = state
                 ._view
                 .take()
-                .expect("original exclusive checkout lease")
+                .ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?
                 .into_mutation_phase();
             let CheckoutCandidate {
                 base,

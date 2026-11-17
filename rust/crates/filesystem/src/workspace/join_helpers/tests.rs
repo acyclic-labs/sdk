@@ -40,7 +40,7 @@ fn original_tag(encoding: NameEncoding) -> u8 {
     }
 }
 
-fn check(path: &NamespacePath) {
+fn check(path: &NamespacePath) -> Result<(), Box<dyn std::error::Error>> {
     let (text, [before, after]) = acyclic_test_support::differential(
         || original_text(path),
         || namespace_path_text(path).map_err(|error| error.to_string()),
@@ -70,14 +70,14 @@ fn check(path: &NamespacePath) {
         expected.extend_from_slice(name.as_bytes());
         let cancellation = CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-        let encoded = canonical_name_key(name, &mut accounting).unwrap();
+        let encoded = canonical_name_key(name, &mut accounting)?;
         assert_eq!(encoded.value, expected);
         let key = ConflictKey::Binding {
             directory_id,
             name: encoded.value.clone(),
         };
         assert_eq!(
-            kernel_conflict(&key).unwrap(),
+            kernel_conflict(&key)?,
             MergeConflict::Binding {
                 directory_id,
                 name: name.clone(),
@@ -95,7 +95,7 @@ fn check(path: &NamespacePath) {
                 Err(DrivenJoinError::StaleCandidate)
             ));
         }
-        encoded.retire(&mut accounting).unwrap();
+        encoded.retire(&mut accounting)?;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -109,12 +109,11 @@ fn check(path: &NamespacePath) {
             hasher.update(name.as_bytes());
         }
         assert_eq!(
-            crate::CapturePolicy::excluding(vec![path.clone()])
-                .unwrap()
-                .fingerprint(),
+            crate::CapturePolicy::excluding(vec![path.clone()])?.fingerprint(),
             crate::foundation::Digest::from_bytes(*hasher.finalize().as_bytes())
         );
     }
+    Ok(())
 }
 
 proptest! {
@@ -143,9 +142,11 @@ proptest! {
             };
             LogicalName::new(encoding, bytes).unwrap()
         }).collect();
-        check(&NamespacePath::new(components, VolumeLimits::default()).unwrap());
+        let result = check(&NamespacePath::new(components, VolumeLimits::default()).unwrap());
+        prop_assert!(result.is_ok(), "{result:?}");
         let unicode = NamespacePath::from_text_in_profile("/é/𝄞", crate::model::FilesystemProfile::Windows,
             VolumeLimits::default()).unwrap();
-        check(&unicode);
+        let result = check(&unicode);
+        prop_assert!(result.is_ok(), "{result:?}");
     }
 }

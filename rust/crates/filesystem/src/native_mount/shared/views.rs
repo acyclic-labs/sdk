@@ -160,14 +160,20 @@ impl<K: Clone + Eq + Hash, C> NamedView<K, C> {
     }
 
     /// Unlists the view, stops its adapter, then drains admitted callbacks.
-    pub(crate) fn retire_after(&mut self, stop: impl FnOnce()) -> Option<(K, C)> {
+    pub(crate) fn retire_after(
+        &mut self,
+        stop: impl FnOnce(),
+    ) -> Result<Option<(K, C)>, &'static str> {
         self.begin_retirement(stop)
-            .map(|(name, retiring)| (name, retiring.finish()))
+            .map(|(name, retiring)| retiring.finish().map(|core| (name, core)))
+            .transpose()
     }
 }
 
 impl<K: Clone + Eq + Hash, C> Drop for NamedView<K, C> {
     fn drop(&mut self) {
-        drop(self.retire_after(|| {}));
+        if let Err(error) = self.retire_after(|| {}) {
+            tracing::error!(error, "view retirement failed during drop");
+        }
     }
 }

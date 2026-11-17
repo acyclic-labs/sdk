@@ -465,6 +465,7 @@ fn pending_owner(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::fd::BorrowedFd;
     crate::initialize_native_mount_services()?;
     // Own one duplicate, without stealing the process's original stdin slot.
+    // SAFETY: this child uses its open standard input for the control channel.
     let mut control = std::fs::File::from(rustix::io::dup(unsafe { BorrowedFd::borrow_raw(0) })?);
     let (inner, _) = shared_sources(posix_config())?;
     let volume_id = inner.volume_id()?;
@@ -546,6 +547,7 @@ fn process_event(id: u32, thread: bool) -> std::io::Result<std::os::fd::OwnedFd>
     if file < 0 {
         return Err(std::io::Error::last_os_error());
     }
+    // SAFETY: pidfd_open returned this new, owned descriptor.
     Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(file as i32) })
 }
 
@@ -558,6 +560,7 @@ fn wait_exit(event: &std::os::fd::OwnedFd) -> std::io::Result<()> {
     };
     loop {
         // One OS exit wait, not a periodic process probe.
+        // SAFETY: interest points to one initialized pollfd for this call.
         if unsafe { libc::poll(&raw mut interest, 1, -1) } >= 0 {
             return Ok(());
         }
