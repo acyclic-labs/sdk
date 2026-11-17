@@ -164,6 +164,9 @@ impl World {
                 }
             }
             Op::Due => {
+                if !self.set.parked_due(now, usize::MAX).is_empty() {
+                    self.host()?.adopt_parked();
+                }
                 self.set.wake_due(now, usize::MAX);
             }
             Op::Deliver(accepted) => {
