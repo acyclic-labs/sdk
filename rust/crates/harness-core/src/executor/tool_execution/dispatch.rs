@@ -361,7 +361,9 @@ impl<'io> StockExecution<'io> {
             // the model, not another pending handler that can end its agent.
             // This settles the tool reply only: the effect may still complete,
             // and an unsafe effect is never dispatched again.
-            Ok(None) | Err(Error::Indeterminate(_)) if started => {
+            Ok(None) | Err(Error::Indeterminate(_))
+                if started && !self.stock.reconciliation_only =>
+            {
                 return self
                     .settle_tool_failure(
                         journal,
