@@ -24,7 +24,7 @@ async fn qualify(
     for &operation in operations {
         match operation % 4 {
             3 => {
-                provider.flush()?;
+                provider.durability_barrier().await?;
                 flushed = frames;
             }
             selected => {
