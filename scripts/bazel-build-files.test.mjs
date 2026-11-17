@@ -25,6 +25,7 @@ function fixture() {
   mkdirSync(join(root, "compatibility/native-families"), { recursive: true });
   cpSync("compatibility/native-families/stream.json", join(root, "compatibility/native-families/stream.json"));
   cpSync("scripts/jsonc.mjs", join(root, "scripts/jsonc.mjs"));
+  cpSync("scripts/protobuf-bindings.mjs", join(root, "scripts/protobuf-bindings.mjs"));
   cpSync("rust-toolchain.toml", join(root, "rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));
   writeFileSync(join(root, ".cargo/config.toml"), '[target.x86_64-unknown-linux-gnu]\nlinker = "scripts/mold-linker.sh"\n\n[env]\n');

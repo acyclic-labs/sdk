@@ -6,7 +6,8 @@ import { dirname, join, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import fc from "fast-check";
-import { compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, writeChanged } from "./generated-bindings.mjs";
+import { packagedTypeScriptBindings, retiredTypeScriptBindingPackages } from "./protobuf-bindings.mjs";
 
 const source = readFileSync(new URL("./generate-proto.mjs", import.meta.url), "utf8");
 const implementation = source.slice(source.indexOf("export function"), source.lastIndexOf("\nif (process.argv"))

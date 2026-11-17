@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { repositoryRoot, toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
 import { parseJsonc } from "./jsonc.mjs";
+import { packagedTypeScriptBindings } from "./protobuf-bindings.mjs";
 
 // The workspace this generator describes. It defaults to the repository that holds this
 // script, and --root points the same generator at another Cargo workspace (Cloud).
@@ -1184,7 +1185,10 @@ const wasmNodeModulesRules = wasmSelections.filter(selection => selection.runtim
   const deps = wasmNodeModules.get(selection.name) ?? [];
   const filegroups = deps.filter(dep => dep.dir).map(dep => rule("filegroup", [
     ["name", q(workspaceTargetName(dep.name))],
-    ["srcs", glob([`${dep.dir}/**`], [`${dep.dir}/generated/wasm/**`])],
+    // Pin and name runtime protobuf projections: absent files must fail analysis.
+    ["srcs", glob([`${dep.dir}/**`], [`${dep.dir}/generated/wasm/**`, `${dep.dir}/generated/proto/**`]) + " + " + list(
+      packagedTypeScriptBindings.filter(([, names]) => names.includes(dep.dir.split("/").at(-1)))
+        .map(([stem]) => fileLabel(`${dep.dir}/generated/proto/${stem}.js`)))],
     ["visibility", q(["//visibility:public"])],
   ])).join("\n");
   const packages = deps.map(dep => [dep.dir ? `:${workspaceTargetName(dep.name)}` : `@${dep.repository}//:files`, `${dep.name}=${dep.dir ?? ""}`]);

@@ -2,7 +2,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { projectGenerated, compatibilityArtifacts, packagedTypeScriptBindings, recordGeneration, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
+import { projectGenerated, compatibilityArtifacts, recordGeneration, writeChanged } from "./generated-bindings.mjs";
+import { packagedTypeScriptBindings, retiredTypeScriptBindingPackages } from "./protobuf-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
