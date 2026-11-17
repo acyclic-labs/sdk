@@ -311,8 +311,9 @@ impl Client {
     }
 
     async fn stage<T>(&self, work: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
+        let mut work = std::pin::pin!(work);
         match &self.context {
-            Some(context) => context.run(work).await?,
+            Some(context) => context.run(work.as_mut()).await?,
             None => work.await,
         }
     }
