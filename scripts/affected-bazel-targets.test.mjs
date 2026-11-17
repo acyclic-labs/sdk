@@ -100,10 +100,12 @@ test("the command maps a base..head diff through the Bazel query", () => {
     git(["-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
       "commit", "--quiet", "-m", "base"]);
     put(root, "rust/crates/a/src/lib.rs", "two\n");
+    put(root, "rust/crates/a/src/naïve.rs", "two\n");
     git(["add", "."]);
     git(["-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
       "commit", "--quiet", "-m", "head"]);
-    assert.deepEqual(changedPathsFromGit("HEAD~1", "HEAD", { cwd: root }), ["rust/crates/a/src/lib.rs"]);
+    assert.deepEqual(changedPathsFromGit("HEAD~1", "HEAD", { cwd: root }),
+      ["rust/crates/a/src/lib.rs", "rust/crates/a/src/naïve.rs"]);
     const capture = join(root, "query.txt");
     const bazel = join(root, "bazel");
     writeFileSync(bazel, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(capture)}\nprintf '//rust/crates/a:test\\n'\n`);
@@ -114,8 +116,8 @@ test("the command maps a base..head diff through the Bazel query", () => {
     const selected = run(["--base", "HEAD~1", "--head", "HEAD", "--json"]);
     assert.equal(selected.status, 0, selected.stderr);
     assert.deepEqual(JSON.parse(selected.stdout), ["//rust/crates/a:test"]);
-    assert.match(readFileSync(capture, "utf8"),
-      /tests\(rdeps\(\/\/\.\.\., set\(\/\/rust\/crates\/a:src\/lib\.rs\)\)\)/);
+    assert.ok(readFileSync(capture, "utf8").includes(
+      "tests(rdeps(//..., set(//rust/crates/a:src/lib.rs //rust/crates/a:src/naïve.rs)))"));
     const count = run(["--base", "HEAD~1", "--head", "HEAD", "--count"]);
     assert.equal(count.status, 0, count.stderr);
     assert.equal(count.stdout.trim(), "1");

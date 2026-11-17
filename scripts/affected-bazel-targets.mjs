@@ -104,9 +104,9 @@ export function affectedTargets({ root, changed, query }) {
 }
 
 export function changedPathsFromGit(base, head = "HEAD", { cwd = ROOT } = {}) {
-  return execFileSync("git", ["diff", "--name-only", "--no-renames", base, head], {
+  return execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", base, head], {
     cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
-  }).split(/\r?\n/u).filter(Boolean);
+  }).split("\0").filter(Boolean);
 }
 
 function parseArguments(argv) {
