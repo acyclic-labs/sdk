@@ -220,13 +220,36 @@ thread_local! {
     > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
 }
 
-/// A world directory whose absolute path is a function of its case, seed and
-/// slot, never of the host's random temporary name. Model requests announce
-/// that path, so a random name would make an otherwise identical replay differ.
+/// A world directory whose absolute path is a function of its case, seed,
+/// slot and process, never of the host's random temporary name. Model requests
+/// announce that path, so a random name would make an otherwise identical
+/// replay differ; the process identity keeps concurrent processes apart.
 struct WorldDirectory {
     path: std::path::PathBuf,
     key: (String, u64),
     slot: usize,
+}
+
+/// A process's start nonce, so two processes that reuse a pid still name
+/// different world directories.
+fn process_nonce() -> u64 {
+    static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *NONCE.get_or_init(|| {
+        let nanos = match std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+        {
+            Ok(elapsed) => elapsed.as_nanos(),
+            Err(_) => 0,
+        };
+        let pid = u64::from(std::process::id());
+        let mut hash = blake3::Hasher::new();
+        hash.update(&pid.to_le_bytes());
+        hash.update(&nanos.to_le_bytes());
+        let bytes = hash.finalize();
+        let mut nonce = [0; 8];
+        nonce.copy_from_slice(&bytes.as_bytes()[..8]);
+        u64::from_le_bytes(nonce)
+    })
 }
 
 impl WorldDirectory {
@@ -258,7 +281,12 @@ impl WorldDirectory {
         } else {
             std::env::temp_dir()
         };
-        let path = root.join(format!("acyclic-dst-{}", &digest.to_hex()[..16]));
+        let path = root.join(format!(
+            "acyclic-dst-{}-{}-{}",
+            std::process::id(),
+            process_nonce(),
+            &digest.to_hex()[..16]
+        ));
         if path.exists() {
             std::fs::remove_dir_all(&path)?;
         }
