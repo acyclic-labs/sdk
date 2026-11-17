@@ -1,6 +1,7 @@
 use super::super::*;
 use crate::NativeStreamProviderExt as _;
 use crate::StreamCategory;
+use acyclic_native_runtime::testing::drive;
 use futures::FutureExt as _;
 use std::{
     sync::atomic::{AtomicBool, Ordering},
@@ -69,7 +70,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
     }
     for native in [false, true] {
         let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
-        let (root, path, meter) = super::journal_lifecycle(&schedule, &mut boundaries, async {
+        let (root, path, meter) = drive(&schedule, &mut boundaries, |_| {}, async {
             let root = tempfile::tempdir()?;
             let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
             let path = StreamPath::new("failure")?;
@@ -318,7 +319,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
             drop(stream);
             Ok::<_, Box<dyn std::error::Error>>((root, path, meter))
         })
-        .await??;
+        .await?;
         meter.assert_refunded();
         let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
         assert_eq!(
@@ -431,7 +432,7 @@ async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::
             }
         }
     }
-    super::journal_lifecycle(&schedule, &mut boundaries, async { drop(stream) }).await?;
+    drive(&schedule, &mut boundaries, |_| {}, async { drop(stream) }).await;
     meter.assert_refunded();
     let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
     assert_eq!(reopened.tail(StreamPath::new("prepared/target")?).await?, 1);
