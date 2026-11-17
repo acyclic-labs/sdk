@@ -1549,6 +1549,32 @@ async fn terminal_fence_collection_cleans_an_interrupted_retain()
     Ok(())
 }
 
+#[tokio::test]
+async fn terminal_fence_retry_finishes_interrupted_batch_cleanup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let medium = Shared::default();
+    let original = Store::new(medium.clone()).account(b"terminal-cleanup")?;
+    let digest = original
+        .put(vec![6; 32].into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("unknown put")?
+        .digest;
+    let root = RootId::new(b"cleanup-intent".to_vec())?;
+    original.retain_fenced(&root, 1, vec![digest]).await?;
+    {
+        let (mut removed, _resume) = medium.park("remove", "/f/");
+        let release = original.release_terminal(&root, 1);
+        tokio::pin!(release);
+        drive_to_park(release.as_mut(), &mut removed).await;
+        // The batch removal took effect, but its owner is lost before reply.
+    }
+    let recovered = Store::new(medium).account(b"terminal-cleanup")?;
+    recovered.release_terminal(&root, 1).await?;
+    assert_eq!(recovered.delete(digest).await?.outcome, Delete::Deleted);
+    Ok(())
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 async fn a_delete_never_removes_a_writers_pending_reference()

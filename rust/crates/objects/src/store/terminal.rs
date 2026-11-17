@@ -108,10 +108,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         name: &str,
         references: &[Digest],
     ) -> Result<bool, Error> {
-        if !self.medium.remove(key).await.map_err(moved)? {
-            return Ok(false);
-        }
-        self.medium.flush(&[key.to_owned()]).await.map_err(medium)?;
+        // This batch is terminal or its admission lost the conditional commit.
+        // Keep it as a cleanup receipt until its index removals are durable,
+        // so interruption cannot leave a permanent orphan pin.
         let tag = format!("f{root}.{name}");
         self.unreference(references, &tag).await?;
         let indexes: Vec<_> = references
@@ -119,7 +118,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .map(|child| self.index_key(child, &tag))
             .collect();
         self.medium.flush(&indexes).await.map_err(medium)?;
-        Ok(true)
+        let removed = self.medium.remove(key).await.map_err(moved)?;
+        self.medium.flush(&[key.to_owned()]).await.map_err(medium)?;
+        Ok(removed)
     }
 
     pub(super) async fn fenced_rooted(&self) -> Result<Vec<Digest>, Error> {
@@ -181,13 +182,14 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .map_err(medium)?;
         let batch = encode_batch(&references);
         let name = format!("{fence:016x}.{}.{}", Digest::of(&batch).to_hex(), nonce()?);
-        let tag = format!("f{}.{name}", Digest::of(root.as_bytes()).to_hex());
+        let root_hash = Digest::of(root.as_bytes()).to_hex();
+        let tag = format!("f{root_hash}.{name}");
         let key = format!("{}{name}", self.fenced_prefix(root));
         self.commit_retention(&references, &tag, &key, batch, 2)
             .await?;
         if !self.terminal_replace(observed, state.terminal).await? {
-            self.medium.remove(&key).await.map_err(moved)?;
-            self.unreference(&references, &tag).await?;
+            self.remove_fenced_batch(&key, &root_hash, &name, &references)
+                .await?;
             let (current, _) = self.terminal_observed(root).await?;
             current.require_open(fence)?;
             return Err(changed());
@@ -198,8 +200,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .map_err(medium)?;
         let (current, _) = self.terminal_observed(root).await?;
         if let Err(error) = current.require_open(fence) {
-            self.medium.remove(&key).await.map_err(moved)?;
-            self.unreference(&references, &tag).await?;
+            self.remove_fenced_batch(&key, &root_hash, &name, &references)
+                .await?;
             return Err(error);
         }
         Ok(Retained {
