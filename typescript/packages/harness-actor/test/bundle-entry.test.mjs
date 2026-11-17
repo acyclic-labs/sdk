@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundleHarnessActor } from "../../../../tools/harness-actor-bundle.mjs";
 import { loadHostedArtifact } from "../../../../scripts/artifact-assets.mjs";
@@ -12,6 +12,21 @@ import { HARNESS_BINDINGS, HARNESS_MODULE, MODEL_FETCH } from "../src/bindings.j
 const directory = mkdtempSync(join(tmpdir(), "harness-entry-"));
 beforeAll(() => bundleHarnessActor(fileURLToPath(new URL("./owner.json", import.meta.url)), directory));
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
+test("relative config and output resolve against the workspace, not the invocation directory", async () => {
+  const workspace = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
+  const config = relative(workspace, fileURLToPath(new URL("./owner.json", import.meta.url)));
+  const output = relative(workspace, mkdtempSync(join(tmpdir(), "harness-entry-relative-")));
+  const cwd = process.cwd();
+  process.chdir(tmpdir());
+  try {
+    await bundleHarnessActor(config, output);
+    expect(existsSync(join(output, "agent-deploy.json"))).toBe(true);
+  } finally {
+    process.chdir(cwd);
+    rmSync(output, { recursive: true, force: true });
+  }
+});
+
 test("built namespace bundle loads through manifest, onRecord and acceptsInterrupt with one admitted heap", async () => {
   const deployment = JSON.parse(readFileSync(join(directory, "agent-deploy.json"), "utf8"));
   const assets = deployment.environments[0].entries[0].assets;
