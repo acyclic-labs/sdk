@@ -1,10 +1,15 @@
 """Standalone proofs over declared production sources, without Cargo or host tools."""
 
+KaniInfo = provider(fields = ["bin"])
+
 def _tool_impl(ctx):
     executable = ctx.actions.declare_file(ctx.label.name)
     ctx.actions.symlink(output = executable, target_file = ctx.file.driver, is_executable = True)
     files = [executable, ctx.file.driver] + ctx.files.data
-    return [DefaultInfo(executable = executable, files = depset(files), runfiles = ctx.runfiles(files = files))]
+    return [
+        DefaultInfo(executable = executable, files = depset(files), runfiles = ctx.runfiles(files = files)),
+        KaniInfo(bin = ctx.file.driver.short_path.rpartition("/")[0]),
+    ]
 
 kani_tool = rule(
     implementation = _tool_impl,
@@ -25,8 +30,9 @@ def _test_impl(ctx):
     ctx.actions.write(executable, """#!/usr/bin/env bash
 set -euo pipefail
 root="${TEST_SRCDIR:?}/${TEST_WORKSPACE:?}"
+export PATH="$root/%s:$PATH"
 exec "$root/%s" "$root/%s" --target-dir "${TEST_TMPDIR:?}" --harness %s --exact --output-format terse
-""" % (ctx.executable._kani.short_path, ctx.file.src.short_path, _quote(ctx.attr.harness)), is_executable = True)
+""" % (ctx.attr._kani[KaniInfo].bin, ctx.executable._kani.short_path, ctx.file.src.short_path, _quote(ctx.attr.harness)), is_executable = True)
     runfiles = ctx.runfiles(files = [ctx.file.src] + ctx.files.srcs)
     runfiles = runfiles.merge(ctx.attr._kani[DefaultInfo].default_runfiles)
     return [DefaultInfo(executable = executable, runfiles = runfiles)]
