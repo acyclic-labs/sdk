@@ -13,16 +13,15 @@ fn uncertain_effect(code: tonic::Code) -> bool {
 }
 
 pub(in super::super) fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
-    let classification = match value.code() {
-        code if uncertain_effect(code) => ProviderError::Indeterminate(key),
-        tonic::Code::Unimplemented => ProviderError::Unsupported(value.message().into()),
-        tonic::Code::FailedPrecondition => Precondition::from_wire(value.details()).map_or_else(
+    if value.code() != tonic::Code::FailedPrecondition {
+        return guest_error(ProviderError::Indeterminate(key), value);
+    }
+    Precondition::from_wire(value.details())
+        .map_or_else(
             || ProviderError::Rejected(value.message().into()),
             ProviderError::FailedPrecondition,
-        ),
-        _ => ProviderError::Rejected(value.message().into()),
-    };
-    classification.with_cause(value)
+        )
+        .with_cause(value)
 }
 pub(in super::super) fn watch_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     ProviderError::Indeterminate(key).with_cause(value)
