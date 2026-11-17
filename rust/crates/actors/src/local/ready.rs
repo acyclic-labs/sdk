@@ -682,11 +682,7 @@ impl<K: Ord + Clone> Registration<K> {
     /// Install a durably observed alarm into the shared due index. A later
     /// observation cannot move generation or consumption backwards. Reinstalling
     /// an unconsumed alarm permits retry after an unsuccessful physical attempt.
-    pub fn update_alarm(
-        &self,
-        alarm: &super::Alarm,
-        now_unix_ms: u64,
-    ) -> Result<(), super::Error> {
+    pub fn update_alarm(&self, alarm: &super::Alarm, now_unix_ms: u64) -> Result<(), super::Error> {
         self.observe_alarm(alarm, alarm.pending(), now_unix_ms)
     }
 

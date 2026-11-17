@@ -136,11 +136,13 @@ impl ClockWorld {
     fn config(&self) -> Result<acyclic_harness::LocalHarnessConfig> {
         let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
         let provider = Arc::new(self.service.reopened());
-        Ok(local_harness_config(self.checkout.clone(), (model, provider))?
-            .without_user_settings()
-            .workspace_mounting(WorkspaceMounting::Physical)
-            .state_directory(self.state.clone())
-            .clock(self.clock.clone()))
+        Ok(
+            local_harness_config(self.checkout.clone(), (model, provider))?
+                .without_user_settings()
+                .workspace_mounting(WorkspaceMounting::Physical)
+                .state_directory(self.state.clone())
+                .clock(self.clock.clone()),
+        )
     }
 
     fn open(&self) -> EntryFuture<'_, Result<Arc<LocalHarness>>> {
@@ -197,11 +199,7 @@ fn wait_plan(timer: &str, child: &str) -> Vec<Plan> {
     let wait = match timer {
         "wait_timeout" => call("wait", "wait", json!({"timeout_ms": 20})),
         "actor_alarm" => call("wait", "wait", json!({"input": true, "timeout_ms": 20})),
-        "call_deadline" => call(
-            "wait",
-            "wait",
-            json!({"agents": [child], "timeout_ms": 20}),
-        ),
+        "call_deadline" => call("wait", "wait", json!({"agents": [child], "timeout_ms": 20})),
         _ => unreachable!(),
     };
     let steps = if timer == "call_deadline" {
@@ -217,7 +215,11 @@ fn wait_plan(timer: &str, child: &str) -> Vec<Plan> {
         vec![vec![wait]]
     };
     let mut plans = vec![Plan {
-        tag: if timer == "call_deadline" { "parent" } else { "wait" },
+        tag: if timer == "call_deadline" {
+            "parent"
+        } else {
+            "wait"
+        },
         steps,
         fail_once: None,
     }];
@@ -231,11 +233,7 @@ fn wait_plan(timer: &str, child: &str) -> Vec<Plan> {
     plans
 }
 
-async fn wait_case(
-    timer: &str,
-    state: &str,
-    seed: u64,
-) -> std::result::Result<(), String> {
+async fn wait_case(timer: &str, state: &str, seed: u64) -> std::result::Result<(), String> {
     let child = format!("kid-{seed}-{state}");
     let world = ClockWorld::new(wait_plan(timer, &child))?;
     let harness = world.open().await.map_err(oracle::failed)?;
@@ -246,10 +244,7 @@ async fn wait_case(
         tag("wait")
     };
     let conversation = Conversation::open(harness.connect().await.map_err(oracle::failed)?);
-    let mut observer = conversation
-        .observe(None)
-        .await
-        .map_err(oracle::failed)?;
+    let mut observer = conversation.observe(None).await.map_err(oracle::failed)?;
     let expected_deadline = world.base.saturating_add(20);
     let inbox = conversation
         .send(&id, &prompt_tag)
@@ -303,8 +298,14 @@ async fn wait_case(
             let conversation = Conversation::open(connection);
             world.advance(deadline)?;
             let (sequence, entry) = loop {
-                match conversation.reply(&id, inbox).await.map_err(oracle::failed)? {
-                    acyclic_harness::agent::Reply::Answered { sequence, entry, .. } => {
+                match conversation
+                    .reply(&id, inbox)
+                    .await
+                    .map_err(oracle::failed)?
+                {
+                    acyclic_harness::agent::Reply::Answered {
+                        sequence, entry, ..
+                    } => {
                         break (sequence, entry);
                     }
                     acyclic_harness::agent::Reply::Dropped => {
@@ -315,7 +316,13 @@ async fn wait_case(
                 }
             };
             let text = output(&conversation, sequence, &entry).await?;
-            if text != done(if timer == "call_deadline" { "parent" } else { "wait" }) {
+            if text
+                != done(if timer == "call_deadline" {
+                    "parent"
+                } else {
+                    "wait"
+                })
+            {
                 return Err(format!("{timer} reopened: wait answered {text:?}"));
             }
             let after = world.service_requests();
@@ -451,7 +458,9 @@ fn provider(
     registry.resolve("dst/model").map_err(oracle::failed)
 }
 
-fn request(provider: &ResolvedModel) -> std::result::Result<(PreparedModelRequest, ModelDispatch), String> {
+fn request(
+    provider: &ResolvedModel,
+) -> std::result::Result<(PreparedModelRequest, ModelDispatch), String> {
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
             summary: false,
@@ -491,9 +500,7 @@ async fn provider_exchange(
     delays: &mut mpsc::UnboundedReceiver<Duration>,
 ) -> std::result::Result<Vec<ModelWait>, String> {
     let timeouts = if timer == "first_byte_deadline" {
-        TimeoutSpec {
-            total_ms: Some(20),
-        }
+        TimeoutSpec { total_ms: Some(20) }
     } else {
         TimeoutSpec::DEFAULT
     };
@@ -589,11 +596,7 @@ fn responses(timer: &str) -> VecDeque<TimedResponse> {
     VecDeque::from([first, second])
 }
 
-async fn provider_case(
-    timer: &str,
-    state: &str,
-    seed: u64,
-) -> std::result::Result<(), String> {
+async fn provider_case(timer: &str, state: &str, seed: u64) -> std::result::Result<(), String> {
     let _ = seed;
     let (clock, mut control) = ControlledClock::new(100);
     let clock = Arc::new(clock);
@@ -605,13 +608,18 @@ async fn provider_case(
             delays: delays_tx,
         });
         let timeouts = if timer == "first_byte_deadline" {
-            TimeoutSpec {
-                total_ms: Some(20),
-            }
+            TimeoutSpec { total_ms: Some(20) }
         } else {
             TimeoutSpec::DEFAULT
         };
-        let provider = provider(transport, timeouts, RetrySpec { base_delay_ms: 0, max_delay_ms: 0 })?;
+        let provider = provider(
+            transport,
+            timeouts,
+            RetrySpec {
+                base_delay_ms: 0,
+                max_delay_ms: 0,
+            },
+        )?;
         let (prepared, dispatch) = request(&provider)?;
         let mut stream = provider.generate(&prepared, dispatch);
         loop {
@@ -656,15 +664,12 @@ async fn provider_case(
         responses: Mutex::new(responses(timer)),
         delays: delays_tx,
     });
-    let waits = provider_exchange(timer, state, &clock, &mut control, transport, &mut delays).await?;
+    let waits =
+        provider_exchange(timer, state, &clock, &mut control, transport, &mut delays).await?;
     check_waits(timer, state, &waits)
 }
 
-fn check_waits(
-    timer: &str,
-    state: &str,
-    waits: &[ModelWait],
-) -> std::result::Result<(), String> {
+fn check_waits(timer: &str, state: &str, waits: &[ModelWait]) -> std::result::Result<(), String> {
     let started = waits
         .iter()
         .filter(|wait| matches!(wait, ModelWait::Started { .. }))
