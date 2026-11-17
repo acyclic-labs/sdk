@@ -101,6 +101,7 @@ test("a patched crate uses crate-universe spokes for its transitive registry dep
     execFileSync('git', ['add', '-A'], {cwd: root});
     const result = run('write');
     assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(readFileSync(join(root, 'BUILD.bazel'), 'utf8'), /node_modules\.bzl/, "a workspace without a WASM runtime needs no SDK staging rule");
     assert.match(readFileSync(join(root, 'patched/BUILD.bazel'), 'utf8'), /@sdk_crates__transitive-1\.0\.0\/\/:transitive/);
     assert.match(readFileSync(join(root, 'cargo.MODULE.bazel'), 'utf8'), /"sdk_crates__transitive-1\.0\.0"/);
   } finally { rmSync(root, {recursive: true, force: true}); }
