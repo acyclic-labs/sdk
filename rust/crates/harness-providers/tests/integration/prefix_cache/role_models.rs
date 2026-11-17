@@ -404,10 +404,11 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         )
         .await?;
     resumed.agents().drain(&kid).await?;
-    assert!(matches!(
-        resumed.agents().state(&kid).await?.phase,
-        acyclic_harness_core::agent::Phase::Idle
-    ));
+    let phase = resumed.agents().state(&kid).await?.phase;
+    assert!(
+        matches!(phase, acyclic_harness_core::agent::Phase::Idle),
+        "resumed child phase: {phase:?}"
+    );
     let sent = child.state.lock().unwrap_or_else(|p| p.into_inner());
     // The negative control binds every child to the root provider. It completes
     // the same lifecycle but cannot satisfy this HTTP-boundary routing oracle.
