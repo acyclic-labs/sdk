@@ -189,36 +189,37 @@ impl CheckoutPublication {
             }
             (None, None) => self.prepare(from, to, state, options, work).await?,
         };
-        // A logical commit can precede its native acknowledgement. Every host
-        // resumes the original transition, even when its current head is `to`.
-        let original = if from.id() == to.id()
-            && let acyclic_fs::MaterializationIntent::GenerationTransition {
-                from: original,
-                to: target,
-            } = journal.plan().intent
-            && target == to.id()
-        {
-            Some(
-                from.workspace()
-                    .generation(original, work, work.cancellation())
-                    .await?,
-            )
-        } else {
-            None
+        // The retained journal is the operation's original transition. A
+        // retry may arrive after another writer advanced the logical head, so
+        // the caller's from/to are not the journal's transition. Resume the
+        // journal's own transition; completion belongs to the journal, so
+        // post-ack host edits cannot be overwritten by replaying another plan.
+        let (original, target) = match journal.plan().intent {
+            acyclic_fs::MaterializationIntent::GenerationTransition { from, to } => (from, to),
+            _ => {
+                return Err(Error::Conflict(
+                    "checkout publication is not a generation transition".into(),
+                ));
+            }
         };
-        let from = original.as_ref().unwrap_or(from);
-        if completed(&journal, self.identity, from.id(), to.id())? {
-            // Completion belongs to the journal, so post-ack host edits cannot
-            // be overwritten by reconstructing and replaying another plan.
+        if completed(&journal, self.identity, original, target)? {
             cleanup_directory(&self.directory)?;
             return Ok(journal);
         }
+        let from = from
+            .workspace()
+            .generation(original, work, work.cancellation())
+            .await?;
+        let to = to
+            .workspace()
+            .generation(target, work, work.cancellation())
+            .await?;
         let guard_cause = std::sync::Mutex::new(None);
         let result = acyclic_fs::publish_native_generation_transition(
-            from,
-            to,
+            &from,
+            &to,
             state,
-            self.request(from, to, options, work),
+            self.request(&from, &to, options, work),
             work.clone(),
             || {
                 let future = guard();
@@ -278,7 +279,7 @@ fn completed(
         || journal.plan().intent
             != (acyclic_fs::MaterializationIntent::GenerationTransition { from, to })
     {
-        return Err(Error::Storage(
+        return Err(Error::Conflict(
             "checkout publication differs from its original generation transition".into(),
         ));
     }
