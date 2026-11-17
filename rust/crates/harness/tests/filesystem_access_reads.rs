@@ -50,6 +50,12 @@ impl Fixture {
     async fn with_policy(initialize: bool) -> Result<Self, Box<dyn Error>> {
         Self::with_filesystem(Fs::memory(), initialize).await
     }
+
+    async fn with_clock(
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_filesystem_clock(Fs::memory(), true, clock).await
+    }
 }
 
 impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
@@ -67,13 +73,26 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
         fs: Fs<acyclic_fs::MemoryAuthorityBackend, O>,
         initialize: bool,
     ) -> Result<Self, Box<dyn Error>> {
+        Self::with_filesystem_clock(
+            fs,
+            initialize,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+        )
+        .await
+    }
+
+    async fn with_filesystem_clock(
+        fs: Fs<acyclic_fs::MemoryAuthorityBackend, O>,
+        initialize: bool,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    ) -> Result<Self, Box<dyn Error>> {
         let provider = ProviderRef::new(
             "access-test".into(),
             "filesystem".into(),
             "2".into(),
             &mut None,
         )?;
-        let host = FilesystemHost::new(fs.clone(), &provider, None)?;
+        let host = FilesystemHost::new_with_clock(fs.clone(), &provider, None, clock)?;
         let volume = VolumeRef::new(
             provider,
             format!("project-{}", uuid::Uuid::new_v4()),
@@ -407,6 +426,23 @@ async fn legacy_label_cannot_bypass_capability_path_or_expiry() -> Result<(), Bo
             allowed
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_clock_ahead_of_wall_time_still_grants_reads() -> Result<(), Box<dyn Error>> {
+    use acyclic_stream::UnixMillisClock as _;
+    let start = acyclic_stream::SystemUnixMillisClock.now_unix_millis() + 5_000;
+    let (clock, _control) = acyclic_actors::local::ControlledClock::new(start);
+    let fixture = Fixture::with_clock(Arc::new(clock)).await?;
+    let reader = fixture.reader(&fixture.scope)?;
+    assert_eq!(
+        reader
+            .read(&fixture.file, 4096, None, None)?
+            .await?
+            .as_ref(),
+        b"private"
+    );
     Ok(())
 }
 
