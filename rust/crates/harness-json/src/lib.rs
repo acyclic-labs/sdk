@@ -41,6 +41,6 @@ pub struct JsonBounds {
     pub maximum_bytes: Option<u64>,
     /// Optional values and keys ceiling, including replaced duplicate entries.
     pub maximum_items: Option<u64>,
-    /// Zero-based nesting depth.
+    /// Zero-based nesting depth of the original admitted document.
     pub maximum_depth: u32,
 }
