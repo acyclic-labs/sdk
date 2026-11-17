@@ -105,6 +105,7 @@ test("grouping visits each file once without copying prior groups", () => {
 test("legal TOML strings cannot hide or spoof the package edition", () => {
   for (const manifest of [
     "[package]\nname = 'member-fuzz'\nedition = '2021'\n[workspace]\n",
+    "[package]\nname = 'member-fuzz'\nedition = '2021'\n[package.metadata]\nreleased = 2026-11-17\nat = 2026-11-17T08:00:00Z\nlocal = 2026-11-17T08:00:00\ntime = 08:00:00\n[workspace]\n",
     '[package]\nname = "member-fuzz"\nedition = "2021"\ndescription = """\n[package]\nedition = "2024"\n"""\n[workspace]\n',
   ]) {
     const root = fixture({ "member/fuzz/Cargo.toml": manifest });
