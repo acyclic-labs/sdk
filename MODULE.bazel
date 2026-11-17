@@ -9,12 +9,14 @@ bazel_dep(name = "toolchains_musl", version = "0.2.0")
 # rules_rust 0.75.0 from acyclic-labs/rules_rust, whose commits on the release:
 # - a transitive module's crate lockfile labels resolve in that module's repository;
 # - rust_check_aspect type-checks crates to metadata, as cargo check does;
+# - the clippy_driver setting runs the Rust compile action through clippy-driver, so lints are part of
+#   compilation and no separate clippy aspect type-checks the same tree again;
 # - build scripts see the toolchain's extra rustc flags in CARGO_ENCODED_RUSTFLAGS and CARGO_CFG_*, as
 #   Cargo's do with RUSTFLAGS, so cc-rs compiles C for the static CRT a crt-static target links.
 git_override(
     module_name = "rules_rust",
     remote = "https://github.com/acyclic-labs/rules_rust.git",
-    commit = "4f0293883980add60314edace130d285b89f5941",
+    commit = "f4f972e06c32ada245afe6801e415daa609c925d",
 )
 
 # The C/C++ toolchains are this module's own build setup, so each is a dev dependency: a module that
