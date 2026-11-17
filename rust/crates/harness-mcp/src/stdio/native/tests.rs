@@ -133,7 +133,7 @@ async fn cancelling_initialization_reaps_the_owned_child_without_blocking_the_ru
     let address = listener.local_addr().map_err(Error::process_io)?;
     let executable = std::env::current_exe().map_err(Error::process_io)?;
     let arguments = format!(
-        "--exact mcp::stdio::native::tests::native_child_is_initialized_once_and_kept_until_the_transport_drops --nocapture --skip mcp-child:{address}"
+        "--exact stdio::native::tests::native_child_is_initialized_once_and_kept_until_the_transport_drops --nocapture --skip mcp-child:{address}"
     );
     // The test runner's banner is not an MCP protocol message.
     #[cfg(windows)]
