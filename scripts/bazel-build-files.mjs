@@ -8,7 +8,7 @@
 // whenever the selection changed).
 // Every workspace member builds with Bazel, and every target `cargo test --all-features` builds
 // is rendered: a target with `test = false` is the only one left out of testing.
-import { execFileSync } from "node:child_process";
+import { workspaceGraph } from "./workspace-model.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { repositoryRoot, toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
@@ -76,7 +76,7 @@ const configEnv = Object.fromEntries(Object.entries(toml(root, ".cargo/config.to
 
 // Every target builds with every feature on, as `cargo test --all-features` does. crate_universe
 // resolves third-party features its own way, so universeSpecs() pins each crate's all-features set.
-const runs = TRIPLES.map(triple => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, "--all-features"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 })));
+const runs = TRIPLES.map(triple => workspaceGraph(root, triple));
 const [base] = runs;
 // The workspace metadata the tests read instead of running Cargo. It holds the workspace members
 // only, with manifest paths relative to the workspace root, so the file is relocatable and small.

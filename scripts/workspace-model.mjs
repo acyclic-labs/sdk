@@ -1,0 +1,158 @@
+// Repository declarations and Bazel's committed crate resolution are the metadata
+// authority. Reading them never resolves, downloads or builds a Cargo workspace.
+import fs from 'node:fs';
+import path from 'node:path';
+import {toml, tomlFiles} from './policy-core.mjs';
+
+const slash = value => value.replaceAll('\\', '/');
+const exists = file => fs.existsSync(file);
+const requirement = value => value === undefined ? '*' : /^\d/.test(value) ? `^${value}` : value;
+
+export function workspacePackages(root) {
+  root = path.resolve(root);
+  const rootManifest = toml(root, 'Cargo.toml');
+  const manifests = new Set();
+  const expand = pattern => fs.globSync(pattern.replace(/\/$/, '') + '/Cargo.toml', {cwd: root});
+  for (const member of rootManifest.workspace?.members ?? []) for (const file of expand(member)) manifests.add(slash(file));
+  if (rootManifest.package) manifests.add('Cargo.toml');
+  const members = new Set(manifests);
+  const packages = [];
+  const pending = [...manifests];
+  tomlFiles(root, pending);
+  while (pending.length) {
+    const file = pending.shift(), manifest = toml(root, file), directory = path.dirname(path.resolve(root, file));
+    if (!manifest.package) throw Error(`${file}: missing package`);
+    let workspaceDirectory = directory;
+    if (manifest.package.workspace) workspaceDirectory = path.resolve(directory, manifest.package.workspace);
+    else while (workspaceDirectory !== root && !(exists(path.join(workspaceDirectory, 'Cargo.toml')) && toml(root, slash(path.relative(root, path.join(workspaceDirectory, 'Cargo.toml')))).workspace))
+      workspaceDirectory = path.dirname(workspaceDirectory);
+    const workspace = toml(root, slash(path.relative(root, path.join(workspaceDirectory, 'Cargo.toml')))).workspace ?? {};
+    const own = Object.fromEntries(Object.entries(manifest.package).map(([key, value]) =>
+      [key, value?.workspace === true ? workspace.package?.[key] : value]));
+    const dependencies = [];
+    const declarations = (tables, target = null) => {
+      for (const [table, kind] of [['dependencies', null], ['dev-dependencies', 'dev'], ['build-dependencies', 'build']])
+        for (const [alias, value] of Object.entries(tables[table] ?? {})) {
+          let declaration = typeof value === 'string' ? {version: value} : value;
+          let base = directory;
+          if (declaration.workspace) {
+            const inherited = workspace.dependencies?.[alias];
+            if (!inherited) throw Error(`${file}: missing workspace dependency ${alias}`);
+            const entry = typeof inherited === 'string' ? {version: inherited} : inherited;
+            declaration = {...entry, ...declaration, features: [...(entry.features ?? []), ...(declaration.features ?? [])]};
+            base = workspaceDirectory;
+          }
+          const patched = rootManifest.patch?.['crates-io']?.[declaration.package ?? alias];
+          const local = declaration.path ? path.resolve(base, declaration.path) : patched?.path ? path.resolve(root, patched.path) : null;
+          if (local) {
+            const next = slash(path.relative(root, path.join(local, 'Cargo.toml')));
+            if (!manifests.has(next)) {manifests.add(next); pending.push(next);}
+          }
+          dependencies.push({name: declaration.package ?? alias, rename: declaration.package ? alias : null,
+            req: requirement(declaration.version), kind, target, optional: declaration.optional ?? false,
+            uses_default_features: declaration['default-features'] ?? true, features: declaration.features ?? [],
+            source: local ? null : 'registry+https://github.com/rust-lang/crates.io-index', ...(local ? {path: local} : {})});
+        }
+    };
+    declarations(manifest);
+    for (const [target, tables] of Object.entries(manifest.target ?? {})) declarations(tables, target);
+    const features = {...manifest.features};
+    const explicit = new Set(Object.values(features).flat().filter(value => value.startsWith('dep:')).map(value => value.slice(4)));
+    for (const dep of dependencies) {
+      const alias = dep.rename ?? dep.name;
+      if (dep.optional && !explicit.has(alias) && !Object.hasOwn(features, alias)) features[alias] = [`dep:${alias}`];
+    }
+    const targets = [];
+    const target = (kind, declaration, fallback, name) => {
+      const src = declaration.path ?? fallback;
+      if (!exists(path.resolve(directory, src))) return;
+      const proc = kind === 'lib' && declaration['proc-macro'];
+      targets.push({kind: [proc ? 'proc-macro' : kind], crate_types: declaration['crate-type'] ?? [proc ? 'proc-macro' : kind === 'lib' ? 'lib' : 'bin'],
+        name: declaration.name ?? name, src_path: path.resolve(directory, src), edition: declaration.edition ?? own.edition ?? '2015',
+        doc: declaration.doc ?? true, doctest: declaration.doctest ?? kind === 'lib', test: declaration.test ?? true,
+        ...(declaration['required-features'] ? {'required-features': declaration['required-features']} : {})});
+    };
+    target('lib', manifest.lib ?? {}, 'src/lib.rs', own.name.replaceAll('-', '_'));
+    for (const [kind, plural, folder] of [['bin', 'bins', 'src/bin'], ['test', 'tests', 'tests'], ['example', 'examples', 'examples'], ['bench', 'benches', 'benches']]) {
+      const declared = manifest[kind] ?? [];
+      for (const item of declared) target(kind, item, kind === 'bin' && item.name === own.name && exists(path.join(directory, 'src/main.rs')) ? 'src/main.rs' : `${folder}/${item.name}.rs`, item.name);
+      if (own[`auto${plural}`] === false) continue;
+      if (kind === 'bin' && !declared.some(item => item.name === own.name)) target(kind, {}, 'src/main.rs', own.name);
+      if (exists(path.join(directory, folder))) for (const entry of fs.readdirSync(path.join(directory, folder), {withFileTypes: true})) {
+        const name = entry.name.replace(/\.rs$/, '');
+        if (!declared.some(item => item.name === name)) target(kind, {}, `${folder}/${entry.name}${entry.isDirectory() ? '/main.rs' : ''}`, name);
+      }
+    }
+    if (own.build !== false) target('custom-build', {}, typeof own.build === 'string' ? own.build : 'build.rs', 'build-script-build');
+    const p = {name: own.name, version: own.version, id: `path+file://${slash(directory)}#${own.name}@${own.version}`,
+      source: null, dependencies, targets, features, manifest_path: path.join(directory, 'Cargo.toml'), workspace_member: members.has(file),
+      publish: own.publish === false ? [] : own.publish ?? null, metadata: own.metadata ?? null, authors: own.authors ?? [], categories: own.categories ?? [], keywords: own.keywords ?? []};
+    for (const key of ['license', 'license-file', 'description', 'repository', 'homepage', 'documentation', 'links', 'default-run', 'rust-version']) p[key.replaceAll('-', '_')] = own[key] ?? null;
+    p.edition = own.edition ?? '2015';
+    p.readme = own.readme === false ? null : own.readme ?? ['README.md', 'README.txt', 'README'].find(name => exists(path.join(directory, name))) ?? null;
+    packages.push(p);
+  }
+  return packages.sort((a, b) => a.name.localeCompare(b.name, 'en'));
+}
+
+export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
+  root = path.resolve(root);
+  const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
+  const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-bazel-lock.json'), 'utf8'));
+  const registry = (lock.package ?? []).filter(p => p.source && universe.crates[`${p.name} ${p.version}`]).map(p => {
+    const pinned = universe.crates[`${p.name} ${p.version}`];
+    if (!pinned) throw Error(`Bazel crate lock lacks ${p.name} ${p.version}`);
+    const lib = pinned.targets.find(t => t.Library || t.ProcMacro);
+    const target = lib?.Library ?? lib?.ProcMacro;
+    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
+      features: Object.fromEntries((pinned.common_attrs?.crate_features ?? []).map(f => [f, []])),
+      targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
+  });
+  const packages = [...local, ...registry], byName = name => packages.filter(p => p.name === name);
+  const platform = new Set([
+    triple.includes('windows') ? 'windows' : 'unix', `target_os=${JSON.stringify(triple.includes('windows') ? 'windows' : triple.includes('darwin') ? 'macos' : 'linux')}`,
+    `target_arch=${JSON.stringify(triple.startsWith('aarch64') ? 'aarch64' : 'x86_64')}`, 'target_pointer_width="64"', 'target_endian="little"',
+    `target_env=${JSON.stringify(triple.includes('msvc') ? 'msvc' : triple.includes('darwin') ? '' : 'gnu')}`, `target_family=${JSON.stringify(triple.includes('windows') ? 'windows' : 'unix')}`,
+  ]);
+  const matches = cfg => {
+    if (!cfg || cfg === triple) return true;
+    if (!cfg.startsWith('cfg(')) return false;
+    const tokens = cfg.slice(4, -1).match(/"[^"\\]*(?:\\.[^"\\]*)*"|\w+|[(),=]/g) ?? [];
+    let at = 0;
+    const parse = () => {
+      const name = tokens[at++];
+      if (tokens[at] === '=') {at++; return platform.has(`${name}=${tokens[at++]}`);}
+      if (tokens[at] !== '(') return platform.has(name);
+      at++;
+      const values = [];
+      while (tokens[at] !== ')' && at < tokens.length) {values.push(parse()); if (tokens[at] === ',') at++;}
+      if (tokens[at++] !== ')') throw Error(`invalid target condition ${cfg}`);
+      if (name === 'all') return values.every(Boolean);
+      if (name === 'any') return values.some(Boolean);
+      if (name === 'not' && values.length === 1) return !values[0];
+      throw Error(`unknown target condition ${cfg}`);
+    };
+    const result = parse();
+    if (at !== tokens.length) throw Error(`invalid target condition ${cfg}`);
+    return result;
+  };
+  const nodes = local.map(p => {
+    const locked = lock.package.find(x => x.name === p.name && x.version === p.version && !x.source);
+    if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
+    const deps = new Map();
+    for (const d of p.dependencies.filter(d => matches(d.target))) {
+      const candidates = d.path ? local.filter(x => path.dirname(x.manifest_path) === d.path) : byName(d.name).filter(x =>
+        (locked.dependencies ?? []).some(key => key === x.name || key.startsWith(`${x.name} ${x.version}`)));
+      if (candidates.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
+      const dependency = candidates[0], name = (d.rename ?? d.name).replaceAll('-', '_');
+      const key = `${name}:${dependency.id}`;
+      if (!deps.has(key)) deps.set(key, {name, pkg: dependency.id, dep_kinds: []});
+      deps.get(key).dep_kinds.push({kind: d.kind, target: d.target});
+    }
+    return {id: p.id, deps: [...deps.values()], features: Object.keys(p.features).sort()};
+  });
+  nodes.push(...registry.map(p => ({id: p.id, deps: [], features: Object.keys(p.features)})));
+  return {packages, workspace_members: local.filter(p => p.workspace_member).map(p => p.id), workspace_root: root,
+    workspace_default_members: local.filter(p => p.workspace_member).map(p => p.id), version: 1,
+    metadata: toml(root, 'Cargo.toml').workspace?.metadata ?? null, resolve: {nodes}};
+}
