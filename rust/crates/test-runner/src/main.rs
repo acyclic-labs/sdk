@@ -63,8 +63,8 @@ struct Suite {
     exclude: Vec<String>,
     package: PathBuf,
     logs: PathBuf,
-    /// Where each case's own temporary directory is made (`temporary_root`).
-    temporary: PathBuf,
+    /// This runner's own directory, where each case's temporary directory is made.
+    temporary: RunnerDirectory,
     limit: Duration,
 }
 
@@ -138,11 +138,11 @@ fn run() -> Result<usize, String> {
             .map(|patterns| patterns.lines().map(str::to_owned).collect())
             .unwrap_or_default(),
         package: root.join(setting("ACYCLIC_TEST_PACKAGE")?),
-        temporary: temporary_root(
+        temporary: RunnerDirectory::claim(&temporary_root(
             &setting("ACYCLIC_TEST_TEMP_ROOT")?,
             Path::new(MEMORY_ROOT),
             &logs,
-        )?,
+        )?)?,
         logs,
         limit: Duration::from_secs(limit),
     };
@@ -150,7 +150,9 @@ fn run() -> Result<usize, String> {
         .into_iter()
         .chain(env::args_os().skip(1))
         .collect();
-    run_suite(&suite, &selection, &mut io::stdout().lock())
+    let failed = run_suite(&suite, &selection, &mut io::stdout().lock())?;
+    suite.temporary.release()?;
+    Ok(failed)
 }
 
 /// The cases libtest's `selection` arguments select, with `--ignored` only the ignored ones.
@@ -230,11 +232,8 @@ fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Resu
                 while let Some((index, name)) = queue.lock().ok().and_then(|mut queue| queue.next())
                 {
                     let log = suite.logs.join(format!("case-{index}.log"));
-                    let temporary = temporary_for(
-                        &suite.temporary,
-                        *RUNNER,
-                        CASES.fetch_add(1, Ordering::Relaxed),
-                    );
+                    let temporary =
+                        temporary_for(&suite.temporary.path, CASES.fetch_add(1, Ordering::Relaxed));
                     let started = Instant::now();
                     let outcome = case(suite, custody, name, &log, &temporary);
                     if sender
@@ -307,6 +306,15 @@ fn temporary_root(kind: &str, memory_root: &Path, logs: &Path) -> Result<PathBuf
                 memory_root.display()
             ));
         }
+        let mounts = fs::read_to_string("/proc/self/mountinfo")
+            .map_err(|error| format!("/proc/self/mountinfo: {error}"))?;
+        if !executes(memory_root, &mounts) {
+            return Err(format!(
+                "{} is mounted noexec, so a case cannot run a script it writes there; \
+                 recovery: remount it exec, or tag a target that needs a real disk requires-disk-tmp",
+                memory_root.display()
+            ));
+        }
         return Ok(memory_root.to_path_buf());
     }
     Ok(if cfg!(unix) {
@@ -316,17 +324,118 @@ fn temporary_root(kind: &str, memory_root: &Path, logs: &Path) -> Result<PathBuf
     })
 }
 
-/// This runner's own random name. A root such as `/dev/shm` is shared by every sandbox, where
-/// each runner may have the same process id, so a process id cannot name a case's directory.
-static RUNNER: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
-    std::collections::hash_map::RandomState::new().hash_one(std::process::id())
-});
+/// Whether the mount holding `path` lets a case execute files, by its innermost entry in
+/// `mountinfo` (the format of `/proc/self/mountinfo`: the mount point is the fifth field and its
+/// options the sixth). Cases write and run scripts in their temporary directories.
+fn executes(path: &Path, mountinfo: &str) -> bool {
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(' ').skip(4);
+            Some((Path::new(fields.next()?), fields.next()?))
+        })
+        .filter(|(point, _)| path.starts_with(point))
+        .max_by_key(|(point, _)| point.as_os_str().len())
+        .is_some_and(|(_, options)| !options.split(',').any(|option| option == "noexec"))
+}
 
-/// A case's own temporary directory under `root`, short by construction so a socket bound in it
-/// fits `sun_path`: Bazel's test directory alone can exceed it. It is named by the runner's
-/// random name and the case's number in it.
-fn temporary_for(root: &Path, runner: u64, number: usize) -> PathBuf {
-    root.join(format!("acyclic-{runner:x}-{number:x}"))
+/// The prefix of a runner's directory, followed by exactly eight lowercase hex digits.
+const RUNNER_PREFIX: &str = "acyclic-";
+
+/// A runner's own directory under the shared temporary root, holding its cases' directories.
+///
+/// A root such as `/dev/shm` or `/tmp` outlives every sandbox, and Bazel may kill a runner before
+/// it removes what its cases left. So on Unix the runner holds an exclusive `flock` on its
+/// directory for its whole life, which the kernel releases however the process ends, and every
+/// runner first reclaims each runner directory whose lock it can take: that runner is gone. Both
+/// steps run under a lock on the root itself, so a directory is never reclaimed between its
+/// creation and its owner's lock. A root's process ids are not unique across sandboxes, so the
+/// directory is named randomly and created exclusively.
+struct RunnerDirectory {
+    path: PathBuf,
+    #[cfg(unix)]
+    _lock: File,
+}
+
+impl RunnerDirectory {
+    fn claim(root: &Path) -> Result<Self, String> {
+        let failed = |action: &str, path: &Path, error: io::Error| {
+            format!("{action} {}: {error}", path.display())
+        };
+        #[cfg(unix)]
+        let root_lock = {
+            let lock = File::open(root).map_err(|error| failed("open", root, error))?;
+            lock.lock().map_err(|error| failed("lock", root, error))?;
+            for entry in fs::read_dir(root).map_err(|error| failed("list", root, error))? {
+                let entry = entry.map_err(|error| failed("list", root, error))?;
+                let path = entry.path();
+                let directory = entry
+                    .file_type()
+                    .map_err(|error| failed("inspect", &path, error))?
+                    .is_dir();
+                if !directory || !entry.file_name().to_str().is_some_and(is_runner_name) {
+                    continue;
+                }
+                let abandoned = File::open(&path).map_err(|error| failed("open", &path, error))?;
+                match abandoned.try_lock() {
+                    Ok(()) => {
+                        fs::remove_dir_all(&path)
+                            .map_err(|error| failed("reclaim", &path, error))?;
+                    }
+                    Err(fs::TryLockError::WouldBlock) => {}
+                    Err(fs::TryLockError::Error(error)) => {
+                        return Err(failed("lock", &path, error));
+                    }
+                }
+            }
+            lock
+        };
+        let mut attempt = 0_u64;
+        let path = loop {
+            let name = std::collections::hash_map::RandomState::new()
+                .hash_one((std::process::id(), attempt))
+                .to_le_bytes();
+            let name = u32::from_le_bytes([name[0], name[1], name[2], name[3]]);
+            let path = root.join(format!("{RUNNER_PREFIX}{name:08x}"));
+            match fs::create_dir(&path) {
+                Ok(()) => break path,
+                // A live runner already has this name; take another.
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => attempt += 1,
+                Err(error) => return Err(failed("create", &path, error)),
+            }
+        };
+        #[cfg(unix)]
+        {
+            let lock = File::open(&path).map_err(|error| failed("open", &path, error))?;
+            lock.lock().map_err(|error| failed("lock", &path, error))?;
+            drop(root_lock);
+            Ok(Self { path, _lock: lock })
+        }
+        #[cfg(not(unix))]
+        Ok(Self { path })
+    }
+
+    /// Removes the directory once every case has ended.
+    fn release(&self) -> Result<(), String> {
+        fs::remove_dir_all(&self.path)
+            .map_err(|error| format!("remove {}: {error}", self.path.display()))
+    }
+}
+
+/// Whether `name` is a runner directory's: the prefix and exactly eight lowercase hex digits.
+fn is_runner_name(name: &str) -> bool {
+    name.strip_prefix(RUNNER_PREFIX).is_some_and(|digits| {
+        digits.len() == 8
+            && digits
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// A case's own temporary directory in its runner's directory, short by construction so a socket
+/// bound in it fits `sun_path`: Bazel's test directory alone can exceed it.
+fn temporary_for(runner: &Path, number: usize) -> PathBuf {
+    runner.join(format!("{number:x}"))
 }
 
 /// Runs one case in its own custodied process tree. A case past the limit fails, and the
@@ -334,8 +443,7 @@ fn temporary_for(root: &Path, runner: u64, number: usize) -> PathBuf {
 ///
 /// The case's temporary directory is its own (`temporary_for`), created new and empty and removed
 /// after the case, and on Unix is named by its resolved path: Bazel gives a test no TMPDIR, and
-/// macOS's `/tmp` is a symlink, which every case that checks its paths for links refuses. A
-/// directory of that name already present belongs to another runner, so creating it fails.
+/// macOS's `/tmp` is a symlink, which every case that checks its paths for links refuses.
 /// Windows names it by its absolute path, never a resolved one: `canonicalize` there returns a
 /// `\\?\` verbatim path, which programs a case starts (the vendored protoc) cannot open.
 fn case(
@@ -415,9 +523,11 @@ mod tests {
 
     const MARKER: &str = "acyclic-test-runner-fixture";
 
-    /// The longest file name a case may bind as a Unix socket inside its temporary directory:
-    /// `sun_path` holds 107 bytes on Linux (103 on macOS, whose root is also the longer).
+    /// The longest file name a case may bind as a Unix socket inside its temporary directory.
     const SOCKET_NAME_ROOM: usize = 56;
+
+    /// The longest path `sun_path` holds, without its terminating NUL.
+    const SUN_PATH: usize = if cfg!(target_os = "macos") { 103 } else { 107 };
 
     fn acting() -> bool {
         Path::new(MARKER).exists()
@@ -458,10 +568,13 @@ mod tests {
                 Some(env::current_exe().unwrap())
             );
             let temporary = env::temp_dir();
-            // The runner's process id is not the case's: the directory is checked by shape.
-            let name = temporary.file_name().unwrap().to_str().unwrap();
+            // The runner's name is random: the directory is checked by shape.
+            let runner = temporary.parent().and_then(Path::file_name);
             assert!(
-                name.starts_with("acyclic-") && name.ends_with("-0"),
+                temporary.file_name() == Some("0".as_ref())
+                    && runner
+                        .and_then(|name| name.to_str())
+                        .is_some_and(is_runner_name),
                 "{} is not case 0's own directory",
                 temporary.display()
             );
@@ -484,7 +597,7 @@ mod tests {
     }
 
     /// The longest per-case directory (any runner, any case) leaves a socket name of
-    /// `SOCKET_NAME_ROOM` bytes inside Linux's 107-byte `sun_path`.
+    /// `SOCKET_NAME_ROOM` bytes inside this platform's `sun_path`.
     #[cfg(unix)]
     #[test]
     fn every_case_directory_leaves_room_for_a_socket() {
@@ -493,10 +606,56 @@ mod tests {
                 .unwrap()
                 .canonicalize()
                 .unwrap();
-            let longest = temporary_for(&root, u64::MAX, usize::MAX);
+            let runner = root.join(format!("{RUNNER_PREFIX}{:08x}", u32::MAX));
+            assert!(is_runner_name(&format!("{RUNNER_PREFIX}{:08x}", u32::MAX)));
+            let longest = temporary_for(&runner, usize::MAX);
             let length = longest.as_os_str().len() + 1 + SOCKET_NAME_ROOM;
-            assert!(length <= 107, "{} leaves {length} > 107", longest.display());
+            assert!(
+                length <= SUN_PATH,
+                "{} leaves {length} > {SUN_PATH}",
+                longest.display()
+            );
         }
+    }
+
+    /// A runner reclaims the directory of a runner that is gone, keeps a live runner's, and
+    /// never touches another program's entry of a similar name.
+    #[cfg(unix)]
+    #[test]
+    fn a_runner_reclaims_only_directories_whose_runner_is_gone() {
+        let root = env::temp_dir().join(format!("acyclic-reclaim-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let live = RunnerDirectory::claim(&root).unwrap();
+        let gone = RunnerDirectory::claim(&root).unwrap();
+        fs::write(gone.path.join("left-behind"), "").unwrap();
+        let gone_path = gone.path.clone();
+        drop(gone);
+        let other = root.join(format!("{RUNNER_PREFIX}0000000g"));
+        fs::create_dir(&other).unwrap();
+        let next = RunnerDirectory::claim(&root).unwrap();
+        assert!(
+            !gone_path.exists(),
+            "{} was not reclaimed",
+            gone_path.display()
+        );
+        assert!(live.path.is_dir() && next.path.is_dir() && other.is_dir());
+        live.release().unwrap();
+        next.release().unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The innermost mount decides, and only its own `noexec` refuses execution.
+    #[test]
+    fn a_noexec_mount_is_refused_by_its_innermost_entry() {
+        let mounts = concat!(
+            "22 1 0:21 / / rw,relatime shared:1 - ext4 /dev/root rw\n",
+            "25 22 0:23 / /dev/shm rw,nosuid,nodev,noexec shared:3 - tmpfs tmpfs rw\n",
+        );
+        assert!(!executes(Path::new("/dev/shm"), mounts));
+        assert!(executes(Path::new("/tmp"), mounts));
+        let remounted =
+            format!("{mounts}26 22 0:24 / /dev/shm rw,nosuid shared:4 - tmpfs tmpfs rw\n");
+        assert!(executes(Path::new("/dev/shm"), &remounted));
     }
 
     /// Cases get RAM-backed directories on Linux and a disk only when the target declares one;
@@ -536,7 +695,10 @@ mod tests {
                 only: None,
                 exclude: Vec::new(),
                 package: root.clone(),
-                temporary: temporary_root("memory", Path::new(MEMORY_ROOT), &root).unwrap(),
+                temporary: RunnerDirectory::claim(
+                    &temporary_root("memory", Path::new(MEMORY_ROOT), &root).unwrap(),
+                )
+                .unwrap(),
                 logs: root,
                 limit: Duration::from_secs(10),
             };
@@ -547,6 +709,7 @@ mod tests {
                 &mut out,
             )
             .unwrap();
+            suite.temporary.release().unwrap();
             let out = String::from_utf8(out).unwrap();
             assert_eq!((failed, out.lines().count()), (0, 1), "{out}");
         }
@@ -554,7 +717,9 @@ mod tests {
 
     #[test]
     fn cases_see_their_inputs_and_none_of_the_runner_settings() {
-        let dir = suite("environment").package;
+        let environment = suite("environment");
+        environment.temporary.release().unwrap();
+        let dir = environment.package;
         let mut runner = Command::new(env::current_exe().unwrap());
         runner
             .args(["tests::environment_runner", "--exact", "--nocapture"])
@@ -586,7 +751,10 @@ mod tests {
             only: None,
             exclude: Vec::new(),
             package: dir.clone(),
-            temporary: temporary_root("memory", Path::new(MEMORY_ROOT), &dir).unwrap(),
+            temporary: RunnerDirectory::claim(
+                &temporary_root("memory", Path::new(MEMORY_ROOT), &dir).unwrap(),
+            )
+            .unwrap(),
             logs: dir,
             limit: Duration::from_secs(2),
         }
@@ -596,6 +764,7 @@ mod tests {
         let selection: Vec<OsString> = selection.iter().map(OsString::from).collect();
         let mut out = Vec::new();
         let failed = run_suite(suite, &selection, &mut out).unwrap();
+        suite.temporary.release().unwrap();
         fs::remove_dir_all(&suite.package).unwrap();
         (failed, String::from_utf8(out).unwrap())
     }
@@ -756,6 +925,7 @@ mod tests {
     fn a_selection_matching_no_case_is_refused() {
         let suite = suite("unmatched");
         let refused = run_suite(&suite, &["tests::no_such_case".into()], &mut Vec::new());
+        suite.temporary.release().unwrap();
         fs::remove_dir_all(&suite.package).unwrap();
         assert_eq!(
             refused,
