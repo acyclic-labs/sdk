@@ -28,6 +28,7 @@ impl StockExecution<'_> {
         range: std::ops::Range<usize>,
         previous: Option<&crate::context::ContextSummary>,
         instruction: Option<&ModelContent>,
+        prefix: &[ModelMessage],
     ) -> Result<(crate::context::Context, ModelContent)> {
         let start = range.start;
         let (mut source, _) = with_history_io(self.io, |work| {
@@ -54,16 +55,50 @@ impl StockExecution<'_> {
             })?;
             return Ok((source, instruction));
         }
-        let instruction = with_history_io(self.io, |work| {
-            preparation_format(
-                format_args!(
-                    "{}\nSource count: {}.\nThe first {} message is the rolling summary of original messages [0,{start}); preserve its useful facts when incorporating the following complete source groups.",
-                    crate::seed::CONTEXT_MANAGER,
-                    source.messages.len(),
-                    usize::from(previous.is_some()),
-                ),
-                work,
+        let leading = super::summary::replaced_leading(&source, prefix);
+        let request_count = prefix
+            .len()
+            .checked_add(
+                source
+                    .messages
+                    .len()
+                    .checked_sub(leading)
+                    .ok_or_else(|| {
+                        stock_boundary(
+                            self.io,
+                            crate::wire::ErrorCode::Invalid,
+                            "context manager source count underflows",
+                        )
+                    })?,
             )
+            .ok_or_else(|| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "context manager request count overflows",
+                )
+            })?;
+        let instruction = with_history_io(self.io, |work| {
+            if previous.is_some() {
+                preparation_format(
+                    format_args!(
+                        "{}\nSource count: {}.\nThe message at index {} is the rolling summary of original messages [0,{start}); preserve its useful facts when incorporating the following complete source groups.",
+                        crate::seed::CONTEXT_MANAGER,
+                        request_count,
+                        prefix.len(),
+                    ),
+                    work,
+                )
+            } else {
+                preparation_format(
+                    format_args!(
+                        "{}\nSource count: {}.\nPreserve the useful facts of the following complete source groups.",
+                        crate::seed::CONTEXT_MANAGER,
+                        request_count,
+                    ),
+                    work,
+                )
+            }
         })?;
         Ok((source, ModelContent::Text(instruction)))
     }
@@ -76,7 +111,6 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        canonical: &crate::context::Context,
     ) -> Result<Vec<ModelMessage>> {
         let Some(reference) = self
             .response_projection(journal, input.operation_id, step)
@@ -87,15 +121,9 @@ impl StockExecution<'_> {
         let (_, prepared) = self.load_response_projection(journal, &reference).await?;
         let messages = &prepared.request().messages;
         let prefix = messages
-            .len()
-            .checked_sub(canonical.messages.len())
-            .ok_or_else(|| {
-                stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Storage,
-                    "worker request is shorter than its canonical context",
-                )
-            })?;
+            .iter()
+            .take_while(|message| message.role == ModelRole::System)
+            .count();
         crate::model::clone_messages(&messages[..prefix], self.io)
     }
 
@@ -148,8 +176,8 @@ impl StockExecution<'_> {
             // selected immutable window escapes this preparation scope.
             let scope = crate::filesystem::PreparationScope::new(self.io)?;
             let session = self.preparing(scope.io());
-            let (source, instruction) =
-                session.manager_material(context, start..end, previous, instruction)?;
+            let (source, instruction) = session
+                .manager_material(context, start..end, previous, instruction, prefix)?;
             let admitted = session
                 .admit_summary_window(journal, turn, (source, prefix), instruction, purpose)
                 .await;
@@ -202,7 +230,7 @@ impl StockExecution<'_> {
         let (eligible, message_limit) = selection;
         let (part, previous, _) = progress;
         let start = previous.map_or(0, |summary| summary.source_messages as usize);
-        let prefix = self.response_prefix(journal, input, step, context).await?;
+        let prefix = self.response_prefix(journal, input, step).await?;
         let end = self
             .manager_window(journal, turn, context, (eligible, None, &prefix), progress)
             .await?;
@@ -210,7 +238,7 @@ impl StockExecution<'_> {
         let session = self.preparing(scope.io());
         let invalid = |reason| stock_boundary(session.io, crate::wire::ErrorCode::Invalid, reason);
         let (source, instruction) =
-            session.manager_material(context, start..end, previous, None)?;
+            session.manager_material(context, start..end, previous, None, &prefix)?;
         // The request replaces the source's leading system messages with the
         // recorded worker prefix, so its message count is the prefix plus the
         // source after those leading messages. An empty prefix replaces none.

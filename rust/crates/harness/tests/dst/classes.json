@@ -378,11 +378,6 @@
      "reopen",
      "length_continuation",
      "retry_after"
-    ],
-    "dialect": [
-     "chat_completions",
-     "responses",
-     "messages"
     ]
    }
   },
