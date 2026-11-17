@@ -1,6 +1,6 @@
 {
  "version": 1,
- "uncovered": 2611,
+ "uncovered": 2632,
  "classes": [
   {
    "id": "A1",
@@ -849,6 +849,28 @@
      "if_absent",
      "if_version",
      "none"
+    ]
+   }
+  },
+  {
+   "id": "J1",
+   "name": "unbounded_growth",
+   "family": "scale",
+   "invariant": "Durable bytes and memory per step are O(delta) and per-agent cost is O(1), independent of step index, agent count and history length.",
+   "dimensions": {
+    "resource": [
+     "durable_log_bytes",
+     "index_keys",
+     "transcript_projection",
+     "resident_memory",
+     "recording_frames",
+     "per_agent_checkout",
+     "query_cost"
+    ],
+    "driver": [
+     "steps",
+     "agents",
+     "calls"
     ]
    }
   },
