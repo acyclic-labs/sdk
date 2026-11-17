@@ -2195,6 +2195,9 @@ struct SettledTurn {
     steering: Option<FileRef>,
     steered: Vec<ModelMessage>,
     transcript: Vec<ModelMessage>,
+    /// Whether a completed turn's output text replays as its reply. A failed
+    /// or cancelled turn keeps only the steps that completed.
+    replay_text: bool,
     notices: Option<crate::agent::NoticeSelection>,
 }
 
@@ -2272,6 +2275,7 @@ impl<'a> TurnContext<'a> {
                     steering: entry.steering.map(|steering| steering.file),
                     steered: Vec::new(),
                     transcript: Vec::new(),
+                    replay_text: entry.outcome.is_completed(),
                     notices: entry.notices,
                 })
             })
@@ -2299,12 +2303,14 @@ impl<'a> TurnContext<'a> {
             output,
             transcript,
             steered,
+            replay_text,
             ..
         } in &mut self.settled
         {
             let original = std::mem::replace(input, ModelContent::Text(String::new()));
             *input = crate::agent::expand_attachments(original, reader).await?;
-            *transcript = staged_transcript(reader, output, std::mem::take(steered)).await?;
+            *transcript =
+                staged_transcript(reader, output, std::mem::take(steered), *replay_text).await?;
         }
         let original = std::mem::replace(&mut self.input, ModelContent::Text(String::new()));
         self.input = crate::agent::expand_attachments(original, reader).await?;
@@ -2596,6 +2602,7 @@ async fn staged_transcript(
     reader: &dyn ContentResidencyVerifier,
     output: &FileRef,
     mut fallback: Vec<ModelMessage>,
+    replay_text: bool,
 ) -> Result<Vec<ModelMessage>> {
     let bytes = reader
         .read(output, output.descriptor().byte_length(), None, None)?
@@ -2603,10 +2610,15 @@ async fn staged_transcript(
     let output = serde_json::from_slice::<TurnOutput>(&bytes)
         .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
     Ok(if output.transcript.is_empty() {
-        fallback.push(ModelMessage {
-            role: ModelRole::Assistant,
-            content: ModelContent::Text(output.text),
-        });
+        // Only a completed turn's reply is a model item. A failed or
+        // cancelled turn keeps its partial stream for observation, never as
+        // history the next request must carry.
+        if replay_text {
+            fallback.push(ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text(output.text),
+            });
+        }
         fallback
     } else {
         output.transcript
