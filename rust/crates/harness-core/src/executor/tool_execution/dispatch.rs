@@ -317,12 +317,7 @@ impl<'io> StockExecution<'io> {
                         &invocation.call_id,
                         tool.executor.cancellable_on_drop(),
                         cancellation,
-                        self.call_tool_executor(
-                            tool,
-                            context,
-                            invocation,
-                            claimed || reexecuted,
-                        ),
+                        self.call_tool_executor(tool, context, invocation, claimed || reexecuted),
                     )
                     .await?
                 }
