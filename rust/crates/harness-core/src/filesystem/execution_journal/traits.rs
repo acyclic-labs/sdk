@@ -553,7 +553,10 @@ where
         let started_at = self.clock.as_deref().map(|clock| {
             acyclic_stream::UnixMillisClock::now_unix_millis(clock).saturating_mul(1000)
         });
-        let ExecutionEvent::ToolStarted { started_at_micros, .. } = event else {
+        let ExecutionEvent::ToolStarted {
+            started_at_micros, ..
+        } = event
+        else {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
