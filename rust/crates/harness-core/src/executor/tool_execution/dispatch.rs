@@ -336,6 +336,19 @@ impl<'io> StockExecution<'io> {
             succeeded = execution.as_ref().is_ok_and(|result| result.is_some()),
             "tool executor returned"
         );
+        let execution = match execution {
+            Err(error)
+                if started
+                    && !self.stock.reconciliation_only
+                    && !error.is_native_failure()
+                    && error.leaves_effect_uncertain() =>
+            {
+                tracing::error!(%operation_id, call_id = %invocation.call_id, ?error,
+                    "tool reconciliation left its original outcome unknown");
+                Ok(None)
+            }
+            result => result,
+        };
         let result = match execution {
             Ok(Some(result)) => result,
             Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {

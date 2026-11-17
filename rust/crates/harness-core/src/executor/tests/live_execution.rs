@@ -87,8 +87,12 @@ async fn a_live_model_retry_is_rejected_before_replay_or_dispatch() -> Result<()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+type PendingOutcome = fn(OperationId) -> Result<Option<ToolResult>>;
+
+#[cfg(not(target_arch = "wasm32"))]
 struct PendingTool {
     retire_on_drop: bool,
+    outcome: PendingOutcome,
     calls: AtomicUsize,
     result: Mutex<Option<ToolResult>>,
     accepted: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
@@ -111,10 +115,15 @@ impl crate::tool::ToolExecutor for PendingTool {
     }
     fn reconcile<'a>(
         &'a self,
-        _: ToolInvocation,
+        invocation: ToolInvocation,
         _: Option<crate::runtime::ToolContext>,
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async { Ok(self.result.lock().unwrap().clone()) })
+        Box::pin(async move {
+            match self.result.lock().unwrap().clone() {
+                Some(result) => Ok(Some(result)),
+                None => (self.outcome)(invocation.operation_id),
+            }
+        })
     }
 }
 
@@ -126,6 +135,7 @@ async fn a_live_tool_retry_requires_retirement_before_settlement() -> Result<()>
     let (accepted, acceptance) = tokio::sync::oneshot::channel();
     let tool = Arc::new(PendingTool {
         retire_on_drop: false,
+        outcome: |_| Ok(None),
         calls: AtomicUsize::new(0),
         result: Mutex::new(None),
         accepted: Mutex::new(Some(accepted)),
@@ -176,6 +186,7 @@ async fn a_live_tool_retry_requires_retirement_before_settlement() -> Result<()>
 async fn start_pending_call(
     journal: &dyn ExecutionJournal,
     retire_on_drop: bool,
+    outcome: PendingOutcome,
 ) -> Result<(
     Arc<PendingTool>,
     Arc<ScriptedModelProvider>,
@@ -186,6 +197,7 @@ async fn start_pending_call(
     let (accepted, acceptance) = tokio::sync::oneshot::channel();
     let tool = Arc::new(PendingTool {
         retire_on_drop,
+        outcome,
         calls: AtomicUsize::new(0),
         result: Mutex::new(None),
         accepted: Mutex::new(Some(accepted)),
@@ -230,7 +242,8 @@ async fn fenced_pending_call(
     TurnInput,
 )> {
     let journal = Journal::default();
-    let (tool, provider, executor, input) = start_pending_call(&journal, false).await?;
+    let (tool, provider, executor, input) =
+        start_pending_call(&journal, false, |_| Ok(None)).await?;
     // The incarnation dies with its producer; the next one reopens the cut.
     let reopened = journal.reopen_before_tool_completion("call-1");
     if dispatched {
@@ -313,10 +326,27 @@ fn seeded_pending_redelivery_settles_without_failing_the_turn() -> std::result::
                 pending_redelivery(&reopened, (tool, provider, executor, input), false).await?;
                 let (reopened, tool, provider, executor, input) = fenced_pending_call(true).await?;
                 pending_redelivery(&reopened, (tool, provider, executor, input), true).await?;
+                let outcomes: [PendingOutcome; 4] = [
+                    |_| Ok(None),
+                    |operation| Err(Error::Indeterminate(operation)),
+                    |_| Err(Error::Storage("reconciliation transport lost".into())),
+                    |operation_id| Err(Error::CommandIndeterminate {
+                        operation_id,
+                        cause: crate::CommandIndeterminacy {
+                            command: "pending".into(),
+                            reason: crate::CommandIndeterminacyReason::Failed {
+                                code: "STORAGE".into(),
+                                error: "command outcome unknown".into(),
+                            },
+                        },
+                    }),
+                ];
                 for retired in [false, true] {
-                    let (journal, _issuer) = super::publication_observation::journal().await?;
-                    let pending = start_pending_call(&journal, retired).await?;
-                    pending_redelivery(&journal, pending, !retired).await?;
+                    for outcome in outcomes {
+                        let (journal, _issuer) = super::publication_observation::journal().await?;
+                        let pending = start_pending_call(&journal, retired, outcome).await?;
+                        pending_redelivery(&journal, pending, !retired).await?;
+                    }
                 }
                 Ok::<(), Error>(())
             };
