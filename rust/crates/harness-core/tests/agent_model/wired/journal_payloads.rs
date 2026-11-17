@@ -257,7 +257,10 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
 
 #[tokio::test]
 async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
-    use acyclic_harness_core::{model::ModelEvent, test_support::ScriptedEvent};
+    use acyclic_harness_core::{
+        model::{ModelEvent, ModelMessage},
+        test_support::ScriptedEvent,
+    };
     let path = AgentPath::root(&id(230));
     let stream = Arc::new(MemoryStream::default());
     let (filesystem, binding) = private_in(&stream, &path).await?;
