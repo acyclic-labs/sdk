@@ -164,10 +164,6 @@ for (const [id, features] of wasmTreeFeatures) (members.has(id) ? wasmWorkspaceF
 const bindgenTest = [...packages.values()].find(p => p.name === "wasm-bindgen-test" && p.version === "0.3.71");
 if (bindgenTest) wasmPinned.set(bindgenTest.id, new Set(["default", "std"]));
 const dir = p => path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/");
-// Local path crates are first-party: their BUILD files are generated here, so the
-// crate universe must not carry them as local path dependencies. Cargo tests only the
-// workspace, so a path crate renders its library and build script alone.
-for (const p of base.packages) if (p.source === null) members.add(p.id);
 const label = p => `//${dir(p)}`;
 const libOf = p => p.targets.find(t => t.kind.some(k => k === "lib" || k === "rlib" || k === "proc-macro"));
 const crateName = target => target.name.replaceAll("-", "_");
