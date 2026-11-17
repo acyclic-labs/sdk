@@ -10,13 +10,14 @@ description = "MCP clients behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-mcp"
 
 [features]
-test-support = ["acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-stream/test-support", "acyclic-harness-native-settings/test-support", "dep:tempfile", "acyclic-auth/test-support", "acyclic-native-runtime/test-support",]
+test-support = ["acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-stream/test-support", "acyclic-harness-native-settings/test-support", "dep:tempfile", "acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-harness-layout/test-support",]
 wasm = ["acyclic-harness-core/wasm", "dep:tsify"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-harness-layout = { version = "=0.2.0", path = "../harness-layout" }
 acyclic-mcp = { version = "=0.2.0", path = "../mcp" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 base64 = "=0.23.1"

@@ -10,10 +10,11 @@ description = "Native settings admission behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-native-settings"
 
 [features]
-test-support = ["acyclic-harness-core/test-support", "dep:futures", "acyclic-native-runtime/test-support",]
+test-support = ["acyclic-harness-core/test-support", "dep:futures", "acyclic-native-runtime/test-support", "acyclic-harness-layout/test-support",]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-harness-layout = { version = "=0.2.0", path = "../harness-layout" }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 futures = { workspace = true, optional = true }
 serde.workspace = true

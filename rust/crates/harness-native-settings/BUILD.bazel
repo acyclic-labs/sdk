@@ -38,6 +38,7 @@ rust_library(
     lint_config = ":lints",
     deps = [
         "//rust/crates/harness-core:acyclic_harness_core",
+        "//rust/crates/harness-layout:acyclic_harness_layout",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//serde-1.0.229",
@@ -118,6 +119,7 @@ rust_test(
         ":acyclic_harness_native_settings",
     ] + [
         "//rust/crates/harness-core:acyclic_harness_core",
+        "//rust/crates/harness-layout:acyclic_harness_layout",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//proptest-1.12.0",
