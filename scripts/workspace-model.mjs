@@ -237,9 +237,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
   root = path.resolve(root);
   const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
   const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-bazel-lock.json'), 'utf8'));
-  const spliced = toml(root, 'cargo-bazel.Cargo.lock').package.find(p => p.name === 'direct-cargo-bazel-deps');
-  const direct = new Set(spliced?.dependencies ?? []);
-  const registry = (lock.package ?? []).filter(p => p.source && (allPlatforms || direct.has(p.name) || direct.has(`${p.name} ${p.version}`))).map(p => {
+  const registry = (lock.package ?? []).filter(p => p.source).map(p => {
     const pinned = universe.crates[`${p.name} ${p.version}`];
     const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
     const target = lib?.Library ?? lib?.ProcMacro;
