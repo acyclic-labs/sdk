@@ -277,7 +277,14 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
         .iter()
         .filter_map(|message| message.content.notice_parts())
         .flat_map(|(notices, _)| notices)
-        .filter(|notice| notice.kind == "tools.changed")
+        .filter(|notice| {
+            notice.kind
+                == if compose {
+                    "tools.changed"
+                } else {
+                    "tools.bound"
+                }
+        })
         .collect();
     assert_eq!(notices.len(), 2);
     assert!(
