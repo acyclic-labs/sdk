@@ -202,7 +202,11 @@ async fn empty_environment_reanchors_blocked_account_opens_and_records() {
     }
     for path in [environment_path("test"), account_path("test", "live")] {
         assert_eq!(
-            Stream::new(provider.clone(), path).unwrap().tail().await,
+            Stream::new(provider.clone(), path)
+                .unwrap()
+                .tail()
+                .await
+                .map_err(|error| error.category()),
             Ok(0)
         );
     }

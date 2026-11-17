@@ -1,5 +1,5 @@
 use acyclic_stream::wire_codec::session::validate_follow;
-use acyclic_stream::{StreamError, wire, wire_codec::session::follow_sequence};
+use acyclic_stream::{StreamCategory, wire, wire_codec::session::follow_sequence};
 use bytes::Bytes;
 use prost::Message;
 use wire::{SessionDelivery, session_data::Item};
@@ -18,12 +18,12 @@ pub(super) enum Fault {
 
 // This oracle describes received wire positions directly. It never encodes a
 // cursor or calls the production inverse to derive the expected sequence.
-fn expected(delivery: i32, next: u64, data: &wire::SessionData) -> Result<u64, StreamError> {
+fn expected(delivery: i32, next: u64, data: &wire::SessionData) -> Result<u64, StreamCategory> {
     let Some(after) = &data.after else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamCategory::Unavailable);
     };
     if data.durable > data.accepted || after.next > data.accepted || !after.opaque.is_empty() {
-        return Err(StreamError::Unavailable);
+        return Err(StreamCategory::Unavailable);
     }
     match (&data.item, delivery) {
         (Some(Item::Record(record)), 1)
@@ -31,10 +31,10 @@ fn expected(delivery: i32, next: u64, data: &wire::SessionData) -> Result<u64, S
         {
             let successor = u128::from(record.sequence) + 1;
             if successor > u128::from(u64::MAX) {
-                return Err(StreamError::OutOfRange);
+                return Err(StreamCategory::OutOfRange);
             }
             if u128::from(after.next) != successor {
-                return Err(StreamError::Unavailable);
+                return Err(StreamCategory::Unavailable);
             }
             Ok(record.sequence)
         }
@@ -46,7 +46,7 @@ fn expected(delivery: i32, next: u64, data: &wire::SessionData) -> Result<u64, S
         {
             Ok(after.next - 1)
         }
-        _ => Err(StreamError::Unavailable),
+        _ => Err(StreamCategory::Unavailable),
     }
 }
 
@@ -72,7 +72,7 @@ pub(super) fn check(
     {
         record.commit_id = vec![7; 32].into();
     }
-    let mut actual = follow_sequence(delivery, next, &changed);
+    let mut actual = follow_sequence(delivery, next, &changed).map_err(|error| error.category());
     if let Some(after) = &data.after {
         match fault {
             Fault::StrictLatest
@@ -80,7 +80,7 @@ pub(super) fn check(
                     && after.next > next.saturating_add(1)
                     && actual.is_ok() =>
             {
-                actual = Err(StreamError::Unavailable);
+                actual = Err(StreamCategory::Unavailable);
             }
             Fault::SkipAll if delivery == SessionDelivery::All as i32 => {
                 if let Some(Item::Record(record)) = &data.item
