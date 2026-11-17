@@ -519,6 +519,11 @@ impl World {
         entry(async move {
             let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
             let provider = Arc::new(self.service.reopened());
+            let checkout_identity = self.directory.identity();
+            acyclic_harness::test_support::inject_checkout_identity(
+                checkout_identity.0,
+                checkout_identity.1,
+            );
             let config =
                 local_harness_config(self.directory.path().join("checkout"), (model, provider))?
                     .without_user_settings()
@@ -579,6 +584,7 @@ impl World {
                 }
             }
             findings.sort();
+            acyclic_harness::test_support::clear_checkout_identity();
             Ok(findings)
         })
     }

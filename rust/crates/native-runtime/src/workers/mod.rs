@@ -175,10 +175,10 @@ pub(crate) fn parallelism() -> usize {
     std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
 }
 
-/// One worker for a seeded simulation, owned by that simulation rather than
-/// by the process-wide pools.
-pub(crate) fn simulation_workers() -> io::Result<NativeWorkers> {
-    start_workers("acyclic-dst", 1)
+/// One worker for a seeded simulation class, owned by that simulation rather
+/// than by the process-wide pools.
+pub(crate) fn simulation_workers(name: &'static str) -> io::Result<NativeWorkers> {
+    start_workers(name, 1)
 }
 
 fn start_workers(name: &'static str, worker_count: usize) -> io::Result<NativeWorkers> {
