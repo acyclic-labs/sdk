@@ -282,31 +282,16 @@ impl<I: AsRef<HostIo>> PendingReply<I> {
         // interrupted). It completes this obligation without disconnecting
         // unrelated requests. Other failures do not certify request retirement.
         self.unique.set(None);
-        match self.io.as_ref().publish_packet(slices) {
-            Ok(
-                outcome @ (acyclic_native_runtime::PacketDevicePublication::Published
-                | acyclic_native_runtime::PacketDevicePublication::Rejected(libc::ENOENT)),
-            ) => Ok(outcome),
-            Ok(acyclic_native_runtime::PacketDevicePublication::Rejected(errno)) => {
-                // The device is still open and rejected this frame. Abort to
-                // release the requests that can no longer be answered.
-                self.abort();
-                Err(std::io::Error::from_raw_os_error(errno))
-            }
-            // Transport loss means the connection is already gone. A retained
-            // abort control could name a later connection that reused its
-            // device number, so never abort after the device has closed.
-            Err(error) => Err(error),
-        }
+        // A rejected frame is a completed physical obligation, not a lost
+        // connection. The host keeps serving; aborting here would turn one
+        // request's rejection into a mounted-connection failure.
+        self.io.as_ref().publish_packet(slices)
     }
 
     pub(super) fn owes_reply(&self) -> bool {
         self.unique.get().is_some()
     }
 
-    fn abort(&self) {
-        self.io.as_ref().abort_connection();
-    }
 }
 
 impl PendingReply<&Arc<HostIo>> {

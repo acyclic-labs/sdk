@@ -56,10 +56,12 @@ impl PacketSession {
                 )?)?;
                 match outcome {
                     PacketDevicePublication::Published => reply.delivered(),
-                    PacketDevicePublication::Rejected(libc::ENOENT) => {
+                    // A rejected frame published no bytes. Complete this
+                    // request without turning its rejection into a session
+                    // failure; the host owns connection retirement.
+                    PacketDevicePublication::Rejected(_) => {
                         reply.rejected(request, response)?;
                     }
-                    PacketDevicePublication::Rejected(errno) => return Err(errno.into()),
                 }
                 Ok(request.opcode != 38)
             }
