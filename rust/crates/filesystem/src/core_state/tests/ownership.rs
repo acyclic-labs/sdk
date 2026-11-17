@@ -122,7 +122,7 @@ fn measured_admission(root: &Path) -> crate::WorkCounters {
         crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation).unwrap();
     let store = LocalCoreStateStore::new(root).materialization(work.clone());
     drop(store.namespace().unwrap());
-    work.receipt()
+    work.receipt().unwrap()
 }
 
 /// Backend reads one measured shared admission of `root` charges.

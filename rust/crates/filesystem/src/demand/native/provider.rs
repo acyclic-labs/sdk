@@ -185,7 +185,7 @@ pub(crate) fn finish_context<T>(
     match context {
         CallbackWork::Original(_) => result,
         CallbackWork::Ordinary(mut context) => {
-            merge_source_work(context.receipt(), accounting)?;
+            merge_source_work(context.receipt()?, accounting)?;
             result
         }
     }

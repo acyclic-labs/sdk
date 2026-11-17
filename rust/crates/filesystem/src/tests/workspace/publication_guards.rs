@@ -229,7 +229,10 @@ async fn native_creation_and_fork_call_original_guard_without_publishing()
             "create={create}: {result:?}"
         );
         assert!(unbounded!(fs, open_workspace("denied")).is_err());
-        original.receipt().verify(selected_transaction_budget())?;
+        original
+            .receipt()
+            .unwrap()
+            .verify(selected_transaction_budget())?;
     }
     Ok(())
 }

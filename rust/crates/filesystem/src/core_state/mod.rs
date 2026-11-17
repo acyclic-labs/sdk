@@ -235,10 +235,10 @@ impl LocalCoreStateStore {
     pub fn defer_durability(&self) -> (Self, DeferredDurability) {
         let deferral = Arc::new(AtomicBool::new(true));
         let store = Self {
-            deferral: Some(deferral),
+            deferral: Some(Arc::clone(&deferral)),
             ..self.clone()
         };
-        (store.clone(), DeferredDurability { store })
+        (store.clone(), DeferredDurability { store, deferral })
     }
 
     /// Retains an external storage owner through clones and in-flight transactions.
@@ -593,12 +593,8 @@ impl Namespace {
         let previous = entry(".previous.json")?;
         let temporary = entry(".next.json")?;
         let lock = entry(".lock")?;
-        let directory_bytes = directory.capacity() as u64;
-        drop(directory);
-        if let Some(allocation) = &mut allocation {
-            allocation.release(directory_bytes)?;
-        }
         Ok(RecordPaths {
+            directory,
             current,
             previous,
             temporary,
@@ -625,16 +621,13 @@ impl Namespace {
 #[derive(Debug)]
 pub struct DeferredDurability {
     store: LocalCoreStateStore,
+    deferral: Arc<AtomicBool>,
 }
 
 impl DeferredDurability {
     /// Ends the scope and makes every commit made through the log so far durable.
     pub async fn commit(self) -> Result<(), LocalCoreStateStoreError> {
-        self.store
-            .deferral
-            .as_ref()
-            .expect("deferred store")
-            .store(false, Ordering::Release);
+        self.deferral.store(false, Ordering::Release);
         self.store
             .transaction(|root| root.with_log(|log| log.flush(&root)))
             .await
@@ -644,11 +637,7 @@ impl DeferredDurability {
 impl Drop for DeferredDurability {
     fn drop(&mut self) {
         // Abandoned commits become durable with the log's next flush.
-        self.store
-            .deferral
-            .as_ref()
-            .expect("deferred store")
-            .store(false, Ordering::Release);
+        self.deferral.store(false, Ordering::Release);
     }
 }
 

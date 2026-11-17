@@ -40,7 +40,7 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
         )
         .await
         .map(|result| result.0)
-        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent().unwrap()))
     }
     .await?;
     assert_eq!(selected.entries.len(), queries.len());
@@ -63,7 +63,7 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let live_before = original.live_allocation_bytes();
+        let live_before = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let actual = lookup_paths_with_accounting(
             &store,
@@ -83,12 +83,12 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
         };
         assert_eq!(allocation.bytes(), value.retained_allocation_bytes);
         assert_eq!(
-            original.live_allocation_bytes(),
+            original.live_allocation_bytes().unwrap(),
             live_before + allocation.bytes()
         );
         drop(value);
         drop(allocation);
-        assert_eq!(original.live_allocation_bytes(), live_before);
+        assert_eq!(original.live_allocation_bytes().unwrap(), live_before);
     }
     let ordinary = lookup_paths(
         &store,
@@ -101,7 +101,7 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
     .await
     .expect_err("ordinary no-follow semantics remain an error");
     assert!(matches!(ordinary.error, PathLookupError::NotDirectory));
-    assert!(ordinary.work.backend_read_operations > 0);
+    assert!(ordinary.work().unwrap().backend_read_operations > 0);
     Ok(())
 }
 
@@ -134,7 +134,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
         )
         .await
         .map(|result| result.0)
-        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent().unwrap()))
     }
     .await
     .expect_err("a malformed binding is not authenticated absence");
@@ -157,7 +157,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
         )
         .await
         .map(|result| result.0)
-        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent().unwrap()))
     }
     .await
     .expect_err("cancelled selected batch must fail before allocation/read");
@@ -184,7 +184,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
         )
         .await
         .map(|result| result.0)
-        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent()))
+        .map_err(|error| OperationFailure::new(path_error(error), accounting.spent().unwrap()))
     }
     .await
     .expect_err("unadmitted selected batch must fail before allocation/read");

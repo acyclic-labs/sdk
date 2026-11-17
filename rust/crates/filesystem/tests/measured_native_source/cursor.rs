@@ -402,8 +402,8 @@ async fn native_filter_admission_precedes_request_transport_custody() -> TestRes
         };
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &token)
             .map_err(|(error, _)| error)?;
-        let before = work.receipt();
-        let live = work.live_allocation_bytes();
+        let before = work.receipt().unwrap();
+        let live = work.live_allocation_bytes().unwrap();
         let failure = source
             .list_page(source.reference(), &root, None, maximum, &work, &token)
             .await
@@ -414,8 +414,8 @@ async fn native_filter_admission_precedes_request_transport_custody() -> TestRes
         } else {
             assert!(matches!(failure, DemandError::InvalidRequest));
         }
-        assert_eq!(work.receipt(), before);
-        assert_eq!(work.live_allocation_bytes(), live);
+        assert_eq!(work.receipt().unwrap(), before);
+        assert_eq!(work.live_allocation_bytes().unwrap(), live);
     }
     Ok(())
 }
@@ -444,22 +444,22 @@ async fn request_transport_copy_denial_retires_and_reports_its_completed_prefix(
     failure.work.verify(budget)?;
     let work =
         acyclic_fs::NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
-    let before = work.receipt();
-    let live = work.live_allocation_bytes();
+    let before = work.receipt().unwrap();
+    let live = work.live_allocation_bytes().unwrap();
     let failure = source
         .list_page(source.reference(), &path, None, 1, &work, &token)
         .await
         .err()
         .ok_or("native path copy was not denied")?;
     assert!(matches!(failure, DemandError::Work(_)));
-    assert_eq!(work.live_allocation_bytes(), live);
-    assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
+    assert_eq!(work.live_allocation_bytes().unwrap(), live);
+    assert_eq!(work.receipt().unwrap().bytes_copied, before.bytes_copied);
     assert_eq!(
-        work.receipt().backend_read_operations,
+        work.receipt().unwrap().backend_read_operations,
         before.backend_read_operations
     );
     assert_eq!(
-        work.receipt().backend_write_operations,
+        work.receipt().unwrap().backend_write_operations,
         before.backend_write_operations
     );
     Ok(())
@@ -480,7 +480,7 @@ async fn request_semantic_denial_preserves_an_existing_original_ledger_failure()
             // An unmatched cleanup acknowledgement poisons the production meter.
             work.runtime_meter()
                 .cancel_reserved_operations(acyclic_native_runtime::NativeOperationKind::Read, 1);
-            let before = work.receipt();
+            let before = work.receipt().unwrap();
             if cancelled {
                 token.cancel();
             }
@@ -490,7 +490,7 @@ async fn request_semantic_denial_preserves_an_existing_original_ledger_failure()
                 .err()
                 .ok_or("poisoned request was admitted")?;
             assert!(matches!(failure, DemandError::OriginalWorkPoisoned));
-            assert_eq!(work.receipt(), before);
+            assert_eq!(work.receipt().unwrap(), before);
         }
     }
     Ok(())

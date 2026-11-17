@@ -37,8 +37,8 @@ async fn prepared_freeze_authenticates_each_source_component() {
                 .await
                 .unwrap()
         );
-        assert!(rejected.spent().items_examined > 0);
-        assert_eq!(rejected.spent().object_bytes_written, 0);
+        assert!(rejected.spent().unwrap().items_examined > 0);
+        assert_eq!(rejected.spent().unwrap().object_bytes_written, 0);
         assert!(load_binding(&store, prepared.workspace_id).await.is_none());
         assert!(swap_binding(&store, 0, prepared_origin_fixture(&updated)).await);
     }

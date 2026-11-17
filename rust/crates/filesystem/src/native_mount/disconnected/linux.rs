@@ -10,7 +10,8 @@ pub(super) struct Pinned {
 }
 
 fn stat(file: &OwnedFd, flags: AtFlags) -> std::io::Result<(FileType, Option<u64>)> {
-    #[cfg(all(test, loom))]
+    #[cfg(test)]
+    #[cfg(all(loom))]
     if let Some(kernel) = super::kernel::current() {
         return metadata(file, flags, kernel.stat(file.as_raw_fd(), flags), || {
             kernel
@@ -190,7 +191,8 @@ impl Pinned {
     }
 
     fn current_stat(&self) -> rustix::io::Result<rustix::fs::Statx> {
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(all(loom))]
         if let Some(kernel) = super::kernel::current() {
             return Ok(kernel.current_stat());
         }

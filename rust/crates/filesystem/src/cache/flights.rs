@@ -128,7 +128,8 @@ pub(super) fn insertion_work<T>(
         .map_err(crate::async_storage::object_error)?
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 pub(crate) fn verify_original_flight_admission_and_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::KernelAccounting;
@@ -353,7 +354,11 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
     let owner = RetainedArc::new(Flight::new(0), &mut ordinary)?;
     let mut index = Flights::default();
     let mut visits = 0;
-    let before = ordinary.standalone_parts().unwrap().1.items_examined;
+    let before = ordinary
+        .standalone_parts()
+        .ok_or("missing original ledger")?
+        .1
+        .items_examined;
     assert!(matches!(
         insertion_work(&mut ordinary, |work, _| {
             let mut measured = Counted {
@@ -367,7 +372,12 @@ pub(crate) fn verify_original_flight_admission_and_retirement()
         (true, _)
     ));
     assert_eq!(
-        ordinary.standalone_parts().unwrap().1.items_examined - before,
+        ordinary
+            .standalone_parts()
+            .ok_or("missing original ledger")?
+            .1
+            .items_examined
+            - before,
         visits
     );
     drop(index);

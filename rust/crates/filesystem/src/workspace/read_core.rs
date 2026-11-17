@@ -35,9 +35,9 @@ pub(super) async fn lookup_paths<
     } else {
         drop(scope);
     }
-    result.map(|(mut lookup, allocation)| {
-        lookup.work = accounting.spent();
-        (lookup, allocation)
+    result.and_then(|(mut lookup, allocation)| {
+        lookup.work = accounting.spent()?;
+        Ok((lookup, allocation))
     })
 }
 
@@ -78,7 +78,8 @@ pub(super) async fn read_selected_with_accounting<
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<crate::kernel::OwnedSourceChunk, WorkspaceError> {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[cfg(test)]
+    #[cfg(all(not(target_arch = "wasm32")))]
     if matches!(selector, GenerationSelector::Head) {
         acyclic_test_support::differential::record(("workspace read", maximum_bytes));
     }
@@ -431,9 +432,9 @@ pub(super) async fn list<
         result
     }
     .await;
-    let result = result.map(|(mut page, allocation)| {
-        page.work = accounting.spent();
-        (page, allocation)
+    let result = result.and_then(|(mut page, allocation)| {
+        page.work = accounting.spent()?;
+        Ok((page, allocation))
     });
     work.finish(result, &accounting)
 }

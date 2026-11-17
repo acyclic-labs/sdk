@@ -83,7 +83,7 @@ async fn run_cut(
                 Ok(future) => future.await,
                 Err(error) => Err(error),
             };
-            (outcome, io.receipt().allocation_operations)
+            (outcome, io.receipt()?.allocation_operations)
         }
         Err(error) => (Err(error), 0),
     };

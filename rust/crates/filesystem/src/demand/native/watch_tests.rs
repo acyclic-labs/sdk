@@ -110,13 +110,13 @@ async fn source_watch_preserves_fence_and_delivery_loss() -> Result<(), Box<dyn 
     *lost.2.lock().unwrap() = Some(Arc::downgrade(&physical));
     // Fault injection enters the actual producer's existing failure path.
     // No event loop, timer or subsequent fence supplies the loss notification.
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     let allocation = acyclic_test_support::measure(|| {
         physical.inject_delivery_failure(DemandError::SourceUnavailable);
     });
     assert_eq!(allocation.count_total, 0, "delivery loss does not allocate");
     assert_eq!(
-        original.receipt(),
+        original.receipt().unwrap(),
         before,
         "loss cannot require fresh work credit"
     );

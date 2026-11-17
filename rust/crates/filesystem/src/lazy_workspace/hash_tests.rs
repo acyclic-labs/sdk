@@ -52,8 +52,8 @@ fn measured<T: MemoryLazyNode>(
     }
     (
         result.map_err(|error| format!("{error:?}")),
-        original.receipt(),
-        original.live_allocation_bytes(),
+        original.receipt().unwrap(),
+        original.live_allocation_bytes().unwrap(),
         format!("{:?}", work.remaining()),
     )
 }

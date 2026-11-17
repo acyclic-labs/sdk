@@ -269,7 +269,7 @@ async fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
             let original =
                 crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
                     .map_err(|(error, _)| error)?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             let mut accounting = KernelAccounting::native(&original, &cancellation);
             let (native_probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
                 &store,
@@ -286,7 +286,7 @@ async fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
             assert_eq!(native, asynchronous.value);
             native_probe.retire_with_accounting(&mut accounting)?;
             drop(constructor);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         }
         if matches!(region, DependencyRegion::DirectoryRange { .. }) {
             page_states.push(asynchronous.value);

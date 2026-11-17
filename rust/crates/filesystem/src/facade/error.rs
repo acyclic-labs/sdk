@@ -4,6 +4,9 @@ use super::*;
 #[derive(Debug, Error, strum::IntoStaticStr)]
 #[cfg_attr(test, derive(strum::EnumCount))]
 pub enum FsError {
+    /// An exact work receipt could not be observed.
+    #[error(transparent)]
+    WorkObservation(#[from] crate::WorkObservationError),
     /// A malformed, missing or over-complex access policy cannot authorize work.
     #[error("invalid access policy")]
     InvalidAccessPolicy,

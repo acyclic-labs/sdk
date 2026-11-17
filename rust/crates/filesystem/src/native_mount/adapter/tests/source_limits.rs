@@ -20,7 +20,7 @@ fn measured_write_copy_refusal_precedes_the_real_source_write()
             .map_err(crate::NativeMountError::Source)
     })
     .expect_err("insufficient copied-byte authority must refuse the whole packet before copying");
-    let spent = work.receipt();
+    let spent = work.receipt().unwrap();
     assert_eq!(spent.bytes_copied, 0);
     assert_eq!(spent.backend_write_operations, 0);
     assert_eq!(opened.read_range(0, 8)?.as_ref(), b"original");
@@ -34,7 +34,7 @@ fn native_namespace_guard_cases() -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let original = capture_meter(BOUNDARY_BUDGET, &cancellation)?;
     let foreign = capture_meter(BOUNDARY_BUDGET, &cancellation)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     for invalid in [true, false] {
         let mut accounting = crate::kernel::KernelAccounting::native(&original, &cancellation);
         let (root, allocation) = NamespacePath::parse_in_profile(
@@ -48,7 +48,7 @@ fn native_namespace_guard_cases() -> Result<(), Box<dyn std::error::Error>> {
             panic!("namespace lacks native allocation");
         };
         let work = if invalid { &foreign } else { &original };
-        let prefix = work.receipt();
+        let prefix = work.receipt().unwrap();
         let result = CheckoutMountSource::new_at_meter(
             Arc::clone(&borrowed.checkout),
             config,
@@ -64,8 +64,8 @@ fn native_namespace_guard_cases() -> Result<(), Box<dyn std::error::Error>> {
                     crate::NativeTreeMaterializationError::InvalidLayout
                 ))
             ));
-            assert_eq!(foreign.receipt(), prefix);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(foreign.receipt().unwrap(), prefix);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
             continue;
         }
         let source = result?.into_arc_meter(work)?;
@@ -84,7 +84,7 @@ fn native_namespace_guard_cases() -> Result<(), Box<dyn std::error::Error>> {
         drop(source);
         assert!(weak.upgrade().is_none());
         drop(stop);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }
@@ -103,12 +103,12 @@ fn source_cleanup_cases() -> Result<(), Box<dyn std::error::Error>> {
         let wait = CancellationToken::new();
         if stopped_wait {
             wait.cancel();
-            let before = root.receipt();
+            let before = root.receipt().unwrap();
             assert!(matches!(
                 source.shutdown_with_cleanup_wait(&wait),
                 Err(MountSourceError::Cancelled)
             ));
-            assert_eq!(root.receipt(), before);
+            assert_eq!(root.receipt().unwrap(), before);
             assert!(source.native_original_work()?.is_some());
         }
         root_stop.cancel();
@@ -127,14 +127,14 @@ fn source_cleanup_cases() -> Result<(), Box<dyn std::error::Error>> {
                 .into_result()?
         );
         assert!(source.capture_retired());
-        let completed = root.receipt();
+        let completed = root.receipt().unwrap();
         healthy_wait.cancel();
         assert!(
             !source
                 .shutdown_with_cleanup_wait(&healthy_wait)?
                 .into_result()?
         );
-        assert_eq!(root.receipt(), completed);
+        assert_eq!(root.receipt().unwrap(), completed);
     }
     Ok(())
 }
@@ -204,7 +204,7 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
         let data: Option<(bytes::Bytes, Option<acyclic_native_runtime::ReadAllocation>)> =
             if cancelled {
                 local_stop.cancel();
-                let prefix = root.receipt();
+                let prefix = root.receipt().unwrap();
                 let error = file
                     .read_bounded_async(0, 8, meter.clone(), false)
                     .err()
@@ -213,12 +213,12 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
                     job.runtime_error(error),
                     crate::NativeTreeMaterializationError::Cancelled
                 ));
-                assert_eq!(root.receipt(), prefix);
+                assert_eq!(root.receipt().unwrap(), prefix);
                 root.cancellation().check()?;
                 None
             } else {
                 #[cfg(windows)]
-                let prefix = root.receipt();
+                let prefix = root.receipt().unwrap();
                 let read = borrowed.runtime.block_on(
                     || {
                         file.read_bounded_async(0, 8, meter.clone(), false)
@@ -237,10 +237,13 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
                         crate::NativeTreeMaterializationError::Work(_)
                     ));
                     assert_eq!(
-                        root.receipt().backend_read_operations,
+                        root.receipt().unwrap().backend_read_operations,
                         prefix.backend_read_operations
                     );
-                    assert_eq!(root.receipt().source_bytes_read, prefix.source_bytes_read);
+                    assert_eq!(
+                        root.receipt().unwrap().source_bytes_read,
+                        prefix.source_bytes_read
+                    );
                     assert_eq!(volume.remaining()?.backend_read_operations, 1);
                     None
                 };
@@ -250,7 +253,7 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
                     assert_eq!(data.0.as_ref(), b"original");
                     assert_eq!(volume.remaining()?.backend_read_operations, 0);
                     assert!(root.remaining()?.backend_read_operations > 0);
-                    let prefix = root.receipt();
+                    let prefix = root.receipt().unwrap();
                     let error = file
                         .read_bounded_async(0, 8, meter.clone(), false)
                         .and_then(|completion| {
@@ -266,8 +269,8 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
                     ));
                     assert_eq!(
                         (
-                            root.receipt().backend_read_operations,
-                            root.receipt().source_bytes_read
+                            root.receipt().unwrap().backend_read_operations,
+                            root.receipt().unwrap().source_bytes_read
                         ),
                         (prefix.backend_read_operations, prefix.source_bytes_read),
                     );
@@ -306,18 +309,18 @@ fn native_source_io_projection_rejects_foreign_root_and_resource_before_allocati
     let foreign_root = capture_meter(BOUNDARY_BUDGET, &cancellation)?;
     let unrelated_volume = root.native_volume_work(crate::performance::BOUNDARY_BUDGET)?;
     for incoming in [&foreign_root, &unrelated_volume] {
-        let prefix = root.receipt();
-        let foreign_prefix = foreign_root.receipt();
+        let prefix = root.receipt().unwrap();
+        let foreign_prefix = foreign_root.receipt().unwrap();
         assert!(matches!(
             incoming.with_source_io_lease(lease.clone()),
             Err(crate::NativeTreeMaterializationError::InvalidLayout)
         ));
         assert_eq!(
-            root.receipt(),
+            root.receipt().unwrap(),
             prefix,
             "Root/resource rejection precedes view allocation"
         );
-        assert_eq!(foreign_root.receipt(), foreign_prefix);
+        assert_eq!(foreign_root.receipt().unwrap(), foreign_prefix);
     }
     drop(lease);
     source.shutdown_accepted_cleanup()?.into_result()?;
@@ -362,19 +365,19 @@ fn native_source_io_last_physical_lease_retires_after_caller_cancellation()
         Err(MountSourceError::Cancelled)
     ));
     root_stop.cancel();
-    let closing_prefix = root.receipt();
+    let closing_prefix = root.receipt().unwrap();
     assert!(matches!(
         source.shutdown_with_cleanup_wait(&CancellationToken::new()),
         Err(MountSourceError::NativeWork(
             crate::NativeTreeMaterializationError::Cancelled
         ))
     ));
-    assert_eq!(root.receipt(), closing_prefix);
+    assert_eq!(root.receipt().unwrap(), closing_prefix);
     assert!(matches!(
         source.native_source_io_lease(source.clone()),
         Err(MountSourceError::Stale)
     ));
-    assert_eq!(root.receipt(), closing_prefix);
+    assert_eq!(root.receipt().unwrap(), closing_prefix);
     drop(lease);
     drop(last_lease);
     assert!(source.shutdown_accepted_cleanup()?.into_result()?);
@@ -476,7 +479,7 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
             weak.upgrade().is_none(),
             "physical source owner was retained after quiescence"
         );
-        let completed = root.receipt();
+        let completed = root.receipt().unwrap();
         let changed = if driver_owned {
             packet.retire(
                 None,
@@ -486,7 +489,7 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
             session.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop)?
         };
         assert!(!changed);
-        assert_eq!(root.receipt(), completed);
+        assert_eq!(root.receipt().unwrap(), completed);
     }
     Ok(())
 }
@@ -685,14 +688,14 @@ fn physical_cleanup_joins_last_lease(
             .ok_or("missing cleanup credit")
     };
     let reserved = cleanup_credit()?;
-    let refused = root.receipt();
+    let refused = root.receipt().unwrap();
     assert!(matches!(
         mounted.shutdown_with_cleanup_wait(&CancellationToken::new()),
         Err(MountSourceError::NativeWork(
             crate::NativeTreeMaterializationError::Work(_)
         ))
     ));
-    assert_eq!(root.receipt(), refused);
+    assert_eq!(root.receipt().unwrap(), refused);
     assert_eq!(cleanup_credit()?, reserved);
     root_stop.cancel();
     let wait = CancellationToken::new();
@@ -701,7 +704,7 @@ fn physical_cleanup_joins_last_lease(
         mounted.shutdown_with_cleanup_wait(&wait),
         Err(MountSourceError::Cancelled)
     ));
-    let before = root.receipt();
+    let before = root.receipt().unwrap();
     let (waiting, observed) = std::sync::mpsc::channel();
     source
         .capture_signal
@@ -762,9 +765,9 @@ fn physical_cleanup_joins_last_lease(
             source.capture_retired(),
             "recording refusal cannot undo physical source quiescence"
         );
-        let completed = root.receipt();
+        let completed = root.receipt().unwrap();
         assert!(!source.shutdown_physical_cleanup()?.into_result()?);
-        assert_eq!(root.receipt(), completed);
+        assert_eq!(root.receipt().unwrap(), completed);
         drop(source);
     } else {
         assert!(
@@ -777,7 +780,7 @@ fn physical_cleanup_joins_last_lease(
         weak.upgrade().is_none(),
         "original physical source custody did not retire"
     );
-    let after = root.receipt();
+    let after = root.receipt().unwrap();
     assert_eq!(after.items_examined, before.items_examined + 1);
     assert_eq!(after.allocation_operations, before.allocation_operations);
     Ok(())
@@ -803,7 +806,7 @@ fn source_cleanup_waits_on_completion_or_its_registered_cancellation()
         let wait = CancellationToken::new();
         let selected = wait.clone();
         let mounted = source.clone();
-        let before = root.receipt();
+        let before = root.receipt().unwrap();
         let worker = std::thread::spawn(move || {
             if cancellable {
                 mounted.shutdown_with_cleanup_wait(&selected)
@@ -818,7 +821,7 @@ fn source_cleanup_waits_on_completion_or_its_registered_cancellation()
         // A cancellable wait funds both its token-list waiter and its
         // notification waker. Accepted cleanup must remain allocation-free.
         let registered = before.allocation_operations + 2 * u64::from(cancellable);
-        assert_eq!(root.receipt().allocation_operations, registered);
+        assert_eq!(root.receipt().unwrap().allocation_operations, registered);
         root_stop.cancel();
         if cancellable {
             wait.cancel();
@@ -839,13 +842,13 @@ fn source_cleanup_waits_on_completion_or_its_registered_cancellation()
                     .into_result()?
             );
             assert_eq!(
-                root.receipt().allocation_operations,
+                root.receipt().unwrap().allocation_operations,
                 before.allocation_operations
             );
         }
         assert!(source.capture_retired());
         assert!(!source.shutdown_accepted_cleanup()?.into_result()?);
-        assert_eq!(root.receipt().allocation_operations, registered);
+        assert_eq!(root.receipt().unwrap().allocation_operations, registered);
     }
     Ok(())
 }
@@ -939,7 +942,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
         false,
         &job,
     )?;
-    let before = root.receipt();
+    let before = root.receipt().unwrap();
     let stop = local_stop.clone();
     let expected_work = root.clone();
     let mut before_publication = move |work: &crate::NativeMaterializationWork| {
@@ -972,7 +975,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     assert!(matches!(failure.1, Some(MountSourceError::Cancelled)));
     assert!(acknowledged.is_none());
     assert_eq!(
-        root.receipt().authority_records_appended,
+        root.receipt().unwrap().authority_records_appended,
         before.authority_records_appended
     );
     assert!(local_stop.is_cancelled());

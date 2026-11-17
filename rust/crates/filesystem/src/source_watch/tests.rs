@@ -632,10 +632,10 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     let resource = Arc::downgrade(scope.resource.as_ref().ok_or("birth resource absent")?);
     let meter = Arc::downgrade(&original.state);
     let recorded = Arc::new(Recorded::default());
-    let before = scope.receipt();
+    let before = scope.receipt().unwrap();
     let mut work = crate::NativeMaterializationWork::clone(&original);
     let watch = NativeSourceWatch::start(&host, recorded.sink(), &mut work)?;
-    let started = scope.receipt();
+    let started = scope.receipt().unwrap();
     assert!(started.backend_read_operations > before.backend_read_operations);
     assert!(started.allocation_operations > before.allocation_operations);
     assert!(!watch.is_stopped());
@@ -655,13 +655,13 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     let bytes = watch.logical_owned_bytes();
     let native_bytes = watch.platform_owned_bytes();
     original.with_original_leaf(|ledger| {
-        let prefix = ledger.receipt();
+        let prefix = ledger.receipt().unwrap();
         assert!(matches!(
             watch.stop_with_cleanup_wait(&wait),
             Err(DemandError::Cancelled)
         ));
         assert_eq!(
-            ledger.receipt(),
+            ledger.receipt().unwrap(),
             prefix,
             "pre-cancel does not spend the birth cleanup suffix"
         );
@@ -758,24 +758,24 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
     let observer = crate::CancellationToken::new();
     observer.cancel();
     cancellation.cancel();
-    let before = scope.receipt();
+    let before = scope.receipt().unwrap();
     assert!(matches!(
         watch.stop_with_cleanup_wait(&observer),
         Err(DemandError::Cancelled)
     ));
-    assert_eq!(scope.receipt(), before);
+    assert_eq!(scope.receipt().unwrap(), before);
     assert!(!watch.is_stopped());
     watch.stop_accepted_cleanup()?;
     assert!(
         watch.is_stopped(),
         "real callback/native-resource terminal state, not kernel thread exit"
     );
-    let completed = scope.receipt();
+    let completed = scope.receipt().unwrap();
     assert!(completed.backend_write_operations > before.backend_write_operations);
     completed.verify(budget)?;
     watch.stop_accepted_cleanup()?;
     assert_eq!(
-        scope.receipt(),
+        scope.receipt().unwrap(),
         completed,
         "idempotence cannot repeat native close attempts"
     );
@@ -806,7 +806,7 @@ fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> 
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
     let scope = root.native_volume_work(budget)?;
     cancellation.cancel();
-    let before = root.receipt();
+    let before = root.receipt().unwrap();
     assert!(matches!(
         NativeSourceWatch::start(
             &host,
@@ -815,7 +815,7 @@ fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> 
         ),
         Err(DemandError::Cancelled)
     ));
-    assert_eq!(root.receipt(), before);
+    assert_eq!(root.receipt().unwrap(), before);
 
     let cancellation = crate::CancellationToken::new();
     let root =
@@ -825,7 +825,7 @@ fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> 
         backend_write_operations: 0,
         ..budget
     })?;
-    let before = root.receipt();
+    let before = root.receipt().unwrap();
     assert!(
         NativeSourceWatch::start(
             &host,
@@ -834,7 +834,7 @@ fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> 
         )
         .is_err()
     );
-    let denied = root.receipt();
+    let denied = root.receipt().unwrap();
     assert_eq!(
         denied.backend_read_operations,
         before.backend_read_operations

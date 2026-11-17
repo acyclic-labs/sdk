@@ -28,7 +28,7 @@ impl ObjectSealer for RetainingOpening {
         context: &mut AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
         // A detached remaining-budget frame loses this completed prefix.
-        assert_eq!(context.spent().items_examined, 1);
+        assert_eq!(context.spent().unwrap().items_examined, 1);
         let mut work = context.accounting();
         let mut copy = crate::kernel::Owned::<Vec<u8>>::allocate(stored.len(), &mut work)
             .map_err(crate::async_storage::object_error)?;
@@ -163,9 +163,9 @@ async fn ordinary_opening_retains_original_work_and_live_backing_on_every_exit()
             ) => assert_eq!(counter, "items_examined"),
             _ => return Err("opening lost its original result".into()),
         }
-        assert_eq!(work.spent().items_examined, items);
-        assert_eq!(work.spent().backend_read_operations, 1);
-        work.spent().verify(budget)?;
+        assert_eq!(work.spent().unwrap().items_examined, items);
+        assert_eq!(work.spent().unwrap().backend_read_operations, 1);
+        work.spent().unwrap().verify(budget)?;
         let held = store
             .sealer
             .held

@@ -205,7 +205,7 @@ async fn retired_mount_proof_preserves_all_terminal_causes_on_every_os()
         destination: root.path().join("retired-mount"),
         _destination_custody: work.path(root.path(), None)?.1,
     };
-    let before = retirement_work.receipt();
+    let before = retirement_work.receipt().unwrap();
     let proof = mount.retire(&cancellation)?;
     retired(root.path(), &fence)?;
     assert!(mount.source.physically_retired()?);
@@ -230,11 +230,11 @@ async fn retired_mount_proof_preserves_all_terminal_causes_on_every_os()
     assert!(proof.take_terminal_failure().is_none());
     proof.into_result()?;
     assert_eq!(
-        retirement_work.receipt().allocation_operations,
+        retirement_work.receipt().unwrap().allocation_operations,
         before.allocation_operations
     );
     assert_eq!(
-        retirement_work.receipt().peak_allocation_bytes,
+        retirement_work.receipt().unwrap().peak_allocation_bytes,
         before.peak_allocation_bytes
     );
     Ok(())
@@ -268,7 +268,7 @@ async fn lifecycle_operations_reuse_the_mount_source_context()
         )),
         &work,
     )?;
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     with_session_work(&session, source.as_ref(), |_, active| {
         assert!(active.shares_allocation_context(&work));
         active.charge(crate::WorkCounters {
@@ -277,7 +277,10 @@ async fn lifecycle_operations_reuse_the_mount_source_context()
         })?;
         Ok(())
     })?;
-    assert_eq!(work.receipt().items_returned, before.items_returned + 1);
+    assert_eq!(
+        work.receipt().unwrap().items_returned,
+        before.items_returned + 1
+    );
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let (schedule, _boundaries) = acyclic_native_runtime::testing::Schedule::seeded(97);
@@ -355,7 +358,7 @@ async fn lifecycle_operations_retain_the_source_invocation_and_finite_budget()
         None,
         None,
     )));
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     for _ in 0..2 {
         with_session_work(&session, source.as_ref(), |_, current| {
             assert!(super::super::view_ledger::same_work(&original, current));
@@ -367,7 +370,10 @@ async fn lifecycle_operations_retain_the_source_invocation_and_finite_budget()
             Ok(())
         })?;
     }
-    assert_eq!(work.receipt().items_examined, before.items_examined + 2);
+    assert_eq!(
+        work.receipt().unwrap().items_examined,
+        before.items_examined + 2
+    );
     assert!(
         with_session_work(&session, source.as_ref(), |_, current| {
             current.charge(crate::WorkCounters {
@@ -378,8 +384,8 @@ async fn lifecycle_operations_retain_the_source_invocation_and_finite_budget()
         })
         .is_err()
     );
-    work.receipt().verify(budget)?;
-    assert_eq!(work.receipt().source_bytes_read, 0);
+    work.receipt().unwrap().verify(budget)?;
+    assert_eq!(work.receipt().unwrap().source_bytes_read, 0);
     source.cancel();
     assert!(
         with_session_work(&session, source.as_ref(), |_, _| panic!(
@@ -430,9 +436,9 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     let (ordinary_source, volume, root) = admitted_source(&lazy, &options, &work).await?;
     assert_eq!(volume, lazy.workspace().id().volume_id());
     assert_eq!(root.0, "/selected");
-    work.receipt().verify(budget)?;
-    assert_eq!(work.receipt().source_bytes_read, 0);
-    assert_eq!(work.receipt().materializations, 0);
+    work.receipt().unwrap().verify(budget)?;
+    assert_eq!(work.receipt().unwrap().source_bytes_read, 0);
+    assert_eq!(work.receipt().unwrap().materializations, 0);
     let mut accounting = KernelAccounting::native(&fixture_work, &fixture_token);
     assert!(matches!(
         &lazy.lookup("/selected", &mut accounting).await?.0,
@@ -456,13 +462,13 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     };
     let denied = test_work(denied_budget, &cancellation)?;
     assert!(admitted_source(&lazy, &options, &denied).await.is_err());
-    denied.receipt().verify(denied_budget)?;
-    assert_eq!(denied.receipt().backend_read_operations, 0);
+    denied.receipt().unwrap().verify(denied_budget)?;
+    assert_eq!(denied.receipt().unwrap().backend_read_operations, 0);
     assert_eq!(head(lazy.workspace(), &fixture_work).await?, pinned);
     let job = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
     assert!(!job.shares_ledger(&work));
     let rejected_root = tempfile::tempdir()?;
-    let before_binding = work.receipt();
+    let before_binding = work.receipt().unwrap();
     assert!(matches!(
         lazy.mount(
             rejected_root.path(),
@@ -473,7 +479,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
             crate::NativeTreeMaterializationError::InvalidLayout,
         )))
     ));
-    assert_eq!(work.receipt(), before_binding);
+    assert_eq!(work.receipt().unwrap(), before_binding);
     assert_eq!(head(lazy.workspace(), &fixture_work).await?, pinned);
     assert_eq!(std::fs::read_dir(rejected_root.path())?.count(), 0);
     let ordinary_job =
@@ -488,12 +494,12 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
         &work,
     )
     .await?;
-    let before_foreign_job = job.receipt();
+    let before_foreign_job = job.receipt().unwrap();
     assert!(matches!(
         job.with_source_io_lease(native_source.native_source_io_lease(native_source.clone())?),
         Err(crate::NativeTreeMaterializationError::InvalidLayout)
     ));
-    assert_eq!(job.receipt(), before_foreign_job);
+    assert_eq!(job.receipt().unwrap(), before_foreign_job);
     let native_job =
         work.with_source_io_lease(native_source.native_source_io_lease(native_source.clone())?)?;
     assert!(native_job.shares_allocation_context(&work));
@@ -501,9 +507,9 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     native_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
     assert!(ordinary_source.capture_retired());
     assert!(native_source.capture_retired());
-    work.receipt().verify(budget)?;
-    assert_eq!(work.receipt().source_bytes_read, 0);
-    assert_eq!(work.receipt().materializations, 0);
+    work.receipt().unwrap().verify(budget)?;
+    assert_eq!(work.receipt().unwrap().source_bytes_read, 0);
+    assert_eq!(work.receipt().unwrap().materializations, 0);
     Ok(())
 }
 
@@ -718,10 +724,10 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     let caller_payload = capture_work.claim(64, 1, crate::WorkCounters::UNCHARGED)?;
     let mut caller_buffer = Vec::<u8>::new();
     caller_buffer.try_reserve_exact(64)?;
-    let before_capture = capture_work.receipt();
+    let before_capture = capture_work.receipt().unwrap();
     source.verify_unchanged(&capture_work).await?;
-    assert!(capture_work.receipt().source_bytes_read > before_capture.source_bytes_read);
-    assert!(capture_work.live_allocation_bytes() >= caller_payload.bytes());
+    assert!(capture_work.receipt().unwrap().source_bytes_read > before_capture.source_bytes_read);
+    assert!(capture_work.live_allocation_bytes().unwrap() >= caller_payload.bytes());
     let namespace = source_options
         .materialized_view
         .as_ref()
@@ -748,7 +754,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     denied_budget.items_examined = 0;
     let denied_work = test_work(denied_budget, &capture_token)?;
     assert!(source.verify_unchanged(&denied_work).await.is_err());
-    assert_eq!(denied_work.receipt().source_bytes_read, 0);
+    assert_eq!(denied_work.receipt().unwrap().source_bytes_read, 0);
     assert_eq!(
         std::fs::read(source_root.path().join("file.txt"))?,
         b"original",

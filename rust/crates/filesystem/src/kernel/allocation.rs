@@ -14,6 +14,7 @@ pub(crate) type SharedAllocationState = crate::sync::InlineMutex<SharedAllocatio
 pub struct AllocationLedger {
     state: LedgerState,
     retirement_failed: bool,
+    observation_error: Option<crate::WorkObservationError>,
 }
 
 #[derive(Debug, Default)]
@@ -501,15 +502,24 @@ impl AllocationLedger {
     /// Returns the original producer's prefix while this branch has handed off
     /// admission. Retaining its existing meter keeps late completion observable
     /// even after the producer and its output owners have retired.
-    pub(crate) fn spent(&self, local: WorkCounters) -> WorkCounters {
+    pub(crate) fn spent(
+        &self,
+        local: WorkCounters,
+    ) -> Result<WorkCounters, crate::WorkObservationError> {
+        if let Some(error) = self.observation_error {
+            return Err(error);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let LedgerState::Suspended(_, Some(original)) = &self.state {
             return original.with_original_leaf(|state| state.receipt());
         }
-        local
+        Ok(local)
     }
 
     pub(crate) fn ensure_active(&self) -> Result<(), crate::FsError> {
+        if let Some(error) = self.observation_error {
+            return Err(error.into());
+        }
         if self.retirement_failed {
             return Err(WorkError::Overflow.into());
         }
@@ -531,6 +541,7 @@ impl AllocationLedger {
         let owned = Self {
             state: LedgerState::Shared(std::sync::Arc::clone(state)),
             retirement_failed: false,
+            observation_error: self.observation_error,
         };
         self.state = match std::mem::take(&mut self.state) {
             LedgerState::Shared(state) => LedgerState::Suspended(
@@ -893,5 +904,6 @@ impl AllocationError {
 #[path = "tests/allocation.rs"]
 mod tests;
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod snapshot_tests;

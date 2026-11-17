@@ -100,7 +100,7 @@ pub(crate) trait SourceDemandReadWork:
     }
     #[cfg(any(test, not(target_arch = "wasm32")))]
     fn merge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.merge(delta, work.live_allocation_bytes()))
+        self.with_original_leaf(|work| work.merge(delta, work.live_allocation_bytes()?))
     }
 }
 

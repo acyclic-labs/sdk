@@ -336,9 +336,12 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             height: 1,
             child_index: 0,
         }) {
-            machine
-                .retire()
-                .map_err(|error| failed(error, *failure.work))?;
+            machine.retire().map_err(|error| {
+                failed(
+                    error,
+                    failure.work.as_deref().copied().map_err(|error| *error),
+                )
+            })?;
             return Err(failure);
         }
         Ok(machine)
@@ -1085,8 +1088,12 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         let (has_more, next_request) = match self.finish_state() {
             Ok(result) => result,
             Err(failure) => {
-                self.retire()
-                    .map_err(|error| failed(error, *failure.work))?;
+                self.retire().map_err(|error| {
+                    failed(
+                        error,
+                        failure.work.as_deref().copied().map_err(|error| *error),
+                    )
+                })?;
                 return Err(failure);
             }
         };
@@ -1094,8 +1101,12 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             Ok(position) => position,
             Err(error) => {
                 let failure = self.failure(error);
-                self.retire()
-                    .map_err(|error| failed(error, *failure.work))?;
+                self.retire().map_err(|error| {
+                    failed(
+                        error,
+                        failure.work.as_deref().copied().map_err(|error| *error),
+                    )
+                })?;
                 return Err(failure);
             }
         };
@@ -1104,7 +1115,12 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             has_more,
             next_request,
             position,
-            work: self.accounting.spent(),
+            work: self.accounting.spent().map_err(|observation| {
+                failed(
+                    Error::Storage(crate::ObjectStoreError::WorkObservation(observation)),
+                    Err(observation),
+                )
+            })?,
         };
         Ok((receipt, self.values_allocation))
     }
@@ -1237,6 +1253,9 @@ pub(super) fn project_failure(error: crate::FsError) -> Error {
         crate::FsError::Directory(error) => error,
         crate::FsError::Cancelled(_) => Error::Cancelled,
         crate::FsError::Work(error) => Error::Work(error),
+        crate::FsError::WorkObservation(error) => {
+            Error::Storage(crate::storage::ObjectStoreError::WorkObservation(error))
+        }
         crate::FsError::Decode(error) => Error::Decode(error),
         crate::FsError::Object(error) => Error::Storage(error),
         crate::FsError::PendingMutationAllocationFailed => Error::AllocationFailed,
@@ -1250,6 +1269,9 @@ pub(super) fn project_failure(error: crate::FsError) -> Error {
     }
 }
 
-fn failed(error: Error, work: WorkCounters) -> Failure {
-    OperationFailure::new(error, work)
+fn failed(error: Error, work: Result<WorkCounters, crate::WorkObservationError>) -> Failure {
+    match work {
+        Ok(work) => OperationFailure::new(error, work),
+        Err(observation) => OperationFailure::without_receipt(error, observation),
+    }
 }

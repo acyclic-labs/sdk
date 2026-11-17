@@ -242,7 +242,7 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
         "revocation after the real remove cannot report success"
     );
     assert!(around.lookup(&path)?.is_none(), "no fictitious rollback");
-    let first_prefix = original.receipt();
+    let first_prefix = original.receipt().unwrap();
     let second = name("second-write-authority");
     let created = crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(&second, FileMetadata::default(), None, work)
@@ -382,7 +382,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
             crate::WorkCounters::UNCHARGED
         );
     }
-    assert!(original.receipt().bytes_copied != 0);
+    assert!(original.receipt().unwrap().bytes_copied != 0);
     let missing = core.request(|work| {
         let path = super::super::fuse_clone_path(&name("authentically-absent"), work)?;
         source
@@ -657,7 +657,7 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
         state: Arc::clone(&state),
         invalidator: None,
     };
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     cancellation.cancel();
     drop(facade);
     terminal.recv_timeout(std::time::Duration::from_secs(10))?;
@@ -673,7 +673,7 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
             .is_some_and(crate::native_mount::NativeMountRetirement::is_retired)
     );
     assert_eq!(
-        original.receipt().allocation_operations,
+        original.receipt().unwrap().allocation_operations,
         before.allocation_operations,
         "last facade drop and the real keeper terminal phase allocate no new controls"
     );

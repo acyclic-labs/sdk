@@ -325,11 +325,9 @@ mod future_custody_tests {
         type Output = Result<(), MountSourceError>;
 
         fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-            assert!(
-                self.work.live_allocation_bytes()
-                    >= crate::NativeMaterializationWork::accounting_state_bytes()
-                        + std::mem::size_of::<Self>() as u64
-            );
+            assert!(self.work.live_allocation_bytes().is_ok_and(|live| live
+                >= crate::NativeMaterializationWork::accounting_state_bytes()
+                    + std::mem::size_of::<Self>() as u64));
             std::hint::black_box(&self.body);
             assert!(!self.panic, "callback unwind control");
             Poll::Ready(Ok(()))
@@ -338,11 +336,11 @@ mod future_custody_tests {
 
     impl Drop for Callback<'_> {
         fn drop(&mut self) {
-            self.charged_at_drop.set(
-                self.work.live_allocation_bytes()
-                    >= crate::NativeMaterializationWork::accounting_state_bytes()
-                        + std::mem::size_of::<Self>() as u64,
-            );
+            self.charged_at_drop
+                .set(self.work.live_allocation_bytes().is_ok_and(|live| {
+                    live >= crate::NativeMaterializationWork::accounting_state_bytes()
+                        + std::mem::size_of::<Self>() as u64
+                }));
             self.dropped.set(true);
         }
     }
@@ -363,7 +361,7 @@ mod future_custody_tests {
         })?;
         assert_eq!(
             work.live_allocation_bytes(),
-            crate::NativeMaterializationWork::accounting_state_bytes()
+            Ok(crate::NativeMaterializationWork::accounting_state_bytes())
         );
         Ok(())
     }
@@ -376,7 +374,7 @@ mod future_custody_tests {
             crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .map_err(|(error, _)| error)?;
         let retained = std::cell::RefCell::new(None);
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let prepared = runtime.prepare_native_wait(&work)?;
         runtime.wait_prepared(prepared, || {
             std::future::poll_fn(|context| {
@@ -388,10 +386,10 @@ mod future_custody_tests {
         // alive. Its allocation must stay charged until that owner is dropped.
         assert_eq!(
             work.live_allocation_bytes(),
-            baseline + std::mem::size_of::<ParkedCallback>() as u64
+            Ok(baseline + std::mem::size_of::<ParkedCallback>() as u64)
         );
         drop(retained.into_inner());
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         Ok(())
     }
 
@@ -409,7 +407,7 @@ mod future_custody_tests {
                 &CancellationToken::new(),
             )
             .map_err(|(error, _)| error)?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes()?;
             let (producer, receiver) = tokio::sync::oneshot::channel();
             BEFORE_PARK.with_borrow_mut(|hook| {
                 assert!(hook.is_none());
@@ -435,7 +433,7 @@ mod future_custody_tests {
             } else {
                 result?;
             }
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes()?, baseline);
         }
         Ok(())
     }
@@ -473,7 +471,7 @@ mod future_custody_tests {
         assert!(!dropped.get());
         assert_eq!(
             work.live_allocation_bytes(),
-            crate::NativeMaterializationWork::accounting_state_bytes()
+            Ok(crate::NativeMaterializationWork::accounting_state_bytes())
         );
         Ok(())
     }
@@ -499,7 +497,7 @@ mod future_custody_tests {
         assert!(charged_at_drop.get());
         assert_eq!(
             work.live_allocation_bytes(),
-            crate::NativeMaterializationWork::accounting_state_bytes()
+            Ok(crate::NativeMaterializationWork::accounting_state_bytes())
         );
     }
 
@@ -537,7 +535,7 @@ mod future_custody_tests {
             assert!(charged_at_drop.get());
             assert_eq!(
                 work.live_allocation_bytes(),
-                crate::NativeMaterializationWork::accounting_state_bytes()
+                Ok(crate::NativeMaterializationWork::accounting_state_bytes())
             );
         }
         Ok(())

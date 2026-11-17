@@ -4,40 +4,47 @@ use super::super::source_state::*;
 use crate::{Digest, GenerationId, VolumeId};
 
 /// Require original writer admission, complete framing and canonical identity.
-pub(crate) fn record<T: PartialEq + std::fmt::Debug, E: std::fmt::Debug>(
+pub(crate) fn record<
+    T: PartialEq + std::fmt::Debug,
+    E: std::fmt::Debug + std::error::Error + 'static,
+>(
     input: &[u8],
     expected: &T,
     encoded: Result<Vec<u8>, E>,
     decode: impl Fn(&[u8]) -> Result<T, E>,
     encode: impl Fn(&T) -> Result<Vec<u8>, E>,
-) -> Vec<u8> {
-    let bytes = super::canonical::<_, _, false>(expected, encoded, &decode);
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let bytes = super::canonical::<_, _, false>(expected, encoded, &decode)?;
     for end in [0, bytes.len() / 2, bytes.len() - 1] {
-        assert!(
-            decode(&bytes[..end]).is_err(),
-            "truncated filesystem record admitted"
-        );
+        if !(decode(&bytes[..end]).is_err()) {
+            return Err("truncated filesystem record admitted".into());
+        };
     }
     let mut trailing = bytes.clone();
     trailing.push(0);
-    assert!(
-        decode(&trailing).is_err(),
-        "trailing filesystem record bytes admitted"
-    );
+    if !(decode(&trailing).is_err()) {
+        return Err("trailing filesystem record bytes admitted".into());
+    };
     if let Ok(value) = decode(input) {
-        assert_eq!(
-            super::canonical::<_, _, false>(&value, encode(&value), &decode),
-            input,
-            "filesystem record changed its original bytes"
-        );
+        if !(&(super::canonical::<_, _, false>(&value, encode(&value), &decode)?) == &(input)) {
+            return Err("filesystem record changed its original bytes".into());
+        };
     }
-    bytes
+    Ok(bytes)
 }
 
 fn fact(input: &[u8], selector: u8) -> SourceFact {
     let mut identity = [0; 32];
     let length = input.len().min(identity.len());
     identity[..length].copy_from_slice(&input[..length]);
+    let mut volume = [0; 16];
+    volume.copy_from_slice(&identity[..16]);
+    let mut root = [0; 16];
+    root.copy_from_slice(&identity[16..]);
+    let mut paths = [0; 4];
+    paths.copy_from_slice(&identity[..4]);
+    let mut extents = [0; 4];
+    extents.copy_from_slice(&identity[4..8]);
     let reasons = [
         SourceInvalidation::InitialSnapshotRequired,
         SourceInvalidation::QueueOverflow,
@@ -48,17 +55,15 @@ fn fact(input: &[u8], selector: u8) -> SourceFact {
         SourceInvalidation::RootChanged,
     ];
     SourceFact {
-        volume_id: VolumeId::from_bytes(identity[..16].try_into().unwrap()),
-        root_identity: identity[16..].try_into().unwrap(),
+        volume_id: VolumeId::from_bytes(volume),
+        root_identity: root,
         mode: if selector & 1 == 0 {
             DurableSourceMode::Pinned
         } else {
             DurableSourceMode::Tracking
         },
-        maximum_paths: (selector & 32 == 0)
-            .then(|| u32::from_le_bytes(identity[..4].try_into().unwrap()).max(1)),
-        maximum_extent_spans: (selector & 64 == 0)
-            .then(|| u32::from_le_bytes(identity[4..8].try_into().unwrap()).max(1)),
+        maximum_paths: (selector & 32 == 0).then(|| u32::from_le_bytes(paths).max(1)),
+        maximum_extent_spans: (selector & 64 == 0).then(|| u32::from_le_bytes(extents).max(1)),
         capture_policy: Digest::from_bytes(identity),
         state: match (selector / 2) % 11 {
             0 => DurableSourceState::Clean,
@@ -72,7 +77,7 @@ fn fact(input: &[u8], selector: u8) -> SourceFact {
 }
 
 /// Exercise the production source and distributed record decoders.
-pub fn check(input: &[u8]) {
+pub fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let value = fact(input, input.first().copied().unwrap_or(0));
     let bytes = record(
         input,
@@ -80,15 +85,15 @@ pub fn check(input: &[u8]) {
         encode_source_fact(value),
         |bytes| decode_source_fact(bytes, 4096),
         |value| encode_source_fact(*value),
-    );
+    )?;
     let domain = DOMAIN.len();
     for version in [0_u16, 1, u16::MAX] {
         let mut changed = bytes.clone();
         changed[domain..domain + 2].copy_from_slice(&version.to_le_bytes());
-        assert!(
-            matches!(decode_source_fact(&changed, 4096), Err(SourceFactError::Decode(CanonicalDecodeError::UnsupportedVersion {found, expected: 2})) if found == version),
-            "source version admitted"
-        );
+        if !(matches!(decode_source_fact(&changed, 4096), Err(SourceFactError::Decode(CanonicalDecodeError::UnsupportedVersion {found, expected: 2})) if found == version))
+        {
+            return Err("source version admitted".into());
+        };
     }
     let paths = domain + 2 + 32 + 1;
     let extents = paths + 1 + if value.maximum_paths.is_some() { 4 } else { 0 };
@@ -103,10 +108,9 @@ pub fn check(input: &[u8]) {
     for offset in [domain + 2 + 32, paths, extents, state] {
         let mut changed = bytes.clone();
         changed[offset] = 255;
-        assert!(
-            decode_source_fact(&changed, 4096).is_err(),
-            "unknown source tag admitted"
-        );
+        if !(decode_source_fact(&changed, 4096).is_err()) {
+            return Err("unknown source tag admitted".into());
+        };
     }
     for bound in 0..2 {
         let mut invalid = value;
@@ -115,10 +119,9 @@ pub fn check(input: &[u8]) {
             1 => invalid.maximum_extent_spans = Some(0),
             _ => unreachable!(),
         }
-        assert!(matches!(
-            encode_source_fact(invalid),
-            Err(SourceFactError::ZeroBound)
-        ));
+        if !(matches!(encode_source_fact(invalid), Err(SourceFactError::ZeroBound))) {
+            return Err("filesystem oracle invariant failed".into());
+        };
         let present = if bound == 0 {
             value.maximum_paths
         } else {
@@ -130,23 +133,22 @@ pub fn check(input: &[u8]) {
         let mut changed = bytes.clone();
         let offset = if bound == 0 { paths } else { extents } + 1;
         changed[offset..offset + 4].fill(0);
-        assert!(
-            matches!(
-                decode_source_fact(&changed, 4096),
-                Err(SourceFactError::ZeroBound)
-            ),
-            "zero source bound admitted"
-        );
+        if !(matches!(
+            decode_source_fact(&changed, 4096),
+            Err(SourceFactError::ZeroBound)
+        )) {
+            return Err("zero source bound admitted".into());
+        };
     }
     if matches!(value.state, DurableSourceState::NeedsRescan(_)) {
         let mut changed = bytes;
         changed[state + 1] = 255;
-        assert!(
-            decode_source_fact(&changed, 4096).is_err(),
-            "unknown source reason admitted"
-        );
+        if !(decode_source_fact(&changed, 4096).is_err()) {
+            return Err("unknown source reason admitted".into());
+        };
     }
-    crate::distributed::record_codec_fuzz::check(input);
+    crate::distributed::record_codec_fuzz::check(input)?;
+    Ok(())
 }
 
 /// Original library writer output; these are authored values, not native captures.
@@ -161,7 +163,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
                 encode_source_fact(value),
                 |bytes| decode_source_fact(bytes, 4096),
                 |value| encode_source_fact(*value),
-            )
+            )?
         }));
     }
     seeds.extend(crate::distributed::record_codec_fuzz::seeds()?);

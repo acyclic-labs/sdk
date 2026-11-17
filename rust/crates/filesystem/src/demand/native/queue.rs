@@ -136,7 +136,7 @@ impl NativeDemandSource {
                     worker_stop.check().map_err(|_| DemandError::Cancelled)?;
                     job(source, context.path.as_ref().ok_or(DemandError::InvalidRequest)?, &mut context.value)
                 })).unwrap_or_else(|_| {
-                    context.value.with_original_leaf(|work| work.poison_native_original_work());
+                    context.value.with_original_leaf(|w| w.poison_native_original_work());
                     Err(DemandError::OriginalWorkPoisoned)
                 });
                 (result, context)
@@ -243,11 +243,27 @@ mod context_custody_tests {
             .err()
             .ok_or("closed queue admitted a request")?;
         assert!(matches!(failure.error, DemandError::WorkerUnavailable));
-        assert_eq!(failure.work.allocation_operations, 2);
-        assert_eq!(failure.work.bytes_copied, path.retained_bytes());
-        assert_eq!(failure.work.backend_read_operations, 0);
-        assert_eq!(failure.work.backend_write_operations, 0);
-        failure.work.verify(budget)?;
+        assert_eq!(
+            failure.work.as_ref().map(|w| w.allocation_operations),
+            Ok(2)
+        );
+        assert_eq!(
+            failure.work.as_ref().map(|w| w.bytes_copied),
+            Ok(path.retained_bytes())
+        );
+        assert_eq!(
+            failure.work.as_ref().map(|w| w.backend_read_operations),
+            Ok(0)
+        );
+        assert_eq!(
+            failure.work.as_ref().map(|w| w.backend_write_operations),
+            Ok(0)
+        );
+        failure
+            .work
+            .as_ref()
+            .map_err(|error| *error)?
+            .verify(budget)?;
         let work =
             crate::NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
         let before = work.receipt();

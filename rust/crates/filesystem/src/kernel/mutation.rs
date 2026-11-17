@@ -351,7 +351,7 @@ impl MutationPlan {
         let mut accounting = super::allocation::KernelAccounting::standalone(budget, &cancellation);
         Self::compile_with_accounting(operations, &mut accounting)
             .map(|(plan, _)| plan)
-            .map_err(|error| OperationFailure::new(plan_error(&error), accounting.spent()))
+            .map_err(|error| OperationFailure::observed(plan_error(&error), accounting.spent()))
     }
 
     pub(crate) fn compile_with_accounting(
@@ -459,7 +459,7 @@ impl MutationPlan {
                 ordered_paths,
                 path_nodes,
                 retained_allocation_bytes: allocation_bytes,
-                work: accounting.spent(),
+                work: accounting.spent()?,
             },
             allocation,
         ))

@@ -120,7 +120,12 @@ impl CheckoutPublication {
         .await;
         match prepared {
             Ok(receipt) => Ok(receipt.value),
-            Err((source, _)) => Err(source.into()),
+            Err(failure) => {
+                failure
+                    .work
+                    .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+                Err(failure.error.into())
+            }
         }
     }
     /// Publishes with the caller's guard and original native work ledger.
@@ -154,7 +159,12 @@ impl CheckoutPublication {
                 .await;
         let journal = match retained {
             Ok(receipt) => receipt.value,
-            Err((cause, _)) => return Err(cause.into()),
+            Err(failure) => {
+                failure
+                    .work
+                    .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+                return Err(failure.error.into());
+            }
         };
         let journal = match (journal, approved) {
             (Some(journal), Some(approved)) => {
@@ -239,13 +249,19 @@ impl CheckoutPublication {
             },
         )
         .await;
-        let journal = result.map(|receipt| receipt.value).map_err(|(source, _)| {
-            guard_cause
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-                .unwrap_or_else(|| Error::from(source))
-        })?;
+        let journal = match result {
+            Ok(receipt) => receipt.value,
+            Err(failure) => {
+                failure
+                    .work
+                    .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+                return Err(guard_cause
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                    .unwrap_or_else(|| Error::from(failure.error)));
+            }
+        };
         cleanup_directory(&self.directory)?;
         Ok(journal)
     }
@@ -313,16 +329,16 @@ mod tests {
         let work =
             NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes()?;
         let identity = NativeRootIdentity::from_bytes([0; 16]);
         let root = std::env::temp_dir().join("checkout-parent/checkout");
         let state = LocalCoreStateStore::new(std::env::temp_dir().join("host-state/core"));
         let publication =
             CheckoutPublication::new(&root, identity, OperationId::new(), &state, &work)?;
         assert_eq!(publication.root(), root.as_path());
-        assert!(work.live_allocation_bytes() > baseline);
+        assert!(work.live_allocation_bytes()? > baseline);
         drop(publication);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         let refused =
             CheckoutPublication::new(Path::new(""), identity, OperationId::new(), &state, &work);
         assert!(matches!(
@@ -333,7 +349,7 @@ mod tests {
             })
         ));
         drop(refused);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes()?, baseline);
         Ok(())
     }
 }

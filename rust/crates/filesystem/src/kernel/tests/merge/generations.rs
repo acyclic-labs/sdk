@@ -765,8 +765,8 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
         ))?,
         root
     );
-    assert!(original.receipt().page_reads > 0);
-    assert!(original.receipt().page_writes > 0);
+    assert!(original.receipt().unwrap().page_reads > 0);
+    assert!(original.receipt().unwrap().page_writes > 0);
     drop(root);
     drop(guard);
     Ok(())
@@ -803,8 +803,8 @@ async fn native_merge_original_allocation_denial_precedes_backend_work()
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let before = original.receipt();
-    let baseline = original.live_allocation_bytes();
+    let before = original.receipt().unwrap();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = (merge_generation_with_accounting(
         &store,
@@ -826,14 +826,14 @@ async fn native_merge_original_allocation_denial_precedes_backend_work()
     ));
     // Selecting the first frontier page is work, even when its allocation is refused.
     assert_eq!(
-        original.receipt(),
+        original.receipt().unwrap(),
         WorkCounters {
             items_examined: 1,
             ..before
         }
     );
-    assert_eq!(original.receipt().backend_read_operations, 0);
-    assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap().backend_read_operations, 0);
+    assert_eq!(original.receipt().unwrap().backend_write_operations, 0);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }

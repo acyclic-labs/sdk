@@ -46,9 +46,9 @@ fn retained_push_checks_work_and_cancellation_with_spare_capacity() -> Result<()
     let cancellation = crate::CancellationToken::new();
     let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let mut values = retained::Retained::<Vec<u64>>::allocate(4, &mut work.accounting())?;
-    let before = work.spent();
+    let before = work.spent().unwrap();
     values.push(17, &mut work.accounting())?;
-    let after = work.spent();
+    let after = work.spent().unwrap();
     assert_eq!(after.items_examined - before.items_examined, 1);
     assert_eq!(after.bytes_copied - before.bytes_copied, 8);
     cancellation.cancel();
@@ -86,7 +86,7 @@ fn scratch_retirement_preserves_errors_and_fences_invalid_custody() -> Result<()
             })();
             assert!(matches!(result, Err(crate::ObjectStoreError::Io(error))
                 if error.kind() == std::io::ErrorKind::PermissionDenied));
-            let before = work.spent();
+            let before = work.spent().unwrap();
             let live = work.allocations.live_bytes();
             assert!(matches!(
                 work.accounting().check(),
@@ -100,7 +100,7 @@ fn scratch_retirement_preserves_errors_and_fences_invalid_custody() -> Result<()
                     .claim_bytes(1, 1, &mut work.work, work.budget),
                 Err(AllocationError::ReleaseInvariant)
             ));
-            assert_eq!(work.spent(), before);
+            assert_eq!(work.spent().unwrap(), before);
             assert_eq!(work.allocations.live_bytes(), live);
             drop(retained);
             assert_eq!(
@@ -226,7 +226,7 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dy
             &cancellation,
         )
         .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let check_growth = |result: Result<(), crate::FsError>,
                             values: &Vec<u64>,
                             (pointer, capacity, before): (*const u64, usize, WorkCounters)|
@@ -248,12 +248,12 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dy
                 );
                 assert_eq!(values.as_ptr(), pointer);
                 assert_eq!(values.capacity(), capacity);
-                assert_eq!(original.receipt(), before);
+                assert_eq!(original.receipt().unwrap(), before);
             } else {
                 result?;
                 assert!(values.capacity() > capacity);
                 assert_eq!(
-                    original.receipt().bytes_copied - before.bytes_copied,
+                    original.receipt().unwrap().bytes_copied - before.bytes_copied,
                     if values.as_ptr() == pointer {
                         0
                     } else {
@@ -273,7 +273,7 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dy
             let old_capacity = values.value.capacity();
             values.value.resize(old_capacity, 7);
             let old_pointer = values.value.as_ptr();
-            let before = original.receipt();
+            let before = original.receipt().unwrap();
             let result = values.ensure_for_push(old_capacity * 2, &mut accounting);
             check_growth(result, &values.value, (old_pointer, old_capacity, before))?;
             values.retire(&mut accounting)?;
@@ -291,7 +291,7 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dy
             };
             values.resize(old_capacity, 7);
             let old_pointer = values.as_ptr();
-            let before = original.receipt();
+            let before = original.receipt().unwrap();
             let result = capacity.ensure_for_push_with_accounting(
                 &mut values,
                 old_capacity * 2,
@@ -306,10 +306,10 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dy
                 &mut accounting,
             )?;
         }
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         assert_eq!(
             original.remaining()?.bytes_copied,
-            copy_budget - original.receipt().bytes_copied
+            copy_budget - original.receipt().unwrap().bytes_copied
         );
     }
 

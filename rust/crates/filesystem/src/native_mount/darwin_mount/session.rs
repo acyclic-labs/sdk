@@ -164,18 +164,27 @@ impl DarwinMountSession {
 
     pub(in crate::native_mount) fn take_callback_failure(
         &self,
-    ) -> Option<(NativeMountError, WorkCounters)> {
+    ) -> Option<(
+        NativeMountError,
+        Result<WorkCounters, crate::WorkObservationError>,
+    )> {
         self.handler_failure
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take_failure()
     }
 
-    pub(in crate::native_mount) fn completed_callback_work(&self) -> WorkCounters {
-        self.handler_failure
+    pub(in crate::native_mount) fn completed_callback_work(
+        &self,
+    ) -> Result<WorkCounters, crate::WorkObservationError> {
+        let state = self
+            .handler_failure
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .completed_future_request_work
+            .unwrap_or_else(PoisonError::into_inner);
+        match state.observation_error {
+            Some(error) => Err(error),
+            None => Ok(state.completed_future_request_work),
+        }
     }
 
     pub(in crate::native_mount) fn namespace_detach_confirmed(&self) -> bool {

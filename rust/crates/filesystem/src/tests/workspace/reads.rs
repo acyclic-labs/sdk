@@ -158,8 +158,8 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
             crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let prior = RetainedAllocation::claim(29, 1, &mut accounting)?;
-        let baseline = original.live_allocation_bytes();
-        let before = accounting.spent();
+        let baseline = original.live_allocation_bytes().unwrap();
+        let before = accounting.spent().unwrap();
         let ids = sorted_changed_file_ids(
             (1..=population).rev().flat_map(|ordinal| {
                 let id = FileId::from_bytes(u128::from(ordinal).to_be_bytes());
@@ -167,7 +167,7 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
             }),
             &mut accounting,
         )?;
-        let spent = accounting.spent();
+        let spent = accounting.spent().unwrap();
         assert_eq!(ids.0.len() as u64, population);
         for (ordinal, id) in ids.0.iter().enumerate() {
             assert_eq!(id.into_bytes(), (ordinal as u128 + 1).to_be_bytes());
@@ -180,7 +180,7 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
         ));
         let bytes = workspace_vec_bytes(&ids.0);
         reverse_drop(ids, bytes, &mut accounting)?;
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         drop(prior);
     }
     eprintln!("reverse identity input=[1,100000] examinations/copy-bytes={counts:?}");
@@ -202,7 +202,7 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
     let input = [3_u128, 1, 2, 1].map(|id| FileId::from_bytes(id.to_be_bytes()));
     let mut accounting = KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
     let ids = sorted_changed_file_ids(input, &mut accounting)?;
-    let spent = accounting.spent();
+    let spent = accounting.spent().unwrap();
     let bytes = workspace_vec_bytes(&ids.0);
     reverse_drop(ids, bytes, &mut accounting)?;
     let budgets = (0..spent.items_examined)
@@ -237,7 +237,9 @@ fn reverse_selection_cost_and_custody() -> Result<(), Box<dyn Error>> {
                 KernelAccounting::BorrowedStandalone { allocations, .. } => {
                     allocations.live_bytes()
                 }
-                KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
+                KernelAccounting::NativeOriginal { work, .. } => {
+                    work.live_allocation_bytes().unwrap()
+                }
             };
             let baseline = live(&accounting);
             assert!(sorted_changed_file_ids(input, &mut accounting).is_err());
@@ -386,14 +388,14 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
             accounting.standalone_parts().unwrap().0.live_bytes(),
             baseline
         );
-        assert!(accounting.spent().backend_read_operations > 0);
+        assert!(accounting.spent().unwrap().backend_read_operations > 0);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     let original =
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
     #[cfg(not(target_arch = "wasm32"))]
-    let native_baseline = original.live_allocation_bytes();
+    let native_baseline = original.live_allocation_bytes().unwrap();
     #[cfg(not(target_arch = "wasm32"))]
     {
         let (lookup, allocation) = generation
@@ -401,7 +403,7 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
             .await?;
         let allocation = allocation.ok_or("native batch lost its original result allocation")?;
         assert_eq!(allocation.bytes(), lookup.retained_allocation_bytes);
-        assert!(original.live_allocation_bytes() >= native_baseline + allocation.bytes());
+        assert!(original.live_allocation_bytes().unwrap() >= native_baseline + allocation.bytes());
         assert_eq!(lookup.entries[0], lookup.entries[2]);
         assert!(lookup.entries[1].record.is_none());
         drop((lookup, allocation));
@@ -420,7 +422,7 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
     assert_eq!(live, baseline);
     drop((generation, reader, workspace, fs, authority));
     #[cfg(not(target_arch = "wasm32"))]
-    assert_eq!(original.live_allocation_bytes(), native_baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), native_baseline);
     Ok(())
 }
 

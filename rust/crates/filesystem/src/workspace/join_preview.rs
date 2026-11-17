@@ -106,7 +106,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let accounting = work.accounting(cancellation);
         let initial = accounting.spent();
         let owner = ReadOwner::new(accounting, || State::new(self))
-            .map_err(|error| OperationFailure::new(WorkspaceError::from(error), initial));
+            .map_err(|error| OperationFailure::observed(WorkspaceError::from(error), initial));
         async move {
             let mut owner = owner?;
             let result = async {
@@ -169,16 +169,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             }
             .await;
             let spent = owner.borrow().1.spent();
-            match result {
-                Ok(()) => Ok(OperationReceipt {
-                    value: JoinPreview { owner },
-                    work: spent,
-                }),
-                Err(error) => {
-                    drop(owner);
-                    Err(OperationFailure::new(error, spent))
-                }
-            }
+            crate::performance::finish_measured(
+                result.map(|()| JoinPreview { owner }),
+                spent,
+                WorkspaceError::from,
+            )
         }
     }
 }
@@ -203,10 +198,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
             })
         }
         .await;
-        let work = accounting.spent();
-        result
-            .map(|value| OperationReceipt { value, work })
-            .map_err(|error| OperationFailure::new(error, work))
+        crate::performance::finish_measured(result, accounting.spent(), WorkspaceError::from)
     }
 
     /// Exact original conflict count; no path or content expansion is performed.
@@ -270,10 +262,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
             Ok(path)
         }
         .await;
-        let work = accounting.spent();
-        result
-            .map(|value| OperationReceipt { value, work })
-            .map_err(|error| OperationFailure::new(error, work))
+        crate::performance::finish_measured(result, accounting.spent(), WorkspaceError::from)
     }
 
     /// Reads one selected side's exact record under this preview's original
@@ -308,10 +297,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
             Ok(record)
         }
         .await;
-        let work = accounting.spent();
-        result
-            .map(|value| OperationReceipt { value, work })
-            .map_err(|error| OperationFailure::new(error, work))
+        crate::performance::finish_measured(result, accounting.spent(), WorkspaceError::from)
     }
 
     /// Selects one regular file under the preview's original work and hold.
@@ -355,16 +341,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     ) -> crate::MeasuredResult<OperationReceipt<Option<ChangedPathEntry>>, WorkspaceError> {
         let (state, mut accounting) = self.owner.borrow();
         let result = state.prepare_clean(&mut accounting).await;
-        let work = accounting.spent();
-        result
-            .map(|()| {
+        crate::performance::finish_measured(result, accounting.spent(), WorkspaceError::from).map(
+            |receipt| {
                 state.clean_ready = false;
                 OperationReceipt {
                     value: state.changes.pending.take(),
-                    work,
+                    work: receipt.work,
                 }
-            })
-            .map_err(|error| OperationFailure::new(error, work))
+            },
+        )
     }
 
     /// Borrows one clean row so an encoder can check its actual byte credit
@@ -374,13 +359,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     ) -> crate::MeasuredResult<OperationReceipt<Option<&ChangedPath>>, WorkspaceError> {
         let (state, mut accounting) = self.owner.borrow();
         let result = state.prepare_clean(&mut accounting).await;
-        let work = accounting.spent();
-        result
-            .map(|()| OperationReceipt {
+        crate::performance::finish_measured(result, accounting.spent(), WorkspaceError::from).map(
+            |receipt| OperationReceipt {
                 value: state.changes.pending.as_ref().map(ChangedPathEntry::value),
-                work,
-            })
-            .map_err(|error| OperationFailure::new(error, work))
+                work: receipt.work,
+            },
+        )
     }
 
     /// Takes one raw conflict without reading any other conflict's path/body.
@@ -420,10 +404,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
             state.failed = false;
             Ok(row)
         })();
-        let work = accounting.spent();
-        result
-            .map(|value| OperationReceipt { value, work })
-            .map_err(|error| OperationFailure::new(error, work))
+        crate::performance::finish_measured(result, accounting.spent(), WorkspaceError::from)
     }
 
     /// Borrows the next exact identity so an encoder can admit its output
@@ -434,20 +415,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
     ) -> crate::MeasuredResult<OperationReceipt<Option<&MergeConflict>>, WorkspaceError> {
         let (state, mut accounting) = self.owner.borrow();
         let result = state.prepare_conflict(&mut accounting);
-        let work = accounting.spent();
-        result
-            .map(|()| OperationReceipt {
+        crate::performance::finish_measured(result, accounting.spent(), WorkspaceError::from).map(
+            |receipt| OperationReceipt {
                 value: state
                     .conflicts
                     .as_ref()
                     .and_then(|conflicts| conflicts.value.as_slice().first()),
-                work,
-            })
-            .map_err(|error| OperationFailure::new(error, work))
+                work: receipt.work,
+            },
+        )
     }
 
     /// Cumulative work on the same original frame, including typed refusals.
-    pub fn work(&mut self) -> WorkCounters {
+    pub fn work(&mut self) -> Result<WorkCounters, crate::WorkObservationError> {
         self.owner.borrow().1.spent()
     }
 
@@ -527,10 +507,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinConten
             Ok::<_, WorkspaceError>(content.bytes.as_slice())
         }
         .await;
-        let work = accounting.spent();
-        result
-            .map(|value| OperationReceipt { value, work })
-            .map_err(|error| OperationFailure::new(error, work))
+        crate::performance::finish_measured(result, accounting.spent(), WorkspaceError::from)
     }
 }
 

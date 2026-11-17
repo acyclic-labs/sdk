@@ -40,7 +40,7 @@ async fn object_allocation_denial_cannot_publish_an_object() -> Result<(), Box<d
         ))
     ));
     assert!(!provider_receipt!(store, contains(object.object_id()), WorkBudget::UNBOUNDED)?.value);
-    original.receipt().verify(budget)?;
+    original.receipt().unwrap().verify(budget)?;
     Ok(())
 }
 
@@ -49,7 +49,7 @@ async fn native_object_bytes_retain_the_original_allocation_until_last_alias_dro
 -> Result<(), Box<dyn Error>> {
     let cancel = CancellationToken::new();
     let original = NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut allocation = original.claim(4, 1, WorkCounters::UNCHARGED)?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(4)?;
@@ -91,13 +91,13 @@ async fn native_object_bytes_retain_the_original_allocation_until_last_alias_dro
     );
     drop(native_view);
     drop(store);
-    assert!(original.live_allocation_bytes() > baseline);
+    assert!(original.live_allocation_bytes().unwrap() > baseline);
     assert_eq!(view.bytes.as_ref(), b"body");
     assert_eq!(alias.as_ref(), b"body");
     drop(view);
-    assert!(original.live_allocation_bytes() > baseline);
+    assert!(original.live_allocation_bytes().unwrap() > baseline);
     drop(alias);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    original.receipt().verify(BUDGET)?;
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+    original.receipt().unwrap().verify(BUDGET)?;
     Ok(())
 }

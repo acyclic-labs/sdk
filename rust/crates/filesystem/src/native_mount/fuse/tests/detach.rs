@@ -103,7 +103,7 @@ fn operation(
             .open_file
             .clone();
         assert_eq!(file.file().read_range(0, 8)?.as_ref(), b"original");
-        Ok(Some(work.receipt().allocation_operations))
+        Ok(Some(work.receipt().unwrap().allocation_operations))
     }
 }
 

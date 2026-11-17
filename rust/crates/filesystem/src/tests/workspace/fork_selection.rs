@@ -13,7 +13,7 @@ async fn invalid_fork_prefixes_stop_before_directory_rewrites() -> Result<(), Bo
         let source = unbounded!(parent, head())?;
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let result = source
             .matches_fork_selection(
                 &source,
@@ -27,9 +27,9 @@ async fn invalid_fork_prefixes_stop_before_directory_rewrites() -> Result<(), Bo
         } else {
             assert!(matches!(result, Err(WorkspaceError::NotDirectory)));
         }
-        writes.push(original.receipt().page_writes);
+        writes.push(original.receipt().unwrap().page_writes);
         drop((source, parent, fs));
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     // Both invalid inputs stop after the same shared empty-tree preparation.
     // A known non-directory must not produce a pruned parent before refusing.

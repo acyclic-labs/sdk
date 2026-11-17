@@ -7,7 +7,7 @@ fn interrupted_admission_poisons_every_locked_resource_and_keeps_retirement_avai
     let parent = root.native_volume_work(WorkBudget::UNBOUNDED).unwrap();
     let child = parent.native_volume_work(WorkBudget::UNBOUNDED).unwrap();
     let resource = child.resource.as_ref().unwrap();
-    let before = root.receipt();
+    let before = root.receipt().unwrap();
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         resource
             .admission(WorkCounters::UNCHARGED, 0, &mut || {
@@ -29,5 +29,5 @@ fn interrupted_admission_poisons_every_locked_resource_and_keeps_retirement_avai
         // Cleanup must still be possible without reviving the resource.
         resource.retire(0).unwrap();
     }
-    assert_eq!(root.receipt(), before);
+    assert_eq!(root.receipt().unwrap(), before);
 }

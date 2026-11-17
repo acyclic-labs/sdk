@@ -26,9 +26,9 @@ async fn external_composition_policy_fence(seal: bool, changed: usize) -> TestRe
         &token,
     )
     .map_err(|(cause, _)| cause)?;
-    let before = original.live_allocation_bytes();
+    let before = original.live_allocation_bytes().unwrap();
     let group = crate::PolicyGroup::new(&[&cuts], &original, &token)?;
-    assert!(original.live_allocation_bytes() > before);
+    assert!(original.live_allocation_bytes().unwrap() > before);
     let effect = StreamPath::new("harness/approval-answer")?;
     let mut commit = crate::FilesystemCommit::new(acyclic_stream::CommitRequest {
         deadline_unix_millis: None,
@@ -50,7 +50,7 @@ async fn external_composition_policy_fence(seal: bool, changed: usize) -> TestRe
         assert!(commit.request_mut().is_none());
     }
     if seal {
-        assert_eq!(original.live_allocation_bytes(), before);
+        assert_eq!(original.live_allocation_bytes().unwrap(), before);
     }
     // A different policy head wins after the caller's original admission.
     let head = store.head(authority, &mut work).await?;

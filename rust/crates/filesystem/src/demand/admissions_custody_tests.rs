@@ -13,10 +13,10 @@ fn logical_growth_uses_retired_credit_before_admission() -> TestResult {
     let survivor = NativeMountAllocationCustody::new(&mut original)?;
     drop(retired);
 
-    let remaining = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
+    let remaining = BUDGET.peak_allocation_bytes - original.live_allocation_bytes().unwrap();
     allocation.resize(remaining)?;
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         BUDGET.peak_allocation_bytes
     );
     drop(allocation);
@@ -35,7 +35,7 @@ proptest::proptest! {
         let mut original = NativeMaterializationWork::new(BUDGET, &cancellation)
             .map_err(|(error, _)| error).unwrap();
         let foreign = NativeMaterializationWork::new(BUDGET, &CancellationToken::new()).unwrap();
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut owners: Vec<Option<(NativeMountAllocationCustody, u64)>> = vec![None; 4];
         for (index, action, bytes) in actions {
             let slot = &mut owners[usize::from(index)];
@@ -44,12 +44,12 @@ proptest::proptest! {
                 (None, _) => {
                     let owner = NativeMountAllocationCustody::new(&mut original).unwrap();
                     // A different ledger cannot adopt or grow this live owner.
-                    let before = foreign.receipt();
+                    let before = foreign.receipt().unwrap();
                     proptest::prop_assert!(matches!(
                         foreign.with_original_leaf(|work| owner.claim(1, work)),
                         Err(DemandError::InvalidRequest)
                     ));
-                    proptest::prop_assert_eq!(foreign.receipt(), before);
+                    proptest::prop_assert_eq!(foreign.receipt().unwrap(), before);
                     *slot = Some((owner, 0));
                 }
                 (Some((owner, retained)), 0) => {
@@ -59,16 +59,16 @@ proptest::proptest! {
                 (Some((owner, retained)), 1) => {
                     // Over-retirement must leave all original credit intact.
                     proptest::prop_assert!(owner.retire(*retained + 1).is_err());
-                    let before = original.receipt();
+                    let before = original.receipt().unwrap();
                     let bytes = bytes.min(*retained);
                     owner.retire(bytes).unwrap();
                     *retained -= bytes;
-                    proptest::prop_assert_eq!(original.receipt(), before);
+                    proptest::prop_assert_eq!(original.receipt().unwrap(), before);
                 }
                 (Some(_), _) => {
-                    let before = original.receipt();
+                    let before = original.receipt().unwrap();
                     *slot = None;
-                    proptest::prop_assert_eq!(original.receipt(), before);
+                    proptest::prop_assert_eq!(original.receipt().unwrap(), before);
                 }
             }
             let live = owners.iter().flatten().collect::<Vec<_>>();
@@ -77,19 +77,19 @@ proptest::proptest! {
                 + live.iter().map(|(_, retained)| {
                     NativeMountAllocationCustody::ALLOCATION_BYTES + retained
                 }).sum::<u64>();
-            proptest::prop_assert_eq!(original.live_allocation_bytes(), expected);
+            proptest::prop_assert_eq!(original.live_allocation_bytes().unwrap(), expected);
             let projected = original.remaining().unwrap();
-            let spent = original.receipt();
+            let spent = original.receipt().unwrap();
             original.charge(WorkCounters::UNCHARGED).unwrap();
             proptest::prop_assert_eq!(original.remaining().unwrap(), projected);
-            proptest::prop_assert_eq!(original.receipt(), spent);
+            proptest::prop_assert_eq!(original.receipt().unwrap(), spent);
             proptest::prop_assert!(spent.verify(BUDGET).is_ok());
         }
-        let spent = original.receipt();
+        let spent = original.receipt().unwrap();
         cancellation.cancel();
         drop(owners);
         // Cancellation cannot require an admitted operation to retire storage.
-        proptest::prop_assert_eq!(original.live_allocation_bytes(), baseline);
-        proptest::prop_assert_eq!(original.receipt(), spent);
+        proptest::prop_assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+        proptest::prop_assert_eq!(original.receipt().unwrap(), spent);
     }
 }

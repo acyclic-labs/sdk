@@ -558,7 +558,11 @@ fn followed_ledger_is_a_charged_copy_of_the_live_ledger() -> Result<(), Box<dyn 
     let followed = ledger
         .followed_with_accounting(&settled, Some(&owner), &mut accounting)?
         .ok_or("two settlements expect one state")?;
-    assert_ne!(accounting.spent().bytes_copied, 0, "name data is copied");
+    assert_ne!(
+        accounting.spent().unwrap().bytes_copied,
+        0,
+        "name data is copied"
+    );
     assert_ne!(
         owner.retained_bytes(),
         0,

@@ -68,7 +68,8 @@ impl DeferredReply {
                 capture,
                 _allocation: allocation,
             })));
-        #[cfg(all(test, not(loom)))]
+        #[cfg(test)]
+        #[cfg(all(not(loom)))]
         if let Some(queued) = core
             .publication_test
             .lock()

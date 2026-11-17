@@ -136,21 +136,21 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
         let cancel = CancellationToken::new();
         let original =
             crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let prior = RetainedAllocation::claim(29, 1, &mut accounting)?;
-        let retained = original.live_allocation_bytes();
-        let before = accounting.spent();
+        let retained = original.live_allocation_bytes().unwrap();
+        let before = accounting.spent().unwrap();
         let capacity = regions.capacity();
         MemoryCheckout::subsume_mutation_record_dependencies(&mut regions, &mut accounting)?;
-        let spent = accounting.spent();
+        let spent = accounting.spent().unwrap();
         assert_eq!(regions, expected);
         assert_eq!(regions.capacity(), capacity);
         assert!(spent.bytes_copied - before.bytes_copied <= budget.bytes_copied);
         assert!(spent.items_examined - before.items_examined <= budget.items_examined);
-        assert_eq!(original.live_allocation_bytes(), retained);
+        assert_eq!(original.live_allocation_bytes().unwrap(), retained);
         drop(prior);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         counts.push((
             spent.items_examined - before.items_examined,
             spent.bytes_copied - before.bytes_copied,
@@ -201,7 +201,7 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
     let mut successful = input.clone();
     let mut accounting = KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
     MemoryCheckout::subsume_mutation_record_dependencies(&mut successful, &mut accounting)?;
-    let spent = accounting.spent();
+    let spent = accounting.spent().unwrap();
     // Every examined-item refusal and the first denied swap keep all original
     // owners. No new work is needed to retire the private membership index.
     for allowance in 0..spent.items_examined {
@@ -211,7 +211,7 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
         };
         let original =
             crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let mut regions = input.clone();
         assert!(
@@ -220,7 +220,7 @@ fn mutation_subsumption_cost_and_custody() -> TestResult {
         );
         assert_eq!(regions.len(), input.len());
         assert!(input.iter().all(|entry| regions.contains(entry)));
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     for budget in [
         WorkBudget {

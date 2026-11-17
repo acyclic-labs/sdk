@@ -1,7 +1,8 @@
 use super::*;
 use crate::kernel::Owned;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 mod tests;
 
 pub(super) fn binding_conflict_view<A, O>(

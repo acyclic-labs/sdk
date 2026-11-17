@@ -80,7 +80,7 @@ async fn cold_wal_replay_is_private_and_missing_records_create_nothing() {
         Some(record)
     );
     assert_eq!(
-        work.receipt().durability_operations,
+        work.receipt().unwrap().durability_operations,
         0,
         "native inspection must not admit or execute a durability barrier"
     );
@@ -180,7 +180,7 @@ async fn inspection_neither_flushes_nor_exposes_a_deferred_after_image() {
             .unwrap(),
         Some(first.clone())
     );
-    assert_eq!(work.receipt().durability_operations, 0);
+    assert_eq!(work.receipt().unwrap().durability_operations, 0);
     assert_eq!(control.log().as_ref().unwrap().flushed, flushed);
     assert!(control.pending.load(Ordering::Acquire));
     assert_eq!(files(directory.path()), before);

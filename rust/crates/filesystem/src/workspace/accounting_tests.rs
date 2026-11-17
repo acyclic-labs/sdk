@@ -48,7 +48,7 @@ async fn file_batch_candidates_preserve_original_custody() -> Result<(), Box<dyn
                         .await?;
                 }
                 let before = transaction.checkout.root().file_table;
-                let original_before = original.receipt();
+                let original_before = original.receipt().unwrap();
                 let candidate = transaction.checkout.private_candidate(
                     &mut crate::kernel::allocation::KernelAccounting::native(
                         &foreign,
@@ -61,8 +61,8 @@ async fn file_batch_candidates_preserve_original_custody() -> Result<(), Box<dyn
                 assert_eq!(candidate.root().file_table, before);
                 drop(candidate);
                 assert_eq!(transaction.checkout.root().file_table, before);
-                assert_eq!(original.receipt(), original_before);
-                let foreign_before = foreign.receipt();
+                assert_eq!(original.receipt().unwrap(), original_before);
+                let foreign_before = foreign.receipt().unwrap();
                 let files = [("/new", acyclic_stream::OwnedBytes::from_static(b"changed"))];
                 let result = if create_only {
                     transaction
@@ -81,8 +81,8 @@ async fn file_batch_candidates_preserve_original_custody() -> Result<(), Box<dyn
                 ));
                 assert_eq!(transaction.checkout.root().file_table, before);
                 assert_eq!(transaction.checkout.has_pending_mutations(), pending);
-                assert_eq!(original.receipt(), original_before);
-                assert_eq!(foreign.receipt(), foreign_before);
+                assert_eq!(original.receipt().unwrap(), original_before);
+                assert_eq!(foreign.receipt().unwrap(), foreign_before);
                 if create_only {
                     transaction
                         .create_batch(&[], &files, &original, &cancellation)
@@ -127,10 +127,11 @@ impl FsWork for &Prefunded {
         accounting
     }
 
-    fn finish<T, E>(
+    fn finish_with<T, E>(
         &self,
         result: Result<T, E>,
         accounting: &KernelAccounting<'_>,
+        _observation_error: impl FnOnce(FsError) -> E,
     ) -> Self::Output<T, E> {
         let KernelAccounting::Standalone { allocations, .. } = accounting else {
             unreachable!("ordinary fixture")
@@ -138,7 +139,7 @@ impl FsWork for &Prefunded {
         let baseline = self.held.lock().unwrap().as_ref().unwrap().1;
         (
             result,
-            accounting.spent(),
+            accounting.spent().unwrap(),
             allocations.live_bytes(),
             baseline,
         )
@@ -249,7 +250,7 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
     let mut earlier = crate::kernel::Owned::<Vec<u8>>::allocate(128, &mut accounting)?;
     earlier.value.push(7);
     let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
-    let mut completed = accounting.spent();
+    let mut completed = accounting.spent().unwrap();
     for _ in 0..2 {
         let result = fs
             .workspace_join_changes_with_accounting(
@@ -265,8 +266,10 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
             accounting.standalone_parts().unwrap().0.live_bytes(),
             baseline
         );
-        assert!(accounting.spent().backend_read_operations > completed.backend_read_operations);
-        completed = accounting.spent();
+        assert!(
+            accounting.spent().unwrap().backend_read_operations > completed.backend_read_operations
+        );
+        completed = accounting.spent().unwrap();
     }
 
     // Withdraw a suspended operation with real temporary backing. Its owner
@@ -288,11 +291,11 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
         baseline
     );
     assert_eq!(
-        accounting.spent().items_examined,
+        accounting.spent().unwrap().items_examined,
         completed.items_examined + 3
     );
     assert_eq!(
-        accounting.spent().backend_read_operations,
+        accounting.spent().unwrap().backend_read_operations,
         completed.backend_read_operations
     );
     assert_eq!(earlier.value, [7]);
@@ -460,46 +463,51 @@ async fn generation_parents_keep_original_work_and_result_custody()
     {
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let (parents, allocation) = selected.parents(&original, &cancellation).await?;
         let allocation = allocation.ok_or("parent result lost original native backing")?;
         assert!(allocation.work().shares_ledger(&original));
         let bytes = (parents.capacity() * size_of::<GenerationId>()) as u64;
         assert_eq!(parents, [before.id()]);
         assert_eq!(allocation.bytes(), bytes);
-        assert_eq!(original.live_allocation_bytes(), baseline + bytes);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline + bytes);
         drop((parents, allocation));
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         assert!(matches!(
             foreign.parents(&original, &cancellation).await,
             Err(WorkspaceError::ForeignGeneration)
         ));
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let held = Retained::<Vec<u8>>::allocate(4096, &mut accounting)?;
-        let held_baseline = original.live_allocation_bytes();
-        let prior = original.receipt();
+        let held_baseline = original.live_allocation_bytes().unwrap();
+        let prior = original.receipt().unwrap();
         assert_eq!(
             selected
                 .normalized_join_parent_for(&selected, &original, &cancellation)
                 .await?,
             selected.id().object_id().digest
         );
-        assert_eq!(original.live_allocation_bytes(), held_baseline);
-        assert_eq!(original.receipt().object_probes, prior.object_probes + 2);
-        assert!(original.receipt().backend_read_operations > prior.backend_read_operations);
-        let prior = original.receipt();
+        assert_eq!(original.live_allocation_bytes().unwrap(), held_baseline);
+        assert_eq!(
+            original.receipt().unwrap().object_probes,
+            prior.object_probes + 2
+        );
+        assert!(
+            original.receipt().unwrap().backend_read_operations > prior.backend_read_operations
+        );
+        let prior = original.receipt().unwrap();
         assert!(matches!(
             selected
                 .normalized_join_parent_for(&selected, &original, &cancelled)
                 .await,
             Err(WorkspaceError::Cancelled(_))
         ));
-        assert_eq!(original.receipt(), prior);
-        assert_eq!(original.live_allocation_bytes(), held_baseline);
+        assert_eq!(original.receipt().unwrap(), prior);
+        assert_eq!(original.live_allocation_bytes().unwrap(), held_baseline);
         drop(held);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }
@@ -590,8 +598,8 @@ async fn extent_plans_keep_original_work_and_output_custody()
             .map_err(|(error, _)| error)?;
         let foreign = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let original_baseline = original.live_allocation_bytes();
-        let foreign_baseline = foreign.live_allocation_bytes();
+        let original_baseline = original.live_allocation_bytes().unwrap();
+        let foreign_baseline = foreign.live_allocation_bytes().unwrap();
         let original_state = std::sync::Arc::downgrade(&original.state);
         let foreign_state = std::sync::Arc::downgrade(&foreign.state);
         let mut checkout = workspace
@@ -608,7 +616,7 @@ async fn extent_plans_keep_original_work_and_output_custody()
                 offset: 0,
                 length: 1,
             };
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             let (plan, allocation) = checkout
                 .plan_file_extents(&path, range, 8, &original, &cancellation)
                 .await?;
@@ -619,12 +627,12 @@ async fn extent_plans_keep_original_work_and_output_custody()
                     .map_or(0, |plan| plan.retained_allocation_bytes)
             );
             assert_eq!(
-                original.live_allocation_bytes(),
+                original.live_allocation_bytes().unwrap(),
                 baseline + allocation.bytes()
             );
             drop((plan, allocation));
-            assert_eq!(original.live_allocation_bytes(), baseline);
-            let foreign_before = foreign.receipt();
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+            let foreign_before = foreign.receipt().unwrap();
             for target in [crate::ExtentSeekTarget::Data, crate::ExtentSeekTarget::Hole] {
                 let boundary = checkout
                     .seek_file_extent(&path, 0, target, &original, &cancellation)
@@ -637,7 +645,7 @@ async fn extent_plans_keep_original_work_and_output_custody()
                         crate::ExtentSeekTarget::Hole => 300,
                     })
                 );
-                assert_eq!(original.live_allocation_bytes(), baseline);
+                assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
                 assert!(matches!(
                     checkout
                         .seek_file_extent(&path, 0, target, &foreign, &cancellation)
@@ -671,7 +679,7 @@ async fn extent_plans_keep_original_work_and_output_custody()
                     crate::NativeTreeMaterializationError::InvalidLayout
                 ))
             ));
-            assert_eq!(foreign.receipt(), foreign_before);
+            assert_eq!(foreign.receipt().unwrap(), foreign_before);
         }
         let reader = checkout.into_pinned_reader_with_native_work(&original, &cancellation)?;
         for name in ["inline", "regular"] {
@@ -685,7 +693,7 @@ async fn extent_plans_keep_original_work_and_output_custody()
                 .await?;
             let file = files[0].as_ref().ok_or("missing native extent file")?;
             for resolved in [false, true] {
-                let baseline = original.live_allocation_bytes();
+                let baseline = original.live_allocation_bytes().unwrap();
                 let (plan, allocation) = if resolved {
                     file.plan_extents(range, 8, &original, &cancellation)
                         .await?
@@ -701,11 +709,11 @@ async fn extent_plans_keep_original_work_and_output_custody()
                         .map_or(0, |plan| plan.retained_allocation_bytes)
                 );
                 assert_eq!(
-                    original.live_allocation_bytes(),
+                    original.live_allocation_bytes().unwrap(),
                     baseline + allocation.bytes()
                 );
                 drop((plan, allocation));
-                assert_eq!(original.live_allocation_bytes(), baseline);
+                assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
             }
             drop((files, handles));
             assert!(matches!(
@@ -720,9 +728,9 @@ async fn extent_plans_keep_original_work_and_output_custody()
         drop(reader);
         // The original receipt retires the shared proof-accounting Arc after
         // its final reader leaves; observing live bytes alone does not retire it.
-        original.receipt().verify(budget)?;
-        assert_eq!(original.live_allocation_bytes(), original_baseline);
-        assert_eq!(foreign.live_allocation_bytes(), foreign_baseline);
+        original.receipt().unwrap().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), original_baseline);
+        assert_eq!(foreign.live_allocation_bytes().unwrap(), foreign_baseline);
         drop((original, foreign));
         assert!(original_state.upgrade().is_none());
         assert!(foreign_state.upgrade().is_none());
@@ -853,9 +861,9 @@ impl AsyncAuthorityStore for ObservedAuthority {
             #[cfg(not(target_arch = "wasm32"))]
             let live = work
                 .original
-                .map_or(live, |work| work.live_allocation_bytes());
+                .map_or(live, |work| work.live_allocation_bytes().unwrap());
             assert!(live >= observation.minimum);
-            assert!(work.spent().items_examined > 0);
+            assert!(work.spent().unwrap().items_examined > 0);
             work.charge(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
@@ -903,7 +911,7 @@ impl AsyncAuthorityStore for ObservedAuthority {
             #[cfg(not(target_arch = "wasm32"))]
             let live = work
                 .original
-                .map(|work| work.live_allocation_bytes())
+                .map(|work| work.live_allocation_bytes().unwrap())
                 .or(live);
             assert!(
                 live.is_some_and(|live| live >= minimum),
@@ -1002,7 +1010,7 @@ async fn workspace_extent_projection_keeps_original_work_and_single_output_backi
     {
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let owner = std::sync::Arc::downgrade(&original.state);
         for (path, length) in [("/inline", 5), ("/regular", 300)] {
             let (plan, allocation) = generation
@@ -1014,11 +1022,11 @@ async fn workspace_extent_projection_keeps_original_work_and_single_output_backi
             assert_eq!(allocation.bytes(), bytes);
             assert_eq!(plan.spans.len(), 1);
             assert_eq!((plan.spans[0].offset, plan.spans[0].length), (0, length));
-            original.receipt().verify(budget)?;
-            assert_eq!(original.live_allocation_bytes(), baseline + bytes);
+            original.receipt().unwrap().verify(budget)?;
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline + bytes);
             drop((plan, allocation));
-            original.receipt().verify(budget)?;
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            original.receipt().unwrap().verify(budget)?;
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         }
         let (empty, allocation) = generation
             .plan_extents("/inline", 5, 0, 8, &original, &cancellation)
@@ -1030,8 +1038,8 @@ async fn workspace_extent_projection_keeps_original_work_and_single_output_backi
                 .bytes(),
             0
         );
-        original.receipt().verify(budget)?;
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        original.receipt().unwrap().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         drop(original);
         assert!(owner.upgrade().is_none());
     }
@@ -1174,7 +1182,7 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
     {
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let owner = std::sync::Arc::downgrade(&original.state);
         assert!(
             generation
@@ -1186,8 +1194,8 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                 .matches_optional_file_payload(&generation, "/missing", &original, &cancellation)
                 .await?
         );
-        original.receipt().verify(budget)?;
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        original.receipt().unwrap().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         assert_eq!(
             generation
                 .stat("/a", &original, &cancellation)
@@ -1195,14 +1203,14 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                 .logical_bytes,
             Some(5)
         );
-        original.receipt().verify(budget)?;
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        original.receipt().unwrap().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         assert!(matches!(
             generation.stat("/missing", &original, &cancellation).await,
             Err(WorkspaceError::NotFound)
         ));
-        original.receipt().verify(budget)?;
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        original.receipt().unwrap().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         let (first, first_allocation) = generation
             .list_directory("/", None, 1, &original, &cancellation)
             .await?;
@@ -1225,17 +1233,20 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
             workspace_vec_bytes(&second.entries) + second.entries[0].name.logical_owned_bytes();
         assert_eq!(second_allocation.bytes(), second_bytes);
         assert!(!second.has_more);
-        original.receipt().verify(budget)?;
+        original.receipt().unwrap().verify(budget)?;
         assert_eq!(
-            original.live_allocation_bytes(),
+            original.live_allocation_bytes().unwrap(),
             baseline + first_bytes + second_bytes
         );
         drop((second, second_allocation));
-        original.receipt().verify(budget)?;
-        assert_eq!(original.live_allocation_bytes(), baseline + first_bytes);
+        original.receipt().unwrap().verify(budget)?;
+        assert_eq!(
+            original.live_allocation_bytes().unwrap(),
+            baseline + first_bytes
+        );
         drop((first, first_allocation));
-        original.receipt().verify(budget)?;
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        original.receipt().unwrap().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         drop(original);
         assert!(owner.upgrade().is_none());
 
@@ -1248,7 +1259,7 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                let baseline = original.live_allocation_bytes();
+                let baseline = original.live_allocation_bytes().unwrap();
                 let (producer, completion) = tokio::sync::oneshot::channel();
                 *authority.observation.lock().unwrap() = Some(Observation {
                     skip_heads: 0,
@@ -1281,9 +1292,9 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                         Err(WorkspaceError::Filesystem(FsError::WorkspaceDeleted))
                     ));
                 }
-                original.receipt().verify(budget)?;
-                assert!(original.receipt().items_examined > 1);
-                assert_eq!(original.live_allocation_bytes(), baseline);
+                original.receipt().unwrap().verify(budget)?;
+                assert!(original.receipt().unwrap().items_examined > 1);
+                assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
             }
         }
     }
@@ -1444,15 +1455,15 @@ async fn workspace_byte_reads_retire_namespace_scratch_and_keep_original_output(
     {
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let owner = Arc::downgrade(&original.state);
         let first = generation
             .read("/inline", 5, &original, &cancellation)
             .await?;
         assert_eq!(first.as_ref(), b"first");
         assert!(first.matches_meter(&original.runtime_meter()));
-        original.receipt().verify(budget)?;
-        let first_live = original.live_allocation_bytes();
+        original.receipt().unwrap().verify(budget)?;
+        let first_live = original.live_allocation_bytes().unwrap();
         assert!(first_live > baseline);
         let range = generation
             .read_range("/regular", 10, 7, &original, &cancellation)
@@ -1463,11 +1474,11 @@ async fn workspace_byte_reads_retire_namespace_scratch_and_keep_original_output(
             .await?;
         assert_eq!(link.bytes.as_ref(), b"/inline");
         drop((range, link));
-        original.receipt().verify(budget)?;
-        assert_eq!(original.live_allocation_bytes(), first_live);
+        original.receipt().unwrap().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), first_live);
         drop(first);
-        original.receipt().verify(budget)?;
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        original.receipt().unwrap().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         drop(original);
         assert!(owner.upgrade().is_none());
     }
@@ -1540,7 +1551,7 @@ async fn policy_revision_retires_original_scratch_on_confirmation_close_and_with
         let mut earlier = crate::kernel::Owned::<Vec<u8>>::allocate(128, &mut accounting)?;
         earlier.value.push(7);
         let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
-        let before = accounting.spent();
+        let before = accounting.spent().unwrap();
         let (producer, completion) = tokio::sync::oneshot::channel();
         *authority.observation.lock().unwrap() = Some(Observation {
             skip_heads: 1,
@@ -1584,9 +1595,11 @@ async fn policy_revision_retires_original_scratch_on_confirmation_close_and_with
                 );
             }
         }
-        accounting.spent().verify(budget)?;
-        assert!(accounting.spent().backend_read_operations > before.backend_read_operations);
-        assert!(accounting.spent().items_examined > before.items_examined);
+        accounting.spent().unwrap().verify(budget)?;
+        assert!(
+            accounting.spent().unwrap().backend_read_operations > before.backend_read_operations
+        );
+        assert!(accounting.spent().unwrap().items_examined > before.items_examined);
         assert_eq!(
             accounting.standalone_parts().unwrap().0.live_bytes(),
             baseline
@@ -1646,7 +1659,7 @@ async fn sparse_seek_retires_original_traversal_on_read_close_and_withdrawal()
         let mut earlier = crate::kernel::Owned::<Vec<u8>>::allocate(128, &mut accounting)?;
         earlier.value.push(7);
         let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
-        let before = accounting.spent();
+        let before = accounting.spent().unwrap();
         let (producer, completion) = tokio::sync::oneshot::channel();
         *objects.release.lock().unwrap() = Some(completion);
         let mut operation = Box::pin(crate::facade::seek_record_extent_with_accounting(
@@ -1678,8 +1691,11 @@ async fn sparse_seek_retires_original_traversal_on_read_close_and_withdrawal()
                 drop(producer);
             }
         }
-        accounting.spent().verify(budget)?;
-        assert_eq!(accounting.spent().page_reads, before.page_reads + 1);
+        accounting.spent().unwrap().verify(budget)?;
+        assert_eq!(
+            accounting.spent().unwrap().page_reads,
+            before.page_reads + 1
+        );
         assert_eq!(
             accounting.standalone_parts().unwrap().0.live_bytes(),
             baseline
@@ -1770,7 +1786,7 @@ async fn scalar_record_reads_retire_original_traversal_on_close_and_withdrawal()
             let mut earlier = crate::kernel::Owned::<Vec<u8>>::allocate(128, &mut accounting)?;
             earlier.value.push(7);
             let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
-            let before = accounting.spent();
+            let before = accounting.spent().unwrap();
             let (producer, completion) = tokio::sync::oneshot::channel();
             *objects.release.lock().unwrap() = Some(completion);
             let mut operation = Box::pin(async {
@@ -1825,8 +1841,8 @@ async fn scalar_record_reads_retire_original_traversal_on_close_and_withdrawal()
                     drop(producer);
                 }
             }
-            accounting.spent().verify(budget)?;
-            assert!(accounting.spent().items_examined > before.items_examined);
+            accounting.spent().unwrap().verify(budget)?;
+            assert!(accounting.spent().unwrap().items_examined > before.items_examined);
             assert_eq!(
                 accounting.standalone_parts().unwrap().0.live_bytes(),
                 baseline

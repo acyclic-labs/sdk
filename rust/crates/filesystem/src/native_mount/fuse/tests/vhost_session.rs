@@ -18,7 +18,7 @@ fn standard_config_then_quiet_cancel_or_unexpected_eof_keeps_actual_outcome()
     for cancel in [false, true] {
         let cancellation = crate::CancellationToken::new();
         let work = cache_work(FINITE_CACHE_BUDGET, &cancellation);
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         let (source, _) = shared_sources(posix_config())?;
         let core = projection_core(Arc::new(source), FINITE_HANDLER_POLICY, &cancellation)?;
         let protocol = PacketSession::new(
@@ -104,7 +104,7 @@ fn standard_config_then_quiet_cancel_or_unexpected_eof_keeps_actual_outcome()
                 ))
             ));
         }
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }

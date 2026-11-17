@@ -26,7 +26,7 @@ async fn original_table_encoding_denial_precedes_native_payload_and_backend_writ
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let live = work.live_allocation_bytes();
+    let live = work.live_allocation_bytes().unwrap();
     let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
     let error = apply_file_table_mutations_with_accounting(
         &store,
@@ -43,10 +43,10 @@ async fn original_table_encoding_denial_precedes_native_payload_and_backend_writ
         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
             | crate::FsError::Work(_)
     ));
-    assert_eq!(work.receipt().bytes_encoded, 0);
-    assert_eq!(work.receipt().page_writes, 0);
-    assert_eq!(work.receipt().backend_write_operations, 0);
-    assert_eq!(work.live_allocation_bytes(), live);
+    assert_eq!(work.receipt().unwrap().bytes_encoded, 0);
+    assert_eq!(work.receipt().unwrap().page_writes, 0);
+    assert_eq!(work.receipt().unwrap().backend_write_operations, 0);
+    assert_eq!(work.live_allocation_bytes().unwrap(), live);
     Ok(())
 }
 fn record(byte: u8, metadata_byte: u8) -> FileRecord {

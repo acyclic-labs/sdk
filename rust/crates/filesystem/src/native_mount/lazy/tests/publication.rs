@@ -281,7 +281,7 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
             let mut checkout = view.authored.shared_checkout().lock().await;
             checkout.retain_operation_id(pending)?;
         }
-        let appended = work.receipt().authority_records_appended;
+        let appended = work.receipt().unwrap().authority_records_appended;
         let mut acknowledged = None;
         let replay = view
             .sync_async_with_permit_qualified_native_work_guarded_with_ack(
@@ -299,7 +299,7 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
             .map_err(|(cause, _)| cause)?;
         assert_eq!(replay, clean);
         assert_eq!(acknowledged, Some(clean.clone()));
-        assert_eq!(work.receipt().authority_records_appended, appended);
+        assert_eq!(work.receipt().unwrap().authority_records_appended, appended);
         if let Some(pending) = pending {
             let mut checkout = view.authored.shared_checkout().lock().await;
             assert_eq!(
@@ -1579,7 +1579,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
                 Err(MountSourceError::Stale)
             ));
         }
-        let appended_before_reconciliation = work.receipt().authority_records_appended;
+        let appended_before_reconciliation = work.receipt().unwrap().authority_records_appended;
         let guarded = move |work: &crate::NativeMaterializationWork| {
             assert!(!unknown_ack, "a durable original must not be sealed twice");
             allow(work)
@@ -1820,7 +1820,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
             let retried = retry_ack.ok_or("reconciled post-CAS ACK")?;
             assert_eq!(retried.operation(), ack.operation());
             assert_eq!(retried.generation(), ack.generation());
-            assert_eq!(retry_work.receipt().authority_records_appended, 0);
+            assert_eq!(retry_work.receipt().unwrap().authority_records_appended, 0);
             let settled = view
                 .authored
                 .shared_checkout()
@@ -1853,7 +1853,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         assert_eq!(settled_observation.retained_operation(), None);
         if unknown_ack {
             assert_eq!(
-                work.receipt().authority_records_appended,
+                work.receipt().unwrap().authority_records_appended,
                 appended_before_reconciliation
             );
         }

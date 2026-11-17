@@ -170,7 +170,7 @@ async fn reservation_recovery_uses_bounded_reads_and_hashing_for_long_histories(
                         .await?,
                     Some(reservation)
                 );
-                let spent = recovery.spent();
+                let spent = recovery.spent().unwrap();
                 // The provider charges its retained-key index probes separately.
                 // Recovery performs a fixed number of reads and hashes one request.
                 assert!(spent.items_examined <= 1024);

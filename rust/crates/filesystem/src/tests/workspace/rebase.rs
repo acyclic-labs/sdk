@@ -270,12 +270,12 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     let (original, held, initial, baseline) = {
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let initial = original.live_allocation_bytes();
+        let initial = original.live_allocation_bytes().unwrap();
         let held = crate::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
             4096,
             &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
         )?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         assert!(matches!(
             agent
                 .live_rebase(
@@ -289,10 +289,10 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
                 .await?,
             WorkspaceRebase::Rebased(_)
         ));
-        assert!(original.receipt().backend_read_operations > 2);
-        assert!(original.receipt().backend_write_operations > 0);
-        assert!(original.receipt().authority_records_appended > 0);
-        assert!(original.live_allocation_bytes() > baseline);
+        assert!(original.receipt().unwrap().backend_read_operations > 2);
+        assert!(original.receipt().unwrap().backend_write_operations > 0);
+        assert!(original.receipt().unwrap().authority_records_appended > 0);
+        assert!(original.live_allocation_bytes().unwrap() > baseline);
         (original, held, initial, baseline)
     };
     assert_eq!(
@@ -306,9 +306,9 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     #[cfg(not(target_arch = "wasm32"))]
     {
         drop((first, agent, main, fs));
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         drop(held);
-        assert_eq!(original.live_allocation_bytes(), initial);
+        assert_eq!(original.live_allocation_bytes().unwrap(), initial);
     }
     Ok(())
 }
@@ -345,7 +345,7 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let WorkspaceRebase::Conflicted {
             conflicts,
             truncated,
@@ -367,12 +367,12 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
         assert!(!conflicts.is_empty());
         let allocation = allocation.ok_or("rebase conflicts lost original native custody")?;
         assert!(allocation.work().shares_ledger(&original));
-        let live = original.live_allocation_bytes();
+        let live = original.live_allocation_bytes().unwrap();
         let bytes = allocation.bytes();
         assert!(bytes > 0);
         assert!(live > baseline + bytes);
         drop((conflicts, allocation));
-        assert_eq!(original.live_allocation_bytes(), live - bytes);
+        assert_eq!(original.live_allocation_bytes().unwrap(), live - bytes);
         (original, baseline)
     };
     assert_eq!(unbounded!(agent, head())?.id(), before);
@@ -390,7 +390,7 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
     #[cfg(not(target_arch = "wasm32"))]
     {
         drop((agent, main, fs));
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }

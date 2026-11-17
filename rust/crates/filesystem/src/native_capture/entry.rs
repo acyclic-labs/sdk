@@ -488,7 +488,8 @@ fn descendant_path(base: &Path, relative: &Path) -> PathBuf {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(all(windows))]
 #[test]
 fn ascent_cancels_only_named_steps() {
     for (base, relative, expected) in [
@@ -542,13 +543,13 @@ async fn capture_paths_in<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
     validate_path_count(paths, options)
-        .map_err(|error| OperationFailure::new(error, native.receipt()))?;
+        .map_err(|error| OperationFailure::observed(error, native.receipt()))?;
     let mut candidate = checkout
         .private_candidate(
             &mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation),
             cancellation,
         )
-        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+        .map_err(|error| OperationFailure::observed(error.into(), native.receipt()))?;
     let scope = CaptureWorkScope::new(&native)?;
     let result = async {
         let source_root = match held {
@@ -586,7 +587,7 @@ async fn capture_paths_in<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let receipt = capture_scope_result(scope, result)?;
     cancellation
         .commit_if_live(|| *checkout = candidate)
-        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+        .map_err(|error| OperationFailure::observed(error.into(), native.receipt()))?;
     Ok(receipt)
 }
 
@@ -607,12 +608,13 @@ pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObject
         cancellation.check()?;
         work.clone().check().map_err(capture_demand_error)
     })();
-    checked.map_err(|error| OperationFailure::new(error, work.receipt()))?;
+    checked.map_err(|error| OperationFailure::observed(error, work.receipt()))?;
     if paths.is_empty() {
-        return Ok(OperationReceipt {
-            value: CaptureReceipt::default(),
-            work: work.receipt(),
-        });
+        return crate::performance::finish_measured(
+            Ok(CaptureReceipt::default()),
+            work.receipt(),
+            CaptureError::from,
+        );
     }
     let scope = CaptureWorkScope::new(work)?;
     let meter = &scope.native;
@@ -647,7 +649,7 @@ pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObject
     let (candidate, value) = receipt.value;
     cancellation
         .commit_if_live(|| *checkout = candidate)
-        .map_err(|error| OperationFailure::new(error.into(), work.receipt()))?;
+        .map_err(|error| OperationFailure::observed(error.into(), work.receipt()))?;
     Ok(OperationReceipt {
         value,
         work: receipt.work,
@@ -668,7 +670,7 @@ pub async fn capture_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             &mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation),
             cancellation,
         )
-        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+        .map_err(|error| OperationFailure::observed(error.into(), native.receipt()))?;
     let result = capture_subtrees_with_native_work(
         &mut candidate,
         &[root],
@@ -681,7 +683,7 @@ pub async fn capture_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let receipt = result?;
     cancellation
         .commit_if_live(|| *checkout = candidate)
-        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+        .map_err(|error| OperationFailure::observed(error.into(), native.receipt()))?;
     Ok(receipt)
 }
 
@@ -879,29 +881,31 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
     if checkout.has_pending_mutations() {
-        return Err(OperationFailure::new(
+        return Err(OperationFailure::observed(
             CaptureError::DirtyCheckout,
             native.receipt(),
         ));
     }
     if options.maximum_paths == Some(0) || options.maximum_extent_spans == Some(0) {
-        return Err(OperationFailure::new(
+        return Err(OperationFailure::observed(
             CaptureError::InvalidOptions,
             native.receipt(),
         ));
     }
     cancellation
         .check()
-        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+        .map_err(|error| OperationFailure::observed(error.into(), native.receipt()))?;
     native
         .with_original_leaf(|work| work.check())
-        .map_err(|error| OperationFailure::new(capture_demand_error(error), native.receipt()))?;
+        .map_err(|error| {
+            OperationFailure::observed(capture_demand_error(error), native.receipt())
+        })?;
     let mut candidate = checkout
         .private_candidate(
             &mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation),
             cancellation,
         )
-        .map_err(|error| OperationFailure::new(CaptureError::from(error), native.receipt()))?;
+        .map_err(|error| OperationFailure::observed(CaptureError::from(error), native.receipt()))?;
     let scope = CaptureWorkScope::new(&native)?;
     let meter = &scope.native;
     let result = (async {
@@ -947,6 +951,6 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let receipt = capture_scope_result(scope, result)?;
     cancellation
         .commit_if_live(|| *checkout = candidate)
-        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+        .map_err(|error| OperationFailure::observed(error.into(), native.receipt()))?;
     Ok(receipt)
 }

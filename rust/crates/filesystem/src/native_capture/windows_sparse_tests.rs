@@ -126,7 +126,10 @@ async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()
                         )
                     })
                     .map_err(|error| {
-                        OperationFailure::new(capture_demand_error(error), work.native.receipt())
+                        OperationFailure::new(
+                            capture_demand_error(error),
+                            work.native.receipt().unwrap(),
+                        )
                     })?;
             }
             let result =
@@ -135,8 +138,8 @@ async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()
                     .map(drop);
             scope
                 .release()
-                .map_err(|error| OperationFailure::new(error, original.receipt()))?;
-            let work = original.receipt();
+                .map_err(|error| OperationFailure::new(error, original.receipt().unwrap()))?;
+            let work = original.receipt().unwrap();
             result
                 .map(|()| ((), work))
                 .map_err(|error| OperationFailure::new(error, work))

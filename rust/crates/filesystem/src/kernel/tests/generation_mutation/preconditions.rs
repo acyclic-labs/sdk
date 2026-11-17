@@ -480,7 +480,7 @@ async fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
         duplicate.error,
         GenerationMutationError::FileIdentityAlreadyExists
     ));
-    assert_eq!(duplicate.work.backend_write_operations, 0);
+    assert_eq!(duplicate.work().unwrap().backend_write_operations, 0);
 
     let missing_identity = FileId::from_bytes([41; 16]);
     let identity = apply_generation_mutations(
@@ -501,7 +501,7 @@ async fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
         identity.error,
         GenerationMutationError::MissingSource
     ));
-    assert_eq!(identity.work.backend_write_operations, 0);
+    assert_eq!(identity.work().unwrap().backend_write_operations, 0);
     let identity_clone = apply_generation_mutations(
         &store,
         &fixture.generation,
@@ -523,7 +523,7 @@ async fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
         identity_clone.error,
         GenerationMutationError::MissingSource
     ));
-    assert_eq!(identity_clone.work.backend_write_operations, 0);
+    assert_eq!(identity_clone.work().unwrap().backend_write_operations, 0);
 
     for mutation in [
         Mutation::ValidateRegular {

@@ -65,8 +65,13 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
                 receipt.value
             }
             Err(failed) => {
-                self.work = Some(*failed.work);
-                self.failure = Some(failed.error);
+                match failed.work {
+                    Ok(work) => {
+                        self.work = Some(*work);
+                        self.failure = Some(failed.error);
+                    }
+                    Err(observation) => self.failure = Some(observation.into()),
+                }
                 return Err(std::io::Error::other("version-pinned source read failed"));
             }
         };

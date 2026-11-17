@@ -698,21 +698,21 @@ proptest! {
         let cancel = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancel)
             .map_err(|(cause, _)| proptest::test_runner::TestCaseError::fail(cause.to_string()))?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         prop_assert_eq!(baseline, acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
         let bytes = first.logical_owned_bytes();
         let custody = work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
         let view = AccessView::new_native(first, custody)?;
         let pinned = view.current()?;
-        let before = work.live_allocation_bytes();
+        let before = work.live_allocation_bytes().unwrap();
         let next = compile()?;
         view.publish_native(next, work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?)?;
-        prop_assert!(work.live_allocation_bytes() > before);
+        prop_assert!(work.live_allocation_bytes().unwrap() > before);
         drop(view);
-        prop_assert!(work.live_allocation_bytes() >= baseline + bytes);
+        prop_assert!(work.live_allocation_bytes().unwrap() >= baseline + bytes);
         prop_assert!(pinned.decide(Action::Read, "file", 100).allowed);
         drop(pinned);
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        prop_assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
       }
     }
 }

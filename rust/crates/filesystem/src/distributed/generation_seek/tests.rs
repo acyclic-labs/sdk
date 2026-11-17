@@ -133,9 +133,9 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
                 Some(first)
             );
             let counts = if native {
-                original.receipt()
+                original.receipt().unwrap()
             } else {
-                work.spent()
+                work.spent().unwrap()
             };
             assert_eq!(
                 (
@@ -163,9 +163,9 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
                 None
             );
             assert_read_only(if native {
-                original.receipt()
+                original.receipt().unwrap()
             } else {
-                work.spent()
+                work.spent().unwrap()
             });
             assert_eq!(
                 store
@@ -174,9 +174,9 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
                 None
             );
             assert_read_only(if native {
-                original.receipt()
+                original.receipt().unwrap()
             } else {
-                work.spent()
+                work.spent().unwrap()
             });
             assert!(
                 store
@@ -190,9 +190,9 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
                     .is_err()
             );
             assert_read_only(if native {
-                original.receipt()
+                original.receipt().unwrap()
             } else {
-                work.spent()
+                work.spent().unwrap()
             });
             drop(work);
         }

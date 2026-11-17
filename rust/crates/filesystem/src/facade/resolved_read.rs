@@ -204,14 +204,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
                         .await
                 };
                 let result = order_batch_results(results, WorkBudget::UNBOUNDED);
-                let work = match &result {
-                    Ok(receipt) => receipt.work,
-                    Err(failure) => *failure.work,
-                };
+                let (result, work) = accounting.split_receipt(result)?;
                 accounting.record_completed(work)?;
-                let receipt = result.map_err(|failure| failure.error)?;
+                let value = result?;
                 let allocation = accounting.claim_owned(
-                    usize_to_u64(receipt.value.capacity() * size_of::<FileRangeRead>()),
+                    usize_to_u64(value.capacity() * size_of::<FileRangeRead>()),
                     u64::from(!requests.is_empty()),
                 )?;
                 accounting.charge(WorkCounters {
@@ -219,7 +216,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
                     bytes_copied: usize_to_u64(requests.len() * size_of::<FileRangeRead>()),
                     ..WorkCounters::UNCHARGED
                 })?;
-                return Ok((receipt.value, allocation));
+                return Ok((value, allocation));
             }
             let mut reads = Owned::<Vec<FileRangeRead>>::allocate(requests.len(), &mut accounting)?;
             for request in requests {
@@ -267,7 +264,16 @@ pub(super) fn order_batch_results<T>(
                 completed.push(receipt.value);
             }
             Err(failure) => {
-                work = add(work, *failure.work)?;
+                let completed = match failure.work {
+                    Ok(completed) => completed,
+                    Err(observation) => {
+                        return Err(OperationFailure::without_receipt(
+                            failure.error,
+                            observation,
+                        ));
+                    }
+                };
+                work = add(work, *completed)?;
                 if first_failure.is_none() {
                     first_failure = Some(failure.error);
                 }

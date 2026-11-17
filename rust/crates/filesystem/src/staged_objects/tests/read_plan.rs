@@ -29,7 +29,7 @@ async fn mixed_read_plan_rejects_known_extents_before_backend_submission()
             for stored in [false, true] {
                 let original = NativeMaterializationWork::new(native_read_budget(), &token)
                     .map_err(|(cause, _)| cause)?;
-                let baseline = original.live_allocation_bytes();
+                let baseline = original.live_allocation_bytes().unwrap();
                 let mut work = if native {
                     AuthorityWork::native(&original, &token)
                 } else {
@@ -76,10 +76,10 @@ async fn mixed_read_plan_rejects_known_extents_before_backend_submission()
                         .any(|event| event.starts_with("native:")),
                     "known private extent dispatched backend work"
                 );
-                assert_eq!(work.spent().backend_read_operations, 0);
-                assert_eq!(work.spent().bytes_copied, 0);
+                assert_eq!(work.spent().unwrap().backend_read_operations, 0);
+                assert_eq!(work.spent().unwrap().bytes_copied, 0);
                 assert_eq!(work.allocations.live_bytes(), 0);
-                assert_eq!(original.live_allocation_bytes(), baseline);
+                assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
             }
         }
     }
@@ -135,7 +135,7 @@ async fn mixed_read_plan_admits_request_copies_before_backend_submission()
                 };
                 let original =
                     NativeMaterializationWork::new(budget, &token).map_err(|(cause, _)| cause)?;
-                let baseline = original.live_allocation_bytes();
+                let baseline = original.live_allocation_bytes().unwrap();
                 let mut work = if native {
                     AuthorityWork::native(&original, &token)
                 } else {
@@ -185,9 +185,9 @@ async fn mixed_read_plan_admits_request_copies_before_backend_submission()
                         .any(|event| event.starts_with("native:")),
                     "unfunded request metadata dispatched backend work"
                 );
-                assert_eq!(work.spent().backend_read_operations, 0);
+                assert_eq!(work.spent().unwrap().backend_read_operations, 0);
                 assert_eq!(work.allocations.live_bytes(), 0);
-                assert_eq!(original.live_allocation_bytes(), baseline);
+                assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
             }
         }
     }

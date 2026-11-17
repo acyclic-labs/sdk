@@ -350,7 +350,7 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
     .await
     .err()
     .ok_or("cancelled relation edit succeeded")?;
-    assert_eq!(denied.work.backend_write_operations, 0);
+    assert_eq!(denied.work().unwrap().backend_write_operations, 0);
     let mut budget = WorkBudget::UNBOUNDED;
     budget.backend_write_operations = 0;
     let denied = apply_generation_mutations(
@@ -509,7 +509,7 @@ async fn content_executes_and_identity_rejections_precede_candidate_writes()
         collision.error,
         GenerationMutationError::FileIdentityAlreadyExists
     ));
-    assert_eq!(collision.work.backend_write_operations, 0);
+    assert_eq!(collision.work().unwrap().backend_write_operations, 0);
     Ok(())
 }
 

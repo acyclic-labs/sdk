@@ -123,7 +123,7 @@ pub fn check_access_record(bytes: &[u8]) -> Result<()> {
     drop(io);
     #[cfg(not(target_arch = "wasm32"))]
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes()?,
         acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())

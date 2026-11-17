@@ -54,12 +54,12 @@ fn foreign_work_is_refused_before_activating_a_real_source()
         original.cancellation(),
     )?;
     let foreign = fuse_fixture_work();
-    let before = foreign.receipt();
+    let before = foreign.receipt().unwrap();
     assert!(matches!(
         NativeMountWorkScope::new(&core, &foreign),
         Err(NativeMountError::ControlPending)
     ));
-    assert_eq!(foreign.receipt(), before);
+    assert_eq!(foreign.receipt().unwrap(), before);
     let active = NativeMountWorkScope::new(&core, &original)?;
     let nested = active.try_clone_for_io()?;
     drop((nested, active));
@@ -124,7 +124,7 @@ fn terminal_view_refuses_later_kernel_packets_without_readmitting_source()
         ))
     });
     assert_eq!(core.finish(result), Err(libc::EIO));
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     let later = super::super::packet_dispatch::PacketFailure::source(
         &core,
         (
@@ -151,7 +151,11 @@ fn terminal_view_refuses_later_kernel_packets_without_readmitting_source()
             },
         );
         assert_eq!(failure.err().map(|failure| failure.errno()), Some(expected));
-        assert_eq!(work.receipt(), before, "no fresh source callback allowance");
+        assert_eq!(
+            work.receipt().unwrap(),
+            before,
+            "no fresh source callback allowance"
+        );
         if expected == libc::EIO {
             assert!(matches!(
                 core.take_handler_failure()
@@ -227,7 +231,7 @@ fn failed_child_view_keeps_parent_packets_live_until_transport_failure()
         (child, libc::EIO),
         (parent, 0),
     ] {
-        let prefix = work.receipt();
+        let prefix = work.receipt().unwrap();
         let mut request =
             PacketRequest::parse(&packet(1)?.request).map_err(std::io::Error::from_raw_os_error)?;
         request.inode = core.state_to_finish().root_inode;
@@ -244,7 +248,7 @@ fn failed_child_view_keeps_parent_packets_live_until_transport_failure()
         );
         if errno != 0 {
             assert_eq!(
-                work.receipt(),
+                work.receipt().unwrap(),
                 prefix,
                 "the failed view admits no source work"
             );
@@ -259,7 +263,7 @@ fn failed_child_view_keeps_parent_packets_live_until_transport_failure()
             .publish(&request, &mut response, |_| Err(libc::EPIPE.into()))
             .is_err()
     );
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     for view in [&parent, &child] {
         request.inode = view.state_to_finish().root_inode;
         assert_eq!(
@@ -285,7 +289,7 @@ fn failed_child_view_keeps_parent_packets_live_until_transport_failure()
         Some(libc::ENODEV)
     );
     assert_eq!(
-        work.receipt(),
+        work.receipt().unwrap(),
         before,
         "closed transport admits no source work"
     );
@@ -508,7 +512,7 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
     );
     let input_allocation = (buffers.input.as_ptr(), buffers.input.capacity());
     let allocation = (buffers.output.as_ptr(), buffers.output.capacity());
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     let failure = super::super::packet_buffers::PacketBuffers::input_for(
         &mut buffers.input,
         capacity + 1,
@@ -517,40 +521,48 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
     .expect_err("a descriptor cannot enlarge the negotiated request envelope");
     assert_eq!(callback_errno(&failure), libc::EMSGSIZE);
     assert!(buffers.input.is_empty());
-    assert_eq!(work.receipt(), before);
+    assert_eq!(work.receipt().unwrap(), before);
     let mut seen = std::collections::BTreeSet::new();
     let mut input_high_water = 0;
     for packet in packets {
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         let input = super::super::packet_buffers::PacketBuffers::input_for(
             &mut buffers.input,
             packet.request.len(),
             capacity,
         )?;
-        assert_eq!(work.receipt(), before, "input growth needs no new credit");
+        assert_eq!(
+            work.receipt().unwrap(),
+            before,
+            "input growth needs no new credit"
+        );
         input.copy_from_slice(&packet.request);
         let request = PacketRequest::parse(input).map_err(std::io::Error::from_raw_os_error)?;
         seen.insert(request.opcode);
         if request.opcode == 16 {
-            let before = work.receipt();
+            let before = work.receipt().unwrap();
             let failure = protocol
                 .dispatch(&request, &mut [0; OUTPUT_HEADER])
                 .err()
                 .ok_or("a write must refuse insufficient reply space before its effect")?;
             assert_eq!(failure.errno(), libc::ENOBUFS);
             assert_eq!(
-                work.receipt(),
+                work.receipt().unwrap(),
                 before,
                 "refused write admits no source work"
             );
         }
-        let before = work.receipt();
+        let before = work.receipt().unwrap();
         let response = super::super::packet_buffers::PacketBuffers::output_for(
             &mut buffers.output,
             &request,
             capacity,
         )?;
-        assert_eq!(work.receipt(), before, "initialization needs no new credit");
+        assert_eq!(
+            work.receipt().unwrap(),
+            before,
+            "initialization needs no new credit"
+        );
         if request.opcode == 26 {
             assert!(
                 input.len() < capacity,
@@ -615,7 +627,7 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
     work.cancellation().cancel();
     buffers.input.clear();
     buffers.output.truncate(OUTPUT_HEADER);
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     for packet in packets {
         super::super::packet_buffers::PacketBuffers::input_for(
             &mut buffers.input,
@@ -630,7 +642,7 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
             capacity,
         )?;
     }
-    assert_eq!(work.receipt(), before);
+    assert_eq!(work.receipt().unwrap(), before);
     assert_eq!(
         (buffers.input.as_ptr(), buffers.input.capacity()),
         input_allocation,
@@ -641,11 +653,11 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
         allocation,
         "reply growth must retain the original allocation through cancellation"
     );
-    let live = work.live_allocation_bytes();
+    let live = work.live_allocation_bytes().unwrap();
     let buffer_bytes = (input_allocation.1 + allocation.1) as u64;
     drop(buffers);
     assert!(
-        live - work.live_allocation_bytes() >= buffer_bytes,
+        live - work.live_allocation_bytes().unwrap() >= buffer_bytes,
         "retiring packet storage must release both original-funded allocations"
     );
     Ok(())

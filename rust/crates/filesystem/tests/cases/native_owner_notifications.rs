@@ -31,38 +31,38 @@ async fn unchanged_charges_and_cross_thread_retirement_preserve_exact_receipts()
     for count in [0, 1, 16, 128] {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         let mut sources = Vec::with_capacity(count);
         for _ in 0..count {
             sources.push(open(root.path(), &work).await?);
         }
-        let mut expected = work.receipt();
-        let live = work.live_allocation_bytes();
+        let mut expected = work.receipt().unwrap();
+        let live = work.live_allocation_bytes().unwrap();
         for _ in 0..64 {
             work.charge(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
             expected.items_examined += 1;
-            assert_eq!(work.receipt(), expected);
-            assert_eq!(work.live_allocation_bytes(), live);
+            assert_eq!(work.receipt().unwrap(), expected);
+            assert_eq!(work.live_allocation_bytes().unwrap(), live);
         }
         std::thread::spawn(move || drop(sources))
             .join()
             .map_err(|_| "retirement panicked")?;
-        assert_eq!(work.receipt(), expected);
+        assert_eq!(work.receipt().unwrap(), expected);
         work.charge(WorkCounters::UNCHARGED)?;
-        let settled = work.live_allocation_bytes();
+        let settled = work.live_allocation_bytes().unwrap();
         assert_eq!(settled, baseline);
-        let settled = work.live_allocation_bytes();
+        let settled = work.live_allocation_bytes().unwrap();
         for _ in 0..64 {
             work.charge(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
             expected.items_examined += 1;
-            assert_eq!(work.receipt(), expected);
-            assert_eq!(work.live_allocation_bytes(), settled);
+            assert_eq!(work.receipt().unwrap(), expected);
+            assert_eq!(work.live_allocation_bytes().unwrap(), settled);
         }
         cancellation.cancel();
         assert!(
@@ -72,7 +72,7 @@ async fn unchanged_charges_and_cross_thread_retirement_preserve_exact_receipts()
             })
             .is_err()
         );
-        assert_eq!(work.receipt(), expected);
+        assert_eq!(work.receipt().unwrap(), expected);
         expected.verify(BUDGET)?;
     }
     Ok(())
@@ -103,23 +103,23 @@ async fn directory_payload_retirement_preserves_a_live_owner_and_all_spent_work(
             .ok_or("native publication missing")?
             .accept(&mut (&work).accounting(&cancellation))?;
         drop(page);
-        let expected = work.receipt();
-        let live = work.live_allocation_bytes();
+        let expected = work.receipt().unwrap();
+        let live = work.live_allocation_bytes().unwrap();
         work.charge(WorkCounters::UNCHARGED)?;
-        assert_eq!(work.receipt(), expected);
-        assert!(work.live_allocation_bytes() <= live);
-        let settled = work.live_allocation_bytes();
+        assert_eq!(work.receipt().unwrap(), expected);
+        assert!(work.live_allocation_bytes().unwrap() <= live);
+        let settled = work.live_allocation_bytes().unwrap();
         work.charge(WorkCounters::UNCHARGED)?;
-        assert_eq!(work.live_allocation_bytes(), settled);
+        assert_eq!(work.live_allocation_bytes().unwrap(), settled);
         if cursor.is_none() {
             break;
         }
     }
     assert_eq!(seen, 4);
     drop(source);
-    let expected = work.receipt();
+    let expected = work.receipt().unwrap();
     work.charge(WorkCounters::UNCHARGED)?;
-    assert_eq!(work.receipt(), expected);
+    assert_eq!(work.receipt().unwrap(), expected);
     expected.verify(BUDGET)?;
     Ok(())
 }
@@ -131,7 +131,7 @@ async fn rejected_owner_admission_preserves_every_spent_prefix() -> TestResult {
     let cancellation = CancellationToken::new();
     let reference = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
     let source = open(root.path(), &reference).await?;
-    let successful_allocations = reference.receipt().allocation_operations;
+    let successful_allocations = reference.receipt().unwrap().allocation_operations;
     drop(source);
     for allowed in 1..successful_allocations {
         let budget = WorkBudget {
@@ -140,14 +140,14 @@ async fn rejected_owner_admission_preserves_every_spent_prefix() -> TestResult {
         };
         let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(e, _)| e)?;
         assert!(open(root.path(), &work).await.is_err());
-        let spent = work.receipt();
+        let spent = work.receipt().unwrap();
         spent.verify(budget)?;
         work.charge(WorkCounters::UNCHARGED)?;
-        assert_eq!(work.receipt(), spent);
-        let live = work.live_allocation_bytes();
+        assert_eq!(work.receipt().unwrap(), spent);
+        let live = work.live_allocation_bytes().unwrap();
         work.charge(WorkCounters::UNCHARGED)?;
-        assert_eq!(work.live_allocation_bytes(), live);
-        assert_eq!(work.receipt(), spent);
+        assert_eq!(work.live_allocation_bytes().unwrap(), live);
+        assert_eq!(work.receipt().unwrap(), spent);
     }
     Ok(())
 }
@@ -164,7 +164,7 @@ async fn concurrent_charges_cannot_consume_a_later_owner_retirement() -> TestRes
         for _ in 0..64 {
             sources.push(open(root.path(), &work).await?);
         }
-        let mut expected = work.receipt();
+        let mut expected = work.receipt().unwrap();
         if concurrent {
             let start = std::sync::Barrier::new(4);
             std::thread::scope(|scope| {
@@ -197,8 +197,8 @@ async fn concurrent_charges_cannot_consume_a_later_owner_retirement() -> TestRes
             drop(sources);
         }
         work.charge(WorkCounters::UNCHARGED)?;
-        assert_eq!(work.receipt(), expected);
-        let live = work.live_allocation_bytes();
+        assert_eq!(work.receipt().unwrap(), expected);
+        let live = work.live_allocation_bytes().unwrap();
         if let Some(expected) = expected_live {
             assert_eq!(live, expected);
         }
@@ -226,10 +226,10 @@ async fn shared_registry_notification_does_not_pin_a_retired_resource() -> TestR
     let second_source = open(root.path(), &second).await?;
     assert!(first.remaining()?.peak_allocation_bytes < first_remaining);
     assert!(second.remaining()?.peak_allocation_bytes < second_remaining);
-    let mut expected = work.receipt();
+    let mut expected = work.receipt().unwrap();
     drop(first_source);
     work.charge(WorkCounters::UNCHARGED)?;
-    let reconciled = work.receipt();
+    let reconciled = work.receipt().unwrap();
     assert!(reconciled.bytes_copied >= expected.bytes_copied);
     expected.bytes_copied = reconciled.bytes_copied;
     assert_eq!(reconciled, expected);
@@ -238,7 +238,7 @@ async fn shared_registry_notification_does_not_pin_a_retired_resource() -> TestR
     drop(second_source);
     work.charge(WorkCounters::UNCHARGED)?;
     assert_eq!(second.remaining()?.peak_allocation_bytes, second_remaining);
-    assert_eq!(work.receipt(), expected);
+    assert_eq!(work.receipt().unwrap(), expected);
     expected.verify(BUDGET)?;
     Ok(())
 }

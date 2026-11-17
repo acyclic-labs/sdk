@@ -9,8 +9,8 @@ use std::{
 
 const SENT_OFFSET: u64 = 7;
 
-pub fn check(input: &[u8]) {
-    check_round_trip(input).unwrap();
+pub fn check(input: &[u8]) -> std::io::Result<()> {
+    check_round_trip(input)
 }
 
 fn check_round_trip(input: &[u8]) -> std::io::Result<()> {
@@ -69,17 +69,16 @@ fn check_round_trip(input: &[u8]) -> std::io::Result<()> {
     // unique inode: that is immune to descriptor-number reuse by other tests,
     // and to their forked children, which hold copies of every descriptor
     // until exec.
-    assert_eq!(descriptors_for(&probe), 1, "only the probe remains open");
+    assert_eq!(descriptors_for(&probe)?, 1, "only the probe remains open");
     Ok(())
 }
 
-fn descriptors_for(probe: &File) -> usize {
+fn descriptors_for(probe: &File) -> std::io::Result<usize> {
     use std::os::unix::fs::MetadataExt as _;
-    let identity = probe.metadata().unwrap();
-    std::fs::read_dir("/proc/self/fd")
-        .unwrap()
+    let identity = probe.metadata()?;
+    Ok(std::fs::read_dir("/proc/self/fd")?
         // Descriptors other tests close mid-census vanish; none is this inode.
         .filter_map(|entry| std::fs::metadata(entry.ok()?.path()).ok())
         .filter(|metadata| metadata.dev() == identity.dev() && metadata.ino() == identity.ino())
-        .count()
+        .count())
 }

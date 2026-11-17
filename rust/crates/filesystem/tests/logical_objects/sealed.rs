@@ -209,11 +209,11 @@ async fn sealed_reconstruction_preserves_association_without_publication()
         .await?;
     let id = object.object_id();
     let stored = object.stored_bytes().clone();
-    let hashed = context.spent().bytes_hashed;
+    let hashed = context.spent().unwrap().bytes_hashed;
     let restored = erased.restore_hashed(id, stored.clone(), object.length(), &mut context)?;
     assert_eq!(restored, object);
     assert_eq!(
-        context.spent().bytes_hashed - hashed,
+        context.spent().unwrap().bytes_hashed - hashed,
         stored.len() as u64 + object.length(),
         "each representation must be authenticated exactly once",
     );
@@ -285,13 +285,13 @@ async fn required_sealing_refuses_every_unprepared_write_before_provider_dispatc
                 .await,
             Err(ObjectStoreError::Corrupt)
         ));
-        assert_eq!(work.spent().backend_write_operations, 0);
-        assert_eq!(work.spent().object_bytes_written, 0);
+        assert_eq!(work.spent().unwrap().backend_write_operations, 0);
+        assert_eq!(work.spent().unwrap().object_bytes_written, 0);
         assert!(matches!(provider.head(blob(object.object_id())).await,
             Err(error) if error.code == acyclic_objects::wire::ErrorCode::NotFound));
     }
-    assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(original.receipt().object_bytes_written, 0);
+    assert_eq!(original.receipt().unwrap().backend_write_operations, 0);
+    assert_eq!(original.receipt().unwrap().object_bytes_written, 0);
     Ok(())
 }
 
@@ -546,15 +546,18 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
         cold.flush_before_publish(scope, &mut denied).await,
         Err(ObjectStoreError::Work(_))
     ));
-    assert_eq!(denied.spent(), WorkCounters::UNCHARGED);
+    assert_eq!(denied.spent().unwrap(), WorkCounters::UNCHARGED);
     let mut commit = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let _hold = cold.flush_before_publish(scope, &mut commit).await?;
-    assert_eq!(commit.spent().durability_operations, 1);
-    let before = original.receipt().durability_operations;
-    let live = original.live_allocation_bytes();
+    assert_eq!(commit.spent().unwrap().durability_operations, 1);
+    let before = original.receipt().unwrap().durability_operations;
+    let live = original.live_allocation_bytes().unwrap();
     let _hold = cold.flush_before_publish(scope, &mut work).await?;
-    assert_eq!(original.receipt().durability_operations, before + 1);
-    assert_eq!(original.live_allocation_bytes(), live);
+    assert_eq!(
+        original.receipt().unwrap().durability_operations,
+        before + 1
+    );
+    assert_eq!(original.live_allocation_bytes().unwrap(), live);
     let read = cold.read(recovered, 1024, &mut work).await?;
     assert!(
         cold.put(recovered, read.bytes.clone(), &mut work)

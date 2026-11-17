@@ -227,7 +227,8 @@ impl FileRecord {
     }
 
     pub(crate) fn validate(self) -> Result<(), FileTableError> {
-        #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(not(loom), not(target_arch = "wasm32")))]
         decode_probe::validation();
         if self.link_count == 0
             || self.metadata.kind != ObjectKind::Metadata
@@ -407,7 +408,7 @@ pub(crate) async fn lookup_file_records_async_with_accounting<S: AsyncObjectStor
 }
 
 fn map_batch_failure(failure: persistent_batch::Failure) -> FileRecordReadFailure {
-    OperationFailure::new(map_batch_error(failure.error), *failure.work)
+    failure.map_error(map_batch_error)
 }
 
 pub(super) fn map_batch_error(error: persistent_batch::Error) -> FileRecordReadError {

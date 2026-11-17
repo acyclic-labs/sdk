@@ -358,7 +358,7 @@ async fn common_ancestor_copy_work_grows_with_the_graph_instead_of_insertion_ord
         // unchanged work directly so this bound isolates traversal storage.
         let decoding = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let decoding_baseline = decoding.live_allocation_bytes();
+        let decoding_baseline = decoding.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&decoding, &cancellation);
         let (decoded, allocation) = crate::kernel::read_generation_root_with_accounting(
             fs.objects(),
@@ -370,10 +370,10 @@ async fn common_ancestor_copy_work_grows_with_the_graph_instead_of_insertion_ord
         .await?;
         let bytes = (decoded.parents.capacity() * std::mem::size_of::<GenerationId>()) as u64;
         Owned::new(decoded, allocation, bytes).retire(&mut accounting)?;
-        assert_eq!(decoding.live_allocation_bytes(), decoding_baseline);
+        assert_eq!(decoding.live_allocation_bytes().unwrap(), decoding_baseline);
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let ancestor = fs
             .workspace_common_ancestor_with_accounting(
                 &source,
@@ -388,11 +388,12 @@ async fn common_ancestor_copy_work_grows_with_the_graph_instead_of_insertion_ord
         copied.push(
             original
                 .receipt()
+                .unwrap()
                 .bytes_copied
-                .checked_sub(decoding.receipt().bytes_copied)
+                .checked_sub(decoding.receipt().unwrap().bytes_copied)
                 .ok_or("lineage decoding work exceeded the complete traversal")?,
         );
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     assert!(copied[1] <= 4 * copied[0], "lineage copy work: {copied:?}");
     Ok(())

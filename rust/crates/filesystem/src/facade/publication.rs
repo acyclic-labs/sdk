@@ -121,13 +121,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             &mut custody_accounting,
         )
         .map_err(|error| {
-            OperationFailure::new(
-                E::from(error),
-                work.with_backend(custody_accounting.spent(), 0)
-                    .unwrap_or(work),
-            )
+            match custody_accounting
+                .spent()
+                .and_then(|nested| work.with_backend(nested, 0).map_err(Into::into))
+            {
+                Ok(combined) => OperationFailure::new(E::from(error), combined),
+                Err(observation) => OperationFailure::without_receipt(E::from(error), observation),
+            }
         })?;
-        let custody_work = custody_accounting.spent();
+        let custody_work = custody_accounting.spent().map_err(|observation| {
+            OperationFailure::without_receipt(E::from(FsError::from(observation)), observation)
+        })?;
         let custody_bytes = custody_work.peak_allocation_bytes;
         work = merge_simultaneous_work(work, custody_work, 0, budget)
             .map_err(|failure| failure.map_error(E::from))?;
@@ -172,9 +176,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             .await
         }
         .map_err(|mut failure| {
-            *failure.work = work
-                .with_backend(*failure.work, custody_bytes)
-                .unwrap_or(work);
+            if let Ok(nested) = &mut failure.work {
+                match work.with_backend(**nested, custody_bytes) {
+                    Ok(combined) => **nested = combined,
+                    Err(error) => failure.work = Err(error.into()),
+                }
+            }
             failure
         })?;
         drop(operation_evidence);
@@ -589,9 +596,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                         .await;
                     authority.receipt(result)
                 })
-                .map_err(|failure| {
-                    OperationFailure::new(E::from(FsError::Authority(failure.error)), *failure.work)
-                })?;
+                .map_err(|failure| failure.map_error(|error| E::from(FsError::Authority(error))))?;
                 let Some(commit) = resolved.value else {
                     return Ok(OperationReceipt {
                         value: None,
@@ -603,17 +608,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                         .map_err(|failure| failure.map_error(E::from))?,
                     cancellation,
                 );
-                let expected =
-                    original_publication_head(&commit, &mut decoded).map_err(|error| {
-                        OperationFailure::new(
-                            E::from(error),
-                            resolved
-                                .work
-                                .checked_add(decoded.spent())
-                                .unwrap_or(resolved.work),
-                        )
-                    })?;
-                let resolved_work = add(resolved.work, decoded.spent())
+                let expected = original_publication_head(&commit, &mut decoded).map_err(
+                    |error| match decoded
+                        .spent()
+                        .and_then(|nested| resolved.work.checked_add(nested).map_err(Into::into))
+                    {
+                        Ok(combined) => OperationFailure::new(E::from(error), combined),
+                        Err(observation) => {
+                            OperationFailure::without_receipt(E::from(error), observation)
+                        }
+                    },
+                )?;
+                let decoded_work = decoded.spent().map_err(|observation| {
+                    OperationFailure::without_receipt(
+                        E::from(FsError::from(observation)),
+                        observation,
+                    )
+                })?;
+                let resolved_work = add(resolved.work, decoded_work)
                     .map_err(|failure| failure.map_error(E::from))?;
                 let retried = self
                     .publish_pending_against(
@@ -632,9 +644,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     )
                     .await
                     .map_err(|mut failure| {
-                        *failure.work = resolved_work
-                            .checked_add(*failure.work)
-                            .unwrap_or(resolved_work);
+                        if let Ok(nested) = &mut failure.work {
+                            match resolved_work.checked_add(**nested) {
+                                Ok(combined) => **nested = combined,
+                                Err(error) => failure.work = Err(error.into()),
+                            }
+                        }
                         failure
                     })?;
                 Ok(OperationReceipt {

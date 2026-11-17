@@ -102,7 +102,7 @@ async fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
         .err()
         .ok_or("zero diff limit unexpectedly succeeded")?;
         assert!(matches!(failure.error, FsError::InvalidDiff));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
     let wrong = ObjectId {
         storage: None,
@@ -121,7 +121,7 @@ async fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
     .err()
     .ok_or("wrong diff root kind unexpectedly succeeded")?;
     assert!(matches!(failure.error, FsError::InvalidDiff));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -198,7 +198,7 @@ async fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
         let budget = crate::performance::BOUNDARY_BUDGET;
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = if native {
             KernelAccounting::native(&original, &cancellation)
         } else {
@@ -236,7 +236,10 @@ async fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
             "vector growth released moved name capacity"
         );
         if native {
-            assert_eq!(original.live_allocation_bytes(), baseline + physical);
+            assert_eq!(
+                original.live_allocation_bytes().unwrap(),
+                baseline + physical
+            );
         } else {
             assert_eq!(
                 accounting
@@ -250,7 +253,7 @@ async fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
         drop(retained);
         retire_allocation(allocation, physical, &mut accounting)?;
         if native {
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         } else {
             assert_eq!(
                 accounting
@@ -285,7 +288,7 @@ async fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
     .err()
     .ok_or("cancelled diff unexpectedly succeeded")?;
     assert!(matches!(failure.error, FsError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
 
     let failure = diff(
         &store,
@@ -309,10 +312,10 @@ async fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
             maximum: 0,
         })
     ));
-    assert_eq!(failure.work.page_reads, 0);
-    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work().unwrap().page_reads, 0);
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
     assert!(
-        failure.work.allocation_operations > 0,
+        failure.work().unwrap().allocation_operations > 0,
         "the guarded frontier precedes provider admission"
     );
     Ok(())
@@ -591,8 +594,8 @@ async fn diff_preserves_storage_and_decode_failures_after_admitted_work()
         failure.error,
         FsError::Object(ObjectStoreError::Missing)
     ));
-    assert_eq!(failure.work.page_reads, 2);
-    assert!(failure.work.backend_read_operations >= 1);
+    assert_eq!(failure.work().unwrap().page_reads, 2);
+    assert!(failure.work().unwrap().backend_read_operations >= 1);
 
     let malformed_bytes = OwnedBytes::from_static(b"not a canonical tree page");
     let malformed = ObjectId {
@@ -619,7 +622,7 @@ async fn diff_preserves_storage_and_decode_failures_after_admitted_work()
     .err()
     .ok_or("malformed page unexpectedly diffed")?;
     assert!(matches!(failure.error, FsError::Decode(_)));
-    assert!(failure.work.page_reads >= 2);
+    assert!(failure.work().unwrap().page_reads >= 2);
     Ok(())
 }
 
@@ -883,8 +886,8 @@ async fn native_diff_denies_frontier_allocation_before_backend_work()
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let before = original.receipt();
-    let baseline = original.live_allocation_bytes();
+    let before = original.receipt().unwrap();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = diff_tree_entries_with_accounting(
         &store,
@@ -907,14 +910,14 @@ async fn native_diff_denies_frontier_allocation_before_backend_work()
     ));
     // Selecting the first frontier page is work, even when its allocation is refused.
     assert_eq!(
-        original.receipt(),
+        original.receipt().unwrap(),
         WorkCounters {
             items_examined: 1,
             ..before
         }
     );
-    assert_eq!(original.receipt().backend_read_operations, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap().backend_read_operations, 0);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -938,7 +941,7 @@ async fn diff_accounted<S: AsyncObjectStore, F: Format>(
         cancellation,
     )
     .await;
-    let work = accounting.spent();
+    let work = accounting.spent().unwrap();
     result
         .map(|(mut diff, _)| {
             diff.work = work;

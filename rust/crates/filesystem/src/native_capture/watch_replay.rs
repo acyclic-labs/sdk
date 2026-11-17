@@ -21,7 +21,7 @@ pub async fn capture_watch_batch<
         None => capture_work(
             accounting
                 .remaining()
-                .map_err(|error| OperationFailure::new(error.into(), accounting.spent()))?,
+                .map_err(|error| OperationFailure::observed(error.into(), accounting.spent()))?,
             cancellation,
         )?,
     };
@@ -30,7 +30,7 @@ pub async fn capture_watch_batch<
             &mut crate::kernel::allocation::KernelAccounting::native(&native, cancellation),
             cancellation,
         )
-        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+        .map_err(|error| OperationFailure::observed(error.into(), native.receipt()))?;
     let scope = CaptureWorkScope::new(&native)?;
     let result = async {
         let checkout = &mut candidate;
@@ -431,6 +431,6 @@ pub async fn capture_watch_batch<
     let receipt = capture_scope_result(scope, result)?;
     cancellation
         .commit_if_live(|| *checkout = candidate)
-        .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+        .map_err(|error| OperationFailure::observed(error.into(), native.receipt()))?;
     Ok(receipt)
 }

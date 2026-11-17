@@ -157,7 +157,7 @@ async fn default_head_payload_keeps_external_replay_funding_until_payload_drops(
     let cancellation = CancellationToken::new();
     let original =
         crate::NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     // Bind funding first, then destructure the payload: this is also the
     // facade's drop order on all normal, error and unwinding paths.
     let (value, allocation) = FundedReplay(b"funded-head-value!", Default::default())
@@ -170,11 +170,11 @@ async fn default_head_payload_keeps_external_replay_funding_until_payload_drops(
     let (_, payload) = value;
     let payload = payload.ok_or("missing funded payload")?;
     assert_eq!(payload.as_ref(), b"funded-head-value!");
-    assert!(original.live_allocation_bytes() >= baseline + payload.len() as u64);
+    assert!(original.live_allocation_bytes().unwrap() >= baseline + payload.len() as u64);
     assert!(allocation.is_some());
     drop(payload);
     drop(allocation);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -202,10 +202,10 @@ async fn exact_head_record_is_authenticated_once_with_default_fallback_equivalen
     let calls = provider.requests().since(before);
     assert_eq!(calls.class(RequestClass::Head), 3);
     assert_eq!(calls.auxiliary(Some(RequestClass::Head)), Some(0));
-    assert_eq!(work.spent().backend_read_operations, 3);
+    assert_eq!(work.spent().unwrap().backend_read_operations, 3);
     assert_eq!(actual, expected);
     let original = crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(e, _)| e)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut native = AuthorityWork::native(&original, &cancel);
     let before = provider.requests();
     let (native_value, native_allocation) =
@@ -215,19 +215,24 @@ async fn exact_head_record_is_authenticated_once_with_default_fallback_equivalen
     assert_eq!(calls.class(RequestClass::Head), 3);
     assert_eq!(calls.auxiliary(Some(RequestClass::Head)), Some(0));
     drop(native);
-    assert!(original.live_allocation_bytes() > baseline);
+    assert!(original.live_allocation_bytes().unwrap() > baseline);
     drop((native_value, native_allocation));
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     let record = actual.1.ok_or("missing head payload")?;
-    assert_eq!(old.spent().authority_records_read, 3);
-    assert_eq!(work.spent().authority_records_read, 2);
+    assert_eq!(old.spent().unwrap().authority_records_read, 3);
+    assert_eq!(work.spent().unwrap().authority_records_read, 2);
     assert_eq!(
-        old.spent().authority_bytes_read - work.spent().authority_bytes_read,
+        old.spent().unwrap().authority_bytes_read - work.spent().unwrap().authority_bytes_read,
         encoded.len() as u64
     );
-    assert_eq!(old.spent().bytes_hashed, work.spent().bytes_hashed * 2);
-    assert!(work.spent().bytes_copied < old.spent().bytes_copied);
-    assert!(work.spent().allocation_operations < old.spent().allocation_operations);
+    assert_eq!(
+        old.spent().unwrap().bytes_hashed,
+        work.spent().unwrap().bytes_hashed * 2
+    );
+    assert!(work.spent().unwrap().bytes_copied < old.spent().unwrap().bytes_copied);
+    assert!(
+        work.spent().unwrap().allocation_operations < old.spent().unwrap().allocation_operations
+    );
     assert_eq!(record.as_ref(), b"generation-payload");
     Ok(())
 }
@@ -282,7 +287,7 @@ async fn bounded_head_record_preserves_genesis_payload_limits_and_cancellation()
                 .await
                 .is_err()
         );
-        assert!(work.spent().authority_records_read <= 1);
+        assert!(work.spent().unwrap().authority_records_read <= 1);
     }
     cancel.cancel();
     let mut work = AuthorityWork::new(BUDGET, &cancel);
@@ -292,7 +297,7 @@ async fn bounded_head_record_preserves_genesis_payload_limits_and_cancellation()
             .await
             .is_err()
     );
-    assert_eq!(work.spent(), WorkCounters::UNCHARGED);
+    assert_eq!(work.spent().unwrap(), WorkCounters::UNCHARGED);
     Ok(())
 }
 
@@ -302,19 +307,19 @@ async fn native_head_record_retains_exact_payload_custody_and_resource_charges()
     let cancel = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(e, _)| e)?;
     let resource = original.native_volume_work(BUDGET)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut work = AuthorityWork::native(&resource, &cancel);
     let (value, _allocation) = store.head_payload(AUTHORITY, 4096, &mut work).await?;
     let (_, record) = value;
     let record = record.ok_or("missing native record")?;
     assert_eq!(record.as_ref(), b"generation-payload");
-    assert_eq!(original.receipt().authority_records_read, 2);
+    assert_eq!(original.receipt().unwrap().authority_records_read, 2);
     drop(work);
-    assert!(original.live_allocation_bytes() > baseline);
-    let spent = original.receipt();
+    assert!(original.live_allocation_bytes().unwrap() > baseline);
+    let spent = original.receipt().unwrap();
     drop(record);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    assert_eq!(original.receipt(), spent);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+    assert_eq!(original.receipt().unwrap(), spent);
     let denied = resource.native_volume_work(WorkBudget {
         bytes_copied: 0,
         ..BUDGET
@@ -326,7 +331,7 @@ async fn native_head_record_retains_exact_payload_custody_and_resource_charges()
             .await
             .is_err()
     );
-    assert_eq!(denied.receipt().bytes_copied, spent.bytes_copied);
+    assert_eq!(denied.receipt().unwrap().bytes_copied, spent.bytes_copied);
     Ok(())
 }
 
@@ -410,7 +415,7 @@ proptest::proptest! {
             let cancellation = CancellationToken::new();
             let original = crate::NativeMaterializationWork::new(BUDGET, &cancellation)
                 .map_err(|(e, _)| e).unwrap();
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             let (value, allocation) = FundedReplay(&body, Default::default()).head_payload(
                 AUTHORITY, 4096, &mut AuthorityWork::native(&original, &cancellation)
             ).await.unwrap();
@@ -418,12 +423,12 @@ proptest::proptest! {
             let payload = payload.unwrap();
             proptest::prop_assert_eq!(payload.as_ref(), body.as_slice());
             proptest::prop_assert!(allocation.is_some());
-            proptest::prop_assert!(original.live_allocation_bytes() >= baseline + body.len() as u64);
-            let receipt = original.receipt();
+            proptest::prop_assert!(original.live_allocation_bytes().unwrap() >= baseline + body.len() as u64);
+            let receipt = original.receipt().unwrap();
             drop(payload);
             drop(allocation);
-            proptest::prop_assert_eq!(original.live_allocation_bytes(), baseline);
-            proptest::prop_assert_eq!(original.receipt(), receipt);
+            proptest::prop_assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+            proptest::prop_assert_eq!(original.receipt().unwrap(), receipt);
             Ok(())
         })?;
     }
@@ -449,8 +454,8 @@ proptest::proptest! {
                 (Err(actual), Err(expected)) => proptest::prop_assert_eq!(actual.to_string(), expected.to_string()),
                 (actual, expected) => proptest::prop_assert!(false, "actual={actual:?}, expected={expected:?}"),
             }
-            proptest::prop_assert!(old.spent().verify(BUDGET).is_ok());
-            proptest::prop_assert!(work.spent().verify(BUDGET).is_ok());
+            proptest::prop_assert!(old.spent().unwrap().verify(BUDGET).is_ok());
+            proptest::prop_assert!(work.spent().unwrap().verify(BUDGET).is_ok());
             Ok(())
         })?;
     }

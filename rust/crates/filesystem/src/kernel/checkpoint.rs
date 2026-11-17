@@ -44,13 +44,13 @@ pub async fn build_checkpoint<S: crate::async_storage::AsyncObjectStore>(
     );
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
     let result = crate::obs::in_span(&span, async {
-        build_checkpoint_with_accounting(store, request, limits, &mut accounting, cancellation)
-            .await
-            .map(|value| OperationReceipt {
-                value,
-                work: accounting.spent(),
-            })
-            .map_err(|error| OperationFailure::new(checkpoint_error(error), accounting.spent()))
+        let result =
+            build_checkpoint_with_accounting(store, request, limits, &mut accounting, cancellation)
+                .await
+                .map_err(checkpoint_error);
+        crate::performance::finish_measured(result, accounting.spent(), |error| {
+            ObjectStoreError::WorkObservation(error).into()
+        })
     })
     .await;
     crate::obs::measured_on(&span, result, |receipt| &receipt.work)
@@ -60,6 +60,7 @@ fn checkpoint_error(error: crate::FsError) -> CheckpointError {
     match error {
         crate::FsError::Checkpoint(error) => error,
         crate::FsError::Work(error) => error.into(),
+        crate::FsError::WorkObservation(error) => ObjectStoreError::WorkObservation(error).into(),
         crate::FsError::Decode(error) => error.into(),
         crate::FsError::Object(error) => error.into(),
         crate::FsError::Cancelled(_) => ObjectStoreError::Cancelled.into(),
@@ -179,7 +180,7 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
             let result = {
                 let mut object_work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
                 let result = store.put_hashed(hashed, &mut object_work).await;
-                object_work.spent().verify(object_work.budget)?;
+                object_work.spent()?.verify(object_work.budget)?;
                 result
             };
             result.map_err(checkpoint_storage_error)?;

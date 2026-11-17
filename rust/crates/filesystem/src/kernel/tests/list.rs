@@ -308,7 +308,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     .err()
     .ok_or("directory height limit unexpectedly succeeded")?;
     assert!(matches!(height.error, DirectoryReadError::HeightExceeded));
-    assert_eq!(height.work.page_reads, 1);
+    assert_eq!(height.work().unwrap().page_reads, 1);
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
@@ -803,7 +803,7 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
             .map_err(|(error, _)| error)?;
         let meter = std::sync::Arc::downgrade(&original.state);
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         assert_eq!(
             baseline,
             crate::NativeMaterializationWork::accounting_state_bytes()
@@ -819,10 +819,10 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
         )
         .await?;
         assert_eq!(page.values[0].name.as_bytes(), b"f");
-        assert!(original.live_allocation_bytes() > baseline);
+        assert!(original.live_allocation_bytes().unwrap() > baseline);
         drop(page);
         drop(allocation);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         drop(accounting);
         drop(original);
         assert!(meter.upgrade().is_none());

@@ -65,13 +65,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangedPat
             .fs
             .same_deployment(&to.workspace.volume.fs)
         {
-            return Err(OperationFailure::new(
+            return Err(OperationFailure::observed(
                 WorkspaceError::ForeignGeneration,
                 initial,
             ));
         }
         let mut owner = ReadOwner::<State<A, O>>::new(accounting, State::default)
-            .map_err(|error| OperationFailure::new(WorkspaceError::from(error), initial))?;
+            .map_err(|error| OperationFailure::observed(WorkspaceError::from(error), initial))?;
         let result = async {
             let (state, mut accounting) = owner.borrow();
             let cancellation = accounting.cancellation();
@@ -100,16 +100,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangedPat
         }
         .await;
         let spent = owner.borrow().1.spent();
-        match result {
-            Ok(()) => Ok(OperationReceipt {
-                value: Self { owner },
-                work: spent,
-            }),
-            Err(error) => {
-                drop(owner);
-                Err(OperationFailure::new(error, spent))
-            }
-        }
+        crate::performance::finish_measured(
+            result.map(|()| Self { owner }),
+            spent,
+            WorkspaceError::from,
+        )
     }
 
     /// Produces one complete row without collecting or recomputing its prefix.
@@ -121,13 +116,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangedPat
     ) -> crate::MeasuredResult<OperationReceipt<Option<ChangedPathEntry>>, WorkspaceError> {
         let (state, mut accounting) = self.owner.borrow();
         let result = state.prepare_next(&mut accounting).await;
-        let work = accounting.spent();
-        result
-            .map(|()| OperationReceipt {
+        crate::performance::finish_measured(result, accounting.spent(), WorkspaceError::from).map(
+            |receipt| OperationReceipt {
                 value: state.pending.take(),
-                work,
-            })
-            .map_err(|error| OperationFailure::new(error, work))
+                work: receipt.work,
+            },
+        )
     }
 
     /// Borrows the next exact row while retaining its original allocation and
@@ -139,18 +133,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangedPat
     ) -> crate::MeasuredResult<OperationReceipt<Option<&ChangedPath>>, WorkspaceError> {
         let (state, mut accounting) = self.owner.borrow();
         let result = state.prepare_next(&mut accounting).await;
-        let work = accounting.spent();
-        result
-            .map(|()| OperationReceipt {
+        crate::performance::finish_measured(result, accounting.spent(), WorkspaceError::from).map(
+            |receipt| OperationReceipt {
                 value: state.pending.as_ref().map(ChangedPathEntry::value),
-                work,
-            })
-            .map_err(|error| OperationFailure::new(error, work))
+                work: receipt.work,
+            },
+        )
     }
 
     /// Cumulative work charged to the original read frame, including completed
     /// calls that ended in cancellation or a typed refusal.
-    pub fn work(&mut self) -> WorkCounters {
+    pub fn work(&mut self) -> Result<WorkCounters, crate::WorkObservationError> {
         self.owner.borrow().1.spent()
     }
 }

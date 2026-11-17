@@ -205,8 +205,8 @@ fn run(
     if cancelled {
         cancellation.cancel();
     }
-    let live_before = work.live_allocation_bytes();
-    let before = work.receipt();
+    let live_before = work.live_allocation_bytes().unwrap();
+    let before = work.receipt().unwrap();
     let probe = Probe::rescan(old);
     if fault == 1 {
         probe.restore_enumeration();
@@ -241,7 +241,7 @@ fn run(
         .unwrap()
         .map(|receipt| receipt.value)
         .map_err(|failure| format!("{:?}", failure.error));
-    let mut receipt = serde_json::to_value(work.receipt()).unwrap();
+    let mut receipt = serde_json::to_value(work.receipt().unwrap()).unwrap();
     let before = serde_json::to_value(before).unwrap();
     for (name, value) in receipt.as_object_mut().unwrap() {
         if name == "peakAllocationBytes" {
@@ -252,7 +252,7 @@ fn run(
             *value = serde_json::json!(value.as_u64().unwrap() - before[name].as_u64().unwrap());
         }
     }
-    let live_after = work.live_allocation_bytes();
+    let live_after = work.live_allocation_bytes().unwrap();
     let unchanged_root = fixture.checkout.root() == &root;
     let bytes = fixture
         .paths

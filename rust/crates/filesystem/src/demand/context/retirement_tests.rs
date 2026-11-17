@@ -6,7 +6,7 @@ fn final_capture_packet_retires_before_returning_its_counter() {
     crate::initialize_test_native_io();
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let capture = CaptureTransientCustody::new_native(&original).unwrap();
     capture.claim(9);
     let packet = Arc::clone(&capture);
@@ -43,11 +43,11 @@ fn final_capture_packet_retires_before_returning_its_counter() {
     assert!(late.upgrade().is_none());
     // Both control guards remain funded until the observer is outside the leaf.
     assert_eq!(
-        original.live_allocation_bytes(),
+        original.live_allocation_bytes().unwrap(),
         baseline + CaptureTransientCustody::allocation_bytes(),
     );
     drop(controls);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn capture_retirement_admits_all_control_storage_before_allocation() {
             &CancellationToken::new(),
         )
         .unwrap();
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut output = None;
         let actual = acyclic_test_support::measure(|| {
             output = Some(CaptureTransientCustody::new_native(&original));
@@ -73,7 +73,10 @@ fn capture_retirement_admits_all_control_storage_before_allocation() {
             assert_eq!(actual.count_current, 2);
             let physical_bytes = u64::try_from(actual.bytes_current).unwrap();
             assert_eq!(physical_bytes, CaptureTransientCustody::allocation_bytes());
-            assert_eq!(original.live_allocation_bytes() - baseline, physical_bytes);
+            assert_eq!(
+                original.live_allocation_bytes().unwrap() - baseline,
+                physical_bytes
+            );
             let (bytes, controls) = capture.retire();
             assert_eq!(bytes, 0);
             drop(controls);
@@ -81,6 +84,6 @@ fn capture_retirement_admits_all_control_storage_before_allocation() {
             assert!(output.is_err());
             assert_eq!(actual.count_current, 0);
         }
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
 }

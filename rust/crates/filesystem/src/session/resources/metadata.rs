@@ -150,7 +150,8 @@ pub(super) fn project(
     Ok(FollowUpdate::Record(record))
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod tests {
     use super::*;
     use crate::kernel::NamespacePath;

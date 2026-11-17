@@ -562,11 +562,11 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
                 .ok_or("capacity overflow")?;
         }
         drop(preview);
-        let live = original.live_allocation_bytes();
+        let live = original.live_allocation_bytes().unwrap();
         assert!(live >= capacity, "escaping text backing was not funded");
         drop(rendered);
         assert_eq!(
-            live.checked_sub(original.live_allocation_bytes()),
+            live.checked_sub(original.live_allocation_bytes().unwrap()),
             Some(capacity),
             "dropping the real output must release exactly its original backing"
         );
@@ -759,12 +759,13 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     let mut resolutions = BTreeMap::new();
     for view in &typed.conflicts {
         #[cfg(not(target_arch = "wasm32"))]
-        let before = original.receipt();
+        let before = original.receipt().unwrap();
         let resolution = directory.resolution(&staged, &view.key).await?;
         #[cfg(not(target_arch = "wasm32"))]
         if &view.key == binary_key {
             let output = original
                 .receipt()
+                .unwrap()
                 .output_bytes
                 .checked_sub(before.output_bytes)
                 .ok_or("original output count regressed")?;
@@ -2297,7 +2298,7 @@ impl MergePreviewFixture {
                 .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
                 .await
                 .map_err(|failure| failure.error)?;
-            let baseline_live = original.live_allocation_bytes();
+            let baseline_live = original.live_allocation_bytes().unwrap();
             let mut page_work = selected.work;
             let mut content = selected.value.ok_or("native body missing")?;
             let mut live = None;
@@ -2310,7 +2311,7 @@ impl MergePreviewFixture {
                 assert_eq!(read.work.items_examined, page_work.items_examined);
                 assert_eq!(read.work.bytes_copied - page_work.bytes_copied, 2);
                 page_work = read.work;
-                let current = original.live_allocation_bytes();
+                let current = original.live_allocation_bytes().unwrap();
                 if let Some(previous) = live {
                     assert_eq!(current, previous, "earlier content pages retained credit");
                 }
@@ -2324,7 +2325,7 @@ impl MergePreviewFixture {
                 .value
                 .ok_or("reselected native body missing")?;
             assert_eq!(
-                original.live_allocation_bytes(),
+                original.live_allocation_bytes().unwrap(),
                 baseline_live,
                 "selection retained the preceding reader's physical page"
             );
@@ -2347,7 +2348,7 @@ impl MergePreviewFixture {
             );
             drop(content);
             assert!(native_pages.next_clean().await.is_err());
-            assert!(original.live_allocation_bytes() < live.unwrap());
+            assert!(original.live_allocation_bytes().unwrap() < live.unwrap());
         }
         let bounded_plan = unbounded!(agent.join_into(&main), plan())?;
         let mut bounded_pages = bounded_plan
@@ -2521,7 +2522,7 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
             content.record().payload,
             FilePayload::Regular { .. }
         ));
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut first_live = None;
         for (offset, expected) in [
             (0, stored.as_slice()),
@@ -2537,7 +2538,7 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
                 .map_err(|failure| failure.error)?;
             assert_eq!(read.value, expected);
             if native && offset == 0 {
-                let live = original.live_allocation_bytes();
+                let live = original.live_allocation_bytes().unwrap();
                 if let Some(first) = first_live {
                     assert_eq!(live, first, "object page retained an earlier range");
                 }
@@ -2552,7 +2553,7 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
             .value
             .ok_or("reselected sparse body missing")?;
         if native {
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         }
         assert!(matches!(
             content
@@ -2571,7 +2572,7 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
         drop(content);
         if native {
             assert_eq!(
-                original.live_allocation_bytes(),
+                original.live_allocation_bytes().unwrap(),
                 baseline,
                 "failed range retained scratch"
             );

@@ -53,7 +53,7 @@ async fn check_replay_payload_cost(native: bool) -> Result<()> {
         if cold {
             *journal.verified.lock().await = SummaryCache::default();
         }
-        let before = io.receipt();
+        let before = io.receipt()?;
         let owned = io.owned_bytes()?;
         let count = if eager {
             // The former replay path consumes every referenced payload.
@@ -74,7 +74,7 @@ async fn check_replay_payload_cost(native: bool) -> Result<()> {
             count
         };
         assert_eq!(count, 1);
-        let after = io.receipt();
+        let after = io.receipt()?;
         eprintln!(
             "replay native={native} cold={cold} eager={eager} source_bytes={} authority_bytes={} object_bytes={} hashed_bytes={}",
             after.source_bytes_read - before.source_bytes_read,
@@ -148,7 +148,7 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
                 message: "unavailable".into(),
             },
         };
-        let before = io.receipt();
+        let before = io.receipt()?;
         assert_eq!(
             io.remaining()?.bytes_encoded,
             budget.bytes_encoded,
@@ -166,21 +166,21 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
         let accepted = match appended {
             Ok(accepted) => accepted,
             Err(error) => {
-                let live = work.live_allocation_bytes();
+                let live = work.live_allocation_bytes()?;
                 // Distinguish retained journal caches from backend custody.
                 // Always return the original error; eviction cannot retry or
                 // turn an exhausted invocation into a successful append.
                 *journal.verified.lock().await = SummaryCache::default();
                 eprintln!(
                     "append step={step} live={live} after_cache_drop={} local={} error={error:?}",
-                    work.live_allocation_bytes(),
+                    work.live_allocation_bytes()?,
                     io.owned_bytes().unwrap_or_default()
                 );
                 return Err(error);
             }
         };
         assert!(accepted);
-        let after = io.receipt();
+        let after = io.receipt()?;
         // A bounded cache may read cold index pages, never a journal
         // prefix. Retry and tool-state preloads plus their two updates
         // each traverse at most 256 branches, a leaf and an external value.
@@ -224,8 +224,8 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
     }
     eprintln!(
         "append history=1000 live={} peak={}",
-        work.live_allocation_bytes(),
-        work.receipt().peak_allocation_bytes
+        work.live_allocation_bytes()?,
+        work.receipt()?.peak_allocation_bytes
     );
     Ok(())
 }
@@ -251,7 +251,7 @@ async fn full_fold_negative_control_is_detected_by_the_flat_append_read_bound() 
     for step in 0..10 {
         // Explicitly exercise the old measured full-fold path. A cold cache
         // alone now has a durable checkpoint and must not replay this prefix.
-        let before = io.receipt();
+        let before = io.receipt()?;
         let owned = io.owned_bytes()?;
         let mut summary = ExecutionSummary {
             operation: Some(operation),
@@ -261,7 +261,7 @@ async fn full_fold_negative_control_is_detected_by_the_flat_append_read_bound() 
             .refresh_summary(operation, &mut summary, Some(&io))
             .await?;
         let hold = io.guard_owned(io.owned_since(owned)?)?;
-        let replayed = io.receipt().authority_records_read - before.authority_records_read;
+        let replayed = io.receipt()?.authority_records_read - before.authority_records_read;
         assert_eq!(replayed, u64::from(step) + 1);
         assert!(
             replayed > 0,
@@ -343,7 +343,7 @@ async fn a_second_writer_refreshes_the_authenticated_cut_and_preserves_retry_and
             )?
             .await?
     );
-    let before = io.receipt();
+    let before = io.receipt()?;
     assert!(
         !first
             .append_if_tail(operation, 2, "third", &failure(2, "unavailable"), Some(&io))?
@@ -351,7 +351,7 @@ async fn a_second_writer_refreshes_the_authenticated_cut_and_preserves_retry_and
     );
     // The checkpoint and anchor are two records. Each of the two validation
     // keys traverses at most three pages in these three-entry maps.
-    let reads = io.receipt().authority_records_read - before.authority_records_read;
+    let reads = io.receipt()?.authority_records_read - before.authority_records_read;
     assert!(
         (2..=8).contains(&reads),
         "writer refreshed beyond the authenticated cut: {reads}"
@@ -402,9 +402,9 @@ fn quiescence_work_is_flat_for_a_thousand_settled_dispatches() -> Result<()> {
                 },
             },
         )?;
-        let before = io.receipt().items_examined;
+        let before = io.receipt()?.items_examined;
         assert!(summary.quiescent(Some(&io))?);
-        assert_eq!(io.receipt().items_examined - before, 1);
+        assert_eq!(io.receipt()?.items_examined - before, 1);
     }
     Ok(())
 }

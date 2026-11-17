@@ -59,7 +59,7 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
             },
         }
     }
-    fn finish<T, E>(
+    fn finish<T, E: From<acyclic_fs::FsError>>(
         &self,
         result: std::result::Result<T, E>,
         accounting: &acyclic_fs::kernel::KernelAccounting<'_>,
@@ -74,9 +74,11 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
         let recorded = self
             .spent(work)
             .and_then(|()| match (result.is_ok(), self) {
-                (true, PreparationIo::Owned { budget, .. }) => {
-                    self.receipt().verify(*budget).map_err(Into::into)
-                }
+                (true, PreparationIo::Owned { budget, .. }) => self
+                    .receipt()
+                    .map_err(acyclic_fs::FsError::from)?
+                    .verify(*budget)
+                    .map_err(Into::into),
                 _ => Ok(()),
             });
         (result, recorded)
@@ -137,7 +139,10 @@ impl PreparationIo {
     ) -> Result<T> {
         let cumulative = match &result {
             Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
+            Err(failure) => **failure
+                .work
+                .as_ref()
+                .map_err(|error| acyclic_fs::FsError::from(*error))?,
         };
         if matches!(self, Self::Owned { .. }) {
             let delta = cumulative

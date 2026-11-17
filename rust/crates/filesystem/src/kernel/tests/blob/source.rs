@@ -72,7 +72,7 @@ async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dy
     .err()
     .ok_or("multilevel blob unexpectedly fit a one-page height bound")?;
     assert!(matches!(shallow.error, BlobReadError::CycleOrHeight));
-    assert!(shallow.work.page_reads > 0);
+    assert!(shallow.work().unwrap().page_reads > 0);
     Ok(())
 }
 
@@ -328,8 +328,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
     .err()
     .ok_or("midstream-cancelled source unexpectedly built")?;
     assert!(matches!(cancelled.error, BlobBuildError::Cancelled));
-    assert_eq!(cancelled.work.source_bytes_read, 1);
-    assert_eq!(cancelled.work.backend_write_operations, 0);
+    assert_eq!(cancelled.work().unwrap().source_bytes_read, 1);
+    assert_eq!(cancelled.work().unwrap().backend_write_operations, 0);
 
     let cancellation = CancellationToken::new();
     let mut queued = ScriptedSource {
@@ -350,11 +350,15 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
     .err()
     .ok_or("queued midstream cancellation unexpectedly built")?;
     assert!(matches!(cancelled.error, BlobBuildError::Cancelled));
-    assert_eq!(cancelled.work.source_bytes_read, 5);
-    assert_eq!(cancelled.work.backend_write_operations, 0);
+    assert_eq!(cancelled.work().unwrap().source_bytes_read, 5);
+    assert_eq!(cancelled.work().unwrap().backend_write_operations, 0);
 
     let mut tight_budget = WorkBudget::UNBOUNDED;
-    tight_budget.peak_allocation_bytes = cancelled.work.peak_allocation_bytes.saturating_sub(1);
+    tight_budget.peak_allocation_bytes = cancelled
+        .work()
+        .unwrap()
+        .peak_allocation_bytes
+        .saturating_sub(1);
     let mut bounded = std::io::Cursor::new(OwnedBytes::from_static(b"abcdef"));
     let rejected = (build_blob(
         &MemoryObjectStore::default(),
@@ -367,8 +371,8 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
     .err()
     .ok_or("one-byte-short retained-buffer budget unexpectedly built")?;
     assert!(matches!(rejected.error, BlobBuildError::Work(_)));
-    assert_eq!(rejected.work.source_bytes_read, 4);
-    assert_eq!(rejected.work.backend_write_operations, 0);
+    assert_eq!(rejected.work().unwrap().source_bytes_read, 4);
+    assert_eq!(rejected.work().unwrap().backend_write_operations, 0);
     Ok(())
 }
 

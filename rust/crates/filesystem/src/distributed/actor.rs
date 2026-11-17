@@ -477,7 +477,8 @@ impl PreparedProjection {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

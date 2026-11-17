@@ -176,8 +176,8 @@ fn completed_kernel_work_borrows_the_original_budget_without_allocating() {
     );
     assert_eq!(allocations.count_total, 0);
     assert_eq!(allocations.bytes_total, 0);
-    assert_eq!(accounting.spent().items_examined, 7);
-    assert_eq!(accounting.spent().bytes_copied, 11);
+    assert_eq!(accounting.spent().unwrap().items_examined, 7);
+    assert_eq!(accounting.spent().unwrap().bytes_copied, 11);
 }
 
 proptest! {
@@ -208,7 +208,7 @@ proptest! {
                 crate::FsError::Cancelled(error) => Err(error),
                 error => panic!("unexpected accounting error: {error:?}"),
             });
-            (result, accounting.spent())
+            (result, accounting.spent().unwrap())
         };
         for cancelled in [false, true] {
             prop_assert_eq!(run(true, cancelled), run(false, cancelled));

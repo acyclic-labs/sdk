@@ -173,8 +173,11 @@ async fn runtime_write_preserves_the_actual_os_error_and_unchanged_bytes()
     assert_eq!(actual.raw_os_error(), Some(expected_code));
     assert_eq!(actual.kind(), expected.kind());
     assert_eq!(std::fs::read(&path)?, b"before");
-    assert_eq!(original.receipt().output_bytes, 0);
-    original.receipt().verify(FINITE_MATERIALIZATION_BUDGET)?;
+    assert_eq!(original.receipt().unwrap().output_bytes, 0);
+    original
+        .receipt()
+        .unwrap()
+        .verify(FINITE_MATERIALIZATION_BUDGET)?;
     Ok(())
 }
 
@@ -192,7 +195,7 @@ async fn metadata_offload_keeps_original_cancellation_without_starting_host_io()
     let root = receipt.owned_arc(root, 0)?;
     let name = LogicalName::new(NameEncoding::Utf8, b"file".to_vec())?;
     let path = materialize_host_path(None, std::slice::from_ref(&name), &mut receipt)?;
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     cancellation.cancel();
     let failure =
         apply_host_metadata_offloaded(&root, &path, FileMetadata::default(), None, &mut receipt)
@@ -203,7 +206,7 @@ async fn metadata_offload_keeps_original_cancellation_without_starting_host_io()
         matches!(failure, MaterializeError::Cancelled(_)),
         "{failure:?}"
     );
-    let after = original.receipt();
+    let after = original.receipt().unwrap();
     assert_eq!(
         after.backend_read_operations,
         before.backend_read_operations
@@ -335,9 +338,9 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     .err()
     .ok_or("zero native-read allowance was accepted")?;
     assert!(matches!(no_read.error, MaterializeError::Work(_)));
-    assert_eq!(no_read.work.backend_read_operations, 0);
-    assert_eq!(no_read.work.backend_write_operations, 0);
-    assert_eq!(no_read.work.output_bytes, 0);
+    assert_eq!(no_read.work().unwrap().backend_read_operations, 0);
+    assert_eq!(no_read.work().unwrap().backend_write_operations, 0);
+    assert_eq!(no_read.work().unwrap().output_bytes, 0);
     assert!(std::fs::read_dir(no_read_output.path())?.next().is_none());
     assert_eq!(completed_reads.load(Ordering::Acquire), 0);
 
@@ -371,10 +374,10 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     .err()
     .ok_or("zero native-write budget was accepted")?;
     assert!(matches!(no_write.error, MaterializeError::Work(_)));
-    assert_eq!(no_write.work.backend_write_operations, 0);
-    assert_eq!(no_write.work.output_bytes, 0);
-    assert!(no_write.work.backend_read_operations > 0);
-    assert!(no_write.work.allocation_operations > 0);
+    assert_eq!(no_write.work().unwrap().backend_write_operations, 0);
+    assert_eq!(no_write.work().unwrap().output_bytes, 0);
+    assert!(no_write.work().unwrap().backend_read_operations > 0);
+    assert!(no_write.work().unwrap().allocation_operations > 0);
     assert!(std::fs::read_dir(no_write_output.path())?.next().is_none());
 
     let no_sync_output = tempfile::tempdir()?;
@@ -407,8 +410,8 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         std::fs::read(no_sync_output.path().join("a-present"))?,
         b"first"
     );
-    assert_eq!(no_sync.work.output_bytes, 5);
-    assert_eq!(no_sync.work.durability_operations, 0);
+    assert_eq!(no_sync.work().unwrap().output_bytes, 5);
+    assert_eq!(no_sync.work().unwrap().durability_operations, 0);
 
     // First retain the original unpublished-candidate scenario: staged/cache
     // hits must not be charged as backend reads that never happened.
@@ -505,7 +508,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         b"first"
     );
     assert!(!late_output.path().join("z-missing").exists());
-    let late_spent = late_work.receipt();
+    let late_spent = late_work.receipt().unwrap();
     assert_eq!(late_spent.output_bytes, 5);
     assert!(late_spent.backend_read_operations > 0);
     assert!(late_spent.backend_write_operations > 0);
@@ -525,7 +528,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     let reader =
         candidate.into_pinned_reader_with_native_work(original.custody.work(), &cancellation);
     let reader = reader?;
-    let prefix = original.custody.work().receipt();
+    let prefix = original.custody.work().receipt().unwrap();
     let original_work = original.custody.work().clone();
     let original_output = tempfile::tempdir()?;
     let paths = [first.clone(), missing.clone()];
@@ -554,7 +557,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         std::fs::read(original_output.path().join("a-present"))?,
         b"first"
     );
-    let original_spent = original.custody.work().receipt();
+    let original_spent = original.custody.work().receipt().unwrap();
     assert!(original_spent.allocation_operations > prefix.allocation_operations);
     assert!(original_spent.backend_read_operations > prefix.backend_read_operations);
     assert_eq!(original_spent.output_bytes, 5);
@@ -568,11 +571,12 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     }
     for deny_before_output in [true, false] {
         let guarded_output = tempfile::tempdir()?;
-        let before = original.custody.work().receipt();
+        let before = original.custody.work().receipt().unwrap();
         let mut task_fence = |phase| {
             let denied = phase == NativeMaterializationActionPhase::Before
                 && (deny_before_output
-                    || original.custody.work().receipt().output_bytes > before.output_bytes);
+                    || original.custody.work().receipt().unwrap().output_bytes
+                        > before.output_bytes);
             std::future::ready(if denied {
                 Err(TaskFenceFailure::Owner)
             } else {
@@ -590,7 +594,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
         .err()
         .ok_or("logical action bypassed the original task fence")?;
         assert!(matches!(error, TaskFenceFailure::Owner));
-        let after = original.custody.work().receipt();
+        let after = original.custody.work().receipt().unwrap();
         after.verify(FINITE_MATERIALIZATION_BUDGET)?;
         assert!(after.backend_read_operations > before.backend_read_operations);
         if deny_before_output {
@@ -640,7 +644,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     .err()
     .ok_or("original source ignored zero native-write allowance")?;
     assert!(matches!(original_no_write, MaterializeError::Work(_)));
-    let original_spent = no_write.custody.work().receipt();
+    let original_spent = no_write.custody.work().receipt().unwrap();
     assert_eq!(original_spent.backend_write_operations, 0);
     assert_eq!(original_spent.output_bytes, 0);
     assert!(std::fs::read_dir(no_write_output.path())?.next().is_none());
@@ -823,7 +827,7 @@ fn restore_preparation_rejects_a_swapped_root_before_any_write()
     assert!(spent.backend_read_operations > 0);
     assert_eq!(spent.backend_write_operations, 0);
     assert_eq!(spent.durability_operations, 0);
-    assert_eq!(allocation_work.live_allocation_bytes(), 0);
+    assert_eq!(allocation_work.live_allocation_bytes().unwrap(), 0);
     assert!(!destination.join("nested").exists());
     assert_eq!(std::fs::read(destination.join("foreign"))?, b"untouched");
     Ok(())
@@ -947,7 +951,7 @@ fn restore_lock_release_is_funded_after_cancellation_and_budget_exhaustion()
             .map_err(|(error, _)| error)?;
     let parent = HostRoot::open(temporary.path(), &mut work)?;
     let lock = acquire_restore_lock(&parent, relative, false, &mut work)?;
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     let withheld = work.reserve_work(WorkCounters {
         backend_write_operations: work.remaining()?.backend_write_operations,
         ..WorkCounters::UNCHARGED
@@ -955,7 +959,7 @@ fn restore_lock_release_is_funded_after_cancellation_and_budget_exhaustion()
     cancellation.cancel();
     drop(lock);
     assert_eq!(
-        work.receipt().backend_write_operations,
+        work.receipt().unwrap().backend_write_operations,
         before.backend_write_operations + 1,
         "the reserved unlock is recorded even after cancellation and exhaustion"
     );
@@ -976,12 +980,12 @@ fn contended_restore_lock_refunds_its_unused_release() -> Result<(), Box<dyn std
     let parent = HostRoot::open(temporary.path(), &mut work)?;
     let relative = Path::new("entry");
     let _held = acquire_restore_lock(&parent, relative, false, &mut work)?;
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     let available = work.remaining()?.backend_write_operations;
     assert!(acquire_restore_lock(&parent, relative, false, &mut work).is_err());
     assert_eq!(
         available - work.remaining()?.backend_write_operations,
-        work.receipt().backend_write_operations - before.backend_write_operations,
+        work.receipt().unwrap().backend_write_operations - before.backend_write_operations,
         "a failed acquisition retains no unused unlock reservation"
     );
     Ok(())

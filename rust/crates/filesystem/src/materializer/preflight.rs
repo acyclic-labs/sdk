@@ -20,7 +20,7 @@ async fn file_comparison_keeps_its_read_buffer_out_of_the_caller_frame()
     let work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let root = HostRoot::open(temporary.path(), &mut &work)?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes()?;
     let comparison = host_holds_generation_file(&root, "file", &generation, &work);
     let bytes = std::mem::size_of_val(&comparison);
     eprintln!("file comparison future: {bytes} bytes");
@@ -37,7 +37,7 @@ async fn file_comparison_keeps_its_read_buffer_out_of_the_caller_frame()
     // owner before checking that both the comparison frame and reads are gone.
     drop(generation);
     drop(workspace);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes()?, baseline);
     Ok(())
 }
 
@@ -270,7 +270,8 @@ async fn host_name_has_binding<O: crate::AsyncObjectStore>(
     Ok(false)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(all(unix))]
 mod tests {
     use super::*;
 
@@ -571,7 +572,7 @@ mod tests {
                 || std::future::ready(Ok(())),
             )
             .await
-            .map_err(|(error, _)| error)?;
+            .map_err(|failure| failure.into_error())?;
             assert_eq!(result.value.phase, MaterializationPhase::Applied);
             assert!(!retired.join("known").exists());
             if foreign {

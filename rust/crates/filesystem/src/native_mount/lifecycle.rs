@@ -175,7 +175,8 @@ fn linux_mount_authority_refusal(root: &Path) -> Option<&'static str> {
     }
 }
 
-#[cfg(all(test, target_os = "linux", not(loom)))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux", not(loom)))]
 mod capability_tests {
     #[test]
     fn native_auto_selection_requires_mount_authority() -> Result<(), Box<dyn std::error::Error>> {

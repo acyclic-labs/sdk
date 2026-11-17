@@ -84,7 +84,8 @@ impl Selection {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod tests {
     use super::*;
     use crate::session::ChangeProvider;

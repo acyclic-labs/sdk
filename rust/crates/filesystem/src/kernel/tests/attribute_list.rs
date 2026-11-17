@@ -459,7 +459,7 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
     .err()
     .ok_or("height-limited attribute traversal succeeded")?;
     assert!(matches!(height.error, DirectoryReadError::HeightExceeded));
-    assert_eq!(height.work.page_reads, 1);
+    assert_eq!(height.work().unwrap().page_reads, 1);
 
     let leaf = put(
         &store,
@@ -495,7 +495,7 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
     .err()
     .ok_or("aliased attribute page succeeded")?;
     assert!(matches!(alias.error, DirectoryReadError::Cycle));
-    assert_eq!(alias.work.page_reads, 2);
+    assert_eq!(alias.work().unwrap().page_reads, 2);
     Ok(())
 }
 

@@ -191,10 +191,10 @@ async fn import_keeps_cumulative_work_live_backing_and_cancelled_prefix()
             .put_stored(*id, body.clone(), &mut reference)
             .await?;
         if index == 0 {
-            first = reference.spent();
+            first = reference.spent().unwrap();
         }
     }
-    let expected = reference.spent();
+    let expected = reference.spent().unwrap();
     let live = reference.allocations.live_bytes();
     assert!(
         live > 0,
@@ -554,8 +554,8 @@ async fn manifest_construction_rejects_foreign_volume_after_complete_authenticat
         mismatch.error,
         GenerationTransferError::ManifestMismatch
     ));
-    assert!(mismatch.work.backend_read_operations > 0);
-    assert!(mismatch.work.page_reads > 0);
+    assert!(mismatch.work().unwrap().backend_read_operations > 0);
+    assert!(mismatch.work().unwrap().page_reads > 0);
 
     let manifest = (build_generation_export_manifest_async(
         &store,

@@ -50,7 +50,9 @@ async fn observed_generations_keep_the_original_hold_until_the_last_alias()
                     .then(|| crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel))
                     .transpose()
                     .map_err(|(error, _)| error)?;
-                let baseline = original.as_ref().map(|work| work.live_allocation_bytes());
+                let baseline = original
+                    .as_ref()
+                    .map(|work| work.live_allocation_bytes().unwrap());
                 let observed = match (&original, exact) {
                     (Some(work), false) => workspace.head(work, &cancel).await?,
                     (Some(work), true) => workspace.generation(id, work, &cancel).await?,
@@ -119,8 +121,8 @@ async fn observed_generations_keep_the_original_hold_until_the_last_alias()
                 drop((account, workspace));
                 close_local(fs).await?;
                 if let Some(work) = &original {
-                    work.receipt().verify(WorkBudget::UNBOUNDED)?;
-                    assert_eq!(Some(work.live_allocation_bytes()), baseline);
+                    work.receipt().unwrap().verify(WorkBudget::UNBOUNDED)?;
+                    assert_eq!(Some(work.live_allocation_bytes().unwrap()), baseline);
                 }
             }
         }

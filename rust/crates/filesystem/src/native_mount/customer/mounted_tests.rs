@@ -126,7 +126,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         .await
         .is_err()
     );
-    path_work.receipt().verify(path_budget)?;
+    path_work.receipt().unwrap().verify(path_budget)?;
     assert_eq!(head(lazy.workspace(), &setup).await?, generation);
     assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
 

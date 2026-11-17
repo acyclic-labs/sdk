@@ -57,7 +57,7 @@ fn empty_staging_preserves_bytes_and_retires_custody() -> Result<(), Box<dyn std
             let cancellation = CancellationToken::new();
             let original =
                 NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-            let initial = original.live_allocation_bytes();
+            let initial = original.live_allocation_bytes().unwrap();
             if cancelled {
                 cancellation.cancel();
             }
@@ -79,13 +79,13 @@ fn empty_staging_preserves_bytes_and_retires_custody() -> Result<(), Box<dyn std
                     &ranges,
                     staged,
                     before,
-                    original.receipt().source_bytes_read,
+                    original.receipt().unwrap().source_bytes_read,
                 )?;
                 // A deliberately broken staging result increments bytes without data.
                 prop_assert!(empty_stage_matches(&ranges, staged + 1, before, 0).is_err());
                 drop(ranges);
             }
-            prop_assert_eq!(original.live_allocation_bytes(), initial);
+            prop_assert_eq!(original.live_allocation_bytes().unwrap(), initial);
             Ok(())
         },
     )?;
@@ -234,7 +234,7 @@ async fn run_capture(
             &cancellation,
         )
         .unwrap();
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     let cancel = cancellation.clone();
     let file = options.source_root.join("file");
     PROBE.set(StageProbe {

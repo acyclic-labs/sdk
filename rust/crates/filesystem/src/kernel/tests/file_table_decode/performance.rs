@@ -89,8 +89,8 @@ fn check(count: u8, bindings: bool, sealed: bool, fault: u8) -> Result<(), &'sta
     // Warm thread-local rank checking before measuring the actual parser,
     // original accounting observer, output Vec and funded owner together.
     drop(decode(&mut accounting));
-    let before = original.receipt();
-    let live = original.live_allocation_bytes();
+    let before = original.receipt().unwrap();
+    let live = original.live_allocation_bytes().unwrap();
     struct Restore((bool, usize, u8));
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -127,14 +127,14 @@ fn check(count: u8, bindings: bool, sealed: bool, fault: u8) -> Result<(), &'sta
             ..WorkCounters::UNCHARGED
         })
         .unwrap();
-    if original.receipt() != expected {
+    if original.receipt().unwrap() != expected {
         return Err("work bound");
     }
-    if original.live_allocation_bytes() != live + bytes {
+    if original.live_allocation_bytes().unwrap() != live + bytes {
         return Err("live allocation");
     }
     drop(decoded);
-    if original.live_allocation_bytes() != live {
+    if original.live_allocation_bytes().unwrap() != live {
         return Err("retirement");
     }
     Ok(())

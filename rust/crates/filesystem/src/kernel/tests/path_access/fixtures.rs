@@ -22,7 +22,7 @@ fn setup_cache<'a, S>(
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(budget, &cancellation);
     let result = OperationReadCache::new(store, entries, &mut accounting, custody);
-    let work = accounting.spent();
+    let work = accounting.spent().unwrap();
     let cache = result.map_err(|error| OperationFailure::new(path_error(error), work))?;
     Ok((cache, work))
 }

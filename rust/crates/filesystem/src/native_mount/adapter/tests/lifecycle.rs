@@ -252,7 +252,7 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
             }
             assert!(!candidate.has_pending_mutations());
             if count == 0 {
-                assert_eq!(work.receipt().source_entries_visited, 0);
+                assert_eq!(work.receipt().unwrap().source_entries_visited, 0);
             }
         }
     }
@@ -728,7 +728,7 @@ fn native_attribute_listings_skip_annotation_page_reads() -> Result<(), Box<dyn 
                 [b"user.value-00".to_vec(), b"user.value-01".to_vec()]
             );
             assert!(page.next_cursor.is_none());
-            counts.push(work.receipt().backend_read_operations);
+            counts.push(work.receipt().unwrap().backend_read_operations);
             assert!(counts[kind] > 0, "the real backing store must be read");
             drop(page);
             drop(allocation);

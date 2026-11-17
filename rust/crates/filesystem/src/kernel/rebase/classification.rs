@@ -96,24 +96,32 @@ pub async fn classify_rebase_async<P: AsyncRebaseProbe>(
         cancellation,
     )
     .await;
-    let work = accounting.spent();
-    match classified {
-        Ok((decision, _allocation)) => Ok(RebaseReceipt { decision, work }),
-        Err(error) => Err(OperationFailure::new(
-            match error {
+    let classified =
+        classified
+            .map(|(decision, _allocation)| decision)
+            .map_err(|error| match error {
                 ClassifyRebaseFailure::Probe(error) => RebaseError::Probe(error),
                 ClassifyRebaseFailure::ZeroConflictLimit => RebaseError::ZeroConflictLimit,
                 ClassifyRebaseFailure::Accounting(crate::FsError::Work(error)) => {
                     RebaseError::Work(error)
                 }
+                ClassifyRebaseFailure::Accounting(crate::FsError::WorkObservation(error)) => {
+                    RebaseError::WorkObservation(error)
+                }
                 ClassifyRebaseFailure::Accounting(crate::FsError::Cancelled(_)) => {
                     RebaseError::Cancelled
                 }
                 ClassifyRebaseFailure::Accounting(_) => RebaseError::AllocationFailed,
-            },
-            work,
-        )),
-    }
+            });
+    crate::performance::finish_measured(
+        classified,
+        accounting.spent(),
+        RebaseError::WorkObservation,
+    )
+    .map(|receipt| RebaseReceipt {
+        decision: receipt.value,
+        work: receipt.work,
+    })
 }
 
 pub(crate) trait AccountingRebaseProbe {
@@ -182,24 +190,15 @@ impl<P: AsyncRebaseProbe> AccountingRebaseProbe for StandaloneClassificationProb
         let budget = accounting
             .remaining()
             .map_err(ClassifyRebaseFailure::Accounting)?;
-        match self
+        let answer = self
             .0
             .probe_async(generation, region, budget, cancellation)
             .await
-        {
-            Ok(receipt) => {
-                retain_standalone_probe_work(accounting, receipt.work)
-                    .map_err(ClassifyRebaseFailure::Accounting)?;
-                Ok(receipt.value)
-            }
-            Err(failure) => {
-                // Probe failures retain the work that actually happened,
-                // including an over-budget measured backend receipt.
-                retain_standalone_probe_work(accounting, *failure.work)
-                    .map_err(ClassifyRebaseFailure::Accounting)?;
-                Err(ClassifyRebaseFailure::Probe(failure.error))
-            }
-        }
+            .map_err(|failure| failure.map_error(ClassifyRebaseFailure::Probe));
+        let (result, work) = accounting.split_receipt(answer)?;
+        retain_standalone_probe_work(accounting, work)
+            .map_err(ClassifyRebaseFailure::Accounting)?;
+        result
     }
 
     // A standalone probe resolves regions only; it knows no names or

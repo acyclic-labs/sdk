@@ -9,7 +9,7 @@ async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
     let cancellation = CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let data = b"canonical HTTP chunk".to_vec();
     let allocation = {
         let claim_bytes = data.capacity() as u64;
@@ -23,9 +23,9 @@ async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
         acyclic_stream::OwnedBytes::from_vec_with_guard(data, allocation, work.runtime_meter())
             .unwrap_or_else(|failure| panic!("ordinary test carrier: {:?}", failure.into_error()));
     let pointer = carrier.as_slice().as_ptr();
-    let retained = work.live_allocation_bytes();
+    let retained = work.live_allocation_bytes().unwrap();
     let mut response = body(Bytes::from_owner(carrier));
-    assert_eq!(work.live_allocation_bytes(), retained);
+    assert_eq!(work.live_allocation_bytes().unwrap(), retained);
     let chunk = response
         .next()
         .await
@@ -36,9 +36,9 @@ async fn ordinary_http_wire_retains_canonical_allocation_through_last_chunk()
     let alias = chunk.slice(1..);
     drop(chunk);
     drop(response);
-    assert_eq!(work.live_allocation_bytes(), retained);
+    assert_eq!(work.live_allocation_bytes().unwrap(), retained);
     drop(alias);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 const SIGNATURE_DATE_HEADER: &str = "x-amz-date";

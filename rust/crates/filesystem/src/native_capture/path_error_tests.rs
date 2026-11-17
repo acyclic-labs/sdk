@@ -109,7 +109,7 @@ fn check(
         let work = NativeMaterializationWork::new(budget, &cancellation).unwrap();
         let scope = CaptureWorkScope::new(&work).unwrap();
         let admitted_leaf = clone_capture_name(&leaf, &scope.native).unwrap();
-        let live = work.live_allocation_bytes();
+        let live = work.live_allocation_bytes().unwrap();
         let before = WorkCounters {
             allocation_operations: 4,
             source_path_components: 1,
@@ -125,7 +125,7 @@ fn check(
                 + leaf_bytes,
             ..WorkCounters::UNCHARGED
         };
-        prop_assert_eq!(work.receipt(), before);
+        prop_assert_eq!(work.receipt().unwrap(), before);
         if cancelled {
             cancellation.cancel();
         }
@@ -163,8 +163,8 @@ fn check(
         }
         delta.allocation_operations = allocations;
         delta.peak_allocation_bytes = live + retained;
-        prop_assert_eq!(work.receipt(), before.checked_add(delta).unwrap());
-        prop_assert_eq!(work.live_allocation_bytes(), live + retained);
+        prop_assert_eq!(work.receipt().unwrap(), before.checked_add(delta).unwrap());
+        prop_assert_eq!(work.live_allocation_bytes().unwrap(), live + retained);
         // A component vector plus one byte vector per borrowed parent name.
         // Failures allocate their real error once. Success has no error box.
         let expected_heap = allocations + u64::from(!success);
@@ -184,10 +184,10 @@ fn check(
             prop_assert_eq!(path, &expected);
             prop_assert_eq!(path.encoded_bytes(), expected.encoded_bytes());
         }
-        outcomes.push((result, work.receipt(), heap));
+        outcomes.push((result, work.receipt().unwrap(), heap));
         drop(scope);
         prop_assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             NativeMaterializationWork::accounting_state_bytes()
         );
     }

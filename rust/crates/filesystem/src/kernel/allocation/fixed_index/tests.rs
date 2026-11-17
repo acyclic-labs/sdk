@@ -42,13 +42,13 @@ proptest! {
             let observed = table.get_or_try_insert_with(key.to_be_bytes(), &mut accounting, |_| Ok(index))?;
             prop_assert_eq!(*observed, *expected.entry(key).or_insert(index));
             for (key, value) in &expected {
-                let before = accounting.spent();
+                let before = accounting.spent().unwrap();
                 let observed = table.get_or_try_insert_with(key.to_be_bytes(), &mut accounting, |_| {
                     unreachable!("an existing key never runs its constructor")
                 })?;
                 prop_assert_eq!(*observed, *value);
-                prop_assert!(accounting.spent().items_examined - before.items_examined <= 290);
-                prop_assert_eq!(accounting.spent().allocation_operations, before.allocation_operations);
+                prop_assert!(accounting.spent().unwrap().items_examined - before.items_examined <= 290);
+                prop_assert_eq!(accounting.spent().unwrap().allocation_operations, before.allocation_operations);
             }
         }
     }
@@ -62,14 +62,14 @@ fn failed_node_admission_and_construction_leave_the_index_and_funding_intact()
     let original =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
             .map_err(|(error, _)| error)?;
-    let original_control = original.live_allocation_bytes();
+    let original_control = original.live_allocation_bytes().unwrap();
     let mut table = FixedIndex::default();
     table.get_or_try_insert_with(
         [0; 16],
         &mut KernelAccounting::native(&original, &cancel),
         |_| Ok(7),
     )?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     for admitted in 0..=2 {
         let budget = WorkBudget {
             allocation_operations: admitted + 1,
@@ -93,10 +93,10 @@ fn failed_node_admission_and_construction_leave_the_index_and_funding_intact()
             "constructor ran before both nodes were funded"
         );
         assert_eq!(
-            attempt.live_allocation_bytes(),
+            attempt.live_allocation_bytes().unwrap(),
             crate::NativeMaterializationWork::accounting_state_bytes()
         );
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         assert_eq!(
             *table.get_or_try_insert_with(
                 [0; 16],
@@ -107,7 +107,7 @@ fn failed_node_admission_and_construction_leave_the_index_and_funding_intact()
         );
     }
     drop(table);
-    assert_eq!(original.live_allocation_bytes(), original_control);
+    assert_eq!(original.live_allocation_bytes().unwrap(), original_control);
     Ok(())
 }
 
@@ -123,7 +123,7 @@ fn fixed_index_value_retires_before_its_original_node_funding()
     impl Drop for Observe<'_> {
         fn drop(&mut self) {
             self.observed
-                .set(self.original.live_allocation_bytes() >= self.minimum.get());
+                .set(self.original.live_allocation_bytes().unwrap() >= self.minimum.get());
         }
     }
     let cancel = CancellationToken::new();
@@ -131,7 +131,7 @@ fn fixed_index_value_retires_before_its_original_node_funding()
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
             .map_err(|(error, _)| error)?;
     let observed = std::cell::Cell::new(false);
-    let original_control = original.live_allocation_bytes();
+    let original_control = original.live_allocation_bytes().unwrap();
     let minimum = std::cell::Cell::new(original_control);
     let mut table = FixedIndex::default();
     table.get_or_try_insert_with(
@@ -145,10 +145,10 @@ fn fixed_index_value_retires_before_its_original_node_funding()
             })
         },
     )?;
-    minimum.set(original.live_allocation_bytes());
+    minimum.set(original.live_allocation_bytes().unwrap());
     drop(table);
     assert!(observed.get(), "node funding retired before its value");
-    assert_eq!(original.live_allocation_bytes(), original_control);
+    assert_eq!(original.live_allocation_bytes().unwrap(), original_control);
     Ok(())
 }
 
@@ -175,9 +175,9 @@ fn every_bit<const N: usize>() -> Result<(), FsError> {
             assert_eq!(index.get(key, &mut accounting)?, Some(&expected));
         }
     }
-    let before = accounting.spent();
+    let before = accounting.spent().unwrap();
     assert_eq!(index.get([0; N], &mut accounting)?, Some(&0));
-    let after = accounting.spent();
+    let after = accounting.spent().unwrap();
     assert_eq!(
         after.items_examined - before.items_examined,
         (N * 9 + 1) as u64
@@ -186,10 +186,13 @@ fn every_bit<const N: usize>() -> Result<(), FsError> {
     drop(index);
     assert_only_ledger_control(&mut accounting, true)?;
     // A second index reuses that same control; only its leaf needs admission.
-    let before = accounting.spent().allocation_operations;
+    let before = accounting.spent().unwrap().allocation_operations;
     let mut next = FixedIndex::default();
     next.get_or_try_insert_with([0; N], &mut accounting, |_| Ok(7))?;
-    assert_eq!(accounting.spent().allocation_operations - before, 1);
+    assert_eq!(
+        accounting.spent().unwrap().allocation_operations - before,
+        1
+    );
     drop(next);
     assert_only_ledger_control(&mut accounting, true)?;
     Ok(())
@@ -206,15 +209,15 @@ fn fixed_index_empty_and_missing_lookup_never_allocates_or_constructs() -> Resul
     let cancel = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
     let mut index = FixedIndex::default();
-    let before = accounting.spent();
+    let before = accounting.spent().unwrap();
     assert_eq!(index.get([0; 40], &mut accounting)?, None);
-    assert_eq!(accounting.spent(), before);
+    assert_eq!(accounting.spent().unwrap(), before);
     index.get_or_try_insert_with([255; 40], &mut accounting, |_| Ok(7))?;
-    let before = accounting.spent();
+    let before = accounting.spent().unwrap();
     assert_eq!(index.get([0; 40], &mut accounting)?, None);
     assert_eq!(index.get([255; 40], &mut accounting)?, Some(&7));
     assert_eq!(
-        accounting.spent().allocation_operations,
+        accounting.spent().unwrap().allocation_operations,
         before.allocation_operations
     );
     Ok(())
@@ -239,10 +242,10 @@ proptest! {
             let entry = index.get_or_try_insert_with(key, &mut accounting, |_| Ok(Observed { value, drops: &drops }))?;
             prop_assert_eq!(entry.value, *expected.entry(key).or_insert(value));
             for (key, value) in &expected {
-                let before = accounting.spent();
+                let before = accounting.spent().unwrap();
                 prop_assert_eq!(index.get(*key, &mut accounting)?.map(|entry| entry.value), Some(*value));
-                prop_assert!(accounting.spent().items_examined - before.items_examined <= 361);
-                prop_assert_eq!(accounting.spent().allocation_operations, before.allocation_operations);
+                prop_assert!(accounting.spent().unwrap().items_examined - before.items_examined <= 361);
+                prop_assert_eq!(accounting.spent().unwrap().allocation_operations, before.allocation_operations);
             }
         }
         prop_assert_eq!(drops.get(), 0);
@@ -272,13 +275,13 @@ fn fixed_index_lookup_admits_comparison_before_returning_a_value() -> Result<(),
         } else {
             assert_eq!(observed?, Some(&7));
         }
-        assert_eq!(reader.spent().allocation_operations, 0);
+        assert_eq!(reader.spent().unwrap().allocation_operations, 0);
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let mut reader = KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancelled);
     let empty = FixedIndex::<u64, 40>::default();
     assert!(empty.get([0; 40], &mut reader).is_err());
-    assert_eq!(reader.spent(), crate::WorkCounters::UNCHARGED);
+    assert_eq!(reader.spent().unwrap(), crate::WorkCounters::UNCHARGED);
     Ok(())
 }

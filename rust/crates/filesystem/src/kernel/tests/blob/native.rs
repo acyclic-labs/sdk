@@ -5,7 +5,7 @@ async fn original_blob_custom_source_rejects_before_io_without_a_fresh_meter()
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let mut source = ScriptedSource {
         bytes: OwnedBytes::from_static(b"abcdef"),
@@ -34,9 +34,9 @@ async fn original_blob_custom_source_rejects_before_io_without_a_fresh_meter()
         FsError::BlobBuild(BlobBuildError::NativeSourceUnavailable)
     ));
     assert_eq!(source.position, 0);
-    assert_eq!(original.receipt().source_bytes_read, 0);
-    assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap().source_bytes_read, 0);
+    assert_eq!(original.receipt().unwrap().backend_write_operations, 0);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -48,7 +48,7 @@ async fn original_blob_partial_reads_retain_source_failure_and_cancellation_pref
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
         let mut source = NativePartialBlobSource {
             source: std::io::Cursor::new(b"abcdef"),
@@ -83,9 +83,9 @@ async fn original_blob_partial_reads_retain_source_failure_and_cancellation_pref
             );
         }
         assert_eq!(source.source.position(), 3);
-        assert_eq!(original.receipt().source_bytes_read, 3);
-        assert_eq!(original.receipt().backend_write_operations, 0);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.receipt().unwrap().source_bytes_read, 3);
+        assert_eq!(original.receipt().unwrap().backend_write_operations, 0);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }

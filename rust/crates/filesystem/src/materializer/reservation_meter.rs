@@ -3,6 +3,13 @@ use crate::{DemandError, WorkCounters};
 use acyclic_native_runtime::{NativeOperationKind, NativeReadMeter};
 use std::{io, sync::Arc};
 
+impl NativeWorkReservation {
+    fn original_allocation_owner(&self) -> Arc<dyn NativeReadMeter> {
+        let owner = self.work().runtime_meter();
+        owner.allocation_owner().unwrap_or(owner)
+    }
+}
+
 macro_rules! reservation_counters {
     ($($admit:ident, $record:ident($($arg:ident: $kind:ty),*) { $($field:ident: $value:expr),* };)*) => {$(
         fn $admit(&self, $($arg:$kind),*) -> io::Result<()> {
@@ -36,8 +43,7 @@ impl NativeReadMeter for NativeWorkReservation {
         self.edit(|state| state.available().map(|_| ()))
     }
     fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> {
-        let owner = self.work().runtime_meter();
-        Some(owner.allocation_owner().unwrap_or(owner))
+        Some(self.original_allocation_owner())
     }
     fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> io::Result<()> {
         self.reserve(crate::demand::DemandWork::operation_credit(kind).delta(count))
@@ -109,14 +115,11 @@ impl NativeReadMeter for NativeWorkReservation {
         }
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
-        self.allocation_owner()
-            .expect("original owner")
+        self.original_allocation_owner()
             .record_completed_adoption(bytes)
     }
     fn release(&self, bytes: u64) {
-        self.allocation_owner()
-            .expect("original owner")
-            .release(bytes);
+        self.original_allocation_owner().release(bytes);
     }
     fn admit_bytes(&self, bytes: usize) -> io::Result<()> {
         self.preflight(NativeResourceCredit::ReadBytes.delta(bytes as u64))

@@ -397,7 +397,7 @@ async fn validation_and_boundary_queries_are_fail_closed_and_exact()
     .err()
     .ok_or("attribute height limit unexpectedly succeeded")?;
     assert!(matches!(height.error, AttributeLookupError::HeightExceeded));
-    assert_eq!(height.work.page_reads, 1);
+    assert_eq!(height.work().unwrap().page_reads, 1);
     Ok(())
 }
 

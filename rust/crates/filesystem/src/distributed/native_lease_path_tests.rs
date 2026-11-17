@@ -33,8 +33,8 @@ fn decimal_boundaries_and_maximum_expiry_preserve_paths_and_native_custody() {
     for expiry in expiries {
         let before = crate::NativeMaterializationWork::new(BUDGET, &cancellation).unwrap();
         let after = crate::NativeMaterializationWork::new(BUDGET, &cancellation).unwrap();
-        let baseline = after.live_allocation_bytes();
-        let old_baseline = before.live_allocation_bytes();
+        let baseline = after.live_allocation_bytes().unwrap();
+        let old_baseline = before.live_allocation_bytes().unwrap();
         let old = legacy_path(
             workspace,
             lease,
@@ -52,17 +52,17 @@ fn decimal_boundaries_and_maximum_expiry_preserve_paths_and_native_custody() {
         );
         assert_eq!(actual.as_str(), expected);
         assert_eq!(actual, old);
-        assert_eq!(after.receipt(), before.receipt());
-        assert!(after.live_allocation_bytes() > baseline);
+        assert_eq!(after.receipt().unwrap(), before.receipt().unwrap());
+        assert!(after.live_allocation_bytes().unwrap() > baseline);
         assert_eq!(
-            after.live_allocation_bytes() - baseline,
-            before.live_allocation_bytes() - old_baseline
+            after.live_allocation_bytes().unwrap() - baseline,
+            before.live_allocation_bytes().unwrap() - old_baseline
         );
         drop(old);
-        assert_eq!(before.live_allocation_bytes(), old_baseline);
+        assert_eq!(before.live_allocation_bytes().unwrap(), old_baseline);
         drop(actual);
-        assert_eq!(after.live_allocation_bytes(), baseline);
-        after.receipt().verify(BUDGET).unwrap();
+        assert_eq!(after.live_allocation_bytes().unwrap(), baseline);
+        after.receipt().unwrap().verify(BUDGET).unwrap();
     }
 }
 
@@ -121,7 +121,7 @@ proptest::proptest! {
             },
             (actual, legacy) => proptest::prop_assert!(false, "actual={actual:?}, legacy={legacy:?}"),
         }
-        proptest::prop_assert_eq!(work.spent(), old.spent());
+        proptest::prop_assert_eq!(work.spent().unwrap(), old.spent().unwrap());
         let expected_work = if cancelled || matches!(limit, 1 | 2) {
             WorkCounters::UNCHARGED
         } else {
@@ -134,7 +134,7 @@ proptest::proptest! {
                 ..WorkCounters::UNCHARGED
             }
         };
-        proptest::prop_assert_eq!(work.spent(), expected_work);
+        proptest::prop_assert_eq!(work.spent().unwrap(), expected_work);
     }
 }
 
@@ -160,8 +160,8 @@ proptest::proptest! {
         let cancellation = CancellationToken::new();
         let before = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
         let after = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
-        let old_baseline = before.live_allocation_bytes();
-        let baseline = after.live_allocation_bytes();
+        let old_baseline = before.live_allocation_bytes().unwrap();
+        let baseline = after.live_allocation_bytes().unwrap();
         if cancelled { cancellation.cancel(); }
         let old = legacy_path(workspace, lease, expiry, &mut AuthorityWork::native(&before, &cancellation));
         let actual = AuthorityWork::native(&after, &cancellation).lease_path(workspace, lease, expiry);
@@ -176,10 +176,10 @@ proptest::proptest! {
             }
             _ => proptest::prop_assert!(false, "actual={actual:?}, old={old:?}"),
         }
-        proptest::prop_assert_eq!(after.receipt(), before.receipt());
-        proptest::prop_assert_eq!(after.live_allocation_bytes() - baseline, before.live_allocation_bytes() - old_baseline);
+        proptest::prop_assert_eq!(after.receipt().unwrap(), before.receipt().unwrap());
+        proptest::prop_assert_eq!(after.live_allocation_bytes().unwrap() - baseline, before.live_allocation_bytes().unwrap() - old_baseline);
         drop((actual, old));
-        proptest::prop_assert_eq!(after.live_allocation_bytes(), baseline);
-        proptest::prop_assert_eq!(before.live_allocation_bytes(), old_baseline);
+        proptest::prop_assert_eq!(after.live_allocation_bytes().unwrap(), baseline);
+        proptest::prop_assert_eq!(before.live_allocation_bytes().unwrap(), old_baseline);
     }
 }

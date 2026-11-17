@@ -229,8 +229,8 @@ async fn checkpoint_request_and_merge_identity_guards_are_total_before_publicati
         mismatch.error,
         CheckpointError::RootIdentityMismatch
     ));
-    assert_eq!(mismatch.work.backend_read_operations, 2);
-    assert_eq!(mismatch.work.backend_write_operations, 0);
+    assert_eq!(mismatch.work().unwrap().backend_read_operations, 2);
+    assert_eq!(mismatch.work().unwrap().backend_write_operations, 0);
     Ok(())
 }
 

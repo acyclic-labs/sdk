@@ -508,7 +508,7 @@ async fn hard_object_bounds_keep_valid_attributes_writable_and_history_independe
             }
         }
         assert_eq!(measured.get(), credit);
-        assert_eq!(accounting.spent().items_examined, credit);
+        assert_eq!(accounting.spent().unwrap().items_examined, credit);
     }
     async fn apply(
         store: &MemoryObjectStore,

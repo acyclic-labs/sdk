@@ -58,10 +58,11 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
         })
     }
     .await;
-    let work = accounting.spent();
-    result
-        .map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(project_merge_error(error), work))
+    crate::performance::finish_measured(
+        result.map_err(project_merge_error),
+        accounting.spent(),
+        |error| project_merge_error(FsError::from(error)),
+    )
 }
 
 #[allow(

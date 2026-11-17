@@ -11,7 +11,12 @@ pub struct LazyMount<A: 'static, O: 'static, D, S> {
 
 impl<A, O, D, S> LazyMount<A, O, D, S> {
     /// Takes the first original fatal callback cause and its completed work.
-    pub fn take_callback_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
+    pub fn take_callback_failure(
+        &self,
+    ) -> Option<(
+        NativeMountError,
+        Result<crate::WorkCounters, crate::WorkObservationError>,
+    )> {
         self.session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

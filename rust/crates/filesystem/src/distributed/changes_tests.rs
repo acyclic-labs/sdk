@@ -74,7 +74,7 @@ async fn proposal_normalization_reuses_receipt_owned_publication_roots() -> Test
                 (head, root)
             );
             assert_eq!(
-                accounting.spent().authority_records_read,
+                accounting.spent().unwrap().authority_records_read,
                 0,
                 "proposal normalization resampled its receipt-owned publication root"
             );

@@ -73,7 +73,8 @@ mod cwd;
 pub(crate) use cwd::canonical_directory_path_held;
 #[cfg(all(unix, any(test, not(target_arch = "wasm32"))))]
 pub(crate) use cwd::normalize_root_path;
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(all(windows))]
 pub(crate) use cwd::short_path;
 #[cfg(windows)]
 pub(crate) use cwd::{canonical_directory_wide, fold_case_wide, long_path_wide};
@@ -214,10 +215,12 @@ mod tests;
 #[cfg(windows)]
 #[path = "tests_windows_clone.rs"]
 mod windows_clone_tests;
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(all(windows))]
 #[path = "tests_windows_directory.rs"]
 mod windows_directory_tests;
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(all(windows))]
 #[path = "tests_windows_file_opens.rs"]
 mod windows_file_open_tests;
 #[cfg(test)]

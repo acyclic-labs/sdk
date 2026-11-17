@@ -155,8 +155,8 @@ async fn policy_history(revisions: Vec<Vec<u8>>) -> Result<(), Box<dyn Error>> {
             .err()
             .ok_or("read-only view staged policy")?;
         assert!(matches!(rejected.error, FsError::MutationNotAllowed));
-        assert_eq!(rejected.work.backend_read_operations, 0);
-        assert_eq!(rejected.work.backend_write_operations, 0);
+        assert_eq!(rejected.work().unwrap().backend_read_operations, 0);
+        assert_eq!(rejected.work().unwrap().backend_write_operations, 0);
         assert_eq!(recorded(&mut reader).await?, previous);
         snapshots.push((reader, previous.clone(), head_sequence));
         unbounded!(
@@ -270,7 +270,7 @@ async fn access_policy_storage_failed_preconditions_leave_the_record_unchanged()
         .err()
         .ok_or("absent policy was replaced")?;
     assert!(matches!(rejected.error, FsError::CreationRejected));
-    assert_eq!(rejected.work.backend_write_operations, 0);
+    assert_eq!(rejected.work().unwrap().backend_write_operations, 0);
     assert_eq!(recorded(&mut checkout).await?, None);
     unbounded!(
         checkout,

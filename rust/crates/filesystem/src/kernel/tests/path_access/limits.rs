@@ -33,7 +33,7 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
     else {
         return Err("zero-peak request did not reject the actual path frame".into());
     };
-    assert_eq!(zero_peak.work.backend_read_operations, 0);
+    assert_eq!(zero_peak.work().unwrap().backend_read_operations, 0);
     let required_peak = frame_bytes
         .checked_add(cache_bytes)
         .and_then(|bytes| bytes.checked_add(dependency_bytes))
@@ -60,9 +60,9 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
             maximum,
         }) if observed == required_peak && maximum == required_peak - 1
     ));
-    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
     assert_eq!(
-        failure.work.allocation_operations,
+        failure.work().unwrap().allocation_operations,
         cache_work.allocation_operations + 1
     );
 
@@ -103,7 +103,7 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
             counter: "peak_allocation_bytes", observed, maximum,
         }) if observed == required_name_peak && maximum == required_name_peak - 1
     ));
-    assert_eq!(accounting.spent().bytes_copied, 0);
+    assert_eq!(accounting.spent().unwrap().bytes_copied, 0);
     Ok(())
 }
 
@@ -131,9 +131,9 @@ async fn batch_cancellation_after_authenticated_progress_preserves_prior_work()
         failure.error,
         PathLookupError::Tree(TreeReadError::Cancelled)
     ));
-    assert!(failure.work.backend_read_operations >= 1);
-    assert!(failure.work.page_reads >= 1);
-    assert!(failure.work.peak_allocation_bytes > 0);
+    assert!(failure.work().unwrap().backend_read_operations >= 1);
+    assert!(failure.work().unwrap().page_reads >= 1);
+    assert!(failure.work().unwrap().peak_allocation_bytes > 0);
     Ok(())
 }
 
@@ -164,9 +164,9 @@ async fn copied_byte_budget_rejects_before_directory_frontier_read()
             ..
         })
     ));
-    assert_eq!(failure.work.backend_read_operations, 1);
-    assert_eq!(failure.work.page_reads, 1);
-    assert!(failure.work.bytes_copied <= budget.bytes_copied);
+    assert_eq!(failure.work().unwrap().backend_read_operations, 1);
+    assert_eq!(failure.work().unwrap().page_reads, 1);
+    assert!(failure.work().unwrap().bytes_copied <= budget.bytes_copied);
     Ok(())
 }
 
@@ -277,7 +277,7 @@ async fn cancelled_and_unadmitted_batches_perform_no_backend_work()
     .err()
     .ok_or("zero-allocation path batch succeeded")?;
     assert!(matches!(unadmitted.error, PathLookupError::Work(_)));
-    assert_eq!(unadmitted.work.backend_read_operations, 0);
+    assert_eq!(unadmitted.work().unwrap().backend_read_operations, 0);
     Ok(())
 }
 
@@ -323,9 +323,9 @@ async fn single_path_cancellation_after_authenticated_progress_preserves_work()
                 TreeReadError::Cancelled | TreeReadError::Storage(ObjectStoreError::Cancelled)
             )
         ));
-        assert!(failure.work.backend_read_operations >= 1);
-        assert!(failure.work.page_reads >= 1);
-        assert!(failure.work.peak_allocation_bytes > 0);
+        assert!(failure.work().unwrap().backend_read_operations >= 1);
+        assert!(failure.work().unwrap().page_reads >= 1);
+        assert!(failure.work().unwrap().peak_allocation_bytes > 0);
     }
     Ok(())
 }
@@ -353,7 +353,7 @@ async fn windows_name_encoding_rejects_before_backend_work()
         PathLookupError::UnsupportedNameEncoding
     ));
     assert_eq!(
-        *failure.work,
+        *failure.work().unwrap(),
         WorkCounters {
             items_examined: 1,
             ..WorkCounters::UNCHARGED

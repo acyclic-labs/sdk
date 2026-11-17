@@ -99,7 +99,8 @@ impl NativeAllocation {
     /// Releases destroyed backing capacity.
     pub fn release(&mut self, bytes: u64) -> Result<(), NativeTreeMaterializationError> {
         let empty = bytes == 0;
-        #[cfg(all(test, loom))]
+        #[cfg(test)]
+        #[cfg(all(loom))]
         let empty = empty && !model_checking::force_ledger_release();
         if empty {
             return Ok(());

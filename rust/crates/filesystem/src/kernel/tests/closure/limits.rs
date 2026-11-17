@@ -50,7 +50,7 @@ async fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
         missing.error,
         ClosureError::Storage(ObjectStoreError::Missing)
     ));
-    assert!(missing.work.object_probes > 0);
+    assert!(missing.work().unwrap().object_probes > 0);
 
     let outside_store = MemoryObjectStore::default();
     let four_bytes = blob_with_bytes(&outside_store, b"data").await?;

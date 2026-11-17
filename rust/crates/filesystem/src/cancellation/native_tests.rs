@@ -41,8 +41,8 @@ fn cancellation_notification_ends_with_its_registration() {
             token.cancel();
         }
         let notification_observed = Arc::clone(&observed);
-        let baseline = original.live_allocation_bytes();
-        let operations = original.receipt().allocation_operations;
+        let baseline = original.live_allocation_bytes().unwrap();
+        let operations = original.receipt().unwrap().allocation_operations;
         let mut registration = None;
         let physical = acyclic_test_support::measure(|| {
             registration = Some(token.on_cancel(funded.then_some(&original), move || {
@@ -52,12 +52,12 @@ fn cancellation_notification_ends_with_its_registration() {
         let registration = registration.unwrap().unwrap();
         if funded {
             assert_eq!(
-                original.live_allocation_bytes() - baseline,
+                original.live_allocation_bytes().unwrap() - baseline,
                 u64::try_from(physical.bytes_current).unwrap(),
                 "original cancellation credit omits live allocator backing"
             );
             assert_eq!(
-                original.receipt().allocation_operations - operations,
+                original.receipt().unwrap().allocation_operations - operations,
                 physical.count_total
             );
         }
@@ -65,7 +65,7 @@ fn cancellation_notification_ends_with_its_registration() {
         drop(registration);
         token.cancel();
         assert_eq!(observed.load(Ordering::Acquire), cancelled_first);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
 }
 
@@ -91,13 +91,13 @@ fn cancelled_cleanup_wait_preserves_live_registry_and_original_prefix() {
     root.cancel();
     let wait = CancellationToken::new();
     wait.cancel();
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     assert!(matches!(
         token.prepare_cancel_cleanup(Some(&wait)),
         Err(crate::NativeTreeMaterializationError::Cancelled)
     ));
     assert!(!token.is_cancelled());
-    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().unwrap(), before);
     drop(registered);
 }
 
@@ -126,7 +126,7 @@ struct DropWaiterOnWake {
 
 impl std::task::Wake for DropWaiterOnWake {
     fn wake(self: Arc<Self>) {
-        let before = self.work.live_allocation_bytes();
+        let before = self.work.live_allocation_bytes().unwrap();
         drop(
             self.waiter
                 .lock()
@@ -134,7 +134,7 @@ impl std::task::Wake for DropWaiterOnWake {
                 .take(),
         );
         self.retired.store(
-            self.work.live_allocation_bytes() < before,
+            self.work.live_allocation_bytes().unwrap() < before,
             Ordering::Release,
         );
     }
@@ -149,7 +149,7 @@ fn delivery_does_not_retain_a_dropped_later_waiters_allocation() {
     let backing = |layout| crate::arc_layout::allocation_bytes(layout).unwrap() as u64;
     let state_bytes = backing(std::alloc::Layout::new::<CancellationState>());
     let waiter_bytes = backing(std::alloc::Layout::new::<CancellationWaiter>());
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     for linked in [false, true] {
         let child = if linked {
             CancellationToken::linked_child_with_native_work(&token, &work)
@@ -163,17 +163,17 @@ fn delivery_does_not_retain_a_dropped_later_waiters_allocation() {
             0
         };
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             baseline + state_bytes + extra,
             "cancellation owners must retain their complete Arc backing"
         );
         drop(child);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     }
     let notify: fn() = || {};
     let registration = token.on_cancel(Some(&work), notify).unwrap();
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         baseline
             + waiter_bytes
             + backing(std::alloc::Layout::new::<
@@ -182,10 +182,13 @@ fn delivery_does_not_retain_a_dropped_later_waiters_allocation() {
         "cancellation notification must retain its complete Arc backing"
     );
     drop(registration);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     let later = token.prepare_cancelled_with_native_work(&work).unwrap();
     let mut first = token.prepare_cancelled_with_native_work(&work).unwrap();
-    assert_eq!(work.live_allocation_bytes(), baseline + 2 * waiter_bytes);
+    assert_eq!(
+        work.live_allocation_bytes().unwrap(),
+        baseline + 2 * waiter_bytes
+    );
     let retired = Arc::new(AtomicBool::new(false));
     let waker = Waker::from(Arc::new(DropWaiterOnWake {
         waiter: Mutex::new(Some(later)),
@@ -201,10 +204,10 @@ fn delivery_does_not_retain_a_dropped_later_waiters_allocation() {
     assert!(retired.load(Ordering::Acquire));
     drop((waker, first));
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
-    work.receipt().verify(budget(64)).unwrap();
+    work.receipt().unwrap().verify(budget(64)).unwrap();
 
     let token = CancellationToken::new();
     let mut caller = crate::kernel::KernelAccounting::standalone(budget(64), &token);
@@ -236,7 +239,7 @@ fn blocking_notifications_preserve_early_events_original_credit_and_retirement()
     let original = crate::NativeMaterializationWork::new(budget(128), &root)
         .map_err(|(error, _)| error)
         .unwrap();
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     for cancel_before_registration in [false, true] {
         let token = CancellationToken::new();
         if cancel_before_registration {
@@ -245,7 +248,7 @@ fn blocking_notifications_preserve_early_events_original_credit_and_retirement()
         let before = NOTIFICATIONS.load(std::sync::atomic::Ordering::SeqCst);
         let mut wait = token.prepare_cancelled_with_native_work(&original).unwrap();
         if !cancel_before_registration {
-            assert!(original.live_allocation_bytes() > baseline);
+            assert!(original.live_allocation_bytes().unwrap() > baseline);
             // Delivery detached the node before its notification was armed.
             token.cancel();
         }
@@ -255,7 +258,7 @@ fn blocking_notifications_preserve_early_events_original_credit_and_retirement()
             before + 1
         );
         drop(wait);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     let token = CancellationToken::new();
     let mut wait = token.prepare_cancelled_with_native_work(&original).unwrap();
@@ -267,7 +270,7 @@ fn blocking_notifications_preserve_early_events_original_credit_and_retirement()
         before + 1
     );
     drop(wait);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
     let token = CancellationToken::new();
     let mut wait = token.prepare_cancelled_with_native_work(&original).unwrap();
@@ -279,8 +282,8 @@ fn blocking_notifications_preserve_early_events_original_credit_and_retirement()
         NOTIFICATIONS.load(std::sync::atomic::Ordering::SeqCst),
         before
     );
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    original.receipt().verify(budget(128)).unwrap();
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+    original.receipt().unwrap().verify(budget(128)).unwrap();
 
     let mut demand = crate::demand::DemandWork::new(
         crate::WorkBudget {

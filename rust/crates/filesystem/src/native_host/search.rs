@@ -3,7 +3,8 @@
 //! process may cross but not list still anchors no-follow lookups below it.
 use super::*;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(all(unix))]
 mod tests {
     use super::*;
 

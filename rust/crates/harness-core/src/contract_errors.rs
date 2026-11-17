@@ -1658,6 +1658,13 @@ impl From<acyclic_fs::NativeWorkspacePublicationError> for Error {
 }
 
 /// Moves the complete filesystem cause and its intrinsic custody without formatting.
+impl From<acyclic_fs::WorkObservationError> for Error {
+    fn from(source: acyclic_fs::WorkObservationError) -> Self {
+        Self::from(acyclic_fs::FsError::from(source))
+    }
+}
+
+/// Moves the complete filesystem cause and its intrinsic custody without formatting.
 impl From<acyclic_fs::FsError> for Error {
     fn from(source: acyclic_fs::FsError) -> Self {
         if matches!(source, acyclic_fs::FsError::UnauthenticatedAccessFacts) {

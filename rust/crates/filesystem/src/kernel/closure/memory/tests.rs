@@ -11,7 +11,7 @@ fn live(meter: &ProofMeter<'_>) -> u64 {
             .0
             .live_bytes(),
         #[cfg(not(target_arch = "wasm32"))]
-        ProofMeter::Native { original, .. } => original.live_allocation_bytes(),
+        ProofMeter::Native { original, .. } => original.live_allocation_bytes().unwrap(),
     }
 }
 
@@ -301,12 +301,12 @@ fn denied_native_first_slot_never_allocates() -> Result<(), Box<dyn std::error::
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
     // Read the existing ledger before probing a new volume. This also initializes
     // the debug lock-order observer's per-thread storage outside measurement.
-    let before = original.receipt();
+    let before = original.receipt().unwrap();
     assert_eq!(before.allocation_operations, 1);
     denied(&ProofMeter::Native {
         original: &original,
         cancellation: &cancellation,
     });
-    assert_eq!(original.receipt(), before);
+    assert_eq!(original.receipt().unwrap(), before);
     Ok(())
 }

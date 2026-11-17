@@ -552,7 +552,7 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
         },
         &cancellation,
     );
-    let encode_initial_work = encode_limited.spent();
+    let encode_initial_work = encode_limited.spent().unwrap();
     let encode_error = (put_extent_page_with_accounting(
         &store,
         &page,
@@ -568,7 +568,7 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
             counter: "bytes_encoded", observed, maximum: 0,
         }) if observed == encoded_length
     ));
-    assert_eq!(encode_limited.spent(), encode_initial_work);
+    assert_eq!(encode_limited.spent().unwrap(), encode_initial_work);
 
     let mut hash_limited = KernelAccounting::standalone(
         WorkBudget {
@@ -592,9 +592,9 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
             counter: "bytes_hashed", observed, maximum: 0,
         }) if observed == encoded_length
     ));
-    assert_eq!(hash_limited.spent().bytes_encoded, encoded_length);
-    assert_eq!(hash_limited.spent().bytes_hashed, 0);
-    assert_eq!(hash_limited.spent().backend_write_operations, 0);
+    assert_eq!(hash_limited.spent().unwrap().bytes_encoded, encoded_length);
+    assert_eq!(hash_limited.spent().unwrap().bytes_hashed, 0);
+    assert_eq!(hash_limited.spent().unwrap().backend_write_operations, 0);
 
     let mut byte_limited = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let byte_error = (put_extent_page_with_accounting(
@@ -615,7 +615,7 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
             observed, maximum: 1,
         }) if observed == encoded_length
     ));
-    assert_eq!(byte_limited.spent().backend_write_operations, 0);
+    assert_eq!(byte_limited.spent().unwrap().backend_write_operations, 0);
 
     Ok(())
 }

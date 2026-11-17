@@ -14,7 +14,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
     );
     original.charge_items(1)?;
     let first = RetainedAllocation::claim(16, 1, &mut original)?;
-    let before = original.spent();
+    let before = original.spent().unwrap();
     let live = original
         .standalone_parts()
         .ok_or(WorkError::Overflow)?
@@ -24,7 +24,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
     {
         let mut borrowed = AuthorityFrame::borrow(&mut original)?;
         // The former remaining-budget frame starts at zero and fails here.
-        assert_eq!(borrowed.spent(), before);
+        assert_eq!(borrowed.spent().unwrap(), before);
         assert_eq!(borrowed.allocations.live_bytes(), live);
         borrowed.charge(WorkCounters {
             items_examined: 1,
@@ -42,7 +42,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
             }))
         ));
         let held = OwnedAccounting::take_branch(&mut borrowed.accounting(), &cancellation)?;
-        let before = borrowed.spent();
+        let before = borrowed.spent().unwrap();
         assert!(matches!(
             borrowed.check(),
             Err(AuthorityStoreError::AccountingHandoffActive)
@@ -86,7 +86,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
                 .map_err(crate::async_storage::object_error),
             Err(ObjectStoreError::AccountingHandoffActive)
         ));
-        assert_eq!(borrowed.spent(), before);
+        assert_eq!(borrowed.spent().unwrap(), before);
         held.restore(&mut borrowed.accounting())?;
         crate::performance::VERIFICATION_PASSES.with(|passes| passes.set(0));
         borrowed.admit(WorkCounters::UNCHARGED)?;
@@ -98,7 +98,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
             borrowed.budget.peak_allocation_bytes - borrowed.allocations.live_bytes()
         );
     }
-    assert_eq!(original.spent().items_examined, 2);
+    assert_eq!(original.spent().unwrap().items_examined, 2);
     assert_eq!(
         original
             .standalone_parts()
@@ -111,10 +111,10 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
     // Dropping the same suspended operation restores its original frame,
     // without a completion callback or fresh cancellation admission.
     let (producer, receiver) = tokio::sync::oneshot::channel::<()>();
-    let before = original.spent();
+    let before = original.spent().unwrap();
     let mut operation = Box::pin(async {
         let borrowed = AuthorityFrame::borrow(&mut original)?;
-        assert_eq!(borrowed.spent(), before);
+        assert_eq!(borrowed.spent().unwrap(), before);
         let _ = receiver.await;
         drop(borrowed);
         Ok::<_, FsError>(())
@@ -123,14 +123,14 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
     cancellation.cancel();
     drop(operation);
     drop(producer);
-    assert_eq!(original.spent(), before);
+    assert_eq!(original.spent().unwrap(), before);
     assert!(AuthorityFrame::borrow(&mut original).is_err());
     let mut stopped = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     assert!(matches!(
         stopped.remaining(),
         Err(AuthorityStoreError::Cancelled)
     ));
-    assert_eq!(stopped.spent(), WorkCounters::UNCHARGED);
+    assert_eq!(stopped.spent().unwrap(), WorkCounters::UNCHARGED);
     assert!(matches!(
         stopped.charge(WorkCounters {
             items_examined: 1,
@@ -138,7 +138,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
         }),
         Err(AuthorityStoreError::Cancelled)
     ));
-    assert_eq!(stopped.spent().items_examined, 1);
+    assert_eq!(stopped.spent().unwrap().items_examined, 1);
     stopped.accept::<_, AuthorityStoreError>(Ok(OperationReceipt {
         value: (),
         work: WorkCounters {
@@ -146,7 +146,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
             ..WorkCounters::UNCHARGED
         },
     }))?;
-    assert_eq!(stopped.spent().items_examined, 3);
+    assert_eq!(stopped.spent().unwrap().items_examined, 3);
     assert!(matches!(
         stopped.accept::<(), _>(Err(OperationFailure::new(
             AuthorityStoreError::Cancelled,
@@ -157,8 +157,8 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
         ))),
         Err(AuthorityStoreError::Cancelled)
     ));
-    assert_eq!(stopped.spent().items_examined, 6);
-    let completed_before = stopped.spent();
+    assert_eq!(stopped.spent().unwrap().items_examined, 6);
+    let completed_before = stopped.spent().unwrap();
     assert!(matches!(
         stopped.accept::<_, FsError>(Ok(OperationReceipt {
             value: (),
@@ -169,8 +169,8 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
         })),
         Err(FsError::Work(WorkError::Overflow))
     ));
-    assert_eq!(stopped.spent(), completed_before);
-    assert_eq!(original.spent(), before);
+    assert_eq!(stopped.spent().unwrap(), completed_before);
+    assert_eq!(original.spent().unwrap(), before);
     drop(first);
     drop(second);
     assert_eq!(
@@ -188,20 +188,20 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
         let cancellation = CancellationToken::new();
         let native = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let baseline = native.live_allocation_bytes();
+        let baseline = native.live_allocation_bytes().unwrap();
         let mut original = KernelAccounting::native(&native, &cancellation);
         original.charge_items(1)?;
         let mut borrowed = AuthorityFrame::borrow(&mut original)?;
-        assert_eq!(borrowed.spent(), native.receipt());
+        assert_eq!(borrowed.spent().unwrap(), native.receipt().unwrap());
         let held = RetainedAllocation::claim(32, 1, &mut borrowed.accounting())?;
         borrowed.charge(WorkCounters {
             items_examined: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        assert_eq!(native.receipt().items_examined, 2);
+        assert_eq!(native.receipt().unwrap().items_examined, 2);
         let caller_cancel = CancellationToken::new();
         let mut caller = AuthorityWork::native(&native, &caller_cancel);
-        let before = native.receipt();
+        let before = native.receipt().unwrap();
         caller_cancel.cancel();
         assert!(matches!(
             caller.remaining(),
@@ -211,13 +211,13 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
             caller.scope(),
             Err(AuthorityStoreError::Cancelled)
         ));
-        assert_eq!(native.receipt(), before);
+        assert_eq!(native.receipt().unwrap(), before);
         assert!(borrowed.remaining().is_ok());
         cancellation.cancel();
         drop(borrowed);
-        assert_eq!(original.spent(), native.receipt());
+        assert_eq!(original.spent().unwrap(), native.receipt().unwrap());
         drop(held);
-        assert_eq!(native.live_allocation_bytes(), baseline);
+        assert_eq!(native.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }

@@ -141,6 +141,9 @@ pub type AuthorityResult<T> = MeasuredResult<crate::OperationReceipt<T>, Authori
 #[derive(Debug, Error, strum::IntoStaticStr)]
 #[cfg_attr(test, derive(strum::EnumCount))]
 pub enum AuthorityStoreError {
+    /// The original work receipt could not be observed.
+    #[error(transparent)]
+    WorkObservation(#[from] crate::WorkObservationError),
     /// The original accounting continuation still owns this operation's custody.
     #[error("authority accounting custody is held by its continuation")]
     AccountingHandoffActive,
@@ -846,6 +849,9 @@ pub type ObjectResult<T> = MeasuredResult<crate::OperationReceipt<T>, ObjectStor
 /// Typed immutable-object failures.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum ObjectStoreError {
+    /// The original work receipt could not be observed.
+    #[error(transparent)]
+    WorkObservation(#[from] crate::WorkObservationError),
     /// Operation was cancelled before immutable-object work began.
     #[error("object operation was cancelled")]
     Cancelled,

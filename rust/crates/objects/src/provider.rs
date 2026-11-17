@@ -139,6 +139,20 @@ pub struct Page {
 pub struct RootId(Vec<u8>);
 
 impl RootId {
+    /// Builds a nonempty identity in reusable storage from a fixed prefix and suffix.
+    #[must_use]
+    pub fn from_prefix<const N: usize>(
+        prefix: &[u8; N],
+        suffix: &[u8],
+        mut bytes: Vec<u8>,
+    ) -> Self {
+        const { assert!(N > 0) };
+        bytes.clear();
+        bytes.extend_from_slice(prefix);
+        bytes.extend_from_slice(suffix);
+        Self(bytes)
+    }
+
     /// Wraps a nonempty identity.
     pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, Error> {
         let bytes = bytes.into();

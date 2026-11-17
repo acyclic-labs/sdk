@@ -154,7 +154,7 @@ fn callback_admission_and_cancellation_preserve_work_and_retire_owned_paths() ->
             );
         }
         assert_eq!(
-            callback.with_original_leaf(|work| work.live_allocation_bytes()),
+            callback.with_original_leaf(|work| work.live_allocation_bytes().unwrap()),
             0
         );
         assert_eq!(callback.with_original_leaf(|work| work.budget), budget);
@@ -393,7 +393,7 @@ fn startup_denial_cleans_the_actual_created_stream_and_queue() -> TestResult {
             Err(error) => {
                 assert!(matches!(error, DemandError::Work(_)));
                 assert_eq!(work.budget, budget);
-                assert_eq!(work.live_allocation_bytes(), 0);
+                assert_eq!(work.live_allocation_bytes().unwrap(), 0);
             }
         }
     }
@@ -555,7 +555,7 @@ fn denied_root_copy_never_reaches_metadata_or_the_framework() -> TestResult {
     assert_eq!(work.work.backend_write_operations, 0);
     assert_eq!(work.work.source_entries_visited, 0);
     assert_eq!(work.work.bytes_copied, 0);
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(work.live_allocation_bytes().unwrap(), 0);
     Ok(())
 }
 
@@ -734,7 +734,7 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
         .ok_or("stream was not registered")?
         .delivery_fence();
     let completion = Arc::clone(&watch.shared);
-    let funded_live = original.with_original_leaf(|work| work.live_allocation_bytes());
+    let funded_live = original.with_original_leaf(|work| work.live_allocation_bytes().unwrap());
     *sink.watch.lock().map_err(|_| "poisoned callback custody")? = Some(watch);
     drop(work);
     std::fs::write(root.path().join("retire"), b"native event")?;
@@ -760,7 +760,7 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
     original.with_original_leaf(|work| {
         work.reconcile_native_controls()?;
         // The original registry's own capacity remains legitimately live.
-        assert!(work.live_allocation_bytes() < funded_live);
+        assert!(work.live_allocation_bytes().unwrap() < funded_live);
         Ok::<_, crate::WorkError>(())
     })?;
     drop(original);

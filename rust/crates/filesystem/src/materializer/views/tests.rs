@@ -48,7 +48,7 @@ fn publication_lifetime_preserves_original_windows_resources_and_cancellation() 
         } else {
             scoped
         };
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let lifetime =
             AuthorityLifetime::admit(&mut KernelAccounting::native(&scoped, &cancel)).unwrap();
         let durable = scoped.authority_publication_view(&lifetime).unwrap();
@@ -92,7 +92,7 @@ fn publication_lifetime_preserves_original_windows_resources_and_cancellation() 
         drop(meter);
         drop(durable);
         drop(lifetime);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
 }
 
@@ -100,23 +100,23 @@ fn publication_lifetime_preserves_original_windows_resources_and_cancellation() 
 fn invocation_layout_matches_allocator_through_the_last_alias() {
     for authority in [false, true] {
         let work = root(crate::performance::BOUNDARY_BUDGET);
-        let baseline = work.live_allocation_bytes(); // Warm the rank-checker TLS.
-        let before = work.receipt();
+        let baseline = work.live_allocation_bytes().unwrap(); // Warm the rank-checker TLS.
+        let before = work.receipt().unwrap();
         let (owner, observed) = measured(|| view(&work, authority).unwrap());
         assert_eq!(observed.count_total, 1);
         assert_eq!(observed.count_current, 1);
         assert_eq!(observed.bytes_total, observed.bytes_max);
         assert_eq!(observed.bytes_current as u64, observed.bytes_total);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             baseline + observed.bytes_total
         );
         assert_eq!(
-            work.receipt().allocation_operations,
+            work.receipt().unwrap().allocation_operations,
             before.allocation_operations + 1
         );
         assert_eq!(
-            work.receipt().peak_allocation_bytes,
+            work.receipt().unwrap().peak_allocation_bytes,
             baseline + observed.bytes_total
         );
         assert_eq!(
@@ -128,16 +128,16 @@ fn invocation_layout_matches_allocator_through_the_last_alias() {
         assert_eq!(cloned.count_total, 0);
         drop(owner);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             baseline + observed.bytes_total
         );
         let (_, released) = measured(|| drop(alias));
         assert_eq!(released.count_total, 0);
         assert_eq!(released.count_current, -1);
         assert_eq!(released.bytes_current, -(observed.bytes_total as i64));
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
         assert_eq!(
-            work.receipt().allocation_operations,
+            work.receipt().unwrap().allocation_operations,
             before.allocation_operations + 1
         );
     }
@@ -146,7 +146,7 @@ fn invocation_layout_matches_allocator_through_the_last_alias() {
 #[test]
 fn every_original_and_ancestor_resource_ceiling_admits_exactly_the_full_layout() {
     let probe = root(crate::performance::BOUNDARY_BUDGET);
-    probe.live_allocation_bytes();
+    probe.live_allocation_bytes().unwrap();
     let (owner, observed) = measured(|| view(&probe, true).unwrap());
     let required = observed.bytes_total;
     drop(owner);
@@ -169,7 +169,7 @@ fn every_original_and_ancestor_resource_ceiling_admits_exactly_the_full_layout()
 fn cancelled_invocation_does_not_allocate_or_change_the_receipt() {
     let work = root(crate::performance::BOUNDARY_BUDGET);
     work.cancellation().cancel();
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     for authority in [false, true] {
         let (result, observed) = measured(|| view(&work, authority));
         assert!(matches!(
@@ -177,9 +177,9 @@ fn cancelled_invocation_does_not_allocate_or_change_the_receipt() {
             Err(NativeTreeMaterializationError::Cancelled)
         ));
         assert_eq!(observed.count_total, 0);
-        assert_eq!(work.receipt(), before);
+        assert_eq!(work.receipt().unwrap(), before);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             NativeMaterializationWork::accounting_state_bytes()
         );
     }
@@ -222,8 +222,8 @@ fn independent_ceiling_case(
             })
             .unwrap();
     }
-    let baseline = work.live_allocation_bytes();
-    let before = work.receipt();
+    let baseline = work.live_allocation_bytes().unwrap();
+    let before = work.receipt().unwrap();
     let expected = root_remaining >= required && limits.iter().all(|&limit| limit >= required);
     let (result, observed) = ONLY_INNERMOST.with(|inner| {
         assert!(inner.get().is_null());
@@ -240,7 +240,7 @@ fn independent_ceiling_case(
         measured(|| view(&scoped, authority))
     });
     let admitted = result.is_ok();
-    let live_with_owner = work.live_allocation_bytes();
+    let live_with_owner = work.live_allocation_bytes().unwrap();
     drop(result);
     assert_eq!(admitted, expected, "ceiling admission");
     assert_eq!(observed.count_total, u64::from(expected));
@@ -253,15 +253,18 @@ fn independent_ceiling_case(
         live_with_owner,
         baseline + if expected { required } else { 0 }
     );
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     if expected {
         assert_eq!(
-            work.receipt().allocation_operations,
+            work.receipt().unwrap().allocation_operations,
             before.allocation_operations + 1
         );
-        assert_eq!(work.receipt().peak_allocation_bytes, baseline + required);
+        assert_eq!(
+            work.receipt().unwrap().peak_allocation_bytes,
+            baseline + required
+        );
     } else {
-        assert_eq!(work.receipt(), before);
+        assert_eq!(work.receipt().unwrap(), before);
     }
     if let Some(resource) = &scoped.resource {
         assert_eq!(

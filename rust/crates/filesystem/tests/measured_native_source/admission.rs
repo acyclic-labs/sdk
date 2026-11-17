@@ -67,7 +67,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     let budget = FINITE_BUDGET;
     let work = NativeMaterializationWork::new(budget, &CancellationToken::new())
         .map_err(|(error, _)| error)?;
-    let before = work.live_allocation_bytes();
+    let before = work.live_allocation_bytes().unwrap();
     let (caller_path, caller_guard) = work.path(&root, None)?;
     let reference = SourceReference {
         components: acyclic_stream::OwnedBytes::new(),
@@ -87,7 +87,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     drop(caller_path);
     drop(caller_guard);
     assert!(
-        work.live_allocation_bytes() > before,
+        work.live_allocation_bytes().unwrap() > before,
         "provider retains its own root/control custody"
     );
     let namespace = requested("")?;
@@ -120,10 +120,10 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
             .await,
         Err(DemandError::SourceUnavailable)
     ));
-    let retained = work.live_allocation_bytes();
+    let retained = work.live_allocation_bytes().unwrap();
     drop(source);
     assert!(
-        work.live_allocation_bytes() < retained,
+        work.live_allocation_bytes().unwrap() < retained,
         "the physical root spelling retires only with its provider"
     );
     let detached_source = NativeDemandSource::open(
@@ -139,7 +139,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     let original = work.runtime_meter();
     let original_weak = Arc::downgrade(&original);
     drop(original);
-    work.receipt().verify(budget)?;
+    work.receipt().unwrap().verify(budget)?;
     drop(work);
     assert!(
         original_weak.upgrade().is_some(),

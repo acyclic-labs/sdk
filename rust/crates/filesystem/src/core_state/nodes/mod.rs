@@ -111,7 +111,7 @@ impl LocalCoreStateStore {
                 let work = namespace
                     ._allocation
                     .as_ref()
-                    .expect("bound native work")
+                    .ok_or(LocalCoreStateStoreError::Integrity)?
                     .work();
                 let paths = namespace.record(T::FAMILY, &T::address(id))?;
                 {
@@ -120,7 +120,7 @@ impl LocalCoreStateStore {
                         return Ok(None);
                     };
                     let mut allocation = crate::kernel::KernelOwnedAllocation::NativeOriginal(
-                        owned.1.take().expect("native record allocation"),
+                        owned.1.take().ok_or(LocalCoreStateStoreError::Integrity)?,
                     );
                     owned
                         .0
@@ -190,7 +190,7 @@ impl LocalCoreStateStore {
                     let work = namespace
                         ._allocation
                         .as_ref()
-                        .expect("bound native work")
+                        .ok_or(LocalCoreStateStoreError::Integrity)?
                         .work();
                     // Immutable publication needs only its final leaf, never
                     // the mutable journal's previous, temporary or lock paths.
@@ -212,7 +212,8 @@ impl LocalCoreStateStore {
                     serde_json::to_writer(&mut encoded, &owned.value)?;
                     // Immutable records need atomic no-replace publication,
                     // not exclusion between unrelated content addresses.
-                    #[cfg(all(test, target_os = "linux"))]
+                    #[cfg(test)]
+                    #[cfg(all(target_os = "linux"))]
                     publication_pause::install(&namespace.root, T::address(id));
                     let mut original = work.clone();
                     let mut publish = || -> Result<(), crate::DemandError> {
@@ -251,7 +252,8 @@ impl LocalCoreStateStore {
 
 mod store;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux"))]
 pub(super) mod publication_pause {
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, PoisonError, mpsc};
@@ -270,10 +272,10 @@ pub(super) mod publication_pause {
         release: mpsc::Sender<()>,
     }
     impl Held {
-        pub(in crate::core_state) async fn entered(&mut self) {
-            (&mut self.entered)
-                .await
-                .expect("original publisher reached its physical cut");
+        pub(in crate::core_state) async fn entered(
+            &mut self,
+        ) -> Result<(), tokio::sync::oneshot::error::RecvError> {
+            (&mut self.entered).await
         }
     }
     impl Drop for Held {

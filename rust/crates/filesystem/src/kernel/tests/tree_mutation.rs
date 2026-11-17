@@ -29,8 +29,8 @@ async fn original_mutation_refuses_index_copy_before_allocating_or_reading()
         &cancellation,
     )
     .map_err(|(error, _)| error)?;
-    let before = work.receipt();
-    let live = work.live_allocation_bytes();
+    let before = work.receipt().unwrap();
+    let live = work.live_allocation_bytes().unwrap();
     let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
     let error = apply_tree_mutations_with_accounting(
         &store,
@@ -47,8 +47,8 @@ async fn original_mutation_refuses_index_copy_before_allocating_or_reading()
         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
             | crate::FsError::Work(_)
     ));
-    assert_eq!(work.receipt(), before);
-    assert_eq!(work.live_allocation_bytes(), live);
+    assert_eq!(work.receipt().unwrap(), before);
+    assert_eq!(work.live_allocation_bytes().unwrap(), live);
     Ok(())
 }
 
@@ -107,8 +107,8 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
             maximum: 1,
         }
     ));
-    assert_eq!(work.receipt().page_writes, 1);
-    assert_eq!(work.receipt().backend_write_operations, 1);
+    assert_eq!(work.receipt().unwrap().page_writes, 1);
+    assert_eq!(work.receipt().unwrap().backend_write_operations, 1);
     assert!(
         store
             .read(
@@ -137,11 +137,11 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
     // Both identities must be encoded before resynchronization can distinguish
     // an existing page from a write needing the caller's remaining credit.
     assert_eq!(
-        work.receipt().bytes_encoded,
+        work.receipt().unwrap().bytes_encoded,
         (first_page_bytes.len() + second_page_bytes.len()) as u64
     );
     assert_eq!(
-        work.receipt().object_bytes_written,
+        work.receipt().unwrap().object_bytes_written,
         first_page_bytes.len() as u64
     );
     assert!(matches!(
@@ -159,7 +159,7 @@ async fn original_mutation_write_denial_preserves_paid_orphan_prefix()
     ));
     drop(store);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())

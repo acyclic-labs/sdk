@@ -124,7 +124,9 @@ async fn dense_volume_rejects_sparse_semantics_before_work()
             cancellation,
         )
         .await
-        .map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent()))
+        .map_err(|error| {
+            OperationFailure::new(project_regular_error(error), accounting.spent().unwrap())
+        })
     })
     .await
     .err()
@@ -231,7 +233,7 @@ async fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
             )
             .await
             .map_err(|error| {
-                OperationFailure::new(project_regular_error(error), accounting.spent())
+                OperationFailure::new(project_regular_error(error), accounting.spent().unwrap())
             })
         })
         .await
@@ -259,7 +261,7 @@ async fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
             )
             .await
             .map_err(|error| {
-                OperationFailure::new(project_regular_error(error), accounting.spent())
+                OperationFailure::new(project_regular_error(error), accounting.spent().unwrap())
             })
         })
         .await

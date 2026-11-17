@@ -832,7 +832,7 @@ async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
     .err()
     .ok_or("wrong file-table root kind unexpectedly succeeded")?;
     assert!(matches!(wrong.error, FileRecordReadError::WrongRootKind));
-    assert_eq!(wrong.work.backend_read_operations, 0);
+    assert_eq!(wrong.work().unwrap().backend_read_operations, 0);
 
     let invalid_limits = DecodeLimits {
         maximum_page_height: 0,
@@ -853,7 +853,7 @@ async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
         invalid.error,
         FileRecordReadError::InvalidHeightLimit
     ));
-    assert_eq!(invalid.work.backend_read_operations, 0);
+    assert_eq!(invalid.work().unwrap().backend_read_operations, 0);
     let height_one = DecodeLimits {
         maximum_page_height: 1,
         ..DecodeLimits::default()
@@ -870,7 +870,7 @@ async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
     .err()
     .ok_or("file lookup height limit unexpectedly succeeded")?;
     assert!(matches!(height.error, FileRecordReadError::HeightExceeded));
-    assert_eq!(height.work.page_reads, 1);
+    assert_eq!(height.work().unwrap().page_reads, 1);
 
     let empty = lookup_file_records(
         &store,
@@ -884,7 +884,7 @@ async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
     .err()
     .ok_or("empty file lookup batch unexpectedly succeeded")?;
     assert!(matches!(empty.error, FileRecordReadError::EmptyBatch));
-    assert_eq!(empty.work.backend_read_operations, 0);
+    assert_eq!(empty.work().unwrap().backend_read_operations, 0);
 
     let leaf = put_memory_page(&store, &FileTablePage::Leaf(vec![fifo_record(1)]), 8).await?;
     let forged = put_memory_page(

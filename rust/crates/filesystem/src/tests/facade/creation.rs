@@ -51,7 +51,7 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                 items_examined: 7,
                 ..WorkCounters::UNCHARGED
             })?;
-            let initial_live = original.live_allocation_bytes();
+            let initial_live = original.live_allocation_bytes().unwrap();
             let held = crate::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
                 4096,
                 &mut crate::kernel::KernelAccounting::native(&original, &cancel),
@@ -60,7 +60,7 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                 bytes_hashed: if deny_hash { 0 } else { B.bytes_hashed },
                 ..B
             })?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             let id = VolumeId::from_bytes([45; 16]);
             let result = fs
                 .create_volume_with_id(id, config(), &restricted, &cancel)
@@ -77,7 +77,7 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                         )
                     )))
                 ));
-                let spent = original.receipt();
+                let spent = original.receipt().unwrap();
                 assert_eq!(spent.bytes_hashed, 0);
                 assert_eq!(spent.backend_write_operations, 0);
                 assert_eq!(spent.authority_records_appended, 0);
@@ -87,13 +87,13 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                 let published_head = head
                     .base_authority_head()
                     .ok_or("head checkout lost its authority observation")?;
-                let published = original.receipt();
+                let published = original.receipt().unwrap();
                 assert!(published.authority_records_appended > 0);
                 assert!(published.backend_write_operations > 0);
                 let retry = fs
                     .create_volume_with_id(id, config(), &restricted, &cancel)
                     .await?;
-                let retried = original.receipt();
+                let retried = original.receipt().unwrap();
                 let retry_head = open_checkout(&retry, pinned(), &cancel).await?;
                 assert_eq!(retry_head.generation_id(), head.generation_id());
                 assert_eq!(retry_head.base_authority_head(), Some(published_head));
@@ -120,12 +120,12 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                     config()
                 );
                 assert_eq!(
-                    original.receipt().authority_records_appended,
+                    original.receipt().unwrap().authority_records_appended,
                     retried.authority_records_appended + published.authority_records_appended
                 );
             }
-            assert!(original.receipt().items_examined >= 7);
-            let stored_live = original.live_allocation_bytes();
+            assert!(original.receipt().unwrap().items_examined >= 7);
+            let stored_live = original.live_allocation_bytes().unwrap();
             if deny_hash {
                 assert_eq!(stored_live, baseline);
             } else {
@@ -134,7 +134,7 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                     "stored bytes lost their original funding"
                 );
             }
-            let spent = original.receipt();
+            let spent = original.receipt().unwrap();
             caller.cancel();
             assert!(matches!(
                 fs.create_volume_with_id(id, config(), &restricted, &cancel)
@@ -149,13 +149,13 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head() -> TestRes
                     crate::NativeTreeMaterializationError::Cancelled
                 ))
             ));
-            assert_eq!(original.receipt(), spent);
-            assert_eq!(original.live_allocation_bytes(), stored_live);
+            assert_eq!(original.receipt().unwrap(), spent);
+            assert_eq!(original.live_allocation_bytes().unwrap(), stored_live);
             drop(fs);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
             drop(restricted);
             drop(held);
-            assert_eq!(original.live_allocation_bytes(), initial_live);
+            assert_eq!(original.live_allocation_bytes().unwrap(), initial_live);
         }
     }
     Ok(())
@@ -206,7 +206,7 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
                 items_examined: 7,
                 ..WorkCounters::UNCHARGED
             })?;
-            let initial_live = original.live_allocation_bytes();
+            let initial_live = original.live_allocation_bytes().unwrap();
             let held = crate::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
                 4096,
                 &mut crate::kernel::KernelAccounting::native(&original, &cancel),
@@ -215,7 +215,7 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
                 backend_read_operations: admitted,
                 ..B
             })?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             let result = fs.open_volume(id, &restricted, &cancel).await;
             if admitted == 0 {
                 assert!(
@@ -237,13 +237,13 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
             } else {
                 assert_eq!(result?.config(), config());
             }
-            let spent = original.receipt();
+            let spent = original.receipt().unwrap();
             assert_eq!(spent.authority_records_read, u64::from(admitted != 0));
             assert!(spent.items_examined >= 7);
             assert_eq!(spent.authority_records_appended, 0);
             assert_eq!(spent.backend_read_operations, admitted);
             assert_eq!(spent.backend_write_operations, 0);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 
             caller.cancel();
             assert!(matches!(
@@ -252,11 +252,11 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
                     crate::NativeTreeMaterializationError::Cancelled
                 ))
             ));
-            assert_eq!(original.receipt(), spent);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.receipt().unwrap(), spent);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
             drop(restricted);
             drop(held);
-            assert_eq!(original.live_allocation_bytes(), initial_live);
+            assert_eq!(original.live_allocation_bytes().unwrap(), initial_live);
         }
     }
     Ok(())

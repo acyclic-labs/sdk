@@ -22,7 +22,7 @@ pub(in crate::native_mount::fuse) fn after_guard_drop() {
 }
 
 #[test]
-fn a_request_replies_while_reverse_invalidation_waits_for_its_kernel_lock() {
+fn a_request_replies_while_reverse_invalidation_waits_for_its_kernel_lock() -> std::io::Result<()> {
     crate::initialize_test_native_io();
     let exercise = |inline, attributes| {
         loom::model(move || {
@@ -110,6 +110,7 @@ fn a_request_replies_while_reverse_invalidation_waits_for_its_kernel_lock() {
             .expect("Loom deadlock message");
         assert!(message.contains("deadlock"), "{message}");
     }
+    Ok(())
 }
 
 pub(in crate::native_mount::fuse) fn omit_guard_notification() -> bool {
@@ -148,7 +149,7 @@ struct RefusesFirst {
 }
 
 #[test]
-fn callback_failure_wakes_the_original_invalidation_waiter() {
+fn callback_failure_wakes_the_original_invalidation_waiter() -> std::io::Result<()> {
     crate::initialize_test_native_io();
     let exercise = |broken| {
         loom::model(move || {
@@ -160,7 +161,7 @@ fn callback_failure_wakes_the_original_invalidation_waiter() {
                 move || {
                     asleep.recv().unwrap();
                     OMIT_TERMINAL_NOTIFY.with(|fault| fault.set(broken));
-                    core.retain_handler_failure((libc::EIO.into(), WorkCounters::UNCHARGED));
+                    core.retain_handler_failure((libc::EIO.into(), Ok(WorkCounters::UNCHARGED)));
                 }
             });
             let mut state = core.state().unwrap();
@@ -185,6 +186,7 @@ fn callback_failure_wakes_the_original_invalidation_waiter() {
         .downcast_ref::<String>()
         .expect("Loom deadlock message");
     assert!(message.contains("deadlock"), "{message}");
+    Ok(())
 }
 
 impl KernelCacheNotifier for RefusesFirst {
@@ -211,7 +213,7 @@ impl KernelCacheNotifier for RefusesFirst {
 }
 
 #[test]
-fn production_guard_wakes_invalidation_failure_and_its_waiter() {
+fn production_guard_wakes_invalidation_failure_and_its_waiter() -> std::io::Result<()> {
     crate::initialize_test_native_io();
     let exercise = |broken| {
         loom::model(move || {
@@ -274,10 +276,11 @@ fn production_guard_wakes_invalidation_failure_and_its_waiter() {
         .downcast_ref::<String>()
         .expect("Loom deadlock message");
     assert!(message.contains("deadlock"), "{message}");
+    Ok(())
 }
 
 #[test]
-fn a_waiter_finishes_before_notifications_admitted_after_its_cut() {
+fn a_waiter_finishes_before_notifications_admitted_after_its_cut() -> std::io::Result<()> {
     crate::initialize_test_native_io();
     loom::model(|| {
         let (core, work) = super::super::tests::model_checking::fixture();
@@ -328,4 +331,5 @@ fn a_waiter_finishes_before_notifications_admitted_after_its_cut() {
         drop(state);
         core.stop();
     });
+    Ok(())
 }

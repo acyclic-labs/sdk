@@ -42,7 +42,7 @@ async fn constant_callbacks_preserve_status_admission_and_all_source_counters()
             ]
         }
     };
-    let prefix = work.receipt();
+    let prefix = work.receipt().unwrap();
     for closed in [false, true] {
         if closed {
             runtime.callbacks.close_admission();
@@ -67,7 +67,7 @@ async fn constant_callbacks_preserve_status_admission_and_all_source_counters()
                     .drain(|| Err::<(), _>("callback remains admitted")),
                 Ok(())
             );
-            prop_assert_eq!(work.receipt(), prefix);
+            prop_assert_eq!(work.receipt().unwrap(), prefix);
             Ok(())
         })?;
     }

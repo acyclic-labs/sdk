@@ -122,7 +122,7 @@ async fn authenticated_bindings_fail_closed_on_kind_or_record_mismatch()
         .err()
         .ok_or("batch accepted inconsistent authenticated binding")?;
         assert!(matches!(batch_failure.error, PathLookupError::KindMismatch));
-        assert!(batch_failure.work.backend_read_operations > 0);
+        assert!(batch_failure.work().unwrap().backend_read_operations > 0);
 
         let observed_failure = (observe_path_async(
             &store,
@@ -139,7 +139,7 @@ async fn authenticated_bindings_fail_closed_on_kind_or_record_mismatch()
             observed_failure.error,
             PathLookupError::KindMismatch
         ));
-        assert!(observed_failure.work.backend_read_operations > 0);
+        assert!(observed_failure.work().unwrap().backend_read_operations > 0);
     }
     Ok(())
 }

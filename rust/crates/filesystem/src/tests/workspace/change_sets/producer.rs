@@ -122,7 +122,7 @@ pub(super) async fn withdrawal_and_producer_loss_retire_original_pins() -> Resul
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     for withdrawn in [true, false] {
         let mut reader = value!(
             before
@@ -165,7 +165,7 @@ pub(super) async fn withdrawal_and_producer_loss_retire_original_pins() -> Resul
             "terminal reader dispatched another read"
         );
         drop(reader);
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     Ok(())
 }

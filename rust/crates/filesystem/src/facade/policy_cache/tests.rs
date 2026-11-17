@@ -156,19 +156,19 @@ async fn shared_policy_bytes_have_cache_custody_independent_of_invocation_ledger
     let original_cancel = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &original_cancel)
         .map_err(|(cause, _)| cause)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let first = load(&owner, &original, &cancel).await?;
     let cache = &owner.volume.fs.inner.policy_cache;
     assert_eq!(live(cache)?, first.logical_owned_bytes());
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     original_cancel.cancel();
     let other = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
         .map_err(|(cause, _)| cause)?;
-    let other_baseline = other.live_allocation_bytes();
+    let other_baseline = other.live_allocation_bytes().unwrap();
     let second = load(&owner, &other, &cancel).await?;
     assert!(Arc::ptr_eq(&first, &second));
-    assert_eq!(other.live_allocation_bytes(), other_baseline);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(other.live_allocation_bytes().unwrap(), other_baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     drop(second);
     crate::access::fixtures::publish_policy(
         &owner,
@@ -178,8 +178,8 @@ async fn shared_policy_bytes_have_cache_custody_independent_of_invocation_ledger
     let changed = load(&owner, &other, &cancel).await?;
     assert!(!Arc::ptr_eq(&first, &changed));
     let retained = first.logical_owned_bytes() + changed.logical_owned_bytes();
-    assert_eq!(other.live_allocation_bytes(), other_baseline);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(other.live_allocation_bytes().unwrap(), other_baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     assert_eq!(live(cache)?, retained);
     let memory = SharedArc::clone(
         cache
@@ -202,7 +202,7 @@ async fn shared_policy_bytes_have_cache_custody_independent_of_invocation_ledger
     );
     drop(changed);
     assert_eq!(*memory.live.lock().map_err(|error| error.to_string())?, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 

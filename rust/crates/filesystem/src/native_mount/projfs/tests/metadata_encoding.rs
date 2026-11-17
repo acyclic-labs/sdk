@@ -17,7 +17,7 @@ proptest! {
         }
         let host = host_relative_path(&path).map_err(|e| TestCaseError::fail(e.to_string()))?;
         let overhead = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .map_err(|(e, _)| TestCaseError::fail(e.to_string()))?.receipt();
+            .map_err(|(e, _)| TestCaseError::fail(e.to_string()))?.receipt().unwrap();
         let budgets = [
             crate::WorkBudget::UNBOUNDED,
             crate::WorkBudget { items_examined: limit, ..crate::WorkBudget::UNBOUNDED },
@@ -29,12 +29,12 @@ proptest! {
             let cancellation = crate::CancellationToken::new();
             let old = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(e, _)| TestCaseError::fail(e.to_string()))?;
             let direct = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(e, _)| TestCaseError::fail(e.to_string()))?;
-            let before = direct.receipt();
+            let before = direct.receipt().unwrap();
             let old_result = crate::native_host::with_wide_path(&host, &mut &old, |wide, _| Ok(wide.to_vec()));
             let units = super::super::callback_path::wide_components(path.components()).ok_or_else(|| TestCaseError::fail("canonical parts"))?;
             let direct_result = crate::native_host::with_wide_units(units, &mut &direct, |wide, _| Ok(wide.to_vec()));
             prop_assert_eq!(old_result.map_err(|e| e.to_string()), direct_result.map_err(|e| e.to_string()));
-            prop_assert_eq!(old.receipt(), direct.receipt());
+            prop_assert_eq!(old.receipt().unwrap(), direct.receipt().unwrap());
             if budget == crate::WorkBudget::UNBOUNDED {
                 let length = path.components().iter().map(|p| p.len() as u64 / 2).sum::<u64>()
                     + path.components().len().saturating_sub(1) as u64;
@@ -43,13 +43,13 @@ proptest! {
                 expected.bytes_encoded += length * 2;
                 expected.allocation_operations += u64::from(length != 0);
                 expected.peak_allocation_bytes += length * 2;
-                prop_assert_eq!(direct.receipt(), expected);
+                prop_assert_eq!(direct.receipt().unwrap(), expected);
             }
             cancellation.cancel();
-            let before = direct.receipt();
+            let before = direct.receipt().unwrap();
             let units = super::super::callback_path::wide_components(path.components()).ok_or_else(|| TestCaseError::fail("canonical parts"))?;
             prop_assert!(crate::native_host::with_wide_units(units, &mut &direct, |_, _| Ok(())).is_err());
-            prop_assert_eq!(direct.receipt(), before);
+            prop_assert_eq!(direct.receipt().unwrap(), before);
         }
     }
 }

@@ -248,11 +248,12 @@ async fn blob_batch_retains_completed_write_on_withdrawal_and_producer_loss()
             }
         }
         // The replaced remaining-budget frame loses the completed write here.
-        assert_eq!(accounting.spent().backend_write_operations, 1);
-        assert_eq!(accounting.spent().object_bytes_written, 7);
+        assert_eq!(accounting.spent().unwrap().backend_write_operations, 1);
+        assert_eq!(accounting.spent().unwrap().object_bytes_written, 7);
         assert_eq!(
             accounting
                 .spent()
+                .unwrap()
                 .remaining(budget)?
                 .backend_write_operations,
             0
@@ -445,7 +446,7 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
         missing.error,
         BlobReadError::Storage(ObjectStoreError::Missing)
     ));
-    assert_eq!(missing.work.page_reads, 1);
+    assert_eq!(missing.work().unwrap().page_reads, 1);
 
     let short_chunk = put(
         &store,
@@ -488,7 +489,7 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     .err()
     .ok_or("short blob chunk unexpectedly succeeded")?;
     assert!(matches!(short.error, BlobReadError::ChunkLengthMismatch));
-    assert_eq!(short.work.object_probes, 2);
+    assert_eq!(short.work().unwrap().object_probes, 2);
 
     for range in [
         ByteRange {

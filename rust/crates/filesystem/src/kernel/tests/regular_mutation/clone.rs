@@ -135,7 +135,9 @@ async fn clone_budget_and_precancellation_fail_before_visible_work()
             cancellation,
         )
         .await
-        .map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent()))
+        .map_err(|error| {
+            OperationFailure::new(project_regular_error(error), accounting.spent().unwrap())
+        })
     })
     .await
     .err()
@@ -167,7 +169,9 @@ async fn clone_budget_and_precancellation_fail_before_visible_work()
             cancellation,
         )
         .await
-        .map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent()))
+        .map_err(|error| {
+            OperationFailure::new(project_regular_error(error), accounting.spent().unwrap())
+        })
     })
     .await
     .err()
@@ -294,7 +298,7 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
         range_failure.error,
         RegularMutationError::BlobRead(BlobReadError::InvalidRange)
     ));
-    assert!(range_failure.work.backend_read_operations > 0);
+    assert!(range_failure.work().unwrap().backend_read_operations > 0);
 
     let baseline = apply(
         &store,

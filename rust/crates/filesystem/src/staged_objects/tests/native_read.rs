@@ -20,10 +20,13 @@ async fn native_spill_alias_retains_actual_buffer_after_cache_and_store_drop()
     let read = reading.await?;
     assert_eq!(read.bytes, bytes);
     let alias = read.bytes.clone();
-    let held = work.live_allocation_bytes();
+    let held = work.live_allocation_bytes().unwrap();
     assert!(held >= NativeMaterializationWork::accounting_state_bytes() + bytes.len() as u64);
-    assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
-    let prefix = work.receipt();
+    assert_eq!(
+        work.receipt().unwrap().object_bytes_read,
+        bytes.len() as u64
+    );
+    let prefix = work.receipt().unwrap();
     drop(
         store
             .read(
@@ -34,20 +37,20 @@ async fn native_spill_alias_retains_actual_buffer_after_cache_and_store_drop()
             .await?,
     );
     assert_eq!(
-        work.receipt().backend_read_operations,
+        work.receipt().unwrap().backend_read_operations,
         prefix.backend_read_operations
     );
     assert_eq!(
-        work.receipt().allocation_operations,
+        work.receipt().unwrap().allocation_operations,
         prefix.allocation_operations
     );
     drop(read);
     drop(store);
-    assert_eq!(work.live_allocation_bytes(), held);
+    assert_eq!(work.live_allocation_bytes().unwrap(), held);
     assert_eq!(alias, bytes);
     drop(alias);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())
@@ -78,10 +81,10 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
             })
         ))
     ));
-    assert_eq!(denied.receipt().backend_read_operations, 0);
-    assert_eq!(denied.receipt().object_bytes_read, 0);
+    assert_eq!(denied.receipt().unwrap().backend_read_operations, 0);
+    assert_eq!(denied.receipt().unwrap().object_bytes_read, 0);
     assert_eq!(
-        denied.live_allocation_bytes(),
+        denied.live_allocation_bytes().unwrap(),
         NativeMaterializationWork::accounting_state_bytes()
     );
 
@@ -102,8 +105,8 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         };
         let original = NativeMaterializationWork::new(native_read_budget(), &original_token)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
-        let before = original.receipt();
+        let baseline = original.live_allocation_bytes().unwrap();
+        let before = original.receipt().unwrap();
         let mut work = if exit == 0 {
             AuthorityWork::new(native_read_budget(), &caller)
         } else {
@@ -153,7 +156,7 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         let completed = if exit == 0 {
             work.work
         } else {
-            original.receipt()
+            original.receipt().unwrap()
         };
         assert_eq!(completed.backend_read_operations, 0);
         assert_eq!(completed.object_bytes_read, 0);
@@ -169,7 +172,7 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
                 before.allocation_operations + 2 + u64::from(exit != 1)
             }
         );
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
     }
 
@@ -208,22 +211,22 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         let caller = CancellationToken::new();
         let work = NativeMaterializationWork::new(native_read_budget(), &token)
             .map_err(|(error, _)| error)?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         let private_requests = [requests[1]; 3];
         let spill_file = store.spill_io.write().await;
         let mut context = AuthorityWork::native(&work, &caller);
         let mut read = Box::pin(store.read_many(&private_requests, &mut context));
         assert!(futures::poll!(read.as_mut()).is_pending());
-        let live = work.live_allocation_bytes() - baseline;
+        let live = work.live_allocation_bytes().unwrap() - baseline;
         drop(read);
         drop(spill_file);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
         live
     };
     let provider_live = {
         let work = NativeMaterializationWork::new(native_read_budget(), &token)
             .map_err(|(error, _)| error)?;
-        let baseline = work.live_allocation_bytes();
+        let baseline = work.live_allocation_bytes().unwrap();
         let (values, allocation) = store
             .inner()
             .read_many(
@@ -240,10 +243,10 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
                 .bytes(),
             (values.capacity() * std::mem::size_of::<ObjectRead>()) as u64
         );
-        let live = work.live_allocation_bytes() - baseline;
+        let live = work.live_allocation_bytes().unwrap() - baseline;
         drop(values);
         drop(allocation);
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
         live
     };
     for (batch, mixed, exit) in [
@@ -295,7 +298,7 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
                 .poll(&mut std::task::Context::from_waker(&waker))
                 .is_pending()
         );
-        let prefix = work.receipt();
+        let prefix = work.receipt().unwrap();
         assert!(
             future
                 .as_mut()
@@ -303,7 +306,7 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
                 .is_pending()
         );
         assert_eq!(
-            work.receipt(),
+            work.receipt().unwrap(),
             prefix,
             "a pending lease must reuse its waiters"
         );
@@ -319,10 +322,13 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
                 0
             }
         );
-        assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
+        assert!(
+            work.live_allocation_bytes().unwrap()
+                > NativeMaterializationWork::accounting_state_bytes()
+        );
         if mixed {
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes().unwrap(),
                 NativeMaterializationWork::accounting_state_bytes() + private_live + provider_live,
                 "the pending mixed batch must retain the original provider backing"
             );
@@ -359,14 +365,14 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         schedule.drained().await;
         driver.abort();
         let _ = driver.await;
-        let mut retired = work.receipt();
+        let mut retired = work.receipt().unwrap();
         // Only the two original waiters' bounded cancellation/unlink work
         // follows this prefix; no I/O, copy or allocation may follow it.
         assert!(retired.items_examined - prefix.items_examined <= 3);
         retired.items_examined = prefix.items_examined;
         assert_eq!(retired, prefix);
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             NativeMaterializationWork::accounting_state_bytes()
         );
     }
@@ -391,10 +397,13 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
             .await,
         Err(ObjectStoreError::Corrupt)
     ));
-    assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
-    assert_eq!(work.receipt().bytes_hashed, bytes.len() as u64);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.receipt().unwrap().object_bytes_read,
+        bytes.len() as u64
+    );
+    assert_eq!(work.receipt().unwrap().bytes_hashed, bytes.len() as u64);
+    assert_eq!(
+        work.live_allocation_bytes().unwrap(),
         NativeMaterializationWork::accounting_state_bytes()
     );
     assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
@@ -421,7 +430,7 @@ async fn native_staged_decoded_alias_keeps_original_guard_after_resident_ejectio
     }?;
     let work =
         NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
-    let initial = work.receipt().allocation_operations;
+    let initial = work.receipt().unwrap().allocation_operations;
     let read = store
         .read(
             id,
@@ -430,8 +439,8 @@ async fn native_staged_decoded_alias_keeps_original_guard_after_resident_ejectio
         )
         .await?;
     assert_eq!(read.bytes.as_ptr(), bytes.as_ptr());
-    assert_eq!(work.receipt().allocation_operations, initial);
-    assert_eq!(work.receipt().backend_read_operations, 0);
+    assert_eq!(work.receipt().unwrap().allocation_operations, initial);
+    assert_eq!(work.receipt().unwrap().backend_read_operations, 0);
     let mut allocation = work.claim(
         std::mem::size_of::<Page>() as u64,
         u64::from((std::mem::size_of::<Page>() as u64) != 0),
@@ -448,7 +457,7 @@ async fn native_staged_decoded_alias_keeps_original_guard_after_resident_ejectio
         _custody: Arc::clone(&custody),
     });
     let key = DecodedCacheKey::new::<Page>(id, DecodeLimits::default());
-    let prefix = work.receipt();
+    let prefix = work.receipt().unwrap();
     drop({
         let __decoded_args = (
             key,
@@ -477,17 +486,17 @@ async fn native_staged_decoded_alias_keeps_original_guard_after_resident_ejectio
     }?
     .ok_or("resident native decoded miss")?;
     assert_eq!(
-        work.receipt().allocation_operations,
+        work.receipt().unwrap().allocation_operations,
         prefix.allocation_operations
     );
     let alias = Arc::clone(&cached.value);
-    let held = work.live_allocation_bytes();
+    let held = work.live_allocation_bytes().unwrap();
     drop(cached);
     store.index_mut().remove(id);
-    assert_eq!(work.live_allocation_bytes(), held);
+    assert_eq!(work.live_allocation_bytes().unwrap(), held);
     drop(alias);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())
@@ -573,7 +582,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 };
                 let original =
                     NativeMaterializationWork::new(budget, &token).map_err(|(cause, _)| cause)?;
-                let baseline = original.live_allocation_bytes();
+                let baseline = original.live_allocation_bytes().unwrap();
                 let mut work = if native {
                     AuthorityWork::native(&original, &token)
                 } else {
@@ -666,17 +675,20 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 let (values, allocation) = result?;
                 assert_eq!(values.len(), expected.len());
                 assert_eq!(
-                    work.spent().items_returned,
+                    work.spent().unwrap().items_returned,
                     requests.len() as u64 + u64::from(native)
                 );
                 for (read, bytes) in values.iter().zip(expected) {
                     assert_eq!(&read.bytes, *bytes);
                 }
                 let drained = u64::from(requests.len() == draining_requests.len());
-                assert_eq!(work.spent().object_probes, 2 + drained + u64::from(native));
+                assert_eq!(
+                    work.spent().unwrap().object_probes,
+                    2 + drained + u64::from(native)
+                );
                 if !native {
                     assert_eq!(
-                        work.spent().backend_read_operations,
+                        work.spent().unwrap().backend_read_operations,
                         1 + drained,
                         "durable reads must preserve the provider batch"
                     );
@@ -685,10 +697,10 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 drop(values);
                 drop(allocation);
                 if native {
-                    assert!(original.live_allocation_bytes() > baseline);
+                    assert!(original.live_allocation_bytes().unwrap() > baseline);
                 }
                 drop(alias);
-                assert_eq!(original.live_allocation_bytes(), baseline);
+                assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
             }
         }
     }
@@ -719,7 +731,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
             let budget = native_batch_read_budget(mixed_requests.len())?;
             let original =
                 NativeMaterializationWork::new(budget, &token).map_err(|(cause, _)| cause)?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             let mut work = if native {
                 AuthorityWork::native(&original, &token)
             } else {
@@ -768,18 +780,18 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
             for (read, (_, expected)) in values.iter().zip(&mixed) {
                 assert_eq!(&read.bytes, expected, "mixed batch changed input order");
             }
-            assert_eq!(work.spent().object_probes, 3);
+            assert_eq!(work.spent().unwrap().object_probes, 3);
             if !native {
-                batch_preserved &= work.spent().backend_read_operations == 1;
+                batch_preserved &= work.spent().unwrap().backend_read_operations == 1;
             }
             let alias = values[2].bytes.clone();
             drop(values);
             drop(allocation);
             if native {
-                assert!(original.live_allocation_bytes() > baseline);
+                assert!(original.live_allocation_bytes().unwrap() > baseline);
             }
             drop(alias);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         }
     }
     assert_eq!(
@@ -796,7 +808,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
             }
             let original =
                 NativeMaterializationWork::new(budget, &caller).map_err(|(cause, _)| cause)?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             let mut work = if native {
                 AuthorityWork::native(&original, &caller)
             } else {
@@ -828,15 +840,15 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                     ))
                 ));
             }
-            assert_eq!(work.spent().object_probes, 0);
-            assert_eq!(work.spent().backend_read_operations, 0);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(work.spent().unwrap().object_probes, 0);
+            assert_eq!(work.spent().unwrap().backend_read_operations, 0);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         }
     }
     // No provider result owner exists for a wholly resident batch.
     let original =
         NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(cause, _)| cause)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let resident_request = ObjectReadRequest {
         object_id: resident.0,
         maximum_bytes: resident.1.len() as u64,
@@ -850,8 +862,8 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
     assert!(values.iter().all(|read| read.bytes == resident.1));
     drop(values);
     drop(allocation);
-    assert_eq!(original.receipt().backend_read_operations, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt().unwrap().backend_read_operations, 0);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     let requests = [
         durable_requests[0],
         ObjectReadRequest {
@@ -876,7 +888,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
     assert_eq!(batch.0[2].bytes, second_bytes);
     assert_eq!(batch.0[3].bytes, durable[1].1);
     assert_eq!(
-        work.receipt().object_bytes_read,
+        work.receipt().unwrap().object_bytes_read,
         (first_bytes.len() + second_bytes.len() + durable[0].1.len() + durable[1].1.len()) as u64
     );
     let alias = batch.0[1].bytes.clone();
@@ -915,7 +927,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
             let budget = native_batch_read_budget(failed_requests.len())?;
             let original =
                 NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             let mut work = if native {
                 AuthorityWork::native(&original, &token)
             } else {
@@ -932,21 +944,23 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 panic!("the original durable read must report its unavailable log");
             };
             assert_eq!(error.code, acyclic_objects::wire::ErrorCode::Unavailable);
-            assert_eq!(work.spent().object_probes, 2);
-            assert_eq!(work.spent().object_bytes_read, 0);
-            assert_eq!(work.spent().bytes_hashed, 0);
-            assert_eq!(work.spent().items_returned, 0);
+            assert_eq!(work.spent().unwrap().object_probes, 2);
+            assert_eq!(work.spent().unwrap().object_bytes_read, 0);
+            assert_eq!(work.spent().unwrap().bytes_hashed, 0);
+            assert_eq!(work.spent().unwrap().items_returned, 0);
             drop(error);
             assert_eq!(work.allocations.live_bytes(), 0);
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
             drop(spill_file);
         }
     }
     drop(store);
-    assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
+    assert!(
+        work.live_allocation_bytes().unwrap() > NativeMaterializationWork::accounting_state_bytes()
+    );
     drop(alias);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())

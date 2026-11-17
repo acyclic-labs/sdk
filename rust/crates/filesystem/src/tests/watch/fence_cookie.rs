@@ -161,7 +161,7 @@ fn read_only_observation_filters_events_without_touching_excluded_subtrees()
         )
         .map_err(|(cause, _)| cause)?;
         observation.watch.fence_with_native_work(&work)?;
-        assert_eq!(work.receipt().backend_write_operations, 0);
+        assert_eq!(work.receipt().unwrap().backend_write_operations, 0);
         assert!(!observation.watch.confirmable()?);
     }
     Ok(())

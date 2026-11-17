@@ -31,13 +31,13 @@ pub fn check_workspace_name(data: &[u8]) {
     );
     if text.is_ascii() {
         assert_eq!(
-            validation.spent().bytes_copied,
-            0,
+            validation.spent().map(|work| work.bytes_copied),
+            Ok(0),
             "borrowed validation copied a name"
         );
         assert_eq!(
-            validation.spent().allocation_operations,
-            0,
+            validation.spent().map(|work| work.allocation_operations),
+            Ok(0),
             "borrowed validation allocated a name"
         );
     }
@@ -75,7 +75,7 @@ pub fn check_workspace_name(data: &[u8]) {
         WorkspaceName::validate_with_accounting(text, &mut cancelled),
         Err(WorkspaceError::Cancelled(_))
     ));
-    assert_eq!(cancelled.spent(), crate::WorkCounters::UNCHARGED);
+    assert_eq!(cancelled.spent(), Ok(crate::WorkCounters::UNCHARGED));
 }
 
 fn check_effects(
@@ -111,7 +111,7 @@ fn check_effects(
     };
     #[cfg(target_arch = "wasm32")]
     let mut accounting = KernelAccounting::standalone(limit, cancellation);
-    let before = accounting.spent();
+    let before = accounting.spent()?;
     let (mut examined, mut copied) = (0, 0);
     let mut probe = |tag, value, bytes| match tag {
         0 | 1 => examined += 1,
@@ -131,7 +131,7 @@ fn check_effects(
     } else {
         let _ = WorkspaceName::with_probe(text, &mut accounting, char::is_ascii, &mut probe);
     }
-    let after = accounting.spent();
+    let after = accounting.spent()?;
     assert_eq!(
         after.items_examined - before.items_examined,
         examined,

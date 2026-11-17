@@ -19,17 +19,17 @@ fn dormant_volume_history_retires_actors_and_index_nodes_on_the_original_ledger(
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
             .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancel);
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let registry = Registry::new(&mut accounting)?;
     for index in 0..256 {
         drop(registry.actor(key(index), &mut accounting)?);
     }
-    let full = original.live_allocation_bytes();
+    let full = original.live_allocation_bytes().unwrap();
     for round in 1..8 {
         for index in round * 256..(round + 1) * 256 {
             drop(registry.actor(key(index), &mut accounting)?);
         }
-        assert_eq!(original.live_allocation_bytes(), full);
+        assert_eq!(original.live_allocation_bytes().unwrap(), full);
         let entries = registry.entries.lock().unwrap();
         for index in 0..(round * 256) {
             assert!(entries.live.get(key(index), &mut accounting)?.is_none());
@@ -47,11 +47,11 @@ fn dormant_volume_history_retires_actors_and_index_nodes_on_the_original_ledger(
     drop(registry);
     assert!(survivors.iter().all(|weak| weak.upgrade().is_none()));
     assert!(
-        original.live_allocation_bytes() > baseline,
+        original.live_allocation_bytes().unwrap() > baseline,
         "dead weak backing lost its funding"
     );
     drop(survivors);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 
@@ -198,13 +198,13 @@ fn refused_index_admission_retires_the_unregistered_actor_before_its_funding()
         &cancel,
     )
     .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     assert!(
         registry
             .actor(key(1), &mut KernelAccounting::native(&original, &cancel))
             .is_err()
     );
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     assert!(
         registry
             .entries
@@ -227,7 +227,7 @@ fn retained_actor_and_dead_registry_backing_stay_funded_after_owner_retirement()
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
             .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancel);
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let registry = Registry::new(&mut accounting)?;
     let actor = registry.actor(key(0), &mut accounting)?;
     let actor_backing = actor.downgrade();
@@ -235,7 +235,7 @@ fn retained_actor_and_dead_registry_backing_stay_funded_after_owner_retirement()
     drop(registry);
     assert!(registry_backing.upgrade().is_none());
     assert_eq!(actor_backing.strong_count(), 1);
-    let actor_and_dead_registry = original.live_allocation_bytes();
+    let actor_and_dead_registry = original.live_allocation_bytes().unwrap();
     assert!(actor_and_dead_registry > baseline);
     cancel.cancel();
     drop(accounting);
@@ -243,11 +243,14 @@ fn retained_actor_and_dead_registry_backing_stay_funded_after_owner_retirement()
     assert!(actor_backing.upgrade().is_none());
     // Dead weak handles keep both actual allocations resident and funded.
     // Cancellation cannot suppress their eventual cleanup.
-    assert_eq!(original.live_allocation_bytes(), actor_and_dead_registry);
+    assert_eq!(
+        original.live_allocation_bytes().unwrap(),
+        actor_and_dead_registry
+    );
     drop(registry_backing);
-    let actor_only = original.live_allocation_bytes();
+    let actor_only = original.live_allocation_bytes().unwrap();
     assert!(actor_only > baseline && actor_only < actor_and_dead_registry);
     drop(actor_backing);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }

@@ -253,14 +253,14 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                         file_count,
                         logical_file_bytes,
                         objects: objects.0,
-                        work: self.meter.work(),
+                        work: self.meter.work()?,
                     },
                     objects.1,
                 );
                 let mut root_guard = root.1;
                 output.1.absorb(&mut root_guard)?;
                 let pending = self.remember(slot, began, &output.0, object_count)?;
-                output.0.work = self.meter.work();
+                output.0.work = self.meter.work()?;
                 return Ok((output.0, output.1, pending));
             }
             self.objects = ProofSet::new(&self.meter);
@@ -305,14 +305,14 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 file_count,
                 logical_file_bytes,
                 objects: objects.0,
-                work: self.meter.work(),
+                work: self.meter.work()?,
             },
             objects.1,
         );
         output.1.absorb(&mut root.1)?;
         let object_count = output.0.objects.len() as u64;
         let pending = self.remember(slot, began, &output.0, object_count)?;
-        output.0.work = self.meter.work();
+        output.0.work = self.meter.work()?;
         Ok((output.0, output.1, pending))
     }
 

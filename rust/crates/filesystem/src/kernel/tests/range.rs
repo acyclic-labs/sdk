@@ -591,7 +591,7 @@ fn range_terminal_and_lower_layer_error_translation_is_total()
         range_error(overflow),
         ExtentReadError::Work(WorkError::Overflow)
     ));
-    assert_eq!(accounting.spent(), prospective);
+    assert_eq!(accounting.spent().unwrap(), prospective);
     Ok(())
 }
 
@@ -871,7 +871,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
     .err()
     .ok_or("forged child bounds succeeded")?;
     assert!(matches!(bounds.error, ExtentReadError::ChildBoundsMismatch));
-    assert_eq!(bounds.work.page_reads, 2);
+    assert_eq!(bounds.work().unwrap().page_reads, 2);
 
     let height = plan_extent_range(
         &store,
@@ -888,7 +888,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
     .err()
     .ok_or("height-limited internal traversal succeeded")?;
     assert!(matches!(height.error, ExtentReadError::HeightExceeded));
-    assert_eq!(height.work.page_reads, 1);
+    assert_eq!(height.work().unwrap().page_reads, 1);
 
     let alias_root = put_page(
         &store,
@@ -914,7 +914,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
     .err()
     .ok_or("aliased extent page succeeded")?;
     assert!(matches!(alias.error, ExtentReadError::Cycle));
-    assert_eq!(alias.work.page_reads, 2);
+    assert_eq!(alias.work().unwrap().page_reads, 2);
 
     Ok(())
 }

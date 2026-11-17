@@ -357,9 +357,11 @@ fn read_record<const N: usize, W: NativeHostWork<Error = DemandError>>(
     leaf: &Path,
     work: &mut W,
 ) -> Result<[u8; N], DemandError> {
-    #[cfg(all(test, target_os = "linux", loom))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", loom))]
     let kernel = models::current();
-    #[cfg(all(test, target_os = "linux", loom))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", loom))]
     let _atomic_read = kernel.as_ref().map(|kernel| kernel.state.lock().unwrap());
     let mut file = open_leaf(directory, leaf, &NativeOpenOptions::Read, work)?;
     record::read(&mut file).map_err(Into::into)
@@ -464,9 +466,11 @@ fn rename_no_replace<W: NativeHostWork>(
     to: &Path,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    #[cfg(all(test, target_os = "linux", loom))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", loom))]
     let kernel = models::current();
-    #[cfg(all(test, target_os = "linux", loom))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", loom))]
     let mut atomic_rename = kernel.as_ref().map(|kernel| kernel.state.lock().unwrap());
     let mode = acyclic_native_runtime::RenameMode::NoReplace;
     let result = host_path(from, work, |from, work| {
@@ -474,7 +478,8 @@ fn rename_no_replace<W: NativeHostWork>(
             rename_held(directory, from, directory, to, mode, None, work)
         })
     });
-    #[cfg(all(test, target_os = "linux", loom))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux", loom))]
     if result.is_ok()
         && let Some(state) = atomic_rename.as_mut()
     {
@@ -489,7 +494,8 @@ pub(crate) mod publish_probe {
     use std::cell::Cell;
 
     /// The steps a kill can follow: created, half written, closed, renamed.
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux"))]
     pub(crate) const STEPS: usize = 4;
     const KILLED: &str = "killed during record publication";
 
@@ -503,7 +509,8 @@ pub(crate) mod publish_probe {
             const { std::cell::RefCell::new(None) };
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux"))]
     pub(crate) fn duplicate_parent_handles(duplicate: bool) {
         DUPLICATE_PARENTS.set(duplicate);
     }
@@ -512,7 +519,8 @@ pub(crate) mod publish_probe {
         DUPLICATE_PARENTS.get()
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux"))]
     pub(crate) fn omit_parent_sync(omit: bool) {
         SKIP_PARENT_SYNC.set(omit);
     }
@@ -529,7 +537,8 @@ pub(crate) mod publish_probe {
         SKIP_READER_SYNC.get()
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux"))]
     pub(crate) fn before_directory_sync(hook: impl FnOnce() + 'static) {
         AFTER_RENAME.set(Some(Box::new(hook)));
     }
@@ -547,7 +556,8 @@ pub(crate) mod publish_probe {
     }
 
     /// Negative control: publish by writing the record in place.
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(all(target_os = "linux"))]
     pub(crate) fn tear(torn: bool) {
         TORN.set(torn);
     }

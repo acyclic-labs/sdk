@@ -38,12 +38,7 @@ where
         };
         let result = self.record(changes, &work).map_err(DemandError::from);
         crate::demand::accept_source_result(
-            result
-                .map(|value| crate::OperationReceipt {
-                    value,
-                    work: work.receipt(),
-                })
-                .map_err(|error| crate::OperationFailure::new(error, work.receipt())),
+            crate::performance::finish_measured(result, work.receipt(), DemandError::from),
             accounting,
         )
     }

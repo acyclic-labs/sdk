@@ -153,6 +153,9 @@ pub(super) fn path_error(error: crate::FsError) -> PathLookupError {
         crate::FsError::Object(ObjectStoreError::Work(error)) => PathLookupError::Work(error),
         crate::FsError::Object(error) => PathLookupError::Tree(TreeReadError::Storage(error)),
         crate::FsError::Work(error) => PathLookupError::Work(error),
+        crate::FsError::WorkObservation(error) => PathLookupError::Tree(TreeReadError::Storage(
+            ObjectStoreError::WorkObservation(error),
+        )),
         crate::FsError::Cancelled(_) => PathLookupError::Tree(TreeReadError::Cancelled),
         #[cfg(not(target_arch = "wasm32"))]
         crate::FsError::NativeKernel(error) => {

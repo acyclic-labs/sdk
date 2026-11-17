@@ -169,7 +169,7 @@ async fn adjust_test_link_counts(
         result
     }
     .await;
-    *work = accounting.spent();
+    *work = accounting.spent().unwrap();
     result.map_err(|error| OperationFailure::new(project_merge_error(error), *work))
 }
 

@@ -562,7 +562,7 @@ fn check_prepared_ascii_leaf_inner<const N: usize>(
         &crate::CancellationToken::new(),
     )
     .map_err(|(error, _)| error)?;
-    let before = work.receipt();
+    let before = work.receipt()?;
     let live = work.live_allocation_bytes();
     let result = prepare_ascii_leaf(bytes, &work);
     let prefix = bytes.split_last().and_then(|(&last, prefix)| {
@@ -584,7 +584,7 @@ fn check_prepared_ascii_leaf_inner<const N: usize>(
     }
     let examined =
         prefix.map_or(0, |prefix| invalid.map_or(prefix.len(), |index| index + 1)) as u64;
-    let after = work.receipt();
+    let after = work.receipt()?;
     assert_eq!(after.items_examined - before.items_examined, examined);
     #[cfg(windows)]
     assert_eq!(after.bytes_encoded - before.bytes_encoded, examined * 2);
@@ -616,12 +616,12 @@ fn check_native_root_name_prefix_inner(name: &str) -> Result<(), NativeTreeMater
     )
     .map_err(|(error, _)| error)?;
     let live = work.live_allocation_bytes();
-    let before = work.receipt();
+    let before = work.receipt()?;
     assert!(matches!(
         work.root_identity(Path::new(name)),
         Err(NativeTreeMaterializationError::InvalidLayout)
     ));
-    let after = work.receipt();
+    let after = work.receipt()?;
     assert_eq!(after.items_examined - before.items_examined, examined);
     assert_eq!(after.bytes_encoded - before.bytes_encoded, encoded);
     assert_eq!(
@@ -635,7 +635,7 @@ fn check_native_root_name_prefix_inner(name: &str) -> Result<(), NativeTreeMater
         HostRoot::open(Path::new(name), &mut original),
         Err(DemandError::InvalidRequest)
     ));
-    let after_demand = work.receipt();
+    let after_demand = work.receipt()?;
     assert_eq!(after_demand.items_examined - after.items_examined, examined);
     assert_eq!(after_demand.bytes_encoded - after.bytes_encoded, encoded);
     assert_eq!(
@@ -655,12 +655,13 @@ fn check_native_root_name_prefix_inner(name: &str) -> Result<(), NativeTreeMater
         denied.root_identity(Path::new(name)),
         Err(NativeTreeMaterializationError::Work(_))
     ));
-    assert_eq!(denied.receipt().items_examined, 0);
-    assert_eq!(denied.receipt().backend_read_operations, 0);
+    assert_eq!(denied.receipt()?.items_examined, 0);
+    assert_eq!(denied.receipt()?.backend_read_operations, 0);
     Ok(())
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(test)]
+#[cfg(all(not(loom)))]
 mod prepared_leaf_tests {
     use super::*;
 

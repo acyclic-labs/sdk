@@ -36,11 +36,13 @@ pub(super) struct VhostRetired {
 }
 
 impl VhostRetired {
-    pub(super) fn take_callback_failure(&self) -> Option<(NativeMountError, WorkCounters)> {
+    pub(super) fn take_callback_failure(&self) -> Option<super::core::HandlerFailure> {
         self.core.take_handler_failure()
     }
 
-    pub(super) fn completed_callback_work(&self) -> WorkCounters {
+    pub(super) fn completed_callback_work(
+        &self,
+    ) -> Result<WorkCounters, crate::WorkObservationError> {
         self.core.completed_callback_work()
     }
 }

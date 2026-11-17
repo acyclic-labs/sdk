@@ -36,7 +36,7 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
         let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let native_baseline = work.live_allocation_bytes();
+        let native_baseline = work.live_allocation_bytes()?;
         let io = if native {
             PreparationIo::from_native_work(&work)?
         } else {
@@ -115,7 +115,7 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
         .await?;
         journal.append(operation, "call", &call, Some(&io))?.await?;
         for step in 1..=100 {
-            let before = io.receipt();
+            let before = io.receipt()?;
             journal
                 .append(
                     operation,
@@ -124,7 +124,7 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
                     Some(&io),
                 )?
                 .await?;
-            let after = io.receipt();
+            let after = io.receipt()?;
             assert!(
                 after.authority_records_read - before.authority_records_read <= 4 * 258,
                 "append exceeded fixed-width index work at step {step}"
@@ -215,7 +215,7 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
         drop(journal);
         assert_eq!(io.owned_bytes()?, 0, "evicted metadata retained custody");
         if native {
-            assert_eq!(work.live_allocation_bytes(), native_baseline);
+            assert_eq!(work.live_allocation_bytes()?, native_baseline);
         }
     }
     Ok(())

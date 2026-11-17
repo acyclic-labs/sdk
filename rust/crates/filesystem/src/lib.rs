@@ -13,7 +13,8 @@
 pub use acyclic_auth::addressing;
 #[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_fs_wire::{AUTHORIZATION, FsMethod, authorization};
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
 #[cfg(test)]
@@ -37,14 +38,16 @@ pub(crate) fn descriptor_digest() -> String {
         .to_string()
 }
 
-#[cfg(any(test, all(feature = "test-support", windows)))]
+#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn initialize_test_native_io() {
-    static INITIALIZED: std::sync::Once = std::sync::Once::new();
-    INITIALIZED.call_once(|| {
+mod test_native_io {
+    pub(crate) fn initialize() {
         acyclic_native_runtime::initialize_native_io_services().expect("native I/O test services");
-    });
+    }
 }
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use test_native_io::initialize as initialize_test_native_io;
 
 #[cfg(all(any(test, feature = "test-support"), windows))]
 mod windows_test_filesystems;
@@ -55,7 +58,8 @@ pub use windows_test_filesystems::junction as test_directory_junction;
 pub mod access;
 mod arc_layout;
 pub use arc_layout::shared_allocation_bytes;
-#[cfg(all(test, loom))]
+#[cfg(test)]
+#[cfg(all(loom))]
 mod operation_claim;
 mod sync;
 #[cfg(not(target_arch = "wasm32"))]
@@ -374,6 +378,7 @@ pub use operation_window::{
 pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
 pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
+    WorkObservationError,
 };
 pub use s3::{
     S3Error, S3List, S3ListCursor, S3ListOptions, S3MultipartOptions, S3MultipartUpload, S3Object,

@@ -97,9 +97,9 @@ proptest! {
         for mode in 0..5 {
             let mut input = vec![2, 255, 255, mode, 0, 0];
             input.extend_from_slice(&bytes);
-            crate::kernel::decoder_fuzz::check(&input);
+            crate::kernel::decoder_fuzz::check(&input).expect("decoder oracle");
             input[1..3].fill(0);
-            crate::kernel::decoder_fuzz::check(&input);
+            crate::kernel::decoder_fuzz::check(&input).expect("decoder oracle");
         }
         prop_assert_eq!(encode(&decoded), bytes);
     }
@@ -135,9 +135,9 @@ fn oracle_detects_missing_order_check_and_keeps_error_precedence() {
     let bytes = encoder.finish();
     let limits = DecodeLimits::default();
     compare::<true>(&bytes, limits).unwrap();
-    let rejected = std::panic::catch_unwind(|| super::fuzz::check::<false>(&bytes, limits, 0));
-    let message = rejected.unwrap_err();
-    let message = message.downcast_ref::<String>().unwrap();
+    let message = super::fuzz::check::<false>(&bytes, limits, 0)
+        .expect_err("missing order check must fail the oracle")
+        .to_string();
     assert!(message.contains("decoder result differs"), "{message}");
     for length in 0..bytes.len() {
         compare::<true>(&bytes[..length], limits).unwrap();

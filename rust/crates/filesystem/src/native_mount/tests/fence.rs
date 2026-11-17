@@ -174,10 +174,10 @@ fn existing_recovery_fences_need_neither_a_reachable_parent_nor_a_new_marker()
         fence.is_file(),
         "a refused contender removed the owner's fence"
     );
-    let before_close = original.receipt().backend_write_operations;
+    let before_close = original.receipt().unwrap().backend_write_operations;
     await_recovery_worker(owner)?;
     assert_eq!(
-        original.receipt().backend_write_operations,
+        original.receipt().unwrap().backend_write_operations,
         before_close + 1
     );
     let unlocked = acquire_existing_mount_lock(&fence)?;
@@ -248,7 +248,7 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
     let error = owner
         .detach(&denied)
         .expect_err("the actual native observation is denied");
-    let receipt = denied.receipt();
+    let receipt = denied.receipt().unwrap();
     assert!(matches!(
         error,
         NativeMountError::Work(_)
@@ -262,10 +262,10 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
         acquire_existing_mount_lock(&lock_path),
         Err(NativeMountError::DestinationBusy)
     ));
-    let before_close = original.receipt().backend_write_operations;
+    let before_close = original.receipt().unwrap().backend_write_operations;
     await_recovery_worker(owner)?;
     assert_eq!(
-        original.receipt().backend_write_operations,
+        original.receipt().unwrap().backend_write_operations,
         before_close + 1
     );
     assert!(
@@ -308,7 +308,7 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
                 ),
                 "the semantic cut holds the actual destination fence"
             );
-            prefix.set(Some(work.receipt().backend_write_operations));
+            prefix.set(Some(work.receipt().unwrap().backend_write_operations));
             // Withhold only still-uncommitted work. The preborn worker's
             // original final-close credit remains available. No I/O count
             // from a different acquisition selects this failure boundary.
@@ -334,7 +334,7 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
         ))
     ));
     assert_eq!(
-        denied.receipt().backend_write_operations,
+        denied.receipt().unwrap().backend_write_operations,
         prefix.get().expect("the actual post-lock cut was reached") + 1,
         "actual prefix plus original physical fence close"
     );
@@ -366,7 +366,7 @@ fn administrative_retry_uses_same_fence_and_distinct_action_ledgers()
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
     assert!(owner.detach(&retry)?);
-    assert!(retry.receipt().backend_read_operations > 0);
+    assert!(retry.receipt().unwrap().backend_read_operations > 0);
     assert_eq!(owner.cleanup_state()?.fence_identity, identity);
     let state = owner.cleanup_state()?;
     assert!(!state.destination_fence_retained && !state.controls_pending);
@@ -581,7 +581,7 @@ fn shared_destination_fence_retains_original_owner_after_denial()
     original.lock().budget.backend_write_operations = u64::MAX;
     guard.release(&mut &meter)?;
     assert!(guard.file.is_none());
-    assert_eq!(original.lock().live_allocation_bytes(), 0);
+    assert_eq!(original.lock().live_allocation_bytes().unwrap(), 0);
     Ok(())
 }
 
@@ -603,11 +603,11 @@ fn accepted_destination_fence_cleanup_survives_original_cancellation()
         &cancelled,
     )
     .map_err(|(error, _)| error)?;
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let mut guard = None;
     MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
     let mut guard = guard.unwrap();
-    let before = work.receipt();
+    let before = work.receipt().unwrap();
     cancelled.cancel();
     let refused_wait = crate::CancellationToken::new();
     refused_wait.cancel();
@@ -617,7 +617,7 @@ fn accepted_destination_fence_cleanup_survives_original_cancellation()
         "denied wait preserves the actual fence"
     );
     assert_eq!(
-        work.receipt(),
+        work.receipt().unwrap(),
         before,
         "no accepted operation starts on a denied wait"
     );
@@ -626,7 +626,7 @@ fn accepted_destination_fence_cleanup_survives_original_cancellation()
         guard.file.is_none(),
         "the same held fence physically retired"
     );
-    let after = work.receipt();
+    let after = work.receipt().unwrap();
     assert!(after.backend_write_operations > before.backend_write_operations);
     assert_eq!(
         after.items_examined, before.items_examined,
@@ -641,7 +641,7 @@ fn accepted_destination_fence_cleanup_survives_original_cancellation()
         "original cancellation is never replaced"
     );
     drop(guard);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 

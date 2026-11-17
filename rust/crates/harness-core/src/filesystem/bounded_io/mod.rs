@@ -394,13 +394,12 @@ impl PreparationIo {
         stock_boundary(Some(self), crate::wire::ErrorCode::Invalid, reason)
     }
     #[doc(hidden)]
-    pub fn receipt(&self) -> WorkCounters {
+    pub fn receipt(&self) -> std::result::Result<WorkCounters, acyclic_fs::WorkObservationError> {
         match self {
-            Self::Owned { work, .. } => {
-                work.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .0
-            }
+            Self::Owned { work, .. } => Ok(work
+                .lock()
+                .map_err(|_| acyclic_fs::WorkObservationError::Poisoned)?
+                .0),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, .. } => work.receipt(),
         }
@@ -681,7 +680,7 @@ impl PreparationIo {
                 Ok(receipt.value)
             }
             Err(failure) => {
-                self.spent(*failure.work)?;
+                self.spent(*failure.work.map_err(acyclic_fs::FsError::from)?)?;
                 let error = failure.error.into();
                 #[cfg(not(target_arch = "wasm32"))]
                 if self.original_native_work().is_some() {

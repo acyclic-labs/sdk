@@ -11,7 +11,7 @@ async fn construction_custody_survives_its_frames(
     let token = CancellationToken::new();
     let native = NativeMaterializationWork::new(native_write_budget(), &token)
         .map_err(|(error, _)| error)?;
-    let baseline = native.live_allocation_bytes();
+    let baseline = native.live_allocation_bytes().unwrap();
     let object = HashedObject::new(
         ObjectKind::BlobChunk,
         OwnedBytes::from_static(b"unfinished child"),
@@ -27,18 +27,18 @@ async fn construction_custody_survives_its_frames(
             }
         }
     }
-    native.receipt();
+    native.receipt().unwrap();
     assert!(
-        native.live_allocation_bytes() > baseline,
+        native.live_allocation_bytes().unwrap() > baseline,
         "construction roots retired before their outer operation"
     );
 
     let mut continuation =
         crate::kernel::allocation::retained::OwnedAccounting::take_branch(&mut original, &token)?;
     drop(original);
-    native.receipt();
+    native.receipt().unwrap();
     assert!(
-        native.live_allocation_bytes() > baseline,
+        native.live_allocation_bytes().unwrap() > baseline,
         "dropping the caller retired accepted construction roots"
     );
     {
@@ -71,15 +71,15 @@ async fn construction_custody_survives_its_frames(
     assert!(futures::poll!(pending.as_mut()).is_pending());
     token.cancel();
     drop(pending);
-    native.receipt();
+    native.receipt().unwrap();
     assert!(
-        native.live_allocation_bytes() > baseline,
+        native.live_allocation_bytes().unwrap() > baseline,
         "withdrawal lost the original construction roots"
     );
     drop(original);
-    native.receipt();
+    native.receipt().unwrap();
     assert_eq!(
-        native.live_allocation_bytes(),
+        native.live_allocation_bytes().unwrap(),
         baseline,
         "construction roots retained backing after their operation ended"
     );
@@ -140,8 +140,8 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
             &mut AuthorityWork::native(&original, &original_token),
         )
         .await?;
-    let before = original.receipt();
-    let live = original.live_allocation_bytes();
+    let before = original.receipt().unwrap();
+    let live = original.live_allocation_bytes().unwrap();
     caller.cancel();
     assert!(matches!(
         store
@@ -158,8 +158,8 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
             .await,
         Err(ObjectStoreError::Cancelled)
     ));
-    assert_eq!(original.receipt(), before);
-    assert_eq!(original.live_allocation_bytes(), live);
+    assert_eq!(original.receipt().unwrap(), before);
+    assert_eq!(original.live_allocation_bytes().unwrap(), live);
     assert!(store.index().objects.contains_key(&id));
     let collecting = store.collection.begin().await;
     let (sweep, _) = collecting.sweepable(Vec::<crate::Digest>::new()).await;
@@ -185,8 +185,8 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
         };
         let original = NativeMaterializationWork::new(native_write_budget(), &original_token)
             .map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
-        let before = original.receipt();
+        let baseline = original.live_allocation_bytes().unwrap();
+        let before = original.receipt().unwrap();
         let mut work = if exit == 0 {
             AuthorityWork::new(native_write_budget(), &caller)
         } else {
@@ -264,7 +264,7 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
         }
         drop(publishing);
         drop(spill);
-        let completed = work.spent();
+        let completed = work.spent().unwrap();
         assert_eq!(completed.backend_write_operations, 0);
         assert_eq!(completed.durability_operations, 0);
         assert_eq!(completed.object_bytes_written, 0);
@@ -280,7 +280,7 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
                 before.allocation_operations + 2 + u64::from(publication) - u64::from(exit == 1)
             }
         );
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         assert!(matches!(store.lookup(id), Lookup::Resident { .. }));
     }
     drop(sweep);
@@ -380,14 +380,16 @@ async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption
             )
             .await?
     );
-    assert_eq!(work.receipt().backend_write_operations, 1);
+    assert_eq!(work.receipt().unwrap().backend_write_operations, 1);
     drop(hold);
     drop(bytes);
     drop(store);
-    assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
+    assert!(
+        work.live_allocation_bytes().unwrap() > NativeMaterializationWork::accounting_state_bytes()
+    );
     drop(alias);
     assert_eq!(
-        work.live_allocation_bytes(),
+        work.live_allocation_bytes().unwrap(),
         NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())
@@ -452,19 +454,19 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
         ));
         let verified_prefix = 2 * 1_048_576;
         assert_eq!(
-            failed.receipt().object_bytes_read,
+            failed.receipt().unwrap().object_bytes_read,
             if truncated {
                 spilled_bytes - 1
             } else {
                 verified_prefix
             }
         );
-        assert_eq!(failed.receipt().bytes_hashed, verified_prefix);
-        assert_eq!(failed.receipt().backend_write_operations, 0);
-        assert_eq!(failed.receipt().object_bytes_written, 0);
-        assert_eq!(failed.receipt().durability_operations, 0);
+        assert_eq!(failed.receipt().unwrap().bytes_hashed, verified_prefix);
+        assert_eq!(failed.receipt().unwrap().backend_write_operations, 0);
+        assert_eq!(failed.receipt().unwrap().object_bytes_written, 0);
+        assert_eq!(failed.receipt().unwrap().durability_operations, 0);
         assert_eq!(
-            failed.live_allocation_bytes(),
+            failed.live_allocation_bytes().unwrap(),
             NativeMaterializationWork::accounting_state_bytes()
         );
         assert_eq!(store.index().objects.len(), closure.len());
@@ -508,10 +510,10 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
     assert_eq!(store.index().spilled.len(), 0);
     assert_eq!(store.index().spill_end, 0);
     assert!(store.spill_io.read().await.is_none());
-    assert_eq!(work.receipt().object_bytes_read, spilled_bytes);
-    assert_eq!(work.receipt().bytes_hashed, spilled_bytes);
-    assert!(work.receipt().backend_read_operations > 0);
-    assert!(work.receipt().backend_write_operations > 0);
+    assert_eq!(work.receipt().unwrap().object_bytes_read, spilled_bytes);
+    assert_eq!(work.receipt().unwrap().bytes_hashed, spilled_bytes);
+    assert!(work.receipt().unwrap().backend_read_operations > 0);
+    assert!(work.receipt().unwrap().backend_write_operations > 0);
     drop(hold);
     drop(store);
     drop(provider);
@@ -553,11 +555,11 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
             }))
         ));
         assert_eq!(
-            unfunded.spent().allocation_operations,
+            unfunded.spent().unwrap().allocation_operations,
             allocation_operations
         );
-        assert_eq!(unfunded.spent().backend_write_operations, 0);
-        assert_eq!(unfunded.spent().object_bytes_written, 0);
+        assert_eq!(unfunded.spent().unwrap().backend_write_operations, 0);
+        assert_eq!(unfunded.spent().unwrap().object_bytes_written, 0);
         assert_eq!(store.index().order.len(), ids.len());
         assert_eq!(store.index().spilled.len(), 0);
         assert!(spill_file.is_none());
@@ -571,8 +573,8 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
             .await
             .is_err()
     );
-    assert_eq!(denied.receipt().backend_write_operations, 0);
-    assert_eq!(denied.receipt().object_bytes_written, 0);
+    assert_eq!(denied.receipt().unwrap().backend_write_operations, 0);
+    assert_eq!(denied.receipt().unwrap().object_bytes_written, 0);
     assert_eq!(store.index().spill_end, 0);
     assert_eq!(store.index().spilled.len(), 0);
     assert_eq!(store.index().order.len(), ids.len());
@@ -586,8 +588,11 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
     store
         .spill_locked(&mut spill_file, &mut AuthorityWork::native(&work, &token))
         .await?;
-    assert!(work.receipt().backend_write_operations > 0);
-    assert_eq!(work.receipt().object_bytes_written, store.index().spill_end);
+    assert!(work.receipt().unwrap().backend_write_operations > 0);
+    assert_eq!(
+        work.receipt().unwrap().object_bytes_written,
+        store.index().spill_end
+    );
     assert!(!store.index().spilled.is_empty());
     Ok(())
 }
@@ -618,9 +623,9 @@ async fn native_flush_spilled_read_denial_keeps_private_remainder()
             .await
             .is_err()
     );
-    assert_eq!(work.receipt().backend_read_operations, 0);
-    assert_eq!(work.receipt().backend_write_operations, 0);
-    assert_eq!(work.receipt().object_bytes_read, 0);
+    assert_eq!(work.receipt().unwrap().backend_read_operations, 0);
+    assert_eq!(work.receipt().unwrap().backend_write_operations, 0);
+    assert_eq!(work.receipt().unwrap().object_bytes_read, 0);
     assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
     assert_eq!(store.index().spilled.len(), 1);
     Ok(())
@@ -655,7 +660,7 @@ impl AsyncObjectStore for CancelAfterNativePut {
             && self.cancel_once.swap(false, Ordering::Relaxed)
         {
             self.committed_write_operations.store(
-                original.receipt().backend_write_operations,
+                original.receipt().unwrap().backend_write_operations,
                 Ordering::Relaxed,
             );
             context.cancellation.cancel();
@@ -748,11 +753,11 @@ async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
         .load(Ordering::Relaxed);
     assert!(committed_write_operations > 0);
     assert_eq!(
-        work.receipt().backend_write_operations,
+        work.receipt().unwrap().backend_write_operations,
         committed_write_operations
     );
     assert_eq!(
-        work.receipt().object_bytes_written,
+        work.receipt().unwrap().object_bytes_written,
         first_bytes.len() as u64
     );
     let token = CancellationToken::new();
@@ -771,9 +776,9 @@ async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
         )
         .await?;
     assert!(store.index().objects.is_empty());
-    assert_eq!(retry.receipt().bytes_hashed, 0);
+    assert_eq!(retry.receipt().unwrap().bytes_hashed, 0);
     assert_eq!(
-        work.receipt().backend_write_operations,
+        work.receipt().unwrap().backend_write_operations,
         committed_write_operations
     );
     drop(hold);

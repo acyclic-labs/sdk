@@ -50,7 +50,7 @@ async fn native_change_wait_uses_retained_events_and_settles_on_cancel_or_drop()
             changed.as_mut().poll(&mut Context::from_waker(&waker)),
             Poll::Pending
         ));
-        let idle = work.receipt();
+        let idle = work.receipt().unwrap();
         assert_eq!(
             wakes.0.load(Ordering::Acquire),
             0,

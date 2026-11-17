@@ -58,7 +58,7 @@ fn check_owned<const LEGACY: bool>(
     };
     let address = records.as_ptr();
     let bytes = (count * size_of::<crate::kernel::FileRecord>()) as u64;
-    let before = accounting.spent();
+    let before = accounting.spent().unwrap();
     // Forcing the default cache hooks replays the old allocate-and-share path.
     let result = if LEGACY {
         admit_page(
@@ -81,7 +81,7 @@ fn check_owned<const LEGACY: bool>(
     prop_assert!(matches!(page.page, PageLease::Owned(_)));
     prop_assert_eq!(page.logical_bytes, bytes);
     prop_assert_eq!(
-        accounting.spent(),
+        accounting.spent().unwrap(),
         before,
         "no shared owner or payload copy is needed"
     );
@@ -98,7 +98,7 @@ fn check_owned<const LEGACY: bool>(
     );
     prop_assert_eq!(actual, bytes);
     prop_assert_eq!(
-        accounting.spent(),
+        accounting.spent().unwrap(),
         before,
         "taking ownership needs no clone"
     );
@@ -132,9 +132,9 @@ proptest! {
         {
             let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
             let resource = original.native_volume_work(exact_budget(count)).unwrap();
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             check_owned::<false>(count, &mut KernelAccounting::native(&resource, &cancellation))?;
-            prop_assert_eq!(original.live_allocation_bytes(), baseline);
+            prop_assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         }
     }
 }
@@ -151,7 +151,7 @@ fn exact_ownership_oracle_rejects_the_old_shared_owner_path() {
                 crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
                     .unwrap();
             let resource = original.native_volume_work(exact_budget(count)).unwrap();
-            let baseline = original.live_allocation_bytes();
+            let baseline = original.live_allocation_bytes().unwrap();
             assert!(
                 check_owned::<true>(
                     count,
@@ -159,7 +159,7 @@ fn exact_ownership_oracle_rejects_the_old_shared_owner_path() {
                 )
                 .is_err()
             );
-            assert_eq!(original.live_allocation_bytes(), baseline);
+            assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         }
     }
 }
@@ -248,7 +248,7 @@ fn uncached_native_admission_keeps_identity_and_cancellation_checks() {
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
     let other =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let input = page(2, &mut KernelAccounting::native(&original, &cancellation));
     let result = admit_page(
         &MemoryObjectStore::default(),
@@ -263,7 +263,7 @@ fn uncached_native_admission_keeps_identity_and_cancellation_checks() {
             crate::NativeTreeMaterializationError::InvalidLayout
         ))
     ));
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     let input = page(2, &mut KernelAccounting::native(&original, &cancellation));
     cancellation.cancel();
     assert!(
@@ -276,7 +276,7 @@ fn uncached_native_admission_keeps_identity_and_cancellation_checks() {
         )
         .is_err()
     );
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -286,7 +286,7 @@ fn uncached_native_handoff_cannot_change_the_allocation_resource() {
     let original =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
     let resource = original.native_volume_work(WorkBudget::UNBOUNDED).unwrap();
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     for (source, destination) in [(&original, &resource), (&resource, &original)] {
         let input = page(2, &mut KernelAccounting::native(source, &cancellation));
         let result = admit_page(
@@ -302,7 +302,7 @@ fn uncached_native_handoff_cannot_change_the_allocation_resource() {
                 crate::NativeTreeMaterializationError::InvalidLayout
             ))
         ));
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     let input = page(2, &mut KernelAccounting::native(&original, &cancellation));
     let explicit = CancellationToken::new();
@@ -317,7 +317,7 @@ fn uncached_native_handoff_cannot_change_the_allocation_resource() {
         )
         .is_err()
     );
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
 }
 
 fn admit_page<S: AsyncObjectStore, F: Format>(

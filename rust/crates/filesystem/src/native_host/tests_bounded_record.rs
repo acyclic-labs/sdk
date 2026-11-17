@@ -24,7 +24,7 @@ fn held_canonical_directory_does_not_scan_unrelated_siblings()
     assert_eq!(work.work.backend_read_operations, 4);
     drop(actual);
     work.release(allocation)?;
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(work.live_allocation_bytes().unwrap(), 0);
     Ok(())
 }
 
@@ -43,10 +43,13 @@ fn held_canonical_directory_observes_renamed_object_not_replaced_spelling()
     let (actual, allocation) = canonical_directory_path_held(directory, &mut work)?;
     assert_eq!(actual, std::fs::canonicalize(&moved)?);
     assert_ne!(actual, std::fs::canonicalize(&original)?);
-    assert_eq!(work.live_allocation_bytes(), actual.capacity() as u64);
+    assert_eq!(
+        work.live_allocation_bytes().unwrap(),
+        actual.capacity() as u64
+    );
     drop(actual);
     work.release(allocation)?;
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(work.live_allocation_bytes().unwrap(), 0);
     Ok(())
 }
 
@@ -70,7 +73,7 @@ fn held_canonical_directory_needs_search_permission_without_directory_read_permi
     assert_eq!(actual, expected);
     drop(actual);
     work.release(allocation)?;
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(work.live_allocation_bytes().unwrap(), 0);
     Ok(())
 }
 
@@ -89,10 +92,13 @@ fn canonical_wide_directory_retains_native_capacity_without_scalar_conversion()
     let (actual, allocation) = canonical_directory_wide(&directory, &mut work)?;
     assert_eq!(actual, expected);
     assert_ne!(actual.last(), Some(&0));
-    assert_eq!(work.live_allocation_bytes(), actual.capacity() as u64 * 2);
+    assert_eq!(
+        work.live_allocation_bytes().unwrap(),
+        actual.capacity() as u64 * 2
+    );
     drop(actual);
     work.release(allocation)?;
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(work.live_allocation_bytes().unwrap(), 0);
     Ok(())
 }
 
@@ -113,7 +119,7 @@ fn held_child_uses_held_parent_after_lexical_replacement() -> Result<(), Box<dyn
     #[cfg(windows)]
     let child = &child;
     assert_eq!(parent.open_child(child, &mut work)?.identity(), expected);
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(work.live_allocation_bytes().unwrap(), 0);
     Ok(())
 }
 
@@ -127,7 +133,7 @@ fn held_child_refuses_symlinks_and_nonleaf_names() -> Result<(), Box<dyn std::er
     for name in ["link", "..", "child/../child"] {
         let mut work = ordinary_work();
         assert!(parent.open_child(Path::new(name), &mut work).is_err());
-        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.live_allocation_bytes().unwrap(), 0);
     }
     Ok(())
 }
@@ -160,7 +166,7 @@ fn held_ancestry_survives_aliases_and_lexical_parent_replacement()
     assert!(directory_has_ancestor(&child, identity, &mut work)?);
     assert!(directory_has_ancestor(&child, parent, &mut work)?);
     assert!(!directory_has_ancestor(&child, replacement, &mut work)?);
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(work.live_allocation_bytes().unwrap(), 0);
     Ok(())
 }
 

@@ -1,7 +1,8 @@
 //! The one enqueue/prepare/seal state machine. Synchronization and storage are
 //! supplied by the host; no callback runs while this state is borrowed twice.
 use super::GroupAbort;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32")))]
 mod tests;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Phase {

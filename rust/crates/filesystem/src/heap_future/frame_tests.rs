@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 fn erasing_a_funded_future_preserves_its_address_and_original_charge() {
     let cancellation = CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-    let baseline = work.live_allocation_bytes();
+    let baseline = work.live_allocation_bytes().unwrap();
     let future = super::native_future(&work, || async {
         let payload = [0x71_u8; 64];
         std::future::pending::<()>().await;
@@ -18,8 +18,8 @@ fn erasing_a_funded_future_preserves_its_address_and_original_charge() {
     .unwrap();
     let address = future.as_ref().get_ref() as *const _ as *const ();
     let bytes = std::mem::size_of_val(future.as_ref().get_ref()) as u64;
-    assert_eq!(work.live_allocation_bytes(), baseline + bytes);
-    let admitted = work.receipt();
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline + bytes);
+    let admitted = work.receipt().unwrap();
     let future = future.erase_send();
     assert_eq!(future.as_ref().get_ref() as *const _ as *const (), address);
     assert_eq!(
@@ -27,13 +27,13 @@ fn erasing_a_funded_future_preserves_its_address_and_original_charge() {
         bytes
     );
     assert_eq!(
-        work.receipt(),
+        work.receipt().unwrap(),
         admitted,
         "erasure must not allocate or copy again"
     );
-    assert_eq!(work.live_allocation_bytes(), baseline + bytes);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline + bytes);
     drop(future);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
 }
 
 #[test]
@@ -135,13 +135,13 @@ fn frame_cancellation_retains_original_native_custody() {
     let sibling = original
         .claim(17, 1, WorkCounters::UNCHARGED)
         .unwrap_or_else(|_| unreachable!("sibling fits"));
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     for poll in [false, true] {
         cancel_frame(
             &mut KernelAccounting::native(&original, &cancellation),
             poll,
         );
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
     drop(sibling);
 }
@@ -324,7 +324,7 @@ impl std::future::Future for NativeDropProbe<'_> {
 impl Drop for NativeDropProbe<'_> {
     fn drop(&mut self) {
         self.live_at_drop.store(
-            self.original.live_allocation_bytes(),
+            self.original.live_allocation_bytes().unwrap(),
             std::sync::atomic::Ordering::Release,
         );
     }
@@ -337,14 +337,14 @@ fn native_owned_frame_destroys_the_future_before_retiring_its_storage() {
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .unwrap_or_else(|_| unreachable!("fixture owner fits"));
         let live_at_drop = std::sync::atomic::AtomicU64::new(0);
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut future = super::native_future(&original, || NativeDropProbe {
             original: original.clone(),
             live_at_drop: &live_at_drop,
             ready: exit == 2,
         })
         .unwrap_or_else(|_| unreachable!("fixture frame fits"));
-        let admitted = original.live_allocation_bytes();
+        let admitted = original.live_allocation_bytes().unwrap();
         assert!(admitted > baseline);
         if exit != 0 {
             assert_eq!((&mut future).now_or_never().is_some(), exit == 2);
@@ -355,7 +355,7 @@ fn native_owned_frame_destroys_the_future_before_retiring_its_storage() {
             admitted,
             "native frame retired before its future"
         );
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     }
 }
 #[test]
@@ -380,7 +380,7 @@ fn retiring_native_storage_before_the_box_is_detected() {
         },
     )
     .unwrap_or_else(|_| unreachable!("fixture frame fits"));
-    let admitted = original.live_allocation_bytes();
+    let admitted = original.live_allocation_bytes().unwrap();
     // Tuple fields drop in order: this deliberately reverses production custody.
     let mut reversed = (allocation, future);
     assert!(reversed.1.as_mut().now_or_never().is_none());

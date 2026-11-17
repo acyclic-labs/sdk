@@ -407,15 +407,15 @@ mod tests {
             b"after"
         );
         issuer.revoke_workload(&caller)?;
-        let before = work.receipt();
+        let before = work.receipt()?;
         assert!(caller_guard.check(&work)?.await.is_err());
         assert!(caller_guard.check_write(&work)?.await.is_err());
         assert_eq!(
-            work.receipt().backend_read_operations,
+            work.receipt()?.backend_read_operations,
             before.backend_read_operations
         );
         assert_eq!(
-            work.receipt().backend_write_operations,
+            work.receipt()?.backend_write_operations,
             before.backend_write_operations
         );
         assert!(observer.read_range(&path, 0, 32).is_err());
@@ -450,10 +450,10 @@ mod tests {
                 .await
                 .is_err()
         );
-        let before = work.receipt();
+        let before = work.receipt()?;
         assert!(guard.check(&work)?.await.is_err());
         assert!(guard.check_write(&work)?.await.is_err());
-        let after = work.receipt();
+        let after = work.receipt()?;
         assert_eq!(
             before.backend_read_operations,
             after.backend_read_operations

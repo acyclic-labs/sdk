@@ -182,7 +182,7 @@ impl<P: ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
     ) -> Result<ObjectRead, crate::FsError> {
         let mut context = crate::async_storage::AuthorityFrame::borrow(work)?;
         let result = self.sealer.open(id, bytes, &mut context);
-        context.spent().verify(context.budget)?;
+        context.spent()?.verify(context.budget)?;
         result.map_err(Into::into)
     }
 }

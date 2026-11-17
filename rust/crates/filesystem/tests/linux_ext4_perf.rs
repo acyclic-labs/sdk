@@ -486,7 +486,7 @@ async fn linux_working_set_cost_ledger_is_bounded() -> Result<(), Box<dyn std::e
             PublicationPermit::Unrestricted,
         )
         .await?;
-    let prepared = work.receipt();
+    let prepared = work.receipt().unwrap();
     assert_eq!(
         prepared.materializations,
         (DIRECTORIES * (FILES_PER_DIRECTORY + 1) + 1) as u64
@@ -499,19 +499,25 @@ async fn linux_working_set_cost_ledger_is_bounded() -> Result<(), Box<dyn std::e
     assert!(prepared.authority_records_appended > 0);
     working_set.validate_for_presentation(&work).await?;
     let changed = write_changed_working_set_files(view.path(), DIRECTORIES, CHANGES)?;
-    let before_capture = work.receipt();
+    let before_capture = work.receipt().unwrap();
     working_set.capture_host_paths(&changed, &work).await?;
-    let captured = work.receipt().checked_sub_cumulative(&before_capture)?;
+    let captured = work
+        .receipt()
+        .unwrap()
+        .checked_sub_cumulative(&before_capture)?;
     assert_eq!(captured.source_entries_visited, CHANGES as u64);
     assert_eq!(captured.materializations, 0);
     assert_eq!(captured.authority_records_appended, 0);
-    let before_sync = work.receipt();
+    let before_sync = work.receipt().unwrap();
     working_set
         .sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
             std::future::ready(Ok::<(), acyclic_fs::MountLifecycleError>(()))
         })
         .await?;
-    let synced = work.receipt().checked_sub_cumulative(&before_sync)?;
+    let synced = work
+        .receipt()
+        .unwrap()
+        .checked_sub_cumulative(&before_sync)?;
     assert_eq!(
         synced.source_entries_visited,
         (DIRECTORIES * (FILES_PER_DIRECTORY + 1)) as u64
@@ -519,13 +525,16 @@ async fn linux_working_set_cost_ledger_is_bounded() -> Result<(), Box<dyn std::e
     assert_eq!(synced.authority_records_appended, 5);
     assert_eq!(synced.materializations, 0);
     let published = lazy.workspace().head(&work, &cancel).await?;
-    let before_noop = work.receipt();
+    let before_noop = work.receipt().unwrap();
     working_set
         .sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
             std::future::ready(Ok::<(), acyclic_fs::MountLifecycleError>(()))
         })
         .await?;
-    let noop = work.receipt().checked_sub_cumulative(&before_noop)?;
+    let noop = work
+        .receipt()
+        .unwrap()
+        .checked_sub_cumulative(&before_noop)?;
     assert_eq!(noop.authority_records_appended, 0);
     assert_eq!(noop.materializations, 0);
     assert_eq!(

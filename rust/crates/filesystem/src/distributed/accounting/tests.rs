@@ -73,14 +73,14 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
         assert_eq!(calls.class(RequestClass::Head), 1);
         assert_eq!(calls.auxiliary(Some(RequestClass::Head)), Some(0));
         assert_eq!(
-            actual.spent(),
-            expected.spent(),
+            actual.spent().unwrap(),
+            expected.spent().unwrap(),
             "historical head lost original completed work"
         );
-        let encoded_before = actual.spent().bytes_encoded;
+        let encoded_before = actual.spent().unwrap().bytes_encoded;
         let live = |work: &AuthorityWork<'_>| {
             if native {
-                work.original.unwrap().live_allocation_bytes()
+                work.original.unwrap().live_allocation_bytes().unwrap()
             } else {
                 work.allocations.live_bytes()
             }
@@ -103,12 +103,12 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
         assert_eq!(records, expected_records);
         eprintln!(
             "HISTORICAL_REPLAY_RECEIPT native={native} codec_encoded_delta={} work={:?}",
-            actual.spent().bytes_encoded - encoded_before,
-            actual.spent()
+            actual.spent().unwrap().bytes_encoded - encoded_before,
+            actual.spent().unwrap()
         );
         assert_eq!(
-            actual.spent(),
-            expected.spent(),
+            actual.spent().unwrap(),
+            expected.spent().unwrap(),
             "historical replay lost original completed work"
         );
         let container_bytes = (records.capacity() * std::mem::size_of::<DurableCommit>()) as u64;
@@ -137,7 +137,7 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
             before_container_retirement - container_bytes,
             "replay container did not retire its exact original capacity"
         );
-        actual.spent().verify(BUDGET)?;
+        actual.spent().unwrap().verify(BUDGET)?;
         cancel.cancel();
         assert!(
             live(&actual) >= before_replay + alias.len() as u64,
@@ -176,7 +176,7 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
             })) if denied == counter),
             "historical replay did not preserve the denied {counter} cause"
         );
-        let spent = work.spent();
+        let spent = work.spent().unwrap();
         let denied = match counter {
             "allocation_operations" => spent.allocation_operations,
             "bytes_hashed" => spent.bytes_hashed,
@@ -215,10 +215,10 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
         release.send(()).map_err(|_| "publication owner exited")?;
         publication.await;
         assert!(matches!(head.await, Err(AuthorityStoreError::Cancelled)));
-        assert_eq!(original.receipt().authority_records_read, 0);
+        assert_eq!(original.receipt().unwrap().authority_records_read, 0);
         drop(work);
         assert_eq!(
-            original.live_allocation_bytes(),
+            original.live_allocation_bytes().unwrap(),
             crate::NativeMaterializationWork::accounting_state_bytes()
         );
     }
@@ -230,6 +230,6 @@ async fn historical_reads_preserve_the_complete_original_receipt() -> TestResult
         Err(AuthorityStoreError::Cancelled)
     ));
     assert_eq!(provider.requests(), before);
-    assert_eq!(work.spent(), WorkCounters::UNCHARGED);
+    assert_eq!(work.spent().unwrap(), WorkCounters::UNCHARGED);
     Ok(())
 }

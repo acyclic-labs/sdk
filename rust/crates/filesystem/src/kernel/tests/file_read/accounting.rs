@@ -74,7 +74,7 @@ fn replay<const PREFIX_MUTANT: u8, const CHECK_PREFIX: bool>(
         _ => KernelAccounting::standalone(budget, &cancellation),
     };
     let mut observed = OriginalReadAccounting::new(&mut accounting).unwrap();
-    let mut expected = observed.accounting.spent();
+    let mut expected = observed.accounting.spent().unwrap();
     let mut failure = None;
     for (index, &(kind, bytes, direct)) in steps.iter().enumerate() {
         if cancel_at == index * 2 {
@@ -132,7 +132,7 @@ fn replay<const PREFIX_MUTANT: u8, const CHECK_PREFIX: bool>(
     let (allocation, bytes) = observed.into_parts();
     assert_eq!(bytes, 0);
     drop(allocation);
-    let actual = accounting.spent();
+    let actual = accounting.spent().unwrap();
     let (stop, (copied, hashed, items)) = prefix(steps, budget, cancel_at, mode >= 3);
     expected.bytes_copied += copied;
     expected.bytes_hashed += hashed;

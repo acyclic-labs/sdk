@@ -34,7 +34,7 @@ async fn cached_read_withdrawal_retains_original_admission_before_provider_compl
                 &mut work.accounting(),
             )?;
             output.value.resize(17, 9_u8);
-            let before = work.spent();
+            let before = work.spent().unwrap();
             let live = work.allocations.live_bytes();
             if finish == 3 {
                 work.budget.items_examined = before.items_examined;
@@ -74,7 +74,7 @@ async fn cached_read_withdrawal_retains_original_admission_before_provider_compl
                 drop(read);
                 drop(producer);
                 assert_eq!(reads.load(Ordering::Acquire), 0);
-                assert_eq!(work.spent(), before);
+                assert_eq!(work.spent().unwrap(), before);
                 assert_eq!(work.allocations.live_bytes(), live);
                 continue;
             }
@@ -99,8 +99,8 @@ async fn cached_read_withdrawal_retains_original_admission_before_provider_compl
                 assert_eq!(work.allocations.live_bytes(), live + retained);
                 work.allocations.release_owned(retained)?;
             }
-            assert!(work.spent().items_examined > before.items_examined);
-            assert!(work.spent().allocation_operations > before.allocation_operations);
+            assert!(work.spent().unwrap().items_examined > before.items_examined);
+            assert!(work.spent().unwrap().allocation_operations > before.allocation_operations);
             assert_eq!(cached.stats()?.in_flight, 0);
             assert_eq!(work.allocations.live_bytes(), live);
             assert_eq!(earlier.value, [7; 31]);
@@ -151,7 +151,7 @@ async fn cached_reads_keep_only_returned_owned_storage_on_the_original_ledger()
                 }; 2];
                 let (values, allocation) = cached.read_many(&requests, &mut work).await?;
                 assert_eq!(values.len(), 2);
-                assert_eq!(work.spent().items_returned, 2);
+                assert_eq!(work.spent().unwrap().items_returned, 2);
                 assert_eq!(values[0].bytes, bytes);
                 assert_eq!(values[1].bytes, bytes);
                 let retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
@@ -183,7 +183,7 @@ async fn cached_reads_keep_only_returned_owned_storage_on_the_original_ledger()
             assert_eq!(cached.stats()?.in_flight, 0);
             drop(output);
             earlier.retire(&mut work.accounting())?;
-            work.spent().verify(budget)?;
+            work.spent().unwrap().verify(budget)?;
         }
     }
     Ok(())
@@ -210,7 +210,7 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
                 .read(request.object_id, request.maximum_bytes, &mut work)
                 .await?,
         );
-        *prefix = work.spent();
+        *prefix = work.spent().unwrap();
     }
     for (complete_before_gate, exit, stored) in [false, true]
         .into_iter()
@@ -233,7 +233,7 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
         })?;
         let mut earlier = crate::kernel::Owned::<Vec<u8>>::allocate(31, &mut work.accounting())?;
         earlier.value.extend([7; 31]);
-        let before = work.spent();
+        let before = work.spent().unwrap();
         let live = work.allocations.live_bytes();
         let (producer, receiver) = futures::channel::oneshot::channel();
         let reads = Arc::new(AtomicUsize::new(0));
@@ -290,7 +290,7 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
                 drop(producer);
             }
         }
-        let completed = work.spent();
+        let completed = work.spent().unwrap();
         // The old outer child frame loses even this admitted prefix on drop.
         assert_eq!(
             completed.allocation_operations,
@@ -492,7 +492,7 @@ fn verify_batch_leader_admission() -> Result<(), Box<dyn std::error::Error>> {
         let cancel = CancellationToken::new();
         let original =
             NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let mut leaders = reads::BatchLeaders::default();
         let mut old = BTreeMap::new();
@@ -510,20 +510,20 @@ fn verify_batch_leader_admission() -> Result<(), Box<dyn std::error::Error>> {
         }
         leaders.get_or_try_insert_with(own.index_key(), &mut accounting, |_| Ok(7))?;
         old.insert(Ordered(own.index_key()), 7);
-        let before = accounting.spent();
+        let before = accounting.spent().unwrap();
         assert_eq!(leaders.get(own.index_key(), &mut accounting)?, Some(&7));
-        visits.push(accounting.spent().items_examined - before.items_examined);
+        visits.push(accounting.spent().unwrap().items_examined - before.items_examined);
         COMPARES.store(0, Ordering::Relaxed);
         assert_eq!(old.get(&Ordered(own.index_key())), Some(&7));
         comparisons.push(COMPARES.load(Ordering::Relaxed));
-        let allocated = accounting.spent().allocation_operations;
+        let allocated = accounting.spent().unwrap().allocation_operations;
         assert_eq!(
             *leaders.get_or_try_insert_with(own.index_key(), &mut accounting, |_| {
                 panic!("duplicate batch leader must retain its original position")
             })?,
             7
         );
-        assert_eq!(accounting.spent().allocation_operations, allocated);
+        assert_eq!(accounting.spent().unwrap().allocation_operations, allocated);
         let sealed = ObjectId {
             storage: Some(crate::ObjectStorage {
                 locator: own.digest,
@@ -538,8 +538,8 @@ fn verify_batch_leader_admission() -> Result<(), Box<dyn std::error::Error>> {
         cancel.cancel();
         assert!(leaders.get(own.index_key(), &mut accounting).is_err());
         drop(leaders);
-        assert_eq!(original.live_allocation_bytes(), baseline);
-        original.receipt().verify(budget)?;
+        assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
+        original.receipt().unwrap().verify(budget)?;
     }
     assert_eq!(visits[0], visits[1]);
     assert!(visits[0] <= ObjectId::ENCODED_LEN as u64 + 2);
@@ -556,23 +556,23 @@ fn verify_batch_leader_admission() -> Result<(), Box<dyn std::error::Error>> {
     let cached = CachedObjectStore::new(MemoryObjectStore::default(), options(4, 64))?;
     let original = NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
         .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
+    let baseline = original.live_allocation_bytes().unwrap();
     let prepared = cached.prepare_batch(
         &[request, request],
         &mut AuthorityWork::native(&original, &cancel),
     )?;
-    let operations = original.receipt().allocation_operations;
+    let operations = original.receipt().unwrap().allocation_operations;
     assert_eq!(prepared.leaders.value.len(), 1);
     drop(prepared);
     assert_eq!(cached.stats()?.in_flight, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
     let denied_budget = WorkBudget {
         allocation_operations: operations - 1,
         ..crate::performance::BOUNDARY_BUDGET
     };
     let denied =
         NativeMaterializationWork::new(denied_budget, &cancel).map_err(|(error, _)| error)?;
-    let baseline = denied.live_allocation_bytes();
+    let baseline = denied.live_allocation_bytes().unwrap();
     assert!(
         cached
             .prepare_batch(
@@ -582,7 +582,7 @@ fn verify_batch_leader_admission() -> Result<(), Box<dyn std::error::Error>> {
             .is_err()
     );
     assert_eq!(cached.stats()?.in_flight, 0);
-    assert_eq!(denied.live_allocation_bytes(), baseline);
+    assert_eq!(denied.live_allocation_bytes().unwrap(), baseline);
     Ok(())
 }
 

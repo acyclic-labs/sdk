@@ -115,10 +115,6 @@ pub enum BlobBuildError {
     Work(#[from] WorkError),
 }
 
-pub(super) fn build_failed(error: BlobBuildError, work: WorkCounters) -> BlobBuildFailure {
-    OperationFailure::new(error, work)
-}
-
 pub(super) fn blob_error(error: FsError) -> BlobReadError {
     match error {
         FsError::BlobRead(error) => error,
@@ -143,8 +139,11 @@ pub(super) fn read_decode_error(error: FsError) -> FsError {
 /// Authenticated blob-read failure with exact work retained on every path.
 pub type BlobReadFailure = OperationFailure<BlobReadError>;
 
-pub(super) fn failed(error: BlobReadError, work: WorkCounters) -> BlobReadFailure {
-    OperationFailure::new(error, work)
+pub(super) fn failed(
+    error: BlobReadError,
+    work: Result<WorkCounters, crate::WorkObservationError>,
+) -> BlobReadFailure {
+    OperationFailure::observed(error, work)
 }
 
 /// Stable authenticated blob-read errors.
