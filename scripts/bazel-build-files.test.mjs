@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 // A one-member workspace with a local path crate and the repository's own toolchain and config inputs.
-function fixture() {
+// `module` adds the root MODULE.bazel whose resolution a write refreshes.
+function fixture({ module = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "bazel-build-files-"));
   mkdirSync(join(root, "scripts"));
   cpSync("scripts/bazel-build-files.mjs", join(root, "scripts/bazel-build-files.mjs"));
+  cpSync("scripts/bazel-executables.mjs", join(root, "scripts/bazel-executables.mjs"));
+  cpSync("scripts/check-bazel-lockfile.mjs", join(root, "scripts/check-bazel-lockfile.mjs"));
   cpSync("scripts/policy-core.mjs", join(root, "scripts/policy-core.mjs"));
   cpSync("scripts/workspace-model.mjs", join(root, "scripts/workspace-model.mjs"));
+  if (module) writeFileSync(join(root, "MODULE.bazel"), 'module(name = "fixture")\n');
   cpSync("rust-toolchain.toml", join(root, "rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));
   writeFileSync(join(root, ".cargo/config.toml"), '[target.x86_64-unknown-linux-gnu]\nlinker = "scripts/mold-linker.sh"\n\n[env]\n');
@@ -28,7 +33,7 @@ function fixture() {
   writeFileSync(join(root, "cargo-bazel-lock.json"), '{"crates":{},"conditions":{}}');
   execFileSync("git", ["init", "-q"], { cwd: root });
   execFileSync("git", ["add", "-A"], { cwd: root });
-  const run = mode => spawnSync(process.execPath, ["scripts/bazel-build-files.mjs", mode], { cwd: root, encoding: "utf8" });
+  const run = (mode, env = {}) => spawnSync(process.execPath, ["scripts/bazel-build-files.mjs", mode], { cwd: root, encoding: "utf8", env: { ...process.env, ...env } });
   return { root, run };
 }
 
@@ -150,6 +155,64 @@ test("a profile's run wrapper starts each of its target's cases, with the siblin
     const refused = run("write");
     assert.notEqual(refused.status, 0);
     assert.match(refused.stderr, /STEP_FAILED bazel-build-files: nextest profile cloud wraps cases by a filter other than its default-filter/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Windows cannot execute a shebang script, so the selected Bazel is this Node executable running a recorder
+// that answers only the `mod` invocation: the same fake Bazel runs on every platform.
+function fakeBazel(root) {
+  const log = join(root, "bazel-args.log");
+  const recorder = join(root, "fake-bazel.mjs");
+  writeFileSync(recorder, `import { appendFileSync } from "node:fs";
+import { basename } from "node:path";
+if (basename(process.argv[1]) === "mod" && process.argv[2] === "deps") {
+  appendFileSync(process.env.FIXTURE_LOG, JSON.stringify([basename(process.argv[1]), ...process.argv.slice(2)]) + "\\n");
+  process.exit(Number(process.env.FIXTURE_STATUS ?? 0));
+}
+`);
+  return {
+    log,
+    env: {
+      ACYCLIC_BAZEL: process.execPath,
+      FIXTURE_LOG: log,
+      NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(recorder).href}`].filter(Boolean).join(" "),
+    },
+  };
+}
+
+test("a write refreshes the module lockfile through the selected Bazel, a check never starts Bazel, and a failed refresh fails", () => {
+  const { root, run } = fixture({ module: true });
+  try {
+    const { log, env } = fakeBazel(root);
+    const written = run("write", env);
+    assert.equal(written.status, 0, written.stderr);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line)), [["mod", "deps", "--lockfile_mode=update"]]);
+    // Check mode verifies the checkout and never starts Bazel: its selected command does not exist.
+    rmSync(log);
+    const checked = run("check", { ...env, ACYCLIC_BAZEL: join(root, "bazel-must-not-start") });
+    assert.equal(checked.status, 0, checked.stderr);
+    assert.equal(existsSync(log), false, "check mode started Bazel");
+    // A lockfile the selected Bazel cannot refresh fails the write instead of passing with a stale one.
+    const failed = run("write", { ...env, FIXTURE_STATUS: "7" });
+    assert.notEqual(failed.status, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the lockfile check runs the selected Bazel in error mode and fails when it refuses", () => {
+  const { root } = fixture({ module: true });
+  try {
+    const { log, env } = fakeBazel(root);
+    const check = checkEnv => spawnSync(process.execPath, ["scripts/check-bazel-lockfile.mjs"], { cwd: root, encoding: "utf8", env: { ...process.env, ...checkEnv } });
+    const current = check(env);
+    assert.equal(current.status, 0, current.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(log, "utf8").trim()), ["mod", "deps", "--lockfile_mode=error"]);
+    // A stale lockfile makes the selected Bazel refuse, and the check propagates that failure.
+    const stale = check({ ...env, FIXTURE_STATUS: "7" });
+    assert.notEqual(stale.status, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

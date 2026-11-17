@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
+import {workspacePackages} from './workspace-model.mjs';
 
-const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--locked', '--no-deps', '--format-version=1'], { maxBuffer: Infinity,encoding: 'utf8'}));
-const members = new Set(metadata.workspace_members);
-const packages = new Map(metadata.packages.filter(pkg => members.has(pkg.id)).map(pkg => [pkg.name, pkg]));
+const packages = new Map(workspacePackages(process.cwd()).filter(pkg => pkg.workspace_member).map(pkg => [pkg.name, pkg]));
 const boundaries = new Map([
   ['acyclic-fs-wire', new Set(['acyclic-fs', 'acyclic-harness', 'acyclic-harness-core', 'acyclic-plugin'])],
   ['acyclic-plugin-identity', new Set(['acyclic-fs', 'acyclic-harness', 'acyclic-harness-core', 'acyclic-plugin'])],

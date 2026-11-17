@@ -70,7 +70,8 @@ pub fn is_private(file: &File) -> io::Result<bool> {
     unsafe_code,
     reason = "geteuid reads the current process identity and has no pointer preconditions"
 )]
-pub(crate) fn effective_user() -> u32 {
+/// The calling process's effective user id, which owns every file it creates.
+pub fn effective_user() -> u32 {
     // SAFETY: geteuid takes no arguments and returns the process effective uid.
     unsafe { libc::geteuid() }
 }

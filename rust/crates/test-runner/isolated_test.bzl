@@ -18,6 +18,9 @@ def _isolated_test_impl(ctx):
         # This SDK's repository in the runfiles, which source_path resolves SDK files against:
         # the workspace directory itself only when the SDK is the main repository.
         "ACYCLIC_TEST_SOURCE": "../" + _SDK.repo_name if _SDK.repo_name else ".",
+        # Cases' temporary directories are RAM-backed on Linux unless the target declares that
+        # it needs a real disk's semantics.
+        "ACYCLIC_TEST_TEMP_ROOT": "disk" if "requires-disk-tmp" in ctx.attr.tags else "memory",
     }
     if ctx.attr.only:
         environment["ACYCLIC_TEST_ONLY"] = ctx.attr.only

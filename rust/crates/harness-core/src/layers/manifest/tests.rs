@@ -249,7 +249,10 @@ async fn retained_imports_share_the_original_preparation_capacity()
         + second
             .retained_capacity()
             .ok_or("unknown second capacity")? as u64;
-    assert_eq!(io.owned_bytes()?, retained);
+    assert_eq!(
+        io.remaining()?.peak_allocation_bytes,
+        budget.peak_allocation_bytes - retained
+    );
     let exceeds_live = budget.peak_allocation_bytes - retained + 1;
     assert!(io.retain_owned(exceeds_live).is_err());
 

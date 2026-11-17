@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { workspacePackages } from "./workspace-model.mjs";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,13 +6,8 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export function harnessPackageClosure(selected = "acyclic-harness") {
-  const result = spawnSync("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"], { maxBuffer: Infinity,
-    cwd: root,
-    encoding: "utf8",
-  });
-  if (result.status !== 0) throw new Error(result.stderr || "cargo metadata failed");
   const order = JSON.parse(readFileSync(join(root, "release", "cargo-crates.json"), "utf8"));
-  return packageClosure(JSON.parse(result.stdout).packages, order, selected);
+  return packageClosure(workspacePackages(root), order, selected);
 }
 
 export function packageClosure(metadata, order, selected) {

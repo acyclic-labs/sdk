@@ -43,7 +43,10 @@ fn parse_at(
 fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
     // Reuse the shipped framer, then compare original wire values with the
     // adapter output. Counter consensus over output alone cannot detect loss.
-    let body = Box::pin(futures::stream::once(std::future::ready(Ok(
+    let body = Box::pin(futures::stream::once(std::future::ready(Ok::<
+        _,
+        acyclic_harness_core::Error,
+    >(
         Bytes::copy_from_slice(input),
     ))));
     let frames: Vec<String> = futures::executor::block_on(
@@ -392,7 +395,7 @@ mod properties {
         #[test]
         fn sse_framing_round_trips_unicode_data(lines in prop::collection::vec("[^\\r\\n]{0,64}", 1..8), width in 1usize..64) {
             let input: String = lines.iter().map(|line| format!("data: {line}\n")).chain(["\n".into()]).collect();
-            let chunks = input.as_bytes().chunks(width).map(|part| Ok(Bytes::copy_from_slice(part)));
+            let chunks = input.as_bytes().chunks(width).map(|part| Ok::<_, acyclic_harness_core::Error>(Bytes::copy_from_slice(part)));
             let frames = futures::executor::block_on(sse::decode(Box::pin(futures::stream::iter(chunks)), 4096).try_collect::<Vec<_>>()).unwrap();
             prop_assert_eq!(frames, vec![lines.join("\n")]);
         }

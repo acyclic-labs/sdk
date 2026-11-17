@@ -25,6 +25,42 @@ impl RootPolicySeed {
         &self.files
     }
 
+    /// The file's content metadata, written beside it in the same creation.
+    pub(in crate::filesystem) fn attributes(
+        &self,
+        volume: &crate::conversation::VolumeRef,
+        operation: acyclic_fs::OperationId,
+    ) -> Result<Vec<acyclic_fs::CreationAttribute>, Error> {
+        let path = self.files[0].0.trim_start_matches('/');
+        let version = hex::encode(operation.into_bytes());
+        let file = FileRef::new(
+            volume.clone(),
+            path.to_owned(),
+            version,
+            self.descriptor.clone(),
+            "policy".to_owned(),
+            &mut None,
+        )
+        .map_err(turn)?;
+        let key = crate::filesystem::host::content_metadata_key_io(volume, path, None)?;
+        let io = crate::filesystem::PreparationIo::for_unmeasured(
+            &acyclic_fs::CancellationToken::new(),
+        )?;
+        let value = io.encode(
+            &(
+                1_u8,
+                (file, Option::<&crate::resources::GenerationRef>::None),
+            ),
+            io.remaining().map_err(crate::Error::from)?.bytes_encoded,
+            true,
+        )?;
+        Ok(vec![acyclic_fs::CreationAttribute {
+            path: self.files[0].0.to_owned(),
+            name: key,
+            value,
+        }])
+    }
+
     pub(in crate::filesystem) fn bind(
         &self,
         request: &mut acyclic_stream::CommitRequest,
