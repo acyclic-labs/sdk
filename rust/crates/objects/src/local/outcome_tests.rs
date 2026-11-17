@@ -590,15 +590,12 @@ async fn physical_outcomes_preserve_visible_mutations_and_uncertainty()
         |_| {
             in_flight = in_flight.max(schedule.pending_native_work());
         },
-        async {
-            futures::future::try_join_all(mutations).await?;
-            maintenance_failure_cannot_refuse_an_already_visible_mutation().await
-        },
+        futures::future::try_join_all(mutations),
     )
     .await?;
     assert!(
         in_flight >= planned,
         "independent roots serialized: {in_flight} < {planned}"
     );
-    Ok(())
+    maintenance_failure_cannot_refuse_an_already_visible_mutation().await
 }
