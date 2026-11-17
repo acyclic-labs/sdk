@@ -103,7 +103,7 @@ async function wasmResolution() {
   const {wasmPackages, wasmSelection, wasmTestConsumers} = await import(pathToFileURL(producer).href);
   const {hostedActorsWasm} = await import(pathToFileURL(path.join(root, "scripts/build-hosted-actors-conformance.mjs")).href);
   const modules = [...Object.keys(wasmPackages).map(name => ({name, ...wasmSelection(name),
-    outputPackage:wasmPackages[name].outputPackage ?? name, runtime:wasmPackages[name].runtime,
+    outputPackage:wasmPackages[name].outputPackage ?? name, runtime:wasmPackages[name].runtime, runtimeDirectory:wasmPackages[name].runtimeDirectory,
     directory:`typescript/packages/${wasmPackages[name].outputPackage ?? name}/generated/wasm`})), {...hostedActorsWasm, outputPackage:undefined}];
   const selected = modules.map(module => module.selection);
   return {run: workspaceBrowserGraph(root, selected), roots:new Set(selected.map(args => args[args.indexOf("-p") + 1])), modules, testConsumers:wasmTestConsumers};
@@ -1172,6 +1172,7 @@ const wasmNodeModulesRules = runtimeFilegroups + runtimeSelections.map(selection
   }
   return `\n${rule("node_modules", [
     ["name", q(`wasm_${selection.name}_node_modules`)],
+    ["directory", selection.runtimeDirectory ? q(selection.runtimeDirectory) : undefined],
     ["packages", starlarkDict(packages)],
     ["visibility", q(["//visibility:public"])],
   ])}`;
