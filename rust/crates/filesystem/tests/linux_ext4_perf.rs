@@ -528,8 +528,11 @@ async fn linux_working_set_cost_ledger_is_bounded() -> Result<(), Box<dyn std::e
         })
         .await?;
     let synced = work.receipt().checked_sub_cumulative(&before_sync)?;
-    assert_eq!(synced.source_entries_visited, 5);
-    assert_eq!(synced.authority_records_appended, CHANGES as u64 + 1);
+    assert_eq!(
+        synced.source_entries_visited,
+        (DIRECTORIES * (FILES_PER_DIRECTORY + 1)) as u64
+    );
+    assert_eq!(synced.authority_records_appended, 5);
     assert_eq!(synced.materializations, 0);
     let published = lazy.workspace().head(&work, &cancel).await?;
     let before_noop = work.receipt();
