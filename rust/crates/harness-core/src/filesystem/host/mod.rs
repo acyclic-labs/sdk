@@ -24,7 +24,7 @@ pub struct FilesystemHost<A: 'static, O: 'static> {
     project_family: Option<Arc<dyn family::ProjectFamily<A, O>>>,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::filesystem) _native_custody: Option<acyclic_fs::NativeAllocation>,
+    pub(in crate::filesystem) _native_custody: Option<Arc<acyclic_fs::NativeAllocation>>,
 }
 
 impl<A, O> FilesystemHost<A, O> {
@@ -41,6 +41,28 @@ impl<A, O> FilesystemHost<A, O> {
     /// An owned handle for work that must outlive this borrow.
     pub(in crate::filesystem) fn clock_handle(&self) -> Arc<dyn acyclic_stream::UnixMillisClock> {
         self.clock.clone()
+    }
+
+    /// The same host, with every access decision evaluated on `clock`.
+    #[must_use]
+    pub fn with_clock(&self, clock: Arc<dyn acyclic_stream::UnixMillisClock>) -> Arc<Self> {
+        Arc::new(Self {
+            filesystem: self.filesystem.clone(),
+            provider: self.provider.clone(),
+            changes: self.changes.clone(),
+            publication_domain: Arc::clone(&self.publication_domain),
+            workspace_binding: self.workspace_binding.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            private_view: self.private_view.clone(),
+            #[cfg(test)]
+            publication_pause: self.publication_pause.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_skills: Arc::clone(&self.native_skills),
+            project_family: self.project_family.clone(),
+            clock,
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_custody: self._native_custody.clone(),
+        })
     }
 
     pub(in crate::filesystem) fn require(
@@ -110,7 +132,7 @@ impl<A, O> FilesystemHost<A, O> {
                 project_family: None,
                 clock,
                 #[cfg(not(target_arch = "wasm32"))]
-                _native_custody,
+                _native_custody: _native_custody.map(Arc::new),
             }))
         })
     }
