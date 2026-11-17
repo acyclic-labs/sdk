@@ -100,6 +100,7 @@ acyclic_test_support::cases! {
         seed_34 => 34,
         seed_35 => 35,
         seed_36 => 36,
+        seed_1000 => 1000,
     ],
 }
 
@@ -114,8 +115,19 @@ fn variants(_seed: u64) -> Vec<Variant> {
     Vec::new()
 }
 
-fn plans(class: &'static str) -> Vec<Plan> {
-    let content = format!("{class}\n");
+fn class(seed: u64) -> &'static str {
+    let index = match usize::try_from(seed % WORLDS.len() as u64) {
+        Ok(index) => index,
+        Err(_) => return WORLDS[0],
+    };
+    match WORLDS.get(index) {
+        Some(class) => class,
+        None => WORLDS[0],
+    }
+}
+
+fn plans(class: &'static str, seed: u64) -> Vec<Plan> {
+    let content = format!("{class}:{seed}\n");
     vec![Plan {
         tag: class,
         steps: vec![vec![
@@ -147,9 +159,9 @@ async fn trace(
     erase_entropy: bool,
 ) -> std::result::Result<Replay, String> {
     let mut world = if erase_entropy {
-        World::without_entropy(seed, &FILES, service(plans(class)))
+        World::without_entropy(seed, &FILES, service(plans(class, seed)))
     } else {
-        World::new(seed, &FILES, service(plans(class)))
+        World::new(seed, &FILES, service(plans(class, seed)))
     }
     .map_err(failed)?;
     let prompts = [vec![(class, tag(class))]];
@@ -216,10 +228,7 @@ fn first_difference(left: &serde_json::Value, right: &serde_json::Value) -> Stri
 }
 
 fn world(seed: u64) -> std::result::Result<bool, String> {
-    let class = usize::try_from(seed)
-        .ok()
-        .and_then(|index| WORLDS.get(index).copied())
-        .ok_or_else(|| format!("X1 seed {seed} names no world"))?;
+    let class = class(seed);
     oracle::simulate(seed, || {
         entry(async move {
             let first = trace(seed, class, false).await?;
