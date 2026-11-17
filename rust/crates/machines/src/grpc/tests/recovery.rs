@@ -207,7 +207,9 @@ fn credential_failure_preserves_admitted_recovery_keys() {
                 let _ = shutdown.send(());
                 server.await.unwrap().unwrap();
                 if fail_at == 0 {
-                    prop_assert!(matches!(outcome, Err(ProviderError::Rejected(_))));
+                    let error = outcome.unwrap_err();
+                    prop_assert!(matches!(error.classification(), ProviderError::Rejected(_)));
+                    prop_assert!(std::error::Error::source(&error).is_some());
                 } else {
                     prop_assert_eq!(outcome, Err(ProviderError::Indeterminate(key)));
                 }
