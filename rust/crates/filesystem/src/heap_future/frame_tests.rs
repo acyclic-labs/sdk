@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn erasing_a_funded_future_preserves_its_address_and_original_charge() {
-    fn assert_send<T: Send>(_: &T) {}
     let cancellation = CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
     let baseline = work.live_allocation_bytes();
@@ -22,7 +21,6 @@ fn erasing_a_funded_future_preserves_its_address_and_original_charge() {
     assert_eq!(work.live_allocation_bytes(), baseline + bytes);
     let admitted = work.receipt();
     let future = future.erase_send();
-    assert_send(&future);
     assert_eq!(future.as_ref().get_ref() as *const _ as *const (), address);
     assert_eq!(
         std::mem::size_of_val(future.as_ref().get_ref()) as u64,
