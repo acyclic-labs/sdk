@@ -1510,6 +1510,45 @@ async fn a_terminal_release_fences_a_delayed_retain() -> Result<(), Box<dyn std:
     Ok(())
 }
 
+#[tokio::test]
+async fn collection_cleans_a_stale_batch_from_an_interrupted_retain()
+-> Result<(), Box<dyn std::error::Error>> {
+    let medium = Shared::default();
+    let retaining = Store::new(medium.clone()).account(b"terminal-recovery")?;
+    let releasing = Store::new(medium.clone()).account(b"terminal-recovery")?;
+    let digest = retaining
+        .put(vec![3; 32].into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("unknown put")?
+        .digest;
+    let root = RootId::new(b"interrupted-intent".to_vec())?;
+    releasing.release_terminal(&root, 2).await?;
+    {
+        let (mut read, resume_read) = medium.park("read", "/t/");
+        let pending = retaining.retain_fenced(&root, 7, vec![digest]);
+        tokio::pin!(pending);
+        drive_to_park(pending.as_mut(), &mut read).await;
+        releasing.release_terminal(&root, 7).await?;
+        let (mut created, _resume_create) = medium.park("create", "/f/");
+        resume_read
+            .send(())
+            .map_err(|()| "retain lost its fence read")?;
+        drive_to_park(pending.as_mut(), &mut created).await;
+        // Dropping the still-pending operation simulates loss of its owner.
+    }
+    releasing.collect().await?;
+    assert_eq!(releasing.delete(digest).await?.outcome, Delete::Deleted);
+    assert_eq!(
+        retaining
+            .retain_fenced(&root, 7, vec![digest])
+            .await
+            .map_err(|error| error.code),
+        Err(ErrorCode::TerminalFence)
+    );
+    Ok(())
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 async fn a_delete_never_removes_a_writers_pending_reference()
