@@ -522,18 +522,20 @@ fn last_record(stream: &PathState) -> Option<Record> {
     }
 }
 
-fn last_record_with(
+fn last_record_with<E>(
     stream: &PathState,
-    examine: impl FnMut(u64) -> Result<(), StreamError>,
-    retain: impl FnOnce(&RecordBatch, usize) -> Result<Option<Record>, StreamError>,
-) -> Result<Option<Record>, StreamError> {
+    examine: impl FnMut(u64) -> Result<(), E>,
+    retain: impl FnOnce(&RecordBatch, usize) -> Result<Option<Record>, E>,
+) -> Result<Option<Record>, E> {
     let Some(from) = stream.tail.checked_sub(1) else {
         return Ok(None);
     };
     if let Some(window) = stream.prefix_window(from, stream.tail) {
         return retain(&window.records, window.start);
     }
-    let mut history = PinnedHistory::new(stream, stream.tail, &mut ReadOnlyWork)?;
+    let Ok(mut history) = PinnedHistory::new(stream, stream.tail, &mut ReadOnlyWork) else {
+        unreachable!("a read-only cut cannot refuse")
+    };
     let window = history.page(from, 1, examine)?;
     match window {
         Some(window) => retain(&window.records, window.start),
