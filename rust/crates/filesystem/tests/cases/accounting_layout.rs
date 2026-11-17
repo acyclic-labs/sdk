@@ -5,9 +5,27 @@ use acyclic_fs::{
     CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters, WorkspaceName,
 };
 fn measured<T>(operation: impl FnOnce() -> T) -> (T, acyclic_test_support::AllocationInfo) {
-    let mut result = None;
-    let allocations = acyclic_test_support::measure(|| result = Some(operation()));
-    (result.unwrap(), allocations)
+    let acyclic_test_support::AllocationInfo {
+        output,
+        count_total,
+        count_current,
+        count_max,
+        bytes_total,
+        bytes_current,
+        bytes_max,
+    } = acyclic_test_support::measure(operation);
+    (
+        output,
+        acyclic_test_support::AllocationInfo {
+            count_total,
+            count_current,
+            count_max,
+            bytes_total,
+            bytes_current,
+            bytes_max,
+            output: (),
+        },
+    )
 }
 
 #[test]
@@ -159,29 +177,30 @@ fn denied_resource_does_not_allocate_its_arc_or_spend_work() {
     }
 }
 
-fn assert_name_layout(name: &str, native: bool) -> u64 {
+fn assert_name_layout(name: &str, native: bool) -> Result<u64, Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-    let before = original.live_allocation_bytes().unwrap();
+    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)?;
+    let before = original.live_allocation_bytes()?;
     let (value, receipt, allocations) = if native {
-        let (value, allocations) =
-            measured(|| WorkspaceName::new(name, &&original, &cancellation).unwrap());
-        let mut receipt = original.receipt().unwrap();
+        let (value, allocations) = measured(|| WorkspaceName::new(name, &&original, &cancellation));
+        let value = value?;
+        let mut receipt = original.receipt()?;
         receipt.peak_allocation_bytes -= before;
         receipt.allocation_operations -= 1;
         assert_eq!(
-            original.live_allocation_bytes().unwrap() - before,
+            original.live_allocation_bytes()? - before,
             allocations.bytes_total
         );
         (value, receipt, allocations)
     } else {
         let (receipt, allocations) =
-            measured(|| WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &cancellation).unwrap());
+            measured(|| WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &cancellation));
+        let receipt = receipt?;
         (receipt.value, receipt.work, allocations)
     };
     assert_eq!(value.as_str(), name);
     assert_eq!(
-        u64::try_from(allocations.count_current).unwrap(),
+        u64::try_from(allocations.count_current)?,
         allocations.count_total
     );
     assert_eq!(allocations.bytes_current as u64, allocations.bytes_total);
@@ -195,8 +214,8 @@ fn assert_name_layout(name: &str, native: bool) -> u64 {
         allocations.bytes_total
     );
     drop(value);
-    assert_eq!(original.live_allocation_bytes().unwrap(), before);
-    allocations.bytes_total
+    assert_eq!(original.live_allocation_bytes()?, before);
+    Ok(allocations.bytes_total)
 }
 
 #[test]
@@ -207,15 +226,16 @@ fn workspace_names_fund_the_actual_arc_at_every_ascii_length() {
         // A standalone name retains its promoted ledger; a native name uses
         // the existing invocation. Measure both instead of assuming identical
         // custody backing. Only the payload grows with the name.
-        let current = [false, true].map(|native| assert_name_layout(&name, native) - length as u64);
+        let current =
+            [false, true].map(|native| assert_name_layout(&name, native).unwrap() - length as u64);
         assert_eq!(*controls.get_or_insert(current), current);
     }
 }
 
 #[test]
 fn workspace_name_admission_uses_the_complete_arc_boundary() {
-    let standalone_required = assert_name_layout("private", false);
-    let native_required = assert_name_layout("private", true);
+    let standalone_required = assert_name_layout("private", false).unwrap();
+    let native_required = assert_name_layout("private", true).unwrap();
     let cancellation = CancellationToken::new();
     for ceiling in 0..=standalone_required {
         let (result, allocations) = measured(|| {

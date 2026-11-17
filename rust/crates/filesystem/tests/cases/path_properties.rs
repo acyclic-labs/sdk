@@ -59,10 +59,10 @@ fn path_oracle() -> acyclic_test_support::differential::oracle::Oracle<Vec<u8>, 
         let fold: input::Fold = match fault {
             Some(Fault::Unfolded) => |name| name.as_bytes().to_vec(),
             Some(Fault::Lowercase) => |name| {
-                std::str::from_utf8(name.as_bytes())
-                    .unwrap()
-                    .to_lowercase()
-                    .into_bytes()
+                let text = std::str::from_utf8(name.as_bytes());
+                assert!(text.is_ok(), "UTF-8 fold mutation requires UTF-8 input");
+                text.map(|text| text.to_lowercase().into_bytes())
+                    .unwrap_or_else(|_| name.as_bytes().to_vec())
             },
             _ => LogicalName::case_fold_key,
         };
