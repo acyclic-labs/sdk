@@ -262,7 +262,6 @@ rust_test(
         "//rust/crates/stream:conformance/stream.json",
         "src/lib.rs",
         "src/main.rs",
-        "//rust/crates/sdk-docs:tests/fixtures/workspace-metadata.json",
     ],
     tags = ["manual"],
 )

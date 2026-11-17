@@ -508,7 +508,7 @@ function buildFile(p) {
   const testData = (p, test) => Object.values(p.metadata?.bazel?.["test-data"]?.[test] ?? {});
   const test = (wanted, attrs, reads, binaries, id) => {
     const tools = { ...binaries, ...testTools(p, wanted) };
-    reads = [...reads, ...testData(p, wanted)];
+    reads = [...new Set([...reads, ...testData(p, wanted)])];
     let name = wanted;
     while (names.has(name) || names.has(`${name}_cases`) || profiles.some(({ profile }) => names.has(`${name}_${profile}`))) name += "_test";
     names.add(name).add(`${name}_cases`);
