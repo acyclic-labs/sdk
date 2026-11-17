@@ -441,6 +441,8 @@ impl<M: Medium> Store<M> {
 }
 
 /// One account's blobs over a shared medium.
+/// Range reads use constant call-stack space at any manifest depth. Storage
+/// for pending selected parts is admitted by the medium before allocation.
 /// `P` owns or borrows that medium; the default retains its shared owner.
 pub struct Account<M, P = Arc<M>> {
     medium: P,
