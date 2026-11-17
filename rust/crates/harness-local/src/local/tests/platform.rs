@@ -250,8 +250,7 @@ impl Platform {
 async fn summaries_remain_readable(mode: Mode) -> Result<()> {
     let provider = Arc::new(
         ScriptedModelProvider::new(
-            ["FIRST", "none", "SUMMARY", "none", "AFTER", "none"]
-                .map(|text| ScriptedTurn::Text(text.into())),
+            ["FIRST", "SUMMARY", "AFTER"].map(|text| ScriptedTurn::Text(text.into())),
         )
         .with_context_capacity(capacity())
         .reading_content(),
