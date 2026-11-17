@@ -665,7 +665,7 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
     assert!(tails > 1, "repeated filter construction must be observable");
     let mut costs = [[acyclic_test_support::AllocationInfo::default(); 2]; 2];
     let mut construction = acyclic_test_support::AllocationInfo::default();
-    let mut saved_owners = acyclic_test_support::AllocationInfo::default();
+    let mut saved_owners = acyclic_test_support::AllocationInfo::<()>::default();
     for (follow, predicate) in [(false, false), (false, true), (true, true), (true, false)] {
         let credential = acyclic_auth::testing::root(|block| {
             let key = &mut block.certificates.as_mut().unwrap().keys[0].key;
