@@ -97,12 +97,12 @@ export function workspacePackages(root) {
     }
     const targets = [];
     const target = (kind, declaration, fallback, name) => {
-      const src = declaration.path ?? fallback;
+      const src = declaration.path ?? (exists(path.resolve(directory, fallback)) ? fallback : fallback.replace(/\.rs$/, '/main.rs'));
       if (!exists(path.resolve(directory, src))) return;
       const proc = kind === 'lib' && declaration['proc-macro'];
-      targets.push({kind: [proc ? 'proc-macro' : kind], crate_types: declaration['crate-type'] ?? [proc ? 'proc-macro' : kind === 'lib' ? 'lib' : 'bin'],
+      targets.push({kind: proc ? ['proc-macro'] : kind === 'lib' ? declaration['crate-type'] ?? ['lib'] : [kind], crate_types: declaration['crate-type'] ?? [proc ? 'proc-macro' : kind === 'lib' ? 'lib' : 'bin'],
         name: declaration.name ?? name, src_path: path.resolve(directory, src), edition: declaration.edition ?? own.edition ?? '2015',
-        doc: declaration.doc ?? true, doctest: declaration.doctest ?? kind === 'lib', test: declaration.test ?? true,
+        doc: declaration.doc ?? true, doctest: declaration.doctest ?? kind === 'lib', test: declaration.test ?? !['example', 'bench'].includes(kind),
         ...(declaration['required-features'] ? {'required-features': declaration['required-features']} : {})});
     };
     target('lib', manifest.lib ?? {}, 'src/lib.rs', own.name.replaceAll('-', '_'));
@@ -112,6 +112,7 @@ export function workspacePackages(root) {
       if (own[`auto${plural}`] === false) continue;
       if (kind === 'bin' && !declared.some(item => item.name === own.name)) target(kind, {}, 'src/main.rs', own.name);
       if (exists(path.join(directory, folder))) for (const entry of fs.readdirSync(path.join(directory, folder), {withFileTypes: true})) {
+        if (!entry.isDirectory() && !entry.name.endsWith('.rs')) continue;
         const name = entry.name.replace(/\.rs$/, '');
         if (!declared.some(item => item.name === name)) target(kind, {}, `${folder}/${entry.name}${entry.isDirectory() ? '/main.rs' : ''}`, name);
       }
