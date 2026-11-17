@@ -46,6 +46,15 @@ pub use child::{command, command_environment, with_command_environment};
 #[doc(hidden)]
 pub use child::{command_directory, decode_metadata_output, execute_metadata, CommandOutput};
 pub use render_cache::{read_rustdoc, read_rustdoc_json, rustdoc_worker, with_rustdoc_cache};
+
+#[cfg(test)]
+fn with_fixture_compiler<T>(operation: impl FnOnce() -> T) -> T {
+    let mut command =
+        std::process::Command::new(acyclic_test_support::fixture_compiler::binary("CARGO"));
+    acyclic_test_support::fixture_compiler::configure(&mut command);
+    command.env("PATH", acyclic_test_support::fixture_compiler::path());
+    with_command_environment(&command, operation)
+}
 /// Cargo/Rustdoc-owned profile projections.
 pub mod rustdoc_profiles;
 /// Rust-owned executable examples and generated consumer projections.

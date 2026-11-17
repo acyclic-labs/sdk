@@ -224,9 +224,15 @@ fn invalid_feature_fails_before_cargo_runs() {
 
 #[test]
 fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
+    crate::with_fixture_compiler(
+        actual_cargo_resolves_renamed_dependency_feature_expressions_world,
+    );
+}
+
+fn actual_cargo_resolves_renamed_dependency_feature_expressions_world() {
     if std::env::var_os("SDK_DOCS_PROFILE_STDERR_CHILD").is_none() {
         let thread = std::thread::current();
-        let output = Command::new(std::env::current_exe().unwrap())
+        let output = crate::command(std::env::current_exe().unwrap())
             .args(["--exact", thread.name().unwrap(), "--nocapture"])
             .env("SDK_DOCS_PROFILE_STDERR_CHILD", "1")
             .output()
@@ -277,7 +283,7 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
         )
         .unwrap();
         let cargo = PathBuf::from(acyclic_test_support::host_tool!("CARGO"));
-        assert!(Command::new(&cargo)
+        assert!(crate::command(&cargo)
             .args(["generate-lockfile", "--offline", "--manifest-path"])
             .arg(root.join("Cargo.toml"))
             .status()

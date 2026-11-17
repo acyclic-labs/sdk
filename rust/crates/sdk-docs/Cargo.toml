@@ -15,6 +15,7 @@ test-env-inherit = ["PATH", "RUSTUP_HOME", "CARGO_HOME"]
 [package.metadata.bazel.test-tools.sdk_docs_test]
 CARGO = "//:toolchain_cargo"
 rustc = "//:rustc"
+rustup = "@sdk_compilers//:rustup"
 
 [package.metadata.bazel.test-data.sdk_docs_test]
 workspace-manifests = "//:workspace-manifests"

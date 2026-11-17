@@ -549,6 +549,10 @@ mod tests {
 
     #[test]
     fn cargo_package_owner_requires_the_actual_package_and_manifest() {
+        crate::with_fixture_compiler(cargo_package_owner_world);
+    }
+
+    fn cargo_package_owner_world() {
         let fixture = tempfile::tempdir().unwrap();
         let manifest = fixture.path().join("Cargo.toml");
         std::fs::create_dir(fixture.path().join("src")).unwrap();
@@ -566,7 +570,14 @@ name = "decoy-owner"
 "#,
         )
         .unwrap();
-        let metadata = cargo_metadata::MetadataCommand::new()
+        let mut command = cargo_metadata::MetadataCommand::new();
+        crate::rustdoc_profiles::CargoExecutionContext {
+            cargo_path: Some(&acyclic_test_support::fixture_compiler::binary("CARGO")),
+            lock_selection: None,
+        }
+        .configure_metadata(&mut command)
+        .unwrap();
+        let metadata = command
             .manifest_path(&manifest)
             .no_deps()
             .other_options(vec!["--offline".into()])
