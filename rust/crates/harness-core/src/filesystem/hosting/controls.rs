@@ -780,13 +780,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     && !archived
                 {
                     // A reported descendant never publishes a second terminal
-                    // status, so its children are watched directly. An
-                    // unreported descendant's Archived status already waits
-                    // for its whole subtree; its children are visited only to
-                    // close and resume any paused descendant below it.
+                    // status, so its children are watched directly, even
+                    // below an unreported frontier. An unreported
+                    // descendant's Archived status waits for its own open
+                    // children; its descendants are visited to close and
+                    // resume paused actors and to find reported nodes.
                     let mut open = state.open_children.clone();
                     open.bind(Arc::clone(self.store.provider()));
-                    stack.push((child, open, watched && reported));
+                    stack.push((child, open, reported));
                 }
             }
         }
