@@ -195,7 +195,9 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                     .into_iter()
                     .find(|(path, _)| observed.files.contains_key(path))
                 {
-                    let hook = &rules[0]["hooks"][0]["run"];
+                    let hook = rules
+                        .pointer("/0/hooks/0/run")
+                        .ok_or("admitted plugin lost its original hook")?;
                     if hook["instance"] != "original:plugins.ts#p:hooks/before-tool"
                         || hook[if form == SHELL { "sh" } else { "ps1" }] != script
                         || hook["config"]
@@ -220,7 +222,7 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                             std::str::from_utf8(imported).map_err(|error| error.to_string())?
                         ],
                     ]);
-                    if rules[0]["hooks"][0]["run"]["ts"] != sources {
+                    if rules.pointer("/0/hooks/0/run/ts") != Some(&sources) {
                         return Err("TypeScript hook discarded its original source closure".into());
                     }
                 } else if rules != json!([]) {
