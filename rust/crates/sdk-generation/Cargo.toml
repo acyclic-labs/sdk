@@ -21,6 +21,7 @@ rustc = "//:rustc"
 [package.metadata.bazel.test-tools.main]
 CARGO = "//:toolchain_cargo"
 rustc = "//:rustc"
+rustup = "@sdk_compilers//:rustup"
 
 [dependencies]
 sdk-docs = { path = "../sdk-docs" }
