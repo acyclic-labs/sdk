@@ -1,4 +1,6 @@
 //! Real-HTTP conformance and protected-origin negative controls.
+#![cfg(not(target_arch = "wasm32"))]
+
 use acyclic_harness_core::{Error, Result};
 use acyclic_harness_http::*;
 use acyclic_harness_providers::ReqwestTransport;
