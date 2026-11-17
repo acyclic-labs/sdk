@@ -522,11 +522,11 @@ fn last_record(stream: &PathState) -> Option<Record> {
     }
 }
 
-fn last_record_with<E>(
+fn last_record_with(
     stream: &PathState,
-    examine: impl FnMut(u64) -> Result<(), E>,
-    retain: impl FnOnce(&RecordBatch, usize) -> Result<Option<Record>, E>,
-) -> Result<Option<Record>, E> {
+    examine: impl FnMut(u64) -> Result<(), StreamError>,
+    retain: impl FnOnce(&RecordBatch, usize) -> Result<Option<Record>, StreamError>,
+) -> Result<Option<Record>, StreamError> {
     let Some(from) = stream.tail.checked_sub(1) else {
         return Ok(None);
     };
