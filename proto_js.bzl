@@ -17,7 +17,7 @@ def _proto_js_impl(ctx):
         'root="$PWD"',
         'tmp="$(mktemp -d)"',
         'trap \'rm -rf "$tmp"\' EXIT',
-        'cp -R "$root/%s/node_modules" "$tmp/"' % roots[0],
+        'cp -RL "$root/%s/node_modules" "$tmp/"' % roots[0],
     ]
     for target, destination in ctx.attr.schemas.items():
         files = target[DefaultInfo].files.to_list()

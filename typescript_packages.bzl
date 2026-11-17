@@ -21,7 +21,7 @@ def _packages_impl(ctx):
         'root="$PWD"',
         'tmp="$(mktemp -d)"',
         'trap \'rm -rf "$tmp"\' EXIT',
-        'cp -R "$root/%s/node_modules" "$tmp/"' % roots[0],
+        'cp -RL "$root/%s/node_modules" "$tmp/"' % roots[0],
     ]
     for file in ctx.files.srcs:
         path = _relative(file)

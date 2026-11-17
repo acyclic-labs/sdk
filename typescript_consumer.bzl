@@ -11,7 +11,7 @@ def _impl(ctx):
         'root="$PWD"',
         'tmp="$(mktemp -d)"',
         'trap \'rm -rf "$tmp"\' EXIT',
-        'cp -R "$root/%s/node_modules" "$tmp/"' % roots[0],
+        'cp -RL "$root/%s/node_modules" "$tmp/"' % roots[0],
     ]
     stage_typescript(commands, compiler)
     commands.extend([
