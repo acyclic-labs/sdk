@@ -1,0 +1,7 @@
+load(":node_test.bzl", "node_test")
+
+node_test(
+    name = "core_test",
+    srcs = ["core.test.mjs", "//:scripts/policy-core.mjs"],
+    entry = "scripts/policy/core.test.mjs",
+)

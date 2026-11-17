@@ -1,3 +1,4 @@
+import { isMain } from "./policy-core.mjs";
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
@@ -30,4 +31,4 @@ for (const {negative, args} of hermeticCompilerPlans()) {
 }
 
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) qualifyHermeticCompiler();
+if (isMain(import.meta.url)) qualifyHermeticCompiler();

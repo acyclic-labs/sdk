@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { trackedFiles } from "./policy-core.mjs";
 import ignore from "ignore";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +12,7 @@ let tracked;
 // current source, so a clean checkout needs no pre-existing generated cache.
 export function projectGenerated(path, content, check) {
   if (check) {
-    tracked ??= new Set(execFileSync("git", ["ls-files", "-z"], { cwd: sourceRoot, encoding: "utf8" }).split("\0"));
+    tracked ??= new Set(trackedFiles(sourceRoot));
     if (tracked.has(relative(sourceRoot, path).replaceAll("\\", "/"))) return checkGenerated(path, content);
   }
   writeChanged(path, content);

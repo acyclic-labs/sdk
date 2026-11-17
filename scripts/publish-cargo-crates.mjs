@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { isMain } from "./policy-core.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -223,7 +224,7 @@ async function publish(sourceSha, releaseVersion) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   const [command, sourceSha, releaseVersion] = process.argv.slice(2);
   if (command === "generate" && sourceSha === undefined && releaseVersion === undefined) generate();
   else if (command === "check" && sourceSha === undefined && releaseVersion === undefined) metadata();

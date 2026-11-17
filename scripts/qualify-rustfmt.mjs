@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMain, trackedFiles } from "./policy-core.mjs";
 
 const VENDORED = ":(exclude)rust/vendor/**";
 // capture.json, review.json and sources.json within this evidence archive bind
@@ -41,8 +42,7 @@ const nearest = (path, table) => {
 
 // Groups the tracked Rust files under `root` by the edition cargo would format them with.
 export function filesByEdition(root) {
-  const list = (pattern) => execFileSync("git", ["ls-files", "-z", "--", pattern, VENDORED, CAPTURED_EVIDENCE], { maxBuffer: Infinity, cwd: root, encoding: "utf8" })
-    .split("\0").filter(Boolean);
+  const list = pattern => trackedFiles(root, [pattern, VENDORED, CAPTURED_EVIDENCE]);
   const texts = Object.fromEntries(list("*Cargo.toml").filter((path) => /(^|\/)Cargo\.toml$/.test(path))
     .map((path) => [path, readFileSync(resolve(root, path), "utf8")]));
   const manifests = new Map(Object.entries(parseManifests(texts)).map(([path, manifest]) => [dirname(path), manifest]));
@@ -116,7 +116,7 @@ export async function qualifyRustfmt(root, { write = false } = {}) {
   return { status, output };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   const { status, output } = await qualifyRustfmt(
     resolve(dirname(fileURLToPath(import.meta.url)), ".."),
     { write: process.argv.includes("--write") },

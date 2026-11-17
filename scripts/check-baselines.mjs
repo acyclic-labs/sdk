@@ -1,3 +1,4 @@
+import { isMain } from "./policy-core.mjs";
 import "./check-compatibility-digests.mjs";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,4 +35,4 @@ if (JSON.stringify(nativeWasmCase?.vector) !== JSON.stringify(vector)) {
   throw new Error("native/WASM fixture is not bound into the Harness suite");
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv[2] !== "--no-compile") checkDescriptors();
+if (isMain(import.meta.url) && process.argv[2] !== "--no-compile") checkDescriptors();

@@ -3,10 +3,10 @@
 // callers, and refuses a recorded caller that no longer invokes Cargo, so the record only shrinks.
 // Documentation, Rust sources (agents run Cargo in the repositories they work on), fixtures, corpora,
 // evidence and vendored code are not tooling.
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { isMain, trackedFiles } from "./policy-core.mjs";
 
 export const RECORD = "scripts/cargo-callers.json";
 const TOOLING = /(?:\.(?:mjs|cjs|js|mts|ts|sh|ps1|py|ya?ml|bzl|bazel)|(?:^|\/)package\.json|(?:^|\/)\.bazelrc)$/;
@@ -17,8 +17,7 @@ const INVOCATION = /\bcargo(?:\s+(?:\+\S+|-{1,2}[A-Za-z][\w-]*(?:[= ][^\s-]\S*)?
 
 /** Tracked tooling files that invoke Cargo, sorted. @param {string} root */
 export function cargoCallers(root) {
-  const files = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8", maxBuffer: Infinity }).split("\0")
-    .filter(file => file && TOOLING.test(file) && !NOT_TOOLING.test(file));
+  const files = trackedFiles(root).filter(file => TOOLING.test(file) && !NOT_TOOLING.test(file));
   return files.filter(file => {
     let text;
     try { text = readFileSync(join(root, file), "utf8"); }
@@ -36,7 +35,7 @@ export function cargoCallerFindings(root, recorded) {
   ];
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const findings = cargoCallerFindings(root, JSON.parse(readFileSync(join(root, RECORD), "utf8")));
   if (findings.length) {

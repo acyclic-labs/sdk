@@ -14,6 +14,7 @@
 //        [--external-only] [--target=TRIPLE]
 // Every extra worker uses its own target directory, so Cargo's build lock never
 // serializes them; the compiler cache still deduplicates their dependencies.
+import { isMain } from "./policy-core.mjs";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -253,4 +254,4 @@ async function main() {
   process.exitCode = passed === total ? 0 : 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+if (isMain(import.meta.url)) await main();
