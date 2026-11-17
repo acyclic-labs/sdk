@@ -719,7 +719,8 @@ fn json_error(error: serde_json::Error) -> WorkspaceError {
             result = Some(WorkspaceError::engine(error));
         });
         crate::test_support::JSON_ERROR_FIRST_ALLOCATION.set(Some(first));
-        result.expect("serializer error conversion completed")
+        result
+            .unwrap_or_else(|| WorkspaceError::path("serializer error conversion did not complete"))
     }
     #[cfg(not(all(test, not(target_arch = "wasm32"))))]
     WorkspaceError::engine(error)
