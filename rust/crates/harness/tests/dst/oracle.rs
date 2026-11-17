@@ -334,6 +334,18 @@ impl World {
         })
     }
 
+    /// The fixture checkout identity every incarnation of this world shares.
+    /// It is the world's, not the incarnation's: a reopen must find the owner
+    /// record the earlier incarnation published.
+    fn checkout_identity(&self) -> ([u8; 16], acyclic_fs::NativeRootGeneration) {
+        let mut object = [0; 16];
+        object.copy_from_slice(
+            &blake3::hash(format!("dst-object:{}", self.seed).as_bytes()).as_bytes()[..16],
+        );
+        let handle = *blake3::hash(format!("dst-handle:{}", self.seed).as_bytes()).as_bytes();
+        (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
+    }
+
     /// Opens a host on the world's files and sends each group of prompts,
     /// each as message `id`, together; a group waits for all of its answers
     /// before the next is sent. With a cut, the incarnation crashes at that
@@ -375,18 +387,8 @@ impl World {
             };
             // The checkout's root identity is a host file handle. A replay
             // supplies its own fixture identity so the owner record and every
-            // later capture are a function of the seed alone. It is the world's
-            // identity, not the incarnation's: a reopen must find the owner
-            // record the crashed incarnation published.
-            let checkout_identity = {
-                let mut object = [0; 16];
-                object.copy_from_slice(
-                    &blake3::hash(format!("dst-object:{}", self.seed).as_bytes()).as_bytes()[..16],
-                );
-                let handle =
-                    *blake3::hash(format!("dst-handle:{}", self.seed).as_bytes()).as_bytes();
-                (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
-            };
+            // later capture are a function of the seed alone.
+            let checkout_identity = self.checkout_identity();
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));
             let observed = Arc::clone(&dispatched_at);
             let provider = Arc::new(self.service.reopened().with_dispatch_observer(move |_| {
@@ -496,7 +498,10 @@ impl World {
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
                     .state_directory(self.directory.path().join("state"));
+            let identity = self.checkout_identity();
+            acyclic_harness::test_support::inject_checkout_identity(identity.0, identity.1);
             let harness = Arc::new(entry(LocalHarness::open(config)).await?);
+            acyclic_harness::test_support::clear_checkout_identity();
             let (_, root) = harness.agents().await?;
             let connection = harness.connect().await?;
             let mut findings = Vec::new();
