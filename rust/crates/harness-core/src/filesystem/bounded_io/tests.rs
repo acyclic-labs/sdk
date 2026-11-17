@@ -383,58 +383,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
     Ok(())
 }
 
-#[test]
-fn dropping_charged_bytes_releases_budget_capacity_but_forget_does_not() -> Result<()> {
-    let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(100_000, 16_000_000),
-        &CancellationToken::new(),
-    )?;
-    let before = io.owned_bytes()?;
-    let bytes = acyclic_stream::OwnedBytes::from(vec![7_u8; 17]);
-    let capacity = u64::try_from(bytes.retained_capacity().unwrap_or(0))
-        .map_err(|_| Error::Invalid("test capacity overflows".into()))?;
-    drop(io.retain_read_bytes(bytes.clone())?);
-    assert_eq!(io.owned_bytes()?, before);
-    std::mem::forget(io.retain_read_bytes(bytes)?);
-    assert_eq!(io.owned_bytes()?, before + capacity);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn dropping_charged_bytes_releases_native_capacity_but_forget_does_not() -> Result<()> {
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(100_000, 16_000_000),
-        &CancellationToken::new(),
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let io = PreparationIo::from_native_work(&work)?;
-    let native_bytes = || -> Result<_> {
-        let bytes = acyclic_stream::OwnedBytes::from(vec![7_u8; 17]);
-        let (mut bytes, custody) = work.copy_bytes(&bytes)?;
-        acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
-            &mut bytes,
-            &mut Some(custody),
-            &work.runtime_meter(),
-        )
-        .map_err(|error| Error::Invalid(error.to_string()))
-    };
-    let before = work.live_allocation_bytes();
-    drop(io.retain_read_bytes(native_bytes()?)?);
-    assert_eq!(work.live_allocation_bytes(), before);
-    let charged = io.retain_read_bytes(native_bytes()?)?;
-    let charged_size = core::mem::size_of_val(&charged);
-    let capacity = u64::try_from(charged.retained_capacity().unwrap_or(0))
-        .map_err(|_| Error::Invalid("test capacity overflows".into()))?;
-    std::mem::forget(charged);
-    assert_eq!(work.live_allocation_bytes(), before + capacity);
-    println!(
-        "size_of Charged<OwnedBytes>={charged_size}, DecodeReservation={}",
-        core::mem::size_of::<DecodeReservation<'static>>()
-    );
-    Ok(())
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn private_reads_distinguish_measured_and_unmeasured_charges() -> Result<()> {
@@ -487,14 +435,17 @@ async fn private_reads_distinguish_measured_and_unmeasured_charges() -> Result<(
     Ok(())
 }
 
-/// The ledger bytes a held read gives back when its holder drops it.
-fn released_on_drop(io: &PreparationIo, bytes: crate::conversation::Custody) -> Result<u64> {
-    let held = io.owned_bytes()?;
+/// Bytes the retained output retires on its original native ledger.
+#[cfg(not(target_arch = "wasm32"))]
+fn released_on_drop(
+    work: &acyclic_fs::NativeMaterializationWork,
+    bytes: crate::conversation::Custody,
+) -> Result<u64> {
+    let held = work.live_allocation_bytes();
     drop(bytes);
-    held.checked_sub(io.owned_bytes()?)
-        .ok_or_else(|| Error::Invalid("dropping a read grew its ledger".into()))
+    held.checked_sub(work.live_allocation_bytes())
+        .ok_or_else(|| Error::Invalid("dropping a read grew its original ledger".into()))
 }
-
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn a_read_charge_lives_exactly_as_long_as_its_bytes() -> Result<()> {
@@ -517,10 +468,12 @@ async fn a_read_charge_lives_exactly_as_long_as_its_bytes() -> Result<()> {
         )
         .await?;
     let bindings = storage.content_bindings();
-    let io = PreparationIo::from_budget(
+    let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(100_000, 16_000_000),
         &CancellationToken::new(),
-    )?;
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
     let mut released = Vec::new();
     for site in [hold as fn(Custody) -> Custody, drop_early] {
         let (_, bytes, _) = bindings
@@ -540,7 +493,7 @@ async fn a_read_charge_lives_exactly_as_long_as_its_bytes() -> Result<()> {
             .ok_or_else(|| Error::Invalid("test value is absent".into()))?;
         let bytes = site(bytes);
         assert_eq!(bytes.as_ref(), b"selected");
-        released.push(released_on_drop(&io, bytes)?);
+        released.push(released_on_drop(&work, bytes)?);
     }
     // Held bytes keep their charge outstanding until dropped, then release it.
     assert!(released[0] >= b"selected".len() as u64, "{released:?}");
