@@ -21,7 +21,9 @@ fn component(value: &str) -> Vec<u8> {
 }
 
 /// Serializes real FUSE mounts across the test runner's per-case processes.
-struct MountSerial(_file: std::fs::File);
+struct MountSerial {
+    _file: std::fs::File,
+}
 
 impl MountSerial {
     fn acquire() -> Result<Self, Box<dyn std::error::Error>> {
@@ -30,7 +32,7 @@ impl MountSerial {
             .write(true)
             .open("/tmp/acyclic-linux-mount-qualification.lock")?;
         file.lock()?;
-        Ok(Self(file))
+        Ok(Self { _file: file })
     }
 }
 
