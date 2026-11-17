@@ -197,9 +197,9 @@ function cfgHasTest(expr) {
 }
 // The end of the string literal that starts at `at`: its closing quote, raw or not.
 function stringEnd(text, at) {
-  const raw = /^(?:b?r(#*))?"/.exec(text.slice(at));
+  const raw = /^b?r(#*)"/.exec(text.slice(at));
   if (raw) {
-    const close = `"${raw[1] ?? ""}`, end = text.indexOf(close, at + raw[0].length);
+    const close = `"${raw[1]}`, end = text.indexOf(close, at + raw[0].length);
     return end < 0 ? text.length : end + close.length;
   }
   let i = at + 1;
