@@ -21,6 +21,8 @@ def _isolated_test_impl(ctx):
     }
     if ctx.attr.only:
         environment["ACYCLIC_TEST_ONLY"] = ctx.attr.only
+    if ctx.attr.workers:
+        environment["ACYCLIC_TEST_WORKERS"] = str(ctx.attr.workers)
     if ctx.attr.exclude:
         environment["ACYCLIC_TEST_EXCLUDE"] = "\n".join(ctx.attr.exclude)
     if ctx.file.wrapper:
@@ -28,10 +30,18 @@ def _isolated_test_impl(ctx):
         runfiles = runfiles.merge(ctx.runfiles(files = [ctx.file.wrapper] + ctx.files.wrapper_data))
 
     # Cargo's CARGO_BIN_EXE_<name>, relative to the runfiles root; the runner makes it absolute.
+    # A filegroup with one file, such as the toolchain's Cargo, is that executable.
     for target, name in ctx.attr.binaries.items():
         info = target[DefaultInfo]
-        environment["CARGO_BIN_EXE_" + name] = info.files_to_run.executable.short_path
+        files = info.files.to_list()
+        tool = info.files_to_run.executable
+        if tool == None:
+            if len(files) != 1:
+                fail("{}: {} names {} files, not one executable".format(ctx.label, name, len(files)))
+            tool = files[0]
+        environment["CARGO_BIN_EXE_" + name] = tool.short_path
         runfiles = runfiles.merge(info.default_runfiles)
+        runfiles = runfiles.merge(ctx.runfiles(files = files))
     return [
         DefaultInfo(executable = executable, runfiles = runfiles),
         RunEnvironmentInfo(environment = environment),
@@ -51,6 +61,9 @@ isolated_test = rule(
         # The profile's nextest run wrapper, which runs each case as `<wrapper> <binary> <arguments>`,
         # and the files it runs beside it.
         "wrapper": attr.label(allow_single_file = True),
+        # Cases to run at once; zero uses the host's parallelism. A suite whose cases each start
+        # Cargo sets this so they do not contend for the same cores.
+        "workers": attr.int(default = 0),
         "wrapper_data": attr.label_list(allow_files = True),
         "limit_seconds": attr.int(mandatory = True),
         "_runner": attr.label(

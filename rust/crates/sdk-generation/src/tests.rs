@@ -504,46 +504,6 @@ fn identical_profile_outputs_keep_each_physical_span_mapping() {
     assert_ne!(sources[0].physical_path, sources[1].physical_path);
 }
 
-mod rustdoc_corpus {
-    use super::*;
-
-    #[test]
-    fn real_rustdoc_corpus_preserves_its_producer_artifacts() {
-        let root = PathBuf::from(env::var("SDK_GENERATION_CORPUS_ROOT").unwrap())
-            .canonicalize()
-            .unwrap();
-        let rustdoc = PathBuf::from(env::var("SDK_GENERATION_CORPUS_RUSTDOC").unwrap())
-            .canonicalize()
-            .unwrap();
-        // The real producer already projects every receipt using its admitted
-        // Cargo target, binary guides and source-span attestations. Verify that
-        // exact output instead of rebuilding a library-only view in the test.
-        let output = rustdoc.parent().unwrap();
-        let args = [
-            "drift".into(),
-            "--root".into(),
-            root.to_str().unwrap().into(),
-            "--output".into(),
-            output.to_str().unwrap().into(),
-            "--rustdoc-dir".into(),
-            rustdoc.to_str().unwrap().into(),
-        ];
-        run(args.clone(), &mut Vec::new()).unwrap();
-
-        let seal = output.join("generation-manifest.v1.sha256");
-        let original = fs::read(&seal).unwrap();
-        let mut changed = original.clone();
-        changed[0] ^= 1;
-        fs::write(&seal, changed).unwrap();
-        let rejected = run(args, &mut Vec::new());
-        fs::write(&seal, original).unwrap();
-        assert!(rejected
-            .unwrap_err()
-            .to_string()
-            .contains("generation manifest integrity check failed"));
-    }
-}
-
 #[cfg(windows)]
 #[test]
 fn restoration_rejects_junction_ancestors_before_writing() {

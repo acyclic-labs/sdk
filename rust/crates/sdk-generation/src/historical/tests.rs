@@ -759,7 +759,10 @@ impl Fixture {
     }
 }
 fn cargo() -> PathBuf {
-    PathBuf::from(std::env::var_os("CARGO").expect("the test runner names Cargo in CARGO"))
+    // The fixtures' debug information is never read; skipping it keeps a real Cargo build
+    // inside the per-case limit.
+    std::env::set_var("CARGO_PROFILE_DEV_DEBUG", "0");
+    PathBuf::from(acyclic_test_support::host_tool!("CARGO"))
 }
 #[test]
 fn dependency_archive_initial_import_uses_verified_registry_facts() {

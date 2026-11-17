@@ -1,4 +1,4 @@
-use sdk_docs::rustdoc_profiles::{load_metadata, profiles_for_package};
+use sdk_docs::rustdoc_profiles::{load_workspace_metadata, profiles_for_package};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
@@ -8,7 +8,8 @@ fn repository_root() -> PathBuf {
 }
 
 fn host_target() -> String {
-    let output = Command::new("rustc").args(["-vV"]).output().unwrap();
+    let rustc = PathBuf::from(acyclic_test_support::host_tool!("rustc"));
+    let output = Command::new(rustc).args(["-vV"]).output().unwrap();
     assert!(output.status.success());
     String::from_utf8_lossy(&output.stdout)
         .lines()
@@ -20,9 +21,11 @@ fn host_target() -> String {
 #[test]
 fn public_feature_profiles_are_bounded_and_target_exact() {
     let root = repository_root();
-    let metadata = load_metadata(
-        root.join("Cargo.toml"),
-        sdk_docs::rustdoc_profiles::CargoExecutionContext::default(),
+    let metadata = load_workspace_metadata(
+        &root,
+        &acyclic_test_support::source_path(
+            "rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json",
+        ),
     )
     .unwrap();
     let host = host_target();

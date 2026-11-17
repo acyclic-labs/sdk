@@ -115,18 +115,22 @@ rust_test(
 isolated_test(
     name = "sdk_generation_test",
     binary = ":sdk_generation_test_cases",
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
     id = "sdk-generation",
     exclude = ["::full_cloud::"],
+    workers = 1,
     limit_seconds = 10,
 )
 
 isolated_test(
     name = "sdk_generation_test_full-cloud",
     binary = ":sdk_generation_test_cases",
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
     id = "sdk-generation",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
+    workers = 1,
     limit_seconds = 10,
     tags = ["manual"],
 )
@@ -254,6 +258,7 @@ rust_test(
         "//plugin:scripts/package.mjs",
         "//plugin:src/main.rs",
         "//plugin:tree/src",
+        "//rust/crates/sdk-docs:tests/fixtures/workspace-metadata.json",
         "//rust/crates/sdk-generation/fuzz:tree",
         "//rust/crates/sdk-generation:tree",
         "//rust/crates/stream:conformance/stream.json",
@@ -266,20 +271,22 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
-    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation"},
+    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
     id = "sdk-generation::main",
     exclude = ["::full_cloud::"],
+    workers = 1,
     limit_seconds = 10,
 )
 
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
-    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation"},
+    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
     id = "sdk-generation::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
+    workers = 1,
     limit_seconds = 10,
     tags = ["manual"],
 )

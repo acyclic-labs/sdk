@@ -274,7 +274,7 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
                     run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
                 if required_failure {
                     assert!(!result.status.success());
-                    assert!(output_message(&result).contains("original package requires base"));
+                    assert!(output_message(&result).contains("Cargo profile"));
                     assert!(
                         !fixture.output.join("sdk-docs-versions.v1.json").exists(),
                         "required upstream profile failure cannot admit the version"

@@ -78,6 +78,31 @@ const configEnv = Object.fromEntries(Object.entries(toml(root, ".cargo/config.to
 // resolves third-party features its own way, so universeSpecs() pins each crate's all-features set.
 const runs = TRIPLES.map(triple => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, "--all-features"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 })));
 const [base] = runs;
+// The workspace metadata the tests read instead of running Cargo. It holds the workspace members
+// only, with manifest paths relative to the workspace root, so the file is relocatable and small.
+const workspaceMetadata = (() => {
+  const members = new Set(base.workspace_members);
+  const relative = p => path.relative(base.workspace_root, p).replaceAll("\\", "/");
+  // Cargo's package id embeds the absolute checkout path; the tests only compare ids, so keep
+  // them stable across worktrees.
+  const stableId = id => id.replaceAll(base.workspace_root, ".");
+  return JSON.stringify({
+    packages: base.packages.filter(p => members.has(p.id)).map(p => ({
+      ...p,
+      id: stableId(p.id),
+      manifest_path: relative(p.manifest_path),
+      dependencies: [],
+      targets: [],
+    })),
+    workspace_members: base.workspace_members.map(stableId),
+    workspace_default_members: Array.isArray(base.workspace_default_members) ? base.workspace_default_members.map(stableId) : base.workspace_default_members,
+    resolve: null,
+    target_directory: "target",
+    version: base.version,
+    workspace_root: ".",
+    metadata: base.metadata,
+  }) + "\n";
+})();
 const packages = new Map(runs.flatMap(run => run.packages.map(p => [p.id, p])));
 const workspace = new Set(runs.flatMap(run => run.workspace_members));
 const members = new Set(workspace);
@@ -481,14 +506,21 @@ function buildFile(p) {
   // [package.metadata.bazel.test-tools.<test>]: ENV = "@repo//:target". The runner names each
   // executable by its Cargo variable, so the test finds it in runfiles without a host path.
   const testTools = (p, test) => Object.fromEntries(Object.entries(p.metadata?.bazel?.["test-tools"]?.[test] ?? {}).map(([name, label]) => [label, name]));
+  // Files a test reads at run time beyond its package, from
+  // [package.metadata.bazel.test-data.<test>]: NAME = "@repo//:target".
+  const testData = (p, test) => Object.values(p.metadata?.bazel?.["test-data"]?.[test] ?? {});
+  // A suite whose cases each start Cargo runs fewer at once, so they do not contend for the same
+  // cores and exceed the per-case limit.
+  const workers = p.metadata?.bazel?.["test-workers"];
   const test = (wanted, attrs, reads, binaries, id) => {
     const tools = { ...binaries, ...testTools(p, wanted) };
+    reads = [...new Set([...reads, ...testData(p, wanted)])];
     let name = wanted;
     while (names.has(name) || names.has(`${name}_cases`) || profiles.some(({ profile }) => names.has(`${name}_${profile}`))) name += "_test";
     names.add(name).add(`${name}_cases`);
     for (const { profile } of profiles) names.add(`${name}_${profile}`);
     const tags = reachesMount(p.id, [null, "dev"]) ? ["no-sandbox"] : [];
-    const isolated = (target, selection, extra) => ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(tools).length ? q(tools) : undefined], ["id", q(id)], ...selection, ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
+    const isolated = (target, selection, extra) => ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(tools).length ? q(tools) : undefined], ["id", q(id)], ...selection, ["workers", workers ? String(workers) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
     rules.push(
       ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
       isolated(name, [["exclude", profiles.length ? q(profiles.map(({ pattern }) => pattern)) : undefined]], []),
@@ -724,6 +756,9 @@ function moduleFile() {
       ["opt_level", q(optLevels)],
       ["extra_rustc_flags_triples", q(Object.fromEntries(TRIPLES.map(t => [t, t === WINDOWS_TRIPLE ? [...flags, ...WINDOWS_RUSTC_FLAGS] : flags])))],
       ["extra_exec_rustc_flags_triples", q(Object.fromEntries(TRIPLES.map(t => [t, flags])))],
+      // A stable name for the Windows toolchain's tools repository, which rules_rust otherwise
+      // names with a hash. The root BUILD's cargo filegroup selects it by that name.
+      ["aliases", q({ [`rust_windows_x86_64__${WINDOWS_TRIPLE}__${channelName}`]: "rust_windows_x86_64" })],
     ]),
     // rules_rust maps the musl triple to the gnu constraints, so its toolchain carries the
     // repository's musl constraint explicitly and the gnu toolchain cannot be selected for it.
@@ -739,7 +774,11 @@ function moduleFile() {
       ["extra_rustc_flags", list(flags)],
       ["extra_exec_rustc_flags", list(flags)],
     ]),
-    `use_repo(rust, "rust_toolchains")\n\n`,
+    `use_repo(rust, "rust_toolchains", ${[
+      `rust_linux_x86_64__${LINUX_GNU_TRIPLE}__${channelName}_tools`,
+      `rust_macos_aarch64__aarch64-apple-darwin__${channelName}_tools`,
+      "rust_windows_x86_64_tools",
+    ].map(q).join(", ")})\n\n`,
     `xwin = use_repo_rule("//:xwin_repo.bzl", "xwin_repository")\n`,
     `xwin(name = "xwin")\n\n`,
     // The musl toolchain is registered before the hub so it wins over the gnu toolchain, which
@@ -807,11 +846,38 @@ const linuxMusl = `
 ${rule("config_setting", [["name", q("linux-musl")], ["constraint_values", list(["@platforms//os:linux", "@platforms//cpu:x86_64", ":libc_musl"])]])}
 ${rule("platform", [["name", q("linux_musl")], ["constraint_values", list(["@platforms//os:linux", "@platforms//cpu:x86_64", ":libc_musl"])]])}
 `;
+// The toolchain's Cargo, as the tests that check real Cargo behaviour start it. Each platform's
+// toolchain repository carries the same release's Cargo beside its rustc.
+const toolchainFilegroups = (() => {
+  const channel = toml(root, "rust-toolchain.toml").toolchain.channel;
+  const channelName = /^(beta|nightly)/.test(channel) ? channel.split("/")[0] : "stable";
+  const tools = (name, triple, tool) => `@${name}__${triple}__${channelName}_tools//:${tool}`;
+  const select = tool => `select(${q({
+    "//:linux-x86_64": [tools("rust_linux_x86_64", LINUX_GNU_TRIPLE, tool)],
+    "//:macos-aarch64": [tools("rust_macos_aarch64", "aarch64-apple-darwin", tool)],
+    "//:windows-x86_64": [`@rust_windows_x86_64_tools//:${tool}`],
+  })})`;
+  return ["cargo", "rustc"].map(tool => `
+${rule("filegroup", [
+    ["name", q(tool === "cargo" ? "toolchain_cargo" : tool)],
+    ["srcs", select(tool)],
+    ["visibility", q(["//visibility:public"])],
+  ])}`).join("");
+})();
+// Every workspace manifest and the lockfile, for tests that validate the scenario source closure.
+const workspaceManifests = `
+${rule("filegroup", [
+    ["name", q("workspace-manifests")],
+    ["srcs", list([...new Set([...members].map(id => `${dir(packages.get(id))}/Cargo.toml`))].sort().map(fileLabel).concat(["Cargo.lock"]))],
+    ["visibility", q(["//visibility:public"])],
+  ])}
+`;
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
+  ["rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json", workspaceMetadata],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
-${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${linuxMusl}${windowsCcToolchain()}${sourcesRule}${exportsRule("")}`],
+${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}

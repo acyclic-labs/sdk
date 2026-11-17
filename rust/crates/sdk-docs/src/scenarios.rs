@@ -582,11 +582,13 @@ name = "decoy-owner"
     #[test]
     fn current_source_closure_is_present_and_digested() {
         let root = acyclic_test_support::source_path("");
-        let metadata = crate::rustdoc_profiles::load_metadata(
-            root.join("Cargo.toml"),
-            crate::rustdoc_profiles::CargoExecutionContext::default(),
+        let metadata = crate::rustdoc_profiles::load_workspace_metadata(
+            &root,
+            &acyclic_test_support::source_path(
+                "rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json",
+            ),
         )
-        .expect("actual workspace Cargo metadata");
+        .expect("generated workspace metadata");
         let sources = validate(&root, &metadata).expect("registered scenario sources should exist");
         assert_eq!(sources.len(), SCENARIOS.len());
         let records = catalog(&sources);

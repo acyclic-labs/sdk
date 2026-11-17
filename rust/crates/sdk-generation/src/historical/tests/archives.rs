@@ -495,10 +495,7 @@ fn cargo_binary_target_produces_native_receipt_without_public_api_admission() {
     )
     .unwrap();
     let metadata = fixture.metadata();
-    let rustc = cargo()
-        .parent()
-        .unwrap()
-        .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+    let rustc = PathBuf::from(acyclic_test_support::host_tool!("rustc"));
     let output = command_output(Command::new(rustc).arg("-vV")).unwrap();
     let info = String::from_utf8(output).unwrap();
     let host = info

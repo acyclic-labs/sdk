@@ -244,6 +244,9 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
         return;
     }
     crate::with_rustdoc_cache(|| {
+        // The fixture's debug information is never read; skipping it keeps a real Cargo build
+        // inside the per-case limit.
+        std::env::set_var("CARGO_PROFILE_DEV_DEBUG", "0");
         let lookups_before = super::execution::rustup_lookup_count();
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path();
@@ -273,8 +276,7 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
             "#[cfg(feature=\"native\")] pub struct Witness;\n",
         )
         .unwrap();
-        let cargo =
-            PathBuf::from(std::env::var_os("CARGO").expect("the test runner names Cargo in CARGO"));
+        let cargo = PathBuf::from(acyclic_test_support::host_tool!("CARGO"));
         assert!(Command::new(&cargo)
             .args(["generate-lockfile", "--offline", "--manifest-path"])
             .arg(root.join("Cargo.toml"))
@@ -289,10 +291,7 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
             },
         )
         .unwrap();
-        let rustc = cargo
-            .parent()
-            .unwrap()
-            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+        let rustc = PathBuf::from(acyclic_test_support::host_tool!("rustc"));
         let output = Command::new(rustc).arg("-vV").output().unwrap();
         assert!(output.status.success());
         let target = String::from_utf8(output.stdout)
