@@ -1,5 +1,3 @@
-use super::*;
-
 #[path = "../support/archive.rs"]
 mod fixture_archive;
 use fixture_archive::encode;

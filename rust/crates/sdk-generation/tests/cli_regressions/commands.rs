@@ -13,9 +13,11 @@ use std::{
 #[derive(Default, Clone)]
 pub(super) struct Queries(Rc<State>);
 
+type Replay = (Output, Vec<(PathBuf, Vec<u8>)>);
+
 #[derive(Default)]
 struct State {
-    outputs: RefCell<BTreeMap<Key, (Output, Vec<(PathBuf, Vec<u8>)>)>>,
+    outputs: RefCell<BTreeMap<Key, Replay>>,
     executed: Cell<usize>,
     replayed: Cell<usize>,
     replayed_compilers: Cell<usize>,
@@ -266,6 +268,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             continue;
         }
         let sources = metadata["sources"].as_array().unwrap();
+        let artifacts = metadata["artifacts"].as_str().unwrap();
         let mut relative_sources = Vec::new();
         let mut matches = true;
         for source in sources {
@@ -279,15 +282,17 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             if Path::new(relative)
                 .file_name()
                 .is_some_and(|name| name == "Cargo.toml")
-                && root
-                    .join(relative)
-                    .parent()
-                    .unwrap()
-                    .join("build.rs")
-                    .exists()
             {
-                matches = false;
-                break;
+                let build = Path::new(relative).parent().unwrap().join("build.rs");
+                if root.join(&build).exists()
+                    && (artifacts.is_empty()
+                        || !sources.iter().any(|source| {
+                            source["relative"].as_str().map(Path::new) == Some(build.as_path())
+                        }))
+                {
+                    matches = false;
+                    break;
+                }
             }
             if relative.ends_with(".rs") {
                 relative_sources.push(relative.to_owned());
@@ -302,8 +307,29 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         if json["target"]["triple"].as_str() != Some(target) {
             continue;
         }
-        fn relocate(value: &mut Value, root: &Path, sources: &[String], owner: &str) {
+        let target_dir = command
+            .get_envs()
+            .find(|(key, _)| *key == "CARGO_TARGET_DIR")
+            .and_then(|(_, value)| value)
+            .map(Path::new)
+            .unwrap();
+        let mut referenced = std::collections::BTreeSet::new();
+        let artifact_target = target_dir.join(Path::new(output_path).file_stem().unwrap());
+        fn relocate(
+            value: &mut Value,
+            root: &Path,
+            target: &Path,
+            sources: &[String],
+            owner: &str,
+            referenced: &mut std::collections::BTreeSet<PathBuf>,
+        ) {
             match value {
+                Value::String(text) => {
+                    if let Some(suffix) = text.strip_prefix("@fixture-target@") {
+                        referenced.insert(PathBuf::from(suffix.trim_start_matches(['/', '\\'])));
+                        *text = format!("{}{suffix}", target.to_string_lossy());
+                    }
+                }
                 Value::Object(object) => {
                     if let Some(Value::Object(span)) = object.get_mut("span") {
                         if let Some(Value::String(filename)) = span.get_mut("filename") {
@@ -318,25 +344,44 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                         }
                     }
                     for child in object.values_mut() {
-                        relocate(child, root, sources, owner);
+                        relocate(child, root, target, sources, owner, referenced);
                     }
                 }
                 Value::Array(array) => {
                     for child in array {
-                        relocate(child, root, sources, owner);
+                        relocate(child, root, target, sources, owner, referenced);
                     }
                 }
                 _ => {}
             }
         }
         let owner = metadata["owner_path"].as_str().unwrap();
-        relocate(&mut json, root, &relative_sources, owner);
-        let target_dir = command
-            .get_envs()
-            .find(|(key, _)| *key == "CARGO_TARGET_DIR")
-            .and_then(|(_, value)| value)
-            .map(Path::new)
-            .unwrap();
+        relocate(
+            &mut json,
+            root,
+            &artifact_target,
+            &relative_sources,
+            owner,
+            &mut referenced,
+        );
+        if !referenced.is_empty() {
+            let artifacts = acyclic_test_support::source_path(artifacts);
+            for relative in referenced {
+                let destination = artifact_target.join(&relative);
+                let source = artifacts.join(relative);
+                if destination.exists() {
+                    if fs::read(&destination)? != fs::read(&source)? {
+                        return Err(std::io::Error::other(format!(
+                            "Rustdoc fixture artifacts disagree at {}",
+                            destination.display()
+                        )));
+                    }
+                } else {
+                    fs::create_dir_all(destination.parent().unwrap())?;
+                    fs::copy(source, destination)?;
+                }
+            }
+        }
         let output_dir = if metadata["proc_macro"].as_bool() == Some(true) {
             target_dir.join("doc")
         } else {

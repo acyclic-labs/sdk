@@ -7,6 +7,8 @@ rust_binary(
     name = "producer",
     srcs = ["producer.rs"],
     edition = "2021",
+    rustc_flags = ["-Dwarnings"],
+    deps = ["@sdk_crates//serde_json-1.0.154"],
 )
 
 _INPUTS = [
@@ -29,6 +31,47 @@ rustdoc_fixture_set(
         "feature_extra": ["--no-default-features", "--features", "extra"],
         "feature_all": ["--features", "base,extra"],
     },
+)
+
+_RELOCATION_ROOT = "rust/crates/sdk-generation/tests/fixtures/relocation/"
+_RELOCATION_INPUTS = [
+    "//rust/crates/sdk-generation:tests/fixtures/relocation/Cargo.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/relocation/Cargo.lock",
+    "//rust/crates/sdk-generation:tests/fixtures/relocation/rust/crates/demo/Cargo.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/relocation/rust/crates/demo/build.rs",
+    "//rust/crates/sdk-generation:tests/fixtures/relocation/rust/crates/demo/src/lib.rs",
+    "//rust/crates/sdk-generation:tests/fixtures/relocation/rust/crates/helper/Cargo.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/relocation/rust/crates/helper/src/lib.rs",
+]
+_RELOCATION_MAPPED = {
+    "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust-toolchain.toml": "rust-toolchain.toml",
+}
+
+rustdoc_fixture_set(
+    srcs = _RELOCATION_INPUTS,
+    fixture_root = _RELOCATION_ROOT,
+    package = "demo",
+    owner_path = "rust/crates/demo",
+    mapped_sources = _RELOCATION_MAPPED,
+    needs_linker = True,
+    retain_artifacts = True,
+    profiles = {
+        "relocation_default": [],
+        "relocation_no_default": ["--no-default-features"],
+        "relocation_base": ["--no-default-features", "--features", "base"],
+        "relocation_extra": ["--no-default-features", "--features", "extra"],
+        "relocation_all": ["--features", "base,extra"],
+    },
+)
+
+rustdoc_fixture_set(
+    srcs = _RELOCATION_INPUTS,
+    fixture_root = _RELOCATION_ROOT,
+    package = "relocation-helper",
+    owner_path = "rust/crates/helper",
+    mapped_sources = _RELOCATION_MAPPED,
+    retain_artifacts = True,
+    profiles = {"relocation_helper": []},
 )
 
 _LONG = "native-execution-observation-" * 8
@@ -111,5 +154,5 @@ rustdoc_fixture_set(
 
 filegroup(
     name = "feature_profiles",
-    srcs = _INPUTS + _EXCLUDED_INPUTS + [_LONG_MANIFEST] + [":feature_default", ":feature_no_default", ":feature_base", ":feature_extra", ":feature_all", ":long_default", ":long_no_default", ":long_base", ":long_extra", ":long_feature", ":long_all", ":excluded_helper_default"] + [":excluded_demo_" + name for name in _EXCLUDED_PROFILES] + [":excluded_macros_" + name for name in _EXCLUDED_PROFILES],
+    srcs = _INPUTS + _EXCLUDED_INPUTS + _RELOCATION_INPUTS + [_LONG_MANIFEST] + [":feature_default", ":feature_no_default", ":feature_base", ":feature_extra", ":feature_all", ":long_default", ":long_no_default", ":long_base", ":long_extra", ":long_feature", ":long_all", ":excluded_helper_default", ":relocation_default", ":relocation_no_default", ":relocation_base", ":relocation_extra", ":relocation_all", ":relocation_helper"] + [":excluded_demo_" + name for name in _EXCLUDED_PROFILES] + [":excluded_macros_" + name for name in _EXCLUDED_PROFILES],
 )

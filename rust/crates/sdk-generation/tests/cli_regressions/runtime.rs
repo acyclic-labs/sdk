@@ -1,9 +1,8 @@
 use super::cache as sync;
 use super::*;
 
-#[path = "../support/compiler.rs"]
-mod compiler;
-pub(super) use compiler::binary;
+use acyclic_test_support::fixture_compiler as compiler;
+pub(super) use acyclic_test_support::fixture_compiler::binary;
 
 thread_local! {
     static GIT: PathBuf = resolve_git();

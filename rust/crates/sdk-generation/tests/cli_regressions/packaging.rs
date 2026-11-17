@@ -1,9 +1,9 @@
 use super::*;
 
-static PACKAGE: cache::Mutex<Option<cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)>>> =
-    cache::Mutex::new(None);
+type Package = (Fixture, BTreeMap<String, Vec<u8>>);
+static PACKAGE: cache::Mutex<Option<cache::Arc<Package>>> = cache::Mutex::new(None);
 
-fn shared_package() -> cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)> {
+fn shared_package() -> cache::Arc<Package> {
     let cargo = runtime::cargo();
     cache::get_or_try_init(&PACKAGE, || {
         let (fixture, support) = historical_source_fixture(None);
