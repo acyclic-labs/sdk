@@ -162,13 +162,14 @@ async fn trace(
         .incarnation(None, &prompts)
         .await
         .map_err(failed)?;
-    // Every replayed input stays in the digest. The explicit record tree only
-    // makes the first differing field nameable when two runs disagree.
+    // Every replayed input stays in the digest, including the exact durable
+    // count at each dispatch. The count after the last dispatch is not a replay
+    // input: independent host stores finish their own writes after the model
+    // has settled, and their interleaving is not the seed's to reproduce.
     let trace = serde_json::json!({
         "prompts": format!("{:?}", incarnation.prompts),
         "requests": serde_json::to_value(&incarnation.requests).map_err(failed)?,
         "dispatched_at": incarnation.dispatched_at,
-        "durable": incarnation.durable,
         "crashed": format!("{:?}", incarnation.crashed),
     });
     let digest = blake3::hash(&serde_json::to_vec(&trace).map_err(failed)?);
