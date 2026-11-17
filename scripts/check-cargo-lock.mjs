@@ -26,7 +26,9 @@ export function checkLock(root) {
     const locked = lock.package.find(p => !p.source && p.name === pkg.name && p.version === pkg.version);
     if (!locked) throw Error(`missing local package ${pkg.name}@${pkg.version}`);
     const declared = pkg.dependencies.filter(dep => pkg.workspace_member || dep.kind !== 'dev');
-    for (const dep of declared) {
+    // A patched dependency outside the workspace may have optional features
+    // no workspace member selected, so its lock need not contain those edges.
+    for (const dep of declared.filter(dep => pkg.workspace_member || !dep.optional)) {
       const present = (locked.dependencies ?? []).some(ref => {
         const [name, version, source] = ref.split(' ');
         if (name !== dep.name) return false;
