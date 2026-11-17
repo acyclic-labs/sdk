@@ -230,17 +230,43 @@ fn tool_with_usage() -> ScriptedTurn {
     ])
 }
 
-fn manager_rewrite(request: &ModelRequest) -> ScriptedTurn {
+fn manager_rewrite_text(request: &ModelRequest) -> String {
     let drop_through = request.messages.len().saturating_sub(1).max(1);
-    ScriptedTurn::Text(
-        json!({"version":1,"drop_through":drop_through,"summary":"compacted history"}).to_string(),
-    )
+    json!({"version":1,"drop_through":drop_through,"summary":"compacted history"}).to_string()
+}
+
+fn manager_rewrite(request: &ModelRequest) -> ScriptedTurn {
+    ScriptedTurn::Text(manager_rewrite_text(request))
+}
+
+fn length_stopped_rewrite(request: &ModelRequest) -> ScriptedTurn {
+    ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Content {
+            delta: manager_rewrite_text(request),
+        }),
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: json!({"finish_reason":"length","usage":{"completion_tokens":8192}}),
+        }),
+    ])
+}
+
+fn review_decision_text() -> String {
+    json!({"version":1,"summary":null,"review_at_input_tokens":999_999}).to_string()
 }
 
 fn review_decision() -> ScriptedTurn {
-    ScriptedTurn::Text(
-        json!({"version":1,"summary":null,"review_at_input_tokens":999_999}).to_string(),
-    )
+    ScriptedTurn::Text(review_decision_text())
+}
+
+fn length_stopped_review() -> ScriptedTurn {
+    ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Content {
+            delta: review_decision_text(),
+        }),
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: json!({"finish_reason":"length","usage":{"completion_tokens":8192}}),
+        }),
+    ])
 }
 
 fn fail<T>(message: &str) -> std::result::Result<T, String> {
@@ -301,6 +327,17 @@ fn has_file(request: &ModelRequest) -> bool {
         .filter(|message| message.role == ModelRole::Assistant)
         .flat_map(|message| message.content.parts())
         .any(|part| matches!(part, ModelContentPart::File { .. }))
+}
+
+fn has_child_notice(request: &ModelRequest) -> bool {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .any(|part| {
+            matches!(part, ModelContentPart::Notices { notices }
+                if notices.iter().any(|notice| notice.kind == "child.settled"))
+        })
 }
 
 fn d3_service(transition: &'static str) -> ScriptedModelProvider {
@@ -583,20 +620,10 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                     }
                 }
                 "child_notice_mid_turn" => {
-                    assert_history(&incarnation.requests, "d3-parent")?;
-                    let child = done("d3-child");
-                    let noticed = incarnation.requests.iter().any(|request| {
-                        !request.summary
-                            && request_tag(request, &["d3-parent"]) == Some("d3-parent")
-                            && request.messages.iter().any(|message| {
-                                serde_json::to_string(&message.content)
-                                    .unwrap_or_default()
-                                    .contains(&child)
-                            })
-                    });
-                    if !noticed {
-                        return fail("the child notice never reached a parent request");
+                    if !incarnation.requests.iter().any(has_child_notice) {
+                        return fail("the parent never saw a child-settlement notice");
                     }
+                    assert_history(&incarnation.requests, "d3-parent")?;
                 }
                 _ => assert_history(&incarnation.requests, "d3-parent")?,
             }
@@ -721,6 +748,39 @@ fn d4_service(
     ScriptedModelProvider::responding(responder)
 }
 
+fn d4_after_service() -> ScriptedModelProvider {
+    ScriptedModelProvider::responding(|request| {
+        if request.summary {
+            return Ok(manager_rewrite(request));
+        }
+        Ok(ScriptedTurn::Text(done("d4-after")))
+    })
+}
+
+fn d4_valid_cut_service(call: &'static str) -> ScriptedModelProvider {
+    let state = Mutex::new(LengthState { step: 0 });
+    let responder = move |request: &ModelRequest| {
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if request.summary {
+            return Ok(if call == "context_review" {
+                length_stopped_review()
+            } else {
+                length_stopped_rewrite(request)
+            });
+        }
+        let answer = if call == "context_review" && state.step == 0 {
+            state.step += 1;
+            tool_with_usage()
+        } else {
+            ScriptedTurn::Text(done("d4-valid-cut"))
+        };
+        Ok(answer)
+    };
+    ScriptedModelProvider::responding(responder)
+}
+
 fn d4_capacity(capacity: &str) -> acyclic_harness::context::ModelContextCapacity {
     match capacity {
         "output_eq_context" => acyclic_harness::context::ModelContextCapacity {
@@ -811,17 +871,28 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     {
                         return fail("a length-cut summary ended the worker");
                     }
+                    world.service = d4_valid_cut_service(call);
+                    let valid_cut = vec![vec![(
+                        "d4-valid-cut",
+                        format!("d4-content:{content} {} valid cut", tag("d4-valid-cut")),
+                    )]];
+                    let cut = world
+                        .incarnation(None, &valid_cut)
+                        .await
+                        .map_err(oracle::failed)?;
+                    if cut.requests.iter().any(has_file) {
+                        return fail("a valid cut summary published a rewrite");
+                    }
+                    world.service = d4_after_service();
                     let after = vec![vec![("d4-after", tag("d4-after"))]];
                     let reopened = world
                         .incarnation(None, &after)
                         .await
                         .map_err(oracle::failed)?;
-                    if !reopened
-                        .prompts
-                        .last()
-                        .is_some_and(|(outcome, _)| matches!(outcome, Prompted::Settled(_)))
+                    if reopened.prompts.last().map(|(outcome, _)| outcome)
+                        != Some(&Prompted::Settled(done("d4-after")))
                     {
-                        return fail("the worker died after its cut summary");
+                        return fail("the worker did not settle after its cut summary");
                     }
                 }
                 "context_review" => {
@@ -850,6 +921,18 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     }
                     if incarnation.requests.iter().any(has_file) {
                         return fail("a length-cut context review published a rewrite");
+                    }
+                    world.service = d4_valid_cut_service(call);
+                    let valid_cut = vec![vec![(
+                        "d4-valid-cut",
+                        format!("d4-content:{content} {} valid cut", tag("d4-valid-cut")),
+                    )]];
+                    let cut = world
+                        .incarnation(None, &valid_cut)
+                        .await
+                        .map_err(oracle::failed)?;
+                    if cut.requests.iter().any(has_file) {
+                        return fail("a valid cut review published a rewrite");
                     }
                 }
                 _ => {
