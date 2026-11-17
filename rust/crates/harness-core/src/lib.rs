@@ -65,7 +65,6 @@ mod json_literal;
 pub mod layers;
 pub mod live;
 pub mod machines;
-#[cfg(not(target_arch = "wasm32"))]
 mod mcp_layouts;
 pub mod model;
 #[cfg(any(test, feature = "test-support", not(target_arch = "wasm32")))]
