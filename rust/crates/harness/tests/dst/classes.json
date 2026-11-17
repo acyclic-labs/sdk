@@ -1,6 +1,6 @@
 {
  "version": 1,
- "uncovered": 2932,
+ "uncovered": 2663,
  "classes": [
   {
    "id": "A1",
@@ -29,16 +29,10 @@
      "crash_after",
      "crash_torn",
      "redeliver",
-     "duplicate",
      "stream_interrupted",
      "interrupt_unknown",
      "cancel",
      "compaction_straddle"
-    ],
-    "topology": [
-     "single",
-     "child",
-     "fork"
     ]
    }
   },

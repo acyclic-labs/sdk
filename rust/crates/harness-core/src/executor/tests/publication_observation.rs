@@ -525,7 +525,7 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
                     unreachable!();
                 };
                 let key =
-                    tool_settlement_key(*step, call_id, ToolTerminalOutcome::Completed, None)?;
+                    tool_settlement_key(*step, call_id, None)?;
                 // A replay record carries the authenticated retry digest,
                 // rather than the original caller's settlement key.
                 assert!(matches!(
