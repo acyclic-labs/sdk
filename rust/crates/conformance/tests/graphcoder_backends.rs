@@ -19,7 +19,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-const SCENARIO: &str = "conformance scenario";
 const CHILD: &str = "conformance child";
 /// The child's answer, which its result carries back to the root.
 const CHILD_REPLY: &str = "child reply";
@@ -34,7 +33,23 @@ const FEEDBACK: &str = "What slowed you down or blocked you?";
 
 /// The binary every backend runs.
 fn executable() -> PathBuf {
-    acyclic_test_support::cargo_binary!("acyclic", std::env::var_os("ACYCLIC_TEST_BINARY"))
+    let declared = std::env::var_os("ACYCLIC_TEST_BINARY")
+        .or_else(|| std::env::var_os("CARGO_BIN_EXE_acyclic"))
+        .or_else(|| option_env!("CARGO_BIN_EXE_acyclic").map(Into::into));
+    if let Some(path) = declared {
+        return acyclic_test_support::cargo_binary!("acyclic", Some(path));
+    }
+    // Under Cargo the plugin package's binary sits in the shared target
+    // directory beside the conformance test's own directory.
+    let deps = std::env::current_exe().unwrap();
+    let target = deps.parent().and_then(Path::parent).unwrap();
+    let path = target.join(format!("acyclic{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        path.exists(),
+        "build the acyclic binary first: cargo build -p acyclic-plugin --features acyclic-native-runtime/test-support ({})",
+        path.display()
+    );
+    path
 }
 
 /// A Server-Sent Events body of one Responses generation.
@@ -59,11 +74,6 @@ fn events(items: &[Value]) -> String {
             "usage": {"input_tokens": 64, "output_tokens": 2}}})
     );
     body
-}
-
-fn call(id: &str, name: &str, arguments: &Value) -> Value {
-    json!({"type": "function_call", "call_id": id, "name": name,
-        "arguments": arguments.to_string()})
 }
 
 fn text(answer: &str) -> Value {
@@ -584,7 +594,7 @@ async fn selected_discovery_survives_a_serving_process_restart() {
     use acyclic_harness_client::{
         AgentBinding, AgentCommand, AgentControls, AgentExchangeError, AgentReply, PreparedCommand,
     };
-    use acyclic_stream::{StreamCategory, StreamError};
+    use acyclic_stream::StreamCategory;
 
     let directory = tempfile::tempdir().unwrap();
     let model = model(directory.path()).await;
