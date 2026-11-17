@@ -236,16 +236,8 @@ pub(in super::super) fn decode_contract(
 ) -> Result<MachineContract, ProviderError> {
     let value =
         value.ok_or_else(|| ProviderError::Rejected("machine contract is missing".into()))?;
-    let capabilities = value
-        .capabilities
-        .iter()
-        .map(|item| decode_capability(*item))
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    if capabilities.len() != value.capabilities.len() {
-        return Err(ProviderError::Rejected(
-            "capabilities contain duplicates".into(),
-        ));
-    }
+    let capabilities =
+        decode_capability_set(&value.capabilities, "capabilities contain duplicates")?;
     let budgets = value
         .budgets
         .as_ref()
