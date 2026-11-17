@@ -212,21 +212,176 @@ pub(super) struct Incarnation {
     pub crashed: Option<InjectedStorageFault>,
 }
 
+/// The model-visible trace of one incarnation: what the prompts returned,
+/// what the service saw, where each dispatch landed and whether it crashed.
+fn incarnation_digest(
+    incarnation: &Incarnation,
+    durable: Option<&std::collections::BTreeMap<String, (bool, Vec<u8>)>>,
+) -> [u8; 32] {
+    let trace = serde_json::json!({
+        "prompts": format!("{:?}", incarnation.prompts),
+        "requests": serde_json::to_value(&incarnation.requests).unwrap_or_default(),
+        "dispatched_at": incarnation.dispatched_at,
+        "durable": incarnation.durable,
+        "crashed": format!("{:?}", incarnation.crashed),
+        "files": durable.map(|files| serde_json::to_value(files).unwrap_or_default()),
+    });
+    *blake3::hash(&serde_json::to_vec(&trace).unwrap_or_default()).as_bytes()
+}
+
+thread_local! {
+    /// Whether the next world erases the scheduler's entropy source. The X1
+    /// control replays the same class generator with it set.
+    static ERASE_ENTROPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `body` with every world's scheduler entropy source erased.
+pub(super) fn erase_entropy<T>(body: impl FnOnce() -> T) -> T {
+    ERASE_ENTROPY.with(|erase| erase.set(true));
+    let result = body();
+    ERASE_ENTROPY.with(|erase| erase.set(false));
+    result
+}
+
+fn erasing_entropy() -> bool {
+    ERASE_ENTROPY.with(std::cell::Cell::get)
+}
+
+thread_local! {
+    /// Live world slots on this test thread, keyed by case and seed. Reusing
+    /// the first free slot makes a repeated world use the same absolute path.
+    static WORLD_SLOTS: std::cell::RefCell<
+        std::collections::BTreeMap<(String, u64), Vec<bool>>,
+    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    /// One digest per retired world directory, in creation order. The X1
+    /// determinism world compares the durable bytes of the actual class
+    /// generators, not a synthetic plan.
+    static WORLD_DIGESTS: std::cell::RefCell<Vec<[u8; 32]>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Clears the retired-world digests before one generator replay.
+pub(super) fn reset_world_digests() {
+    WORLD_DIGESTS.with(|digests| digests.borrow_mut().clear());
+}
+
+/// The durable bytes of every world the last replay retired, in order.
+pub(super) fn take_world_digests() -> Vec<[u8; 32]> {
+    WORLD_DIGESTS.with(|digests| std::mem::take(&mut *digests.borrow_mut()))
+}
+
+/// A world directory whose absolute path is a function of its case, seed and
+/// slot, never of the host's random temporary name. Model requests announce
+/// that path, so a random name would make an otherwise identical replay differ.
+struct WorldDirectory {
+    path: std::path::PathBuf,
+    key: (String, u64),
+    slot: usize,
+    /// Held for the world's lifetime so a concurrent suite using the same
+    /// deterministic path waits instead of deleting this run's files.
+    _lock: std::fs::File,
+}
+
+impl WorldDirectory {
+    fn new(seed: u64) -> std::io::Result<Self> {
+        // A cross-process child replays the parent's exact world path.
+        let key = (
+            std::env::var("DST_WORLD_KEY")
+                .ok()
+                .unwrap_or_else(|| std::thread::current().name().unwrap_or("dst").to_owned()),
+            seed,
+        );
+        let slot = WORLD_SLOTS.with(|slots| {
+            let mut slots = slots.borrow_mut();
+            let used = slots.entry(key.clone()).or_default();
+            match used.iter().position(|used| !used) {
+                Some(slot) => {
+                    used[slot] = true;
+                    slot
+                }
+                None => {
+                    used.push(true);
+                    used.len() - 1
+                }
+            }
+        });
+        let digest = blake3::hash(format!("{}:{}:{slot}", key.0, key.1).as_bytes());
+        let root = if Path::new("/dev/shm").is_dir() {
+            std::path::PathBuf::from("/dev/shm")
+        } else {
+            std::env::temp_dir()
+        };
+        let path = root.join(format!("acyclic-dst-{}", &digest.to_hex()[..16]));
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(root.join(format!("acyclic-dst-{}.lock", &digest.to_hex()[..16])))?;
+        lock.lock()?;
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        std::fs::create_dir(&path)?;
+        Ok(Self {
+            path,
+            key,
+            slot,
+            _lock: lock,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for WorldDirectory {
+    fn drop(&mut self) {
+        WORLD_SLOTS.with(|slots| {
+            if let Some(used) = slots.borrow_mut().get_mut(&self.key) {
+                if let Some(used) = used.get_mut(self.slot) {
+                    *used = false;
+                }
+            }
+        });
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// A seeded world on disk. Incarnations share only its files and the model
 /// service, never a host object.
 pub(super) struct World {
-    directory: tempfile::TempDir,
+    directory: WorldDirectory,
     pub service: ScriptedModelProvider,
     pub seed: u64,
     incarnations: u64,
+    entropy: bool,
 }
 
 impl World {
     pub fn new(seed: u64, files: &[(&str, &str)], service: ScriptedModelProvider) -> Result<Self> {
-        let directory = tempfile::Builder::new()
-            .prefix("sdk-dst-world-")
-            .tempdir()
-            .map_err(storage)?;
+        Self::with_entropy(seed, files, service, true)
+    }
+
+    /// The same world with the scheduler's entropy source erased, so a trace
+    /// that still matches the seeded one proves the seed never reached it.
+    pub fn without_entropy(
+        seed: u64,
+        files: &[(&str, &str)],
+        service: ScriptedModelProvider,
+    ) -> Result<Self> {
+        Self::with_entropy(seed, files, service, false)
+    }
+
+    fn with_entropy(
+        seed: u64,
+        files: &[(&str, &str)],
+        service: ScriptedModelProvider,
+        entropy: bool,
+    ) -> Result<Self> {
+        let entropy = entropy && !erasing_entropy();
+        acyclic_fs::demand::native::reset_fixture_versions();
+        let directory = WorldDirectory::new(seed).map_err(storage)?;
         let checkout = directory.path().join("checkout");
         std::fs::create_dir(&checkout).map_err(storage)?;
         for (path, body) in files {
@@ -241,7 +396,20 @@ impl World {
             service,
             seed,
             incarnations: 0,
+            entropy,
         })
+    }
+
+    /// The fixture checkout identity every incarnation of this world shares.
+    /// It is the world's, not the incarnation's: a reopen must find the owner
+    /// record the earlier incarnation published.
+    fn checkout_identity(&self) -> ([u8; 16], acyclic_fs::NativeRootGeneration) {
+        let mut object = [0; 16];
+        object.copy_from_slice(
+            &blake3::hash(format!("dst-object:{}", self.seed).as_bytes()).as_bytes()[..16],
+        );
+        let handle = *blake3::hash(format!("dst-handle:{}", self.seed).as_bytes()).as_bytes();
+        (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
     }
 
     /// Opens a host on the world's files and sends each group of prompts,
@@ -257,9 +425,36 @@ impl World {
             // Each incarnation is an independent scheduler over the same files.
             let scheduler = self.seed ^ self.incarnations.wrapping_mul(0x9e37_79b9_7f4a_7c15);
             self.incarnations += 1;
-            let mut driver = Driver::world(scheduler, cut);
+            let mut driver = if self.entropy {
+                Driver::world(scheduler, cut)
+            } else {
+                Driver::without_entropy(scheduler, cut)
+            };
+            // Native timestamps are fixture inputs, not host facts: a world
+            // replayed from the same seed must not depend on when it ran.
+            driver.schedule.set_native_times_provider(|input| {
+                const TIME_NS: i64 = 1_700_000_000_000_000_000;
+                acyclic_native_runtime::testing::NativeTimes {
+                    created_ns: input.times.created_ns.map(|_| TIME_NS),
+                    modified_ns: input.times.modified_ns.map(|_| TIME_NS),
+                    accessed_ns: input.times.accessed_ns.map(|_| TIME_NS),
+                    changed_ns: input.times.changed_ns.map(|_| TIME_NS),
+                }
+            });
             let schedule = driver.schedule.clone();
             let counter = schedule.clone();
+            let source_entropy = {
+                let schedule = schedule.clone();
+                Arc::new(move || {
+                    let mut bytes = [0; 16];
+                    schedule.fill_entropy(&mut bytes);
+                    bytes
+                })
+            };
+            // The checkout's root identity is a host file handle. A replay
+            // supplies its own fixture identity so the owner record and every
+            // later capture are a function of the seed alone.
+            let checkout_identity = self.checkout_identity();
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));
             let observed = Arc::clone(&dispatched_at);
             let provider = Arc::new(self.service.reopened().with_dispatch_observer(move |_| {
@@ -270,18 +465,25 @@ impl World {
                 Box::pin(async { Ok(()) })
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
+            let durable = Arc::new(Mutex::new(None));
             let directory = self.directory.path();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
+                let durable = Arc::clone(&durable);
                 entry(async move {
                     let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
+                    acyclic_harness::test_support::inject_checkout_identity(
+                        checkout_identity.0,
+                        checkout_identity.1,
+                    );
                     let config = local_harness_config(
                         directory.join("checkout"),
                         (model, provider.clone()),
                     )?
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
+                    .source_entropy(source_entropy)
                     .state_directory(directory.join("state"));
                     let harness = Arc::new(entry(LocalHarness::open(config)).await?);
                     for group in prompts {
@@ -312,6 +514,22 @@ impl World {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
                     }
+                    // The saved files and records are part of the replay, not
+                    // just the model-visible requests. Capture them before the
+                    // harness retires its mounts.
+                    *durable
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+                        super::durable_bytes(directory)
+                            .map_err(|error| Error::Invalid(format!("durable bytes: {error}")))?,
+                    );
+                    // Retire every native mount and worker before the next
+                    // replay can reuse this world's deterministic path.
+                    let harness = Arc::try_unwrap(harness).map_err(|_| {
+                        Error::Invalid("world harness still has live connections".into())
+                    })?;
+                    harness.disconnect().await?;
+                    acyclic_harness::test_support::clear_checkout_identity();
                     Ok::<_, Error>(())
                 })
             };
@@ -332,13 +550,20 @@ impl World {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
-            Ok(Incarnation {
+            let incarnation = Incarnation {
                 prompts,
                 requests: provider.requests(),
                 dispatched_at,
                 durable: counter.durable_write_count(),
                 crashed,
-            })
+            };
+            let durable = durable
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            let digest = incarnation_digest(&incarnation, durable.as_ref());
+            WORLD_DIGESTS.with(|digests| digests.borrow_mut().push(digest));
+            Ok(incarnation)
         })
     }
 
@@ -357,7 +582,10 @@ impl World {
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
                     .state_directory(self.directory.path().join("state"));
+            let identity = self.checkout_identity();
+            acyclic_harness::test_support::inject_checkout_identity(identity.0, identity.1);
             let harness = Arc::new(entry(LocalHarness::open(config)).await?);
+            acyclic_harness::test_support::clear_checkout_identity();
             let (_, root) = harness.agents().await?;
             let connection = harness.connect().await?;
             let mut findings = Vec::new();

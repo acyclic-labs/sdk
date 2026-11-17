@@ -212,6 +212,7 @@ impl NativeDemandSource {
     }
     fn next_entry(
         &self,
+        logical: &NamespacePath,
         directory: &DemandPath,
         entry: &HostListedEntry,
         backing: &mut Owned<Vec<SourceDirectoryEntry>>,
@@ -254,10 +255,10 @@ impl NativeDemandSource {
                 .map_err(DemandError::from)?;
         }
         let name = LogicalName::new(encoding, bytes).map_err(|_| DemandError::InvalidRequest)?;
-        Ok(Some(SourceDirectoryEntry {
-            name,
-            node: Self::node(stat),
-        }))
+        let host = directory.join(&entry.name);
+        let content = self.fixture_content_at(&host, stat, work)?;
+        let node = Self::node(child_path_key(logical, &name), content, stat);
+        Ok(Some(SourceDirectoryEntry { name, node }))
     }
     fn page_entries(
         &self,
@@ -288,7 +289,8 @@ impl NativeDemandSource {
                 let Some((entry, _, _)) = &state.pending else {
                     break;
                 };
-                let converted = self.next_entry(&relative, entry, backing, work)?;
+                let converted =
+                    self.next_entry(&state.directory, &relative, entry, backing, work)?;
                 let (entry, bytes, carried) =
                     state.pending.take().ok_or(DemandError::StaleCursor)?;
                 drop(entry);
@@ -349,7 +351,11 @@ impl NativeDemandSource {
         if !stat.is_dir() {
             return Err(DemandError::NotDirectory);
         }
-        let observed = version(&stat);
+        let observed = version(
+            &path_key(directory),
+            fixture_content(&stat, |_| Ok(())),
+            &stat,
+        );
         let restore = cursor.is_some();
         let (cursor, state) = if let Some(cursor) = cursor {
             if cursor.source != source {
@@ -455,7 +461,14 @@ impl NativeDemandSource {
             native: Some(lease.cursor.clone().erase()),
         });
         self.check(&source, work)?;
-        if self.metadata(directory, work)?.as_ref().map(version) != Some(observed) {
+        if self.metadata(directory, work)?.as_ref().map(|metadata| {
+            version(
+                &path_key(directory),
+                fixture_content(metadata, |_| Ok(())),
+                metadata,
+            )
+        }) != Some(observed)
+        {
             *lease
                 .cursor
                 .position

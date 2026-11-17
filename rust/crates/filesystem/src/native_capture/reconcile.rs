@@ -320,6 +320,7 @@ impl<'a> CaptureBatch<'a> {
                 Some(source_capture_id(
                     self.source_root,
                     &host_path,
+                    &crate::demand::native::path_key(&path),
                     &metadata,
                     namespace,
                     self.meter,
@@ -696,6 +697,7 @@ impl<'a> CaptureBatch<'a> {
 pub(super) fn source_capture_id(
     root: &HostRoot,
     path: &CaptureHostPath,
+    logical: &[u8],
     metadata: &HostStat,
     namespace: [u8; 16],
     meter: &NativeMaterializationWork,
@@ -714,7 +716,23 @@ pub(super) fn source_capture_id(
     let metadata = &observed;
     #[cfg(not(target_os = "linux"))]
     let _ = (root, path);
-    let identity = crate::demand::native::file_identity(metadata);
+    let content = crate::demand::native::fixture_content(metadata, |hasher| {
+        // Open through the held root, never the process's current directory.
+        #[cfg(unix)]
+        let mut file = root
+            .open_file(path, &mut meter.clone())
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        #[cfg(windows)]
+        let mut file = root
+            .open_file(
+                path,
+                windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+                &mut meter.clone(),
+            )
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        std::io::copy(&mut file, hasher).map(|_| ())
+    });
+    let identity = crate::demand::native::file_identity(logical, content, metadata);
     Ok(crate::demand::source_file_id(
         &namespace,
         &identity,

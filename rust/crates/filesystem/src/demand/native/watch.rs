@@ -313,7 +313,33 @@ impl NativeChanges {
                         inner.root.held(work).and_then(|root| root.stat(path, work))
                     });
                     match metadata {
-                        Ok(metadata) => Some(file_identity(&metadata)),
+                        Ok(metadata) => {
+                            let content = fixture_content(&metadata, |hasher| {
+                                let mut file = crate::native_host::host_path(
+                                    relative,
+                                    work,
+                                    |path, work| {
+                                        #[cfg(unix)]
+                                        let file = inner
+                                            .root
+                                            .held(work)
+                                            .and_then(|root| root.open_file(path, work));
+                                        #[cfg(windows)]
+                                        let file = inner.root.held(work).and_then(|root| {
+                                            root.open_file(
+                                                path,
+                                                windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+                                                work,
+                                            )
+                                        });
+                                        file
+                                    },
+                                )
+                                .map_err(std::io::Error::other)?;
+                                std::io::copy(&mut file, hasher).map(|_| ())
+                            });
+                            Some(file_identity(&path_key(&name), content, &metadata))
+                        }
                         Err(DemandError::Io(error))
                             if matches!(
                                 error.kind(),

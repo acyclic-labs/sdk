@@ -47,7 +47,14 @@ pub(super) async fn observed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 None => true,
                 Some(record) => {
                     let host = namespace_to_host_path_measured(path, meter)?;
-                    let id = source_capture_id(root, &host, metadata, namespace, meter)?;
+                    let id = source_capture_id(
+                        root,
+                        &host,
+                        &crate::demand::native::path_key(path),
+                        metadata,
+                        namespace,
+                        meter,
+                    )?;
                     capture_drop_host_path(host, meter)?;
                     id != record.file_id && removed_identity(&removed, id, meter)?
                 }
@@ -80,7 +87,14 @@ pub(super) async fn observed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             lookup.record
         };
         let host = namespace_to_host_path_measured(destination, meter)?;
-        let id = source_capture_id(root, &host, metadata, namespace, meter)?;
+        let id = source_capture_id(
+            root,
+            &host,
+            &crate::demand::native::path_key(destination),
+            metadata,
+            namespace,
+            meter,
+        )?;
         capture_drop_host_path(host, meter)?;
         if current.is_some_and(|record| record.file_id == id) {
             continue;
@@ -141,7 +155,16 @@ pub(super) async fn observed_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         source.retire(&mut accounting)?;
         let host = namespace_to_host_path_measured(&path, meter)?;
         let same_node = match observe_host_path(root, &host, meter)? {
-            Some(observed) => source_capture_id(root, &host, &observed, namespace, meter)? == id,
+            Some(observed) => {
+                source_capture_id(
+                    root,
+                    &host,
+                    &crate::demand::native::path_key(&path),
+                    &observed,
+                    namespace,
+                    meter,
+                )? == id
+            }
             None => false,
         };
         capture_drop_host_path(host, meter)?;

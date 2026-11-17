@@ -27,7 +27,7 @@ pub(super) fn user_state_root() -> Result<PathBuf> {
 pub(super) const UNIT_TESTS_INJECT_STATE: &str =
     "unit tests must inject LocalHarnessConfig::state_directory; the per-user store is unreachable";
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// A temporary per-user data root for default state selection, so tests
     /// exercise it without touching real per-user state.
@@ -40,7 +40,7 @@ thread_local! {
     static REKEY_VOLUMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Replaces a capture's object id and generation, as a filesystem that
     /// reissues ids or renumbers them across remounts.
-    pub(super) static INJECTED: std::cell::Cell<Option<([u8; 16], acyclic_fs::NativeRootGeneration)>> =
+    pub(crate) static INJECTED: std::cell::Cell<Option<([u8; 16], acyclic_fs::NativeRootGeneration)>> =
         const { std::cell::Cell::new(None) };
     /// Negative control: a root without stable ids is keyed on its id.
     pub(super) static UNSTABLE_KEYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -155,7 +155,7 @@ impl Checkout {
             let mut object = incarnation.identity.to_bytes();
             object[..8].copy_from_slice(&incarnation.volume.to_le_bytes());
             let generation = incarnation.generation;
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             let (object, generation) = INJECTED.get().unwrap_or((object, generation));
             Ok(Self {
                 path,

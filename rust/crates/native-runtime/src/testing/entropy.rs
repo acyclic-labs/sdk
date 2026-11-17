@@ -20,6 +20,23 @@ impl Source {
     }
 }
 
+impl Schedule {
+    /// Whether this schedule still has a seeded entropy source.
+    pub fn has_entropy(&self) -> bool {
+        self.0.entropy.is_some()
+    }
+
+    /// Fills bytes from this schedule's seeded source, independent of the
+    /// caller's task-local context. Returns false when entropy is erased.
+    pub fn fill_entropy(&self, bytes: &mut [u8]) -> bool {
+        let Some(source) = &self.0.entropy else {
+            return false;
+        };
+        source.fill(bytes);
+        true
+    }
+}
+
 /// Fills bytes from the active simulation's seeded source, returning false when
 /// no source is installed. Callers then use their ordinary host entropy.
 /// Task scopes and owned blocking callbacks retain the same source.

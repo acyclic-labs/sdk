@@ -114,6 +114,9 @@ pub struct LocalHarnessConfig {
     pub(super) workspace_mounting: WorkspaceMounting,
     #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) native_mount_probe: acyclic_fs::NativeMountProbe,
+    /// Fresh source identities; absent selects OS randomness.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) source_entropy: Option<acyclic_fs::demand::native::SourceEntropy>,
 }
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -312,6 +315,8 @@ impl LocalHarnessConfig {
             workspace_mounting: WorkspaceMounting::Native,
             #[cfg(any(test, not(target_arch = "wasm32")))]
             native_mount_probe: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            source_entropy: None,
         }
     }
     /// Selects how task views reach the host filesystem; `Native` by default.
@@ -631,6 +636,14 @@ impl LocalHarnessConfig {
         self
     }
     /// Selects the one clock used by actor alarms, durable admission and leases.
+    #[must_use]
+    /// Supplies fresh source identities from `entropy` instead of OS randomness.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn source_entropy(mut self, entropy: acyclic_fs::demand::native::SourceEntropy) -> Self {
+        self.source_entropy = Some(entropy);
+        self
+    }
     #[must_use]
     pub fn clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
         self.clock = clock;

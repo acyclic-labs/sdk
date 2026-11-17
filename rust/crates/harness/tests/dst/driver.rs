@@ -34,8 +34,8 @@ impl Driver {
         Self::from_scope(Schedule::seeded_unrecorded(seed), cut, false).refuse_processes()
     }
 
-    pub fn without_entropy(seed: u64) -> Self {
-        Self::from_scope(Schedule::without_entropy(seed), None, true).refuse_processes()
+    pub fn without_entropy(seed: u64, cut: Option<(usize, DurableFault)>) -> Self {
+        Self::from_scope(Schedule::without_entropy(seed), cut, true).refuse_processes()
     }
 
     fn from_scope(
@@ -171,7 +171,7 @@ fn every_file_cut_drops_the_turn_before_independent_reopen() -> Result<()> {
     let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
-        let directory = tempfile::tempdir().map_err(storage)?;
+        let directory = temporary_directory().map_err(storage)?;
         let path = directory.path().join("journal");
         let write = |path: std::path::PathBuf| -> EntryFuture<'static, std::io::Result<()>> {
             entry(async move {

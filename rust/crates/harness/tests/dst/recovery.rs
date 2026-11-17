@@ -115,11 +115,7 @@ fn crash_reopen(point: Cut) -> Result<()> {
         tokio::time::pause();
         // The controller retains the original world from before execution, so
         // failure/unwind cannot delete its journal through TempDir cleanup.
-        let directory = tempfile::Builder::new()
-            .prefix("sdk-dst-replay-")
-            .tempdir()
-            .map_err(seed_error)?
-            .keep();
+        let directory = temporary_directory().map_err(seed_error)?.keep();
         let seed_path = seed.retain(&directory)?;
         println!("DST_REPLAY_SEED={}", seed_path.display());
         let seed = ReplaySeed::read(&seed_path)?;
@@ -198,7 +194,10 @@ fn crash_reopen(point: Cut) -> Result<()> {
             seed.response.clone()
         };
         let provider = Arc::new(
+            // Each prompt makes its response request and one follow-up.
             ScriptedModelProvider::new([
+                ScriptedTurn::Text(seed.response.clone()),
+                ScriptedTurn::Text(seed.response.clone()),
                 ScriptedTurn::Text(seed.response.clone()),
                 ScriptedTurn::Text(seed.response.clone()),
             ])
@@ -249,6 +248,8 @@ fn crash_reopen(point: Cut) -> Result<()> {
             "a settlement skipped or repeated its retrospective"
         );
         if let Some(interrupted) = dispatched {
+            // The reconciled prompt's follow-up keeps its turn's operation;
+            // the new prompt's own request is the next dispatch.
             assert_ne!(
                 interrupted.operation_id, work[0].1.operation_id,
                 "the new prompt reused the interrupted operation"

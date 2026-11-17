@@ -79,10 +79,11 @@ impl<C: FilesystemCut> FilesystemView<C> {
         hash.update(&self.view.identity());
         hash.update(&cut.identity());
         hash.update(path.as_bytes());
+        let identity = *hash.finalize().as_bytes();
         Ok(Some(SourceNode {
             kind,
             logical_bytes: length,
-            file_identity: *hash.finalize().as_bytes(),
+            file_identity: identity,
             link_count: Some(1),
             device: None,
             version: SourceVersion([0; 32]),

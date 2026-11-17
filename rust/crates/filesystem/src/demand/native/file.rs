@@ -3,7 +3,7 @@ struct NativeDemandFile {
     provider: NativeDemandSource,
     source: SourceReference,
     relative: DemandPath,
-    expected: SourceVersion,
+    physical: SourceVersion,
     logical_bytes: u64,
     #[cfg(windows)]
     file: Arc<std::sync::RwLock<Arc<SourceFile>>>,
@@ -60,15 +60,18 @@ impl NativeDemandFile {
         if opened.file_type() != crate::demand::SourceNodeKind::RegularFile {
             return Err(DemandError::NotRegularFile);
         }
-        if version(&opened) != expected {
+        let path_key = path_key(path);
+        let content = provider.fixture_content(path, &opened, context)?;
+        if version(&path_key, content, &opened) != expected {
             return Err(DemandError::StaleVersion);
         }
+        let physical = physical_version(&opened);
         Ok(Self {
             provider,
             source,
             relative,
             _ownership: Arc::new(ownership),
-            expected,
+            physical,
             logical_bytes: opened.len(),
             #[cfg(windows)]
             file: Arc::new(std::sync::RwLock::new(Arc::new(file))),
@@ -152,7 +155,7 @@ impl NativeDemandFile {
             Err(error) => return Err(error),
         };
         let opened = stat_held(&self.provider, &file, context)?;
-        if version(&opened) != self.expected {
+        if physical_version(&opened) != self.physical {
             return Err(DemandError::StaleVersion);
         }
         Ok(file)
@@ -286,8 +289,8 @@ impl NativeDemandFile {
             .root
             .held(context)
             .and_then(|root| root.stat(&self.relative, context));
-        if version(&held) != self.expected
-            || named.as_ref().map(version).ok() != Some(self.expected)
+        if physical_version(&held) != self.physical
+            || named.as_ref().map(physical_version).ok() != Some(self.physical)
         {
             self.provider.check(&self.source, context)?;
             return Err(DemandError::StaleVersion);
