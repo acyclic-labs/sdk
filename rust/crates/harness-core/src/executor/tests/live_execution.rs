@@ -337,8 +337,11 @@ fn seeded_pending_redelivery_settles_without_failing_the_turn() -> std::result::
         Schedule, seeded_runtime,
         sweep::{seeds, sweep},
     };
-    sweep("harness-pending-redelivery", seeds(0..8)?, |seed| {
-        seeded_runtime(seed).map_err(|error| error.to_string())?.block_on(async {
+    sweep(
+        "harness-pending-redelivery",
+        seeds(0..8).map_err(|error| error.to_string())?,
+        |seed| {
+            seeded_runtime(seed).map_err(|error| error.to_string())?.block_on(async {
             let (schedule, mut boundaries) = Schedule::seeded(seed);
             let history = async {
                 let (reopened, tool, provider, executor, input) = fenced_pending_call(false).await?;
@@ -363,7 +366,9 @@ fn seeded_pending_redelivery_settles_without_failing_the_turn() -> std::result::
             }
             result.map_err(|error| error.to_string())
         })
-    })?;
+        },
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
