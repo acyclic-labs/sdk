@@ -61,23 +61,8 @@ pub(crate) struct Connected {
     generation: u64,
 }
 
-impl McpConfig {
-    /// Connects configured servers once and adds their tools without replacing caller tools.
-    /// `workspace` must be the absolute project root. Required failures reject startup.
-    /// Credential references resolve only through the host's `secrets`.
-    pub async fn install(
-        self,
-        tools: ToolRegistry,
-        workspace: &Path,
-        limits: McpClientLimits,
-        secrets: Arc<dyn acyclic_harness_core::secrets::SecretSource>,
-    ) -> Result<McpInstallation> {
-        McpConfigInstall::install(self, tools, workspace, limits, secrets).await
-    }
-}
-
 /// Connects configured MCP servers through the ordinary tool registry.
-pub(crate) trait McpConfigInstall {
+pub trait McpConfigInstall {
     /// Connects configured servers and adds their tools without replacing caller tools.
     /// `workspace` must be the absolute project root. Required failures reject startup.
     /// Credential references resolve only through the host's `secrets`.
@@ -88,7 +73,10 @@ pub(crate) trait McpConfigInstall {
         limits: McpClientLimits,
         secrets: Arc<dyn acyclic_harness_core::secrets::SecretSource>,
     ) -> Result<McpInstallation>;
+}
 
+/// Connects configured servers with a caller-supplied per-server connector.
+pub(crate) trait McpConfigInstallWith {
     /// Connects configured servers with the supplied per-server connector.
     async fn install_with<F>(
         self,
@@ -122,7 +110,9 @@ impl McpConfigInstall for McpConfig {
         })
         .await
     }
+}
 
+impl McpConfigInstallWith for McpConfig {
     async fn install_with<F>(
         self,
         mut tools: ToolRegistry,
