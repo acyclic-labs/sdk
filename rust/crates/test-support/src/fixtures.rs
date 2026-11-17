@@ -73,12 +73,14 @@ macro_rules! cargo_binary {
 /// A Bazel test supplies the tool as a declared executable through Cargo's
 /// `CARGO_BIN_EXE_<name>` variable, as [`cargo_binary!`](crate::cargo_binary)
 /// does. An ordinary Cargo run has no such variable, so the tool is resolved
-/// from the host's executable search path by its bare name.
+/// from an environment variable of the same name (Cargo sets `CARGO`), or from
+/// the host's executable search path by its bare name.
 #[macro_export]
 macro_rules! host_tool {
     ($name:literal) => {{
         ::std::env::var_os(concat!("CARGO_BIN_EXE_", $name))
             .or_else(|| ::std::env::var_os(concat!("NEXTEST_BIN_EXE_", $name).replace('-', "_")))
+            .or_else(|| ::std::env::var_os($name))
             .map_or_else(
                 || ::std::ffi::OsString::from($name),
                 ::std::ffi::OsString::from,
@@ -192,7 +194,8 @@ mod tests {
                 .args(["--exact", "fixtures::tests::host_tool_child", "--nocapture"])
                 .env("ACYCLIC_HOST_TOOL_CHILD", "1")
                 .env_remove("CARGO_BIN_EXE_node")
-                .env_remove("NEXTEST_BIN_EXE_node");
+                .env_remove("NEXTEST_BIN_EXE_node")
+                .env_remove("node");
             if let Some(declared) = declared {
                 command.env("CARGO_BIN_EXE_node", declared);
             }
