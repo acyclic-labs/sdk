@@ -101,3 +101,9 @@ exports_files([
         "fixtures/conformance/identity/dex/manifest.json",
         "fixtures/conformance/identity/dex/token.body",
 ])
+
+filegroup(
+    name = "tree/src",
+    srcs = glob(["src/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
