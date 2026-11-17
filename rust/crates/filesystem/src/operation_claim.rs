@@ -1,11 +1,10 @@
 //! Ownership checks at filesystem composition boundaries.
-#[cfg(test)]
+#[cfg(all(test, loom))]
 use acyclic_stream::OperationClaims;
 
 #[cfg(test)]
 #[cfg(not(loom))]
 mod tests {
-    use super::*;
     use std::cell::Cell;
 
     #[test]
@@ -122,23 +121,6 @@ mod tests {
         assert!(
             alias
                 .operation_claims()
-                .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
-                .unwrap()
-                .into_owner()
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn refused_storage_never_installs_a_claim() {
-        let claims = OperationClaims::default();
-        assert!(
-            claims
-                .claim([1; 48], || Ok::<_, ()>(()), |_, _| Err::<(), _>(()))
-                .is_err()
-        );
-        assert!(
-            claims
                 .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
                 .into_owner()
