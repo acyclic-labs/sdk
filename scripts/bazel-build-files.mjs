@@ -737,7 +737,7 @@ function moduleFile() {
     // rustfmt's macro formatting changes between releases, and the nightly one emits calls the
     // repository's macros do not accept. These repositories are independent of the rust toolchain
     // hub, so pinning rustfmt does not change any compile action.
-    `rustfmt = use_repo_rule("@rules_rust//rust:repositories.bzl", "rustfmt_toolchain_tools_repository")\n`,
+    `rustfmt = use_repo_rule("@rules_rust//rust/private:repositories.bzl", "rustfmt_toolchain_tools_repository")\n`,
     ...TRIPLES.map(t => `rustfmt(name = ${q(`pinned_rustfmt_${t.replaceAll("-", "_")}`)}, version = ${q(channel)}, exec_triple = ${q(t)})\n`),
     `\n`,
     rule("rust.toolchain", [
