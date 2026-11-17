@@ -169,6 +169,38 @@ fn workspace_path(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
+fn decode_file_url_path(path: &str) -> Option<String> {
+    let mut bytes = path.bytes();
+    let mut decoded = Vec::with_capacity(path.len());
+    while let Some(byte) = bytes.next() {
+        decoded.push(if byte == b'%' {
+            let high = char::from(bytes.next()?).to_digit(16)?;
+            let low = char::from(bytes.next()?).to_digit(16)?;
+            (high * 16 + low).try_into().ok()?
+        } else {
+            byte
+        });
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn encode_file_url_path(path: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@/".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.extend([
+                '%',
+                char::from(HEX[usize::from(byte >> 4)]),
+                char::from(HEX[usize::from(byte & 15)]),
+            ]);
+        }
+    }
+    encoded
+}
+
 fn relocate_metadata(value: &mut serde_json::Value, old: &str, root: &str) {
     match value {
         serde_json::Value::String(text) => {
@@ -203,13 +235,18 @@ fn relocate_metadata(value: &mut serde_json::Value, old: &str, root: &str) {
                 };
             } else if let Some(id) = normalized.strip_prefix("path+file://") {
                 if let Some((path, suffix)) = id.split_once('#') {
+                    let Some(path) = decode_file_url_path(path) else {
+                        return;
+                    };
+                    let unc = windows && old.starts_with("//") && !path.starts_with('/');
+                    let path = if unc { format!("//{path}") } else { path };
                     let path = if windows
                         && path.starts_with('/')
                         && path.as_bytes().get(2) == Some(&b':')
                     {
                         &path[1..]
                     } else {
-                        path
+                        &path
                     };
                     if let Some(rebased) = crate::path_identity::rebase(path, &old, marker, windows)
                     {
@@ -219,10 +256,15 @@ fn relocate_metadata(value: &mut serde_json::Value, old: &str, root: &str) {
                         } else {
                             ""
                         };
+                        let destination = if suffix_path.is_empty() {
+                            root.clone()
+                        } else {
+                            format!("{}{suffix_path}", root.trim_end_matches('/'))
+                        };
+                        let authority = destination.strip_prefix("//").unwrap_or(&destination);
                         *text = format!(
-                            "path+file://{slash}{}{}#{suffix}",
-                            root.trim_end_matches('/'),
-                            suffix_path
+                            "path+file://{slash}{}#{suffix}",
+                            encode_file_url_path(authority)
                         );
                     }
                 }

@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import {pathToFileURL} from 'node:url';
 import {dependencyEnabled, evaluateCfg, forwardedFeatures, growSets, manifestDependencies, reachable, toml, tomlFiles} from './policy-core.mjs';
 
 const slash = value => value.replaceAll('\\', '/');
@@ -204,7 +205,7 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
     if (own.build !== false) target('custom-build', {}, typeof own.build === 'string' ? own.build : 'build.rs', 'build-script-build');
     const rank = t => t.kind.includes('custom-build') ? 5 : t.kind.includes('bench') ? 4 : t.kind.includes('test') ? 3 : t.kind.includes('example') ? 2 : t.kind.includes('bin') ? 1 : 0;
     targets.sort((a, b) => rank(a) - rank(b) || (a.kind.includes('test') && own.autotests === false || a.kind.includes('bin') && own.autobins === false ? 0 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    const p = {name: own.name, version: own.version, id: `path+file://${slash(directory)}#${path.basename(directory) === own.name ? own.version : `${own.name}@${own.version}`}`,
+    const p = {name: own.name, version: own.version, id: `path+${pathToFileURL(directory).href}#${path.basename(directory) === own.name ? own.version : `${own.name}@${own.version}`}`,
       source: null, dependencies, targets, features, manifest_path: path.join(directory, 'Cargo.toml'), workspace_member: members.has(file),
       publish: own.publish === false ? [] : own.publish === true ? null : own.publish ?? null, metadata: own.metadata ?? null, authors: own.authors ?? [], categories: own.categories ?? [], keywords: own.keywords ?? []};
     for (const key of ['license', 'license-file', 'description', 'repository', 'homepage', 'documentation', 'links', 'default-run', 'rust-version']) p[key.replaceAll('-', '_')] = own[key] ?? null;

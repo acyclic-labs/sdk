@@ -33,6 +33,39 @@ fn declared_workspace_metadata_round_trips_to_a_new_root() {
 }
 
 #[test]
+fn workspace_metadata_rebases_percent_encoded_package_ids() {
+    let source = acyclic_test_support::source_path(
+        "rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json",
+    );
+    let mut metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
+    metadata["workspace_root"] = "/work/sdk checkout".into();
+    metadata["packages"][0]["id"] =
+        "path+file:///work/sdk%20checkout/crate%23one#crate@1.0.0".into();
+    metadata["packages"][0]["manifest_path"] = "/work/sdk checkout/crate#one/Cargo.toml".into();
+    let temp = tempfile::tempdir().unwrap();
+    let graph = temp.path().join("graph.json");
+    fs::write(&graph, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+    let destination = temp.path().join("sdk #%");
+    let loaded = load_workspace_metadata(&destination, &graph).unwrap();
+    assert_eq!(
+        loaded.packages[0].manifest_path.as_std_path(),
+        destination.join("crate#one").join("Cargo.toml")
+    );
+    assert!(loaded.packages[0]
+        .id
+        .repr
+        .ends_with("/sdk%20%23%25/crate%23one#crate@1.0.0"));
+    let serialized: serde_json::Value =
+        serde_json::from_slice(&workspace_metadata_bytes(&loaded).unwrap()).unwrap();
+    assert_eq!(
+        serialized["packages"][0]["id"],
+        "path+file://./crate%23one#crate@1.0.0"
+    );
+}
+
+#[test]
 fn workspace_metadata_relocates_windows_path_components() {
     let mut graph = serde_json::json!({
         "manifest": r"\\?\C:\BUILD\SDK\crate\Cargo.toml",
