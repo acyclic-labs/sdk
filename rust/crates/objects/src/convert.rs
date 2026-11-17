@@ -35,6 +35,27 @@ pub(crate) fn range(range: ByteRange) -> wire::ByteRange {
     }
 }
 
+/// Builds the same read request for every transport.
+pub(crate) fn get_request(
+    digest: Digest,
+    selection: ByteRange,
+    maximum_bytes: u64,
+) -> wire::GetBlobRequest {
+    wire::GetBlobRequest {
+        digest: Some(digest.into()),
+        range: Some(range(selection)),
+        maximum_bytes,
+    }
+}
+
+/// Builds the same page request for every transport.
+pub(crate) fn list_request(after: Option<Digest>, limit: u32) -> wire::ListBlobsRequest {
+    wire::ListBlobsRequest {
+        after: after.map(Into::into),
+        limit,
+    }
+}
+
 pub(crate) fn from_range(range: Option<&wire::ByteRange>) -> ByteRange {
     range.map_or(ByteRange::FULL, |range| ByteRange {
         start: range.start,

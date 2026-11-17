@@ -370,11 +370,7 @@ impl Blobs for GrpcObjects {
             let reply = call!(
                 self,
                 get_blob,
-                wire::GetBlobRequest {
-                    digest: Some(digest.into()),
-                    range: Some(convert::range(range)),
-                    maximum_bytes,
-                },
+                convert::get_request(digest, range, maximum_bytes),
                 self.transfer_timeout,
                 read
             )?;
@@ -423,10 +419,7 @@ impl Blobs for GrpcObjects {
             let reply = call!(
                 self,
                 list_blobs,
-                wire::ListBlobsRequest {
-                    after: after.map(Into::into),
-                    limit,
-                },
+                convert::list_request(after, limit),
                 None,
                 read
             )?;

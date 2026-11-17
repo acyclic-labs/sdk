@@ -135,11 +135,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
         let (reply, revision) = self
             .call(
                 "blobs/get",
-                wire::GetBlobRequest {
-                    digest: Some(digest.into()),
-                    range: Some(convert::range(range)),
-                    maximum_bytes,
-                },
+                convert::get_request(digest, range, maximum_bytes),
             )
             .await?;
         Ok(convert::object(reply, digest, range, maximum_bytes)
@@ -177,13 +173,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
         let (reply, revision) = self
-            .call(
-                "blobs/list",
-                wire::ListBlobsRequest {
-                    after: after.map(Into::into),
-                    limit,
-                },
-            )
+            .call("blobs/list", convert::list_request(after, limit))
             .await?;
         let mut page = convert::listed(&reply, after, limit).map_err(|_| unavailable())?;
         page.revision = revision;
