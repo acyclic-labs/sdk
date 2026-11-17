@@ -78,7 +78,7 @@ operation_service! {
             return Err(Status::unimplemented("inspect_checkpoint"));
         };
         let original = {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             let original = script.results.clone().ok_or_else(|| Status::unimplemented("inspect_checkpoint"))?;
             script.calls.push("inspect_checkpoint");
             original
@@ -96,7 +96,7 @@ operation_service! {
             return Err(Status::unimplemented("list_machines"));
         };
         let original = {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             let original = script.results.clone().ok_or_else(|| Status::unimplemented("list_machines"))?;
             script.calls.push("list_machines");
             original
@@ -115,7 +115,7 @@ operation_service! {
             return Err(Status::unimplemented("read_results"));
         };
         let original = {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             let original = script.results.clone().ok_or_else(|| Status::unimplemented("read_results"))?;
             script.calls.push("read_results");
             original
@@ -145,7 +145,7 @@ operation_service! {
             return Err(Status::unimplemented("create"));
         };
         if let WatchReply::Script(script) = &self.watch {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             script.selected_volumes.push(request.selected_volume_ref);
             script.selected_secrets.push(request.secrets);
             script.calls.push(
@@ -157,7 +157,7 @@ operation_service! {
     async fn inspect_machine(&self, request: Request<wire::InspectMachineRequest>)
         -> Result<Response<wire::MachineState>, Status> {
         let original = if let WatchReply::Script(script) = &self.watch {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             let original = script.results.clone();
             if original.is_some() {
                 script.calls.push("inspect_machine");
@@ -180,7 +180,7 @@ operation_service! {
             return Err(Status::invalid_argument("machine was substituted"));
         }
         let contract = if let WatchReply::Script(script) = &self.watch {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             script.calls.push("inspect_machine");
             script.current_contract.clone().or_else(|| admission.contract.clone())
         } else { admission.contract.clone() };
@@ -204,7 +204,7 @@ operation_service! {
             return Err(Status::unimplemented("attach_volume"));
         };
         if let WatchReply::Script(script) = &self.watch {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             script.selected_volumes.push(request.selected_volume_ref);
             script.calls.push("attach_volume");
         }
@@ -234,7 +234,7 @@ operation_service! {
         if request.machine != admission.machine {
             return Err(Status::invalid_argument("machine was substituted"));
         }
-        let original = script.lock().expect("observation script").results.clone();
+        let original = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?.results.clone();
         if let Some(original) = original {
             let machine = decode_machine(admission.machine.as_ref())
                 .map_err(|error| Status::internal(error.to_string()))?;
@@ -315,7 +315,7 @@ operation_service! {
         if let WatchReply::Script(script) = &self.watch {
             script
                 .lock()
-                .expect("observation script")
+                .map_err(|_| Status::internal("observation script lock poisoned"))?
                 .calls
                 .push("cancel");
         }
@@ -328,7 +328,7 @@ operation_service! {
     ) -> Result<Response<wire::OperationState>, Status> {
         self.require_operation(&request.into_inner())?;
         let original = if let WatchReply::Script(script) = &self.watch {
-            let mut script = script.lock().expect("observation script");
+            let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
             if let Some(reply) = script.inspections.pop_front() {
                 return reply.map(Response::new)
                     .map_err(|code| Status::new(code, "inspection interrupted"));
@@ -405,7 +405,7 @@ operation_service! {
         {
             return Err(Status::invalid_argument("event cursor or identity was substituted"));
         }
-        let events = events.lock().expect("original events").take()
+        let events = events.lock().map_err(|_| Status::internal("original events lock poisoned"))?.take()
             .ok_or_else(|| Status::failed_precondition("original events already taken"))?;
         Ok(Response::new(Box::pin(events.map(|event| {
             event.map(wire::MachineEvent::from).map_err(|_| Status::unavailable("original event producer lost"))
@@ -423,7 +423,7 @@ operation_service! {
         self.require_operation(&request.into_inner())?;
         let reply = match &self.watch {
             WatchReply::Script(script) => {
-                let mut script = script.lock().expect("observation script");
+                let mut script = script.lock().map_err(|_| Status::internal("observation script lock poisoned"))?;
                 script.calls.push("watch");
                 script.started.notify_one();
                 script
@@ -444,7 +444,7 @@ operation_service! {
             }
             WatchReply::Script(_) | WatchReply::Events { .. } => Err(Status::internal("unexpected observation script")),
             WatchReply::Gated(value, release) => {
-                let release = release.lock().expect("watch release").take()
+                let release = release.lock().map_err(|_| Status::internal("watch release lock poisoned"))?.take()
                     .ok_or_else(|| Status::internal("watch release already consumed"))?;
                 Ok(Response::new(Box::pin(stream::once(async move {
                 release.await.map_err(|_| Status::unavailable("watch producer ended"))?;
@@ -489,9 +489,9 @@ fn scripted_operation_service(
     std::sync::Arc<std::sync::Mutex<ObservationScript>>,
     MachineId,
 ) {
-    let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000041").expect("key");
-    let operation = OperationId::parse("00000000-0000-0000-0000-000000000042").expect("operation");
-    let machine = MachineId::parse("00000000-0000-0000-0000-000000000043").expect("machine");
+    let key = IdempotencyKey(uuid::Uuid::from_u128(0x41));
+    let operation = OperationId(uuid::Uuid::from_u128(0x42));
+    let machine = MachineId(uuid::Uuid::from_u128(0x43));
     let script = std::sync::Arc::new(std::sync::Mutex::new(ObservationScript {
         results: None,
         watches: watches.into(),

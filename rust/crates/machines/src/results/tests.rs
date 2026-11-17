@@ -66,7 +66,12 @@ async fn append(
         .map(|index| {
             let mut machine = machine.clone();
             let mut identity = [7; 32];
-            identity[..8].copy_from_slice(&(from + u64::try_from(index).unwrap()).to_le_bytes());
+            identity[..8].copy_from_slice(
+                &(from
+                    + u64::try_from(index)
+                        .map_err(|error| ProviderError::Invalid(error.to_string()))?)
+                .to_le_bytes(),
+            );
             machine.id = crate::MachineId::from_digest(identity);
             record(&machine)
         })
