@@ -23,6 +23,26 @@ export function rewriteModuleSpecifier(directory, specifier, target) {
   }
 }
 
+/** Give published output the same package surface, including its wasm URL, that Bazel imports. */
+export function rewriteWasmPackage(directory, wasm) {
+  const entry = wasm.outName ?? wasm.artifact;
+  const name = wasm.wasmPackage.slice(wasm.wasmPackage.lastIndexOf("/") + 1);
+  const target = `../generated/wasm/${entry}.js`;
+  writeFileSync(join(directory, `${name}.js`), [
+    `export { default } from "${target}";`,
+    `export * from "${target}";`,
+    `export const wasmUrl = new URL("../generated/wasm/${entry}_bg.wasm", import.meta.url);`,
+    "",
+  ].join("\n"));
+  writeFileSync(join(directory, `${name}.d.ts`), [
+    `export { default } from "${target}";`,
+    `export * from "${target}";`,
+    `export const wasmUrl: URL;`,
+    "",
+  ].join("\n"));
+  rewriteModuleSpecifier(directory, wasm.wasmPackage, `./${name}.js`);
+}
+
 /** Shared exact assembly specialized only by immutable Rust-generated family facts. */
 export function createNativeAssembler(family) {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -317,7 +337,7 @@ async function main() {
     const compiled = join(temporary, "dist");
     run("bun", ["x", "tsc", "-p", packageTsconfig, "--outDir", compiled, "--pretty", "false"]);
     const wasm = wasmPackages[family.key];
-    if (wasm?.wasmPackage) rewriteModuleSpecifier(compiled, wasm.wasmPackage, `../generated/wasm/${wasm.outName ?? wasm.artifact}.js`);
+    if (wasm?.wasmPackage) rewriteWasmPackage(compiled, wasm);
     const compiledEntrypoint = join(compiled, "index.js");
     try { await readFile(compiledEntrypoint); }
     catch { fail(`TypeScript compilation did not produce ${compiledEntrypoint}`); }
