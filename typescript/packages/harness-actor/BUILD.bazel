@@ -14,6 +14,7 @@ genrule(
     srcs = ["//:tools/harness-actor-bundle.mjs"],
     tools = [
         ":proto",
+        "//rust/crates/harness-providers:acyclic_harness_wasm",
         "//rust/crates/manifest:acyclic_manifest_wasm",
         "//:wasm_auth_generated",
         "//:wasm_actors_generated",
