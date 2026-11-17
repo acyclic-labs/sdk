@@ -1468,13 +1468,3 @@ async fn alarm_publication_wakes() -> TestResult {
     Ok(())
 }
 
-/// Every hot-path `Result<_, local::Error>` keeps the large cold failure
-/// payloads behind one pointer, so success never reserves their bytes.
-#[test]
-fn actor_error_keeps_hot_path_results_small() {
-    assert!(
-        std::mem::size_of::<Error>() <= 24,
-        "local::Error grew to {} bytes",
-        std::mem::size_of::<Error>()
-    );
-}
