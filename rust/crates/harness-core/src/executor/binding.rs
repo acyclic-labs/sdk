@@ -263,22 +263,48 @@ impl StockExecution<'_> {
     }
 
     /// Starts a host-only journal before its first tool observation. A journal
-    /// already started by a turn keeps its original request binding. A host
-    /// call has no model request or summary destination, so it binds its own
-    /// invocation identity instead of a turn input.
+    /// already started by a turn keeps its original request binding. The start
+    /// record belongs to the parent execution, not to one call: each call's
+    /// selection is retained separately, so concurrent first calls append the
+    /// same idempotent start instead of racing two request identities.
     pub(super) async fn ensure_host_started(
         &self,
         journal: &dyn ExecutionJournal,
         operation: OperationId,
-        invocation: &ToolInvocation,
+        _invocation: &ToolInvocation,
     ) -> Result<()> {
-        if !journal.replay(operation, 0, 1, self.io)?.await?.is_empty() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _records_hold;
+        #[cfg(not(target_arch = "wasm32"))]
+        let records_before = self
+            .io
+            .map(PreparationIo::owned_bytes)
+            .transpose()?
+            .unwrap_or(0);
+        let records = journal.replay(operation, 0, 1, self.io)?.await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            _records_hold = if let Some(io) = self.io.filter(|_| stock_is_native(self.io)) {
+                let bytes = io
+                    .owned_bytes()?
+                    .checked_sub(records_before)
+                    .ok_or_else(|| {
+                        stock_boundary(
+                            Some(io),
+                            crate::wire::ErrorCode::Storage,
+                            "binding record ownership underflows",
+                        )
+                    })?;
+                Some(io.guard_owned(bytes)?)
+            } else {
+                None
+            };
+        }
+        if !records.is_empty() {
             return Ok(());
         }
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.host-invocation-start.v1");
         hasher.update(&operation.into_bytes());
-        hasher.update(invocation.call_id.as_bytes());
-        hasher.update(invocation.name.as_bytes());
         let request_digest = *hasher.finalize().as_bytes();
         journal
             .append(

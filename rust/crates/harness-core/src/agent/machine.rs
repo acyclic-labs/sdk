@@ -1682,8 +1682,10 @@ async fn run<T: TurnDriver + ?Sized>(
         Pick::Review => {
             let review = driver.review(state, cursor, cancellation.clone()).await;
             let review = match review {
-                // A cancelled review is terminal: the ask is refused and must
-                // never re-enter because its own write was refused.
+                // A cancelled review leaves its original page pending. The
+                // next step finishes it, repairing any decision whose wake was
+                // not published; clearing the page would strand every child
+                // whose ask was already consumed from the inbox.
                 Err(Error::Turn(error))
                     if matches!(
                         *error,
@@ -1692,7 +1694,6 @@ async fn run<T: TurnDriver + ?Sized>(
                         )
                     ) =>
                 {
-                    state.approval_control = None;
                     return Ok(());
                 }
                 result => result?,
