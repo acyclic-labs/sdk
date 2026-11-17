@@ -5,9 +5,10 @@
 //! `ACYCLIC_TEST_BINARY` (the libtest executable), `ACYCLIC_TEST_ID` (its nextest binary id),
 //! `ACYCLIC_TEST_PACKAGE` (the Cargo package directory, each case's working directory as under
 //! Cargo), `ACYCLIC_TEST_SOURCE` (this SDK's own repository in the runfiles, which a consuming
-//! workspace sees as an external repository) and `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case
-//! limit). A nextest profile's cases
-//! select through `ACYCLIC_TEST_ONLY` (run only cases whose name contains it) and
+//! workspace sees as an external repository), `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case limit)
+//! and `ACYCLIC_TEST_TEMP_ROOT` (`memory`, or `disk` for a target tagged `requires-disk-tmp`; see
+//! `temporary_root`). A nextest profile's cases select through `ACYCLIC_TEST_ONLY` (run only cases
+//! whose name contains it) and
 //! `ACYCLIC_TEST_EXCLUDE` (newline-separated; skip cases whose name contains any), as
 //! nextest's `test(...)` default filters do; a profile whose cases nextest runs under a wrapper
 //! script names it as `ACYCLIC_TEST_WRAPPER`. Within those, cases are selected as libtest
@@ -23,6 +24,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};
+use std::hash::BuildHasher as _;
 use std::io::{self, Write};
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
@@ -61,6 +63,8 @@ struct Suite {
     exclude: Vec<String>,
     package: PathBuf,
     logs: PathBuf,
+    /// This runner's own directory, where each case's temporary directory is made.
+    temporary: RunnerDirectory,
     limit: Duration,
 }
 
@@ -93,7 +97,7 @@ fn main() -> ExitCode {
 
 /// The runner's own settings, from its rule. Cases never see them: a case may read a variable of
 /// the same name as its own input.
-const SETTINGS: [&str; 9] = [
+const SETTINGS: [&str; 10] = [
     "ACYCLIC_TEST_BINARY",
     "ACYCLIC_TEST_EXCLUDE",
     "ACYCLIC_TEST_ID",
@@ -101,6 +105,7 @@ const SETTINGS: [&str; 9] = [
     "ACYCLIC_TEST_ONLY",
     "ACYCLIC_TEST_PACKAGE",
     "ACYCLIC_TEST_SOURCE",
+    "ACYCLIC_TEST_TEMP_ROOT",
     "ACYCLIC_TEST_WORKERS",
     "ACYCLIC_TEST_WRAPPER",
 ];
@@ -121,6 +126,7 @@ fn run() -> Result<usize, String> {
                 .then(|| (name, root.join(path)))
         })
         .collect();
+    let logs = PathBuf::from(setting("TEST_TMPDIR")?);
     let suite = Suite {
         source: root.join(setting("ACYCLIC_TEST_SOURCE")?),
         executables,
@@ -132,14 +138,21 @@ fn run() -> Result<usize, String> {
             .map(|patterns| patterns.lines().map(str::to_owned).collect())
             .unwrap_or_default(),
         package: root.join(setting("ACYCLIC_TEST_PACKAGE")?),
-        logs: PathBuf::from(setting("TEST_TMPDIR")?),
+        temporary: RunnerDirectory::claim(&temporary_root(
+            &setting("ACYCLIC_TEST_TEMP_ROOT")?,
+            Path::new(MEMORY_ROOT),
+            &logs,
+        )?)?,
+        logs,
         limit: Duration::from_secs(limit),
     };
     let selection: Vec<OsString> = env::var_os("TESTBRIDGE_TEST_ONLY")
         .into_iter()
         .chain(env::args_os().skip(1))
         .collect();
-    run_suite(&suite, &selection, &mut io::stdout().lock())
+    let failed = run_suite(&suite, &selection, &mut io::stdout().lock())?;
+    suite.temporary.release()?;
+    Ok(failed)
 }
 
 /// The cases libtest's `selection` arguments select, with `--ignored` only the ignored ones.
@@ -219,11 +232,8 @@ fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Resu
                 while let Some((index, name)) = queue.lock().ok().and_then(|mut queue| queue.next())
                 {
                     let log = suite.logs.join(format!("case-{index}.log"));
-                    let temporary = temporary_for(
-                        &suite.logs,
-                        std::process::id(),
-                        CASES.fetch_add(1, Ordering::Relaxed),
-                    );
+                    let temporary =
+                        temporary_for(&suite.temporary.path, CASES.fetch_add(1, Ordering::Relaxed));
                     let started = Instant::now();
                     let outcome = case(suite, custody, name, &log, &temporary);
                     if sender
@@ -269,26 +279,249 @@ fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Resu
 /// test` runs this crate's own tests) never share a temporary directory.
 static CASES: AtomicUsize = AtomicUsize::new(0);
 
-/// A case's own temporary directory, short by construction so a socket bound in it fits
-/// `sun_path`: Bazel's test directory alone can exceed it. On Unix it sits under `/tmp`, which
-/// the Linux sandbox makes private to the test, named by the runner's process and the case's
-/// number in it. Windows keeps it under the test's directory.
-fn temporary_for(logs: &Path, runner: u32, number: usize) -> PathBuf {
-    let name = format!("acyclic-{runner:x}-{number:x}");
-    if cfg!(unix) {
-        Path::new("/tmp").join(name)
-    } else {
-        logs.join(name)
+/// Linux's RAM-backed directory: a case's durability syncs there cost no device flush, so a
+/// test's wall time does not follow the load on the host's disk. The product still syncs.
+const MEMORY_ROOT: &str = "/dev/shm";
+
+/// The root of every case's temporary directory, by the rule's `ACYCLIC_TEST_TEMP_ROOT`. On Linux
+/// `memory` is `memory_root`, which must exist: there is no silent fallback to a disk. A target
+/// that needs a real disk's semantics (`O_DIRECT`, a block device behind `statfs`) is tagged
+/// `requires-disk-tmp` and gets `disk`. Elsewhere, and for `disk`, the root is `/tmp` on Unix
+/// (short, so a socket path fits) and the test's own directory on Windows.
+fn temporary_root(kind: &str, memory_root: &Path, logs: &Path) -> Result<PathBuf, String> {
+    let memory = match kind {
+        "memory" => true,
+        "disk" => false,
+        other => {
+            return Err(format!(
+                "ACYCLIC_TEST_TEMP_ROOT: {other:?} is neither \"memory\" nor \"disk\""
+            ));
+        }
+    };
+    if cfg!(target_os = "linux") && memory {
+        if !memory_root.is_dir() {
+            return Err(format!(
+                "{} is not a directory, so cases cannot have RAM-backed temporary directories; \
+                 recovery: mount it, or tag a target that needs a real disk requires-disk-tmp",
+                memory_root.display()
+            ));
+        }
+        let mounts = fs::read_to_string("/proc/self/mountinfo")
+            .map_err(|error| format!("/proc/self/mountinfo: {error}"))?;
+        if !executes(memory_root, &mounts) {
+            return Err(format!(
+                "{} is mounted noexec, so a case cannot run a script it writes there; \
+                 recovery: remount it exec, or tag a target that needs a real disk requires-disk-tmp",
+                memory_root.display()
+            ));
+        }
+        return Ok(memory_root.to_path_buf());
     }
+    Ok(if cfg!(unix) {
+        PathBuf::from("/tmp")
+    } else {
+        logs.to_path_buf()
+    })
+}
+
+/// Whether the mount holding `path` lets a case execute files, by its innermost entry in
+/// `mountinfo` (the format of `/proc/self/mountinfo`: the mount point is the fifth field and its
+/// options the sixth). Cases write and run scripts in their temporary directories.
+fn executes(path: &Path, mountinfo: &str) -> bool {
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(' ').skip(4);
+            Some((Path::new(fields.next()?), fields.next()?))
+        })
+        .filter(|(point, _)| path.starts_with(point))
+        .max_by_key(|(point, _)| point.as_os_str().len())
+        .is_some_and(|(_, options)| !options.split(',').any(|option| option == "noexec"))
+}
+
+/// The prefix of a runner's directory, followed by exactly eight lowercase hex digits.
+const RUNNER_PREFIX: &str = "acyclic-";
+
+/// A runner's own directory under the shared temporary root, holding its cases' directories.
+///
+/// A root such as `/dev/shm` or `/tmp` outlives every sandbox, and Bazel may kill a runner before
+/// it removes what its cases left. So on Unix the runner holds an exclusive `flock` on its
+/// directory for its whole life, which the kernel releases however the process ends, and every
+/// new runner reclaims each runner directory of its own user whose lock it can take: that runner
+/// is gone. The directory is created owner-only under a random name, then locked; a reclaimer
+/// that takes it before its owner locks it removes it, and the owner sees the unlinked inode and
+/// retries. Another user's directories are left alone.
+struct RunnerDirectory {
+    path: PathBuf,
+    #[cfg(unix)]
+    _lock: File,
+}
+
+fn failed(action: &str, path: &Path, error: io::Error) -> String {
+    format!("{action} {}: {error}", path.display())
+}
+
+impl RunnerDirectory {
+    fn claim(root: &Path) -> Result<Self, String> {
+        // Abandoned directories go before this runner needs a new one: they may hold the very
+        // space or inodes its creation needs.
+        #[cfg(unix)]
+        reclaim(root, acyclic_native_runtime::private_file::effective_user())?;
+        let mut attempt = 0_u64;
+        loop {
+            let name = std::collections::hash_map::RandomState::new()
+                .hash_one((std::process::id(), attempt))
+                .to_le_bytes();
+            let name = u32::from_le_bytes([name[0], name[1], name[2], name[3]]);
+            let path = root.join(format!("{RUNNER_PREFIX}{name:08x}"));
+            let directory = &mut fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                directory.mode(0o700);
+            }
+            match directory.create(&path) {
+                Ok(()) => {}
+                // A live runner already has this name; take another.
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    attempt += 1;
+                    continue;
+                }
+                Err(error) => return Err(failed("create", &path, error)),
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                let lock = match File::open(&path) {
+                    Ok(lock) => lock,
+                    // A reclaimer took the still-unlocked directory first.
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        attempt += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(failed("open", &path, error)),
+                };
+                lock.lock().map_err(|error| failed("lock", &path, error))?;
+                let held = lock
+                    .metadata()
+                    .map_err(|error| failed("inspect", &path, error))?;
+                match fs::symlink_metadata(&path) {
+                    Ok(visible) if (visible.dev(), visible.ino()) == (held.dev(), held.ino()) => {
+                        return Ok(Self { path, _lock: lock });
+                    }
+                    // The directory this runner locked is no longer the one at its path.
+                    Ok(_) => {
+                        attempt += 1;
+                        continue;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        attempt += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(failed("inspect", &path, error)),
+                }
+            }
+            #[cfg(not(unix))]
+            return Ok(Self { path });
+        }
+    }
+
+    /// Removes the directory once every case has ended.
+    fn release(&self) -> Result<(), String> {
+        remove(&self.path)
+    }
+}
+
+/// Removes a runner directory and everything in it. A case may leave a directory it made
+/// unwritable; the runner owns the whole tree, so it restores its own access to each directory
+/// first, and no leftover outlives its runner's reclaim.
+fn remove(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    restore_access(path)?;
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        // A reclaimer may have removed the same directory first.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(failed("remove", path, error)),
+    }
+}
+
+/// Gives the owner full access to `path` and every directory under it, following no link.
+#[cfg(unix)]
+fn restore_access(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(failed("inspect", path, error)),
+    };
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    if metadata.permissions().mode() & 0o700 != 0o700 {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|error| failed("restore access to", path, error))?;
+    }
+    for entry in fs::read_dir(path).map_err(|error| failed("list", path, error))? {
+        restore_access(&entry.map_err(|error| failed("list", path, error))?.path())?;
+    }
+    Ok(())
+}
+
+/// Removes every runner directory of `user` under `root` whose lock is free.
+#[cfg(unix)]
+fn reclaim(root: &Path, user: u32) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt as _;
+    for entry in fs::read_dir(root).map_err(|error| failed("list", root, error))? {
+        let entry = entry.map_err(|error| failed("list", root, error))?;
+        let path = entry.path();
+        if !entry.file_name().to_str().is_some_and(is_runner_name) {
+            continue;
+        }
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(failed("inspect", &path, error)),
+        };
+        if !metadata.is_dir() || metadata.uid() != user {
+            continue;
+        }
+        let abandoned = match File::open(&path) {
+            Ok(abandoned) => abandoned,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(failed("open", &path, error)),
+        };
+        match abandoned.try_lock() {
+            Ok(()) => remove(&path)?,
+            Err(fs::TryLockError::WouldBlock) => {}
+            Err(fs::TryLockError::Error(error)) => return Err(failed("lock", &path, error)),
+        }
+    }
+    Ok(())
+}
+
+/// Whether `name` is a runner directory's: the prefix and exactly eight lowercase hex digits.
+fn is_runner_name(name: &str) -> bool {
+    name.strip_prefix(RUNNER_PREFIX).is_some_and(|digits| {
+        digits.len() == 8
+            && digits
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// A case's own temporary directory in its runner's directory, short by construction so a socket
+/// bound in it fits `sun_path`: Bazel's test directory alone can exceed it.
+fn temporary_for(runner: &Path, number: usize) -> PathBuf {
+    runner.join(format!("{number:x}"))
 }
 
 /// Runs one case in its own custodied process tree. A case past the limit fails, and the
 /// tree is stopped with every process the case started, including ones that left its group.
 ///
-/// The case's temporary directory is its own (`temporary_for`), created empty and removed after
-/// the case, and on Unix is named by its resolved path: Bazel gives a test no TMPDIR, and
-/// macOS's `/tmp` is a symlink, which every case that checks its paths for links refuses. A
-/// directory left by an earlier runner of the same process id is stale and is replaced.
+/// The case's temporary directory is its own (`temporary_for`), created new and empty and removed
+/// after the case, and on Unix is named by its resolved path: Bazel gives a test no TMPDIR, and
+/// macOS's `/tmp` is a symlink, which every case that checks its paths for links refuses.
 /// Windows names it by its absolute path, never a resolved one: `canonicalize` there returns a
 /// `\\?\` verbatim path, which programs a case starts (the vendored protoc) cannot open.
 fn case(
@@ -299,10 +532,7 @@ fn case(
     temporary: &Path,
 ) -> io::Result<Outcome> {
     let output = File::create(log)?;
-    match fs::remove_dir_all(temporary) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-        _ => fs::create_dir(temporary)?,
-    }
+    fs::create_dir(temporary)?;
     let named = if cfg!(windows) {
         std::path::absolute(temporary)?
     } else {
@@ -371,9 +601,11 @@ mod tests {
 
     const MARKER: &str = "acyclic-test-runner-fixture";
 
-    /// The longest file name a case may bind as a Unix socket inside its temporary directory:
-    /// `sun_path` holds 107 bytes on Linux (103 on macOS, whose root is also the longer).
+    /// The longest file name a case may bind as a Unix socket inside its temporary directory.
     const SOCKET_NAME_ROOM: usize = 56;
+
+    /// The longest path `sun_path` holds, without its terminating NUL.
+    const SUN_PATH: usize = if cfg!(target_os = "macos") { 103 } else { 107 };
 
     fn acting() -> bool {
         Path::new(MARKER).exists()
@@ -414,10 +646,13 @@ mod tests {
                 Some(env::current_exe().unwrap())
             );
             let temporary = env::temp_dir();
-            // The runner's process id is not the case's: the directory is checked by shape.
-            let name = temporary.file_name().unwrap().to_str().unwrap();
+            // The runner's name is random: the directory is checked by shape.
+            let runner = temporary.parent().and_then(Path::file_name);
             assert!(
-                name.starts_with("acyclic-") && name.ends_with("-0"),
+                temporary.file_name() == Some("0".as_ref())
+                    && runner
+                        .and_then(|name| name.to_str())
+                        .is_some_and(is_runner_name),
                 "{} is not case 0's own directory",
                 temporary.display()
             );
@@ -436,23 +671,166 @@ mod tests {
                 assert_eq!(temporary.canonicalize().unwrap(), temporary, "unresolved");
             }
             assert_eq!(fs::read_dir(&temporary).unwrap().count(), 0, "not empty");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let permissions = fs::metadata(temporary.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(permissions & 0o077, 0, "another user can open the runner");
+            }
         }
     }
 
     /// The longest per-case directory (any runner, any case) leaves a socket name of
-    /// `SOCKET_NAME_ROOM` bytes inside Linux's 107-byte `sun_path`.
+    /// `SOCKET_NAME_ROOM` bytes inside this platform's `sun_path`.
     #[cfg(unix)]
     #[test]
     fn every_case_directory_leaves_room_for_a_socket() {
-        let root = Path::new("/tmp").canonicalize().unwrap();
-        let longest = temporary_for(Path::new("/unused"), u32::MAX, usize::MAX);
-        let resolved = root.join(longest.file_name().unwrap());
-        let length = resolved.as_os_str().len() + 1 + SOCKET_NAME_ROOM;
+        for kind in ["memory", "disk"] {
+            let root = temporary_root(kind, Path::new(MEMORY_ROOT), Path::new("/unused"))
+                .unwrap()
+                .canonicalize()
+                .unwrap();
+            let runner = root.join(format!("{RUNNER_PREFIX}{:08x}", u32::MAX));
+            assert!(is_runner_name(&format!("{RUNNER_PREFIX}{:08x}", u32::MAX)));
+            let longest = temporary_for(&runner, usize::MAX);
+            let length = longest.as_os_str().len() + 1 + SOCKET_NAME_ROOM;
+            assert!(
+                length <= SUN_PATH,
+                "{} leaves {length} > {SUN_PATH}",
+                longest.display()
+            );
+        }
+    }
+
+    /// A runner reclaims the directory of a runner that is gone, even one its cases left unwritable,
+    /// keeps a live runner's, and never touches another program's entry of a similar name.
+    #[cfg(unix)]
+    #[test]
+    fn a_runner_reclaims_only_directories_whose_runner_is_gone() {
+        let root = env::temp_dir().join(format!("acyclic-reclaim-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let live = RunnerDirectory::claim(&root).unwrap();
+        let gone = RunnerDirectory::claim(&root).unwrap();
+        fs::write(gone.path.join("left-behind"), "").unwrap();
+        // A case may end with a directory it made unwritable, its entries still in it.
+        let sealed = gone.path.join("sealed");
+        fs::create_dir(&sealed).unwrap();
+        fs::write(sealed.join("entry"), "").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let gone_path = gone.path.clone();
+        drop(gone);
+        let other = root.join(format!("{RUNNER_PREFIX}0000000g"));
+        fs::create_dir(&other).unwrap();
+        let next = RunnerDirectory::claim(&root).unwrap();
         assert!(
-            length <= 107,
-            "{} leaves {length} > 107",
-            resolved.display()
+            !gone_path.exists(),
+            "{} was not reclaimed",
+            gone_path.display()
         );
+        assert!(live.path.is_dir() && next.path.is_dir() && other.is_dir());
+        live.release().unwrap();
+        next.release().unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A pre-created entry at the old predictable lock path in the shared root is ignored: the
+    /// lock lives in a directory only this user can write, so another user cannot block a runner
+    /// by claiming a name there.
+    #[cfg(unix)]
+    #[test]
+    fn a_foreign_entry_at_the_old_lock_path_does_not_block_a_runner() {
+        let root = env::temp_dir().join(format!("acyclic-lock-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let user = acyclic_native_runtime::private_file::effective_user();
+        let old = root.join(format!("{RUNNER_PREFIX}{user}.lock"));
+        // A directory is not a file of the user, so the old lock would refuse it.
+        fs::create_dir(&old).unwrap();
+        let runner = RunnerDirectory::claim(&root).unwrap();
+        assert!(runner.path.is_dir());
+        runner.release().unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A lock file in the process's `HOME` does not block a runner: the lock is the runner's own
+    /// directory in the shared root, so jobs with different `HOME` values share one lock.
+    #[cfg(unix)]
+    #[test]
+    fn a_home_lock_file_does_not_block_a_runner() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = env::temp_dir().join(format!("acyclic-home-root-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let home = env::temp_dir().join(format!("acyclic-home-{}", std::process::id()));
+        fs::create_dir(&home).unwrap();
+        let lock_directory = home.join(".acyclic-test-runner");
+        fs::create_dir(&lock_directory).unwrap();
+        fs::set_permissions(&lock_directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let user = acyclic_native_runtime::private_file::effective_user();
+        // A directory at the lock path is not a file the old lock code would accept.
+        fs::create_dir(lock_directory.join(format!("{RUNNER_PREFIX}{user}.lock"))).unwrap();
+        let output = Command::new(env::current_exe().unwrap())
+            .args(["tests::home_lock_runner", "--exact", "--nocapture"])
+            .env("ACYCLIC_HOME_LOCK_ROOT", &root)
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// Acts as a runner whose `HOME` holds a lock file the old lock code would refuse.
+    #[cfg(unix)]
+    #[test]
+    fn home_lock_runner() {
+        if let Some(root) = env::var_os("ACYCLIC_HOME_LOCK_ROOT") {
+            let runner = RunnerDirectory::claim(Path::new(&root)).unwrap();
+            assert!(runner.path.is_dir());
+            runner.release().unwrap();
+        }
+    }
+
+    /// The innermost mount decides, and only its own `noexec` refuses execution.
+    #[test]
+    fn a_noexec_mount_is_refused_by_its_innermost_entry() {
+        let mounts = concat!(
+            "22 1 0:21 / / rw,relatime shared:1 - ext4 /dev/root rw\n",
+            "25 22 0:23 / /dev/shm rw,nosuid,nodev,noexec shared:3 - tmpfs tmpfs rw\n",
+        );
+        assert!(!executes(Path::new("/dev/shm"), mounts));
+        assert!(executes(Path::new("/tmp"), mounts));
+        let remounted =
+            format!("{mounts}26 22 0:24 / /dev/shm rw,nosuid shared:4 - tmpfs tmpfs rw\n");
+        assert!(executes(Path::new("/dev/shm"), &remounted));
+    }
+
+    /// Cases get RAM-backed directories on Linux and a disk only when the target declares one;
+    /// a missing RAM root or an unknown kind refuses the suite instead of falling back.
+    #[test]
+    fn the_temporary_root_is_memory_on_linux_unless_a_disk_is_declared() {
+        let logs = Path::new("/unused");
+        let memory = temporary_root("memory", Path::new(MEMORY_ROOT), logs).unwrap();
+        let disk = temporary_root("disk", Path::new(MEMORY_ROOT), logs).unwrap();
+        if cfg!(target_os = "linux") {
+            assert_eq!(memory, Path::new(MEMORY_ROOT));
+            let missing = env::temp_dir().join(format!("acyclic-no-root-{}", std::process::id()));
+            let refused = temporary_root("memory", &missing, logs).unwrap_err();
+            assert!(refused.contains("requires-disk-tmp"), "{refused}");
+        } else {
+            assert_eq!(memory, disk);
+        }
+        assert_ne!(disk, Path::new(MEMORY_ROOT));
+        assert!(temporary_root("ram", Path::new(MEMORY_ROOT), logs).is_err());
     }
 
     /// Acts as a runner started with its settings set, running `environment_case`.
@@ -473,6 +851,10 @@ mod tests {
                 only: None,
                 exclude: Vec::new(),
                 package: root.clone(),
+                temporary: RunnerDirectory::claim(
+                    &temporary_root("memory", Path::new(MEMORY_ROOT), &root).unwrap(),
+                )
+                .unwrap(),
                 logs: root,
                 limit: Duration::from_secs(10),
             };
@@ -483,6 +865,7 @@ mod tests {
                 &mut out,
             )
             .unwrap();
+            suite.temporary.release().unwrap();
             let out = String::from_utf8(out).unwrap();
             assert_eq!((failed, out.lines().count()), (0, 1), "{out}");
         }
@@ -490,7 +873,9 @@ mod tests {
 
     #[test]
     fn cases_see_their_inputs_and_none_of_the_runner_settings() {
-        let dir = suite("environment").package;
+        let environment = suite("environment");
+        environment.temporary.release().unwrap();
+        let dir = environment.package;
         let mut runner = Command::new(env::current_exe().unwrap());
         runner
             .args(["tests::environment_runner", "--exact", "--nocapture"])
@@ -522,6 +907,10 @@ mod tests {
             only: None,
             exclude: Vec::new(),
             package: dir.clone(),
+            temporary: RunnerDirectory::claim(
+                &temporary_root("memory", Path::new(MEMORY_ROOT), &dir).unwrap(),
+            )
+            .unwrap(),
             logs: dir,
             limit: Duration::from_secs(2),
         }
@@ -531,6 +920,7 @@ mod tests {
         let selection: Vec<OsString> = selection.iter().map(OsString::from).collect();
         let mut out = Vec::new();
         let failed = run_suite(suite, &selection, &mut out).unwrap();
+        suite.temporary.release().unwrap();
         fs::remove_dir_all(&suite.package).unwrap();
         (failed, String::from_utf8(out).unwrap())
     }
@@ -691,6 +1081,7 @@ mod tests {
     fn a_selection_matching_no_case_is_refused() {
         let suite = suite("unmatched");
         let refused = run_suite(&suite, &["tests::no_such_case".into()], &mut Vec::new());
+        suite.temporary.release().unwrap();
         fs::remove_dir_all(&suite.package).unwrap();
         assert_eq!(
             refused,

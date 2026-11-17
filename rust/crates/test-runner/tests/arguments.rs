@@ -56,6 +56,7 @@ fn the_runner_selects_cases_from_its_arguments() {
         .env("ACYCLIC_TEST_PACKAGE", &dir)
         .env("ACYCLIC_TEST_SOURCE", EXTERNAL_SOURCE)
         .env("ACYCLIC_TEST_LIMIT_SECONDS", "10")
+        .env("ACYCLIC_TEST_TEMP_ROOT", "memory")
         .env("TEST_TMPDIR", &dir)
         .env_remove("TESTBRIDGE_TEST_ONLY")
         .current_dir(&dir)
