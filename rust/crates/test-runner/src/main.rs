@@ -347,49 +347,27 @@ const RUNNER_PREFIX: &str = "acyclic-";
 /// A root such as `/dev/shm` or `/tmp` outlives every sandbox, and Bazel may kill a runner before
 /// it removes what its cases left. So on Unix the runner holds an exclusive `flock` on its
 /// directory for its whole life, which the kernel releases however the process ends, and every
-/// runner first reclaims each runner directory whose lock it can take: that runner is gone. Both
-/// steps run under a lock on the root itself, so a directory is never reclaimed between its
-/// creation and its owner's lock. A root's process ids are not unique across sandboxes, so the
-/// directory is named randomly and created exclusively.
+/// new runner reclaims each runner directory of its own user whose lock it can take: that runner
+/// is gone. Claiming, reclaiming and removal all run under a lock on the root itself, so a scan
+/// never sees a directory between its creation and its owner's lock or while it is removed.
+/// Another user's directories are left alone. A root's process ids are not unique across
+/// sandboxes, so the directory is named randomly and created exclusively.
 struct RunnerDirectory {
+    #[cfg(unix)]
+    root: PathBuf,
     path: PathBuf,
     #[cfg(unix)]
     _lock: File,
 }
 
+fn failed(action: &str, path: &Path, error: io::Error) -> String {
+    format!("{action} {}: {error}", path.display())
+}
+
 impl RunnerDirectory {
     fn claim(root: &Path) -> Result<Self, String> {
-        let failed = |action: &str, path: &Path, error: io::Error| {
-            format!("{action} {}: {error}", path.display())
-        };
         #[cfg(unix)]
-        let root_lock = {
-            let lock = File::open(root).map_err(|error| failed("open", root, error))?;
-            lock.lock().map_err(|error| failed("lock", root, error))?;
-            for entry in fs::read_dir(root).map_err(|error| failed("list", root, error))? {
-                let entry = entry.map_err(|error| failed("list", root, error))?;
-                let path = entry.path();
-                let directory = entry
-                    .file_type()
-                    .map_err(|error| failed("inspect", &path, error))?
-                    .is_dir();
-                if !directory || !entry.file_name().to_str().is_some_and(is_runner_name) {
-                    continue;
-                }
-                let abandoned = File::open(&path).map_err(|error| failed("open", &path, error))?;
-                match abandoned.try_lock() {
-                    Ok(()) => {
-                        fs::remove_dir_all(&path)
-                            .map_err(|error| failed("reclaim", &path, error))?;
-                    }
-                    Err(fs::TryLockError::WouldBlock) => {}
-                    Err(fs::TryLockError::Error(error)) => {
-                        return Err(failed("lock", &path, error));
-                    }
-                }
-            }
-            lock
-        };
+        let root_lock = lock_root(root)?;
         let mut attempt = 0_u64;
         let path = loop {
             let name = std::collections::hash_map::RandomState::new()
@@ -406,10 +384,21 @@ impl RunnerDirectory {
         };
         #[cfg(unix)]
         {
+            use std::os::unix::fs::MetadataExt as _;
             let lock = File::open(&path).map_err(|error| failed("open", &path, error))?;
             lock.lock().map_err(|error| failed("lock", &path, error))?;
+            // The directory this runner just created names its own user.
+            let user = lock
+                .metadata()
+                .map_err(|error| failed("inspect", &path, error))?
+                .uid();
+            reclaim(root, &path, user)?;
             drop(root_lock);
-            Ok(Self { path, _lock: lock })
+            Ok(Self {
+                root: root.to_path_buf(),
+                path,
+                _lock: lock,
+            })
         }
         #[cfg(not(unix))]
         Ok(Self { path })
@@ -417,9 +406,44 @@ impl RunnerDirectory {
 
     /// Removes the directory once every case has ended.
     fn release(&self) -> Result<(), String> {
-        fs::remove_dir_all(&self.path)
-            .map_err(|error| format!("remove {}: {error}", self.path.display()))
+        #[cfg(unix)]
+        let _root = lock_root(&self.root)?;
+        fs::remove_dir_all(&self.path).map_err(|error| failed("remove", &self.path, error))
     }
+}
+
+/// Takes the root's lock, which serializes every runner's claim, reclaim and removal.
+#[cfg(unix)]
+fn lock_root(root: &Path) -> Result<File, String> {
+    let lock = File::open(root).map_err(|error| failed("open", root, error))?;
+    lock.lock().map_err(|error| failed("lock", root, error))?;
+    Ok(lock)
+}
+
+/// Removes every runner directory of `user` under `root`, other than `own`, whose lock is free.
+#[cfg(unix)]
+fn reclaim(root: &Path, own: &Path, user: u32) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt as _;
+    for entry in fs::read_dir(root).map_err(|error| failed("list", root, error))? {
+        let entry = entry.map_err(|error| failed("list", root, error))?;
+        let path = entry.path();
+        if path == own || !entry.file_name().to_str().is_some_and(is_runner_name) {
+            continue;
+        }
+        let metadata = entry
+            .metadata()
+            .map_err(|error| failed("inspect", &path, error))?;
+        if !metadata.is_dir() || metadata.uid() != user {
+            continue;
+        }
+        let abandoned = File::open(&path).map_err(|error| failed("open", &path, error))?;
+        match abandoned.try_lock() {
+            Ok(()) => fs::remove_dir_all(&path).map_err(|error| failed("reclaim", &path, error))?,
+            Err(fs::TryLockError::WouldBlock) => {}
+            Err(fs::TryLockError::Error(error)) => return Err(failed("lock", &path, error)),
+        }
+    }
+    Ok(())
 }
 
 /// Whether `name` is a runner directory's: the prefix and exactly eight lowercase hex digits.
