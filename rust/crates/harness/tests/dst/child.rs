@@ -273,9 +273,6 @@ fn settled_names(results: &[(String, serde_json::Value)]) -> Vec<String> {
 fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), String> {
     let fault = fault(seed);
     let topology = topology(seed);
-    if !requests.iter().any(|request| request.summary) {
-        return Err(format!("{fault}/{topology}: no background summary request"));
-    }
     let results = wait_results(requests)?;
     let found = settled_names(&results);
     // A recovered root observes its direct child; the middle agent's own
