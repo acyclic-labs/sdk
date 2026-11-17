@@ -165,6 +165,20 @@ fn state_wait(form: &str, id: &str, state: &str, target: &str, sibling: &str) ->
     }
 }
 
+/// The reopened host's wait. The no-agent form's inbox wake is not used
+/// across a reopen; the same child is observed by name instead.
+fn reopen_wait(form: &str, id: &str, state: &str, target: &str, sibling: &str) -> ToolCall {
+    if form == "no_agents" {
+        if needs_sibling(state) {
+            wait(id, &[sibling, target], Some(1), None)
+        } else {
+            wait(id, &[target], None, None)
+        }
+    } else {
+        state_wait(form, id, state, target, sibling)
+    }
+}
+
 fn needs_sibling(state: &str) -> bool {
     matches!(state, "running" | "starting")
 }
@@ -194,7 +208,7 @@ fn plans(seed: u64) -> Vec<Plan> {
         },
         Plan {
             tag: "c3-reopen",
-            steps: vec![vec![state_wait(
+            steps: vec![vec![reopen_wait(
                 form,
                 "reopen-wait",
                 state,
@@ -316,7 +330,7 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
     if reason(value).is_empty() {
         return Err(format!("wait {id} returned no reason: {value}"));
     }
-    if form == "no_agents" {
+    if form == "no_agents" && relation != "same_parent_other_runtime" {
         if reason(value) != "input" {
             return Err(format!("no-agent wait returned {}: {value}", reason(value)));
         }
@@ -373,10 +387,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 let mut world = World::new(seed, &[("marker.txt", "marker\n")], service(plans(seed)))
                     .map_err(oracle::failed)?
                     .completing();
-                let mut spawn_prompt = vec![("root", tag("c3-reopen-spawn"))];
-                if form == "no_agents" {
-                    spawn_prompt.push(("wake", "wake".to_owned()));
-                }
+                let spawn_prompt = vec![("root", tag("c3-reopen-spawn"))];
                 let spawned = world
                     .incarnation(None, &[spawn_prompt])
                     .await
@@ -392,10 +403,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                         spawned.prompts
                     ));
                 }
-                let mut recovery = vec![vec![("reopen", tag("c3-reopen"))]];
-                if form == "no_agents" {
-                    recovery[0].push(("wake", "wake".to_owned()));
-                }
+                let recovery = vec![vec![("reopen", tag("c3-reopen"))]];
                 let reopened = world
                     .incarnation(None, &recovery)
                     .await
