@@ -92,6 +92,8 @@ struct Connection {
 }
 
 /// Authenticated customer connection; infrastructure remains entirely service-owned.
+/// Static and renewed bearer credentials use shared Auth admission, with no
+/// client-specific byte ceiling.
 #[derive(Clone)]
 pub struct Inference(Arc<Connection>);
 
