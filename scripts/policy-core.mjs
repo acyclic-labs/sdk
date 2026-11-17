@@ -1,5 +1,5 @@
 import {execFileSync} from 'node:child_process';
-import {existsSync, readFileSync, readdirSync} from 'node:fs';
+import {existsSync, lstatSync, readFileSync, readdirSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -121,7 +121,10 @@ export function testFeatureFindings(root) {
         for (const name of readdirSync(join(directory, 'tests'))) {
           const path = `tests/${name}`;
           if (name.endsWith('.rs') && !targets.has(path)) targets.set(path, {});
-          if (existsSync(join(directory, path, 'main.rs')) && !targets.has(`${path}/main.rs`)) targets.set(`${path}/main.rs`, {});
+          try {
+            lstatSync(join(directory, path, 'main.rs'));
+            if (!targets.has(`${path}/main.rs`)) targets.set(`${path}/main.rs`, {});
+          } catch (error) { if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error; }
         }
       }
       for (const [path, target] of targets) {

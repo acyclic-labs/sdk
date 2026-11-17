@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFileSync, spawnSync} from 'node:child_process';
-import {copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
@@ -35,6 +35,10 @@ test('real Cargo targets retain feature closure, alternatives, platform independ
   assert.doesNotMatch(errors[0], /add required-features/);
   assert.equal(testFeatureFindings(fixture(t, '', '', {'tests/nested/main.rs': '#![cfg(feature="local")]'})).length, 1);
   assert.equal(testFeatureFindings(fixture(t, 'autotests=false\n[[test]]\nname="custom"\npath="custom.rs"\n', '', {'custom.rs': '#![cfg(feature="local")]'})).length, 1);
+  const broken = fixture(t, '', '');
+  mkdirSync(join(broken, 'tests/nested'));
+  symlinkSync('absent.rs', join(broken, 'tests/nested/main.rs'), 'file');
+  assert.match(testFeatureFindings(broken)[0], /ENOENT/);
 });
 
 test('bounded cfg model: direct evaluation agrees with the former independent DNF representation', () => {
