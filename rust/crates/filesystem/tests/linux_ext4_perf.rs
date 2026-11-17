@@ -493,7 +493,8 @@ async fn linux_working_set_cost_ledger_is_bounded() -> Result<(), Box<dyn std::e
                     .publication(acyclic_fs::MountPublication::Manual)
                     .subdirectory("/hot"),
             )
-            .await?,
+            .await?
+            .native_context(&work, None, None),
             &materialization,
             WorkBudget::UNBOUNDED,
             &cancel,
