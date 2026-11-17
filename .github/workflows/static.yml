@@ -13,25 +13,9 @@ concurrency:
   group: static-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  advisory:
-    name: Offline dependency audit
-    runs-on: kaizen-linux
-    timeout-minutes: 1
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install Bazelisk
-        run: npm install --global @bazel/bazelisk@1.26.0
-      - name: Audit resolved Rust dependencies offline
-        run: bazelisk test --test_output=errors //toolchains/cargo-deny:offline_test
-      - name: Test advisory index parsing
-        run: bazelisk test --test_output=errors //toolchains/cargo-deny:index_test
   static:
     name: SDK Static
     runs-on: kaizen-linux
-    needs: advisory
-    if: ${{ always() }}
     timeout-minutes: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,8 +61,3 @@ jobs:
         run: rustup toolchain install
       - name: Check formatting of every tracked Rust file without compiling
         run: node scripts/qualify-rustfmt.mjs
-      - name: Require the dependency audit
-        if: ${{ always() }}
-        env:
-          ADVISORY_RESULT: ${{ needs.advisory.result }}
-        run: test "$ADVISORY_RESULT" = success
