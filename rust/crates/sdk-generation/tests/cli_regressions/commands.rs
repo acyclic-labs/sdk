@@ -150,15 +150,6 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         return Ok(None);
     };
     let environment = command.get_envs().collect::<BTreeMap<_, _>>();
-    if environment
-        .get(std::ffi::OsStr::new("RUSTUP_TOOLCHAIN"))
-        .copied()
-        .flatten()
-        .and_then(|v| v.to_str())
-        != Some(format!("nightly-2026-07-01-{target}").as_str())
-    {
-        return Ok(None);
-    }
     let rustflags = if cfg!(windows) {
         "-C\u{1f}prefer-dynamic"
     } else {
@@ -203,6 +194,16 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         }
         let metadata: Value = serde_json::from_slice(&fs::read(entry.path())?)?;
         if metadata["package"].as_str() != Some(package) {
+            continue;
+        }
+        let toolchain = metadata["toolchain"].as_str().unwrap();
+        if environment
+            .get(std::ffi::OsStr::new("RUSTUP_TOOLCHAIN"))
+            .copied()
+            .flatten()
+            .and_then(|value| value.to_str())
+            != Some(format!("{toolchain}-{target}").as_str())
+        {
             continue;
         }
         let declared = metadata["cargo_flags"].as_array().unwrap();

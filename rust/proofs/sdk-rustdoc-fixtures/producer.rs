@@ -4,6 +4,7 @@ fn main() {
     let mut args = env::args_os().skip(1);
     let output = PathBuf::from(args.next().unwrap());
     let rustup = fs::canonicalize(args.next().unwrap()).unwrap();
+    let toolchain = args.next().unwrap().into_string().unwrap();
     let package = args.next().unwrap().into_string().unwrap();
     let root = output.with_extension("work");
     let source = root.join("source");
@@ -28,7 +29,7 @@ fn main() {
         .unwrap()
         .join("rustup");
     let version = Command::new(&rustup)
-        .args(["run", "nightly-2026-07-01", "rustc", "-vV"])
+        .args(["run", &toolchain, "rustc", "-vV"])
         .env("RUSTUP_HOME", &home)
         .env("CARGO_HOME", root.join("cargo-home"))
         .output()
@@ -41,13 +42,13 @@ fn main() {
         .unwrap();
     let bin = home
         .join("toolchains")
-        .join(format!("nightly-2026-07-01-{host}"))
+        .join(format!("{toolchain}-{host}"))
         .join("bin");
     let mut command = Command::new(rustup);
     command
         .args([
             "run",
-            "nightly-2026-07-01",
+            &toolchain,
             "cargo",
             "rustdoc",
             "--locked",

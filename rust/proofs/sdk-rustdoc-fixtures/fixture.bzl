@@ -9,6 +9,7 @@ def _rustdoc_fixture_impl(ctx):
     ctx.actions.write(metadata, json.encode({
         "fixture_root": ctx.attr.fixture_root,
         "package": ctx.attr.package,
+        "toolchain": ctx.attr._rustup.label.name,
         "cargo_flags": ctx.attr.cargo_flags,
         "sources": [_repository_path(file.short_path) for file in ctx.files.srcs],
         "output": _repository_path(output.short_path),
@@ -16,6 +17,7 @@ def _rustdoc_fixture_impl(ctx):
     args = ctx.actions.args()
     args.add(output)
     args.add(ctx.file._rustup)
+    args.add(ctx.attr._rustup.label.name)
     args.add(ctx.attr.package)
     for file in ctx.files.srcs:
         path = _repository_path(file.short_path)
@@ -44,7 +46,7 @@ rustdoc_fixture = rule(
         "package": attr.string(mandatory = True),
         "cargo_flags": attr.string_list(),
         "_producer": attr.label(default = ":producer", executable = True, cfg = "exec"),
-        "_rustup": attr.label(default = "@sdk_compilers//:rustup", allow_single_file = True, cfg = "exec"),
+        "_rustup": attr.label(default = "@sdk_compilers//:nightly-2026-07-01", allow_single_file = True, cfg = "exec"),
     },
 )
 
