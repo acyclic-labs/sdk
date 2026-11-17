@@ -69,16 +69,22 @@ fn with_fixture_content(
     provider: &NativeDemandSource,
     relative: &DemandPath,
     stat: HostStat,
-    context: &mut CallbackWork,
+    _context: &mut CallbackWork,
 ) -> Result<HostStat, DemandError> {
     if stat.file_type() != crate::demand::SourceNodeKind::RegularFile {
         return Ok(stat);
     }
-    let root = provider.inner.root.held(context)?;
-    match root.fixture_content(relative, context)? {
-        Some(content) => Ok(stat.with_content(content)),
-        None => Ok(stat),
-    }
+    #[cfg(unix)]
+    let path = provider.inner.path.join(relative);
+    #[cfg(windows)]
+    let path = provider
+        .inner
+        .path
+        .join(std::ffi::OsString::from_wide(relative));
+    let Ok(bytes) = std::fs::read(path) else {
+        return Ok(stat);
+    };
+    Ok(stat.with_content(*blake3::hash(&bytes).as_bytes()))
 }
 
 fn version(path: Option<&[u8]>, metadata: &HostStat) -> SourceVersion {
