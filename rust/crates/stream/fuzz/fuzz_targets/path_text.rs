@@ -4,7 +4,8 @@ use acyclic_stream::StreamPath;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    assert_eq!(acyclic_stream::codec_fuzz::filesystem_paths(data), Ok(()));
+    let paths = acyclic_stream::codec_fuzz::filesystem_paths(data);
+    assert!(paths.is_ok(), "{paths:?}");
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
