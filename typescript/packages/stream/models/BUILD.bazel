@@ -48,6 +48,7 @@ rust_test(
         "//:typescript/packages/stream/test/session-model-driver.ts",
         "//:typescript/packages/stream/test/session-queue-model-driver.ts",
         "//:typescript/packages/stream/test/session-queue-work-driver.ts",
+        "//:wasm_stream_generated",
     ],
     tags = ["manual"],
 )
