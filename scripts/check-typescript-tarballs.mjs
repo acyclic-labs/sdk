@@ -1,4 +1,4 @@
-import { repositoryRoot as root } from "./policy-core.mjs";
+import { checkTypeScriptReferences, repositoryRoot as root } from "./policy-core.mjs";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
@@ -29,14 +29,7 @@ for (const entry of publishedPackageEntries) {
 const packageEntries = assembledDirectory ? publishedPackageEntries : workspacePackageEntries;
 const packageDirectories = packageEntries.map(item => item.directory);
 const rootManifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-const rootTsconfig = JSON.parse(await readFile(join(root, "tsconfig.json"), "utf8"));
-const checkedProjects = new Set(rootTsconfig.references.map(reference =>
-  relative(packagesRoot, resolve(root, reference.path)).split(sep).join("/")));
-for (const entry of packageEntries) {
-  if (!checkedProjects.has(entry.directory)) {
-    throw new Error(`TypeScript workspace package is absent from the root type check: ${entry.name}`);
-  }
-}
+checkTypeScriptReferences(root, packageDirectories);
 
 export const representativeExports = {
   "@acyclic-labs/auth": "credentialProvider",

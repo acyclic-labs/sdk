@@ -1,3 +1,4 @@
+import { checkTypeScriptReferences } from "./policy-core.mjs";
 import { spawnSync } from "node:child_process";
 import { globSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -61,6 +62,7 @@ async function main() {
   let status = "FAIL";
   const started = performance.now();
   try {
+    if (["build", "check", "typescript"].includes(operation)) checkTypeScriptReferences(root);
     if (context && process.env.SDK_WEB_DOCS_BUILD_ACTIVE !== "1") {
       process.exitCode = await releaseBuild({ id: `sdk/webdocs/${operation}/${selected ?? "all"}`,
         command: process.execPath, args: [fileURLToPath(import.meta.url), operation, ...(selected ? [selected] : [])],
