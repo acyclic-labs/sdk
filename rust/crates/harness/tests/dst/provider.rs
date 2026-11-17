@@ -565,6 +565,22 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                         return fail("the Retry-After retry changed the request bytes");
                     }
                 }
+                "child_notice_mid_turn" => {
+                    assert_history(&incarnation.requests, "d3-parent")?;
+                    let child = done("d3-child");
+                    let noticed = incarnation.requests.iter().any(|request| {
+                        !request.summary
+                            && request_tag(request, &["d3-parent"]) == Some("d3-parent")
+                            && request.messages.iter().any(|message| {
+                                serde_json::to_string(&message.content)
+                                    .unwrap_or_default()
+                                    .contains(&child)
+                            })
+                    });
+                    if !noticed {
+                        return fail("the child notice never reached a parent request");
+                    }
+                }
                 _ => assert_history(&incarnation.requests, "d3-parent")?,
             }
             Ok(true)
