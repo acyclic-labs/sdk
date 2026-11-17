@@ -16,6 +16,7 @@ pub(super) fn cached_binding_matches<State, Binding: Copy, Lease, Error>(
     cached_binding_decision(binding, lease, current, unchanged)
 }
 
+#[path = "cached_binding/decision.rs"]
 mod decision;
 pub(super) use decision::cached_binding_decision;
 
