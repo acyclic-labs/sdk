@@ -48,7 +48,7 @@ register_toolchains("@musl_toolchains_hub//:all", dev_dependency = True)
 
 register_toolchains("@llvm_toolchain//:all", dev_dependency = True)
 
-# The pinned JavaScript tools also build the package trees for dependent modules.
+# Pinned Node serves the shared policy test rule and downstream package builds.
 node = use_extension("//:node_repo.bzl", "node")
 node.node(version = "24.22.2")
 use_repo(node, "nodejs")
