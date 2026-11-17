@@ -89,6 +89,29 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
     manifests.add(slash(path.relative(root, path.join(patch.directory, 'Cargo.toml'))));
   const packages = [];
   const pending = [...manifests];
+  const enqueueLockedPatches = (name, version) => {
+    if (!lock) return;
+    const selected = (lock.package ?? []).filter(item => item.name === name && item.version === version && !item.source);
+    if (selected.length !== 1) throw Error(`Cargo.lock lacks local package ${name}@${version}`);
+    const visited = new Set(), queue = [...selected];
+    for (const item of queue) {
+      if (visited.has(item)) continue;
+      visited.add(item);
+      if (!item.source) for (const patch of patches.filter(candidate => candidate.name === item.name)) {
+        const file = slash(path.relative(root, path.join(patch.directory, 'Cargo.toml')));
+        if (toml(root, file).package?.version !== item.version) continue;
+        if (!manifests.has(file)) {manifests.add(file); pending.push(file);}
+      }
+      for (const dependency of item.dependencies ?? []) {
+        const match = /^(\S+)(?: (\S+))?(?: \((.+)\))?$/.exec(dependency);
+        if (!match) throw Error(`invalid Cargo.lock dependency ${dependency}`);
+        const candidates = (lock.package ?? []).filter(candidate => candidate.name === match[1] &&
+          (!match[2] || candidate.version === match[2]) && (!match[3] || candidate.source === match[3]));
+        if (candidates.length !== 1) throw Error(`ambiguous or missing Cargo.lock dependency ${dependency}`);
+        queue.push(candidates[0]);
+      }
+    }
+  };
   for (const file of pending) if (!withinSource(path.dirname(path.resolve(root, file)))) throw Error(`workspace dependency escapes source root: ${file}`);
   tomlFiles(root, pending);
   while (pending.length) {
@@ -112,6 +135,7 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
     const workspace = toml(root, slash(path.relative(root, path.join(workspaceDirectory, 'Cargo.toml')))).workspace ?? {};
     const own = Object.fromEntries(Object.entries(manifest.package).map(([key, value]) =>
       [key, value?.workspace === true ? workspace.package?.[key] : value]));
+    enqueueLockedPatches(own.name, own.version);
     const dependencies = [];
     const declarations = (tables, target = null) => {
       for (const [table, kind] of [['dependencies', null], ['dev-dependencies', 'dev'], ['build-dependencies', 'build']])
@@ -138,7 +162,7 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
             const next = slash(path.relative(root, path.join(local, 'Cargo.toml')));
             if (!withinSource(local)) throw Error(`workspace dependency escapes source root: ${next}`);
             if (!manifests.has(next)) {manifests.add(next); pending.push(next);}
-            if (rootManifest.workspace && !next.startsWith('../') && !path.isAbsolute(next) && !excluded(next)) {
+            if (declaration.path && rootManifest.workspace && !next.startsWith('../') && !path.isAbsolute(next) && !excluded(next)) {
               const dependency = toml(root, next);
               const explicitWorkspace = dependency.package?.workspace && path.resolve(local, dependency.package.workspace);
               if (!dependency.workspace && (!explicitWorkspace || explicitWorkspace === root)) members.add(next);

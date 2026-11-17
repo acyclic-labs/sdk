@@ -4,7 +4,7 @@ def stage_workspace(name, directory, inputs, files):
     sources = {source.removeprefix(directory + "/"): source for source in inputs}
     sources.update(files)
     staging = "$(@D)/" + name + ".source"
-    commands = ["mkdir -p '%s'" % staging]
+    commands = ["rm -rf '%s' && mkdir -p '%s'" % (staging, staging)]
     for relative, source in sources.items():
         parent = relative.rsplit("/", 1)[0] if "/" in relative else "."
         commands.extend([
