@@ -9,7 +9,7 @@ publish = false
 default-run = "sdk-generation"
 
 [package.metadata.bazel]
-test-workers = 4
+test-workers = 1
 
 [package.metadata.bazel.test-tools.sdk_generation_test]
 cargo = "//:cargo"

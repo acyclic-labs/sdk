@@ -118,7 +118,7 @@ isolated_test(
     binaries = {"//:cargo":"cargo","//:rustc":"rustc"},
     id = "sdk-generation",
     exclude = ["::full_cloud::"],
-    workers = 4,
+    workers = 1,
     limit_seconds = 10,
 )
 
@@ -130,7 +130,7 @@ isolated_test(
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
-    workers = 4,
+    workers = 1,
     limit_seconds = 10,
     tags = ["manual"],
 )
@@ -274,7 +274,7 @@ isolated_test(
     binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:cargo":"cargo","//:rustc":"rustc"},
     id = "sdk-generation::main",
     exclude = ["::full_cloud::"],
-    workers = 4,
+    workers = 1,
     limit_seconds = 10,
 )
 
@@ -286,7 +286,7 @@ isolated_test(
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
-    workers = 4,
+    workers = 1,
     limit_seconds = 10,
     tags = ["manual"],
 )

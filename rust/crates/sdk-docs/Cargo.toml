@@ -8,7 +8,7 @@ publish = false
 description = "Deterministic Rust-owned versioned SDK documentation data"
 
 [package.metadata.bazel]
-test-workers = 4
+test-workers = 1
 
 [package.metadata.bazel.test-tools.sdk_docs_test]
 cargo = "//:cargo"
