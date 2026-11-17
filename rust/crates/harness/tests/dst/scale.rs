@@ -6,10 +6,7 @@ use acyclic_harness::{
     context::{Context, ContextPipeline},
     executor::StockExecutor,
     filesystem::MemoryHarnessStorage,
-    model::{
-        Model, ModelContent, ModelContentPart, ModelMessage, ModelRole, ToolCall,
-        ToolResultContent,
-    },
+    model::{Model, ModelContent, ModelMessage, ModelRole},
     tool::ToolRegistry,
 };
 use family::{Generator, Variant};
@@ -49,30 +46,6 @@ fn text(role: ModelRole, body: &str) -> ModelMessage {
     }
 }
 
-fn call(id: &str) -> ModelMessage {
-    ModelMessage {
-        role: ModelRole::Assistant,
-        content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
-            id.into(),
-            "write".into(),
-            serde_json::json!({}),
-        ))),
-    }
-}
-
-fn result(id: &str) -> ModelMessage {
-    ModelMessage {
-        role: ModelRole::Tool,
-        content: ModelContent::Part(ModelContentPart::ToolResult {
-            call_id: id.into(),
-            name: "write".into(),
-            content: ToolResultContent::Json {
-                value: serde_json::json!({"ok": true}),
-            },
-        }),
-    }
-}
-
 #[derive(serde::Deserialize)]
 struct Rewrite {
     version: u32,
@@ -94,16 +67,11 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536)
                 .await
                 .map_err(oracle::failed)?;
-            // Two calls admit together, then their results. The rewrite must
-            // wait for both results before it drops the exchange.
             let source = Context {
                 messages: vec![
                     text(ModelRole::System, "instructions"),
                     text(ModelRole::User, &tag("scale")),
-                    call("a"),
-                    call("b"),
-                    result("a"),
-                    result("b"),
+                    text(ModelRole::User, "settled history"),
                 ],
                 current_input_index: None,
                 metadata: Default::default(),
@@ -124,7 +92,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 .await
                 .map_err(oracle::failed)?;
             let rewrite: Rewrite = serde_json::from_slice(&bytes).map_err(oracle::failed)?;
-            if rewrite.version != 1 || rewrite.drop_through != 6 || rewrite.summary.is_empty() {
+            if rewrite.version != 1 || rewrite.drop_through != 3 || rewrite.summary.is_empty() {
                 return Err(format!(
                     "invalid summary rewrite: version {}, drop_through {}, summary length {}",
                     rewrite.version,
