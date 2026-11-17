@@ -109,8 +109,12 @@ async fn execute(
         name: name.into(),
         arguments,
     };
-    let context = ToolContext::new(Arc::clone(task), invocation.operation_id, &invocation.call_id)
-        .map_err(oracle::failed)?;
+    let context = ToolContext::new(
+        Arc::clone(task),
+        invocation.operation_id,
+        &invocation.call_id,
+    )
+    .map_err(oracle::failed)?;
     read()
         .map_err(oracle::failed)?
         .executor
@@ -136,9 +140,15 @@ fn text(value: &Value) -> std::result::Result<&str, String> {
 
 fn check_page(label: &str, value: &Value) -> std::result::Result<(), String> {
     let page = page(value)?;
-    let start = page.get("start").and_then(Value::as_u64).ok_or("page start")?;
+    let start = page
+        .get("start")
+        .and_then(Value::as_u64)
+        .ok_or("page start")?;
     let end = page.get("end").and_then(Value::as_u64).ok_or("page end")?;
-    let total = page.get("total").and_then(Value::as_u64).ok_or("page total")?;
+    let total = page
+        .get("total")
+        .and_then(Value::as_u64)
+        .ok_or("page total")?;
     let eof = page.get("eof").and_then(Value::as_bool).ok_or("page eof")?;
     let next = page.get("next");
     if start > end || end > total {
@@ -152,7 +162,9 @@ fn check_page(label: &str, value: &Value) -> std::result::Result<(), String> {
     }
     let text = text(value)?;
     if text.starts_with("{\"file\"") || text.contains("\"descriptor\"") {
-        return Err(format!("{label}: read text is a machine envelope: {text:.80}"));
+        return Err(format!(
+            "{label}: read text is a machine envelope: {text:.80}"
+        ));
     }
     Ok(())
 }
