@@ -69,7 +69,9 @@ fn host_is_owned(pid: Pid) -> bool {
             let mut digits = 0;
             for byte in bytes.get(index + 5..).unwrap_or_default() {
                 if byte.is_ascii_digit() {
-                    value = value.saturating_mul(10).saturating_add(Pid::from(byte - b'0'));
+                    value = value
+                        .saturating_mul(10)
+                        .saturating_add(Pid::from(byte - b'0'));
                     digits += 1;
                 } else if digits > 0 {
                     break;

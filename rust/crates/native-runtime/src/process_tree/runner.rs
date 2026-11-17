@@ -814,11 +814,7 @@ fn has_warden() -> bool {
 /// A top-level owner has no warden to register with and no tree custody to
 /// escape. Keep the host its child and reap it here, so neither the host nor
 /// an intermediate clone becomes a zombie.
-fn start_top_level_host(
-    listener: OwnedFd,
-    admission: File,
-    events: OwnedFd,
-) -> io::Result<()> {
+fn start_top_level_host(listener: OwnedFd, admission: File, events: OwnedFd) -> io::Result<()> {
     let executable = image()?;
     let (started, child) = std::sync::mpsc::sync_channel::<std::process::Child>(1);
     std::thread::Builder::new()
