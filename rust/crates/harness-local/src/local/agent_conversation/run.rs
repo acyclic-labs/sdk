@@ -27,6 +27,17 @@ pub enum RunOutcome {
     },
 }
 
+impl RunOutcome {
+    fn terminal(event: &Lifecycle) -> Option<Self> {
+        let (action, signal) = match *event {
+            Lifecycle::Paused { signal } => (Action::Pause, signal),
+            Lifecycle::Stopped { signal } => (Action::Stop, signal),
+            _ => return None,
+        };
+        Some(Self::Terminal { action, signal })
+    }
+}
+
 impl Conversation {
     /// Admit file inputs once and run until goal completion or the host's
     /// terminal supervision event. Works over the same local/remote session.
@@ -102,22 +113,11 @@ impl Conversation {
         )?;
         let mut feed = self.connection.supervision_own().await?;
         let owner = feed.owner_control().await?;
-        if let Some((_, event)) = &owner {
-            match event.event {
-                Lifecycle::Paused { signal } => {
-                    return Ok(RunOutcome::Terminal {
-                        action: Action::Pause,
-                        signal,
-                    });
-                }
-                Lifecycle::Stopped { signal } => {
-                    return Ok(RunOutcome::Terminal {
-                        action: Action::Stop,
-                        signal,
-                    });
-                }
-                _ => {}
-            }
+        if let Some(outcome) = owner
+            .as_ref()
+            .and_then(|(_, event)| RunOutcome::terminal(&event.event))
+        {
+            return Ok(outcome);
         }
         let owner_through = owner.map(|(sequence, _)| sequence);
         let mut events = self.observe(None).await?;
@@ -185,16 +185,13 @@ impl Conversation {
                         run = event.run;
                     }
                     if event.run.is_some() && run != event.run { continue; }
-                    match event.event {
-                        Lifecycle::Paused { signal } => {
-                            if let Some(run) = event.run
-                                && feed.run_control(run).await?.is_some_and(|through| through > position.sequence) {
-                                continue;
-                            }
-                            return Ok(RunOutcome::Terminal { action: Action::Pause, signal });
+                    if let Some(outcome) = RunOutcome::terminal(&event.event) {
+                        if matches!(event.event, Lifecycle::Paused { .. })
+                            && let Some(run) = event.run
+                            && feed.run_control(run).await?.is_some_and(|through| through > position.sequence) {
+                            continue;
                         }
-                        Lifecycle::Stopped { signal } => return Ok(RunOutcome::Terminal { action: Action::Stop, signal }),
-                        _ => {}
+                        return Ok(outcome);
                     }
                 }
                 result = &mut completion, if completed.is_none() => {
