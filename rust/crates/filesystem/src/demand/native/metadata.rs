@@ -184,6 +184,13 @@ fn source_metadata(metadata: &HostStat) -> SourceMetadata {
     {
         result.windows_attributes = Some(metadata.raw.FileAttributes);
     }
+    #[cfg(feature = "test-support")]
+    if let Some(times) = fixture_times(metadata) {
+        result.created_ns = times.created_ns.map(i128::from);
+        result.modified_ns = times.modified_ns.map(i128::from);
+        result.accessed_ns = times.accessed_ns.map(i128::from);
+        result.changed_ns = times.changed_ns.map(i128::from);
+    }
     result
 }
 
