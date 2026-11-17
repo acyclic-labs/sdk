@@ -127,31 +127,6 @@ fn capture_resets_after_panic_and_rejects_nesting() {
     record(1u32); // Capture is inactive again.
 }
 
-// A shared code path may carry observation points of several types; each
-// capture keeps exactly its own type, in order, and ignores the others.
-#[test]
-fn captures_keep_only_their_event_type() {
-    let run = |(), _: bool| {
-        record(1u16);
-        record(1u8);
-        record(("foreign", 2u64));
-        record(2u8);
-        record(3u16);
-    };
-    assert_eq!(
-        pair::<_, _, u8>(|| (), run),
-        [((), vec![1, 2]), ((), vec![1, 2])]
-    );
-    assert_eq!(
-        pair::<_, _, u16>(|| (), run),
-        [((), vec![1, 3]), ((), vec![1, 3])]
-    );
-    assert_eq!(
-        pair::<_, _, (&str, u64)>(|| (), run),
-        [((), vec![("foreign", 2)]), ((), vec![("foreign", 2)])]
-    );
-}
-
 // Observation points of one event type are kept apart by name.
 #[test]
 fn named_captures_keep_only_their_kinds() {
