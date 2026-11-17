@@ -244,11 +244,9 @@ pub async fn retain(
     request: wire::RetainRequest,
 ) -> Result<Served<wire::RetainResponse>, Error> {
     let references = convert::digests(&request.references)?;
-    let root = RootId::new(request.root)?;
-    let retained = match request.fence {
-        Some(fence) => blobs.retain_fenced(&root, fence, references).await?,
-        None => blobs.retain(&root, references).await?,
-    };
+    let retained = blobs
+        .retain(&RootId::new(request.root)?, references)
+        .await?;
     Ok((
         wire::RetainResponse {
             references: retained.references,
@@ -265,11 +263,43 @@ pub async fn release(
     blobs: &dyn Blobs,
     request: wire::ReleaseRequest,
 ) -> Result<Served<wire::ReleaseResponse>, Error> {
-    let root = RootId::new(request.root)?;
-    let released = match request.terminal_fence {
-        Some(fence) => blobs.release_terminal(&root, fence).await?,
-        None => blobs.release(&root).await?,
-    };
+    let released = blobs.release(&RootId::new(request.root)?).await?;
+    Ok((
+        wire::ReleaseResponse {
+            existed: released.existed,
+        },
+        released.revision,
+    ))
+}
+
+/// Retains one batch at a fenced intent's original generation.
+pub async fn retain_fenced(
+    blobs: &dyn Blobs,
+    request: wire::RetainFencedRequest,
+) -> Result<Served<wire::RetainResponse>, Error> {
+    let retained = blobs
+        .retain_fenced(
+            &RootId::new(request.root)?,
+            request.fence,
+            convert::digests(&request.references)?,
+        )
+        .await?;
+    Ok((
+        wire::RetainResponse {
+            references: retained.references,
+        },
+        retained.revision,
+    ))
+}
+
+/// Durably closes a fenced intent through its supplied generation.
+pub async fn release_terminal(
+    blobs: &dyn Blobs,
+    request: wire::ReleaseTerminalRequest,
+) -> Result<Served<wire::ReleaseResponse>, Error> {
+    let released = blobs
+        .release_terminal(&RootId::new(request.root)?, request.fence)
+        .await?;
     Ok((
         wire::ReleaseResponse {
             existed: released.existed,
@@ -343,6 +373,8 @@ pub async fn invoke_at(
         "blobs/list" => encode(list_blobs(blobs, decode(input)?).await?),
         "blobs/retain" => encode(retain(blobs, decode(input)?).await?),
         "blobs/release" => encode(release(blobs, decode(input)?).await?),
+        "blobs/retain-fenced" => encode(retain_fenced(blobs, decode(input)?).await?),
+        "blobs/release-terminal" => encode(release_terminal(blobs, decode(input)?).await?),
         "blobs/collect" => encode(collect(blobs, decode(input)?).await?),
         "blobs/usage" => encode(usage(blobs, decode(input)?).await?),
         _ => return Err(wire::ErrorCode::InvalidArgument.into()),
@@ -408,6 +440,8 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
         }
         "blobs/retain" => reply::<wire::RetainResponse>(output).map(drop),
         "blobs/release" => reply::<wire::ReleaseResponse>(output).map(drop),
+        "blobs/retain-fenced" => reply::<wire::RetainResponse>(output).map(drop),
+        "blobs/release-terminal" => reply::<wire::ReleaseResponse>(output).map(drop),
         "blobs/collect" => reply::<wire::CollectResponse>(output).map(drop),
         "blobs/usage" => reply::<wire::UsageResponse>(output).map(drop),
         _ => return Err(wire::ErrorCode::InvalidArgument.into()),

@@ -101,6 +101,27 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         )
     }
 
+    async fn remove_fenced_batch(
+        &self,
+        key: &str,
+        root: &str,
+        name: &str,
+        references: &[Digest],
+    ) -> Result<bool, Error> {
+        if !self.medium.remove(key).await.map_err(moved)? {
+            return Ok(false);
+        }
+        self.medium.flush(&[key.to_owned()]).await.map_err(medium)?;
+        let tag = format!("f{root}.{name}");
+        self.unreference(references, &tag).await?;
+        let indexes: Vec<_> = references
+            .iter()
+            .map(|child| self.index_key(child, &tag))
+            .collect();
+        self.medium.flush(&indexes).await.map_err(medium)?;
+        Ok(true)
+    }
+
     pub(super) async fn fenced_rooted(&self) -> Result<Vec<Digest>, Error> {
         let mut references = Vec::new();
         let mut pages = self.pages(format!("{}f/", self.state.prefix));
@@ -131,19 +152,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                     // A visible terminal record must be durable before its
                     // batches or their child indexes can be removed.
                     self.medium.flush(&[terminal_key]).await.map_err(medium)?;
-                    if self.medium.remove(&key).await.map_err(moved)? {
-                        self.medium
-                            .flush(std::slice::from_ref(&key))
-                            .await
-                            .map_err(medium)?;
-                        let tag = format!("f{root}.{name}");
-                        self.unreference(&batch, &tag).await?;
-                        let indexes: Vec<_> = batch
-                            .iter()
-                            .map(|child| self.index_key(child, &tag))
-                            .collect();
-                        self.medium.flush(&indexes).await.map_err(medium)?;
-                    }
+                    self.remove_fenced_batch(&key, root, name, &batch).await?;
                 } else {
                     references.extend(batch);
                 }
@@ -238,20 +247,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                     continue;
                 }
                 if let Some(references) = self.batch(&key).await? {
-                    if self.medium.remove(&key).await.map_err(moved)? {
-                        existed = true;
-                        self.medium
-                            .flush(std::slice::from_ref(&key))
-                            .await
-                            .map_err(medium)?;
-                        let tag = format!("f{root_hash}.{name}");
-                        self.unreference(&references, &tag).await?;
-                        let indexes: Vec<_> = references
-                            .iter()
-                            .map(|child| self.index_key(child, &tag))
-                            .collect();
-                        self.medium.flush(&indexes).await.map_err(medium)?;
-                    }
+                    existed |= self
+                        .remove_fenced_batch(&key, &root_hash, name, &references)
+                        .await?;
                 }
             }
         }

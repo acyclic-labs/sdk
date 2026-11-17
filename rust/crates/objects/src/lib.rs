@@ -112,6 +112,16 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
     ("blobs/list", "ListBlobsRequest", "ListBlobsResponse"),
     ("blobs/retain", "RetainRequest", "RetainResponse"),
     ("blobs/release", "ReleaseRequest", "ReleaseResponse"),
+    (
+        "blobs/retain-fenced",
+        "RetainFencedRequest",
+        "RetainResponse",
+    ),
+    (
+        "blobs/release-terminal",
+        "ReleaseTerminalRequest",
+        "ReleaseResponse",
+    ),
     ("blobs/collect", "CollectRequest", "CollectResponse"),
     ("blobs/usage", "UsageRequest", "UsageResponse"),
 ];

@@ -98,7 +98,7 @@ async fn verify_terminal_fence(first: &dyn Blobs, run: &str) -> Result<(), Failu
     for fence in [0, 3] {
         let result = first.retain_fenced(&root, fence, vec![digest]).await;
         expect!(
-            case,
+            "terminal-fence",
             code(&result) == Some(ErrorCode::TerminalFence),
             result
         );
@@ -117,7 +117,7 @@ async fn verify_terminal_fence(first: &dyn Blobs, run: &str) -> Result<(), Failu
         .map_err(|error| fail(case, error))?;
     let retained = first.delete(digest).await;
     expect!(
-        case,
+        "terminal-fence",
         matches!(&retained, Ok(value) if value.outcome == Delete::Referenced),
         retained
     );
@@ -127,7 +127,7 @@ async fn verify_terminal_fence(first: &dyn Blobs, run: &str) -> Result<(), Failu
         .map_err(|error| fail(case, error))?;
     let removed = first.delete(digest).await;
     expect!(
-        case,
+        "terminal-fence",
         matches!(&removed, Ok(value) if value.outcome == Delete::Deleted),
         removed
     );

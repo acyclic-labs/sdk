@@ -469,7 +469,6 @@ impl Blobs for GrpcObjects {
                 wire::RetainRequest {
                     root: root.as_bytes().to_vec(),
                     references: convert::wire_digests(&references),
-                    fence: None,
                 },
                 None
             )?;
@@ -487,7 +486,6 @@ impl Blobs for GrpcObjects {
                 release,
                 wire::ReleaseRequest {
                     root: root.as_bytes().to_vec(),
-                    terminal_fence: None,
                 },
                 None
             )?;
@@ -508,11 +506,11 @@ impl Blobs for GrpcObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let reply = call!(
                 self,
-                retain,
-                wire::RetainRequest {
+                retain_fenced,
+                wire::RetainFencedRequest {
                     root: root.as_bytes().to_vec(),
                     references: convert::wire_digests(&references),
-                    fence: Some(fence),
+                    fence,
                 },
                 None
             )?;
@@ -527,10 +525,10 @@ impl Blobs for GrpcObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let reply = call!(
                 self,
-                release,
-                wire::ReleaseRequest {
+                release_terminal,
+                wire::ReleaseTerminalRequest {
                     root: root.as_bytes().to_vec(),
-                    terminal_fence: Some(fence),
+                    fence,
                 },
                 None
             )?;
@@ -777,6 +775,18 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
         request: Request<wire::ReleaseRequest>,
     ) -> Reply<wire::ReleaseResponse> {
         serve!(self, request, release)
+    }
+    async fn retain_fenced(
+        &self,
+        request: Request<wire::RetainFencedRequest>,
+    ) -> Reply<wire::RetainResponse> {
+        serve!(self, request, retain_fenced)
+    }
+    async fn release_terminal(
+        &self,
+        request: Request<wire::ReleaseTerminalRequest>,
+    ) -> Reply<wire::ReleaseResponse> {
+        serve!(self, request, release_terminal)
     }
     async fn collect(
         &self,

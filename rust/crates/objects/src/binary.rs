@@ -221,7 +221,6 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 wire::RetainRequest {
                     root: root.as_bytes().to_vec(),
                     references: convert::wire_digests(&references),
-                    fence: None,
                 },
             )
             .await?;
@@ -236,7 +235,6 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 "blobs/release",
                 wire::ReleaseRequest {
                     root: root.as_bytes().to_vec(),
-                    terminal_fence: None,
                 },
             )
             .await?;
@@ -254,11 +252,11 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     ) -> Result<Retained, Error> {
         let (reply, revision): (wire::RetainResponse, _) = self
             .call(
-                "blobs/retain",
-                wire::RetainRequest {
+                "blobs/retain-fenced",
+                wire::RetainFencedRequest {
                     root: root.as_bytes().to_vec(),
                     references: convert::wire_digests(&references),
-                    fence: Some(fence),
+                    fence,
                 },
             )
             .await?;
@@ -270,10 +268,10 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
         let (reply, revision): (wire::ReleaseResponse, _) = self
             .call(
-                "blobs/release",
-                wire::ReleaseRequest {
+                "blobs/release-terminal",
+                wire::ReleaseTerminalRequest {
                     root: root.as_bytes().to_vec(),
-                    terminal_fence: Some(fence),
+                    fence,
                 },
             )
             .await?;

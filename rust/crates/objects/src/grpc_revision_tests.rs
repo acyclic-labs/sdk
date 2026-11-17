@@ -289,14 +289,12 @@ async fn refused_writes_for(foreign: bool) -> TestResult {
     let mut request = Request::new(wire::RetainRequest {
         root: b"refused-root".as_slice().into(),
         references: vec![digest.into()],
-        fence: None,
     });
     minimum(&mut request, Some(&floor));
     refused(&medium, &before, client.retain(request)).await?;
 
     let mut request = Request::new(wire::ReleaseRequest {
         root: b"original-root".as_slice().into(),
-        terminal_fence: None,
     });
     minimum(&mut request, Some(&floor));
     refused(&medium, &before, client.release(request)).await?;

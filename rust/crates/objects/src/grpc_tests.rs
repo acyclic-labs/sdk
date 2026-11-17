@@ -169,6 +169,34 @@ fn channel_over(resolve: AccountResolver) -> Channel {
 }
 
 #[tokio::test]
+async fn terminal_fence_survives_the_grpc_boundary() -> TestResult {
+    let provider = Arc::new(MemoryObjects::memory());
+    let resolve: AccountResolver = Arc::new(move |_| Ok(provider.clone() as Arc<dyn Blobs>));
+    let client = client_over(
+        resolve,
+        CredentialProvider::new(|| async { Ok("fixture".to_owned()) }),
+    );
+    let digest = client
+        .put(OwnedBytes::from(vec![9; 16]), Vec::new())
+        .await?
+        .verified()
+        .ok_or("unknown put")?
+        .digest;
+    let root = RootId::new(b"grpc-terminal".to_vec())?;
+    client.retain_fenced(&root, 7, vec![digest]).await?;
+    client.release_terminal(&root, 7).await?;
+    assert_eq!(
+        client
+            .retain_fenced(&root, 7, vec![digest])
+            .await
+            .map_err(|error| error.code),
+        Err(wire::ErrorCode::TerminalFence)
+    );
+    client.retain_fenced(&root, 8, vec![digest]).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn caller_supplied_channel_refreshes_credentials_for_each_rpc() -> TestResult {
     let provider = Arc::new(MemoryObjects::memory());
     let observed = Arc::new(Mutex::new(Vec::new()));
