@@ -194,23 +194,48 @@ mod tests {
     /// error naming the first known tool it names outside the command form.
     ///
     /// An instruction names a command only as a code span `` `$ <tool> ...` ``,
-    /// whose first word is the executable, whatever that name is. A known
-    /// tool named anywhere else is refused, so a command cannot reach the
-    /// model in a form this check does not read.
+    /// whose first word is the executable, whatever that name is, or as a
+    /// tool call: a tool's name span, then a `{"command":"..."}` span. A
+    /// `shell` call's first word is an executable; any other tool's command
+    /// is that tool's own subcommand, never an executable. A known tool named
+    /// anywhere else is refused, so a command cannot reach the model in a
+    /// form this check does not read.
     fn commands(text: &str) -> std::result::Result<BTreeSet<&str>, String> {
+        fn executable(line: &str) -> &str {
+            line.split_whitespace().next().unwrap_or_default()
+        }
         let mut commands = BTreeSet::new();
         let mut prose = String::new();
+        // The tool a following call span invokes: its name span, joined to
+        // the call by nothing but "with".
+        let mut called = None;
         for (index, part) in text.split('`').enumerate() {
-            match part.strip_prefix("$ ").filter(|_| index % 2 == 1) {
-                Some(line) => {
-                    let tool = line.split_whitespace().next().unwrap_or_default();
-                    commands.insert(tool);
+            let tool = called.take();
+            if index % 2 == 1 {
+                if let Some(line) = part.strip_prefix("$ ") {
+                    commands.insert(executable(line));
+                    continue;
                 }
-                None => {
-                    prose.push_str(part);
-                    prose.push(' ');
+                // A call whose command needs JSON escapes stays prose.
+                let call = serde_json::from_str::<std::collections::BTreeMap<&str, &str>>(part)
+                    .ok()
+                    .and_then(|call| call.get("command").copied());
+                match (call, tool) {
+                    (Some(line), Some("shell")) => {
+                        commands.insert(executable(line));
+                        continue;
+                    }
+                    (Some(_), Some(_)) => continue,
+                    _ => {}
                 }
+                if !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_lowercase()) {
+                    called = Some(part);
+                }
+            } else if part.trim() == "with" {
+                called = tool;
             }
+            prose.push_str(part);
+            prose.push(' ');
         }
         // A word keeps its path characters, so `.git` or `src/rg` names a
         // path, not a tool; only sentence punctuation is trimmed.
@@ -256,6 +281,18 @@ mod tests {
         );
         assert!(unprovided("Read relevant code with jq before editing.").is_err());
         assert!(unprovided("Then use git.").is_err());
+        // A facade's own subcommand is no executable; a shell call's is, and
+        // a call span no tool names is prose.
+        assert_eq!(
+            unprovided(r#"Search with `fs` with `{"command":"grep 'x'"}`."#),
+            Ok(vec![])
+        );
+        assert_eq!(
+            unprovided(r#"Run `shell` with `{"command":"make test"}`."#),
+            Ok(vec!["make"])
+        );
+        assert!(unprovided(r#"Run `{"command":"grep x"}`."#).is_err());
+        assert!(unprovided(r#"Run `fs`, then `{"command":"grep x"}`."#).is_err());
         assert_eq!(
             unprovided("Files under `.git` are project files."),
             Ok(vec![])
