@@ -112,6 +112,33 @@ test('retained producer patches use their declared config and separate lock', t 
   assert.throws(() => workspacePackages(root, {...options, patchConfig: '../foreign.toml'}), /escapes source root/);
 });
 
+test('retained lock reaches transitive patches without making patches workspace members', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-transitive-patch-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  write('Cargo.toml', '[workspace]\nmembers=["app"]\n[patch.crates-io]\ndirect={path="direct"}\ntransitive={path="transitive"}\nunused={path="unused"}\n');
+  write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nbridge="1"\ndirect="1"\n');
+  for (const name of ['direct', 'transitive', 'unused']) {
+    write(`${name}/Cargo.toml`, `[package]\nname="${name}"\nversion="1.0.0"\n[features]\nextra=[]\n[dev-dependencies]\nghost="1"\n`);
+    write(`${name}/src/lib.rs`, '');
+  }
+  write('app/src/lib.rs', '');
+  write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["bridge", "direct"]\n[[package]]\nname="bridge"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\ndependencies=["transitive"]\n[[package]]\nname="direct"\nversion="1.0.0"\n[[package]]\nname="transitive"\nversion="1.0.0"\n');
+  write('cargo-bazel-lock.json', JSON.stringify({conditions:{}, crates:{'bridge 1.0.0': {targets:[{Library:{crate_name:'bridge'}}], common_attrs:{deps:[{id:'transitive 1.0.0', target:'transitive'}]}}}}));
+  const options = {sourceRoot:root, lockFile:'Cargo.lock'};
+  const packages = workspacePackages(root, options);
+  assert.deepEqual(packages.map(p => p.name), ['app', 'direct', 'transitive']);
+  assert.deepEqual(packages.filter(p => p.workspace_member).map(p => p.name), ['app']);
+  const workspace = workspaceProfileMetadata(root, {...options, workspaceOnly:true});
+  assert.deepEqual(workspace.packages.map(p => p.name), ['app']);
+  const graph = workspaceGraph(root, null, options);
+  const node = name => graph.resolve.nodes.find(n => n.id === graph.packages.find(p => p.name === name).id);
+  assert.deepEqual(node('bridge').deps.map(dep => dep.name), ['transitive']);
+  assert.deepEqual(node('direct').features, []);
+  assert.deepEqual(node('direct').deps, []);
+  assert.deepEqual(workspaceProfileMetadata(root, options).packages.map(p => p.name), ['app', 'direct', 'transitive']);
+});
+
 test('workspace discovery includes implicit path members and respects excluded subtrees', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-members-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
