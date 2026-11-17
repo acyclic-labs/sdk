@@ -108,10 +108,10 @@ impl HistoryCursor {
             from
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let work = work.as_deref();
+        let cut_work = work.as_deref();
         #[cfg(target_arch = "wasm32")]
-        let work = None;
-        let mut cursor = Self::new(path, path.tail, start, work)?;
+        let cut_work = None;
+        let mut cursor = Self::new(path, path.tail, start, cut_work)?;
         #[cfg(not(target_arch = "wasm32"))]
         {
             cursor.work = work;

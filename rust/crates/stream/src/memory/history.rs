@@ -121,8 +121,10 @@ impl acyclic_collections::IndexWork for MeterWork<'_> {
     }
 
     fn charge_items(&mut self, items: u64) -> Result<(), StreamError> {
-        self.0.meter.examine(items, 0)?;
-        Ok(())
+        self.0
+            .meter
+            .examine(items, 0)
+            .map_err(|_| StreamError::Unavailable)
     }
 
     fn claim(&mut self, bytes: u64) -> Result<Allocation, StreamError> {
