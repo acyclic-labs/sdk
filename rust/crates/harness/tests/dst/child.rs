@@ -249,7 +249,14 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
     let topology = topology(seed);
     let results = wait_results(requests)?;
     let found = settled_names(&results);
-    for name in names(topology) {
+    // A recovered root observes its direct child; the middle agent's own
+    // grandchild wait is not replayed after the crash.
+    let expected = if fault == "crash_actor_state" && topology == "grandchild" {
+        vec!["mid"]
+    } else {
+        names(topology)
+    };
+    for name in expected {
         if !found.iter().any(|settled| settled == name) {
             return Err(format!(
                 "{fault}/{topology}: child {name} never started; settled {found:?}"
