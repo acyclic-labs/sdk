@@ -115,3 +115,14 @@ index 4365d29..e6032bb 100644
  # buildifier: disable=unnamed-macro
  def clippy_toml():
      """This setting is used by the clippy rules. See https://bazelbuild.github.io/rules_rust/rust_clippy.html
+diff --git a/cargo/private/cargo_build_script_runner/lib.rs b/cargo/private/cargo_build_script_runner/lib.rs
+--- a/cargo/private/cargo_build_script_runner/lib.rs
++++ b/cargo/private/cargo_build_script_runner/lib.rs
+@@ -83,6 +83,7 @@
+         match cargo_instruction_name {
+             "rustc-link-lib" => Some(BuildScriptOutput::LinkLib(param)),
+             "rustc-link-search" => Some(BuildScriptOutput::LinkSearch(param)),
+             "rustc-cfg" => Some(BuildScriptOutput::Cfg(param)),
++            "rustc-check-cfg" => Some(BuildScriptOutput::Flags(format!("--check-cfg={param}"))),
+             "rustc-flags" => Some(BuildScriptOutput::Flags(param)),
+             "rustc-link-arg" => Some(BuildScriptOutput::LinkArg(param)),
