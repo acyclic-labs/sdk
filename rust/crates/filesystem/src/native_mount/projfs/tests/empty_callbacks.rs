@@ -60,7 +60,13 @@ async fn constant_callbacks_preserve_status_admission_and_all_source_counters()
         runner.run(&(any::<u64>(), any::<u32>()), |(offset, length)| {
             prop_assert_eq!(invoke(&raw const data, offset, length), expected);
             prop_assert_eq!(invoke(std::ptr::null(), offset, length), [HR_UNEXPECTED; 4]);
-            prop_assert_eq!(runtime.callbacks.admission.active(), 0);
+            prop_assert_eq!(
+                runtime
+                    .callbacks
+                    .admission
+                    .drain(|| Err::<(), _>("callback remains admitted")),
+                Ok(())
+            );
             prop_assert_eq!(work.receipt(), prefix);
             Ok(())
         })?;

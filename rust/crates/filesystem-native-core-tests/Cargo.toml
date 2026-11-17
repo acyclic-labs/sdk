@@ -12,6 +12,10 @@ description = "Production-source models of shared native filesystem coordination
 name = "ready"
 path = "src/ready.rs"
 
+[[test]]
+name = "callback_gate"
+path = "src/callback_gate.rs"
+
 [dev-dependencies]
 proptest.workspace = true
 
