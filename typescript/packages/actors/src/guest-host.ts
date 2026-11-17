@@ -179,7 +179,7 @@ export class GuestActivation<State, Bindings> {
         const init: RequestInit = { method, headers: headers.map(([name, value]) => [name, value]) };
         if (method !== "GET" && method !== "HEAD") init.body = Uint8Array.from(body);
         if (signal !== undefined) init.signal = signal;
-        const request = new Request(url, init);
+        const request = new Request(new URL(url, "https://actor.invalid/"), init);
         const response = await invokeResponse(wasm, await this.fetch(request, context), signal);
         reply = () => response;
       } else {
@@ -211,7 +211,8 @@ export interface DefinitionDeployment {
   /** Declared subscription ids; each actor binds its own path when created. */
   readonly subscriptions: readonly string[];
   /** "fetch" when every invocation is a front-door `InvokeActorRequest` served
-   * by the definition's fetch; otherwise invocations are application-defined
+   * by the definition's fetch. Path targets resolve under https://actor.invalid/;
+   * absolute URLs retain their origin. Otherwise invocations are application-defined
    * bytes delivered to its event hook. */
   readonly invocations?: "fetch" | "event";
   readonly limits?: { readonly handlerTimeoutMillis?: bigint; readonly memoryBytes?: bigint; readonly checkpointBytes?: bigint };
