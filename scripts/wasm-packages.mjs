@@ -1,6 +1,6 @@
 /** Every published WASM package, with the Cargo selection Bazel renders as its wasm targets. */
 export const wasmPackages = {
-  stream: { selection: ["-p", "acyclic-stream", "--no-default-features", "--features", "wasm"], artifact: "acyclic_stream", outName: "acyclic_stream_wasm" },
+  stream: { selection: ["-p", "acyclic-stream", "--no-default-features", "--features", "wasm"], artifact: "acyclic_stream", outName: "acyclic_stream_wasm", wasmPackage: "@acyclic/stream-wasm" },
 };
 
 /** The Cargo selection of one package. */

@@ -7,7 +7,7 @@ import { credentialProvider, validateCredential, type CredentialProvider } from 
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
+import { projectMemoryResponse } from "@acyclic/stream-wasm";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
 import { normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";

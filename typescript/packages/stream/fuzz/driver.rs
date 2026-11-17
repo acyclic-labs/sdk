@@ -49,6 +49,9 @@ impl Driver {
     /// Start a process with an explicit budget for tests at the exact boundary.
     pub fn budgeted(root: &Path, scenario: &str, fault: &str, steps: u64) -> io::Result<Self> {
         let mut child = Command::new("bun")
+            // Generated wasm packages live in the runfiles node_modules; NODE_PATH reaches
+            // them even when Bazel's source symlinks resolve to the checkout's real path.
+            .env("NODE_PATH", root.join("node_modules"))
             .arg(if scenario.starts_with("deadline") {
                 "typescript/packages/stream/test/session-deadline-model-driver.ts"
             } else if scenario == "queue-work" {

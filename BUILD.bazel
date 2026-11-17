@@ -2,6 +2,7 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 load("@rules_rust_wasm_bindgen//:defs.bzl", "rust_wasm_bindgen_toolchain")
+load("//:node_modules.bzl", "node_modules")
 load("//:wasm_package.bzl", "wasm_package")
 
 constraint_setting(
@@ -131,6 +132,29 @@ wasm_package(
     name = "wasm_stream_generated",
     bindgen = "//rust/crates/stream:acyclic_stream_wasm_bindgen",
     out_dir = "typescript/packages/stream/generated/wasm",
+    package_name = "@acyclic/stream-wasm",
+    entry = "acyclic_stream_wasm",
+    visibility = ["//visibility:public"],
+)
+filegroup(
+    name = "workspace_acyclic_labs_core",
+    srcs = glob(["typescript/packages/core/**"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "workspace_acyclic_labs_auth",
+    srcs = glob(["typescript/packages/auth/**"]),
+    visibility = ["//visibility:public"],
+)
+
+node_modules(
+    name = "wasm_stream_node_modules",
+    packages = {
+        ":workspace_acyclic_labs_core": "@acyclic-labs/core=typescript/packages/core",
+        ":workspace_acyclic_labs_auth": "@acyclic-labs/auth=typescript/packages/auth",
+        ":wasm_stream_generated": "@acyclic/stream-wasm=typescript/packages/stream/generated/wasm",
+    },
     visibility = ["//visibility:public"],
 )
 
