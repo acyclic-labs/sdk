@@ -150,7 +150,7 @@ impl HistoryCursor {
             .position()
             .checked_sub(1)
             .ok_or(StreamError::InvalidArgument)?;
-        let mut pinned = PinnedHistory::new(path, path.tail);
+        let mut pinned = PinnedHistory::new(path, path.tail, &mut ReadOnlyWork)?;
         let previous = crate::pages::PageSource::next_page(&mut pinned, from, 1).await?;
         if previous
             .and_then(|window| window.records.record(window.start))
@@ -179,7 +179,8 @@ impl HistoryCursor {
     }
     fn new(path: &PathState, tail: u64, next: u64) -> Self {
         let records = FiniteRead {
-            history: PinnedHistory::new(path, tail),
+            history: PinnedHistory::new(path, tail, &mut ReadOnlyWork)
+                .expect("read-only history cut"),
             window: path.prefix_window(next, tail),
             key: None,
             next,
@@ -210,7 +211,7 @@ impl HistoryCursor {
         let appended = matches!((&history.root, root.map(AsRef::as_ref)),
             (Some(old), Some(History::Batch { parent: Some(parent), .. })) if Arc::ptr_eq(old, parent));
         let keep_page = appended && tail >= history.tail;
-        let pinned = PinnedHistory::new(path, tail);
+        let pinned = PinnedHistory::new(path, tail, &mut ReadOnlyWork)?;
         self.records.history = pinned;
         if !keep_page {
             self.records.window = None;
@@ -272,7 +273,11 @@ impl FiniteRead {
         }
     }
 
-    fn new(path: &PathState, request: ReadRequest) -> Self {
+    fn new(
+        path: &PathState,
+        request: ReadRequest,
+        work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
+    ) -> Result<Self, StreamError> {
         let tail = request.key.as_ref().map_or_else(
             || {
                 path.tail
@@ -280,17 +285,20 @@ impl FiniteRead {
             },
             |key| key.before.min(path.tail),
         );
-        Self {
-            history: PinnedHistory::new(path, tail),
+        Ok(Self {
+            history: PinnedHistory::new(path, tail, work)?,
             window: request
                 .key
                 .is_none()
                 .then(|| path.prefix_window(request.from, tail))
                 .flatten(),
-            key: request.key.map(|key| (key, path.keys.key_pin(path.tail))),
+            key: request
+                .key
+                .map(|key| path.keys.key_pin(path.tail, work).map(|pin| (key, pin)))
+                .transpose()?,
             next: request.from,
             remaining: request.limit,
-        }
+        })
     }
 
     fn peek<E>(

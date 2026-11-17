@@ -26,8 +26,12 @@ impl RecordBatch {
 type HistoryRanges = acyclic_collections::PersistentIndex<Arc<RecordBatch>, Allocation>;
 
 impl LineageIndex for HistoryRanges {
-    fn cut(&self, before: u64) -> Self {
-        self.prefix(before.to_be_bytes())
+    fn cut(
+        &self,
+        before: u64,
+        work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
+    ) -> Result<Self, StreamError> {
+        self.prefix(before.to_be_bytes(), work)
     }
 }
 
@@ -70,6 +74,27 @@ impl acyclic_collections::IndexWork for HistoryIndexWork<'_> {
     fn claim(&mut self, bytes: u64) -> Result<Allocation, StreamError> {
         self.0
             .allocate(usize::try_from(bytes).map_err(|_| StreamError::Capacity)?)
+    }
+}
+
+/// A read view's cut is temporary and not retained; it needs no allocation
+/// funding, but it still uses the same funded cut representation.
+struct ReadOnlyWork;
+
+impl acyclic_collections::IndexWork for ReadOnlyWork {
+    type Error = StreamError;
+    type Allocation = Allocation;
+
+    fn check(&mut self) -> Result<(), StreamError> {
+        Ok(())
+    }
+
+    fn charge_items(&mut self, _items: u64) -> Result<(), StreamError> {
+        Ok(())
+    }
+
+    fn claim(&mut self, _bytes: u64) -> Result<Allocation, StreamError> {
+        Ok(None)
     }
 }
 
@@ -238,12 +263,16 @@ struct PinnedHistory {
     tail: u64,
 }
 impl PinnedHistory {
-    fn new(path: &PathState, tail: u64) -> Self {
-        Self {
+    fn new(
+        path: &PathState,
+        tail: u64,
+        work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
+    ) -> Result<Self, StreamError> {
+        Ok(Self {
             root: path.history.clone(),
-            ranges: path.ranges.pin(tail),
+            ranges: path.ranges.pin(tail, work)?,
             tail,
-        }
+        })
     }
 
     fn empty(tail: u64) -> Self {

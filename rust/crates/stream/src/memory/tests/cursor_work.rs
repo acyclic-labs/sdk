@@ -394,7 +394,7 @@ proptest! {
             let mut baseline_cursor = BaselineCursor::at(start);
             baseline(&mut baseline_cursor, snapshot.history.as_ref(), snapshot.tail);
             let expected: Vec<_> = std::iter::from_fn(|| baseline_cursor.next_record()).map(record_bytes).collect();
-            let mut pinned = PinnedHistory::new(&snapshot, snapshot.tail);
+            let mut pinned = PinnedHistory::new(&snapshot, snapshot.tail, &mut ReadOnlyWork).expect("read-only cut");
             let mut after = start;
             let mut actual = Vec::new();
             while let Some(window) = crate::pages::PageSource::next_page(&mut pinned, after, budget).await.unwrap() {

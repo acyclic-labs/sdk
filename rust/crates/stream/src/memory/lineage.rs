@@ -8,7 +8,11 @@
 
 /// An index that can be restricted to the positions before a sequence cut.
 trait LineageIndex: Clone + Default {
-    fn cut(&self, before: u64) -> Self;
+    fn cut(
+        &self,
+        before: u64,
+        work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
+    ) -> Result<Self, StreamError>;
 }
 
 /// One path version's view of a lineage.
@@ -83,25 +87,35 @@ impl<I: LineageIndex> IndexLineage<I> {
     }
 
     /// An immutable index of this view for a holder at `tail`.
-    fn pin(&self, tail: u64) -> I {
+    fn pin(
+        &self,
+        tail: u64,
+        work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
+    ) -> Result<I, StreamError> {
         self.newest()
-            .cut(self.before.map_or(tail, |before| before.min(tail)))
+            .cut(self.before.map_or(tail, |before| before.min(tail)), work)
     }
 
     /// The index an extension of `path`'s version at `tail` starts from, and
     /// whether that version is the newest view of a lineage `path` owns.
-    fn base(&self, path: &StreamPath, tail: u64) -> (I, bool) {
+    fn base(
+        &self,
+        path: &StreamPath,
+        tail: u64,
+        work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
+    ) -> Result<(I, bool), StreamError> {
         match &self.shared {
             Some(shared) if self.before.is_none() && shared.owner == *path => {
-                shared.with(|newest| {
+                let newest = shared.with(|newest| {
                     if newest.generation == self.generation {
-                        (newest.index.clone(), true)
+                        Ok((newest.index.clone(), true))
                     } else {
-                        (newest.index.cut(tail), false)
+                        newest.index.cut(tail, work).map(|index| (index, false))
                     }
-                })
+                });
+                newest
             }
-            _ => (self.pin(tail), false),
+            _ => self.pin(tail, work).map(|index| (index, false)),
         }
     }
 
