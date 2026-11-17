@@ -248,12 +248,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
             }
             if let Some(root_view) = &root_view {
-                access::require_current(&root, &root_view.0, io).await?;
+                access::require_current(&root, &root_view.0, io, self.clock()).await?;
             }
             if let Some(binding) = binding {
                 bounded_io::retain(&binding, Some(io)).await?;
             }
-            access::require_current(&opened, &view.0, io).await?;
+            access::require_current(&opened, &view.0, io, self.clock()).await?;
             grant.recheck(Some(io))?;
             bounded_io::retain(generation, Some(io)).await?;
             let count = receipt.1.len();
@@ -474,9 +474,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         "conditional publication identity belongs to a different request",
                     ));
                 }
-                access::require_current(&opened, &view.0, io).await?;
+                access::require_current(&opened, &view.0, io, self.clock()).await?;
                 if let Some(root_view) = &root_view {
-                    access::require_current(&root, &root_view.0, io).await?;
+                    access::require_current(&root, &root_view.0, io, self.clock()).await?;
                 }
                 prior.into_generation()
             } else {
@@ -681,7 +681,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     io,
                     workspaces::FilePublication::Authorized(fence, grant, root_fence),
                     Some(workspaces::publication_context(receipt, io)?),
-                    self.access_now()?,
+                    self.clock(),
                 )?;
                 match root_cut {
                     Some(cut) => cut.scope(publication).await?,
