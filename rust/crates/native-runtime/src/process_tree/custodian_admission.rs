@@ -35,12 +35,12 @@ pub(super) fn secret() -> io::Result<Secret> {
 }
 
 pub(super) fn endpoint(address: &str, tree: usize, secret: &Secret) -> String {
-    let digits = tree.checked_ilog10().map_or(1, |digits| {
-        match usize::try_from(digits) {
+    let digits = tree
+        .checked_ilog10()
+        .map_or(1, |digits| match usize::try_from(digits) {
             Ok(digits) => digits + 1,
             Err(_) => unreachable!("a decimal digit count fits usize"),
-        }
-    });
+        });
     let mut endpoint = String::with_capacity(address.len() + 1 + digits + 1 + 32);
     endpoint.push_str(address);
     endpoint.push('/');

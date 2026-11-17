@@ -4,11 +4,7 @@
 use super::*;
 use flatbuffers::FlatBufferBuilder;
 
-pub(super) fn encode(
-    grant: &Grant,
-    access: ExecutionAccess,
-    minor: u32,
-) -> io::Result<Vec<u8>> {
+pub(super) fn encode(grant: &Grant, access: ExecutionAccess, minor: u32) -> io::Result<Vec<u8>> {
     let mut builder = FlatBufferBuilder::new();
     let writable = access == ExecutionAccess::WorkspaceWrite;
     // PSEC applies the most specific listed path, and a path listed both ways
