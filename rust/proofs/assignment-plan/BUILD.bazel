@@ -3,7 +3,7 @@ load("//toolchains/kani:defs.bzl", "kani_test")
 kani_test(
     name = "bijection",
     src = "main.rs",
-    srcs = ["//rust/crates/harness-core:src/experiments/plan/assignments.rs"],
+    srcs = ["//rust/crates/harness-experiments:src/plan/assignments.rs"],
     harness = "production::proofs::assignment_indices_are_bijective_within_the_declared_population",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
     size = "small",
