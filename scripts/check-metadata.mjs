@@ -2,8 +2,9 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { readFile } from "node:fs/promises";
 import { checkManifestFields, repositoryRoot, repositoryUrl as root } from "./policy-core.mjs";
 import "./check-compatibility-digests.mjs";
-import { packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { packagedTypeScriptBindings } from "./protobuf-bindings.mjs";
 import { retiredRuntimeFindings } from "./retired-runtime.mjs";
+import { parseJsonc } from "./jsonc.mjs";
 
 const load = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
 const ajv = new Ajv2020({ allErrors: true });
@@ -53,7 +54,7 @@ for (const item of await load("release/npm-packages.json")) {
   }
 }
 const lock = /** @type {{ workspaces: Record<string, { name: string, version?: string }> }} */ (
-  Bun.JSONC.parse(await readFile(new URL("bun.lock", root), "utf8"))
+  parseJsonc(await readFile(new URL("bun.lock", root), "utf8"))
 );
 for (const [path, locked] of Object.entries(lock.workspaces)) {
   const manifest = await load(path ? `${path}/package.json` : "package.json");

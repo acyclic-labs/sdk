@@ -6,10 +6,11 @@ import { dirname, join, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import fc from "fast-check";
-import { compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, recordGeneration, writeChanged } from "./generated-bindings.mjs";
+import { packagedTypeScriptBindings, retiredTypeScriptBindingPackages } from "./protobuf-bindings.mjs";
 
 const source = readFileSync(new URL("./generate-proto.mjs", import.meta.url), "utf8");
-const implementation = source.slice(source.indexOf("export function"), source.lastIndexOf("\nif (process.argv"))
+const implementation = source.slice(source.indexOf("export function"), source.lastIndexOf("\nif (import.meta.main)"))
   .replace("export function", "function");
 const names = [...new Set([...packagedTypeScriptBindings.flatMap(([, names]) => names), ...retiredTypeScriptBindingPackages]), "workers"];
 const sources = new Map(packagedTypeScriptBindings.map(([stem, , sourceRoot]) => [stem,
@@ -27,7 +28,7 @@ function exercise(selected, seed, code = implementation) {
   let calls = 0;
   let writes = 0;
   const context = {
-    root, compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, dirname, join, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
+    root, compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, dirname, join, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, recordGeneration,
     process: { platform: process.platform },
     writeFileSync: (path, bytes) => { writes++; writeFileSync(path, bytes); },
     spawnSync: (_command, args) => {
@@ -107,7 +108,7 @@ os.execv(sys.argv[1], sys.argv[1:])
 `;
   try {
     for (const file of [".gitignore", "buf.yaml", "buf.lock", "buf.gen.yaml", "package.json",
-      "scripts/generate-proto.mjs", "scripts/generated-bindings.mjs"]) {
+      "scripts/generate-proto.mjs", "scripts/generated-bindings.mjs", "scripts/protobuf-bindings.mjs", "scripts/policy-core.mjs"]) {
       mkdirSync(dirname(join(root, file)), { recursive: true });
       cpSync(file, join(root, file));
     }

@@ -4,6 +4,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parseJsonc } from "./jsonc.mjs";
+
+test("lockfile comments preserve quoted syntax and cannot join adjacent tokens", () => {
+  const values = ['https://registry.example/a//b', '/* literal */', 'escaped \\" quote', ',}', ',]'];
+  const expected = { packages: values };
+  const text = `\uFEFF// lockfile\n{ "packages": [${values.map(JSON.stringify).join(", /* package */\n")},], /* end */ }`;
+  assert.deepEqual(parseJsonc(text), expected);
+  assert.throws(() => parseJsonc('{"version": 1/* comment */2}'), SyntaxError);
+});
 import { pathToFileURL } from "node:url";
 
 // A one-member workspace with a local path crate and the repository's own toolchain and config inputs.
@@ -15,6 +24,9 @@ function fixture({ module = false } = {}) {
   writeFileSync(join(root, "scripts/bazel-executables.mjs"), readFileSync("scripts/bazel-executables.mjs"));
   writeFileSync(join(root, "scripts/check-bazel-lockfile.mjs"), readFileSync("scripts/check-bazel-lockfile.mjs"));
   writeFileSync(join(root, "scripts/policy-core.mjs"), readFileSync("scripts/policy-core.mjs"));
+  writeFileSync(join(root, "scripts/jsonc.mjs"), readFileSync("scripts/jsonc.mjs"));
+  writeFileSync(join(root, "scripts/protobuf-bindings.mjs"), readFileSync("scripts/protobuf-bindings.mjs"));
+  writeFileSync(join(root, "scripts/generate-stream-token-operations.mjs"), readFileSync("scripts/generate-stream-token-operations.mjs"));
   writeFileSync(join(root, "scripts/workspace-model.mjs"), readFileSync("scripts/workspace-model.mjs"));
   if (module) writeFileSync(join(root, "MODULE.bazel"), 'module(name = "fixture")\n');
   writeFileSync(join(root, "rust-toolchain.toml"), readFileSync("rust-toolchain.toml"));
@@ -89,6 +101,7 @@ test("a patched crate uses crate-universe spokes for its transitive registry dep
     execFileSync('git', ['add', '-A'], {cwd: root});
     const result = run('write');
     assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(readFileSync(join(root, 'BUILD.bazel'), 'utf8'), /node_modules\.bzl/, "a workspace without a WASM runtime needs no SDK staging rule");
     assert.match(readFileSync(join(root, 'patched/BUILD.bazel'), 'utf8'), /@sdk_crates__transitive-1\.0\.0\/\/:transitive/);
     assert.match(readFileSync(join(root, 'cargo.MODULE.bazel'), 'utf8'), /"sdk_crates__transitive-1\.0\.0"/);
   } finally { rmSync(root, {recursive: true, force: true}); }

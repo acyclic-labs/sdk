@@ -17,7 +17,7 @@ export const wasmPackages = {
   auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm" },
   actors: { family: true },
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
-  stream: { family: true },
+  stream: { family: true, runtime: true },
   objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
   manifest: { cargo: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers" },
   machines: {
@@ -48,3 +48,6 @@ export function wasmSelection(name) {
     ...(family.wasm.features.length ? ["--features", family.wasm.features.join(",")] : [])];
   return { selection, artifact, outName, targetDirectory, family };
 }
+
+// Tests that consume the assembled runtime rather than a checkout's generated tree.
+export const wasmTestConsumers = { "acyclic-stream-typescript-models": "stream" };
