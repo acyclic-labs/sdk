@@ -56,7 +56,7 @@ async fn run_scenario(root: std::path::PathBuf, path: std::path::PathBuf) -> Tes
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_scenarios() -> TestResult {
     use futures::{StreamExt as _, TryStreamExt as _};
     let root = acyclic_test_support::crate_path!("tests/scenarios");
