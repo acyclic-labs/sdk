@@ -108,7 +108,6 @@ rust_wasm_bindgen_toolchain(
     browser = "@firefox",
     browser_type = "firefox",
     wasm_bindgen_cli = "@rules_rust_wasm_bindgen//3rdparty:wasm_bindgen_cli",
-    wasm_bindgen_test = "@sdk_crates_wasm//wasm-bindgen-test-0.3.71",
     wasm_bindgen_test_runner = "@rules_rust_wasm_bindgen//3rdparty:wasm_bindgen_test_runner",
     webdriver = "@geckodriver",
     webdriver_args = [

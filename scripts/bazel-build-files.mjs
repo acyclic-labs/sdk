@@ -844,15 +844,6 @@ function wasmAnnotations() {
   const annotations = [
     ...thirdParty.filter(([name]) => [...wasmPinned].some(([id]) => packages.get(id).name === name))
       .map(([name, opt]) => ({ crate: name, fields: { rustc_flags: [`-Copt-level=${opt}`] } })),
-    // A C dependency (ring) still builds its C sources for wasm32; the shared LLVM tools
-    // are the compiler and archiver for that target.
-    { crate: "ring", version: "0.17.14", fields: {
-      build_script_env: {
-        CC_wasm32_unknown_unknown: "$(execpath @@//:wasm_clang)",
-        AR_wasm32_unknown_unknown: "$(execpath @@//:wasm_ar)",
-      },
-      build_script_data: ["@@//:wasm_clang", "@@//:wasm_ar"],
-    } },
     ...[...staged.values()].filter(({ name }) => [...wasmPinned].some(([id]) => packages.get(id).name === name))
       .map(({ name, version, files }) => ({ crate: name, version, fields: { additive_build_file_content: `exports_files(${JSON.stringify([...files].sort())})\n` } })),
     ...wasmPatchedMembers().map(id => {
@@ -1078,7 +1069,6 @@ ${rule("rust_wasm_bindgen_toolchain", [
   ["browser", q("@firefox")],
   ["browser_type", q("firefox")],
   ["wasm_bindgen_cli", q("@rules_rust_wasm_bindgen//3rdparty:wasm_bindgen_cli")],
-  ["wasm_bindgen_test", q(`@${WASM_HUB}//wasm-bindgen-test-0.3.71`)],
   ["wasm_bindgen_test_runner", q("@rules_rust_wasm_bindgen//3rdparty:wasm_bindgen_test_runner")],
   ["webdriver", q("@geckodriver")],
   ["webdriver_args", list(["--verbose"])],

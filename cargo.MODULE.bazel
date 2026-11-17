@@ -9135,19 +9135,6 @@ crate_wasm.annotation(
 )
 
 crate_wasm.annotation(
-    crate = "ring",
-    version = "=0.17.14",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    build_script_env = {"CC_wasm32_unknown_unknown": "$(execpath @@//:wasm_clang)", "AR_wasm32_unknown_unknown": "$(execpath @@//:wasm_ar)"},
-    build_script_data = [
-        "@@//:wasm_clang",
-        "@@//:wasm_ar",
-    ],
-)
-
-crate_wasm.annotation(
     crate = "ts-rs-macros",
     version = "=12.0.1",
     repositories = [
