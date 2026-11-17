@@ -2,6 +2,7 @@
 // as a build action; the test receives only the resulting file.
 import {readFileSync, writeFileSync} from 'node:fs';
 import {gunzipSync} from 'node:zlib';
+import {ranges} from './advisory-ranges.mjs';
 
 const [archive, output] = process.argv.slice(2);
 if (!archive || !output) throw Error('expected advisory archive and output path');
@@ -31,21 +32,10 @@ for (let offset = 0; offset + 512 <= tar.length;) {
     if (!match && required) throw Error(`missing ${sectionName}.${key}: ${name}`);
     return match?.[1];
   };
-  const ranges = key => {
-    const sectionText = sections.versions ?? '';
-    const match = new RegExp(`^\\s*${key}\\s*=\\s*\\[([^\\]]*)\\]`, 'm').exec(sectionText);
-    if (!match) {
-      if (new RegExp(`^\\s*${key}\\s*=`, 'm').test(sectionText)) throw Error(`invalid versions.${key}: ${name}`);
-      return [];
-    }
-    const values = [...match[1].matchAll(/"([^"\\]*)"/g)].map(item => item[1]);
-    if (match[1].replace(/"[^"\\]*"|#[^\n]*|[\s,]/g, '') !== '') throw Error(`invalid versions.${key}: ${name}`);
-    return values;
-  };
   const id = scalar('advisory', 'id', true), crate = scalar('advisory', 'package', true);
   if (!name.endsWith(`/${id}.md`) || name.split('/')[2] !== crate) throw Error(`advisory identity mismatch: ${name}`);
   if (scalar('advisory', 'withdrawn')) continue;
-  (crates[crate] ??= []).push({id, informational: scalar('advisory', 'informational') ?? null, patched: ranges('patched'), unaffected: ranges('unaffected')});
+  (crates[crate] ??= []).push({id, informational: scalar('advisory', 'informational') ?? null, patched: ranges(sections.versions ?? '', 'patched', name), unaffected: ranges(sections.versions ?? '', 'unaffected', name)});
 }
 if (!Object.keys(crates).length) throw Error('pinned archive contains no crate advisories');
 for (const entries of Object.values(crates)) entries.sort((a, b) => a.id.localeCompare(b.id, 'en'));

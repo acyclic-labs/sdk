@@ -3,6 +3,13 @@ load("@rules_rust//rust:defs.bzl", "rust_test")
 
 advisory_index(name = "advisory_db")
 
+sh_test(
+    name = "index_test",
+    srcs = ["index-test.sh"],
+    data = ["advisory-ranges.mjs", "advisory-ranges.test.mjs", "@nodejs//:node"],
+    env = {"NODE": "$(rootpath @nodejs//:node)"},
+)
+
 rust_test(
     name = "offline_test",
     edition = "2024",

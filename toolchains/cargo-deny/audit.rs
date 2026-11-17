@@ -19,6 +19,20 @@ fn matches_any(version: &Version, ranges: &Value) -> bool {
         })
 }
 
+fn validate_acknowledgement(id: &str, name: &str, advisory: &Value, ack: &Value) {
+    assert_eq!(
+        advisory["informational"], "unmaintained",
+        "acknowledgement applies only to unmaintained notices: {id}"
+    );
+    assert_eq!(ack["crate"], name, "acknowledgement crate mismatch: {id}");
+    for field in ["reason", "evidence"] {
+        assert!(
+            ack[field].as_str().is_some_and(|s| !s.trim().is_empty()),
+            "{id} requires {field}"
+        );
+    }
+}
+
 #[test]
 fn resolved_crates_have_no_unpatched_advisories() {
     let index = read("ADVISORY_INDEX");
@@ -48,17 +62,7 @@ fn resolved_crates_have_no_unpatched_advisories() {
                 {
                     let id = advisory["id"].as_str().expect("advisory id");
                     if let Some(ack) = acknowledgements.get(id) {
-                        assert_eq!(
-                            advisory["informational"], "unmaintained",
-                            "acknowledgement applies only to unmaintained notices: {id}"
-                        );
-                        assert_eq!(ack["crate"], name, "acknowledgement crate mismatch: {id}");
-                        for field in ["reason", "evidence"] {
-                            assert!(
-                                ack[field].as_str().is_some_and(|s| !s.trim().is_empty()),
-                                "{id} requires {field}"
-                            );
-                        }
+                        validate_acknowledgement(id, name, advisory, ack);
                         continue;
                     }
                     failures.push(format!("{} {version}: {}", name, id));
@@ -70,6 +74,32 @@ fn resolved_crates_have_no_unpatched_advisories() {
         failures.is_empty(),
         "unpatched RustSec advisories:\n{}",
         failures.join("\n")
+    );
+}
+
+#[test]
+fn acknowledgements_cannot_suppress_other_crates_or_vulnerabilities() {
+    let ack = serde_json::json!({"crate": "example", "reason": "reviewed", "evidence": "dependency path"});
+    let notice = serde_json::json!({"informational": "unmaintained"});
+    let vulnerability = serde_json::json!({"informational": null});
+    validate_acknowledgement("RUSTSEC-test", "example", &notice, &ack);
+    assert!(
+        std::panic::catch_unwind(|| validate_acknowledgement(
+            "RUSTSEC-test",
+            "other",
+            &notice,
+            &ack
+        ))
+        .is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(|| validate_acknowledgement(
+            "RUSTSEC-test",
+            "example",
+            &vulnerability,
+            &ack
+        ))
+        .is_err()
     );
 }
 
