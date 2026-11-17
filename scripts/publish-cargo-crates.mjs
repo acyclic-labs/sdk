@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -84,6 +84,8 @@ export function metadata(releaseVersion) {
   }
   const unpublishable = publicationDependencyErrors(packages, byName);
   if (unpublishable.length) fail(unpublishable.join("\n"));
+  const missingReadmes = readmeErrors(publishable);
+  if (missingReadmes.length) fail(missingReadmes.join("\n"));
   const position = new Map(order.map((name, index) => [name, index]));
   for (const item of publishable) {
     if (releaseVersion && item.version !== releaseVersion) fail(`${item.name} is not version ${releaseVersion}`);
@@ -95,6 +97,16 @@ export function metadata(releaseVersion) {
     }
   }
   return byName;
+}
+
+// `cargo package` refuses a declared readme that is not in the crate, so the
+// publication inventory checks the file before the release reaches Cargo.
+export function readmeErrors(packages) {
+  return packages.flatMap(item => {
+    if (!item.readme) return [];
+    const path = resolve(dirname(item.manifest_path), item.readme);
+    return existsSync(path) ? [] : [`${item.name} declares missing readme ${item.readme}`];
+  });
 }
 
 // `cargo package` rejects every non-dev local dependency, optional or not, that
