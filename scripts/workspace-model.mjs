@@ -363,6 +363,17 @@ export function assertRegistryPinsCurrent(root) {
   }
 }
 
+function registryPackages(lock, universe, triple) {
+  return (lock.package ?? []).filter(p => p.source).map(p => {
+    const pinned = universe.crates[`${p.name} ${p.version}`];
+    const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
+    const target = lib?.Library ?? lib?.ProcMacro;
+    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
+      features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, triple).map(f => [f, []])),
+      targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
+  });
+}
+
 // Browser builds start from the published packages, rather than the native
 // all-workspace, all-features test graph. Registry edges and resolved features
 // come from the browser crate-universe lock; local features come from manifests.
@@ -371,14 +382,7 @@ export function workspaceBrowserGraph(root, selections) {
   const triple = 'wasm32-unknown-unknown';
   const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
   const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-wasm-bazel-lock.json'), 'utf8'));
-  const registry = (lock.package ?? []).filter(p => p.source).map(p => {
-    const pinned = universe.crates[`${p.name} ${p.version}`];
-    const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
-    const target = lib?.Library ?? lib?.ProcMacro;
-    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
-      features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, triple).map(f => [f, []])),
-      targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
-  });
+  const registry = registryPackages(lock, universe, triple);
   const packages = [...local, ...registry], byId = new Map(packages.map(p => [p.id, p]));
   const byPath = new Map(local.map(p => [path.dirname(p.manifest_path), p]));
   const enabled = new Map(local.map(p => [p.id, new Set()]));
@@ -461,14 +465,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
   const universeRelative = path.relative(path.resolve(sourceRoot), universePath);
   if (universeRelative === '..' || universeRelative.startsWith(`..${path.sep}`) || path.isAbsolute(universeRelative)) throw Error('workspace universe escapes source root');
   const universe = JSON.parse(fs.readFileSync(universePath, 'utf8'));
-  const registry = (lock.package ?? []).filter(p => p.source).map(p => {
-    const pinned = universe.crates[`${p.name} ${p.version}`];
-    const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
-    const target = lib?.Library ?? lib?.ProcMacro;
-    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
-      features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, allPlatforms ? null : triple).map(f => [f, []])),
-      targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
-  });
+  const registry = registryPackages(lock, universe, allPlatforms ? null : triple);
   const packages = [...local, ...registry];
   const matches = cfg => allPlatforms || targetMatches(cfg, triple);
   const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : selectedEntries(universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features, universe, allPlatforms ? null : triple))]));
