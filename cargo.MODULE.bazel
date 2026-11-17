@@ -6520,6 +6520,16 @@ crate.spec(
 )
 
 crate.annotation(
+    crate = "acyclic-syntect",
+    repositories = [
+        "crates",
+    ],
+    rustc_flags = [
+        "-Copt-level=3",
+    ],
+)
+
+crate.annotation(
     crate = "blake3",
     repositories = [
         "crates",
@@ -10288,6 +10298,16 @@ crate_wasm.spec(
     features = [
         "serde-compat",
         "termcolor",
+    ],
+)
+
+crate_wasm.annotation(
+    crate = "acyclic-syntect",
+    repositories = [
+        "crates_wasm",
+    ],
+    rustc_flags = [
+        "-Copt-level=3",
     ],
 )
 
