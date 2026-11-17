@@ -115,6 +115,9 @@ pub enum WindowsUsnError {
     /// The journal returned impossible or truncated metadata.
     #[error("the Windows USN journal metadata is invalid")]
     InvalidJournal,
+    /// The volume has no active change journal to certify continuity.
+    #[error("the Windows USN journal is not active")]
+    JournalInactive,
     /// Ordinary path or volume I/O failed.
     #[error("Windows USN I/O failed: {0}")]
     Io(String),

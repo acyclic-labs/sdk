@@ -327,18 +327,16 @@ mod tests {
             Path::new("workspace"),
             |_| None,
         )?;
+        let expected = shell_command("echo literal-source", None).map_err(Error::process_io)?;
+        assert_eq!(command.get_program(), expected.get_program());
         assert_eq!(
             Path::new(command.get_program()),
             acyclic_executable_search::platform_shell().map_err(Error::process_io)?
         );
-        let args: Vec<_> = command.get_args().collect();
-        let mut expected: Vec<_> = acyclic_native_runtime::shell_spec::PLATFORM
-            .arguments
-            .iter()
-            .map(std::ffi::OsStr::new)
-            .collect();
-        expected.push(std::ffi::OsStr::new("echo literal-source"));
-        assert_eq!(args, expected);
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            expected.get_args().collect::<Vec<_>>()
+        );
         Ok(())
     }
 

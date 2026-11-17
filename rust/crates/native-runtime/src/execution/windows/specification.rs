@@ -4,7 +4,11 @@
 use super::*;
 use flatbuffers::FlatBufferBuilder;
 
-pub(super) fn encode(grant: &Grant, access: ExecutionAccess) -> io::Result<Vec<u8>> {
+pub(super) fn encode(
+    grant: &Grant,
+    access: ExecutionAccess,
+    minor: u32,
+) -> io::Result<Vec<u8>> {
     let mut builder = FlatBufferBuilder::new();
     let writable = access == ExecutionAccess::WorkspaceWrite;
     // PSEC applies the most specific listed path, and a path listed both ways
@@ -62,8 +66,9 @@ pub(super) fn encode(grant: &Grant, access: ExecutionAccess) -> io::Result<Vec<u
     let network = builder.end_table(table);
     let table = builder.start_table();
     // SchemaVersion is an inline pair of little-endian u16s. A u32 writes
-    // exactly those four bytes with stronger, valid alignment: major=minor=1.
-    builder.push_slot_always::<u32>(4, 0x0001_0001);
+    // exactly those four bytes with stronger, valid alignment: major=1 and the
+    // host's supported minor. The policy uses no 1.1-only field.
+    builder.push_slot_always::<u32>(4, 0x0001_0000 | minor);
     builder.push_slot_always(6, capabilities);
     builder.push_slot::<u64>(10, 0xff, 0); // all native Job UI restrictions
     builder.push_slot_always(12, write);
