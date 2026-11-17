@@ -11,6 +11,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { bazelCommand } from "./bazel-executables.mjs";
 import { repositoryRoot, toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
 
 // The workspace this generator describes. It defaults to the repository that holds this
@@ -1027,4 +1028,9 @@ for (const [file, text] of files) {
 }
 if (mode === "check" && stale.length) {
   throw new Error(`STEP_FAILED bazel-build-files: stale ${stale.join(", ")}; recovery: node scripts/bazel-build-files.mjs write`);
+}
+// This generator owns the module files, so it also owns the resolution they produce. A write refreshes the
+// committed lockfile; every other Bazel command runs with --lockfile_mode=error and refuses a stale one.
+if (mode === "write" && fs.existsSync(path.join(root, "MODULE.bazel"))) {
+  execFileSync(bazelCommand(), ["mod", "deps", "--lockfile_mode=update"], { cwd: root, stdio: "inherit" });
 }
