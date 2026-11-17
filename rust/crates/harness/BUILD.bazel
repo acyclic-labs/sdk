@@ -918,6 +918,7 @@ rust_test(
         "tests/dst/configuration.rs",
         "tests/dst/containment.rs",
         "tests/dst/coverage.rs",
+        "tests/dst/determinism.rs",
         "tests/dst/digest.rs",
         "tests/dst/driver.rs",
         "tests/dst/family.rs",
