@@ -290,7 +290,7 @@ async fn proposals_beyond_one_provider_transaction_remain_in_batches_without_cal
 async fn evidence_capacity_splits_disjoint_proposals_before_stream_admission() -> TestResult {
     let cancel = CancellationToken::new();
     let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
-    let count = 24;
+    let count = crate::async_storage::MAX_AUTHORITY_GROUP_MEMBERS + 1;
     for index in 0..count {
         create(
             &mut seed,

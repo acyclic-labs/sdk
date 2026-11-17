@@ -638,6 +638,7 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn native_attribute_listings_skip_annotation_page_reads() -> Result<(), Box<dyn std::error::Error>>
 {

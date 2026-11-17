@@ -226,6 +226,10 @@ impl StoreClaim {
     /// kernel file probe: its open, one read and the read at its end.
     pub const OBSERVATION_READ_OPERATIONS: u64 = 3;
 
+    /// Physical reads one live lock probe makes: its open, its identity and
+    /// its lock test, counted from the probe's own step list.
+    pub const LOCK_PROBE_READ_OPERATIONS: u64 = process::LOCK_PROBE_READ_OPERATIONS;
+
     /// Claims the store whose claim file is `path`, creating the file if needed.
     pub fn acquire(path: &Path) -> io::Result<Self> {
         Self::acquire_with(Native::SYSTEM, path)
