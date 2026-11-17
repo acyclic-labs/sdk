@@ -1,4 +1,5 @@
 //! Heap layout of typed records, described by JSON position.
+//! One layout walk accounts for both byte decoding and resident-value decoding.
 //!
 //! Every type a bounded decode produces implements [`HeapLayout`], usually
 //! through `#[derive(HeapLayout)]` beside its serde derive. The layout names,
