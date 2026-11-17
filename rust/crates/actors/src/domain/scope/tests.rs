@@ -35,10 +35,10 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
                         bound = Some(request.with_reference(&address));
                     });
                     assert_eq!(allocations.count_total, 3);
-                    bound.ok_or("binding did not complete")??
+                    bound.ok_or("binding did not complete")?
                 };
                 #[cfg(target_arch = "wasm32")]
-                let bound = request.with_reference(&address)?;
+                let bound = request.with_reference(&address);
                 assert_eq!(bound.reference(b"wrong-account")?, address);
                 assert_eq!(bound.namespace(), "Class_One");
                 let mut expected = raw;
