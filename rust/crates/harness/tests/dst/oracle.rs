@@ -440,7 +440,7 @@ impl World {
     /// One seeded driver over this world's files, with native timestamps as
     /// fixture inputs rather than host facts.
     fn driver(&self, scheduler: u64, cut: Option<(usize, DurableFault)>) -> Driver {
-        let mut driver = if self.entropy {
+        let driver = if self.entropy {
             Driver::world(scheduler, cut)
         } else {
             Driver::without_entropy(scheduler, cut)
@@ -472,6 +472,7 @@ impl World {
             self.incarnations += 1;
             let mut driver = self.driver(scheduler, cut);
             let schedule = driver.schedule.clone();
+            let entropy_source = schedule.has_entropy();
             let counter = schedule.clone();
             let drawn = Arc::new(Mutex::new(Vec::<[u8; 16]>::new()));
             let source_entropy = {
@@ -586,7 +587,7 @@ impl World {
                 dispatched_at,
                 durable: counter.durable_write_count(),
                 entropy,
-                entropy_source: schedule.has_entropy(),
+                entropy_source,
                 crashed,
             };
             record_incarnation(&incarnation, self.directory.path());
