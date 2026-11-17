@@ -718,6 +718,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             call_id: run.call_id.clone(),
             invocation: reference,
             publication: None,
+            started_at_micros: None,
         };
         assert!(
             journal

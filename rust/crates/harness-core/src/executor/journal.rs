@@ -372,15 +372,16 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         ))
     }
 
-    /// Appends a fresh exclusive claim at the exact tail and returns its committed
-    /// timestamp in microseconds, directly from publication. Refusal or a repeated
-    /// claim returns `None`; a claim never discovers its receipt by reading storage.
+    /// Appends a fresh exclusive claim at the exact tail and returns its claim
+    /// timestamp in microseconds, stamped on the journal's clock when it has one.
+    /// Refusal or a repeated claim returns `None`; a claim never discovers its
+    /// receipt by reading storage.
     fn claim_if_tail<'a>(
         &'a self,
         _operation_id: OperationId,
         _expected_tail: u64,
         _claim_id: &'a str,
-        _event: &'a ExecutionEvent,
+        _event: &'a mut ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<u64>>> {
         Err(stock_boundary(

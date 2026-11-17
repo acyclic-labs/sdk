@@ -484,6 +484,129 @@ async fn a_replacement_host_fires_alarms_armed_before_the_checkpoint() -> TestRe
     Ok(())
 }
 
+/// A persisted alarm is registered on recovery through the same function a
+/// resident alarm uses. Advancing the shared clock to its deadline delivers it
+/// exactly once; a second advance does not deliver it again.
+#[tokio::test]
+async fn a_recovered_alarm_fires_once_when_the_clock_reaches_it() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let armed = spawn_with(&store, "recovered-armed", &[b"set 50"]).await?;
+    let shard = store.scheduling_shard(&armed);
+    let (clock, mut control) = ControlledClock::new(100);
+    let clock = Arc::new(clock);
+    let host = |clock: Arc<ControlledClock>| {
+        let runtime = Runtime::new(
+            crate::guest::Requests::default(),
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(Package::new()?),
+            clock as Arc<dyn Clock>,
+        )
+        .with_scheduling_shards([shard])?;
+        Ok::<_, Box<dyn std::error::Error>>(runtime)
+    };
+    let first = host(Arc::clone(&clock))?;
+    let tail = provider.tail(store.scheduling_path(shard)?).await?;
+    let (checkpoint, dispatcher) = first.dispatcher_store(shard)?;
+    {
+        let mut serving = Box::pin(first.run(|_, error| panic!("delivery failed: {error}")));
+        observe_while_running(
+            serving.as_mut(),
+            state_after(&checkpoint, &dispatcher, |state| {
+                state.cursor("activation") == Some(tail)
+            }),
+        )
+        .await?;
+    }
+    let pending = store.load(&armed).await?;
+    assert_eq!(
+        pending.state().and_then(|state| state.alarm().pending()),
+        Some(150)
+    );
+    assert!(records(&*provider, "out/recovered-armed").await?.is_empty());
+
+    let replacement = host(Arc::clone(&clock))?;
+    let mut serving = Box::pin(replacement.run(|_, error| panic!("delivery failed: {error}")));
+    control.advance_to(150)?;
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &armed, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
+    assert_eq!(
+        records(&*provider, "out/recovered-armed").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    control.advance_to(200)?;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        records(&*provider, "out/recovered-armed").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    Ok(())
+}
+
+/// Recovery at exactly the persisted deadline enqueues the alarm at
+/// registration: the controlled clock does not move again, so wake_due never
+/// runs. A deadline one millisecond earlier takes the same path.
+#[tokio::test]
+async fn a_due_recovered_alarm_fires_once_at_or_before_its_deadline() -> TestResult {
+    for now in [150, 151] {
+        let provider = Arc::new(MemoryStream::default());
+        let store = Store::new(Arc::clone(&provider), root()?);
+        let armed = spawn_with(&store, "due-armed", &[b"set 50"]).await?;
+        let shard = store.scheduling_shard(&armed);
+        let host = |now| {
+            let (clock, control) = ControlledClock::new(now);
+            let runtime = Runtime::new(
+                crate::guest::Requests::default(),
+                Store::new(Arc::clone(&provider), root()?),
+                Arc::new(Package::new()?),
+                Arc::new(clock) as Arc<dyn Clock>,
+            )
+            .with_scheduling_shards([shard])?;
+            Ok::<_, Box<dyn std::error::Error>>((runtime, control))
+        };
+        let (first, _control) = host(100)?;
+        let tail = provider.tail(store.scheduling_path(shard)?).await?;
+        let (checkpoint, dispatcher) = first.dispatcher_store(shard)?;
+        {
+            let mut serving = Box::pin(first.run(|_, error| panic!("delivery failed: {error}")));
+            observe_while_running(
+                serving.as_mut(),
+                state_after(&checkpoint, &dispatcher, |state| {
+                    state.cursor("activation") == Some(tail)
+                }),
+            )
+            .await?;
+        }
+        assert_eq!(
+            store
+                .load(&armed)
+                .await?
+                .state()
+                .and_then(|state| state.alarm().pending()),
+            Some(150)
+        );
+        let (replacement, _control) = host(now)?;
+        let mut serving = Box::pin(replacement.run(|_, error| panic!("delivery failed: {error}")));
+        observe_while_running(
+            serving.as_mut(),
+            state_after(&store, &armed, |state| {
+                state.alarm().delivered_generation == Some(1)
+            }),
+        )
+        .await?;
+        assert_eq!(
+            records(&*provider, "out/due-armed").await?,
+            vec![Bytes::from_static(b"a1")]
+        );
+    }
+    Ok(())
+}
+
 struct Authority(AtomicU64);
 
 impl acyclic_stream::UnixMillisClock for Authority {
@@ -693,5 +816,109 @@ async fn a_malformed_window_record_refuses_only_itself() -> TestResult {
         records(&*provider, "out/malformed").await?,
         vec![Bytes::from_static(b"a1")]
     );
+    Ok(())
+}
+
+/// An alarm armed by a running host, then a crash before any checkpoint, is
+/// still found by the reopened host and fires exactly once at its deadline.
+#[tokio::test]
+async fn a_recovered_alarm_armed_by_a_running_host_fires_once() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let (clock, mut control) = ControlledClock::new(100);
+    let clock = Arc::new(clock);
+    let host = || {
+        Ok::<_, Box<dyn std::error::Error>>(Runtime::new(
+            crate::guest::Requests::default(),
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(Package::new()?),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        ))
+    };
+    let first = host()?;
+    let mut serving = Box::pin(first.run(|_, error| panic!("delivery failed: {error}")));
+    let armed = spawn_with(&store, "late-armed", &[b"set 50"]).await?;
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &armed, |state| state.alarm().pending() == Some(150)),
+    )
+    .await?;
+    assert!(first.release(&armed), "the waiting actor did not hibernate");
+    drop(serving);
+    let replacement = host()?;
+    let mut serving = Box::pin(replacement.run(|_, error| panic!("delivery failed: {error}")));
+    control.advance_to(150)?;
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &armed, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
+    assert_eq!(
+        records(&*provider, "out/late-armed").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    Ok(())
+}
+
+/// A token parked by a predecessor after its replacement registered moves
+/// into the live registration, so the dispatcher does not keep waking an
+/// already elapsed alarm.
+#[tokio::test]
+async fn a_late_parked_alarm_moves_into_the_live_registration() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let (clock, _control) = ControlledClock::new(100);
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(clock) as Arc<dyn Clock>,
+    );
+    for ready in &runtime.ready {
+        ready.dispatch();
+    }
+    let address = actor("late-parked")?;
+    runtime.track(address.clone())?;
+    let first = runtime.slot(&address).ok_or("missing first slot")?;
+    first.registration.update_alarm(
+        &crate::local::Alarm {
+            generation: 1,
+            deadline_unix_ms: Some(150),
+            delivered_generation: None,
+        },
+        100,
+    )?;
+    runtime
+        .shard(&address)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&address);
+    runtime.track(address.clone())?;
+    drop(first);
+    runtime.track(address.clone())?;
+    let class = runtime.handler.admission_class(&address).index();
+    assert_eq!(runtime.ready[class].next_deadline(), Some(150));
+    Ok(())
+}
+
+/// The registered-deadline signal keeps the highest active deadline until the
+/// controller clears it, so an earlier waiter cannot hide a later one.
+#[tokio::test]
+async fn registered_deadline_keeps_the_highest_until_cleared() -> TestResult {
+    let (clock, mut control) = ControlledClock::new(100);
+    let mut later = Box::pin(clock.sleep_until(200));
+    assert!(futures::poll!(later.as_mut()).is_pending());
+    let mut earlier = Box::pin(clock.sleep_until(150));
+    assert!(futures::poll!(earlier.as_mut()).is_pending());
+    let mut observed = clock.registered_at_least(200);
+    assert!(matches!(
+        futures::poll!(observed.as_mut()),
+        std::task::Poll::Ready(200)
+    ));
+    control.clear_registered();
+    let mut cleared = clock.registered_at_least(200);
+    assert!(futures::poll!(cleared.as_mut()).is_pending());
     Ok(())
 }

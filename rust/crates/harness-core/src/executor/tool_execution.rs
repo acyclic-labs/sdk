@@ -371,10 +371,11 @@ impl<'io> StockExecution<'io> {
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)
             .await?;
-        let original_started_at = records.iter().find_map(|record| {
-            matches!(record.event, ExecutionEvent::ToolStarted { .. })
-                .then_some(record.committed_at_micros)
-                .flatten()
+        let original_started_at = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ToolStarted {
+                started_at_micros, ..
+            } => started_at_micros.or(record.committed_at_micros),
+            _ => None,
         });
         let recorded = RecordedCall::classify(&records)
             .map_err(|reason| stock_boundary(self.io, Invalid, reason))?;

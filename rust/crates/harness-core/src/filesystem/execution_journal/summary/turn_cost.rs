@@ -36,6 +36,7 @@ async fn check_replay_payload_cost(native: bool) -> Result<()> {
                 call_id: "call".into(),
                 invocation: reference.clone(),
                 publication: None,
+                started_at_micros: None,
             },
             None,
         )?

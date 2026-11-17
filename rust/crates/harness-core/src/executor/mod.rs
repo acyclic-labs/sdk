@@ -525,6 +525,11 @@ pub enum ExecutionEvent {
         /// Identity of original records published atomically with this start.
         #[serde(skip_serializing_if = "Option::is_none")]
         publication: Option<[u8; 32]>,
+        /// The journal clock's claim time in Unix microseconds, when the
+        /// journal stamps claims on its own clock. A resumed timed tool
+        /// measures its deadline from this same value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at_micros: Option<u64>,
     },
     /// Tool execution and projection completed.
     ToolCompleted {

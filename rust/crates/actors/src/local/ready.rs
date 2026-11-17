@@ -8,6 +8,12 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
+/// Whether a registered wake is due at `now_unix_ms`. One comparison for
+/// registration and delivery, so a due alarm never waits for a clock move.
+const fn due(wake: u64, now_unix_ms: u64) -> bool {
+    wake <= now_unix_ms
+}
+
 struct Entry<K> {
     key: K,
     phase: Phase,
@@ -581,14 +587,14 @@ impl<K: Ord + Clone> ReadySet<K> {
         let mut count = 0;
         let mut waiter = None;
         while count < limit {
-            let Some(due @ (wake, id, _)) = index.due.first().copied() else {
+            let Some(next @ (wake, id, _)) = index.due.first().copied() else {
                 break;
             };
-            if wake > now_unix_ms {
+            if !due(wake, now_unix_ms) {
                 break;
             }
             // The wake is delivered; the token stays with its registration.
-            index.due.remove(&due);
+            index.due.remove(&next);
             if let Some(token) = index
                 .entries
                 .get_mut(&id)
@@ -676,8 +682,8 @@ impl<K: Ord + Clone> Registration<K> {
     /// Install a durably observed alarm into the shared due index. A later
     /// observation cannot move generation or consumption backwards. Reinstalling
     /// an unconsumed alarm permits retry after an unsuccessful physical attempt.
-    pub fn update_alarm(&self, alarm: &super::Alarm) -> Result<(), super::Error> {
-        self.observe_alarm(alarm, alarm.pending())
+    pub fn update_alarm(&self, alarm: &super::Alarm, now_unix_ms: u64) -> Result<(), super::Error> {
+        self.observe_alarm(alarm, alarm.pending(), now_unix_ms)
     }
 
     /// Observe the committed alarm before a delivery at `now_unix_ms`. True
@@ -692,22 +698,28 @@ impl<K: Ord + Clone> Registration<K> {
     ) -> Result<bool, super::Error> {
         let due = alarm
             .pending()
-            .is_some_and(|deadline| deadline <= now_unix_ms);
-        self.observe_alarm(alarm, alarm.pending().filter(|_| !due))?;
+            .is_some_and(|deadline| due(deadline, now_unix_ms));
+        self.observe_alarm(alarm, alarm.pending().filter(|_| !due), now_unix_ms)?;
         Ok(due)
     }
 
     /// Reinstall the committed, still pending alarm to wake at host time
     /// `at_unix_ms` instead of its deadline: the authority refused its
     /// consumption because its own clock had not yet reached the deadline.
-    pub fn defer_alarm(&self, alarm: &super::Alarm, at_unix_ms: u64) -> Result<(), super::Error> {
-        self.observe_alarm(alarm, alarm.pending().map(|_| at_unix_ms))
+    pub fn defer_alarm(
+        &self,
+        alarm: &super::Alarm,
+        at_unix_ms: u64,
+        now_unix_ms: u64,
+    ) -> Result<(), super::Error> {
+        self.observe_alarm(alarm, alarm.pending().map(|_| at_unix_ms), now_unix_ms)
     }
 
     fn observe_alarm(
         &self,
         alarm: &super::Alarm,
         deadline: Option<u64>,
+        now_unix_ms: u64,
     ) -> Result<(), super::Error> {
         if alarm.deadline_unix_ms == Some(0)
             || (alarm.deadline_unix_ms.is_some() && alarm.generation == 0)
@@ -763,7 +775,14 @@ impl<K: Ord + Clone> Registration<K> {
             }
         }
         // An earlier deadline must wake the single dispatcher so it can rearm.
-        let waiter = index.waiter.take();
+        // A wake already due is enqueued now: under a controlled clock the
+        // clock may never move again, so waiting for wake_due would hang.
+        let mut waiter = index.waiter.take();
+        if let Some(wake) = deadline
+            && due(wake, now_unix_ms)
+        {
+            waiter = index.notify(self.id).or(waiter);
+        }
         drop(index);
         if let Some(waiter) = waiter {
             waiter.wake();
@@ -826,6 +845,7 @@ impl<K: Ord + Clone> Registration<K> {
         }
     }
 }
+
 impl<K: Ord + Clone> Drop for Registration<K> {
     fn drop(&mut self) {
         let mut index = self

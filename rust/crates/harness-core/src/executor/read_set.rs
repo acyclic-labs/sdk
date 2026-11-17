@@ -472,6 +472,7 @@ mod tests {
                         call_id: call_id.clone(),
                         invocation: reference,
                         publication: None,
+                        started_at_micros: None,
                     },
                     None,
                 )?

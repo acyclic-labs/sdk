@@ -141,16 +141,21 @@ impl World {
                 };
                 self.filed.insert(window(deadline));
                 let alarm = self.alarm.clone();
+                let now = self.now();
                 self.host()?
-                    .update_alarm(&alarm)
+                    .update_alarm(&alarm, now)
                     .map_err(|error| error.to_string())?;
             }
             Op::Tick => self.time += 1,
             Op::Open => {
                 if let Some(opened) = self.openable() {
                     self.windows.pop_first();
+                    let alarm = self.alarm.clone();
+                    let now = self.now();
                     let registration = self.host()?;
-                    registration.claim_alarm(window_start(opened));
+                    registration
+                        .update_alarm(&alarm, now)
+                        .map_err(|error| error.to_string())?;
                     registration.waker().wake_by_ref();
                     if self.consumed < opened + 1 {
                         self.consumed = opened + 1;
@@ -181,7 +186,7 @@ impl World {
                     self.alarm = consumed;
                 } else if due {
                     registration
-                        .defer_alarm(&alarm, now + 2 * WINDOW)
+                        .defer_alarm(&alarm, now + 2 * WINDOW, now)
                         .map_err(|error| error.to_string())?;
                 }
             }

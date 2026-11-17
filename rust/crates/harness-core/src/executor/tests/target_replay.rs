@@ -413,6 +413,7 @@ async fn filesystem_binding_replay(
                 call_id: invocation.call_id.clone(),
                 invocation: start,
                 publication: None,
+                started_at_micros: None,
             },
             None,
         )?

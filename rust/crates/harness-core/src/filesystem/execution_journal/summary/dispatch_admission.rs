@@ -78,6 +78,7 @@ async fn run_cut(
                 call_id: "call".into(),
                 invocation,
                 publication: None,
+                started_at_micros: None,
             };
             let outcome = match journal.append(operation, "tool", &event, Some(&io)) {
                 Ok(future) => future.await,

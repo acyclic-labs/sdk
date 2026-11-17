@@ -22,16 +22,36 @@ fn alarm(
 
 #[cfg(not(loom))]
 #[test]
+fn a_due_alarm_is_enqueued_at_registration_exactly_once() -> Result<(), super::super::Error> {
+    for now in [20, 21] {
+        let set = ReadySet::default();
+        let registration = set.register(1)?;
+        registration.update_alarm(&alarm(1, Some(20), None), now)?;
+        let work = set
+            .take()
+            .ok_or(super::super::Error::Invalid("due alarm was not enqueued"))?;
+        assert_eq!(*work.key(), 1);
+        drop(work);
+        assert!(
+            set.take().is_none(),
+            "a due alarm must be enqueued exactly once"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(loom))]
+#[test]
 fn due_alarms_share_one_bounded_index_and_replacements_remove_old_nodes()
 -> Result<(), super::super::Error> {
     let set = ReadySet::default();
     let first = set.register(1)?;
     let second = set.register(2)?;
     let third = set.register(3)?;
-    first.update_alarm(&alarm(1, Some(20), None))?;
-    second.update_alarm(&alarm(1, Some(30), None))?;
-    third.update_alarm(&alarm(1, Some(40), None))?;
-    first.update_alarm(&alarm(2, Some(50), None))?;
+    first.update_alarm(&alarm(1, Some(20), None), 0)?;
+    second.update_alarm(&alarm(1, Some(30), None), 0)?;
+    third.update_alarm(&alarm(1, Some(40), None), 0)?;
+    first.update_alarm(&alarm(2, Some(50), None), 0)?;
     assert_eq!(
         set.alarm_count(),
         3,
@@ -54,10 +74,10 @@ fn due_alarms_share_one_bounded_index_and_replacements_remove_old_nodes()
     assert_eq!(*work.key(), 2);
     drop(work);
     assert_eq!(set.alarm_count(), 2);
-    second.update_alarm(&alarm(1, Some(30), Some(1)))?;
+    second.update_alarm(&alarm(1, Some(30), Some(1)), 0)?;
     assert!(
         matches!(
-            second.update_alarm(&alarm(1, Some(30), None)),
+            second.update_alarm(&alarm(1, Some(30), None), 0),
             Err(super::super::Error::Conflict)
         ),
         "consumed generation cannot be made eligible again"
@@ -163,12 +183,12 @@ fn earlier_deadline_rearms_the_shared_dispatcher_after_unlock() -> Result<(), su
         set.poll_ready(&mut Context::from_waker(&waker))
             .is_pending()
     );
-    registration.update_alarm(&alarm(1, Some(100), None))?;
+    registration.update_alarm(&alarm(1, Some(100), None), 0)?;
     assert!(
         set.poll_ready(&mut Context::from_waker(&waker))
             .is_pending()
     );
-    registration.update_alarm(&alarm(2, Some(50), None))?;
+    registration.update_alarm(&alarm(2, Some(50), None), 0)?;
     assert_eq!(
         signal.wakes.load(Ordering::SeqCst),
         2,
@@ -197,12 +217,12 @@ fn unchanged_alarm_keeps_the_waiter_but_popped_or_suspended_alarm_reinstalls()
     let set = ReadySet::default();
     let registration = set.register(7_u64)?;
     let committed = alarm(1, Some(100), None);
-    registration.update_alarm(&committed)?;
+    registration.update_alarm(&committed, 0)?;
     let signal = Arc::new(Signal(AtomicUsize::new(0)));
     let waker = Waker::from(Arc::clone(&signal));
     set.listen(&Context::from_waker(&waker));
     for _ in 0..8 {
-        registration.update_alarm(&committed)?;
+        registration.update_alarm(&committed, 0)?;
     }
     assert_eq!(signal.0.load(Ordering::SeqCst), 0);
     assert_eq!(set.alarm_count(), 1);
@@ -217,7 +237,7 @@ fn unchanged_alarm_keeps_the_waiter_but_popped_or_suspended_alarm_reinstalls()
     assert_eq!(set.wake_due(100, 1), 1);
     drop(set.take());
     set.listen(&Context::from_waker(&waker));
-    registration.update_alarm(&committed)?;
+    registration.update_alarm(&committed, 0)?;
     assert_eq!(
         signal.0.load(Ordering::SeqCst),
         2,
@@ -226,7 +246,7 @@ fn unchanged_alarm_keeps_the_waiter_but_popped_or_suspended_alarm_reinstalls()
     assert_eq!(set.next_deadline(), Some(100));
     registration.suspend_alarm();
     set.listen(&Context::from_waker(&waker));
-    registration.update_alarm(&committed)?;
+    registration.update_alarm(&committed, 0)?;
     assert_eq!(
         signal.0.load(Ordering::SeqCst),
         3,
@@ -323,16 +343,16 @@ mod schedules {
             registration.waker().wake();
             let work = set.take().unwrap();
             registration
-                .update_alarm(&alarm(1, Some(10), None))
+                .update_alarm(&alarm(1, Some(10), None), 0)
                 .unwrap();
             let due_set = Arc::clone(&set);
             let due = thread::spawn(move || {
                 let count = due_set.wake_due(10, 1);
                 registration
-                    .update_alarm(&alarm(2, Some(20), None))
+                    .update_alarm(&alarm(2, Some(20), None), 0)
                     .unwrap();
                 assert!(matches!(
-                    registration.update_alarm(&alarm(1, Some(10), None)),
+                    registration.update_alarm(&alarm(1, Some(10), None), 0),
                     Err(super::super::super::Error::Conflict)
                 ));
                 (count, registration)
@@ -350,7 +370,7 @@ mod schedules {
             );
             drop(set.take());
             assert_eq!(set.counts(), (1, 0));
-            registration.update_alarm(&alarm(3, None, None)).unwrap();
+            registration.update_alarm(&alarm(3, None, None), 0).unwrap();
             assert_eq!(set.wake_due(100, 1), 0);
             assert_eq!(set.alarm_count(), 0);
             assert_eq!(set.counts(), (1, 0));
@@ -366,20 +386,20 @@ mod schedules {
             let registration = Arc::new(set.register(7).unwrap());
             drop(set.take());
             registration
-                .update_alarm(&alarm(1, Some(10), None))
+                .update_alarm(&alarm(1, Some(10), None), 0)
                 .unwrap();
             let due_set = Arc::clone(&set);
             let due = thread::spawn(move || due_set.wake_due(10, 1));
             let clearing = Arc::clone(&registration);
             let clear = thread::spawn(move || {
-                clearing.update_alarm(&alarm(2, None, None)).unwrap();
+                clearing.update_alarm(&alarm(2, None, None), 0).unwrap();
             });
             due.join().unwrap();
             clear.join().unwrap();
             assert_eq!(set.alarm_count(), 0);
             assert_eq!(set.next_deadline(), None);
             assert!(matches!(
-                registration.update_alarm(&alarm(1, Some(10), None)),
+                registration.update_alarm(&alarm(1, Some(10), None), 0),
                 Err(super::super::super::Error::Conflict)
             ));
             // Selection may already have queued work. The retained generation,
@@ -398,7 +418,7 @@ mod schedules {
             let set = ReadySet::default();
             let registration = set.register(7).unwrap();
             registration
-                .update_alarm(&alarm(1, Some(100), None))
+                .update_alarm(&alarm(1, Some(100), None), 0)
                 .unwrap();
             let counter = Arc::new(Counter(AtomicUsize::new(0)));
             let consumer_counter = Arc::clone(&counter);
@@ -413,7 +433,7 @@ mod schedules {
             });
             let producer = thread::spawn(move || {
                 registration
-                    .update_alarm(&alarm(2, Some(50), None))
+                    .update_alarm(&alarm(2, Some(50), None), 0)
                     .unwrap();
                 registration
             });
@@ -468,7 +488,7 @@ fn a_parked_alarm_holds_only_its_own_groups_watermark() -> Result<(), super::sup
     let set = ReadySet::grouped(|key: &u64| u16::try_from(*key % 2).unwrap_or(0));
     set.dispatch();
     let held = set.register(1)?;
-    held.update_alarm(&alarm(1, Some(70_000), None))?;
+    held.update_alarm(&alarm(1, Some(70_000), None), 0)?;
     drop(held);
     let now = 250_000;
     assert_eq!(

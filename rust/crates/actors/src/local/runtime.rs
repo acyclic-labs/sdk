@@ -511,7 +511,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .shard(&actor)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if actors.contains_key(&actor) {
+        if let Some(slot) = actors.get(&actor) {
+            // A predecessor registration may have parked its alarm after this
+            // slot was installed; move that late token into the live slot.
+            slot.registration.adopt_parked();
             return Ok(());
         }
         let ready = &self.ready[self.handler.admission_class(&actor).index()];
@@ -969,17 +972,23 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         for ready in &self.ready {
             ready.dispatch();
         }
-        let earliest =
-            futures::future::try_join_all(self.scheduling_shards.iter().zip(&loaded).map(
-                |(&shard, dispatcher)| {
-                    self.store
-                        .next_window(shard, dispatcher::deadline_cursor(dispatcher))
-                },
-            ))
-            .await?;
+        // Recovery reads the index from its head: never later than the
+        // current window, so a due alarm armed after its window was consumed
+        // is still found instead of starting behind it.
+        let now = self.clock.now_unix_millis();
+        let head = |dispatcher: &Snapshot| {
+            dispatcher::deadline_cursor(dispatcher).min(scheduling::window(now))
+        };
+        let earliest = futures::future::try_join_all(
+            self.scheduling_shards
+                .iter()
+                .zip(&loaded)
+                .map(|(&shard, dispatcher)| self.store.next_window(shard, head(dispatcher))),
+        )
+        .await?;
         for ((&shard, dispatcher), next) in self.scheduling_shards.iter().zip(&loaded).zip(earliest)
         {
-            consumed.insert(shard, dispatcher::deadline_cursor(dispatcher));
+            consumed.insert(shard, head(dispatcher));
             windows.extend(next.map(|window| (window, shard)));
         }
         for ((&shard, (store, _)), dispatcher) in
@@ -1268,9 +1277,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             .flat_map(|ready| ready.parked_due(now, self.limits.work))
                         {
                             self.track(actor.clone())?;
-                            if let Some(slot) = self.slot(&actor) {
-                                slot.registration.adopt_parked();
-                            }
                             self.wake(&actor);
                         }
                     }
@@ -2022,7 +2028,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // time on this host's clock; nothing was published.
                 let remaining = deadline.saturating_sub(*authority_unix_ms).max(1);
                 slot.registration
-                    .defer_alarm(state.alarm(), now.saturating_add(remaining))?;
+                    .defer_alarm(state.alarm(), now.saturating_add(remaining), now)?;
                 inner.observed = None;
                 return Ok(true);
             }
