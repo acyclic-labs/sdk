@@ -10,6 +10,7 @@ fn main() {
     let selected_lock = PathBuf::from(args.next().unwrap());
     let library_name = args.next().unwrap().into_string().unwrap();
     let proc_macro = args.next().unwrap() == "proc-macro";
+    let linker = args.next().unwrap();
     let root = output.with_extension("work");
     let source = root.join("source");
     let target = root.join("target");
@@ -49,6 +50,15 @@ fn main() {
         .join(format!("{toolchain}-{host}"))
         .join("bin");
     let mut command = Command::new(rustup);
+    if !linker.is_empty() {
+        command.env(
+            format!(
+                "CARGO_TARGET_{}_LINKER",
+                host.replace('-', "_").to_ascii_uppercase()
+            ),
+            fs::canonicalize(linker).unwrap(),
+        );
+    }
     command
         .args([
             "run",

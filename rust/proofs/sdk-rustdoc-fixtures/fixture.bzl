@@ -1,6 +1,7 @@
 """Cache real Rustdoc JSON as declared, independently keyed fixture actions."""
 
 load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain", "use_cpp_toolchain")
+load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "ACTION_NAMES")
 
 def _repository_path(path):
     return path.split("/", 2)[2] if path.startswith("../") else path
@@ -56,20 +57,28 @@ def _rustdoc_fixture_impl(ctx):
     args.add(ctx.attr.selected_lock)
     args.add(ctx.attr.library_name or ctx.attr.package.replace("-", "_"))
     args.add("proc-macro" if ctx.attr.proc_macro else "library")
+    tool_inputs = [ctx.attr._rustup[DefaultInfo].data_runfiles.files]
+    linker_env = {}
+    if ctx.attr.needs_linker:
+        cc = find_cpp_toolchain(ctx)
+        features = cc_common.configure_features(ctx = ctx, cc_toolchain = cc, requested_features = ctx.features, unsupported_features = ctx.disabled_features)
+        action = ACTION_NAMES.cpp_link_executable
+        variables = cc_common.create_link_variables(feature_configuration = features, cc_toolchain = cc, output_file = "fixture-link-output")
+        linker_env = cc_common.get_environment_variables(feature_configuration = features, action_name = action, variables = variables)
+        args.add(cc_common.get_tool_for_action(feature_configuration = features, action_name = action))
+        tool_inputs.append(cc.all_files)
+    else:
+        args.add("")
     for file, relative in sources:
         args.add(file)
         args.add(relative)
     args.add("--")
     args.add_all(ctx.attr.cargo_flags)
-    compiler = ctx.attr._rustup[DefaultInfo]
-    tool_inputs = [compiler.data_runfiles.files]
-    if ctx.attr.needs_linker:
-        tool_inputs.append(find_cpp_toolchain(ctx).all_files)
     ctx.actions.run(
         executable = ctx.executable._producer,
         arguments = [args],
         inputs = depset([file for file, _ in sources] + [ctx.file._rustup], transitive = tool_inputs),
-        use_default_shell_env = ctx.attr.needs_linker,
+        env = linker_env,
         outputs = [output],
         mnemonic = "FixtureRustdoc",
         progress_message = "Building Rustdoc fixture %{label}",
