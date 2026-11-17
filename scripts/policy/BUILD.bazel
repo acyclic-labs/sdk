@@ -17,7 +17,13 @@ node_test(
 
 node_test(
     name = "core_test",
-    srcs = ["core.test.mjs", "//:scripts/policy-core.mjs"],
+    srcs = [
+        "core.test.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/check-js-licenses.mjs",
+        "//:scripts/check-js-licenses.fuzz.mjs",
+        "//:scripts/test-support/license-graphs.mjs",
+    ],
     entry = "scripts/policy/core.test.mjs",
 )
 

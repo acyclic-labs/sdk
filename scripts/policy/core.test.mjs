@@ -5,6 +5,10 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
 import {checkManifestFields, toml, trackedFiles} from '../policy-core.mjs';
+import {fuzz as licenseGraph} from '../check-js-licenses.fuzz.mjs';
+
+test('shared license graph conformance: aliases, cycles and canonical physical reads', () =>
+  licenseGraph(Uint8Array.of(7, 0, 1, 2, 3, 4, 5, 6, 7)));
 
 test('Git inventory preserves path bytes, pathspecs, and missing tracked files', t => {
   const root = mkdtempSync(join(tmpdir(), 'policy-core-'));
