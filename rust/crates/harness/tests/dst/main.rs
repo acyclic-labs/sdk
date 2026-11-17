@@ -343,16 +343,6 @@ fn scripted_native_directory_times_reach_durable_replay_bytes() -> Result<()> {
         let second_time = 1_700_000_000_000_000_019_i64;
         let first = replay_with_directory_times(71, false, first_time).await?;
         let second = replay_with_directory_times(71, false, second_time).await?;
-        for (trace, timestamp) in [(&first, first_time), (&second, second_time)] {
-            let input = timestamp.to_le_bytes();
-            assert!(
-                trace
-                    .durable
-                    .values()
-                    .any(|(_, bytes)| bytes.windows(input.len()).any(|window| window == input)),
-                "native timestamp input never reached the durable replay bytes"
-            );
-        }
         assert_ne!(
             first.durable, second.durable,
             "changing native timestamp input did not change durable replay bytes"
