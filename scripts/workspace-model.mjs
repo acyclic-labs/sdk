@@ -299,7 +299,7 @@ function lockedOwner(lock, {name, version}) {
 function lockedCandidates(candidates, declaration, owner) {
   return candidates.filter(pkg => pkg.name === declaration.name && versionMatches(pkg.version, declaration.req) &&
     (owner.dependencies ?? []).some(key =>
-      key === pkg.name || key === `${pkg.name} ${pkg.version}` || key.startsWith(`${pkg.name} ${pkg.version} (`)));
+      key === pkg.name || key === `${pkg.name} ${pkg.version}` || key === `${pkg.name} ${pkg.version} (${pkg.source})`));
 }
 
 function uniqueDependency(owner, declaration, matches) {
