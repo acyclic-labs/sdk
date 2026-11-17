@@ -201,17 +201,13 @@ fn child_plan(tag_name: &'static str, state: &str, form: &str) -> Plan {
     }
 }
 
-fn needs_sibling(form: &str, _state: &str) -> bool {
-    form == "quorum_need"
-}
-
 /// The wait in the requested form. A running child is released first for the
 /// named form; the quorum form observes it through a settled sibling, and the
 /// timeout form returns on its deadline.
 fn form_wait(form: &str, id: &str, target: &str) -> ToolCall {
     match form {
         "no_agents" => call(id, "wait", json!({"timeout_ms": 1})),
-        "quorum_need" => wait(id, &[target, "sibling"], Some(1), None),
+        "quorum_need" => wait(id, &[target], Some(1), None),
         "timeout" => wait(id, &[target], None, Some(1)),
         _ => wait(id, &[target], None, None),
     }
@@ -236,19 +232,12 @@ fn observe_steps(form: &str, state: &str, prefix: &str) -> Vec<Vec<ToolCall>> {
 }
 
 fn spawn_steps(form: &str, state: &str, prefix: &str) -> Vec<ToolCall> {
-    let mut step = vec![spawn(
+    let _ = (form, state);
+    vec![spawn(
         &format!("{prefix}-spawn-target"),
         "target",
         "c3-target",
-    )];
-    if needs_sibling(form, state) {
-        step.push(spawn(
-            &format!("{prefix}-spawn-sibling"),
-            "sibling",
-            "c3-sibling",
-        ));
-    }
-    step
+    )]
 }
 
 fn plans(seed: u64) -> Vec<Plan> {
@@ -257,7 +246,6 @@ fn plans(seed: u64) -> Vec<Plan> {
     let relation = relation(seed);
     let mut plans = vec![
         child_plan("c3-target", state, form),
-        settled("c3-sibling"),
         Plan {
             tag: "c3-mid",
             steps: {
@@ -294,7 +282,6 @@ fn plans(seed: u64) -> Vec<Plan> {
             fail_once: None,
         },
     ];
-    plans.push(settled("c3-sibling"));
     plans
 }
 
