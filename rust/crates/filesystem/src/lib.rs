@@ -55,6 +55,7 @@ pub use windows_test_filesystems::junction as test_directory_junction;
 pub mod access;
 mod arc_layout;
 pub use arc_layout::shared_allocation_bytes;
+#[cfg(all(test, loom))]
 mod operation_claim;
 mod sync;
 #[cfg(not(target_arch = "wasm32"))]
