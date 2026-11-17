@@ -35,6 +35,8 @@ jobs:
       # builds the other shapes Cargo accepts (no [workspace.package], for one).
       - name: Test the Bazel file generator
         run: node --test scripts/bazel-build-files.test.mjs
+      - name: Test the affected Bazel target selector
+        run: node --test scripts/affected-bazel-targets.test.mjs
       - name: Check that no tooling file gains a Cargo invocation
         run: node scripts/check-cargo-callers.mjs
       - name: Check that feature-gated Cargo tests explicitly opt in
