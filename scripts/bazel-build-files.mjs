@@ -1111,6 +1111,10 @@ const wasmNodeModulesRules = wasmSelections.filter(selection => selection.wasmPa
     ["visibility", q(["//visibility:public"])],
   ])).join("\n");
   const packages = deps.map(dep => [`:${workspaceTargetName(dep.name)}`, `${dep.name}=${dep.dir}`]);
+  for (const dep of deps) {
+    const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
+    if (generated) packages.push([`:${generated.name}`, `${dep.name}/generated/wasm=`]);
+  }
   return `${filegroups}\n${rule("node_modules", [
     ["name", q(`wasm_${selection.name}_node_modules`)],
     ["packages", starlarkDict(packages)],
