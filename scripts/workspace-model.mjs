@@ -7,6 +7,8 @@ import {toml, tomlFiles} from './policy-core.mjs';
 const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
 const requirement = value => value === undefined ? '*' : /^\d/.test(value) ? `^${value}` : value;
+const selectedEntries = (value, universe, triple) => Array.isArray(value) ? value :
+  [...(value?.common ?? []), ...Object.entries(value?.selects ?? {}).flatMap(([cfg, entries]) => triple === null || (universe.conditions[cfg] ?? [cfg]).includes(triple) ? entries : [])];
 export function compareVersions(a, b) {
   const parts = value => value.split('+')[0].split(/[.-]/).map(x => /^\d+$/.test(x) ? Number(x) : x);
   const aa = parts(a), bb = parts(b);
@@ -225,7 +227,7 @@ export function assertRegistryPinsCurrent(root) {
   for (const p of inputs) {
     const pinned = universe.crates[`${p.name} ${p.version}`];
     if (!pinned) throw Error(`STEP_FAILED bazel-build-files: registry package ${p.name} ${p.version} missing from Bazel lock; repin: ${recovery}`);
-    const features = new Set(pinned.common_attrs?.crate_features ?? []);
+    const features = new Set(selectedEntries(pinned.common_attrs?.crate_features, universe, null));
     for (const feature of p.features) if (!features.has(feature))
       throw Error(`STEP_FAILED bazel-build-files: ${p.name} ${p.version} feature ${feature} missing from Bazel lock; repin: ${recovery}`);
   }
@@ -242,12 +244,12 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
     const target = lib?.Library ?? lib?.ProcMacro;
     return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
-      features: Object.fromEntries((pinned?.common_attrs?.crate_features ?? []).map(f => [f, []])),
+      features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, allPlatforms ? null : triple).map(f => [f, []])),
       targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
   });
   const packages = [...local, ...registry], byName = name => packages.filter(p => p.name === name);
   const matches = cfg => allPlatforms || targetMatches(cfg, triple);
-  const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features ?? [])]));
+  const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : selectedEntries(universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features, universe, allPlatforms ? null : triple))]));
   const active = (p, d) => !d.optional || [...enabled.get(p.id)].some(f => f === `dep:${d.rename ?? d.name}` || f.startsWith(`${d.rename ?? d.name}/`));
   let changed = true;
   while (changed) {
@@ -283,7 +285,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     }
     return {id: p.id, deps: [...deps.values()], features: Object.keys(p.features).filter(f => enabled.get(p.id).has(f)).sort()};
   });
-  const selected = value => Array.isArray(value) ? value : [...(value?.common ?? []), ...Object.entries(value?.selects ?? {}).flatMap(([cfg, entries]) => allPlatforms || (universe.conditions[cfg] ?? [cfg]).includes(triple) ? entries : [])];
+  const selected = value => selectedEntries(value, universe, allPlatforms ? null : triple);
   nodes.push(...registry.map(p => {
     const pinned = universe.crates[`${p.name} ${p.version}`];
     const deps = [];

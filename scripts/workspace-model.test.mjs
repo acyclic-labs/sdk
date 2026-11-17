@@ -16,7 +16,7 @@ test('manifest and Bazel lock projection preserves aliases, target edges and loc
   write('backend/src/lib.rs', '');
   write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["backend","win"]\n[[package]]\nname="backend"\nversion="0.1.0"\n[[package]]\nname="win"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
   write('cargo-bazel.Cargo.lock', 'version=4\n[[package]]\nname="direct-cargo-bazel-deps"\nversion="0.0.1"\ndependencies=["win"]\n');
-  write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {'win 1.0.0': {targets: [{Library: {crate_name: 'win'}}], common_attrs: {}}}}));
+  write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {'win 1.0.0': {targets: [{Library: {crate_name: 'win'}}], common_attrs: {crate_features: {common: [], selects: {'x86_64-pc-windows-msvc': ['windows-only']}}}}}}));
   const packages = workspacePackages(root), app = packages.find(p => p.name === 'app');
   assert.equal(app.edition, '2024');
   assert.deepEqual(app.targets.map(t => t.name), ['custom']);
@@ -26,6 +26,8 @@ test('manifest and Bazel lock projection preserves aliases, target edges and loc
   const node = (graph, name) => graph.resolve.nodes.find(n => n.id === graph.packages.find(p => p.name === name).id);
   assert.deepEqual(node(linux, 'app').deps.map(d => d.name), ['renamed']);
   assert.deepEqual(node(windows, 'app').deps.map(d => d.name), ['renamed', 'win']);
+  assert.deepEqual(node(windows, 'win').features, ['windows-only']);
+  assert.deepEqual(node(linux, 'win').features, []);
   assert.deepEqual(node(linux, 'backend').features, ['test-support']);
 });
 

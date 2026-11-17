@@ -41,7 +41,7 @@ rust_library(
         "//rust/crates/observability:acyclic_observability",
         "@sdk_crates//http-body-1.1.0",
         "@sdk_crates//pin-project-lite-0.2.17",
-        "@sdk_crates//prettyplease_0_3_0-0.3.0",
+        "@sdk_crates//prettyplease-0.3.0",
         "@sdk_crates//rcgen-0.14.10",
         "@sdk_crates//syn_3_0_9-3.0.9",
         "@sdk_crates//tempfile-3.27.0",
