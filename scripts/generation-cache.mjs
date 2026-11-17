@@ -19,7 +19,7 @@ export const generationStore = () => process.env.SDK_GENERATION_CACHE
 // manifests (every workspace member manifest), and the root files crates include. Rust inputs are the workspace crates
 // the generators compile, from the manifests' declared path dependencies. A traced generation proves the list: every
 // repository file it reads is an input or output.
-const inputPaths = ["scripts", "proto", ":(glob)rust/crates/*/proto/**", "compatibility", "patches", "rust/vendor", ".cargo",
+const inputPaths = ["scripts", "tools", "proto", ":(glob)rust/crates/*/proto/**", "compatibility", "patches", "rust/vendor", ".cargo",
   "Cargo.lock", ":(glob)**/Cargo.toml", "rust-toolchain.toml", "MODULE.bazel", "MODULE.bazel.lock", "cargo.MODULE.bazel",
   ".bazelrc", ".bazelversion", ":(glob)*.bzl", ":(glob)*.patch", ":(glob)**/BUILD.bazel", "package.json", "bun.lock", "buf.yaml", "buf.gen.yaml",
   "buf.lock", "tsconfig.json", "tsconfig.base.json", "LICENSE", "README.md",
