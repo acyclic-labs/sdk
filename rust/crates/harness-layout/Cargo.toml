@@ -1,0 +1,25 @@
+[package]
+name = "acyclic-harness-layout"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typed JSON heap layouts and allocation accounting for the harness"
+documentation = "https://docs.rs/acyclic-harness-layout"
+
+[features]
+test-support = ["acyclic-fs/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support"]
+
+[dependencies]
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+
+[lints]
+workspace = true

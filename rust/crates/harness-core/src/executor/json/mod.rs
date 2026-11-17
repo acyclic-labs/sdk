@@ -77,7 +77,7 @@ pub(crate) use serialization::json_bytes_match;
 pub(crate) use serialization::json_bytes_match_bounded;
 mod copy;
 mod decode;
-pub(crate) mod layout;
+pub(crate) use acyclic_harness_layout as layout;
 pub(crate) use layout::LayoutCost;
 mod schema;
 mod shape;
