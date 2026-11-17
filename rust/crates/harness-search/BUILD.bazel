@@ -36,6 +36,7 @@ rust_library(
     deps = [
         "//rust/crates/filesystem:acyclic_fs",
         "//rust/crates/harness-core:acyclic_harness_core",
+        "//rust/crates/harness-layout:acyclic_harness_layout",
         "//rust/crates/stream:acyclic_stream",
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//futures-0.3.34",
