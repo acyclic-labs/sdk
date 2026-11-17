@@ -223,7 +223,9 @@ pub fn check_manifest(file: &str, text: &str, policy: &toml::Value) -> Result<Ve
                         let requirement = dep
                             .as_str()
                             .or_else(|| dep.get("version").and_then(toml::Value::as_str));
-                        let wildcard = requirement.is_some_and(|v| {
+                        let inherited =
+                            dep.get("workspace").and_then(toml::Value::as_bool) == Some(true);
+                        let wildcard = requirement.map_or(!inherited, |v| {
                             v.contains('*') || v.split('.').any(|part| part == "x" || part == "X")
                         });
                         let path_only = dep.get("path").and_then(toml::Value::as_str).is_some();
@@ -261,11 +263,21 @@ fn license_expressions_enforce_and_or_and_exceptions() {
 fn wildcard_paths_are_restricted_to_private_or_dev_dependencies() {
     let policy: toml::Value =
         toml::from_str("[bans]\nwildcards='deny'\nallow-wildcard-paths=true\n").unwrap();
-    let manifest = "[package]\nname='public'\n[dependencies]\na={version='*',path='../a'}\n[dev-dependencies]\nb={version='*',path='../b'}\nc='*'\n";
+    let manifest = "[package]\nname='public'\n[dependencies]\na={path='../a'}\ninherited={workspace=true}\n[dev-dependencies]\nb={path='../b'}\nc='*'\n";
     let failures = check_manifest("Cargo.toml", manifest, &policy).unwrap();
     assert_eq!(failures.len(), 2);
     assert!(failures.iter().any(|f| f.ends_with("dependency a")));
     assert!(failures.iter().any(|f| f.ends_with("dependency c")));
+}
+
+#[test]
+fn workspace_level_wildcard_is_rejected() {
+    let policy: toml::Value = toml::from_str("[bans]\nwildcards='deny'\n").unwrap();
+    let manifest = "[workspace.dependencies]\nshared='*'\n";
+    assert_eq!(
+        check_manifest("Cargo.toml", manifest, &policy).unwrap(),
+        ["Cargo.toml: wildcard dependency shared"]
+    );
 }
 
 #[test]

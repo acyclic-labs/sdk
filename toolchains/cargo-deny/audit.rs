@@ -47,11 +47,13 @@ fn resolved_crates_have_no_unpatched_advisories() {
     let crates = lock["crates"].as_object().expect("resolved crate map");
     assert!(!crates.is_empty(), "resolved crate map must not be empty");
     let mut failures = Vec::new();
-    for file in env::var("WORKSPACE_MANIFESTS")
-        .expect("Bazel supplies manifests")
-        .split_whitespace()
-        .filter(|p| p.ends_with("Cargo.toml"))
-    {
+    let root = env::var("ROOT_MANIFEST").expect("Bazel supplies root manifest");
+    let manifests = env::var("WORKSPACE_MANIFESTS").expect("Bazel supplies manifests");
+    for file in std::iter::once(root.as_str()).chain(
+        manifests
+            .split_whitespace()
+            .filter(|p| p.ends_with("Cargo.toml")),
+    ) {
         let text = fs::read_to_string(file).expect("read workspace manifest");
         failures.extend(
             policy::check_manifest(file, &text, &policy).expect("valid workspace manifest policy"),
