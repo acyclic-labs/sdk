@@ -127,49 +127,40 @@ impl Conversation {
         );
         let inbox = self.send(&id, &prompt).await?;
         let completion = async {
-            loop {
-                match self.settle(&id, inbox, &mut events).await? {
-                    Settlement::Approval { .. } => {
-                        // External approvers use the same durable approval
-                        // files; wait on their event, never retry readiness.
-                        events.next().await?;
-                    }
-                    Settlement::Reply(Reply::Answered { entry, .. }) => {
-                        // A failed or cancelled turn cannot satisfy a goal.
-                        // Preserve its original committed cause rather than
-                        // replacing it with an active-goal protocol error.
-                        match &entry.outcome {
-                            crate::agent::TurnOutcome::Completed => {}
-                            crate::agent::TurnOutcome::Failed { message } => {
-                                return Err(Error::Refused(message.clone()));
-                            }
-                            crate::agent::TurnOutcome::Cancelled => {
-                                return Err(Error::Refused("goal run was cancelled".into()));
-                            }
-                            crate::agent::TurnOutcome::RestoreConflict => {
-                                return Err(Error::Refused(self.output_text(&entry).await?));
-                            }
+            match self.wait_reply(&id, inbox, &mut events).await? {
+                Settlement::Reply(Reply::Answered { entry, .. }) => {
+                    // A failed or cancelled turn cannot satisfy a goal.
+                    // Preserve its original committed cause rather than
+                    // replacing it with an active-goal protocol error.
+                    match &entry.outcome {
+                        crate::agent::TurnOutcome::Completed => {}
+                        crate::agent::TurnOutcome::Failed { message } => {
+                            return Err(Error::Refused(message.clone()));
                         }
-                        let files = self
-                            .files(FileRoot::Home {}, vec!["GOAL.md".into()], None)
-                            .await?;
-                        let file = files.files["GOAL.md"]
-                            .as_ref()
-                            .ok_or_else(|| Error::Conflict("run ended without GOAL.md".into()))?;
-                        let goal = GoalState::from_bytes(file.text.as_bytes(), u64::MAX)?;
-                        if goal.status == GoalStatus::Active {
-                            return Err(Error::Conflict(
-                                "goal continuation ended with an active goal".into(),
-                            ));
+                        crate::agent::TurnOutcome::Cancelled => {
+                            return Err(Error::Refused("goal run was cancelled".into()));
                         }
-                        return Ok(RunOutcome::Goal { goal });
+                        crate::agent::TurnOutcome::RestoreConflict => {
+                            return Err(Error::Refused(self.output_text(&entry).await?));
+                        }
                     }
-                    Settlement::Reply(Reply::Dropped) => {
-                        return Err(Error::Refused(self.dropped().await?));
+                    let files = self
+                        .files(FileRoot::Home {}, vec!["GOAL.md".into()], None)
+                        .await?;
+                    let file = files.files["GOAL.md"]
+                        .as_ref()
+                        .ok_or_else(|| Error::Conflict("run ended without GOAL.md".into()))?;
+                    let goal = GoalState::from_bytes(file.text.as_bytes(), u64::MAX)?;
+                    if goal.status == GoalStatus::Active {
+                        return Err(Error::Conflict(
+                            "goal continuation ended with an active goal".into(),
+                        ));
                     }
-                    Settlement::Reply(_) => return Err(unexpected()),
-                    Settlement::Ended(reason) => return Err(Error::Refused(reason)),
+                    Ok(RunOutcome::Goal { goal })
                 }
+                Settlement::Reply(Reply::Dropped) => Err(Error::Refused(self.dropped().await?)),
+                Settlement::Reply(_) | Settlement::Approval { .. } => Err(unexpected()),
+                Settlement::Ended(reason) => Err(Error::Refused(reason)),
             }
         };
         tokio::pin!(completion);
