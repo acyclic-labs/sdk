@@ -696,6 +696,17 @@ isolated_test(
     tags = ["no-sandbox"],
 )
 
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    id = "acyclic-fs::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
 rust_binary(
     name = "bench-fs_example",
     crate_root = "examples/bench-fs.rs",

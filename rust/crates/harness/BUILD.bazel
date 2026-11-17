@@ -1193,6 +1193,18 @@ isolated_test(
     tags = ["no-sandbox"],
 )
 
+isolated_test(
+    name = "main_full-cloud",
+    binary = ":main_cases",
+    binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
+    id = "acyclic-harness::main",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
+)
+
 rust_binary(
     name = "authority-id-contract_example",
     crate_root = "examples/authority-id-contract.rs",
