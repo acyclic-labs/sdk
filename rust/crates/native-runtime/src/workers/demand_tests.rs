@@ -92,6 +92,9 @@ async fn cold_service_retains_owner_through_body_and_terminal_wake() -> io::Resu
 #[cfg(feature = "test-support")]
 #[test]
 fn a_seeded_world_runs_a_nested_blocking_child_on_its_second_worker() -> io::Result<()> {
+    if crate::workers::parallelism() < 2 {
+        return Ok(());
+    }
     let runtime = crate::testing::seeded_runtime(7)?;
     let (schedule, mut events) = crate::testing::Schedule::seeded(7);
     runtime.block_on(async {
