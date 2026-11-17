@@ -194,7 +194,6 @@ fn archive(id: &str, target: &str) -> ToolCall {
 
 fn child_plan(tag_name: &'static str, state: &str, form: &str) -> Plan {
     match (state, form) {
-        ("running", "named") => settled(tag_name),
         ("running", _) | ("archived", _) | ("stopped", _) => parked(tag_name),
         ("settled_failed", _) => failed(tag_name),
         ("merged", _) => writer(tag_name),
