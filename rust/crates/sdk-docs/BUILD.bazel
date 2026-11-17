@@ -119,7 +119,7 @@ isolated_test(
 isolated_test(
     name = "sdk_docs_test_full-cloud",
     binary = ":sdk_docs_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@nodejs//:node":"node"},
     id = "sdk-docs",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

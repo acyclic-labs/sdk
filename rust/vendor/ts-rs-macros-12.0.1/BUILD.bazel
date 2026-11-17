@@ -65,6 +65,7 @@ isolated_test(
 isolated_test(
     name = "ts_rs_macros_test_full-cloud",
     binary = ":ts_rs_macros_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "ts-rs-macros",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

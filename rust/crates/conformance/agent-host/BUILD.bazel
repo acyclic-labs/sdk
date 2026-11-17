@@ -138,7 +138,7 @@ isolated_test(
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
-    binaries = {":oidc-qualify":"oidc-qualify"},
+    binaries = {":oidc-qualify":"oidc-qualify","@nodejs//:node":"node"},
     id = "acyclic-agent-host-conformance::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

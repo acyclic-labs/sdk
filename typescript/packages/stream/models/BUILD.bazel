@@ -64,6 +64,7 @@ isolated_test(
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-stream-typescript-models::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

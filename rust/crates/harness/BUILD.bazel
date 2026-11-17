@@ -341,6 +341,7 @@ isolated_test(
 isolated_test(
     name = "acyclic_harness_test_full-cloud",
     binary = ":acyclic_harness_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-harness",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -869,6 +870,7 @@ isolated_test(
 isolated_test(
     name = "acyclic_virtiofsd_test_full-cloud",
     binary = ":acyclic_virtiofsd_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-harness::bin/acyclic-virtiofsd",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -1327,7 +1329,7 @@ isolated_test(
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
-    binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
+    binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd","@nodejs//:node":"node"},
     id = "acyclic-harness::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -1617,7 +1619,7 @@ isolated_test(
 isolated_test(
     name = "native_receipt_full-cloud",
     binary = ":native_receipt_cases",
-    binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd"},
+    binaries = {":acyclic-virtiofsd":"acyclic-virtiofsd","@nodejs//:node":"node"},
     id = "acyclic-harness::native_receipt",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

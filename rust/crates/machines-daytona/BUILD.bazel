@@ -105,6 +105,7 @@ isolated_test(
 isolated_test(
     name = "conformance_full-cloud",
     binary = ":conformance_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-machines-daytona::conformance",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

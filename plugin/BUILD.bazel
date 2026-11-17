@@ -145,6 +145,7 @@ isolated_test(
 isolated_test(
     name = "acyclic_plugin_test_full-cloud",
     binary = ":acyclic_plugin_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-plugin",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -308,6 +309,7 @@ isolated_test(
 isolated_test(
     name = "acyclic_test_full-cloud",
     binary = ":acyclic_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-plugin::bin/acyclic",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -469,6 +471,7 @@ isolated_test(
 isolated_test(
     name = "graphcoder_test_full-cloud",
     binary = ":graphcoder_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-plugin::bin/graphcoder",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -722,7 +725,7 @@ isolated_test(
 isolated_test(
     name = "cli_full-cloud",
     binary = ":cli_cases",
-    binaries = {":acyclic":"acyclic",":graphcoder":"graphcoder"},
+    binaries = {":acyclic":"acyclic",":graphcoder":"graphcoder","@nodejs//:node":"node"},
     id = "acyclic-plugin::cli",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
