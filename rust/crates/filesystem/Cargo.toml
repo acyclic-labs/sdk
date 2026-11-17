@@ -22,6 +22,10 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "native_source"
+path = "tests/measured_native_source.rs"
+
+[[test]]
 name = "browser_commit"
 path = "tests/browser_commit.rs"
 required-features = ["browser"]
