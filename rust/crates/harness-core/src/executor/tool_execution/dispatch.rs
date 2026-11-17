@@ -60,8 +60,9 @@ impl<'io> StockExecution<'io> {
     ) -> Result<ToolInvocationOutcome<'io>> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
-        // A fenced start's producer is not this owner, which is never fenced
-        // itself; its own start record decides reconciliation's unknown.
+        // The previous invocation retired either with its provider owner or
+        // through the executor's drop-cancellation contract. Its original
+        // start record decides reconciliation's unknown.
         let decision =
             fenced.map(|records| FencedStart::of(records, tool.executor.reexecutes_fenced()));
         let reexecuted = matches!(decision, Some(FencedStart::Reexecuted));

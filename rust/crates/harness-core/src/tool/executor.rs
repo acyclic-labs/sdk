@@ -354,8 +354,9 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// `None` or an indeterminate error means completion is still unknown. While
     /// the call's producer may be live, the caller retains the original
     /// invocation without recording a terminal failure or executing it again, so
-    /// a later result can settle that invocation. Once its producer is fenced (a
-    /// predecessor started it and this owner took the actor's delivery), no
+    /// a later result can settle that invocation. Once its producer is fenced
+    /// (by a successor owner, or by [`Self::cancellable_on_drop`] and exclusive
+    /// custody of the redelivered invocation), no
     /// later result can come from it: a call dispatched to another host is
     /// still retained for that host's settlement, and any other call is
     /// interrupted, or run again where [`Self::reexecutes_fenced`] allows.
