@@ -13,6 +13,8 @@ pub(crate) struct AdmissionState {
     pub(crate) tail: Weak<CapacityWaiter>,
     pub(crate) waiter_count: usize,
     pub(crate) queued_jobs: usize,
+    pub(crate) running_jobs: usize,
+    pub(crate) started_workers: usize,
     notifying: bool,
     notify_again: bool,
     notify_next: Option<Arc<CapacityWaiter>>,
@@ -38,6 +40,8 @@ impl AdmissionState {
             tail: Weak::new(),
             waiter_count: 0,
             queued_jobs: 0,
+            running_jobs: 0,
+            started_workers: 0,
             notifying: false,
             notify_again: false,
             notify_next: None,
@@ -206,6 +210,14 @@ pub(crate) fn poll_submission_with(
         .admission
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let demand = admission.running_jobs + admission.queued_jobs + 1;
+    if let Err(error) = workers.start(&mut admission, demand) {
+        drop(admission);
+        job.set_queued(false);
+        job.record_submission_error(&error);
+        remove_capacity_waiter(workers, waiter.take());
+        return Poll::Ready(Err(error));
+    }
     // A job that never waits retires its prepaid waiter charge on admission.
     let mut prepaid = job.take_admission();
     let submission = match workers.sender.try_send(job) {
@@ -312,18 +324,21 @@ pub(crate) fn wake_capacity_waiter(waiter: Option<Waker>) {
     }
 }
 
-pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
+pub(crate) fn notify_capacity_released(admission: &Arc<Mutex<AdmissionState>>) -> super::Running {
+    let running;
     {
         let mut admission = admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         debug_assert_ne!(admission.queued_jobs, 0, "native queue accounting lost");
         admission.queued_jobs = admission.queued_jobs.saturating_sub(1);
+        admission.running_jobs += 1;
+        running = super::Running(Arc::clone(admission));
         if admission.notifying {
             // A waiter already visited by the active notifier may have polled
             // while the channel was full. Cover this release in a fresh pass.
             admission.notify_again = true;
-            return;
+            return running;
         }
         admission.notifying = true;
         admission.notify_next = admission.head.clone();
@@ -339,7 +354,7 @@ pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
             }
             let Some(node) = admission.notify_next.take() else {
                 admission.notifying = false;
-                return;
+                return running;
             };
             let mut state = node
                 .state

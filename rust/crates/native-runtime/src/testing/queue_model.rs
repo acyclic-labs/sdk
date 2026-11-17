@@ -100,7 +100,7 @@ fn capacity() {
         let released = workers.admission.clone();
         let receiving = receiver.clone();
         let worker = thread::spawn(move || {
-            let filler = crate::workers::receive_job(&receiving, &released).unwrap();
+            let (filler, _running) = crate::workers::receive_job(&receiving, &released).unwrap();
             wake_capacity_waiter(filler.run());
         });
 
@@ -137,7 +137,8 @@ fn capacity() {
         assert!(completion.as_mut().poll(&mut cx).is_pending());
         assert_eq!(effects.load(Ordering::SeqCst), 0);
         assert_eq!(workers.admission.lock().unwrap().waiter_count, 0);
-        let accepted = crate::workers::receive_job(&receiver, &workers.admission).unwrap();
+        let (accepted, _running) =
+            crate::workers::receive_job(&receiver, &workers.admission).unwrap();
         wake_capacity_waiter(accepted.run());
         assert_ne!(flag.0.load(Ordering::SeqCst), 0, "terminal wake lost");
         assert!(matches!(
@@ -398,7 +399,7 @@ fn waiter_charge(cancel: bool) {
         let released = workers.admission.clone();
         let receiving = receiver.clone();
         let notifier = thread::spawn(move || {
-            let filler = crate::workers::receive_job(&receiving, &released).unwrap();
+            let (filler, _running) = crate::workers::receive_job(&receiving, &released).unwrap();
             wake_capacity_waiter(filler.run());
         });
         let mut notifier = Some(notifier);
@@ -434,7 +435,8 @@ fn waiter_charge(cancel: bool) {
         assert_eq!(admission.queued_jobs, usize::from(!cancel));
         drop(admission);
         if !cancel {
-            let accepted = crate::workers::receive_job(&receiver, &workers.admission).unwrap();
+            let (accepted, _running) =
+                crate::workers::receive_job(&receiver, &workers.admission).unwrap();
             wake_capacity_waiter(accepted.run());
         }
         drop(pending);

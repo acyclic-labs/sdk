@@ -840,7 +840,7 @@ fn capacity_release_reaches_a_repolled_original_submission() -> io::Result<()> {
             // The real owner has reinstalled its consumed observer while the
             // channel is full. This original receive releases that capacity
             // during the same broadcast and must revisit that live owner.
-            let filler = crate::workers::receive_job(&receiver, &workers.admission)
+            let (filler, _running) = crate::workers::receive_job(&receiver, &workers.admission)
                 .expect("original queue owner");
             wake_capacity_waiter(filler.run());
         }))))))
@@ -850,7 +850,7 @@ fn capacity_release_reaches_a_repolled_original_submission() -> io::Result<()> {
     let mut waiter = None;
     let context = Context::from_waker(&reenter);
     assert!(poll_submission_with(&workers, &mut pending, &mut waiter, &context).is_pending());
-    let filler = crate::workers::receive_job(&receiver, &workers.admission)
+    let (filler, _running) = crate::workers::receive_job(&receiver, &workers.admission)
         .ok_or(io::ErrorKind::BrokenPipe)?;
     wake_capacity_waiter(filler.run());
     assert_eq!(
@@ -869,7 +869,7 @@ fn capacity_release_reaches_a_repolled_original_submission() -> io::Result<()> {
         poll_submission_with(&workers, pending, waiter, &context),
         Poll::Ready(Ok(()))
     ));
-    let accepted = crate::workers::receive_job(&receiver, &workers.admission)
+    let (accepted, _running) = crate::workers::receive_job(&receiver, &workers.admission)
         .ok_or(io::ErrorKind::BrokenPipe)?;
     wake_capacity_waiter(accepted.run());
     assert_eq!(complete(prior)?, 37);
