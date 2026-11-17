@@ -1075,6 +1075,13 @@ function moduleFile() {
       ["build_file_content", q('filegroup(name = "files", srcs = glob(["**"], exclude = ["BUILD.bazel"]), visibility = ["//visibility:public"])\n')],
     ])),
     `rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")\n`,
+    // The formatting check uses the pinned toolchain's rustfmt, not rules_rust's default nightly:
+    // rustfmt's macro formatting changes between releases, and the nightly one emits calls the
+    // repository's macros do not accept. These repositories are independent of the rust toolchain
+    // hub, so pinning rustfmt does not change any compile action.
+    `rustfmt = use_repo_rule("@rules_rust//rust:repositories.bzl", "rustfmt_toolchain_tools_repository")\n`,
+    ...TRIPLES.map(t => `rustfmt(name = ${q(`pinned_rustfmt_${t.replaceAll("-", "_")}`)}, version = ${q(channel)}, exec_triple = ${q(t)})\n`),
+    `\n`,
     rule("rust.toolchain", [
       ["versions", list([channel])],
       ["extra_target_triples", list([WINDOWS_TRIPLE, WASM_TRIPLE])],
@@ -1118,7 +1125,7 @@ function moduleFile() {
     // module's own: rules_rust keeps only the root module's toolchains and repository sets, and the
     // Windows C toolchain runs from the LLVM repository only the root creates. A module that depends
     // on this one registers its own toolchains.
-    `register_toolchains("//${WINDOWS_TOOLCHAIN_PACKAGE}:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__${LINUX_MUSL_TRIPLE}__${channelName}", "@rust_toolchains//:all", dev_dependency = True)\n\n`,
+    `register_toolchains("//toolchains/rustfmt:linux_x86_64", "//toolchains/rustfmt:macos_aarch64", "//toolchains/rustfmt:windows_x86_64", "//${WINDOWS_TOOLCHAIN_PACKAGE}:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__${LINUX_MUSL_TRIPLE}__${channelName}", "@rust_toolchains//:all", dev_dependency = True)\n\n`,
     `crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")\n\n`,
     ...thirdParty.map(([name, opt]) => `${rule("crate.annotation", [["crate", q(name)], ["repositories", list([HUB])], ["rustc_flags", list([`-Copt-level=${opt}`])]])}
 `),

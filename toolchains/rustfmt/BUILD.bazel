@@ -1,0 +1,31 @@
+# The formatting check runs the pinned toolchain's rustfmt, not rules_rust's default nightly.
+# Each toolchain is registered before the rules_rust hub, so it wins on its host platform.
+toolchain(
+    name = "linux_x86_64",
+    toolchain = "@pinned_rustfmt_x86_64_unknown_linux_gnu//:rustfmt_toolchain",
+    toolchain_type = "@rules_rust//rust/rustfmt:toolchain_type",
+    exec_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+toolchain(
+    name = "macos_aarch64",
+    toolchain = "@pinned_rustfmt_aarch64_apple_darwin//:rustfmt_toolchain",
+    toolchain_type = "@rules_rust//rust/rustfmt:toolchain_type",
+    exec_compatible_with = [
+        "@platforms//os:macos",
+        "@platforms//cpu:aarch64",
+    ],
+)
+
+toolchain(
+    name = "windows_x86_64",
+    toolchain = "@pinned_rustfmt_x86_64_pc_windows_msvc//:rustfmt_toolchain",
+    toolchain_type = "@rules_rust//rust/rustfmt:toolchain_type",
+    exec_compatible_with = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+    ],
+)
