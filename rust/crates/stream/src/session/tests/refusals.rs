@@ -155,7 +155,7 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
         assert_eq!(closed.code, original.code());
         assert_eq!(closed.message, expected);
         assert_eq!(
-            retained.map(|error| error.category()),
+            retained.as_ref().map(|error| error.category()),
             Some(original.category()),
             "queued terminal lost the original refusal"
         );

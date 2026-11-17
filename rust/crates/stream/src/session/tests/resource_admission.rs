@@ -152,7 +152,7 @@ async fn resource_refusals_preserve_other_channels_in_the_same_interest() -> Tes
                     assert_eq!(message.channel_id, 3);
                     assert_eq!(closed.code, error.code());
                     assert_eq!(
-                        original.map(|error| error.category()),
+                        original.as_ref().map(|error| error.category()),
                         Some(error.category())
                     );
                     assert_eq!(
