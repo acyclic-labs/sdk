@@ -149,7 +149,18 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
         .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
-    assert_eq!(events.len(), 2);
+    let mut output = events
+        .into_iter()
+        .filter(|event| !matches!(event, ModelEvent::Wait(_) | ModelEvent::Trace { .. }));
+    assert!(matches!(output.next(), Some(ModelEvent::Content { delta }) if delta == "done"));
+    assert!(matches!(
+        output.next(),
+        Some(ModelEvent::Completed { metadata })
+            if metadata["id"] == "run"
+                && metadata["usage"]["input_tokens"] == 5
+                && metadata["usage"]["output_tokens"] == 3
+    ));
+    assert!(output.next().is_none(), "refresh duplicated model output");
     let requests = server
         .requests
         .lock()
