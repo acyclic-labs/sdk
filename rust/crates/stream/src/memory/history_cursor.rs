@@ -177,6 +177,7 @@ impl HistoryCursor {
             registration: None,
         }
     }
+    #[cfg(test)]
     fn new(path: &PathState, tail: u64, next: u64) -> Self {
         let records = FiniteRead {
             history: PinnedHistory::new(path, tail, &mut ReadOnlyWork)
