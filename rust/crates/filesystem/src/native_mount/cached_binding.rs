@@ -51,19 +51,6 @@ mod proofs {
         check(kani::any(), kani::any(), kani::any(), kani::any());
     }
 
-    #[cfg(not(kani))]
-    #[test]
-    fn every_boolean_decision_retains_its_lease_and_bounds_callbacks() {
-        for flags in 0..16 {
-            check(
-                flags & 1 != 0,
-                flags & 2 != 0,
-                flags & 4 != 0,
-                flags & 8 != 0,
-            );
-        }
-    }
-
     fn check(present: bool, admitted: bool, current: bool, unchanged: bool) {
         let live = Cell::new(false);
         let lease_calls = Cell::new(0_u8);
