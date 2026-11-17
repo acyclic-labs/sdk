@@ -790,7 +790,6 @@ async fn peer_send_returns_acceptance_before_receiver_execution() -> Result {
                 json!({"agent": peer.as_str(), "message": "Hello peer"}),
             ),
             ScriptedTurn::Text("sent".into()),
-            ScriptedTurn::Text("no follow-up work".into()),
         ],
         0,
     )
@@ -864,7 +863,6 @@ async fn peer_send_returns_acceptance_before_receiver_execution() -> Result {
             json!({"agent": root.as_str(), "message": "Hello back", "re": message.id.as_str()}),
         ),
         ScriptedTurn::Text("answered".into()),
-        ScriptedTurn::Text("no follow-up work".into()),
     ]);
     agents.drain(&peer).await?;
     let receiver = agents.state(&peer).await?;
@@ -899,10 +897,7 @@ async fn peer_send_returns_acceptance_before_receiver_execution() -> Result {
             .any(|request| observes(request, &root))
     );
     let before_reply = model.request_count();
-    model.extend([
-        ScriptedTurn::Text("conversation complete".into()),
-        ScriptedTurn::Text("no follow-up work".into()),
-    ]);
+    model.extend([ScriptedTurn::Text("conversation complete".into())]);
     agents.drain(&root).await?;
     let requests = model.requests();
     assert!(

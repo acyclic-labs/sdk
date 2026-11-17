@@ -730,7 +730,8 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
         }
     }
     let requests = model.requests();
-    assert_eq!(requests.len(), 18);
+    // Each of the 18 turns and its settlement's retrospective.
+    assert_eq!(requests.len(), 2 * 18);
     for request in &requests {
         acyclic_harness_core::model::PreparedModelRequest::prepare(
             request.clone(),
