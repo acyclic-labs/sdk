@@ -175,6 +175,8 @@ fn replacement_examples_reuse_parents_without_retaining_files()
 fn replacement_examples_do_not_reopen_their_held_parent_roots()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_host::stat_probe::Probe;
+    // Service startup opens its own roots; only the replacement is measured.
+    crate::initialize_native_mount_services()?;
     let directories = ReplacementDirectories::new()?;
     for destination_read_only in [false, true] {
         for replacement_read_only in [false, true] {
