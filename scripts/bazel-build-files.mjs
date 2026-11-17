@@ -514,9 +514,19 @@ const universe = currentRegistry.map(p => ({...p, id: `${p.source}#${p.name}@${p
 const spliceKey = new Map(Object.values(Object.groupBy(universe, p => p.name))
   .filter(versions => versions.length > 1).flat()
   .map(p => [p.id, `${p.name}-${p.version.replace(/[^A-Za-z0-9_-]/g, "_")}`]));
+const universeIds = new Set(universe.map(p => p.id));
+const spokeRepo = p => `${HUB}__${p.name}-${p.version}`;
+// A local patched crate may depend on a registry crate that is only reached
+// transitively. The hub exposes direct specs; crate_universe also exposes the
+// resolved transitive crate as a spoke, without adding an inactive root spec.
+const transitiveSpokes = new Set(runs.flatMap(run => run.resolve.nodes)
+  .filter(node => members.has(node.id)).flatMap(node => node.deps)
+  .map(dep => packages.get(dep.pkg)).filter(p => p?.source?.startsWith("registry+") && !universeIds.has(p.id))
+  .map(spokeRepo));
 // The hub names a crate by a splicing dependency key, with dashes as underscores, and its version.
 const hubLabel = id => {
-  const { name, version } = packages.get(id);
+  const p = packages.get(id), { name, version } = p;
+  if (!universeIds.has(id)) return `@${spokeRepo(p)}//:${crateName(libOf(p))}`;
   return `@${HUB}//${spliceKey.has(id) ? spliceKey.get(id).replaceAll("-", "_") : name}-${version}`;
 };
 
@@ -937,7 +947,7 @@ function moduleFile() {
       ["version", q(`=${version}`)],
       ["additive_build_file_content", q(`exports_files(${JSON.stringify([...files].sort())})\n`)],
     ])}\n`),
-    `use_repo(${["crate", HUB, ...[...staged.keys()].sort()].map((r, i) => (i ? q(r) : r)).join(", ")})\n`,
+    `use_repo(${["crate", HUB, ...[...new Set([...staged.keys(), ...transitiveSpokes])].sort()].map((r, i) => (i ? q(r) : r)).join(", ")})\n`,
   ].join("");
 }
 
