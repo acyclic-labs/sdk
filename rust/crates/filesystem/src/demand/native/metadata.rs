@@ -21,7 +21,9 @@ fn child_path_key(parent: &NamespacePath, name: &crate::kernel::LogicalName) -> 
 }
 
 #[cfg(feature = "test-support")]
-pub(crate) fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing::NativeTimes> {
+pub(crate) fn fixture_times(
+    metadata: &HostStat,
+) -> Option<acyclic_native_runtime::testing::NativeTimes> {
     use acyclic_native_runtime::testing::{NativeMetadataInput, NativeTimes, capture_native_times};
     let identity = metadata.identity();
     let nanos = |time: Option<i128>| time.and_then(|time| i64::try_from(time).ok());
@@ -178,11 +180,7 @@ pub(crate) fn physical_version(metadata: &HostStat) -> SourceVersion {
 /// with neither handles nor birth times (a few) cannot tell reuse apart by
 /// identity alone.
 #[cfg(unix)]
-pub(crate) fn file_identity(
-    path: &[u8],
-    content: FixtureContent,
-    metadata: &HostStat,
-) -> [u8; 32] {
+pub(crate) fn file_identity(path: &[u8], content: FixtureContent, metadata: &HostStat) -> [u8; 32] {
     #[cfg(feature = "test-support")]
     if let Some(identity) = fixture_identity(path, metadata) {
         if let Some(content) = content {
@@ -212,11 +210,7 @@ pub(crate) fn file_identity(
 }
 
 #[cfg(windows)]
-pub(crate) fn file_identity(
-    path: &[u8],
-    content: FixtureContent,
-    metadata: &HostStat,
-) -> [u8; 32] {
+pub(crate) fn file_identity(path: &[u8], content: FixtureContent, metadata: &HostStat) -> [u8; 32] {
     #[cfg(feature = "test-support")]
     if let Some(identity) = fixture_identity(path, metadata) {
         if let Some(content) = content {

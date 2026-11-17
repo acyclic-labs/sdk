@@ -121,9 +121,7 @@ fn child(seed: u64, erase_entropy: bool) -> std::result::Result<Child, String> {
         .and_then(|digest| {
             blake3::Hash::from_hex(digest.trim()).map_err(|error| error.to_string())
         })?;
-    let reached = output
-        .lines()
-        .any(|line| line.contains("DST_X1_REACHED=1"));
+    let reached = output.lines().any(|line| line.contains("DST_X1_REACHED=1"));
     Ok(Child { reached, digest })
 }
 
@@ -141,11 +139,7 @@ fn x1_child() {
         .unwrap_or_default();
     let erase = std::env::var("DST_X1_ERASE").is_ok_and(|erase| erase == "1");
     let (reached, trace) = trace(seed, erase).unwrap_or_else(|error| panic!("{error}"));
-    println!(
-        "DST_X1_DIGEST={} {}",
-        class(seed),
-        digest(&trace)
-    );
+    println!("DST_X1_DIGEST={} {}", class(seed), digest(&trace));
     if reached {
         println!("DST_X1_REACHED=1");
     }

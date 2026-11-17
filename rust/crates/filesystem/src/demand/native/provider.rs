@@ -183,17 +183,13 @@ impl DemandSource for NativeDemandSource {
                 drop(relative);
                 context.release(allocation)?;
                 let bytes = answer?;
-                if provider
-                    .metadata(path, context)?
-                    .as_ref()
-                    .map(|metadata| {
-                        version(
-                            &path_key(path),
-                            fixture_content(metadata, |_| Ok(())),
-                            metadata,
-                        )
-                    })
-                    != Some(expected)
+                if provider.metadata(path, context)?.as_ref().map(|metadata| {
+                    version(
+                        &path_key(path),
+                        fixture_content(metadata, |_| Ok(())),
+                        metadata,
+                    )
+                }) != Some(expected)
                 {
                     return Err(DemandError::StaleVersion);
                 }

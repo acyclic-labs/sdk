@@ -720,9 +720,7 @@ pub(super) fn source_capture_id(
         #[cfg(unix)]
         let mut file = std::fs::File::open(path)?;
         #[cfg(windows)]
-        let mut file = std::fs::File::open(std::ffi::OsString::from_wide(
-            path.as_slice(),
-        ))?;
+        let mut file = std::fs::File::open(std::ffi::OsString::from_wide(path.as_slice()))?;
         std::io::copy(&mut file, hasher).map(|_| ())
     });
     let identity = crate::demand::native::file_identity(logical, content, metadata);

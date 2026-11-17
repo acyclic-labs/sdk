@@ -290,11 +290,7 @@ impl NativeDemandFile {
             .held(context)
             .and_then(|root| root.stat(&self.relative, context));
         if physical_version(&held) != self.physical
-            || named
-                .as_ref()
-                .map(physical_version)
-                .ok()
-                != Some(self.physical)
+            || named.as_ref().map(physical_version).ok() != Some(self.physical)
         {
             self.provider.check(&self.source, context)?;
             return Err(DemandError::StaleVersion);

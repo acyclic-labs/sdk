@@ -461,17 +461,13 @@ impl NativeDemandSource {
             native: Some(lease.cursor.clone().erase()),
         });
         self.check(&source, work)?;
-        if self
-            .metadata(directory, work)?
-            .as_ref()
-            .map(|metadata| {
-                version(
-                    &path_key(directory),
-                    fixture_content(metadata, |_| Ok(())),
-                    metadata,
-                )
-            })
-            != Some(observed)
+        if self.metadata(directory, work)?.as_ref().map(|metadata| {
+            version(
+                &path_key(directory),
+                fixture_content(metadata, |_| Ok(())),
+                metadata,
+            )
+        }) != Some(observed)
         {
             *lease
                 .cursor

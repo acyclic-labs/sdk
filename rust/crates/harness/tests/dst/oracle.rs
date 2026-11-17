@@ -624,57 +624,57 @@ impl World {
                 acyclic_harness::test_support::clear_checkout_identity();
                 let (_, root) = harness.agents().await?;
                 let connection = harness.connect().await?;
-            let mut findings = Vec::new();
-            let mut cursor = None;
-            let mut generation = None;
-            loop {
-                let request = AgentCommand::Directory {
-                    agent: root.clone(),
-                    target: DirectoryTarget::Primary {},
-                    path: "findings".into(),
-                    generation: generation.clone(),
-                    after_generation: None,
-                    page: AgentPageRequest::new(items, u32::MAX, cursor)
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                };
-                let AgentReply::Directory { page } = connection.execute(&request).await? else {
-                    return Err(Error::Invalid("findings directory reply".into()));
-                };
-                for entry in &page.entries {
-                    if entry.kind != PrivateDirectoryEntryKind::File {
-                        continue;
-                    }
-                    let path = format!("findings/{}", entry.name);
-                    let mut body = Vec::new();
-                    loop {
-                        let read = AgentCommand::Read {
-                            agent: root.clone(),
-                            offset: body.len() as u64,
-                            target: ReadTarget::Path {
-                                target: DirectoryTarget::Primary {},
-                                path: path.clone(),
-                                generation: page.generation.clone(),
-                            },
-                        };
-                        let reply = connection.execute(&read).await?;
-                        let (bytes, length) = reply
-                            .content()
-                            .map_err(|error| Error::Invalid(error.to_string()))?;
-                        body.extend_from_slice(&bytes);
-                        if body.len() as u64 >= length {
-                            break;
+                let mut findings = Vec::new();
+                let mut cursor = None;
+                let mut generation = None;
+                loop {
+                    let request = AgentCommand::Directory {
+                        agent: root.clone(),
+                        target: DirectoryTarget::Primary {},
+                        path: "findings".into(),
+                        generation: generation.clone(),
+                        after_generation: None,
+                        page: AgentPageRequest::new(items, u32::MAX, cursor)
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                    };
+                    let AgentReply::Directory { page } = connection.execute(&request).await? else {
+                        return Err(Error::Invalid("findings directory reply".into()));
+                    };
+                    for entry in &page.entries {
+                        if entry.kind != PrivateDirectoryEntryKind::File {
+                            continue;
                         }
+                        let path = format!("findings/{}", entry.name);
+                        let mut body = Vec::new();
+                        loop {
+                            let read = AgentCommand::Read {
+                                agent: root.clone(),
+                                offset: body.len() as u64,
+                                target: ReadTarget::Path {
+                                    target: DirectoryTarget::Primary {},
+                                    path: path.clone(),
+                                    generation: page.generation.clone(),
+                                },
+                            };
+                            let reply = connection.execute(&read).await?;
+                            let (bytes, length) = reply
+                                .content()
+                                .map_err(|error| Error::Invalid(error.to_string()))?;
+                            body.extend_from_slice(&bytes);
+                            if body.len() as u64 >= length {
+                                break;
+                            }
+                        }
+                        findings.push((entry.name.clone(), body));
                     }
-                    findings.push((entry.name.clone(), body));
-                }
-                match page.next {
-                    Some(next) => {
-                        cursor = Some(next);
-                        generation = Some(page.generation);
+                    match page.next {
+                        Some(next) => {
+                            cursor = Some(next);
+                            generation = Some(page.generation);
+                        }
+                        None => break,
                     }
-                    None => break,
                 }
-            }
                 findings.sort();
                 drop(connection);
                 let harness = Arc::try_unwrap(harness).map_err(|_| {
@@ -685,9 +685,9 @@ impl World {
             });
             match driver.run(run).await {
                 Outcome::Completed(result) => result,
-                Outcome::Crashed(cause) => Err(Error::Invalid(format!(
-                    "findings reopen crashed: {cause}"
-                ))),
+                Outcome::Crashed(cause) => {
+                    Err(Error::Invalid(format!("findings reopen crashed: {cause}")))
+                }
             }
         })
     }
