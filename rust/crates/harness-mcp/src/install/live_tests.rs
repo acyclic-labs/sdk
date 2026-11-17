@@ -276,12 +276,16 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
         requests[0].messages,
         requests[1].messages[..requests[0].messages.len()]
     );
+    // Composed requests announce dynamic schemas in model-visible
+    // `tools.changed` notices; non-composed requests keep every schema in the
+    // private `tools.bound` history table.
+    let kind = if compose { "tools.changed" } else { "tools.bound" };
     let notices: Vec<_> = requests[1]
         .messages
         .iter()
         .filter_map(|message| message.content.notice_parts())
         .flat_map(|(notices, _)| notices)
-        .filter(|notice| notice.kind == "tools.changed")
+        .filter(|notice| notice.kind == kind)
         .collect();
     assert_eq!(notices.len(), 2);
     assert!(
