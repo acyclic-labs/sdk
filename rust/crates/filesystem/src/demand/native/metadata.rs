@@ -64,6 +64,23 @@ fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing:
     })
 }
 
+#[cfg(feature = "test-support")]
+fn with_fixture_content(
+    provider: &NativeDemandSource,
+    relative: &DemandPath,
+    stat: HostStat,
+    context: &mut CallbackWork,
+) -> Result<HostStat, DemandError> {
+    if stat.file_type() != crate::demand::SourceNodeKind::RegularFile {
+        return Ok(stat);
+    }
+    let root = provider.inner.root.held(context)?;
+    match root.fixture_content(relative, context)? {
+        Some(content) => Ok(stat.with_content(content)),
+        None => Ok(stat),
+    }
+}
+
 fn version(path: Option<&[u8]>, metadata: &HostStat) -> SourceVersion {
     #[cfg(feature = "test-support")]
     if let Some(times) = fixture_times(metadata) {
@@ -72,6 +89,9 @@ fn version(path: Option<&[u8]>, metadata: &HostStat) -> SourceVersion {
         hash.update(&metadata.len().to_le_bytes());
         if let Some(path) = path {
             hash.update(path);
+        }
+        if let Some(content) = metadata.content() {
+            hash.update(&content);
         }
         hash.update(&times.modified_ns.unwrap_or_default().to_le_bytes());
         hash.update(&times.changed_ns.unwrap_or_default().to_le_bytes());

@@ -306,3 +306,84 @@ fn two_incarnations_reopen_the_same_state() -> std::result::Result<(), String> {
         })
     })
 }
+
+#[test]
+fn a_same_length_fixture_rewrite_is_not_a_stale_version() -> std::result::Result<(), String> {
+    fn plan(tag: &'static str, calls: Vec<acyclic_harness::model::ToolCall>) -> Plan {
+        Plan {
+            tag,
+            steps: vec![calls],
+            fail_once: None,
+        }
+    }
+    oracle::simulate(0, || {
+        entry(async move {
+            let plans = vec![
+                plan(
+                    "write-a",
+                    vec![call(
+                        "write-a",
+                        "write",
+                        json!({
+                            "path": "same.txt",
+                            "content": "aaaa",
+                            "ifVersion": "absent",
+                        }),
+                    )],
+                ),
+                plan(
+                    "read-a",
+                    vec![call("read-a", "read", json!({ "path": "same.txt" }))],
+                ),
+                plan(
+                    "write-b",
+                    vec![call(
+                        "write-b",
+                        "write",
+                        json!({
+                            "path": "same.txt",
+                            "content": "bbbb",
+                            "ifVersion": "any",
+                        }),
+                    )],
+                ),
+                plan(
+                    "read-b",
+                    vec![call("read-b", "read", json!({ "path": "same.txt" }))],
+                ),
+            ];
+            let mut world = World::new(0, &FILES, service(plans)).map_err(failed)?;
+            let incarnation = world
+                .incarnation(
+                    None,
+                    &[
+                        vec![("write-a", tag("write-a"))],
+                        vec![("read-a", tag("read-a"))],
+                        vec![("write-b", tag("write-b"))],
+                        vec![("read-b", tag("read-b"))],
+                    ],
+                )
+                .await
+                .map_err(failed)?;
+            for request in &incarnation.requests {
+                let Ok(settled) = oracle::settlements(request) else {
+                    continue;
+                };
+                let Some(read) = settled
+                    .iter()
+                    .find(|settled| settled.call.call_id == "read-b")
+                else {
+                    continue;
+                };
+                let rendered = read.rendered();
+                if !rendered.contains("bbbb") {
+                    return Err(format!(
+                        "a same-length rewrite replayed stale fixture data: {rendered}"
+                    ));
+                }
+                return Ok(());
+            }
+            Err("read-b never settled in a model request".into())
+        })
+    })
+}

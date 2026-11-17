@@ -401,6 +401,27 @@ impl HostRoot {
             Ok(cap_std::fs::File::from_std(file))
         })
     }
+    /// A fixture world's content identity for a regular file. Production
+    /// versions use native timestamps and never read content here.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn fixture_content<W: NativeHostWork>(
+        &self,
+        path: &NativePath,
+        work: &mut W,
+    ) -> Result<Option<[u8; 32]>, W::Error> {
+        if self.stat(path, work)?.file_type() != crate::demand::SourceNodeKind::RegularFile {
+            return Ok(None);
+        }
+        #[cfg(windows)]
+        let file = self.open_file(path, nt::NTCREATEFILE_CREATE_OPTIONS(0), work)?;
+        #[cfg(not(windows))]
+        let file = self.open_file(path, work)?;
+        let mut file = file.into_std();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut bytes)?;
+        Ok(Some(*blake3::hash(&bytes).as_bytes()))
+    }
+
     #[cfg(target_os = "macos")]
     pub(crate) fn clone_file_from<W: SourceDemandReadWork>(
         &self,

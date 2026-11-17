@@ -218,9 +218,8 @@ impl NativeDemandSource {
         backing: &mut Owned<Vec<SourceDirectoryEntry>>,
         work: &mut CallbackWork,
     ) -> Result<Option<SourceDirectoryEntry>, DemandError> {
-        let observed;
         let stat = if let Some(stat) = &entry.stat {
-            stat
+            stat.clone()
         } else {
             #[cfg(unix)]
             let result = self
@@ -237,15 +236,16 @@ impl NativeDemandSource {
                 .and_then(|parent| {
                     crate::native_host::stat_windows_leaf(&parent, &entry.name, work)
                 });
-            observed = match result {
+            match result {
                 Ok(stat) => stat,
                 Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                     return Ok(None);
                 }
                 Err(error) => return Err(error),
-            };
-            &observed
+            }
         };
+        #[cfg(feature = "test-support")]
+        let stat = with_fixture_content(self, &directory.join(&entry.name), stat, work)?;
         let ((encoding, bytes), allocation) = source_name(&entry.name, self.inner.profile, work)?;
         backing.bytes += bytes.capacity() as u64;
         if let Some(allocation) = allocation {
@@ -255,7 +255,7 @@ impl NativeDemandSource {
                 .map_err(DemandError::from)?;
         }
         let name = LogicalName::new(encoding, bytes).map_err(|_| DemandError::InvalidRequest)?;
-        let node = Self::node(child_fixture_path_key(logical, &name).as_deref(), stat);
+        let node = Self::node(child_fixture_path_key(logical, &name).as_deref(), &stat);
         Ok(Some(SourceDirectoryEntry { name, node }))
     }
     fn page_entries(
