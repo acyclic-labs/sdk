@@ -300,7 +300,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             // before traversing again, so children spawned after our first
             // snapshot cannot escape the stop's wait.
             let mut effects = Vec::new();
-            let descendants = self
+            let mut descendants = self
                 .descendant_status(
                     &delivery.actor,
                     &child,
@@ -308,6 +308,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     &mut effects,
                 )
                 .await?;
+            descendants.retain(|change| match change {
+                SubscriptionChange::Add { id, .. } => !delivery.subscriptions.contains_key(id),
+                _ => true,
+            });
             let remaining = delivery
                 .subscriptions
                 .iter()
