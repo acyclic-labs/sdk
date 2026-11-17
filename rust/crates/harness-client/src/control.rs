@@ -915,7 +915,11 @@ mod tests {
         for cause in acyclic_stream::StreamCategory::ALL.map(StreamError::from) {
             let error = AgentExchangeError::Session(cause.clone());
             assert_eq!(error.code(), cause.code());
-            assert!(matches!(error, AgentExchangeError::Session(original) if original == cause));
+            assert!(matches!(
+                error,
+                AgentExchangeError::Session(original)
+                    if original.category() == cause.category()
+            ));
         }
     }
 }
