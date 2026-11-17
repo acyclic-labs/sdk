@@ -51,7 +51,8 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
         )
         .await?;
         if let Some((_, compiled)) = &self.data_access {
-            self.host.require(&compiled.0, Action::Read, self.reference.path(), self.io)?;
+            self.host
+                .require(&compiled.0, Action::Read, self.reference.path(), self.io)?;
         }
         Ok(())
     }

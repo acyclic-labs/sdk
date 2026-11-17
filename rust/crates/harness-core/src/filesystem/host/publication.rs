@@ -205,28 +205,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .decide(acyclic_fs::access::Action::Create, file.path(), now)
                 .allowed
             {
-                self.require(
-                    &view.0,
-                    acyclic_fs::access::Action::Write,
-                    file.path(),
-                    io,
-                )?;
+                self.require(&view.0, acyclic_fs::access::Action::Write, file.path(), io)?;
             }
         } else {
-            self.require(
-                &view.0,
-                acyclic_fs::access::Action::List,
-                file.path(),
-                io,
-            )?;
+            self.require(&view.0, acyclic_fs::access::Action::List, file.path(), io)?;
         }
         if purpose == PublicationPurpose::Content {
-            self.require(
-                &view.0,
-                acyclic_fs::access::Action::Read,
-                file.path(),
-                io,
-            )?;
+            self.require(&view.0, acyclic_fs::access::Action::Read, file.path(), io)?;
         }
         Ok(view)
     }

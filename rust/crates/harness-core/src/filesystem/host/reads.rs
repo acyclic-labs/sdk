@@ -84,8 +84,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         if let Some((_, view)) = &data_access {
-            super::super::access::require_at(&view.0, acyclic_fs::access::Action::List, path, io, now)?;
-            super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, now)?;
+            super::super::access::require_at(
+                &view.0,
+                acyclic_fs::access::Action::List,
+                path,
+                io,
+                now,
+            )?;
+            super::super::access::require_at(
+                &view.0,
+                acyclic_fs::access::Action::Read,
+                path,
+                io,
+                now,
+            )?;
         }
         bounded_io::retain(generation, Some(io)).await?;
         Ok(PrivateReadSelection {
@@ -938,7 +950,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         if let Some((_, view)) = &data_access {
-            super::super::access::require_at(&view.0, acyclic_fs::access::Action::Read, path, io, now)?;
+            super::super::access::require_at(
+                &view.0,
+                acyclic_fs::access::Action::Read,
+                path,
+                io,
+                now,
+            )?;
         }
         bounded_io::retain(&pinned, Some(io)).await?;
         let path = crate::executor::with_history_io(Some(io), |work| {

@@ -275,10 +275,9 @@ async fn gc_wait_waits_resume_on_the_original_platform_clock(mode: Mode) -> Resu
     // clock starts at the wall time that already signed this platform's
     // admission. One millisecond covers the signing clock reaching that instant.
     const LEAD_MS: u64 = 1;
-    let start = acyclic_stream::UnixMillisClock::now_unix_millis(
-        &acyclic_stream::SystemUnixMillisClock,
-    )
-    .saturating_add(LEAD_MS);
+    let start =
+        acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock)
+            .saturating_add(LEAD_MS);
     let (clock, mut control) = acyclic_actors::local::ControlledClock::new(start);
     let provider = Arc::new(
         ScriptedModelProvider::new([
@@ -343,7 +342,9 @@ async fn gc_wait_waits_resume_on_the_original_platform_clock(mode: Mode) -> Resu
     // ignores it waits for the real ten-second deadline instead.
     let (sequence, entry) = tokio::time::timeout(std::time::Duration::from_secs(2), settlement)
         .await
-        .map_err(|_| super::super::Error::Storage("wait did not use the platform clock".into()))??;
+        .map_err(|_| {
+            super::super::Error::Storage("wait did not use the platform clock".into())
+        })??;
     assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
     assert_eq!(
         conversation.output_text_at(sequence, &entry).await?,
