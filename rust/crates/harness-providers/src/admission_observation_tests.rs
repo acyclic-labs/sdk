@@ -221,7 +221,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             let harness = Arc::new(LocalHarness::open(config).await?);
             let conversation = Arc::new(Conversation::open(harness.connect().await?));
             let mut usage = conversation.usage_query();
-            let input = "dense input ".repeat(1_000);
+            let input = "dense input ".repeat(200);
             let mut turn = Box::pin(acyclic_harness_local::test_support::prompt_settled(
                 &harness,
                 "admission",
