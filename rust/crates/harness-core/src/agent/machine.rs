@@ -145,7 +145,8 @@ pub struct AgentState {
     /// publishes it idle or done answers with one `ChildSettled`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub awaited: bool,
-    /// Open children that still have to receive `Archive`.
+    /// Children whose `Archive` has not been emitted.
+    /// Only archive emission removes an entry; settlement does not close an inbox.
     pub archive_pending: super::Children,
     /// A terminal publication refusal stopped the cascade. Pending children
     /// remain durable, but neither arrivals nor alarms retry their writes.
@@ -1449,7 +1450,6 @@ async fn admit(
     if let InboxRecord::ChildDone(done) = &record {
         if done.child.is_child_of(&state.path) {
             state.open_children.remove(&done.child).await?;
-            state.archive_pending.remove(&done.child).await?;
         }
     }
     match &record {
