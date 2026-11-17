@@ -1201,7 +1201,7 @@ const wasmNodeModulesRules = runtimeFilegroups + (runtimeSelections.length ? "\n
       packages.push([`:${workspaceTargetName(dep.name)}_proto`, `${dep.name}/generated/proto=`]);
     }
     const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
-    if (generated) packages.push([generated.name, `${dep.name}/generated/wasm=`]);
+    if (generated && !builtRuntimeDeps.has(dep.name)) packages.push([generated.name, `${dep.name}/generated/wasm=`]);
   }
   return rule("node_modules", [
     ["name", q(`wasm_${selection.name}_node_modules`)],

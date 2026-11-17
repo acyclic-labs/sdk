@@ -372,7 +372,6 @@ node_modules(
         ":sdk_typescript_auth": "@acyclic-labs/auth=",
         "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
         "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
-        "//wasm:auth": "@acyclic-labs/auth/generated/wasm=",
     },
     visibility = ["//visibility:public"],
 )
@@ -385,8 +384,6 @@ node_modules(
         "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
         "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
         ":sdk_typescript_auth": "@acyclic-labs/auth=",
-        "//wasm:actors": "@acyclic-labs/actors/generated/wasm=",
-        "//wasm:auth": "@acyclic-labs/auth/generated/wasm=",
     },
     visibility = ["//visibility:public"],
 )
@@ -403,7 +400,6 @@ node_modules(
         ":sdk_typescript_auth": "@acyclic-labs/auth=",
         ":workspace_acyclic_labs_stream_proto": "@acyclic-labs/stream/generated/proto=",
         "//wasm:stream": "@acyclic-labs/stream/generated/wasm=",
-        "//wasm:auth": "@acyclic-labs/auth/generated/wasm=",
     },
     visibility = ["//visibility:public"],
 )
@@ -416,8 +412,6 @@ node_modules(
         "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
         "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
         ":sdk_typescript_auth": "@acyclic-labs/auth=",
-        "//wasm:inference": "@acyclic-labs/inference/generated/wasm=",
-        "//wasm:auth": "@acyclic-labs/auth/generated/wasm=",
     },
     visibility = ["//visibility:public"],
 )
