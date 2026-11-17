@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {assertRegistryPinsCurrent, workspaceGraph, workspacePackages, versionMatches} from './workspace-model.mjs';
+import {assertRegistryPinsCurrent, workspaceBrowserGraph, workspaceGraph, workspacePackages, versionMatches} from './workspace-model.mjs';
 
 test('manifest and Bazel lock projection preserves aliases, target edges and local feature forwarding', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-model-'));
@@ -17,6 +17,7 @@ test('manifest and Bazel lock projection preserves aliases, target edges and loc
   write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["backend","win"]\n[[package]]\nname="backend"\nversion="0.1.0"\n[[package]]\nname="win"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
   write('cargo-bazel.Cargo.lock', 'version=4\n[[package]]\nname="direct-cargo-bazel-deps"\nversion="0.0.1"\ndependencies=["win"]\n');
   write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {'win 1.0.0': {targets: [{Library: {crate_name: 'win'}}], common_attrs: {crate_features: {common: [], selects: {'x86_64-pc-windows-msvc': ['windows-only']}}}}}}));
+  write('cargo-wasm-bazel-lock.json', JSON.stringify({conditions: {}, crates: {}}));
   const packages = workspacePackages(root), app = packages.find(p => p.name === 'app');
   assert.equal(app.edition, '2024');
   assert.deepEqual(app.targets.map(t => t.name), ['custom']);
@@ -29,6 +30,11 @@ test('manifest and Bazel lock projection preserves aliases, target edges and loc
   assert.deepEqual(node(windows, 'win').features, ['windows-only']);
   assert.deepEqual(node(linux, 'win').features, []);
   assert.deepEqual(node(linux, 'backend').features, ['test-support']);
+  const browser = workspaceBrowserGraph(root, [['-p', 'app']]);
+  assert.deepEqual(node(browser, 'app').deps.map(d => d.name), ['renamed']);
+  assert.deepEqual(node(browser, 'backend').features, []);
+  const selected = workspaceBrowserGraph(root, [['-p', 'app', '--features', 'test-support']]);
+  assert.deepEqual(node(selected, 'backend').features, ['test-support']);
 });
 
 test('locked version selection distinguishes aliases across incompatible versions', () => {
@@ -51,6 +57,12 @@ test('registry features follow the current dependency declaration', t => {
   write('cargo-bazel.Cargo.lock', 'version=4\n[[package]]\nname="direct-cargo-bazel-deps"\nversion="0.0.1"\ndependencies=["serde_json"]\n');
   write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {'serde_json 1.0.0': {targets: [{Library: {crate_name: 'serde_json'}}], common_attrs: {crate_features: ['default']}}}}));
   assert.throws(() => assertRegistryPinsCurrent(root), /serde_json.*preserve_order.*repin/i);
+  write('cargo-wasm-bazel-lock.json', JSON.stringify({conditions: {}, crates: {'serde_json 1.0.0': {targets: [{Library: {crate_name: 'serde_json'}}], common_attrs: {crate_features: ['default']}}}}));
+  const stale = workspaceBrowserGraph(root, [['-p', 'app']]);
+  assert.deepEqual([...stale.registry_inputs.values()][0].features, new Set(['preserve_order']));
+  write('cargo-wasm-bazel-lock.json', JSON.stringify({conditions: {}, crates: {'serde_json 1.0.0': {targets: [{Library: {crate_name: 'serde_json'}}], common_attrs: {crate_features: ['default', 'preserve_order']}}}}));
+  const browser = workspaceBrowserGraph(root, [['-p', 'app']]);
+  assert.deepEqual(browser.resolve.nodes.find(node => node.id.includes('#serde_json@')).features, ['default', 'preserve_order']);
 });
 
 test('registry dependencies are selected from the current Cargo lock', t => {
@@ -65,6 +77,22 @@ test('registry dependencies are selected from the current Cargo lock', t => {
   assert.throws(() => assertRegistryPinsCurrent(root), /new_crate.*1\.0\.0.*repin/i);
 });
 
+test('browser registry inputs retain direct default-feature requests', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-defaults-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  write('Cargo.toml', '[workspace]\nmembers=["app"]\n');
+  write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nserde_json="1"\ncfg-if={version="1",default-features=false}\n');
+  write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["serde_json","cfg-if"]\n[[package]]\nname="serde_json"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n[[package]]\nname="cfg-if"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
+  write('cargo-wasm-bazel-lock.json', JSON.stringify({conditions: {}, crates: Object.fromEntries(['serde_json', 'cfg-if'].map(name =>
+    [`${name} 1.0.0`, {targets: [{Library: {crate_name: name.replaceAll('-', '_')}}], common_attrs: {crate_features: ['stale_feature']}}]))}));
+  const graph = workspaceBrowserGraph(root, [['-p', 'app']]);
+  const defaults = [...graph.registry_inputs].filter(([, value]) => value.defaultFeatures)
+    .map(([id]) => graph.packages.find(pkg => pkg.id === id).name);
+  assert.deepEqual(defaults, ['serde_json']);
+  for (const input of graph.registry_inputs.values()) assert.equal(input.features.size, 0);
+});
+
 test('unselected platforms and disabled optional dependencies do not require registry pins', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-inactive-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
@@ -75,4 +103,7 @@ test('unselected platforms and disabled optional dependencies do not require reg
   write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["helper", "wasm"]\n[[package]]\nname="helper"\nversion="0.1.0"\ndependencies=["unused"]\n[[package]]\nname="wasm"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n[[package]]\nname="unused"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
   write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {}}));
   assert.doesNotThrow(() => assertRegistryPinsCurrent(root));
+  const browser = workspaceGraph(root, 'wasm32-unknown-unknown');
+  const app = browser.packages.find(pkg => pkg.name === 'app');
+  assert.deepEqual(browser.resolve.nodes.find(node => node.id === app.id).deps.map(dep => dep.name), ['helper', 'wasm']);
 });
