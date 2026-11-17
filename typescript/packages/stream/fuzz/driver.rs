@@ -56,7 +56,10 @@ impl Driver {
             // when Bazel's source symlinks resolve to the checkout's real path.
             .env("NODE_PATH", root.join("node_modules"))
             // The generated wasm is a declared runfiles tree, not a checkout file.
-            .env("ACYCLIC_STREAM_WASM_DIR", root.join("typescript/packages/stream/generated/wasm"))
+            .env(
+                "ACYCLIC_STREAM_WASM_DIR",
+                root.join("typescript/packages/stream/generated/wasm"),
+            )
             .arg("--preload")
             .arg(root.join(WASM_RUNFILES_PLUGIN))
             .arg(if scenario.starts_with("deadline") {
