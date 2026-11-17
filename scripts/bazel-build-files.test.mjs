@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 // A one-member workspace with a local path crate and the repository's own toolchain and config inputs.
-function fixture() {
+// `module` adds the root MODULE.bazel whose resolution a write refreshes.
+function fixture({ module = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "bazel-build-files-"));
   mkdirSync(join(root, "scripts"));
   cpSync("scripts/bazel-build-files.mjs", join(root, "scripts/bazel-build-files.mjs"));
+  cpSync("scripts/bazel-executables.mjs", join(root, "scripts/bazel-executables.mjs"));
   cpSync("scripts/policy-core.mjs", join(root, "scripts/policy-core.mjs"));
+  if (module) writeFileSync(join(root, "MODULE.bazel"), 'module(name = "fixture")\n');
   cpSync("rust-toolchain.toml", join(root, "rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));
   writeFileSync(join(root, ".cargo/config.toml"), '[target.x86_64-unknown-linux-gnu]\nlinker = "scripts/mold-linker.sh"\n\n[env]\n');
@@ -25,7 +28,7 @@ function fixture() {
   execFileSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, stdio: "ignore" });
   execFileSync("git", ["init", "-q"], { cwd: root });
   execFileSync("git", ["add", "-A"], { cwd: root });
-  const run = mode => spawnSync(process.execPath, ["scripts/bazel-build-files.mjs", mode], { cwd: root, encoding: "utf8" });
+  const run = (mode, env = {}) => spawnSync(process.execPath, ["scripts/bazel-build-files.mjs", mode], { cwd: root, encoding: "utf8", env: { ...process.env, ...env } });
   return { root, run };
 }
 
@@ -147,6 +150,30 @@ test("a profile's run wrapper starts each of its target's cases, with the siblin
     const refused = run("write");
     assert.notEqual(refused.status, 0);
     assert.match(refused.stderr, /STEP_FAILED bazel-build-files: nextest profile cloud wraps cases by a filter other than its default-filter/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a write refreshes the module lockfile through the selected Bazel, a check never starts Bazel, and a failed refresh fails", () => {
+  const { root, run } = fixture({ module: true });
+  try {
+    const log = join(root, "bazel-args.txt");
+    const bazel = join(root, "fake-bazel");
+    // The selected Bazel is the only one generation may run, so it records every invocation.
+    writeFileSync(bazel, `#!/bin/sh\nprintf "%s\\n" "$@" >> "${log}"\nexit "\${FIXTURE_STATUS:-0}"\n`);
+    chmodSync(bazel, 0o755);
+    const written = run("write", { ACYCLIC_BAZEL: bazel });
+    assert.equal(written.status, 0, written.stderr);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), ["mod", "deps", "--lockfile_mode=update"]);
+    // Check mode verifies the checkout and never starts Bazel: its selected command does not exist.
+    rmSync(log);
+    const checked = run("check", { ACYCLIC_BAZEL: join(root, "bazel-must-not-start") });
+    assert.equal(checked.status, 0, checked.stderr);
+    assert.equal(existsSync(log), false, "check mode started Bazel");
+    // A lockfile the selected Bazel cannot refresh fails the write instead of passing with a stale one.
+    const failed = run("write", { ACYCLIC_BAZEL: bazel, FIXTURE_STATUS: "7" });
+    assert.notEqual(failed.status, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
