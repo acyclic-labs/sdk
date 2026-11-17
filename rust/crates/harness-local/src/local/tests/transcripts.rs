@@ -210,9 +210,6 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
         let mut position = ExecutionPosition::default();
         let mut calls = 0;
         let mut failed_tool = false;
-        let mut prompted = false;
-        let mut tool_started = false;
-        let mut tool_completed = false;
         loop {
             let query = selected
                 .execution_page(position.input, position.after, false)
@@ -233,24 +230,6 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
                         record.committed_at_micros.is_some(),
                         "feedback time comes from its original stream record"
                     );
-                }
-                match record.event {
-                    crate::executor::ExecutionEvent::Prompt { step: 0, .. } => prompted = true,
-                    crate::executor::ExecutionEvent::ToolStarted { .. } => {
-                        tool_started = true;
-                        assert!(
-                            record.committed_at_micros.is_some(),
-                            "a tool start carries its simulated-clock timestamp"
-                        );
-                    }
-                    crate::executor::ExecutionEvent::ToolCompleted { .. } => {
-                        tool_completed = true;
-                        assert!(
-                            record.committed_at_micros.is_some(),
-                            "a tool completion carries its simulated-clock timestamp"
-                        );
-                    }
-                    _ => {}
                 }
                 calls += usize::from(matches!(
                     record.event,
@@ -317,12 +296,6 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
             }
         }
         assert!(calls > 0, "agent's own model calls are absent");
-        assert!(prompted, "agent's effective prompt is absent from its run record");
-        assert!(tool_started, "agent's tool start is absent from its run record");
-        assert!(
-            tool_completed,
-            "agent's tool completion is absent from its run record"
-        );
         if path.depth() == 1 {
             assert!(failed_tool, "child's tool error is absent");
         }

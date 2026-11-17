@@ -228,14 +228,6 @@ impl ModelUsageRecord {
         self.admission() == other.admission()
     }
 
-    /// Every transport attempt this call made, including abandoned attempts.
-    /// A pending call has one attempt; a completed call adds the attempts its
-    /// stream restarted before the terminal one.
-    #[must_use]
-    pub fn attempts(&self) -> Option<u64> {
-        1u64.checked_add(self.abandoned.map_or(0, |abandoned| abandoned.attempts))
-    }
-
     /// The original admitted identity of this call.
     #[must_use]
     pub fn admission(&self) -> ModelUsageAdmission<'_> {
