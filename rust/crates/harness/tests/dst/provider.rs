@@ -202,9 +202,11 @@ fn length_stop(content: &str, model: &str) -> ScriptedTurn {
             delta: "partial text".into(),
         })],
         "reasoning_only" => vec![ScriptedEvent::Event(reasoning(model, b"exact reasoning"))],
-        "partial_tool_call" => vec![ScriptedEvent::Event(ModelEvent::ToolCall(
-            oracle::call("cut-call", "read", json!({"path":"missing.txt"})),
-        ))],
+        "partial_tool_call" => vec![ScriptedEvent::Event(ModelEvent::ToolCall(oracle::call(
+            "cut-call",
+            "read",
+            json!({"path":"missing.txt"}),
+        )))],
         _ => Vec::new(),
     };
     events.push(completed);
@@ -254,7 +256,8 @@ fn stable(first: &ModelRequest, next: &ModelRequest) -> std::result::Result<(), 
     if first.model != next.model {
         return fail("the request's model selection changed between steps");
     }
-    if first.tools != next.tools || first.sampling != next.sampling || first.summary != next.summary {
+    if first.tools != next.tools || first.sampling != next.sampling || first.summary != next.summary
+    {
         return fail("the request's tools, sampling or purpose changed between steps");
     }
     if next.messages.len() < first.messages.len()
@@ -281,7 +284,10 @@ fn assert_history(requests: &[ModelRequest], tag: &str) -> std::result::Result<(
 }
 
 fn assert_reasoning(request: &ModelRequest, model: &str) -> std::result::Result<(), String> {
-    let found = request.messages.iter().flat_map(|message| message.content.parts());
+    let found = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts());
     for part in found {
         if let ModelContentPart::Reasoning { block } = part
             && block.continuity == b"exact reasoning"
@@ -367,7 +373,9 @@ fn d3_service(transition: &'static str, _dialect: &'static str) -> ScriptedModel
                     ScriptedTurn::Text(done(found_tag))
                 }
             }
-            "child_notice_mid_turn" if found_tag == "d3-child" => ScriptedTurn::Text(done(found_tag)),
+            "child_notice_mid_turn" if found_tag == "d3-child" => {
+                ScriptedTurn::Text(done(found_tag))
+            }
             "child_notice_mid_turn" => match step {
                 0 => ScriptedTurn::Events(vec![
                     ScriptedEvent::Event(ModelEvent::ToolCall(oracle::call(
@@ -403,7 +411,9 @@ fn d3_service(transition: &'static str, _dialect: &'static str) -> ScriptedModel
                 }
             }
             "retry_after" => {
-                let mut failed = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut failed = failed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if !*failed {
                     *failed = true;
                     ScriptedTurn::Events(vec![ScriptedEvent::Refused {
@@ -445,37 +455,42 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                     .incarnation(None, &next)
                     .await
                     .map_err(oracle::failed)?;
-                let previous = opener.requests.last().ok_or("the first turn sent no request")?;
-                let request = reopened.requests.first().ok_or("the reopen sent no request")?;
+                let previous = opener
+                    .requests
+                    .last()
+                    .ok_or("the first turn sent no request")?;
+                let request = reopened
+                    .requests
+                    .first()
+                    .ok_or("the reopen sent no request")?;
                 stable(previous, request)?;
                 return Ok(true);
             }
             let prompt = tag("d3-parent");
-            let prompts = if transition == "compaction_applied"
-                || transition == "background_summary"
-            {
-                let mut prompts: Vec<Vec<(&str, String)>> = (0..2)
-                    .map(|index| {
-                        let id = ["d3-warm-0", "d3-warm-1"][index];
+            let prompts =
+                if transition == "compaction_applied" || transition == "background_summary" {
+                    let mut prompts: Vec<Vec<(&str, String)>> = (0..2)
+                        .map(|index| {
+                            let id = ["d3-warm-0", "d3-warm-1"][index];
+                            vec![(
+                                id,
+                                format!("{} large context {}", tag(id), "x".repeat(60_000)),
+                            )]
+                        })
+                        .collect();
+                    prompts.push(vec![("d3-parent", prompt)]);
+                    prompts
+                } else if transition == "context_review" {
+                    vec![
                         vec![(
-                            id,
-                            format!("{} large context {}", tag(id), "x".repeat(60_000)),
-                        )]
-                    })
-                    .collect();
-                prompts.push(vec![("d3-parent", prompt)]);
-                prompts
-            } else if transition == "context_review" {
-                vec![
-                    vec![(
-                        "d3-warm-0",
-                        format!("{} history {}", tag("d3-warm-0"), "x".repeat(20_000)),
-                    )],
-                    vec![("d3-parent", prompt)],
-                ]
-            } else {
-                vec![vec![("d3-parent", prompt)]]
-            };
+                            "d3-warm-0",
+                            format!("{} history {}", tag("d3-warm-0"), "x".repeat(20_000)),
+                        )],
+                        vec![("d3-parent", prompt)],
+                    ]
+                } else {
+                    vec![vec![("d3-parent", prompt)]]
+                };
             let incarnation = world
                 .incarnation(None, &prompts)
                 .await
@@ -529,7 +544,8 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                     if summaries.is_empty() {
                         return fail("the background call was never dispatched");
                     }
-                    let worker = before_summary.ok_or("the background call has no worker request")?;
+                    let worker =
+                        before_summary.ok_or("the background call has no worker request")?;
                     let source_prefix: Vec<_> = summaries[0]
                         .messages
                         .iter()
@@ -574,21 +590,64 @@ struct LengthState {
     step: usize,
 }
 
-fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvider {
+/// The newest prompt a request carries, from the warmups or the selected case.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LengthPrompt {
+    Warmup,
+    Current,
+}
+
+fn contains_prompt(body: &str, prompt: &str) -> bool {
+    let digest: [u8; 32] = sha2::Sha256::digest(prompt.as_bytes()).into();
+    body.contains(prompt)
+        || body.contains(&format!(
+            "\"sha256\":{}",
+            serde_json::to_string(&digest).unwrap_or_default()
+        ))
+}
+
+fn newest_length_prompt(
+    request: &ModelRequest,
+    warmups: &[String],
+    current: &str,
+) -> Option<LengthPrompt> {
+    for message in request
+        .messages
+        .iter()
+        .rev()
+        .filter(|message| message.role == ModelRole::User)
+    {
+        let body = serde_json::to_string(&message.content).unwrap_or_default();
+        if contains_prompt(&body, current) {
+            return Some(LengthPrompt::Current);
+        }
+        if warmups.iter().any(|warmup| contains_prompt(&body, warmup)) {
+            return Some(LengthPrompt::Warmup);
+        }
+    }
+    None
+}
+
+fn d4_service(
+    call: &'static str,
+    content: &'static str,
+    warmups: Vec<String>,
+    current: String,
+) -> ScriptedModelProvider {
     let state = Mutex::new(LengthState { step: 0 });
     let responder = move |request: &ModelRequest| {
         if request.summary {
             return Ok(length_stop(content, "dst"));
         }
-        if request_tag(
-            request,
-            &["d4-warm-0", "d4-warm-1", "d4-warm-2", "d4-warm-3"],
-        )
-        .is_some()
-        {
+        // The newest relevant prompt decides the answer. A later request
+        // still carries the warmup in its history, so matching any older
+        // warmup would answer the selected case with the warmup.
+        if newest_length_prompt(request, &warmups, &current) == Some(LengthPrompt::Warmup) {
             return Ok(ScriptedTurn::Text(done("d4-warm")));
         }
-        let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let answer = match call {
             "context_review" => match state.step {
                 0 => {
@@ -670,12 +729,10 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
     oracle::simulate(base, move || {
         entry(async move {
             let files = [("a.txt", "alpha\n")];
-            let service = d4_service(call, content).with_context_capacity(d4_capacity(capacity));
-            let mut world = World::new(base, &files, service).map_err(oracle::failed)?;
             let prompt = format!("d4-content:{content} {}", tag("d4"));
             let groups = if call == "summary" {
                 let (warmups, size) = if capacity == "output_eq_context" {
-                    (2, 60_000)
+                    (2, 45_000)
                 } else {
                     (3, 30_000)
                 };
@@ -701,6 +758,15 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
             } else {
                 vec![vec![("d4", prompt.clone())]]
             };
+            let warmups: Vec<String> = groups
+                .iter()
+                .flatten()
+                .filter(|(id, _)| id.starts_with("d4-warm"))
+                .map(|(_, prompt)| prompt.clone())
+                .collect();
+            let service = d4_service(call, content, warmups.clone(), prompt.clone())
+                .with_context_capacity(d4_capacity(capacity));
+            let mut world = World::new(base, &files, service).map_err(oracle::failed)?;
             let incarnation = world
                 .incarnation(None, &groups)
                 .await
@@ -733,7 +799,22 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     if summary_requests.is_empty() {
                         return fail("the length-cut context review was never requested");
                     }
-                    if incarnation.prompts.first().map(|(outcome, _)| outcome)
+                    let tool = incarnation.requests.iter().find(|request| {
+                        !request.summary
+                            && request.messages.iter().any(|message| {
+                                serde_json::to_string(&message.content)
+                                    .unwrap_or_default()
+                                    .contains("d4-read")
+                            })
+                    });
+                    let Some(tool) = tool else {
+                        return fail("the length-cut context review made no tool call");
+                    };
+                    if newest_length_prompt(tool, &warmups, &prompt) != Some(LengthPrompt::Current)
+                    {
+                        return fail("the length-cut context review tool call answered the warmup");
+                    }
+                    if incarnation.prompts.last().map(|(outcome, _)| outcome)
                         != Some(&Prompted::Settled(done("d4")))
                     {
                         return fail("a length-cut context review ended the worker");
