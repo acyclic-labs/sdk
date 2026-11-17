@@ -1,10 +1,30 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {fuzzProject} from '../no-polling.fuzz.mjs';
+import {newProjectPollingSites} from './project.mjs';
 
 const moduleUrl = source => 'data:text/javascript;base64,' + Buffer.from(source).toString('base64');
 const indexUrl = new URL('./index.mjs', import.meta.url);
+
+test('source-only command preserves the recorded producer/consumer graph', () => {
+ const capture = JSON.parse(readFileSync(new URL('../fixtures/no-polling/actor-project.json', import.meta.url), 'utf8'));
+ const before = new Map(capture.sources);
+ const [producer, consumer] = capture.files;
+ const after = new Map(before).set(producer, before.get(producer).replace('this.#initialize = initialize;', 'this.#initialize = initialize; Bun.sleep(1);'));
+ const run = request => spawnSync(process.execPath, [fileURLToPath(new URL('./check.mjs', import.meta.url)),
+  fileURLToPath(import.meta.resolve('typescript-parser'))], {input: JSON.stringify(request), encoding: 'utf8'});
+ const request = {before: [...before], after: [...after]};
+ const result = run(request);
+ assert.equal(result.status, 0, result.stderr);
+ const actual = JSON.parse(result.stdout);
+ assert.deepEqual(actual, newProjectPollingSites(before, after));
+ assert.ok(actual.some(site => site.file === consumer && site.kind === 'polling-helper-reference'));
+ assert.ok(actual.some(site => site.file === producer && site.kind === 'timer-or-readiness'));
+ assert.equal(run({...request, after: [...after, [...after][0]]}).status, 1);
+});
 
 test('closed project consumers use the original parser and production graph oracle', async () => {
  const original = readFileSync(indexUrl, 'utf8');

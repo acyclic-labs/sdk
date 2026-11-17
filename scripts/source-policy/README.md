@@ -85,6 +85,16 @@ UTF-8 source and omits missing objects. It rejects incomplete responses, malform
 blob headers, unsafe sizes, missing body terminators and extra response bytes
 with `GitBatchSyntaxError`. Revision selection and process I/O stay with callers.
 Missing-object headers must carry a full revision ID and the requested file key.
+Source-only downstream checks can resolve `labels(srcs,
+@sdk_source//scripts/policy:source_policy_runtime)` with Bazel query's location
+output. The public target contains the command, analyzer and integrity-pinned
+TypeScript runtime; query fetches source without compiling or installing npm.
+Run `node <check.mjs> <typescript.js>` with JSON on stdin containing `before`
+and `after` arrays of unique `[file, source]` pairs, plus optional `dispositions`
+and `policy`. Stdout is the SDK's new-project-site array; invalid input or
+analysis errors exit unsuccessfully. Resolve all files from the same pinned
+SDK target. The command uses the supplied parser only for its own project
+module and removes its module hook before analysis.
 The decoder advances once through the supplied bytes, with no I/O or extra body
 copy. Run `node --test scripts/no-polling-git-fuzz.test.mjs` for the original Git
 captures for SHA-1 and SHA-256 (including empty blobs and paths with spaces),
