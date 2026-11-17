@@ -429,6 +429,7 @@ rust_test(
         "src/async_storage/contract.rs",
         "src/materializer/memory.rs",
         "src/native_mount/cached_binding.rs",
+        "src/native_mount/cached_binding/decision.rs",
         "src/native_mount/projfs/callback_path.rs",
         "src/native_mount/projfs/creating_name.rs",
         "src/native_mount/projfs/probe_guard.rs",

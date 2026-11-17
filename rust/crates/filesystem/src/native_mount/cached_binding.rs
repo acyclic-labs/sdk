@@ -16,93 +16,15 @@ pub(super) fn cached_binding_matches<State, Binding: Copy, Lease, Error>(
     cached_binding_decision(binding, lease, current, unchanged)
 }
 
-pub(super) fn cached_binding_decision<Binding: Copy, Lease, Error>(
-    binding: Option<Binding>,
-    lease: impl FnOnce() -> Result<Lease, Error>,
-    current: impl FnOnce(Binding) -> bool,
-    unchanged: impl FnOnce(Binding) -> bool,
-) -> Result<bool, Error> {
-    let Some(binding) = binding else {
-        return Ok(false);
-    };
-    let _lease = lease()?;
-    Ok(current(binding) || unchanged(binding))
-}
+#[path = "cached_binding/decision.rs"]
+mod decision;
+pub(super) use decision::cached_binding_decision;
 
-// The decision and the projection copy: Kani proves them in the library, where no test target and
-// none of its dev-dependencies stand between proofs and verifier; unit tests enumerate them.
+// Keep the original mutex check beside the adapter; the pure decision has a
+// standalone solver target over the same production implementation.
 #[cfg(any(all(test, not(loom)), kani))]
 mod proofs {
-    use super::{cached_binding_decision, cached_binding_matches};
-    use std::cell::Cell;
-
-    struct Lease<'a>(&'a Cell<bool>);
-
-    impl Drop for Lease<'_> {
-        fn drop(&mut self) {
-            self.0.set(false);
-        }
-    }
-
-    #[cfg(kani)]
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn decision_requires_a_binding_and_lease_and_checks_each_path_at_most_once() {
-        check(kani::any(), kani::any(), kani::any(), kani::any());
-    }
-
-    #[cfg(not(kani))]
-    #[test]
-    fn every_boolean_decision_retains_its_lease_and_bounds_callbacks() {
-        for flags in 0..16 {
-            check(
-                flags & 1 != 0,
-                flags & 2 != 0,
-                flags & 4 != 0,
-                flags & 8 != 0,
-            );
-        }
-    }
-
-    fn check(present: bool, admitted: bool, current: bool, unchanged: bool) {
-        let live = Cell::new(false);
-        let lease_calls = Cell::new(0_u8);
-        let current_calls = Cell::new(0_u8);
-        let fallback_calls = Cell::new(0_u8);
-        let matched = cached_binding_decision(
-            present.then_some(()),
-            || {
-                lease_calls.set(lease_calls.get() + 1);
-                live.set(admitted);
-                if admitted { Ok(Lease(&live)) } else { Err(()) }
-            },
-            |()| {
-                assert!(live.get());
-                current_calls.set(current_calls.get() + 1);
-                current
-            },
-            |()| {
-                assert!(live.get());
-                fallback_calls.set(fallback_calls.get() + 1);
-                unchanged
-            },
-        );
-        assert_eq!(
-            matched,
-            if present && !admitted {
-                Err(())
-            } else {
-                Ok(present && (current || unchanged))
-            }
-        );
-        assert_eq!(lease_calls.get(), u8::from(present));
-        assert_eq!(current_calls.get(), u8::from(present && admitted));
-        assert_eq!(
-            fallback_calls.get(),
-            u8::from(present && admitted && !current)
-        );
-        assert!(!live.get());
-    }
+    use super::cached_binding_matches;
 
     #[cfg_attr(kani, kani::proof)]
     #[cfg_attr(not(kani), test)]
