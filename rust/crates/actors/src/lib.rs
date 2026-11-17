@@ -75,11 +75,6 @@ pub mod wire;
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn valid_token(token: &str) -> bool {
-    acyclic_auth::credential::valid_credential(token)
-}
-
 /// Rust-owned route names used by the TypeScript transport generator.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[
     ("deployNamespace", "v1/actors/namespaces/deploy"),

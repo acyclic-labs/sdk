@@ -35,7 +35,7 @@ uuid.workspace = true
 bytes = { workspace = true, features = ["serde"] }
 futures.workspace = true
 http.workspace = true
-acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc-metadata"] }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 http-body = "1.1.0"
 prost.workspace = true
