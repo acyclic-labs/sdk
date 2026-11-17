@@ -31,6 +31,7 @@ mod identity;
 pub mod json;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod local;
+mod manifest_builder;
 mod medium;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
@@ -52,6 +53,7 @@ pub use acyclic_stream::SealedBytes as Sealed;
 pub use availability::{Availability, AvailabilityCursor, AvailabilitySource};
 pub use blob::{ByteRange, Digest, Kind, Manifest, Part};
 pub use error::Error;
+pub use manifest_builder::ManifestBuilder;
 #[cfg(any(test, feature = "test-support"))]
 pub use medium::{Fault, Injected};
 pub use medium::{Medium, MediumError, MemoryMedium};
