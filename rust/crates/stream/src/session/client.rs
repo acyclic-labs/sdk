@@ -108,10 +108,14 @@ impl PoolHandle {
     fn retire_interest(&self, id: u64, progress: &Progress) {
         // Every live interest is counted in `active`; a close takes this same
         // lock, so a retire can never race a link close with a new interest.
+        // Cancel after releasing it: cancellation wakes the pool, whose close
+        // takes the same lock.
         let lifetime = Arc::clone(&self.lifetime);
-        let _lifetime = lifetime.lock().unwrap_or_else(|error| error.into_inner());
+        {
+            let _lifetime = lifetime.lock().unwrap_or_else(|error| error.into_inner());
+            self.active.fetch_sub(1, Ordering::AcqRel);
+        }
         self.cancel_interest(id, progress);
-        self.active.fetch_sub(1, Ordering::AcqRel);
     }
     pub(crate) fn with_revisions(self, revisions: Arc<crate::RevisionTracker>) -> Client {
         Client {
