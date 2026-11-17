@@ -21,6 +21,24 @@ cleanup() {
     exit "$rc"
 }
 trap cleanup EXIT
+# Blocks until the stream a command prints yields a line matching the pattern,
+# then stops the stream. A stream that ends first (its container died) fails.
+await_line() {
+    local pattern=$1 line fd pid
+    shift
+    exec {fd}< <(exec "$@" 2>&1)
+    pid=$!
+    while IFS= read -r line <&"$fd"; do
+        if [[ $line =~ $pattern ]]; then
+            kill "$pid" 2>/dev/null || true
+            exec {fd}<&-
+            return 0
+        fi
+    done
+    exec {fd}<&-
+    echo "step=$step: stream ended before '$pattern'; recovery: docker ps -a" >&2
+    return 1
+}
 scratch=${TMPDIR:-/tmp}
 root=$(mktemp -d "$scratch/acyclic-storage.XXXXXXXX")
 case "$root" in "$scratch"/acyclic-storage.*) ;; *) echo "step=setup: unexpected data root $root; recovery: ls -ld $scratch" >&2; exit 2 ;; esac
@@ -48,7 +66,10 @@ step=postgres-start
 mkdir -p "$root/postgres" "$root/minio"
 # Docker refuses an occupied loopback port; the EXIT trap reports recovery and
 # removes either container.
-pg=$(docker run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=storage -v "$root/postgres:/var/lib/postgresql/data" -p 127.0.0.1:15400:5432 postgres:17-alpine)
+started=$(date +%s)
+# The image's temporary bootstrap server accepts Unix sockets only, so a TCP
+# probe cannot report health before the final server listens.
+pg=$(docker run -d --rm --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d storage" --health-interval 1s --health-start-period 60s --health-start-interval 100ms -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=storage -v "$root/postgres:/var/lib/postgresql/data" -p 127.0.0.1:15400:5432 postgres:17-alpine)
 step=minio-start
 # Public, disposable emulator values only. Never read host/cloud credentials.
 minio=$(docker run -d --rm -e MINIO_ROOT_USER=storage-local-access -e MINIO_ROOT_PASSWORD=storage-local-secret -v "$root/minio:/data" -p 127.0.0.1:15401:9000 "$minio_image" server /data)
@@ -63,23 +84,20 @@ export STORAGE_S3_SECRET_KEY=storage-local-secret
 export STORAGE_S3_ALLOW_HTTP=1
 
 step=postgres-ready
-# The image's temporary bootstrap server accepts Unix sockets only. Probe TCP
-# so readiness cannot pass before that server shuts down and the final one starts.
-for _ in {1..40}; do
-    if docker exec "$pg" pg_isready -h 127.0.0.1 -U postgres -d storage >/dev/null; then break; fi
-    sleep 0.25
-done
-docker exec "$pg" pg_isready -h 127.0.0.1 -U postgres -d storage
+# Docker's health event for the container, or its death, ends the wait.
+await_line '^(health_status: healthy|health_status: unhealthy|die)$' \
+    docker events --since "$started" --filter "container=$pg" \
+    --filter event=health_status --filter event=die --format '{{.Action}}'
+[[ $(docker inspect -f '{{.State.Health.Status}}' "$pg") == healthy ]]
 step=postgres-isolation-fixture
 # Exercise a nondefault server setting: publication must choose its own fresh
 # statement snapshots after waiting for the namespace advisory lock.
 docker exec "$pg" psql -U postgres -d storage -v ON_ERROR_STOP=1 -c "ALTER DATABASE storage SET default_transaction_isolation TO 'repeatable read'"
 docker exec "$pg" psql -U postgres -d storage -Atc 'SHOW default_transaction_isolation'
 step=minio-ready
-for _ in {1..40}; do
-    if curl -fsS "$STORAGE_S3_ENDPOINT/minio/health/ready" >/dev/null 2>&1; then break; fi
-    sleep 0.25
-done
+# MinIO announces its API endpoint once its listener accepts; the image has
+# no shell for a health command. A stopped container ends the log stream.
+await_line 'API: http' docker logs --follow "$minio"
 curl -fsS "$STORAGE_S3_ENDPOINT/minio/health/ready"
 step=physical-bucket
 curl --fail --silent --show-error --aws-sigv4 aws:amz:us-east-1:s3 --user storage-local-access:storage-local-secret -X PUT "$STORAGE_S3_ENDPOINT/storage"
