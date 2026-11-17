@@ -1,22 +1,27 @@
-//! J1: durable work per step is a function of that step's delta, not of the
-//! history before it. A long turn writes one equal file per step; the durable
-//! bytes between two ordinary dispatches must stay flat.
+//! J1: a context-manager summary request receives a rewrite the manager can
+//! validate, so the turn continues instead of failing on the rewrite.
 use super::*;
+use acyclic_harness::{
+    AgentId, OperationId,
+    context::{CapacityCompaction, CompactionPolicy, ContextPipeline, ModelContextCapacity},
+    executor::{StockExecutor, TurnInput},
+    filesystem::MemoryHarnessStorage,
+    model::{Model, ModelContent, ModelMessage, ModelRole},
+    tool::ToolRegistry,
+};
 use family::{Generator, Variant};
-use oracle::{Plan, World, call, done, service, settlements, simulate, tag};
-
-const STEPS: usize = 8;
-const FILE_BYTES: usize = 8 * 1024;
+use oracle::{Plan, service, simulate, tag};
+use std::sync::Arc;
 
 pub(super) const GENERATOR: Generator = Generator {
     class: "J1",
-    seeds: flat_durable_work_per_step::VALUES,
+    seeds: context_manager_rewrite_is_valid::VALUES,
     variants,
     world,
 };
 
 acyclic_test_support::cases! {
-    module = flat_durable_work_per_step,
+    module = context_manager_rewrite_is_valid,
     values: u64,
     runner = super::run,
     cases = [seed_0 => 0],
@@ -29,127 +34,59 @@ fn run(seed: u64) -> std::result::Result<(), String> {
 fn plan() -> Plan {
     Plan {
         tag: "scale",
-        steps: (0..STEPS)
-            .map(|step| {
-                vec![call(
-                    &format!("s{step}"),
-                    "write",
-                    serde_json::json!({
-                        "path": format!("step-{step}.txt"),
-                        "content": "x".repeat(FILE_BYTES),
-                    }),
-                )]
-            })
-            .collect(),
+        steps: Vec::new(),
         fail_once: None,
     }
 }
 
-/// Every call the model saw settled, across the whole turn. A summary may
-/// drop older calls from later requests, so the last request alone is partial.
-fn settled_calls(requests: &[acyclic_harness::model::ModelRequest]) -> Vec<oracle::Settled> {
-    let mut seen = std::collections::BTreeMap::new();
-    for request in requests {
-        if let Ok(settled) = settlements(request) {
-            for settled in settled {
-                seen.insert(settled.call.call_id.clone(), settled);
-            }
-        }
+fn text(role: ModelRole, body: &str) -> ModelMessage {
+    ModelMessage {
+        role,
+        content: ModelContent::Text(body.into()),
     }
-    seen.into_values().collect()
-}
-
-/// Durable bytes between each pair of ordinary model dispatches, and whether
-/// that interval contains a one-time compaction. Summary requests are not work
-/// steps, so they do not open or close an interval.
-fn per_step(
-    dispatched_at: &[usize],
-    requests: &[acyclic_harness::model::ModelRequest],
-) -> Vec<(usize, bool)> {
-    let ordinary: Vec<(usize, usize)> = requests
-        .iter()
-        .enumerate()
-        .zip(dispatched_at)
-        .filter(|((_, request), _)| !request.summary)
-        .map(|((index, _), &at)| (index, at))
-        .collect();
-    ordinary
-        .windows(2)
-        .map(|window| {
-            let ((start_index, start), (end_index, end)) = (window[0], window[1]);
-            let operations = end.saturating_sub(start);
-            let compacted = requests[start_index + 1..=end_index]
-                .iter()
-                .any(|request| request.summary);
-            (operations, compacted)
-        })
-        .collect()
 }
 
 fn world(seed: u64) -> std::result::Result<bool, String> {
     simulate(seed, || {
         entry(async move {
-            let mut world = World::new(seed, &[], service(vec![plan()])).map_err(oracle::failed)?;
-            let prompt = tag("scale");
-            let incarnation = world
-                .incarnation(None, &[vec![("scale", prompt)]])
+            let provider = Arc::new(service(vec![plan()]).with_context_capacity(
+                ModelContextCapacity {
+                    context_tokens: 4096,
+                    output_tokens: Some(1024),
+                    output_shares_context: false,
+                },
+            ));
+            let executor = StockExecutor::new(
+                Model::new("fixture".into(), "scale".into(), "1".into())
+                    .map_err(oracle::failed)?,
+                provider,
+                ContextPipeline::default(),
+                ToolRegistry::default(),
+            )
+            .with_compaction_policy(CompactionPolicy::Capacity(CapacityCompaction::default()));
+            let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536)
                 .await
                 .map_err(oracle::failed)?;
-            if incarnation.crashed.is_some() {
-                return Err("the scale world crashed".into());
-            }
-            match incarnation.prompts.first() {
-                Some((oracle::Prompted::Settled(text), _)) if text.contains(&done("scale")) => {}
-                Some((oracle::Prompted::Settled(text), _)) => {
-                    return Err(format!(
-                        "the scale prompt settled without its answer: {text}"
-                    ));
-                }
-                Some((oracle::Prompted::Failed(message), _)) => {
-                    return Err(format!("the scale prompt failed: {message}"));
-                }
-                None => return Err("the scale world settled no prompt".into()),
-            }
-            if !incarnation.requests.iter().any(|request| request.summary) {
-                return Err("the scale world never reached the context manager".into());
-            }
-            let settled = settled_calls(&incarnation.requests);
-            let expected_writes = STEPS;
-            if settled.len() < expected_writes {
-                return Err(format!(
-                    "the scale world settled {} of {expected_writes} writes",
-                    settled.len()
-                ));
-            }
-            if let Some(failed) = settled.iter().find(|settled| !settled.succeeded()) {
-                return Err(format!(
-                    "the scale world failed a write: {}",
-                    failed.rendered()
-                ));
-            }
-            let steps = per_step(&incarnation.dispatched_at, &incarnation.requests);
-            if steps.len() < STEPS {
-                return Err(format!(
-                    "the scale world dispatched {} of {STEPS} steps",
-                    steps.len()
-                ));
-            }
-            // Skip the first interval's setup. Every later step writes the same
-            // bytes, so its durable work must not grow with the step index. A
-            // one-time compaction may rewrite the history; the steps after it
-            // must return to the flat delta.
-            let steady = &steps[1..];
-            let first = steady.first().map(|(bytes, _)| *bytes).unwrap_or(0);
-            let bound = first.saturating_mul(2).saturating_add(64);
-            if let Some((index, (bytes, _))) = steady
-                .iter()
-                .enumerate()
-                .find(|(_, (bytes, compacted))| !compacted && *bytes > bound)
-            {
-                return Err(format!(
-                    "durable operations per step grew with history: step {index}, first {first}, operations {bytes}, all {steps:?}"
-                ));
-            }
+            // The source fits the summary window; the large current input does
+            // not, so the manager asks for a rewrite before dispatching it.
+            let prior = vec![
+                text(ModelRole::System, "instructions"),
+                text(
+                    ModelRole::User,
+                    &format!("{} {}", tag("scale"), "x".repeat(1024)),
+                ),
+                text(ModelRole::User, "settled history"),
+            ];
+            let input = TurnInput {
+                operation_id: OperationId::new(),
+                input: ModelContent::Text("x".repeat(8 * 1024)),
+                selected_context: None,
+                max_steps: Some(1),
+            };
+            executor
+                .model_step(storage.journal().as_ref(), &input, 0, &prior)
+                .await
+                .map_err(oracle::failed)?;
             Ok(true)
         })
     })
