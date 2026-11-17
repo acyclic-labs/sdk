@@ -235,7 +235,11 @@ fn pinned_cursor_open_is_constant_space_and_eager_control_grows() {
         };
         assert_eq!(old_records, new_records);
         assert_eq!(*new_count, 0, "opening walked the pinned backlog");
-        assert_eq!(new_heap.count_total, 0, "opening allocated backlog windows");
+        assert_eq!(new_heap.count_total, 1, "opening allocated its shared cut");
+        assert!(
+            new_heap.bytes_total <= 64,
+            "opening's shared cut stays bounded"
+        );
         assert!(*old_count >= batches, "eager control hid its history walk");
         assert!(old_heap.count_total > 0 && old_heap.bytes_total > new_heap.bytes_total);
         let [eager_first, lazy_first] = first_output.as_slice() else {
@@ -313,7 +317,12 @@ fn appended_follow_updates_its_pin_without_history_work_or_allocations() {
         *before,
         (2, 1, (4 * std::mem::size_of::<HistoryWindow>()) as u64)
     );
-    assert_eq!(*after, (0, 0, 0));
+    assert_eq!(after.0, 0);
+    assert_eq!(after.1, 1, "append refresh allocated its shared cut");
+    assert!(
+        after.2 > 0 && after.2 <= 64,
+        "append refresh's shared cut stays bounded"
+    );
     assert_ne!(
         before, after,
         "old scratch allocation escaped exact work assertions"
