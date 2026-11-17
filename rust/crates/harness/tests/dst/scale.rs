@@ -1,9 +1,9 @@
 //! J1: durable work per step is a function of that step's delta, not of the
 //! history before it. A long turn writes one equal file per step; the durable
-//! operations between two dispatches must stay flat.
+//! bytes between two ordinary dispatches must stay flat.
 use super::*;
 use family::{Generator, Variant};
-use oracle::{Plan, World, call, service, simulate, tag};
+use oracle::{Plan, World, call, done, service, settlements, simulate, tag};
 
 const STEPS: usize = 8;
 const FILE_BYTES: usize = 8 * 1024;
@@ -31,26 +31,49 @@ fn plan() -> Plan {
         tag: "scale",
         steps: (0..STEPS)
             .map(|step| {
-                vec![call(
-                    &format!("s{step}"),
-                    "write",
-                    serde_json::json!({
-                        "path": format!("step-{step}.txt"),
-                        "content": "x".repeat(FILE_BYTES),
-                    }),
-                )]
+                // The first step admits two calls together, so a summary cut
+                // must wait for both results before it drops the exchange.
+                let calls = if step == 0 { 2 } else { 1 };
+                (0..calls)
+                    .map(|part| {
+                        call(
+                            &format!("s{step}-{part}"),
+                            "write",
+                            serde_json::json!({
+                                "path": format!("step-{step}-{part}.txt"),
+                                "content": "x".repeat(FILE_BYTES),
+                            }),
+                        )
+                    })
+                    .collect()
             })
             .collect(),
         fail_once: None,
     }
 }
 
-/// Durable operations between each pair of model dispatches. The first
-/// dispatch includes host setup, so only the steady steps are compared.
-fn per_step(dispatched_at: &[usize]) -> Vec<usize> {
-    dispatched_at
+/// Durable bytes between each pair of ordinary model dispatches. Summary
+/// requests are not work steps, so they do not open or close an interval.
+fn per_step(
+    writes: &[DurableWrite],
+    dispatched_at: &[usize],
+    requests: &[acyclic_harness::model::ModelRequest],
+) -> Vec<usize> {
+    let ordinary: Vec<usize> = requests
+        .iter()
+        .zip(dispatched_at)
+        .filter(|(request, _)| !request.summary)
+        .map(|(_, &at)| at)
+        .collect();
+    ordinary
         .windows(2)
-        .map(|window| window[1].saturating_sub(window[0]))
+        .map(|window| {
+            let (start, end) = (window[0], window[1]);
+            writes[start..end]
+                .iter()
+                .map(|write| write.requested)
+                .sum()
+        })
         .collect()
 }
 
@@ -60,36 +83,61 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             let mut world = World::new(seed, &[], service(vec![plan()])).map_err(oracle::failed)?;
             let prompt = tag("scale");
             let incarnation = world
-                .incarnation(None, &[vec![("scale", prompt)]])
+                .incarnation_recorded(None, &[vec![("scale", prompt)]])
                 .await
                 .map_err(oracle::failed)?;
             if incarnation.crashed.is_some() {
                 return Err("the scale world crashed".into());
             }
-            if let Some((prompted, _)) = incarnation.prompts.first()
-                && let oracle::Prompted::Failed(message) = prompted
-            {
-                return Err(format!("the scale prompt failed: {message}"));
+            match incarnation.prompts.first() {
+                Some((oracle::Prompted::Settled(text), _)) if text.contains(&done("scale")) => {}
+                Some((oracle::Prompted::Settled(text), _)) => {
+                    return Err(format!("the scale prompt settled without its answer: {text}"));
+                }
+                Some((oracle::Prompted::Failed(message), _)) => {
+                    return Err(format!("the scale prompt failed: {message}"));
+                }
+                None => return Err("the scale world settled no prompt".into()),
             }
             if !incarnation.requests.iter().any(|request| request.summary) {
                 return Err("the scale world never reached the context manager".into());
             }
-            let steps = per_step(&incarnation.dispatched_at);
+            let last = incarnation
+                .requests
+                .last()
+                .ok_or("the scale world sent no request")?;
+            let settled = settlements(last)?;
+            if settled.len() < STEPS {
+                return Err(format!(
+                    "the scale world settled {} of {STEPS} writes",
+                    settled.len()
+                ));
+            }
+            if let Some(failed) = settled.iter().find(|settled| !settled.succeeded()) {
+                return Err(format!(
+                    "the scale world failed a write: {}",
+                    failed.rendered()
+                ));
+            }
+            let steps = per_step(
+                &incarnation.writes,
+                &incarnation.dispatched_at,
+                &incarnation.requests,
+            );
             if steps.len() < STEPS {
                 return Err(format!(
                     "the scale world dispatched {} of {STEPS} steps",
                     steps.len()
                 ));
             }
-            // Skip the first dispatch's setup. Every later step writes the same
-            // file, so its durable work must not grow with the step index.
+            // Skip the first interval's setup. Every later step writes the same
+            // bytes, so its durable work must not grow with the step index.
             let steady = &steps[1..];
             let first = steady.first().copied().unwrap_or(0);
-            let last = steady.last().copied().unwrap_or(0);
-            let bound = first.saturating_mul(2).saturating_add(64);
-            if last > bound {
+            let bound = first.saturating_mul(2).saturating_add(64 * 1024);
+            if let Some((index, &step)) = steady.iter().enumerate().find(|(_, &step)| step > bound) {
                 return Err(format!(
-                    "durable operations per step grew with history: first {first}, last {last}, all {steps:?}"
+                    "durable bytes per step grew with history: step {index}, first {first}, step {step}, all {steps:?}"
                 ));
             }
             Ok(true)
@@ -98,8 +146,10 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
 }
 
 fn variants(_seed: u64) -> Vec<Variant> {
-    ["durable_log_bytes", "index_keys", "transcript_projection"]
-        .into_iter()
-        .map(|resource| Variant::from([("resource", resource), ("driver", "steps")]))
-        .collect()
+    [Variant::from([
+        ("resource", "durable_log_bytes"),
+        ("driver", "steps"),
+    ])]
+    .into_iter()
+    .collect()
 }

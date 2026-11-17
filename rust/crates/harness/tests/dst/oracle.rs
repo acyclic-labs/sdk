@@ -126,6 +126,31 @@ pub(super) fn done(tag: &str) -> String {
     format!("done {tag}")
 }
 
+/// The first index after a complete tool exchange: every call before it has
+/// its result, so a cut there preserves whole dependency groups.
+fn complete_exchange_cut(source: &[ModelMessage]) -> Option<usize> {
+    let mut pending = std::collections::BTreeSet::new();
+    let mut saw_result = false;
+    for (index, message) in source.iter().enumerate() {
+        for part in message.content.parts() {
+            match part {
+                ModelContentPart::ToolCall(call) => {
+                    pending.insert(call.call_id.clone());
+                }
+                ModelContentPart::ToolResult { call_id, .. } => {
+                    pending.remove(call_id);
+                    saw_result = true;
+                }
+                _ => {}
+            }
+        }
+        if saw_result && pending.is_empty() {
+            return Some(index + 1);
+        }
+    }
+    None
+}
+
 /// A deterministic model service: each answer is a function of the request's
 /// visible history alone, so every incarnation of a host sees the same model.
 pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
@@ -156,18 +181,9 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
                 || "untagged summary".to_owned(),
                 |(_, plan)| format!("{} summary", tag(plan.tag)),
             );
-            // Drop the oldest complete tool exchange. Its call and result are
-            // both before the cut, so the manager's dependency check accepts it.
-            let drop_through = source
-                .iter()
-                .position(|message| {
-                    message
-                        .content
-                        .parts()
-                        .iter()
-                        .any(|part| matches!(part, ModelContentPart::ToolResult { .. }))
-                })
-                .map_or(source.len(), |index| index + 1);
+            // Drop the oldest complete tool exchange. Every call before the
+            // cut must have its result, including parallel calls in one step.
+            let drop_through = complete_exchange_cut(source).unwrap_or(source.len());
             return ScriptedTurn::Text(
                 serde_json::json!({
                     "version": 1,
@@ -259,6 +275,8 @@ pub(super) struct Incarnation {
     pub dispatched_at: Vec<usize>,
     /// Durable operations the whole incarnation performed.
     pub durable: usize,
+    /// Every durable operation, including its offered and transferred bytes.
+    pub writes: Vec<DurableWrite>,
     pub crashed: Option<InjectedStorageFault>,
 }
 
@@ -303,11 +321,34 @@ impl World {
         cut: Option<(usize, DurableFault)>,
         prompts: &'a [Vec<(&'a str, String)>],
     ) -> EntryFuture<'a, Result<Incarnation>> {
+        self.incarnation_with(cut, prompts, false)
+    }
+
+    /// An incarnation that retains the durable call trace, for worlds that
+    /// measure the bytes offered between dispatches.
+    pub fn incarnation_recorded<'a>(
+        &'a mut self,
+        cut: Option<(usize, DurableFault)>,
+        prompts: &'a [Vec<(&'a str, String)>],
+    ) -> EntryFuture<'a, Result<Incarnation>> {
+        self.incarnation_with(cut, prompts, true)
+    }
+
+    fn incarnation_with<'a>(
+        &'a mut self,
+        cut: Option<(usize, DurableFault)>,
+        prompts: &'a [Vec<(&'a str, String)>],
+        record: bool,
+    ) -> EntryFuture<'a, Result<Incarnation>> {
         entry(async move {
             // Each incarnation is an independent scheduler over the same files.
             let scheduler = self.seed ^ self.incarnations.wrapping_mul(0x9e37_79b9_7f4a_7c15);
             self.incarnations += 1;
-            let mut driver = Driver::world(scheduler, cut);
+            let mut driver = if record {
+                Driver::new(scheduler, cut)
+            } else {
+                Driver::world(scheduler, cut)
+            };
             let schedule = driver.schedule.clone();
             let counter = schedule.clone();
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));
@@ -387,6 +428,7 @@ impl World {
                 requests: provider.requests(),
                 dispatched_at,
                 durable: counter.durable_write_count(),
+                writes: counter.durable_writes(),
                 crashed,
             })
         })
