@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+# The variable a_declared_variable_reaches_the_case reads from the invoking environment.
+[package.metadata.bazel]
+test-env-inherit = ["ACYCLIC_TEST_RUNNER_INHERITED"]
+
 [dependencies]
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 
