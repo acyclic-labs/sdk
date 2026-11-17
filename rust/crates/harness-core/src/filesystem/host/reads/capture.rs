@@ -82,7 +82,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?
             .await?;
         if let Some(prior) = prior {
-            selected.recheck(grant, io).await?;
+            selected.recheck(grant, io, self.clock()).await?;
             let file = capture_result(
                 &capture,
                 prior,
@@ -98,7 +98,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::with_history_io(access.io, |work| -> Result<_> {
                 file.descriptor().verify(&bytes, work)
             })?;
-            selected.recheck(grant, io).await?;
+            selected.recheck(grant, io, self.clock()).await?;
             return Ok((file, bytes, hold));
         }
         let bytes = if access.io.is_none() {
@@ -144,7 +144,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .tool_input()
         })?;
-        selected.recheck(grant, io).await?;
+        selected.recheck(grant, io, self.clock()).await?;
         let changes = [
             ContentChange::CreateAbsent {
                 path: capture.path,
@@ -179,7 +179,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         // The cold path returns its already admitted source bytes. It does
         // not read the newly published body back just to assemble a prompt.
         crate::executor::with_history_io(access.io, |work| file.descriptor().verify(&bytes, work))?;
-        selected.recheck(grant, io).await?;
+        selected.recheck(grant, io, self.clock()).await?;
         Ok((file, bytes, hold))
     }
 

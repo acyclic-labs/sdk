@@ -115,12 +115,17 @@ pub(crate) fn access_now_at(unix_millis: u64) -> Result<u64> {
         .map_err(|_| Error::FilesystemAccessConfiguration("access clock is unavailable"))
 }
 
+pub(crate) fn clock_now(clock: &dyn acyclic_stream::UnixMillisClock) -> Result<u64> {
+    access_now_at(clock.now_unix_millis())
+}
+
 pub(crate) fn require_unrestricted(
     view: &PathTrie,
     actions: &[Action],
     surface: &'static str,
+    clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<()> {
-    require_unrestricted_at(view, actions, surface, access_now()?)
+    require_unrestricted_at(view, actions, surface, clock_now(clock)?)
 }
 
 pub(crate) fn require_unrestricted_at(

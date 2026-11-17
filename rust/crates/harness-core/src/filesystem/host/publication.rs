@@ -124,9 +124,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let recovered = self
             .recovered_upload(original, recorded, &request, io)
             .await?;
-        super::super::access::require_current(&workspace, &view.0, io).await?;
+        super::super::access::require_current(&workspace, &view.0, io, self.clock()).await?;
         if let Some(view) = root_view {
-            super::super::access::require_current(&root, &view.0, io).await?;
+            super::super::access::require_current(&root, &view.0, io, self.clock()).await?;
         }
         Ok(Some(recovered))
     }

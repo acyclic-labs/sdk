@@ -41,10 +41,15 @@ struct PrivateReadSelection<'a, A: 'static, O: 'static> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PrivateReadSelection<'_, A, O> {
-    async fn recheck(&self, grant: &ContentGrant, io: &PreparationIo) -> Result<()> {
-        super::super::access::require_current(&self.workspace, &self.view.0, io).await?;
+    async fn recheck(
+        &self,
+        grant: &ContentGrant,
+        io: &PreparationIo,
+        clock: &dyn acyclic_stream::UnixMillisClock,
+    ) -> Result<()> {
+        super::super::access::require_current(&self.workspace, &self.view.0, io, clock).await?;
         if let Some((workspace, view)) = &self.data_access {
-            super::super::access::require_current(workspace, &view.0, io).await?;
+            super::super::access::require_current(workspace, &view.0, io, clock).await?;
         }
         grant.recheck(Some(io))
     }
@@ -367,11 +372,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let selected = self
             .select_private_read(volume, grant, path, expected_generation, access.ceiling, io)
             .await?;
-        selected.recheck(grant, io).await?;
+        selected.recheck(grant, io, self.clock()).await?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(cut) = &selected.cut.snapshot {
             self.validate_private_snapshot(cut, io).await?;
-            selected.recheck(grant, io).await?;
+            selected.recheck(grant, io, self.clock()).await?;
         }
         self.cut_ref(&selected.cut, expected_generation, io)
     }
@@ -405,7 +410,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(cut) = &selected.cut.snapshot {
             let stat = self.stat_private_snapshot(cut, &requested, io).await?;
-            selected.recheck(grant, io).await?;
+            selected.recheck(grant, io, self.clock()).await?;
             return Ok(stat);
         }
         let stat = io.sdk_if_present(
@@ -415,7 +420,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .stat(&requested, io, io.cancellation())
                 .await,
         )?;
-        selected.recheck(grant, io).await?;
+        selected.recheck(grant, io, self.clock()).await?;
         Ok(stat)
     }
 
@@ -686,7 +691,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             None
         };
-        read.recheck(grant, io).await?;
+        read.recheck(grant, io, self.clock()).await?;
         selected
             .map(|(reference, bytes, publication)| {
                 reference.1.into_retained()?;
@@ -774,7 +779,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let (bytes, length) = self
                 .read_private_snapshot(cut, &requested, range, io)
                 .await?;
-            selected.recheck(grant, io).await?;
+            selected.recheck(grant, io, self.clock()).await?;
             return Ok((
                 io.retain_read_bytes(bytes)?,
                 self.private_generation_ref(cut, expected_generation, io)?,
@@ -808,7 +813,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
                 .await,
         )?;
-        selected.recheck(grant, io).await?;
+        selected.recheck(grant, io, self.clock()).await?;
         drop(requested_hold);
         let selected_id = self.generation_ref_id(generation.id(), Some(io))?;
         Ok((io.retain_read_bytes(chunk.bytes)?, selected_id, length))
@@ -849,7 +854,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await,
         )?
         else {
-            selected.recheck(grant, io).await?;
+            selected.recheck(grant, io, self.clock()).await?;
             return Ok(None);
         };
         let length = stat
@@ -894,7 +899,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .read_range(&requested, prefix, delta, io, io.cancellation())
                 .await,
         )?;
-        selected.recheck(grant, io).await?;
+        selected.recheck(grant, io, self.clock()).await?;
         Ok(Some(io.retain_read_bytes(chunk.bytes)?.into_custody()))
     }
 
@@ -1030,9 +1035,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(path_hold);
         drop(reference);
         drop(reference_hold);
-        super::super::access::require_current(&workspace, &view.0, io).await?;
+        super::super::access::require_current(&workspace, &view.0, io, self.clock()).await?;
         if let Some((workspace, view)) = &data_access {
-            super::super::access::require_current(workspace, &view.0, io).await?;
+            super::super::access::require_current(workspace, &view.0, io, self.clock()).await?;
         }
         grant.recheck(Some(io))?;
         Ok(bytes)

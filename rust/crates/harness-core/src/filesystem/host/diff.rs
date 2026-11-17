@@ -115,8 +115,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let next = io.cursor_receipt(changed.next().await, &mut work)?;
             if streaming || next.is_none() {
                 for ((_, grant), (before, after)) in roots.iter().zip(&selections) {
-                    before.require_current(io).await?;
-                    after.require_current(io).await?;
+                    before.require_current(io, self.clock()).await?;
+                    after.require_current(io, self.clock()).await?;
                     grant.recheck(Some(io))?;
                 }
             }
@@ -202,8 +202,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             (kind == DiffKind::Added || discloses(&before, path))
                 && (kind == DiffKind::Removed || discloses(&after, path))
         });
-        before.require_current(&io).await?;
-        after.require_current(&io).await?;
+        before.require_current(&io, self.clock()).await?;
+        after.require_current(&io, self.clock()).await?;
         grant.recheck(Some(&io))?;
         Ok(listed)
     }
