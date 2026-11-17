@@ -649,9 +649,15 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     assert_eq!(bound.selected_import_roots, original.selected_import_roots);
     let child_cut = child.snapshot(&mut ctx).await?;
     assert_ne!(child_cut.source.identity, parent_cut.source.identity);
+    let measured = acyclic_harness_core::filesystem::PreparationIo::from_native_work(&native)?;
     let projected_host = host.for_private_view(&child_volume, child.share(&mut ctx)?)?;
-    let projected_reader =
-        FilesystemContentVerifier::new(projected_host.clone(), &verifier, &scope, 16_384, None)?;
+    let projected_reader = FilesystemContentVerifier::new(
+        projected_host.clone(),
+        &verifier,
+        &scope,
+        16_384,
+        Some(&measured),
+    )?;
     let (selected, projected, _) = projected_reader
         .read_private_range(
             &child_volume,
@@ -783,7 +789,6 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
             idempotency_key: IdempotencyKey::unique(),
         })
         .await?;
-    let measured = acyclic_harness_core::filesystem::PreparationIo::from_native_work(&native)?;
     let (reselected, repeated, _) = projected_reader
         .read_private_range(
             &child_volume,
@@ -992,6 +997,7 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     );
     let child_workspace = child.workspace().clone();
     drop(projected_reader);
+    drop(projected_host);
     drop(replay);
     drop(child);
     drop(inherited);
@@ -1019,6 +1025,7 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
 
 #[tokio::test]
 async fn computed_ui_watch_delivers_real_publications_and_physically_stops() -> Result {
+    acyclic_native_runtime::initialize_native_io_services()?;
     use acyclic_fs::demand::{SourceChange, SourceChangeSink, SourceFence};
     use acyclic_harness_core::{
         agent::{AgentId, IntentId, create_root, spawn},

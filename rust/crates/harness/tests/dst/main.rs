@@ -27,6 +27,7 @@ mod oracle;
 mod publication;
 mod recovery;
 mod redelivery;
+mod refusal;
 mod settlement;
 mod swarm;
 

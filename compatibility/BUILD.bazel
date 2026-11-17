@@ -33,6 +33,7 @@ cargo_build_script(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     build_script_env = PACKAGE_ENV | select({"//:linux-x86_64":{"PROTOC":"$(execpath @sdk_crates__protoc-bin-vendored-linux-x86_64-3.3.0//:bin/protoc)","PROTOC_INCLUDE":"$(execpath @sdk_crates__protoc-bin-vendored-linux-x86_64-3.3.0//:include)"},"//:macos-aarch64":{"PROTOC":"$(execpath @sdk_crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:bin/protoc)","PROTOC_INCLUDE":"$(execpath @sdk_crates__protoc-bin-vendored-macos-aarch_64-3.3.0//:include)"},"//:windows-x86_64":{"PROTOC":"$(execpath @sdk_crates__protoc-bin-vendored-win32-3.3.0//:bin/protoc.exe)","PROTOC_INCLUDE":"$(execpath @sdk_crates__protoc-bin-vendored-win32-3.3.0//:include)"}}, no_match_error = "acyclic-proto-build: build-script-env names no file for this platform"),
@@ -63,6 +64,7 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -90,6 +92,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -200,6 +203,7 @@ rust_binary(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [

@@ -1,6 +1,6 @@
 {
  "version": 1,
- "uncovered": 2984,
+ "uncovered": 2976,
  "classes": [
   {
    "id": "A1",
@@ -563,8 +563,7 @@
      "custody_conflict",
      "malformed_output",
      "subscription_end",
-     "child_settles_during_turn",
-     "interaction_cancelled"
+     "child_settles_during_turn"
     ],
     "location": [
      "root",
