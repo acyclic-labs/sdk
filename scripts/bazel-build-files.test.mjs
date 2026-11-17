@@ -66,6 +66,10 @@ test("check accepts the generated files and fails on a stale BUILD file", () => 
     const platformBlock = buildFile.slice(platformStart, buildFile.indexOf("\n)\n", platformStart) + 3);
     assert.match(platformBlock, /":libc_musl"/, "linux_musl platform carries libc_musl");
     const moduleFile = readFileSync(join(root, "cargo.MODULE.bazel"), "utf8");
+    const rustfmtBuild = readFileSync(join(root, "toolchains/rustfmt/BUILD.bazel"), "utf8");
+    for (const name of ["linux_x86_64", "macos_aarch64", "windows_x86_64"]) {
+      assert.match(rustfmtBuild, new RegExp(`name = "${name}"`), `the ${name} rustfmt toolchain is generated`);
+    }
     const localBuild = readFileSync(join(root, "local/BUILD.bazel"), "utf8");
     assert.match(localBuild, /"-Copt-level=3"/, "a local path crate carries its dev opt-level in its own BUILD");
     assert.doesNotMatch(moduleFile, /crate = "local"/, "a local path crate is not a third-party annotation");

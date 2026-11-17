@@ -1080,7 +1080,7 @@ function moduleFile() {
     // repository's macros do not accept. These repositories are independent of the rust toolchain
     // hub, so pinning rustfmt does not change any compile action.
     `rustfmt = use_repo_rule("@rules_rust//rust/private:repositories.bzl", "rustfmt_toolchain_tools_repository")\n`,
-    ...TRIPLES.map(t => `rustfmt(name = ${q(`pinned_rustfmt_${t.replaceAll("-", "_")}`)}, version = ${q(channel)}, exec_triple = ${q(t)})\n`),
+    ...RUSTFMT_TOOLCHAINS.map(([, triple]) => `rustfmt(name = ${q(`pinned_rustfmt_${triple.replaceAll("-", "_")}`)}, version = ${q(channel)}, exec_triple = ${q(triple)})\n`),
     `\n`,
     rule("rust.toolchain", [
       ["versions", list([channel])],
@@ -1125,7 +1125,7 @@ function moduleFile() {
     // module's own: rules_rust keeps only the root module's toolchains and repository sets, and the
     // Windows C toolchain runs from the LLVM repository only the root creates. A module that depends
     // on this one registers its own toolchains.
-    `register_toolchains("//toolchains/rustfmt:linux_x86_64", "//toolchains/rustfmt:macos_aarch64", "//toolchains/rustfmt:windows_x86_64", "//${WINDOWS_TOOLCHAIN_PACKAGE}:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__${LINUX_MUSL_TRIPLE}__${channelName}", "@rust_toolchains//:all", dev_dependency = True)\n\n`,
+    `register_toolchains(${RUSTFMT_TOOLCHAINS.map(([name]) => q(`//${RUSTFMT_TOOLCHAIN_PACKAGE}:${name}`)).join(", ")}, "//${WINDOWS_TOOLCHAIN_PACKAGE}:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__${LINUX_MUSL_TRIPLE}__${channelName}", "@rust_toolchains//:all", dev_dependency = True)\n\n`,
     `crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")\n\n`,
     ...thirdParty.map(([name, opt]) => `${rule("crate.annotation", [["crate", q(name)], ["repositories", list([HUB])], ["rustc_flags", list([`-Copt-level=${opt}`])]])}
 `),
@@ -1214,6 +1214,21 @@ for (const id of members) {
   if (missing.length || extra.length) throw new Error(`STEP_FAILED bazel-build-files: ${p.name} renders a different target set than cargo test --all-features (missing: ${missing.join(", ") || "none"}; extra: ${extra.join(", ") || "none"})`);
 }
 const WINDOWS_TOOLCHAIN_PACKAGE = "toolchains/windows";
+const RUSTFMT_TOOLCHAIN_PACKAGE = "toolchains/rustfmt";
+// The host platforms the formatting check runs on, with the repository that carries each pinned rustfmt.
+const RUSTFMT_TOOLCHAINS = [
+  ["linux_x86_64", LINUX_GNU_TRIPLE, "linux", "x86_64"],
+  ["macos_aarch64", "aarch64-apple-darwin", "macos", "aarch64"],
+  ["windows_x86_64", WINDOWS_TRIPLE, "windows", "x86_64"],
+];
+function rustfmtToolchains() {
+  return RUSTFMT_TOOLCHAINS.map(([name, triple, os, cpu]) => rule("toolchain", [
+    ["name", q(name)],
+    ["toolchain", q(`@pinned_rustfmt_${triple.replaceAll("-", "_")}//:rustfmt_toolchain`)],
+    ["toolchain_type", q("@rules_rust//rust/rustfmt:toolchain_type")],
+    ["exec_compatible_with", list([`@platforms//os:${os}`, `@platforms//cpu:${cpu}`])],
+  ])).join("\n");
+}
 const windowsLoads = `load("@rules_cc//cc/private/toolchain:windows_cc_toolchain_config.bzl", "cc_toolchain_config")\nload("//:windows_paths.bzl", "WINDOWS_LLVM", "WINDOWS_XWIN")\n`;
 const windowsPlatform = rule("platform", [["name", q("windows")], ["constraint_values", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])]]);
 const macosPlatform = rule("platform", [["name", q("macos_aarch64")], ["constraint_values", list(["@platforms//os:macos", "@platforms//cpu:aarch64"])]]);
@@ -1317,6 +1332,8 @@ ${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:
   // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}
 ${windowsLoads}${windowsToolchain()}`],
+  [`${RUSTFMT_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}
+${rustfmtToolchains()}`],
 ]);
 if (wasm) {
   files.set("harness-tools.bzl", HEADER + "\nHARNESS_TOOLS = {\n" + [...harnessTools].map(label =>
