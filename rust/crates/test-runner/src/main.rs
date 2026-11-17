@@ -36,6 +36,8 @@ use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use acyclic_native_runtime::{FileLock, FileLockMode};
 use acyclic_native_runtime::{ProcessCommand, ProcessCustody, ProcessStdio, ProcessTree};
 
 /// How one case ended.
@@ -363,10 +365,10 @@ const RUNNER_PREFIX: &str = "acyclic-";
 struct RunnerDirectory {
     path: PathBuf,
     #[cfg(unix)]
-    _lock: File,
+    _lock: FileLock,
 }
 
-fn failed(action: &str, path: &Path, error: io::Error) -> String {
+fn failed(action: &str, path: &Path, error: &io::Error) -> String {
     format!("{action} {}: {error}", path.display())
 }
 
@@ -396,7 +398,7 @@ impl RunnerDirectory {
                     attempt += 1;
                     continue;
                 }
-                Err(error) => return Err(failed("create", &path, error)),
+                Err(error) => return Err(failed("create", &path, &error)),
             }
             #[cfg(unix)]
             {
@@ -408,12 +410,13 @@ impl RunnerDirectory {
                         attempt += 1;
                         continue;
                     }
-                    Err(error) => return Err(failed("open", &path, error)),
+                    Err(error) => return Err(failed("open", &path, &error)),
                 };
-                lock.lock().map_err(|error| failed("lock", &path, error))?;
                 let held = lock
                     .metadata()
-                    .map_err(|error| failed("inspect", &path, error))?;
+                    .map_err(|error| failed("inspect", &path, &error))?;
+                let lock = FileLock::acquire(lock, FileLockMode::Exclusive)
+                    .map_err(|error| failed("lock", &path, &error))?;
                 match fs::symlink_metadata(&path) {
                     Ok(visible) if (visible.dev(), visible.ino()) == (held.dev(), held.ino()) => {
                         return Ok(Self { path, _lock: lock });
@@ -427,7 +430,7 @@ impl RunnerDirectory {
                         attempt += 1;
                         continue;
                     }
-                    Err(error) => return Err(failed("inspect", &path, error)),
+                    Err(error) => return Err(failed("inspect", &path, &error)),
                 }
             }
             #[cfg(not(unix))]
@@ -451,7 +454,7 @@ fn remove(path: &Path) -> Result<(), String> {
         Ok(()) => Ok(()),
         // A reclaimer may have removed the same directory first.
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(failed("remove", path, error)),
+        Err(error) => Err(failed("remove", path, &error)),
     }
 }
 
@@ -462,17 +465,17 @@ fn restore_access(path: &Path) -> Result<(), String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(failed("inspect", path, error)),
+        Err(error) => return Err(failed("inspect", path, &error)),
     };
     if !metadata.is_dir() {
         return Ok(());
     }
     if metadata.permissions().mode() & 0o700 != 0o700 {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|error| failed("restore access to", path, error))?;
+            .map_err(|error| failed("restore access to", path, &error))?;
     }
-    for entry in fs::read_dir(path).map_err(|error| failed("list", path, error))? {
-        restore_access(&entry.map_err(|error| failed("list", path, error))?.path())?;
+    for entry in fs::read_dir(path).map_err(|error| failed("list", path, &error))? {
+        restore_access(&entry.map_err(|error| failed("list", path, &error))?.path())?;
     }
     Ok(())
 }
@@ -481,8 +484,8 @@ fn restore_access(path: &Path) -> Result<(), String> {
 #[cfg(unix)]
 fn reclaim(root: &Path, user: u32) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt as _;
-    for entry in fs::read_dir(root).map_err(|error| failed("list", root, error))? {
-        let entry = entry.map_err(|error| failed("list", root, error))?;
+    for entry in fs::read_dir(root).map_err(|error| failed("list", root, &error))? {
+        let entry = entry.map_err(|error| failed("list", root, &error))?;
         let path = entry.path();
         if !entry.file_name().to_str().is_some_and(is_runner_name) {
             continue;
@@ -490,7 +493,7 @@ fn reclaim(root: &Path, user: u32) -> Result<(), String> {
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(failed("inspect", &path, error)),
+            Err(error) => return Err(failed("inspect", &path, &error)),
         };
         if !metadata.is_dir() || metadata.uid() != user {
             continue;
@@ -498,12 +501,12 @@ fn reclaim(root: &Path, user: u32) -> Result<(), String> {
         let abandoned = match File::open(&path) {
             Ok(abandoned) => abandoned,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(failed("open", &path, error)),
+            Err(error) => return Err(failed("open", &path, &error)),
         };
-        match abandoned.try_lock() {
-            Ok(()) => remove(&path)?,
-            Err(fs::TryLockError::WouldBlock) => {}
-            Err(fs::TryLockError::Error(error)) => return Err(failed("lock", &path, error)),
+        match FileLock::try_acquire(abandoned, FileLockMode::Exclusive) {
+            Ok(_lock) => remove(&path)?,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(failed("lock", &path, &error)),
         }
     }
     Ok(())
