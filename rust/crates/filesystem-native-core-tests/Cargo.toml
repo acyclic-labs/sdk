@@ -1,0 +1,15 @@
+[package]
+name = "acyclic-fs-native-core-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Production-source models of shared native filesystem coordination"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

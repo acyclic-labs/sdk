@@ -469,6 +469,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-fs-native-core-tests"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "acyclic-fs-wasm"
 version = "0.2.0"
 dependencies = [
