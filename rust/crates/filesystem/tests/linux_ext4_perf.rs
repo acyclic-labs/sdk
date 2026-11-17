@@ -470,6 +470,7 @@ async fn qualify_linux_source_rename_visibility() -> Result<(), Box<dyn std::err
 /// one record per change plus its generation, and a no-op sync appends nothing.
 #[tokio::test]
 async fn linux_working_set_cost_ledger_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    acyclic_fs::initialize_native_mount_services()?;
     const DIRECTORIES: usize = 1;
     const FILES_PER_DIRECTORY: usize = 2;
     const CHANGES: usize = 2;
