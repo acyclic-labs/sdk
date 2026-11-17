@@ -14,7 +14,8 @@ import { normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRe
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
-import { StreamError, type StreamFailureCode, type StreamRefusal } from "./types.js";
+import { StreamError } from "./types.js";
+import { streamError } from "./wasm-error.js";
 import type { AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions, CommitResult, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 
 let modulePromise: Promise<typeof GeneratedNative> | undefined;
@@ -120,7 +121,7 @@ export class NativeStreamProvider implements StreamProvider {
         ? await module.NativeStreamClient.connectResult(endpoint, token, cancellation)
         : await module.NativeStreamClient.connectWithCaResult(endpoint, token, certificate, cancellation);
     }
-    if (result.error !== undefined) throw nativeError(result.error, "connect");
+    if (result.error !== undefined) throw streamError(result.error, "connect");
     if (result.client === undefined) throw new StreamError("transport", "Stream native companion returned no client");
     const client = result.client;
     if (resolve !== undefined) {
@@ -138,7 +139,7 @@ export class NativeStreamProvider implements StreamProvider {
 
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
     try { this.client.registerCredential(slot, Buffer.from(credential)); }
-    catch (error) { throw nativeError(error, "session credential"); }
+    catch (error) { throw streamError(error, "session credential"); }
   }
 
   get transport(): string { return this.client.transport(); }
@@ -220,7 +221,7 @@ export class NativeStreamProvider implements StreamProvider {
         const result = operation === "read"
           ? await this.client.readResult(Buffer.from(input), cancellation)
           : await this.client.openFollowResult(Buffer.from(input), cancellation);
-        if (result.error !== undefined) throw nativeError(result.error, operation);
+        if (result.error !== undefined) throw streamError(result.error, operation);
         cursor = result.follow;
         if (cursor === undefined || result.opened === undefined) throw new StreamError("invalid_response", "native open omitted its receipt or cursor");
         signal.throwIfAborted();
@@ -230,7 +231,7 @@ export class NativeStreamProvider implements StreamProvider {
           for (;;) {
             const result = await retained.nextResult();
             if (signal.aborted) return;
-            if (result.error !== undefined) throw nativeError(result.error, operation);
+            if (result.error !== undefined) throw streamError(result.error, operation);
             if (result.value === undefined) return;
             yield result.value;
           }
@@ -240,7 +241,7 @@ export class NativeStreamProvider implements StreamProvider {
       } catch (error) {
         await closeAfterFailure(error, close);
         if (error instanceof StreamError || signal.aborted) throw error;
-        throw nativeError(error, operation);
+        throw streamError(error, operation);
       }
     }, signal);
   }
@@ -272,12 +273,12 @@ export class NativeStreamProvider implements StreamProvider {
   private async operation(operation: string, result: Promise<GeneratedNative.NativeStreamOperationResult>): Promise<Uint8Array> {
     try {
       const value = await result;
-      if (value.error !== undefined) throw nativeError(value.error, operation);
+      if (value.error !== undefined) throw streamError(value.error, operation);
       if (value.value === undefined) throw new StreamError("invalid_response", `native ${operation} response omitted its value`);
       return new Uint8Array(value.value);
     } catch (error) {
       if (error instanceof StreamError) throw error;
-      throw nativeError(error, operation);
+      throw streamError(error, operation);
     }
   }
 
@@ -290,32 +291,4 @@ export class NativeStreamProvider implements StreamProvider {
 function invalidResponse(operation: string, error: unknown): StreamError {
   const message = error instanceof Error ? error.message : String(error);
   return new StreamError("invalid_response", `invalid ${operation} response${message ? `: ${message}` : ""}`);
-}
-
-function nativeError(error: unknown, operation: string): Error {
-  if (error instanceof StreamError) return error;
-  let code: unknown;
-  let message: string;
-  if (typeof error === "object" && error !== null) {
-    code = "code" in error ? (error as { readonly code?: unknown }).code : undefined;
-    message = "message" in error && typeof (error as { readonly message?: unknown }).message === "string"
-      ? (error as { readonly message: string }).message : String(error);
-  } else message = String(error);
-  if (typeof code !== "string") return new StreamError("unavailable", message);
-  let mappedCode = code;
-  if (mappedCode === "not_found") mappedCode = operation === "read_commit" ? "commit_not_found" : "stream_not_found";
-  else if (mappedCode === "already_exists") mappedCode = "destination_exists";
-  else if (mappedCode === "capacity") mappedCode = "capacity_exhausted";
-  else if (mappedCode === "prefix_not_retained" && operation === "commit") mappedCode = "invalid_argument";
-  const knownCodes = new Set<StreamFailureCode>([
-    "invalid_path", "invalid_argument", "limit_exceeded", "not_found", "already_exists",
-    "prefix_not_retained", "out_of_range", "idempotency_mismatch", "capacity", "access_denied",
-    "unavailable", "hierarchy_changed", "deadline_elapsed", "unsupported", "stream_not_found",
-    "commit_not_found", "destination_exists", "capacity_exhausted", "configuration", "invalid_cursor",
-    "invalid_page", "invalid_response", "provider_mismatch", "response_too_large", "transport", "revision_foreign",
-    "failed",
-  ]);
-  const raw = typeof error === "object" && error !== null ? (error as { readonly refusal?: unknown }).refusal : undefined;
-  const refusal = typeof raw === "object" && raw !== null ? raw as StreamRefusal : undefined;
-  return new StreamError(knownCodes.has(mappedCode as StreamFailureCode) ? mappedCode as StreamFailureCode : "unavailable", message, undefined, refusal);
 }
