@@ -52,3 +52,7 @@ use_repo(kani, "kani")
 
 # The Rust toolchain, rustc flags and crate universe, generated from the Cargo configuration.
 include("//:cargo.MODULE.bazel")
+
+# Artifact conformance executes the published Cargo and Rustdoc producers.
+sdk_compilers = use_extension("//toolchains/sdk:repositories.bzl", "sdk_compilers", dev_dependency = True)
+use_repo(sdk_compilers, "sdk_compilers")

@@ -63,6 +63,7 @@ pub(super) fn path() -> std::ffi::OsString {
     std::env::join_paths(
         [
             cargo().parent().unwrap().to_owned(),
+            binary("rustup").parent().unwrap().to_owned(),
             git().parent().unwrap().to_owned(),
         ]
         .into_iter()
@@ -115,7 +116,18 @@ pub(super) fn configure(command: &mut Command) {
                 ""
             },
         )
-        .env("RUSTC", rustc());
+        .env("RUSTC", rustc())
+        .env(
+            "RUSTUP_HOME",
+            binary("rustup")
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("rustup"),
+        );
     #[cfg(windows)]
     {
         command.env("TEMP", temp_dir()).env("TMP", temp_dir());
