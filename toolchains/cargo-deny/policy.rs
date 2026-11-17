@@ -2,10 +2,41 @@ use semver::{Version, VersionReq};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
+pub struct Identifiers {
+    licenses: BTreeSet<String>,
+    exceptions: BTreeSet<String>,
+}
+
+impl Identifiers {
+    pub fn from_index(index: &Value) -> Result<Self, String> {
+        let list = |key: &str| -> Result<BTreeSet<String>, String> {
+            index[key]
+                .as_array()
+                .ok_or_else(|| format!("missing SPDX {key}"))?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| format!("invalid SPDX {key}"))
+                })
+                .collect()
+        };
+        let result = Self {
+            licenses: list("licenses")?,
+            exceptions: list("exceptions")?,
+        };
+        if result.licenses.is_empty() || result.exceptions.is_empty() {
+            return Err("empty SPDX identifiers".into());
+        }
+        Ok(result)
+    }
+}
+
 struct Expression<'a> {
     tokens: Vec<&'a str>,
     position: usize,
     allowed: &'a BTreeSet<String>,
+    identifiers: &'a Identifiers,
 }
 
 impl<'a> Expression<'a> {
@@ -27,6 +58,13 @@ impl<'a> Expression<'a> {
         if matches!(token, ")" | "AND" | "OR" | "WITH") {
             return Err(format!("unexpected license token {token}"));
         }
+        if !self
+            .identifiers
+            .licenses
+            .contains(token.strip_suffix('+').unwrap_or(token))
+        {
+            return Err(format!("unknown SPDX license {token}"));
+        }
         let mut license = token.to_owned();
         if self.tokens.get(self.position) == Some(&"WITH") {
             self.position += 1;
@@ -37,6 +75,9 @@ impl<'a> Expression<'a> {
                 .ok_or("missing license exception")?;
             if matches!(exception, "(" | ")" | "AND" | "OR" | "WITH") {
                 return Err("invalid license exception".into());
+            }
+            if !self.identifiers.exceptions.contains(exception) {
+                return Err(format!("unknown SPDX exception {exception}"));
             }
             self.position += 1;
             license.push_str(" WITH ");
@@ -64,7 +105,11 @@ impl<'a> Expression<'a> {
     }
 }
 
-fn license_allowed(expression: &str, allowed: &BTreeSet<String>) -> Result<bool, String> {
+fn license_allowed(
+    expression: &str,
+    allowed: &BTreeSet<String>,
+    identifiers: &Identifiers,
+) -> Result<bool, String> {
     // Older Cargo manifests used a slash for dual licensing; Cargo interprets it as OR.
     let padded = expression
         .replace('/', " OR ")
@@ -74,6 +119,7 @@ fn license_allowed(expression: &str, allowed: &BTreeSet<String>) -> Result<bool,
         tokens: padded.split_whitespace().collect(),
         position: 0,
         allowed,
+        identifiers,
     };
     let result = parser.or()?;
     if parser.position != parser.tokens.len() {
@@ -95,7 +141,12 @@ fn strings(value: &toml::Value) -> Result<BTreeSet<String>, String> {
         .collect()
 }
 
-pub fn check(entry: &Value, registry: &Value, policy: &toml::Value) -> Result<Vec<String>, String> {
+pub fn check(
+    entry: &Value,
+    registry: &Value,
+    policy: &toml::Value,
+    identifiers: &Identifiers,
+) -> Result<Vec<String>, String> {
     let name = entry["name"].as_str().ok_or("missing crate name")?;
     let version = Version::parse(entry["version"].as_str().ok_or("missing crate version")?)
         .map_err(|e| e.to_string())?;
@@ -169,7 +220,7 @@ pub fn check(entry: &Value, registry: &Value, policy: &toml::Value) -> Result<Ve
     let license = entry["license"]
         .as_str()
         .ok_or_else(|| format!("{name} {version}: no license expression"))?;
-    if !license_allowed(license, &allowed)
+    if !license_allowed(license, &allowed, identifiers)
         .map_err(|error| format!("{name} {version}: {license}: {error}"))?
     {
         failures.push(format!("{name} {version}: disallowed license {license}"));
@@ -251,12 +302,20 @@ fn license_expressions_enforce_and_or_and_exceptions() {
         .into_iter()
         .map(str::to_owned)
         .collect();
-    assert!(license_allowed("MIT OR GPL-3.0-only", &allowed).unwrap());
-    assert!(license_allowed("GPL-3.0-only / MIT", &allowed).unwrap());
-    assert!(!license_allowed("MIT AND GPL-3.0-only", &allowed).unwrap());
-    assert!(license_allowed("Apache-2.0 WITH LLVM-exception", &allowed).unwrap());
-    assert!(license_allowed("MIT OR (GPL-3.0-only AND MIT)", &allowed).unwrap());
-    assert!(license_allowed("MIT OR", &allowed).is_err());
+    let ids = test_identifiers();
+    assert!(license_allowed("MIT OR GPL-3.0-only", &allowed, &ids).unwrap());
+    assert!(license_allowed("GPL-3.0-only / MIT", &allowed, &ids).unwrap());
+    assert!(!license_allowed("MIT AND GPL-3.0-only", &allowed, &ids).unwrap());
+    assert!(license_allowed("Apache-2.0 WITH LLVM-exception", &allowed, &ids).unwrap());
+    assert!(license_allowed("MIT OR (GPL-3.0-only AND MIT)", &allowed, &ids).unwrap());
+    assert!(license_allowed("MIT OR", &allowed, &ids).is_err());
+    assert!(license_allowed("MIT OR Not-A-License", &allowed, &ids).is_err());
+    assert!(license_allowed("MIT OR Apache-2.0 WITH Not-An-Exception", &allowed, &ids).is_err());
+}
+
+#[cfg(test)]
+fn test_identifiers() -> Identifiers {
+    Identifiers::from_index(&serde_json::json!({"licenses": ["MIT", "Apache-2.0", "GPL-3.0-only"], "exceptions": ["LLVM-exception"]})).unwrap()
 }
 
 #[test]
@@ -288,20 +347,25 @@ fn registry_policy_fails_closed_on_sources_yanks_bans_and_license() {
     let entry = serde_json::json!({"name":"demo", "version":"1.0.0", "license":"MIT", "repository":{"Http":{"url":"https://static.crates.io/crates/demo/1.0.0/download", "sha256":"abc"}}});
     let registry =
         serde_json::json!({"crates":{"demo":{"1.0.0":{"yanked":false,"checksum":"abc"}}}});
-    assert!(check(&entry, &registry, &policy).unwrap().is_empty());
+    let ids = test_identifiers();
+    assert!(check(&entry, &registry, &policy, &ids).unwrap().is_empty());
     let mut yanked = registry.clone();
     yanked["crates"]["demo"]["1.0.0"]["yanked"] = true.into();
-    assert!(check(&entry, &yanked, &policy).unwrap()[0].contains("yanked"));
+    assert!(check(&entry, &yanked, &policy, &ids).unwrap()[0].contains("yanked"));
     let mut invalid_source = entry.clone();
     invalid_source["repository"]["Http"]["url"] = "https://example.invalid/demo".into();
-    assert!(check(&invalid_source, &registry, &policy).is_err());
+    assert!(check(&invalid_source, &registry, &policy, &ids).is_err());
     let mut invalid_checksum = registry.clone();
     invalid_checksum["crates"]["demo"]["1.0.0"]["checksum"] = "different".into();
-    assert!(check(&entry, &invalid_checksum, &policy).is_err());
+    assert!(check(&entry, &invalid_checksum, &policy, &ids).is_err());
     let mut bad_license = entry.clone();
     bad_license["license"] = "GPL-3.0-only".into();
-    assert!(check(&bad_license, &registry, &policy).unwrap()[0].contains("disallowed license"));
+    assert!(
+        check(&bad_license, &registry, &policy, &ids).unwrap()[0].contains("disallowed license")
+    );
     let mut banned_policy = policy.clone();
     banned_policy["bans"]["deny"][0]["crate"] = toml::Value::String("demo".into());
-    assert!(check(&entry, &registry, &banned_policy).unwrap()[0].contains("banned dependency"));
+    assert!(
+        check(&entry, &registry, &banned_policy, &ids).unwrap()[0].contains("banned dependency")
+    );
 }

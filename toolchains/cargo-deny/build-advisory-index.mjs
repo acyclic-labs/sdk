@@ -4,8 +4,8 @@ import {readFileSync, writeFileSync} from 'node:fs';
 import {gunzipSync} from 'node:zlib';
 import {ranges} from './advisory-ranges.mjs';
 
-const [archive, registryFile, output] = process.argv.slice(2);
-if (!archive || !registryFile || !output) throw Error('expected advisory archive, registry state and output path');
+const [archive, registryFile, spdxFile, output] = process.argv.slice(2);
+if (!archive || !registryFile || !spdxFile || !output) throw Error('expected advisory archive, registry state, SPDX identifiers and output path');
 const tar = gunzipSync(readFileSync(archive));
 const crates = Object.create(null);
 for (let offset = 0; offset + 512 <= tar.length;) {
@@ -41,4 +41,6 @@ if (!Object.keys(crates).length) throw Error('pinned archive contains no crate a
 for (const entries of Object.values(crates)) entries.sort((a, b) => a.id.localeCompare(b.id, 'en'));
 const registry = JSON.parse(readFileSync(registryFile, 'utf8'));
 if (!/^[0-9a-f]{40}$/.test(registry.commit) || !registry.crates || !Object.keys(registry.crates).length) throw Error('invalid pinned registry state');
-writeFileSync(output, JSON.stringify({advisories: Object.fromEntries(Object.entries(crates).sort(([a], [b]) => a.localeCompare(b, 'en'))), registry}) + '\n');
+const spdx = JSON.parse(readFileSync(spdxFile, 'utf8'));
+if (!/^[0-9a-f]{40}$/.test(spdx.commit) || !spdx.licenses?.length || !spdx.exceptions?.length) throw Error('invalid pinned SPDX identifiers');
+writeFileSync(output, JSON.stringify({advisories: Object.fromEntries(Object.entries(crates).sort(([a], [b]) => a.localeCompare(b, 'en'))), registry, spdx}) + '\n');

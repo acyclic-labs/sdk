@@ -37,6 +37,8 @@ fn validate_acknowledgement(id: &str, name: &str, advisory: &Value, ack: &Value)
 #[test]
 fn resolved_crates_have_no_unpatched_advisories() {
     let index = read("ADVISORY_INDEX");
+    let identifiers =
+        policy::Identifiers::from_index(&index["spdx"]).expect("pinned SPDX identifiers");
     let lock = read("CRATE_LOCK");
     let acknowledgements = read("ADVISORY_ACKNOWLEDGEMENTS");
     let acknowledgements = acknowledgements.as_object().expect("acknowledgement map");
@@ -61,7 +63,7 @@ fn resolved_crates_have_no_unpatched_advisories() {
     }
     for entry in crates.values() {
         failures.extend(
-            policy::check(entry, &index["registry"], &policy)
+            policy::check(entry, &index["registry"], &policy, &identifiers)
                 .expect("valid, pinned dependency policy inputs"),
         );
         let Some(url) = entry
