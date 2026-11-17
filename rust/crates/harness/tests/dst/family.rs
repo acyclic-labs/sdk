@@ -32,7 +32,6 @@ pub(super) const GENERATORS: &[&Generator] = &[
     &super::publication::GENERATOR,
     &super::refusal::GENERATOR,
     &super::configuration::GENERATOR,
-    &super::protective::GENERATOR,
     &super::records::GENERATOR,
 ];
 
