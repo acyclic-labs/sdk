@@ -26,16 +26,21 @@ json.dump(documents, sys.stdout)
 `], {input: JSON.stringify(texts), encoding: 'utf8', maxBuffer: Infinity}));
 }
 
-export function toml(root, file) {
-  const key = resolve(root, file);
-  if (!manifests.has(key)) manifests.set(key, parseToml({[file]: readFileSync(key, 'utf8')})[file]);
-  return manifests.get(key);
+export function tomlFiles(root, files) {
+  const missing = files.filter(file => !manifests.has(resolve(root, file)));
+  if (missing.length) {
+    const parsed = parseToml(Object.fromEntries(missing.map(file => [file, readFileSync(resolve(root, file), 'utf8')])));
+    for (const [file, manifest] of Object.entries(parsed)) manifests.set(resolve(root, file), manifest);
+  }
+  return Object.fromEntries(files.map(file => [file, manifests.get(resolve(root, file))]));
 }
+
+export const toml = (root, file) => tomlFiles(root, [file])[file];
 
 // Expectations name actual parsed fields, independently of manifest formatting.
 export function checkManifestFields(root, expectations) {
   const files = [...new Set(expectations.map(([file]) => file))];
-  const parsed = parseToml(Object.fromEntries(files.filter(file => file.endsWith('.toml')).map(file => [file, readFileSync(resolve(root, file), 'utf8')])));
+  const parsed = tomlFiles(root, files.filter(file => file.endsWith('.toml')));
   for (const file of files.filter(file => !file.endsWith('.toml'))) parsed[file] = JSON.parse(readFileSync(resolve(root, file), 'utf8'));
   for (const [file, keys, expected] of expectations) {
     const actual = keys.reduce((value, key) => value?.[key], parsed[file]);
