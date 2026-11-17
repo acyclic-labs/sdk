@@ -25,10 +25,11 @@ test('Git inventory preserves path bytes, pathspecs, and missing tracked files',
 test('manifest policy checks the declared table and every dependency identity', t => {
   const root = mkdtempSync(join(tmpdir(), 'policy-manifests-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
-  writeFileSync(join(root, 'Cargo.toml'), '[package]\nversion = "1.0.0"\n[workspace.package]\nversion = "2.0.0"\n');
+  writeFileSync(join(root, 'Cargo.toml'), '[package]\nversion = "1.0.0"\n[package.metadata]\nreleased = 2026-11-17\n[workspace.package]\nversion = "2.0.0"\n');
   writeFileSync(join(root, 'package.json'), JSON.stringify({dependencies: {'@acyclic-labs/stream': '3.0.0'}}));
   const checks = [['Cargo.toml', ['package', 'version'], '1.0.0'], ['package.json', ['dependencies', '@acyclic-labs/stream'], '3.0.0']];
   checkManifestFields(root, checks);
+  assert.throws(() => checkManifestFields(root, [['Cargo.toml', ['package', 'metadata', 'released'], '2026-11-17']]), /must be/);
   for (const [file, keys] of checks) {
     assert.throws(() => checkManifestFields(root, [[file, keys, '2.0.0']]), /must be/);
     assert.throws(() => checkManifestFields(root, [[file, [...keys, 'missing'], '1.0.0']]), /found undefined/);
