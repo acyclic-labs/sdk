@@ -35,7 +35,7 @@ function expectedAssets() {
 async function create(output, sourceSha, buildReceipt, retained) {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceSha)) fail("source commit must be a full lowercase Git object ID");
   // Keep verify-only publication staging independent of the archive validator:
-  // publish-npm.yml copies this script without its repository-local imports.
+  // publish-npm.yml copies this script and the shared policy core, without validators.
   const { validateArchive } = await import("./validate-npm-package.mjs");
   const original = retained ? await retainedCompilerFiles(retained, sourceSha, buildReceipt) : undefined;
   const { build, receiptSha256: buildSha256 } = readCompilerBuild(buildReceipt, sourceSha, original);

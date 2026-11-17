@@ -107,7 +107,7 @@ jobs:
           cp -R "$RUNNER_TEMP/qualified/typescript" "$stage/typescript"
           cp scripts/publish-npm-packages.mjs "$stage/scripts/"
           cp scripts/registry-publication.mjs "$stage/scripts/"
-          cp scripts/generated-bindings.mjs scripts/proto-codegen.mjs scripts/bazel-executables.mjs "$stage/scripts/"
+          cp scripts/generated-bindings.mjs scripts/proto-codegen.mjs scripts/bazel-executables.mjs scripts/policy-core.mjs "$stage/scripts/"
           mkdir -p "$stage/node_modules"
           cp -RL node_modules/ignore "$stage/node_modules/ignore"
           cp scripts/plugin-qualification.mjs "$stage/scripts/"

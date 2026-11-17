@@ -32,6 +32,13 @@ function packageEntries() {
 
 const entries = packageEntries();
 
+function copyQualification(stage, modules = []) {
+  for (const directory of ["scripts", "release"]) mkdirSync(join(stage, directory), { recursive: true });
+  for (const name of ["typescript-qualification.mjs", "policy-core.mjs", ...modules])
+    cpSync(join(root, "scripts", name), join(stage, "scripts", name));
+  cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
+}
+
 test("native tar admission visits one member at a time and rejects late corruption", t => {
   const work = mkdtempSync(join(tmpdir(), "acyclic-tar-cursor-"));
   try {
@@ -203,8 +210,7 @@ for (const mutation of ["source", "baseline", "stale-dist"]) {
     const stage = mkdtempSync(join(tmpdir(), "acyclic-build-receipt-boundary-"));
     try {
       for (const directory of ["scripts", "release", "target", "typescript/packages/demo/src", "compatibility/native-families"]) mkdirSync(join(stage, directory), { recursive: true });
-      cpSync(qualification, join(stage, "scripts/typescript-qualification.mjs"));
-      cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
+      copyQualification(stage);
       writeFileSync(join(stage, ".gitignore"), "target/\ntypescript/packages/*/dist/\n");
       writeFileSync(join(stage, "typescript/packages/demo/src/index.ts"), "export const value = 1;\n");
       writeFileSync(join(stage, "compatibility/native-families/demo.json"), "{}\n");
@@ -272,11 +278,8 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
   test(`compiler-bound archive admission: ${mutation}`, () => {
     const stage = mkdtempSync(join(tmpdir(), "acyclic-compiler-archive-"));
     try {
-      mkdirSync(join(stage, "scripts"));
-      mkdirSync(join(stage, "release"));
+      copyQualification(stage, ["validate-npm-package.mjs", "archive-utils.mjs"]);
       mkdirSync(join(stage, "target"));
-      for (const name of ["typescript-qualification.mjs", "validate-npm-package.mjs", "archive-utils.mjs"]) cpSync(join(root, "scripts", name), join(stage, "scripts", name));
-      cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
       writeFileSync(join(stage, ".gitignore"), "/target/\n/archives/\n/archive-inputs/\n/typescript/packages/*/dist/\n/typescript/packages/*/generated/wasm/\n");
       for (const item of entries) writeArchiveFixture(stage, item);
       const git = args => {
@@ -404,13 +407,10 @@ test("qualification rejects a valid archive with the wrong manifest identity", (
   }
 });
 
-test("verify-only publication staging runs with only the copied qualification script", () => {
+test("verify-only publication staging runs with only the copied qualification modules", () => {
   const stage = mkdtempSync(join(tmpdir(), "acyclic-qualification-stage-"));
   try {
-    mkdirSync(join(stage, "scripts"), { recursive: true });
-    mkdirSync(join(stage, "release"), { recursive: true });
-    cpSync(qualification, join(stage, "scripts/typescript-qualification.mjs"));
-    cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
+    copyQualification(stage);
     for (const item of releasePackages) {
       const manifest = join(root, "typescript/packages", item.directory, "package.json");
       const target = join(stage, "typescript/packages", item.directory, "package.json");
