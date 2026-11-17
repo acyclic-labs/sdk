@@ -1,5 +1,6 @@
 import {execFileSync} from 'node:child_process';
-import {existsSync, lstatSync, readFileSync, readdirSync} from 'node:fs';
+import {existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -30,6 +31,14 @@ export const parseJson = text => JSON.parse(text, (_, value) => value && typeof 
   ? Object.setPrototypeOf(value, null) : value);
 export function parseToml(texts) {
   return parseJson(execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-I', '-c', `
+}
+
+const pythonJson = (source, input) => parseJson(execFileSync(
+  process.platform === 'win32' ? 'python' : 'python3', ['-I', '-c', source],
+  {input: JSON.stringify(input), encoding: 'utf8', maxBuffer: Infinity}));
+
+export function parseToml(texts) {
+  return pythonJson(`
 import datetime, json, math, sys, tomllib
 def encode(value):
     if isinstance(value, dict):
@@ -50,7 +59,7 @@ for path, text in json.load(sys.stdin).items():
     except tomllib.TOMLDecodeError as error:
         sys.exit(f"{path}: {error}")
 json.dump(encode(documents), sys.stdout, allow_nan=False)
-`], {input: JSON.stringify(texts), encoding: 'utf8', maxBuffer: Infinity}));
+`, texts);
 }
 
 export function tomlFiles(root, files) {
@@ -157,4 +166,80 @@ export function testFeatureFindings(root) {
     } catch (error) { errors.push(`${manifest}: ${error.message}`); }
   }
   return errors;
+}
+
+// Starlark is a Python syntax subset. Parse syntax, never execute repository code.
+// Literal pins and direct calls are mandatory: indirection cannot hide a fetch.
+export function bazelGitPins(root) {
+  const files = trackedFiles(root).filter(file => file.endsWith('MODULE.bazel') || file.endsWith('.bzl'));
+  return pythonJson(`
+import ast, json, re, sys
+pins = []
+for file, source in json.load(sys.stdin).items():
+    tree = ast.parse(source, filename=file)
+    names = {"git_override", "git_repository"}
+    bindings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "load":
+            for keyword in node.keywords:
+                if isinstance(keyword.value, ast.Constant) and keyword.value.value in names:
+                    names.add(keyword.arg)
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            call = node.value
+            if isinstance(call.func, ast.Name) and call.func.id == "use_repo_rule" and len(call.args) > 1:
+                if isinstance(call.args[1], ast.Constant) and call.args[1].value == "git_repository":
+                    for target in node.targets:
+                        if not isinstance(target, ast.Name):
+                            sys.exit(f"{file}:{node.lineno}: Git rule binding must be a name")
+                        names.add(target.id)
+                        bindings.add(target)
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    for node in ast.walk(tree):
+        name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
+        if name not in names or node in bindings:
+            continue
+        call = parents.get(node)
+        location = f"{file}:{node.lineno}"
+        if not isinstance(call, ast.Call) or call.func is not node:
+            sys.exit(f"{location}: Git rules must be called directly, not passed or aliased")
+        fields = {keyword.arg: keyword.value for keyword in call.keywords}
+        if call.args or None in fields or len(fields) != len(call.keywords):
+            sys.exit(f"{location}: Git rules require explicit keyword arguments")
+        pin = {"file": file, "line": node.lineno}
+        for key in ("remote", "commit"):
+            value = fields.get(key)
+            if not isinstance(value, ast.Constant) or not isinstance(value.value, str) or not value.value:
+                sys.exit(f"{location}: Git {key} must be a nonempty literal string")
+            pin[key] = value.value
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", pin["commit"]):
+            sys.exit(f"{location}: Git commit must be a full SHA-1")
+        pins.append(pin)
+json.dump(pins, sys.stdout)
+`, Object.fromEntries(files.map(file => [file, readUtf8(resolve(root, file))])));
+}
+
+export function checkFetchableGitPins(root) {
+  const pins = bazelGitPins(root), checked = new Set();
+  const directory = mkdtempSync(resolve(tmpdir(), 'git-pins-'));
+  try {
+    for (const pin of pins) {
+      const key = JSON.stringify([pin.remote, pin.commit]);
+      if (checked.has(key)) continue;
+      // No object from another declared remote may satisfy this fetch.
+      const repository = mkdtempSync(resolve(directory, 'pin-'));
+      const git = args => execFileSync('git', args, {cwd: repository, encoding: 'utf8',
+        env: {...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never'}, stdio: ['ignore', 'pipe', 'pipe']}).trim();
+      git(['init', '--bare', '-q']);
+      try {
+        git(['fetch', '--depth=1', '--no-tags', '--no-recurse-submodules', '--', pin.remote, pin.commit]);
+        if (git(['rev-parse', 'FETCH_HEAD^{commit}']).toLowerCase() !== pin.commit.toLowerCase()) throw new Error('wrong commit');
+      } catch {
+        throw new Error(`${pin.file}:${pin.line}: Git commit ${pin.commit} is not fetchable from its declared remote`);
+      }
+      checked.add(key);
+    }
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
+  }
+  return checked.size;
 }

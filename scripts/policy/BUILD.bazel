@@ -26,6 +26,16 @@ node_test(
 )
 
 node_test(
+    name = "git_pins_test",
+    srcs = [
+        "git-pins.test.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/check-git-pins.mjs",
+    ],
+    entry = "scripts/policy/git-pins.test.mjs",
+)
+
+node_test(
     name = "core_test",
     srcs = [
         "core.test.mjs",
