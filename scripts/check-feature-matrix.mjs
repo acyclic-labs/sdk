@@ -14,8 +14,7 @@
 //        [--external-only] [--target=TRIPLE]
 // Every extra worker uses its own target directory, so Cargo's build lock never
 // serializes them; the compiler cache still deduplicates their dependencies.
-import { repositoryRoot as root } from "./policy-core.mjs";
-import { createHash } from "node:crypto";
+import { repositoryRoot as root, selectionWorker, workerEnv } from "./policy-core.mjs";
 import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -34,14 +33,6 @@ export function featureWorker(name, args, workers) {
 }
 // One (package, feature flags) -> worker map, shared with consumer codegen so a
 // selection's check and build reuse the same worker target.
-export function selectionWorker(name, flags, workers) {
-  const key = [name, ...flags].join("\0");
-  return createHash("sha256").update(key).digest().readUInt32LE(0) % workers;
-}
-/** @returns {NodeJS.ProcessEnv} */
-export function workerEnv(index, env = process.env) {
-  return index === 0 ? { ...env } : { ...env, CARGO_TARGET_DIR: `${env.CARGO_TARGET_DIR ?? join(root, "target")}-features-${index}` };
-}
 
 // Keep the consumer library isolated from test dependencies, then compile
 // cfg(test) and other targets with the same feature selection. An all-features

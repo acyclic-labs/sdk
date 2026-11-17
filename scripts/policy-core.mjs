@@ -1,4 +1,5 @@
 import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {readFile} from 'node:fs/promises';
@@ -8,6 +9,13 @@ import {fileURLToPath} from 'node:url';
 
 export const repositoryUrl = new URL('../', import.meta.url).href;
 export const repositoryRoot = resolve(fileURLToPath(repositoryUrl));
+
+export function selectionWorker(name, flags, workers) {
+  return createHash('sha256').update([name, ...flags].join('\0')).digest().readUInt32LE(0) % workers;
+}
+export function workerEnv(index, env = process.env) {
+  return index === 0 ? {...env} : {...env, CARGO_TARGET_DIR: `${env.CARGO_TARGET_DIR ?? join(repositoryRoot, 'target')}-features-${index}`};
+}
 
 const utf8 = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
 export function readUtf8(file) {
