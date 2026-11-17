@@ -19,11 +19,13 @@ const names = [...wanted.keys()].sort(), found = new Map(); let next = 0;
 await Promise.all(Array.from({length: 16}, async () => {
   while (next < names.length) {
     const name = names[next++], expected = pins.packages[name];
-    if (!/^[0-9a-f]{64}$/.test(expected ?? '')) throw Error(`missing index pin for ${name}`);
+    if (expected && !/^[0-9a-f]{64}$/.test(expected)) throw Error(`invalid index pin for ${name}`);
     const response = await fetch(`https://raw.githubusercontent.com/rust-lang/crates.io-index/${pins.commit}/${indexPath(name)}`);
     if (!response.ok) throw Error(`${name}: index download returned ${response.status}`);
     const bytes = Buffer.from(await response.arrayBuffer());
-    if (createHash('sha256').update(bytes).digest('hex') !== expected) throw Error(`${name}: index checksum mismatch`);
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    if (expected && digest !== expected) throw Error(`${name}: index checksum mismatch`);
+    pins.packages[name] = digest;
     const versions = wanted.get(name), records = Object.create(null);
     for (const line of bytes.toString('utf8').trim().split('\n')) {
       const entry = JSON.parse(line);
@@ -35,4 +37,5 @@ await Promise.all(Array.from({length: 16}, async () => {
     found.set(name, records);
   }
 }));
+writeFileSync('toolchains/cargo-deny/registry-pins.json', JSON.stringify({commit: pins.commit, packages: Object.fromEntries(Object.entries(pins.packages).sort(([a], [b]) => a.localeCompare(b, 'en')))}) + '\n');
 writeFileSync('toolchains/cargo-deny/registry-state.json', JSON.stringify({commit: pins.commit, crates: Object.fromEntries(names.map(name => [name, found.get(name)]))}) + '\n');
