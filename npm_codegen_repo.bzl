@@ -1,7 +1,6 @@
 """Pinned npm inputs for Bazel JavaScript generation, read from the workspace lock."""
 
 _PACKAGES = {
-    "@bufbuild/buf-linux-x64": "@bufbuild/buf-linux-x64",
     "@bufbuild/protobuf": "@bufbuild/protobuf",
     "@bufbuild/protoc-gen-es": "@bufbuild/protoc-gen-es",
     "@bufbuild/protoplugin": "@bufbuild/protoplugin",
@@ -9,9 +8,12 @@ _PACKAGES = {
     "@connectrpc/connect": "@connectrpc/connect",
     "@connectrpc/connect-node": "@connectrpc/connect-node",
     "@typescript/vfs": "@typescript/vfs",
+    "@types/node": "@types/node",
     "debug": "debug",
     "ignore": "ignore",
     "ms": "ms",
+    "typescript": "typescript",
+    "undici-types": "undici-types",
 }
 
 def _npm_codegen_repository_impl(ctx):

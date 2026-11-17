@@ -5,6 +5,7 @@ def _quote(value):
 
 def _proto_js_impl(ctx):
     output = ctx.actions.declare_directory(ctx.label.name)
+    buf = ctx.toolchains["//toolchains/javascript:toolchain_type"].buf
     npm = ctx.files._npm
     roots = [f.path.split("/node_modules/")[0] for f in npm if "/node_modules/" in f.path]
     if not roots:
@@ -34,13 +35,13 @@ def _proto_js_impl(ctx):
         'printf %%s %s > "$tmp/buf.yaml"' % _quote(yaml),
         'printf \'version: v2\\nplugins:\\n  - local: ["%s", "%s"]\\n    out: generated\\n    strategy: all\\n    opt: [target=js+dts, import_extension=js]\\n\' "$root/%s" "$tmp/node_modules/@bufbuild/protoc-gen-es/bin/protoc-gen-es" > "$tmp/buf.gen.yaml"' % ("%s", "%s", ctx.executable._node.path),
         'cd "$tmp"',
-        '"$tmp/node_modules/@bufbuild/buf-linux-x64/bin/buf" generate %s' % " ".join(["--path " + _quote(path) for path in paths]),
+        '"$root/%s" generate %s' % (buf.path, " ".join(["--path " + _quote(path) for path in paths])),
         'mkdir -p "$root/%s"' % output.path,
         'cp -R generated/. "$root/%s/"' % output.path,
     ])
     ctx.actions.run_shell(
         inputs = depset(ctx.files.schemas + npm),
-        tools = [ctx.executable._node],
+        tools = [ctx.executable._node, buf],
         outputs = [output],
         command = "\n".join(commands),
         mnemonic = "ProtoJavaScript",
@@ -49,6 +50,7 @@ def _proto_js_impl(ctx):
 
 proto_js = rule(
     implementation = _proto_js_impl,
+    toolchains = ["//toolchains/javascript:toolchain_type"],
     attrs = {
         "schemas": attr.label_keyed_string_dict(allow_files = True, mandatory = True),
         "_npm": attr.label(default = "@npm_codegen_packages//:packages", allow_files = True),

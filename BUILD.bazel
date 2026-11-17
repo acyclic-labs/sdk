@@ -300,22 +300,25 @@ typescript_packages(
         "auth",
         "actors",
         "core",
-        "stream",
         "inference",
     ],
     srcs = glob(["scripts/*.mjs","scripts/vendor/**","typescript/packages/*/package.json"], allow_empty = True) + [
         "//:package.json",
+        "//:tsconfig.base.json",
         ":workspace_acyclic_labs_auth",
         ":workspace_acyclic_labs_actors",
         ":workspace_acyclic_labs_core",
-        ":workspace_acyclic_labs_stream",
         ":workspace_acyclic_labs_inference",
     ],
     protos = {
         ":workspace_acyclic_labs_auth_proto": "auth",
         ":workspace_acyclic_labs_actors_proto": "actors",
-        ":workspace_acyclic_labs_stream_proto": "stream",
         ":workspace_acyclic_labs_inference_proto": "inference",
+    },
+    wasms = {
+        "//wasm:auth": "auth",
+        "//wasm:actors": "actors",
+        "//wasm:inference": "inference",
     },
     tools = {
         "//rust/crates/actors-wasm:actors-wasm-rpc-inventory": "//rust/crates/actors-wasm:actors-wasm-rpc-inventory",
@@ -328,10 +331,6 @@ typescript_packages(
         "//rust/crates/inference-wasm:inference-typescript-widths_example": "//rust/crates/inference-wasm:inference-typescript-widths_example",
         "//rust/crates/inference:inference-typescript-defaults_example": "//rust/crates/inference:inference-typescript-defaults_example",
         "//rust/crates/proto-codegen:sdk-proto-codegen": "//rust/crates/proto-codegen:sdk-proto-codegen",
-        "//rust/crates/stream:stream-authorization_example": "//rust/crates/stream:stream-authorization_example",
-        "//rust/crates/stream:stream-http-contract": "//rust/crates/stream:stream-http-contract",
-        "//rust/crates/stream:stream-rpc-inventory": "//rust/crates/stream:stream-rpc-inventory",
-        "//rust/crates/stream:token-operations_example": "//rust/crates/stream:token-operations_example",
     },
 )
 
@@ -357,14 +356,6 @@ filegroup(
         ":sdk_typescript_packages",
     ],
     output_group = "core",
-)
-
-filegroup(
-    name = "sdk_typescript_stream",
-    srcs = [
-        ":sdk_typescript_packages",
-    ],
-    output_group = "stream",
 )
 
 filegroup(
@@ -404,12 +395,13 @@ node_modules(
     name = "wasm_stream_node_modules",
     directory = "node_modules",
     packages = {
-        ":sdk_typescript_stream": "@acyclic-labs/stream=",
+        ":workspace_acyclic_labs_stream": "@acyclic-labs/stream=typescript/packages/stream",
         ":sdk_typescript_core": "@acyclic-labs/core=",
         "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
         "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
         "@npm_workspace_connectrpc_connect_node//:files": "@connectrpc/connect-node=",
         ":sdk_typescript_auth": "@acyclic-labs/auth=",
+        ":workspace_acyclic_labs_stream_proto": "@acyclic-labs/stream/generated/proto=",
         "//wasm:stream": "@acyclic-labs/stream/generated/wasm=",
         "//wasm:auth": "@acyclic-labs/auth/generated/wasm=",
     },
