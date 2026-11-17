@@ -37,6 +37,7 @@ rust_proc_macro(
         "@sdk_crates//termcolor-1.4.1",
     ],
     visibility = ["//visibility:public"],
+    tags = ["no_rustfmt"],
 )
 
 rust_test(
@@ -51,7 +52,7 @@ rust_test(
     ],
     lint_config = ":lints",
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
-    tags = ["manual"],
+    tags = ["manual","no_rustfmt"],
 )
 
 isolated_test(

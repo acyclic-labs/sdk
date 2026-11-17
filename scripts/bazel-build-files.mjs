@@ -601,6 +601,16 @@ function buildFile(p) {
     covered.add(`build example ${example.name}`);
     rules.push(["rust_binary", [["name", q(name)], ...separate(example)]]);
   }
+  // Vendored crates keep their upstream bytes, so the formatting check skips their rules.
+  if (dir(p).startsWith("rust/vendor/")) {
+    const formattable = new Set(["cargo_build_script", "rust_binary", "rust_library", "rust_proc_macro", "rust_shared_library", "rust_test"]);
+    for (const [kind, attrs] of rules) {
+      if (!formattable.has(kind)) continue;
+      const tags = attrs.find(([name]) => name === "tags");
+      if (tags) tags[1] = q([...JSON.parse(tags[1]), "no_rustfmt"]);
+      else attrs.push(["tags", q(["no_rustfmt"])]);
+    }
+  }
   const loads = Map.groupBy([...new Set(rules.map(([kind]) => kind))].sort(), kind => LOADS[kind]);
   const header = [
     HEADER,

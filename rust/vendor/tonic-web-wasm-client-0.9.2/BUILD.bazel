@@ -26,6 +26,7 @@ rust_library(
     ],
     lint_config = ":lints",
     visibility = ["//visibility:public"],
+    tags = ["no_rustfmt"],
 )
 
 filegroup(

@@ -50,6 +50,7 @@ rust_library(
     ],
     aliases = {"@sdk_crates//syn_3_0_9-3.0.9":"syn_serde"},
     visibility = ["//visibility:public"],
+    tags = ["no_rustfmt"],
 )
 
 rust_binary(
@@ -79,6 +80,7 @@ rust_binary(
     ],
     aliases = {"@sdk_crates//syn_3_0_9-3.0.9":"syn_serde"},
     visibility = ["//visibility:public"],
+    tags = ["no_rustfmt"],
 )
 
 filegroup(

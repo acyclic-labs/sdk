@@ -50,6 +50,7 @@ cargo_build_script(
     deps = [
         "@sdk_crates//napi-build-2.6.0",
     ],
+    tags = ["no_rustfmt"],
 )
 
 rust_library(
@@ -106,6 +107,7 @@ rust_library(
     ],
     }),
     visibility = ["//visibility:public"],
+    tags = ["no_rustfmt"],
 )
 
 filegroup(

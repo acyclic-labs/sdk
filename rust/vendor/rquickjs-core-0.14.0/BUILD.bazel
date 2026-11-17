@@ -36,6 +36,7 @@ rust_library(
         "@sdk_crates//relative-path-2.0.3",
     ],
     visibility = ["//visibility:public"],
+    tags = ["no_rustfmt"],
 )
 
 filegroup(

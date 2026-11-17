@@ -33,6 +33,7 @@ cargo_build_script(
     deps = [
         "@sdk_crates//cc-1.10.0",
     ],
+    tags = ["no_rustfmt"],
 )
 
 rust_library(
@@ -53,6 +54,7 @@ rust_library(
         ":build_script",
     ],
     visibility = ["//visibility:public"],
+    tags = ["no_rustfmt"],
 )
 
 filegroup(
