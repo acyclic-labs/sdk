@@ -22,7 +22,7 @@ export async function bindingTools(packages, {families = [...packages], native =
   ])].sort();
 }
 
-export async function projectBindings(packages, {tools, check = false, families = [...packages], native = false, sourceCommit = undefined, protobuf = true}) {
+export async function projectBindings(packages, {tools, check = false, families = [...packages], native = false, sourceCommit = undefined, protobuf = true, runtimeOnly = false}) {
   const [{generateFiles}, {generateProto}, {write: generateActors}] = await Promise.all([
     import("./generated-bindings.mjs"), import("./generate-proto.mjs"), import("./generate-actors.mjs"),
   ]);
@@ -40,5 +40,5 @@ export async function projectBindings(packages, {tools, check = false, families 
     await generateFiles(join(root, "typescript/packages/workers/test/generated"), destination => run(MANIFEST, [
       destination, join(root, "rust/crates/manifest/fuzz/corpus/manifest_json/valid.json"), "production", "agent"]), [], check);
   }
-  await generateContracts(check ? "check" : "write", families, {native, tools, sourceCommit});
+  await generateContracts(check ? "check" : "write", families, {native, tools, sourceCommit, runtimeOnly});
 }

@@ -53,14 +53,15 @@ export function contractModules(families = []) {
 }
 
 // Full generation keeps every output. A selection omits outputs only a native build reads unless it asks for them.
-export const keepsGenerator = (generator, families, native) => !generator.nativeOnly || native || families.length === 0;
+export const keepsGenerator = (generator, families, native, runtimeOnly = false) =>
+  !(runtimeOnly && generator.crates) && (!generator.nativeOnly || native || families.length === 0);
 
 /** The contract modules are the one computed import: every caller loads them here. @param {string[]} names */
 export const loadContractModules = names => Promise.all(names.map(name => import(`./${name}`)));
 
 /** @param {string} [mode] @param {string[]} [families]
  * @param {{native?:boolean,tools?:ReadonlyMap<string,string>,sourceCommit?:string}} [options] */
-export async function generateContracts(mode = "write", families = [], { native = false, tools = undefined, sourceCommit = undefined } = {}) {
+export async function generateContracts(mode = "write", families = [], { native = false, tools = undefined, sourceCommit = undefined, runtimeOnly = false } = {}) {
   const {checkGenerated, projectGenerated} = await import("./generated-bindings.mjs");
   let modules = contractModules(families);
 
@@ -90,7 +91,7 @@ export async function generateContracts(mode = "write", families = [], { native 
     report.phase = "imports";
     saveReport();
     let generators = await loadContractModules(modules);
-    const kept = generators.map(generator => keepsGenerator(generator, families, native));
+    const kept = generators.map(generator => keepsGenerator(generator, families, native, runtimeOnly));
     modules = modules.filter((_, index) => kept[index]);
     generators = generators.filter((_, index) => kept[index]);
     const targets = [...new Set(generators.flatMap(generator => generator.rust ?? []))];
