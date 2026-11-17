@@ -453,6 +453,8 @@ pub(super) struct Crashed {
     pub cause: InjectedStorageFault,
     /// Whether the cut fell inside the selected window.
     pub in_window: bool,
+    /// Requests the crashed incarnation sent before its cut.
+    pub requests: Vec<ModelRequest>,
 }
 
 impl std::fmt::Display for Crashed {
@@ -506,8 +508,16 @@ impl<'a, P: Fn() -> Vec<Plan>> Crash<'a, P> {
                 (Some(open), close) => open <= cause.ordinal && cause.ordinal < close,
                 (None, _) => false,
             };
+            let requests = crashed.requests;
             let recovered = world.incarnation(None, &recovery).await.map_err(failed)?;
-            Ok((Crashed { cause, in_window }, recovered))
+            Ok((
+                Crashed {
+                    cause,
+                    in_window,
+                    requests,
+                },
+                recovered,
+            ))
         })
     }
 }
