@@ -29,7 +29,8 @@ pub fn validate_actor_id(bytes: &[u8]) -> Result<(), IdentityError> {
 pub struct NamespaceId(String);
 
 impl NamespaceId {
-    fn validated_text(bytes: &[u8]) -> Result<&str, IdentityError> {
+    /// Validate an exact namespace spelling without allocating, including the reserved scope.
+    pub fn validate(bytes: &[u8]) -> Result<&str, IdentityError> {
         if !valid_name(bytes) {
             return Err(IdentityError::InvalidNamespace);
         }
@@ -38,11 +39,11 @@ impl NamespaceId {
 
     /// Parse an exact namespace spelling, including the reserved legacy scope.
     pub fn new(bytes: &[u8]) -> Result<Self, IdentityError> {
-        Ok(Self(Self::validated_text(bytes)?.to_owned()))
+        Ok(Self(Self::validate(bytes)?.to_owned()))
     }
     /// Validate an explicitly deployed namespace without allocating its spelling.
     pub fn validate_deployment(bytes: &[u8]) -> Result<&str, IdentityError> {
-        let value = Self::validated_text(bytes)?;
+        let value = Self::validate(bytes)?;
         if value == DEFAULT_ACTOR_NAMESPACE {
             return Err(IdentityError::ReservedNamespace);
         }
@@ -51,10 +52,6 @@ impl NamespaceId {
     /// Admit an explicitly deployed namespace, excluding the legacy scope.
     pub fn for_deployment(bytes: &[u8]) -> Result<Self, IdentityError> {
         Ok(Self(Self::validate_deployment(bytes)?.to_owned()))
-    }
-    /// Resolve an absent legacy wire field to its reserved namespace.
-    pub fn from_legacy_field(value: Option<&str>) -> Result<Self, IdentityError> {
-        Self::new(value.unwrap_or(DEFAULT_ACTOR_NAMESPACE).as_bytes())
     }
     /// Exact spelling for logs and existing string fields.
     pub fn as_str(&self) -> &str {
@@ -91,8 +88,11 @@ impl ActorReference {
         namespace: Option<&str>,
         id: &str,
     ) -> Result<Self, IdentityError> {
-        let namespace = NamespaceId::from_legacy_field(namespace)?;
-        Self::new(account, namespace.as_str().as_bytes(), id.as_bytes())
+        Self::new(
+            account,
+            namespace.unwrap_or(DEFAULT_ACTOR_NAMESPACE).as_bytes(),
+            id.as_bytes(),
+        )
     }
     /// Account bytes, unchanged.
     pub const fn account(&self) -> &AccountId {

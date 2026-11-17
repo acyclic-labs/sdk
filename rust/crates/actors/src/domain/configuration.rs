@@ -111,8 +111,8 @@ impl Binding {
                 }
             }
             (Some(namespace), None) => {
-                crate::addressing::AccountId::new(&self.target_account)?;
-                crate::addressing::NamespaceId::new(namespace.as_bytes())?;
+                crate::addressing::validate_account(&self.target_account)?;
+                crate::addressing::NamespaceId::validate(namespace.as_bytes())?;
                 if self.resource
                     != format!(
                         "actors:/{}",
@@ -123,7 +123,7 @@ impl Binding {
                 }
             }
             (None, Some(worker)) => {
-                crate::addressing::AccountId::new(&self.target_account)?;
+                crate::addressing::validate_account(&self.target_account)?;
                 crate::addressing::validate_dns_label(worker.as_bytes())
                     .map_err(|_| DomainError::InvalidBinding)?;
                 if self.resource
