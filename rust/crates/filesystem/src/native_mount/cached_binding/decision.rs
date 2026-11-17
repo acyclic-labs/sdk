@@ -14,7 +14,7 @@ pub(crate) fn cached_binding_decision<Binding: Copy, Lease, Error>(
 #[cfg(kani)]
 mod proofs {
     use super::cached_binding_decision;
-    use std::cell::Cell;
+    use core::cell::Cell;
 
     struct Lease<'a>(&'a Cell<bool>);
 
@@ -40,30 +40,34 @@ mod proofs {
                 if admitted { Ok(Lease(&live)) } else { Err(()) }
             },
             |()| {
-                assert!(live.get());
+                kani::assert(live.get(), "lease covers current binding check");
                 current_calls.set(current_calls.get() + 1);
                 current
             },
             |()| {
-                assert!(live.get());
+                kani::assert(live.get(), "lease covers fallback binding check");
                 fallback_calls.set(fallback_calls.get() + 1);
                 unchanged
             },
         );
-        assert_eq!(
-            matched,
-            if present && !admitted {
-                Err(())
-            } else {
-                Ok(present && (current || unchanged))
-            }
+        let expected = if present && !admitted {
+            Err(())
+        } else {
+            Ok(present && (current || unchanged))
+        };
+        kani::assert(matched == expected, "exact binding result and lease error");
+        kani::assert(
+            lease_calls.get() == u8::from(present),
+            "one lease admission",
         );
-        assert_eq!(lease_calls.get(), u8::from(present));
-        assert_eq!(current_calls.get(), u8::from(present && admitted));
-        assert_eq!(
-            fallback_calls.get(),
-            u8::from(present && admitted && !current)
+        kani::assert(
+            current_calls.get() == u8::from(present && admitted),
+            "one current check",
         );
-        assert!(!live.get());
+        kani::assert(
+            fallback_calls.get() == u8::from(present && admitted && !current),
+            "fallback only after a leased current miss",
+        );
+        kani::assert(!live.get(), "lease released after decision");
     }
 }
