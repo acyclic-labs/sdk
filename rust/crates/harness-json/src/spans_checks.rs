@@ -1,9 +1,9 @@
 use super::*;
 use crate::policy::SyntaxError;
+use proptest::prelude::*;
 use serde_json::Value;
 type JsonSpans = super::JsonSpans<crate::policy::Unfunded>;
 type Result<T> = std::result::Result<T, SyntaxError>;
-use proptest::prelude::*;
 
 fn scan(bytes: &[u8], chunk: usize, depth: u32) -> Result<Vec<SpanEvent>> {
     let mut cursor = JsonSpans::default();

@@ -149,11 +149,8 @@ impl<P: Policy> JsonSpans<P> {
 
     fn end(
         &mut self,
-        /// Original value kind.
         kind: SpanKind,
-        /// Original starting byte offset.
         start: u64,
-        /// Exclusive original ending byte offset.
         end: u64,
         emit: &mut dyn FnMut(SpanEvent) -> Result<bool, P::Error>,
     ) -> Result<bool, P::Error> {

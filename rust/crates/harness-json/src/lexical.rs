@@ -23,13 +23,6 @@ pub struct State {
     pub string: bool,
     /// Deepest original opening when scratch accounting is enabled.
     pub maximum_depth: u32,
-}
-/// Admission records scratch bounds in its existing lexical pass. Encoders
-/// and array indexing use the same lexer with that accounting compiled out.
-#[derive(Default)]
-pub struct Lexer<const TRACK_SCRATCH: bool, P: Policy = Unfunded> {
-    pub(crate) state: State,
-    policy: std::marker::PhantomData<fn() -> P>,
     escape: bool,
     atom: bool,
     string_bytes: u64,
@@ -37,13 +30,20 @@ pub struct Lexer<const TRACK_SCRATCH: bool, P: Policy = Unfunded> {
     longest_string: u64,
     longest_escaped: u64,
 }
+/// Admission records scratch bounds in its existing lexical pass. Encoders
+/// and array indexing use the same lexer with that accounting compiled out.
+#[derive(Default)]
+pub struct Lexer<const TRACK_SCRATCH: bool, P: Policy = Unfunded> {
+    pub(crate) state: State,
+    policy: std::marker::PhantomData<fn() -> P>,
+}
 impl<const TRACK_SCRATCH: bool, P: Policy> Lexer<TRACK_SCRATCH, P> {
     /// Longest original token or nesting stack requiring decoder scratch.
     pub fn scratch_source_bytes(&self, labels: bool) -> u64 {
         u64::from(self.state.maximum_depth).max(if labels {
-            self.longest_string
+            self.state.longest_string
         } else {
-            self.longest_escaped
+            self.state.longest_escaped
         })
     }
     /// Admit one original byte and charge an item before increasing its count.
@@ -56,21 +56,23 @@ impl<const TRACK_SCRATCH: bool, P: Policy> Lexer<TRACK_SCRATCH, P> {
     ) -> Result<bool, P::Error> {
         if self.state.string {
             if TRACK_SCRATCH {
-                self.string_bytes += 1;
+                self.state.string_bytes += 1;
             }
-            if self.escape {
-                self.escape = false;
+            if self.state.escape {
+                self.state.escape = false;
             } else if byte == b'\\' {
-                self.escape = true;
+                self.state.escape = true;
                 if TRACK_SCRATCH {
-                    self.escaped_string = true;
+                    self.state.escaped_string = true;
                 }
             } else if byte == b'"' {
                 self.state.string = false;
                 if TRACK_SCRATCH {
-                    self.longest_string = self.longest_string.max(self.string_bytes);
-                    if self.escaped_string {
-                        self.longest_escaped = self.longest_escaped.max(self.string_bytes);
+                    self.state.longest_string =
+                        self.state.longest_string.max(self.state.string_bytes);
+                    if self.state.escaped_string {
+                        self.state.longest_escaped =
+                            self.state.longest_escaped.max(self.state.string_bytes);
                     }
                 }
             }
@@ -81,10 +83,10 @@ impl<const TRACK_SCRATCH: bool, P: Policy> Lexer<TRACK_SCRATCH, P> {
             b'"' => {
                 self.state.string = true;
                 if TRACK_SCRATCH {
-                    self.string_bytes = 0;
-                    self.escaped_string = false;
+                    self.state.string_bytes = 0;
+                    self.state.escaped_string = false;
                 }
-                self.atom = false;
+                self.state.atom = false;
                 true
             }
             b'[' | b'{' => {
@@ -94,7 +96,7 @@ impl<const TRACK_SCRATCH: bool, P: Policy> Lexer<TRACK_SCRATCH, P> {
                 if TRACK_SCRATCH {
                     self.state.maximum_depth = self.state.maximum_depth.max(self.state.depth);
                 }
-                self.atom = false;
+                self.state.atom = false;
                 true
             }
             b']' | b'}' => {
@@ -102,16 +104,16 @@ impl<const TRACK_SCRATCH: bool, P: Policy> Lexer<TRACK_SCRATCH, P> {
                     .depth
                     .checked_sub(1)
                     .ok_or_else(|| P::input(JsonInputError::Nesting, code))?;
-                self.atom = false;
+                self.state.atom = false;
                 false
             }
             b':' | b',' | b' ' | b'\n' | b'\r' | b'\t' => {
-                self.atom = false;
+                self.state.atom = false;
                 false
             }
             _ => {
-                let first = !self.atom;
-                self.atom = true;
+                let first = !self.state.atom;
+                self.state.atom = true;
                 first
             }
         };
