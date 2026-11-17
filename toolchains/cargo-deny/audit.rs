@@ -23,6 +23,8 @@ fn matches_any(version: &Version, ranges: &Value) -> bool {
 fn resolved_crates_have_no_unpatched_advisories() {
     let index = read("ADVISORY_INDEX");
     let lock = read("CRATE_LOCK");
+    let acknowledgements = read("ADVISORY_ACKNOWLEDGEMENTS");
+    let acknowledgements = acknowledgements.as_object().expect("acknowledgement map");
     let crates = lock["crates"].as_object().expect("resolved crate map");
     assert!(!crates.is_empty(), "resolved crate map must not be empty");
     let mut failures = Vec::new();
@@ -44,11 +46,22 @@ fn resolved_crates_have_no_unpatched_advisories() {
                 if !matches_any(&version, &advisory["patched"])
                     && !matches_any(&version, &advisory["unaffected"])
                 {
-                    failures.push(format!(
-                        "{} {version}: {}",
-                        name,
-                        advisory["id"].as_str().expect("advisory id")
-                    ));
+                    let id = advisory["id"].as_str().expect("advisory id");
+                    if let Some(ack) = acknowledgements.get(id) {
+                        assert_eq!(
+                            advisory["informational"], "unmaintained",
+                            "acknowledgement applies only to unmaintained notices: {id}"
+                        );
+                        assert_eq!(ack["crate"], name, "acknowledgement crate mismatch: {id}");
+                        for field in ["reason", "evidence"] {
+                            assert!(
+                                ack[field].as_str().is_some_and(|s| !s.trim().is_empty()),
+                                "{id} requires {field}"
+                            );
+                        }
+                        continue;
+                    }
+                    failures.push(format!("{} {version}: {}", name, id));
                 }
             }
         }

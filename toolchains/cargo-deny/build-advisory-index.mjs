@@ -45,7 +45,7 @@ for (let offset = 0; offset + 512 <= tar.length;) {
   const id = scalar('advisory', 'id', true), crate = scalar('advisory', 'package', true);
   if (!name.endsWith(`/${id}.md`) || name.split('/')[2] !== crate) throw Error(`advisory identity mismatch: ${name}`);
   if (scalar('advisory', 'withdrawn')) continue;
-  (crates[crate] ??= []).push({id, patched: ranges('patched'), unaffected: ranges('unaffected')});
+  (crates[crate] ??= []).push({id, informational: scalar('advisory', 'informational') ?? null, patched: ranges('patched'), unaffected: ranges('unaffected')});
 }
 if (!Object.keys(crates).length) throw Error('pinned archive contains no crate advisories');
 for (const entries of Object.values(crates)) entries.sort((a, b) => a.id.localeCompare(b.id, 'en'));
