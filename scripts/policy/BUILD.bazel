@@ -1,6 +1,16 @@
 load(":node_test.bzl", "node_test")
 
 node_test(
+    name = "workspace_model_test",
+    srcs = [
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-model.mjs",
+        "//:scripts/workspace-model.test.mjs",
+    ],
+    entry = "scripts/workspace-model.test.mjs",
+)
+
+node_test(
     name = "test_features_test",
     srcs = [
         "//:scripts/policy-core.mjs",
