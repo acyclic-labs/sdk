@@ -166,19 +166,25 @@ fn assistant_since_prompt(request: &ModelRequest) -> usize {
         .count()
 }
 
-fn reasoning(model: &str, continuity: &[u8]) -> ModelEvent {
-    ModelEvent::ReasoningBlock {
-        block: ReasoningBlock {
-            kind: ReasoningKind::Readable,
-            text: Some("reasoning retained".into()),
-            origin: ReasoningOrigin {
-                provider: "scripted".into(),
-                model: model.into(),
-                credential_scope: None,
-            },
-            continuity: continuity.to_vec(),
-            outcome: ReasoningOutcome::PreservedReadable,
+const REASONING_CONTINUITY: &[u8] = b"exact reasoning";
+
+fn reasoning_block(model: &str) -> ReasoningBlock {
+    ReasoningBlock {
+        kind: ReasoningKind::Readable,
+        text: Some("reasoning retained".into()),
+        origin: ReasoningOrigin {
+            provider: "scripted".into(),
+            model: model.into(),
+            credential_scope: None,
         },
+        continuity: REASONING_CONTINUITY.to_vec(),
+        outcome: ReasoningOutcome::PreservedReadable,
+    }
+}
+
+fn reasoning(model: &str) -> ModelEvent {
+    ModelEvent::ReasoningBlock {
+        block: reasoning_block(model),
     }
 }
 
@@ -190,7 +196,7 @@ fn length_stop(content: &str, model: &str) -> ScriptedTurn {
         "text" => vec![ScriptedEvent::Event(ModelEvent::Content {
             delta: "partial text".into(),
         })],
-        "reasoning_only" => vec![ScriptedEvent::Event(reasoning(model, b"exact reasoning"))],
+        "reasoning_only" => vec![ScriptedEvent::Event(reasoning(model))],
         "partial_tool_call" => vec![ScriptedEvent::Event(ModelEvent::ToolCall(oracle::call(
             "cut-call",
             "read",
@@ -273,14 +279,14 @@ fn assert_history(requests: &[ModelRequest], tag: &str) -> std::result::Result<(
 }
 
 fn assert_reasoning(request: &ModelRequest, model: &str) -> std::result::Result<(), String> {
+    let expected = reasoning_block(model);
     let found = request
         .messages
         .iter()
         .flat_map(|message| message.content.parts());
     for part in found {
         if let ModelContentPart::Reasoning { block } = part
-            && block.continuity == b"exact reasoning"
-            && block.origin.model == model
+            && block == &expected
         {
             return Ok(());
         }
