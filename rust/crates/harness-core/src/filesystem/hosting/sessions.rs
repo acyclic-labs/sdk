@@ -311,16 +311,22 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         Ok(())
     }
 
-    /// Fork a session's volumes through the shared child-volume composer.
-    /// The root, its directory membership and every volume appear together.
-    pub async fn prepare_isolated_session(
+    /// Prepare an independent root and its directory membership in one commit.
+    /// A source selects the shared volume-fork path without copying history.
+    pub async fn prepare_session_root(
         &self,
         intent: &IntentId,
-        root: RootRequest,
-        source: &AgentPath,
+        request: RootRequest,
+        source: Option<&AgentPath>,
         questions: Option<bool>,
     ) -> Result<Prepared, Error> {
-        self.prepare_session_fork(intent, root, source, None, questions)
+        if let Some(source) = source {
+            return self
+                .prepare_session_fork(intent, request, source, None, questions)
+                .await;
+        }
+        self.admit_sessions()?;
+        self.prepare_root_request(intent, request, true, questions)
             .await
     }
 

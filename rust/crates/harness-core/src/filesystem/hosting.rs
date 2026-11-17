@@ -1560,19 +1560,6 @@ where
             .await
     }
 
-    /// Prepare an independent root and its directory membership in one commit.
-    /// The serving placement initializes its directory once before admission.
-    pub async fn prepare_session_root(
-        &self,
-        intent: &IntentId,
-        request: RootRequest,
-        questions: Option<bool>,
-    ) -> Result<Prepared, Error> {
-        self.admit_sessions()?;
-        self.prepare_root_request(intent, request, true, questions)
-            .await
-    }
-
     async fn prepare_root_request(
         &self,
         intent: &IntentId,

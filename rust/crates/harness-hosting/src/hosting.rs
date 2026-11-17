@@ -769,18 +769,10 @@ where
                                     .await?
                             }
                             AgentCommand::NewSession { questions, .. } => {
-                                match self.platform.session_source() {
-                                    Some(source) => {
-                                        self.bound
-                                            .prepare_isolated_session(id, root, &source, *questions)
-                                            .await?
-                                    }
-                                    None => {
-                                        self.bound
-                                            .prepare_session_root(id, root, *questions)
-                                            .await?
-                                    }
-                                }
+                                let source = self.platform.session_source();
+                                self.bound
+                                    .prepare_session_root(id, root, source.as_ref(), *questions)
+                                    .await?
                             }
                             _ => return Err(Error::Record("expected a session creation command")),
                         }
