@@ -44,7 +44,7 @@ rust_library(
         "@sdk_crates//cargo_metadata-0.23.1",
         "@sdk_crates//public-api-0.52.2",
         "@sdk_crates//ring-0.17.14",
-        "@sdk_crates//rustdoc_types_0_60_0-0.60.0",
+        "@sdk_crates//rustdoc-types-0.60.0",
         "@sdk_crates//schemars-1.2.3",
         "@sdk_crates//semver-1.0.28",
         "@sdk_crates//serde-1.0.229",
@@ -75,7 +75,7 @@ rust_test(
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//hex-0.4.3",
         "@sdk_crates//proptest-1.12.0",
-        "@sdk_crates//sha2_0_11_1-0.11.1",
+        "@sdk_crates//sha2-0.11.1",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
         "//:typescript/packages/actors/test/grpc-conformance.mjs",

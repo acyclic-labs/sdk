@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { repositoryRoot as root } from "./policy-core.mjs";
+import { workspacePackages } from "./workspace-model.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -21,33 +22,24 @@ function run(command, args, options = {}) {
 }
 
 export function localCargoPackages() {
-  const result = run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]);
-  if (result.status !== 0) fail(result.stderr || "cargo metadata failed");
-  const workspace = JSON.parse(result.stdout);
-  const packages = workspace.packages;
-  // Clippy lints every root workspace member a selection builds, not only the
-  // selected one; packages found below are other workspaces' members.
-  const members = new Set(workspace.workspace_members);
-  for (const item of packages) item.workspace_member = members.has(item.id);
-  const known = new Set(packages.map(item => item.name));
-  for (const item of packages) {
+  const packages = workspacePackages(root);
+  const selected = new Set(packages.filter(item => item.workspace_member));
+  const byDirectory = new Map(packages.map(item => [dirname(item.manifest_path), item]));
+  for (const item of selected) {
     for (const dependency of item.dependencies) {
-      if (!dependency.path || !dependency.name.startsWith("acyclic-") || known.has(dependency.name)) continue;
-      const local = run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1",
-        "--manifest-path", join(dependency.path, "Cargo.toml")]);
-      if (local.status !== 0) fail(local.stderr || "local Cargo metadata failed");
-      for (const candidate of JSON.parse(local.stdout).packages) {
-        if (!known.has(candidate.name)) { known.add(candidate.name); packages.push(candidate); }
-      }
+      if (!dependency.path) continue;
+      const local = byDirectory.get(dependency.path);
+      if (!local) fail(`missing local publication dependency ${dependency.path}`);
+      selected.add(local);
     }
   }
-  return packages;
+  return [...selected];
 }
 
 
 // The publication order is a topological order of the publishable local crates:
 // every crate follows the local crates it depends on. Deriving it from Cargo
-// metadata means a new publishable crate cannot be left out of the inventory.
+// declarations means a new publishable crate cannot be left out of the inventory.
 export function publicationOrder(packages) {
   const publishable = packages.filter(item => item.source === null && (item.publish === null || item.publish.includes("crates-io")));
   const byName = new Map(publishable.map(item => [item.name, item]));

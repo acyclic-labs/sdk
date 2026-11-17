@@ -8,6 +8,7 @@
 // whenever the selection changed).
 // Every workspace member builds with Bazel, and every target `cargo test --all-features` builds
 // is rendered: a target with `test = false` is the only one left out of testing.
+import { assertRegistryPinsCurrent, registryInputs, workspaceGraph } from "./workspace-model.mjs";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -27,6 +28,7 @@ const mode = args[0];
 if (args.length !== 1 || (mode !== "write" && mode !== "check")) {
   throw new Error("STEP_FAILED bazel-build-files: expected [--root DIR] [--test-runner LABEL] write|check; recovery: node scripts/bazel-build-files.mjs write");
 }
+assertRegistryPinsCurrent(root);
 
 // Bazel builds each crate for these targets. A dependency or feature that differs between
 // them becomes a select() on the rules_rust platform setting.
@@ -77,7 +79,7 @@ const configEnv = Object.fromEntries(Object.entries(toml(root, ".cargo/config.to
 
 // Every target builds with every feature on, as `cargo test --all-features` does. crate_universe
 // resolves third-party features its own way, so universeSpecs() pins each crate's all-features set.
-const runs = TRIPLES.map(triple => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, "--all-features"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 })));
+const runs = TRIPLES.map(triple => workspaceGraph(root, triple));
 const [base] = runs;
 // The workspace metadata the tests read instead of running Cargo. It holds the workspace members
 // only, with manifest paths relative to the workspace root, so the file is relocatable and small.
@@ -88,7 +90,7 @@ const workspaceMetadata = (() => {
   // them stable across worktrees.
   const stableId = id => id.replaceAll(base.workspace_root, ".");
   return JSON.stringify({
-    packages: base.packages.filter(p => members.has(p.id)).map(p => ({
+    packages: base.packages.filter(p => members.has(p.id)).map(({workspace_member, ...p}) => ({
       ...p,
       id: stableId(p.id),
       manifest_path: relative(p.manifest_path),
@@ -501,26 +503,30 @@ function perTriple(values, render) {
 
 // Every registry crate's --all-features feature set, pinned by a crate.spec: crate_universe resolves
 // third-party features its own way. Path and patch sources keep their lockfile resolution.
-const pinned = new Map();
-for (const run of runs) {
-  for (const node of run.resolve.nodes) {
-    if (members.has(node.id) || node.features.length === 0 || !packages.get(node.id).source?.startsWith("registry+")) continue;
-    if (!pinned.has(node.id)) pinned.set(node.id, new Set());
-    for (const feature of node.features) pinned.get(node.id).add(feature);
-  }
-}
+const currentRegistry = registryInputs(root).inputs;
+const pinned = new Map(currentRegistry.map(p => [`${p.source}#${p.name}@${p.version}`, p.features]));
 // The crate universe: every registry crate any target platform resolves. Vendored path crates
 // are first-party targets, never universe crates.
-const universe = [...packages.values()].filter(p => p.source?.startsWith("registry+") && !members.has(p.id))
+const universe = currentRegistry.map(p => ({...p, id: `${p.source}#${p.name}@${p.version}`}))
   .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : a.version < b.version ? -1 : 1);
 // Two versions of one package need distinct splicing dependency keys. A key is a Cargo
 // package name, so the version is spelled with XID characters only.
 const spliceKey = new Map(Object.values(Object.groupBy(universe, p => p.name))
   .filter(versions => versions.length > 1).flat()
   .map(p => [p.id, `${p.name}-${p.version.replace(/[^A-Za-z0-9_-]/g, "_")}`]));
+const universeIds = new Set(universe.map(p => p.id));
+const spokeRepo = p => `${HUB}__${p.name}-${p.version}`;
+// A local patched crate may depend on a registry crate that is only reached
+// transitively. The hub exposes direct specs; crate_universe also exposes the
+// resolved transitive crate as a spoke, without adding an inactive root spec.
+const transitiveSpokes = new Set(runs.flatMap(run => run.resolve.nodes)
+  .filter(node => members.has(node.id)).flatMap(node => node.deps)
+  .map(dep => packages.get(dep.pkg)).filter(p => p?.source?.startsWith("registry+") && !universeIds.has(p.id))
+  .map(spokeRepo));
 // The hub names a crate by a splicing dependency key, with dashes as underscores, and its version.
 const hubLabel = id => {
-  const { name, version } = packages.get(id);
+  const p = packages.get(id), { name, version } = p;
+  if (!universeIds.has(id)) return `@${spokeRepo(p)}//:${crateName(libOf(p))}`;
   return `@${HUB}//${spliceKey.has(id) ? spliceKey.get(id).replaceAll("-", "_") : name}-${version}`;
 };
 
@@ -771,7 +777,7 @@ function universeSpecs() {
     ["package", q(p.name)],
     ["version", q(`=${p.version}`)],
     ["package_alias", spliceKey.has(p.id) ? q(spliceKey.get(p.id)) : undefined],
-    ["default_features", "False"],
+    ["default_features", p.defaultFeatures ? "True" : "False"],
     ["features", list([...(pinned.get(p.id) ?? [])].sort())],
   ])}
 `);
@@ -941,7 +947,7 @@ function moduleFile() {
       ["version", q(`=${version}`)],
       ["additive_build_file_content", q(`exports_files(${JSON.stringify([...files].sort())})\n`)],
     ])}\n`),
-    `use_repo(${["crate", HUB, ...[...staged.keys()].sort()].map((r, i) => (i ? q(r) : r)).join(", ")})\n`,
+    `use_repo(${["crate", HUB, ...[...new Set([...staged.keys(), ...transitiveSpokes])].sort()].map((r, i) => (i ? q(r) : r)).join(", ")})\n`,
   ].join("");
 }
 

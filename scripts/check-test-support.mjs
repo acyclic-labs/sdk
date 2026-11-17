@@ -1,4 +1,4 @@
-import {spawn} from 'node:child_process';
+import {workspaceGraph} from './workspace-model.mjs';
 import {readFileSync} from 'node:fs';
 import { trackedFiles } from './policy-core.mjs';
 
@@ -242,19 +242,13 @@ export function checkTestSupportExports(sources) {
 
 if (import.meta.main) {
   // Resolve every optional and target-specific edge, including registry crates.
-  const child = spawn('cargo', ['metadata', '--locked', '--all-features', '--format-version', '1'],
-    {stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true});
-  let output = '';
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', chunk => { output += chunk; });
-  const status = await new Promise((accept, reject) => child.on('error', reject).on('close', accept));
-  if (status !== 0) throw new Error(`cargo metadata failed (${status})`);
-  console.log(`test-support forwarding: ${checkTestSupport(JSON.parse(output))} dependency declarations checked`);
+  const metadata = workspaceGraph(process.cwd(), null);
+  console.log(`test-support forwarding: ${checkTestSupport(metadata)} dependency declarations checked`);
   const files = trackedFiles(process.cwd(), ['*.rs']);
   const sources = files.map(file => [file, readFileSync(file, 'utf8')]);
   const commands = trackedFiles(process.cwd(), [':!scripts/tests/fixtures'])
     .filter(file => COMMAND_FILE.test(file)).map(file => [file, readFileSync(file, 'utf8')]);
-  console.log(`loom opt-in: ${checkLoomOptIn(JSON.parse(output), sources)} model packages checked, ` +
+  console.log(`loom opt-in: ${checkLoomOptIn(metadata, sources)} model packages checked, ` +
     `${checkNoLoomCfgFlag(commands)} command files without a hand-passed loom cfg`);
   console.log(`test-support deserialized members: ${checkDeserializedTestSupport(sources)} Rust sources checked`);
   console.log(`test-support exports: ${checkTestSupportExports(sources)} local re-exports checked`);

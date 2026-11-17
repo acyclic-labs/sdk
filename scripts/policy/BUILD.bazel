@@ -1,6 +1,46 @@
 load(":node_test.bzl", "node_test")
 
 node_test(
+    name = "bazel_build_files_test",
+    srcs = [
+        "//:rust-toolchain.toml",
+        "//:scripts/bazel-build-files.mjs",
+        "//:scripts/bazel-build-files.test.mjs",
+        "//:scripts/bazel-executables.mjs",
+        "//:scripts/check-bazel-lockfile.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-model.mjs",
+    ],
+    entry = "scripts/bazel-build-files.test.mjs",
+)
+
+node_test(
+    name = "workspace_model_test",
+    srcs = [
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-model.mjs",
+        "//:scripts/workspace-model.test.mjs",
+    ],
+    entry = "scripts/workspace-model.test.mjs",
+)
+
+node_test(
+    name = "cargo_lock_test",
+    srcs = [
+        "//:scripts/check-cargo-lock.mjs",
+        "//:scripts/check-cargo-lock.test.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-model.mjs",
+    ],
+    entry = "scripts/check-cargo-lock.test.mjs",
+)
+
+test_suite(
+    name = "workspace_metadata_test",
+    tests = [":cargo_lock_test", ":workspace_model_test"],
+)
+
+node_test(
     name = "test_features_test",
     srcs = [
         "//:scripts/policy-core.mjs",
