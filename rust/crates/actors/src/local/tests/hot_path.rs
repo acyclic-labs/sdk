@@ -716,7 +716,7 @@ async fn accepted_call_recovery_survives_physical_loss() -> TestResult {
             })
             .await?;
         while let Some(record) = records.try_next().await? {
-            crate::call::codec_fuzz::check_record(&record, &journal);
+            crate::call::codec_fuzz::check_record(&record, &journal)?;
             journal.apply(&record)?;
         }
         assert_eq!(journal.next(), u64::from(tail));
