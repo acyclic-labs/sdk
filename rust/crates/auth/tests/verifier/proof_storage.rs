@@ -91,15 +91,15 @@ fn scrub_child() {
         return;
     };
     if case.starts_with("body-") {
-        body_storage(&case);
+        body_storage(&case).unwrap();
         return;
     }
     if case.starts_with("json-") {
-        json_storage(&case);
+        json_storage(&case).unwrap();
         return;
     }
     if case.starts_with("bearer-") {
-        bearer_storage(&case);
+        bearer_storage(&case).unwrap();
         return;
     }
     let mut bytes = Zeroizing::new(root(|_| {}));
@@ -121,7 +121,7 @@ fn scrub_child() {
         }
         _ => {}
     }
-    std::fs::write(std::env::var_os("AUTH_SCRUB_ACTIVE").unwrap(), b"active").unwrap();
+    arm_scrub().unwrap();
     match case.as_str() {
         "broken" => {
             drop(CapabilityProto::decode(bytes.as_slice()).unwrap());
@@ -137,7 +137,13 @@ fn scrub_child() {
     }
 }
 
-fn bearer_storage(case: &str) {
+fn arm_scrub() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::var_os("AUTH_SCRUB_ACTIVE").ok_or("missing scrub observer path")?;
+    std::fs::write(path, b"active")?;
+    Ok(())
+}
+
+fn bearer_storage(case: &str) -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_auth::credential::{CredentialError, bearer_header};
     use std::error::Error as _;
 
@@ -145,11 +151,11 @@ fn bearer_storage(case: &str) {
     if case.ends_with("-invalid") {
         token.push('\u{7f}');
     }
-    std::fs::write(std::env::var_os("AUTH_SCRUB_ACTIVE").unwrap(), b"active").unwrap();
+    arm_scrub()?;
     match case {
         "bearer-unprotected" => drop(format!("Bearer {}", token.as_str())),
         "bearer-header" => {
-            let header = bearer_header(&token).unwrap();
+            let header = bearer_header(&token)?;
             let retained = header.clone();
             assert!(header.is_sensitive());
             assert_eq!(header.as_bytes().as_ptr(), retained.as_bytes().as_ptr());
@@ -158,13 +164,15 @@ fn bearer_storage(case: &str) {
             drop(retained);
         }
         "bearer-header-invalid" => {
-            let error = bearer_header(&token).unwrap_err();
+            let error = bearer_header(&token)
+                .err()
+                .ok_or("invalid header was admitted")?;
             assert!(matches!(error, CredentialError::Header(_)));
             assert!(error.source().is_some());
         }
         #[cfg(feature = "grpc-metadata")]
         "bearer-metadata" => {
-            let metadata = acyclic_auth::credential::bearer_metadata(&token).unwrap();
+            let metadata = acyclic_auth::credential::bearer_metadata(&token)?;
             let retained = metadata.clone();
             assert!(metadata.is_sensitive());
             assert_eq!(
@@ -177,15 +185,18 @@ fn bearer_storage(case: &str) {
         }
         #[cfg(feature = "grpc-metadata")]
         "bearer-metadata-invalid" => {
-            let error = acyclic_auth::credential::bearer_metadata(&token).unwrap_err();
+            let error = acyclic_auth::credential::bearer_metadata(&token)
+                .err()
+                .ok_or("invalid metadata was admitted")?;
             assert!(matches!(error, CredentialError::Metadata(_)));
             assert!(error.source().is_some());
         }
-        _ => panic!("unknown bearer storage case"),
+        _ => return Err("unknown bearer storage case".into()),
     }
+    Ok(())
 }
 
-fn json_storage(case: &str) {
+fn json_storage(case: &str) -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_auth::{
         credential::CredentialProvider,
         operation::ProtectedBytes,
@@ -214,7 +225,7 @@ fn json_storage(case: &str) {
                             version: 1,
                             kind: SecretKind::Protected,
                         })
-                        .unwrap(),
+                        .map_err(|_| acyclic_auth::secrets::Error::InvalidResponse)?,
                     ),
                 })
             })
@@ -227,8 +238,8 @@ fn json_storage(case: &str) {
         value: "Z".repeat(4096),
         expected_generation: 0,
     };
-    let expected = Zeroizing::new(serde_json::to_vec(&request).unwrap());
-    std::fs::write(std::env::var_os("AUTH_SCRUB_ACTIVE").unwrap(), b"active").unwrap();
+    let expected = Zeroizing::new(serde_json::to_vec(&request)?);
+    arm_scrub()?;
     match case {
         "json-client" => {
             let (context, _stop) = crate::operation_context::invocation();
@@ -261,37 +272,38 @@ fn json_storage(case: &str) {
         "json-unprotected" => {
             // The former encoder must fail the same relocation/free oracle,
             // even though its completed output would be protected afterwards.
-            drop(Zeroizing::new(serde_json::to_vec(&request).unwrap()));
+            drop(Zeroizing::new(serde_json::to_vec(&request)?));
         }
-        _ => unreachable!(),
+        _ => return Err("unknown JSON storage case".into()),
     }
     // The caller retains its original input; it is outside the encoded body.
     request.scope.zeroize();
     request.value.zeroize();
+    Ok(())
 }
 
-fn body_storage(case: &str) {
+fn body_storage(case: &str) -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_auth::operation::reserve_protected_bytes;
 
     let mut bytes = Zeroizing::new(Vec::new());
-    reserve_protected_bytes(&mut bytes, 64).unwrap();
+    reserve_protected_bytes(&mut bytes, 64)?;
     bytes.extend_from_slice(&[4; 64]);
     let original = bytes.as_ptr();
     let capacity = bytes.capacity();
-    std::fs::write(std::env::var_os("AUTH_SCRUB_ACTIVE").unwrap(), b"active").unwrap();
+    arm_scrub()?;
     match case {
         "body-grow" => {
-            let cost = acyclic_test_support::measure(|| {
-                reserve_protected_bytes(&mut bytes, capacity * 2).unwrap();
-            });
+            let cost =
+                acyclic_test_support::measure(|| reserve_protected_bytes(&mut bytes, capacity * 2));
+            cost.output?;
             assert_eq!(cost.count_total, 1);
             assert_eq!(cost.bytes_total, bytes.capacity() as u64);
             assert_ne!(original, bytes.as_ptr());
             assert_eq!(bytes.as_slice(), &[4; 64]);
             let current = bytes.as_ptr();
-            let cost = acyclic_test_support::measure(|| {
-                reserve_protected_bytes(&mut bytes, capacity).unwrap();
-            });
+            let cost =
+                acyclic_test_support::measure(|| reserve_protected_bytes(&mut bytes, capacity));
+            cost.output?;
             assert_eq!(cost.count_total, 0);
             assert_eq!(current, bytes.as_ptr());
         }
@@ -309,6 +321,7 @@ fn body_storage(case: &str) {
             drop(unprotected);
             drop(Zeroizing::new(replacement));
         }
-        _ => unreachable!(),
+        _ => return Err("unknown body storage case".into()),
     }
+    Ok(())
 }
