@@ -268,12 +268,7 @@ impl<'io> StockExecution<'io> {
                     return Err(failure.into_error());
                 }
                 Ok(ExecutionProgress::Ended(ended)) => return Err(ended.0),
-                Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
-                    return self
-                        .interrupted(journal, identity, &invocation.call_id, error)
-                        .await;
-                }
-                Err(error) => return Err(error),
+                Err(error) => Some(Err(error)),
             }
         } else {
             None
