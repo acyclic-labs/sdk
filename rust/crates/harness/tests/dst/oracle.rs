@@ -5,14 +5,12 @@
 use super::*;
 use acyclic_harness::{
     conversation::{DirectoryTarget, PrivateDirectoryEntryKind},
-    executor::ExecutionRecord,
+    executor::{ExecutionEvent, ExecutionPayloadField, ExecutionRecord},
     local::{WorkspaceMounting, agent_conversation::Conversation},
     model::{ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall, ToolResultContent},
     test_support::{ScriptedEvent, model_visible_messages},
 };
-use acyclic_harness_client::{
-    AgentCommand, AgentPageRequest, AgentReply, ExecutionPosition, ReadTarget,
-};
+use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
 use acyclic_native_runtime::testing::{DurableFault, InjectedStorageFault};
 use driver::{Driver, Outcome};
 use std::sync::Mutex;
@@ -215,6 +213,8 @@ pub(super) struct Incarnation {
     pub crashed: Option<InjectedStorageFault>,
     /// The root agent's committed execution records, in journal order.
     pub records: Vec<ExecutionRecord>,
+    /// The prepared context the first prompt record points at.
+    pub prompt_projection: Option<Vec<u8>>,
 }
 
 /// A seeded world on disk. Incarnations share only its files and the model
@@ -276,11 +276,13 @@ impl World {
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
             let records = Arc::new(Mutex::new(Vec::new()));
+            let prompt_projection = Arc::new(Mutex::new(None));
             let directory = self.directory.path();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
                 let records = Arc::clone(&records);
+                let prompt_projection = Arc::clone(&prompt_projection);
                 entry(async move {
                     let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
                     let config = local_harness_config(
@@ -319,30 +321,43 @@ impl World {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
                     }
+                    let (agents, _) = entry(harness.agents()).await?;
+                    entry(agents.runtime().complete()).await.map_err(storage)?;
                     let conversation = Conversation::open(Box::pin(harness.connect()).await?);
-                    let settled = conversation.settled().await?;
-                    for input in 0..=settled {
-                        let mut position = ExecutionPosition {
-                            input,
-                            after: 0,
-                        };
-                        loop {
-                            let query = conversation
-                                .execution_page(position.input, position.after, false)
-                                .await?;
-                            let next = query.continuation().map_err(storage)?;
-                            let Some(page) = query.page else {
-                                break;
-                            };
-                            records
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .extend(page.items);
-                            if next == position || next.input != input {
-                                break;
+                    for (input, record) in conversation.execution_records().await? {
+                        if prompt_projection
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .is_none()
+                            && matches!(&record.event, ExecutionEvent::Prompt { step: 0, .. })
+                        {
+                            let mut bytes = Vec::new();
+                            let mut offset = 0;
+                            loop {
+                                let (chunk, length) = conversation
+                                    .execution_payload(
+                                        input,
+                                        record.sequence,
+                                        ExecutionPayloadField::Projection,
+                                        offset,
+                                    )
+                                    .await?;
+                                bytes.extend_from_slice(&chunk);
+                                offset = offset.checked_add(chunk.len() as u64).ok_or_else(|| {
+                                    Error::Invalid("prompt projection offset overflows".into())
+                                })?;
+                                if offset >= length {
+                                    break;
+                                }
                             }
-                            position = next;
+                            *prompt_projection
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bytes);
                         }
+                        records
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(record);
                     }
                     Ok::<_, Error>(())
                 })
@@ -369,6 +384,11 @@ impl World {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
+            let prompt_projection = std::mem::take(
+                &mut *prompt_projection
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
             Ok(Incarnation {
                 prompts,
                 requests: provider.requests(),
@@ -376,6 +396,7 @@ impl World {
                 durable: counter.durable_write_count(),
                 crashed,
                 records,
+                prompt_projection,
             })
         })
     }

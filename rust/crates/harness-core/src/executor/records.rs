@@ -84,7 +84,7 @@ impl StockExecution<'_> {
             self.stock
                 .limits
                 .model_events_per_step
-                .map(|maximum| maximum.get().saturating_add(3)),
+                .map(|maximum| maximum.get().saturating_add(4)),
             |event| {
                 matches!(event,
                 ExecutionEvent::ModelStarted { step: event_step, purpose: event_purpose, .. }

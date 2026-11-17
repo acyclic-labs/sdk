@@ -1036,6 +1036,7 @@ mod tests {
             // A late counter overflow must not install earlier field additions.
             let mut maximum = ModelUsageTotals::new("USD".into()).unwrap();
             maximum.calls = 1;
+            maximum.attempts = 1;
             maximum.completed = 1;
             maximum.token_nano_units.known = u64::MAX;
             let mut one = maximum.clone();
@@ -1046,6 +1047,7 @@ mod tests {
             for calls in [1, 100, 100_000] {
                 let mut target = ModelUsageTotals::unpriced();
                 target.calls = calls;
+                target.attempts = calls;
                 target.completed = calls;
                 target.token_nano_units.unknown = calls;
                 let allocations = acyclic_test_support::measure(|| target.merge(&parts[0]).unwrap());

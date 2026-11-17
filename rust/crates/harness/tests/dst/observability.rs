@@ -64,6 +64,21 @@ pub(super) fn world(seed: u64) -> std::result::Result<bool, String> {
                     _ => {}
                 }
             }
+            let prompt_text = oracle::tag("observe");
+            let projection = incarnation
+                .prompt_projection
+                .as_deref()
+                .ok_or_else(|| "the prompt record has no prepared projection".to_string())?;
+            let rendered = String::from_utf8_lossy(projection);
+            if !oracle::appears(&prompt_text)
+                .iter()
+                .any(|needle| rendered.contains(needle))
+            {
+                return Err(
+                    "the prompt record points at a projection without the effective prompt"
+                        .to_string(),
+                );
+            }
             if prompt && start && complete && usage {
                 Ok(true)
             } else {
