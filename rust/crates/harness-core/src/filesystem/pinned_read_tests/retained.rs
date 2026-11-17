@@ -610,7 +610,7 @@ fn a_retained_read_is_charged_once_for_exactly_its_bytes() -> Result<()> {
             acyclic_fs::performance::work_budget(1_000_000, 64 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )?;
-        let before = io.owned_bytes()?;
+        let before = io.remaining()?.peak_allocation_bytes;
         let bytes = with_reopen(reopen, || {
             runtime.block_on(async {
                 host.read_retained_file(&generation, &file, 4096, Some(&io))?
@@ -622,9 +622,9 @@ fn a_retained_read_is_charged_once_for_exactly_its_bytes() -> Result<()> {
             .retained_capacity()
             .ok_or_else(|| Error::Invalid("read bytes expose no capacity".into()))?
             as u64;
-        let held = io.owned_since(before)?;
+        let held = before - io.remaining()?.peak_allocation_bytes;
         drop(bytes);
-        let leftover = io.owned_since(before)?;
+        let leftover = before - io.remaining()?.peak_allocation_bytes;
         Ok((capacity, held - leftover, leftover))
     };
     let once = |small: (u64, u64, u64), large: (u64, u64, u64)| {
