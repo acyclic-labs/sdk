@@ -3206,9 +3206,10 @@ async fn a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
-    let store = Store::new(Counting::new(
-        crate::LocalMedium::open(root.path(), Default::default(), None).await?,
-    ));
+    let open = crate::LocalMedium::open(root.path(), Default::default(), None);
+    let (opened, opening) = syncs(open).await;
+    assert_eq!(opening.get("file:sync_parent"), Some(&1), "{opening:?}");
+    let store = Store::new(Counting::new(opened?));
     let blobs = store.account(b"account")?;
     blobs.flush(None).await?;
     let digest = |put: Put| {
