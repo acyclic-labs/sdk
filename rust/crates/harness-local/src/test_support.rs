@@ -7,14 +7,10 @@ pub use crate::local::host_process::children::answer::validation as native_answe
 
 pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
-
 /// Replaces the next checkout capture's root identity with a fixture. The
 /// world owns this thread-local input and sets it before opening its harness.
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-pub fn inject_checkout_identity(
-    object: [u8; 16],
-    generation: acyclic_fs::NativeRootGeneration,
-) {
+pub fn inject_checkout_identity(object: [u8; 16], generation: acyclic_fs::NativeRootGeneration) {
     crate::local::owner::INJECTED.with(|injected| injected.set(Some((object, generation))));
 }
 
