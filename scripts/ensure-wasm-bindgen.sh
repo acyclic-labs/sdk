@@ -6,11 +6,13 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bun_platform="$(bun -e 'process.stdout.write(process.platform)')"
 rustup_bin=rustup
 rustc_bin=rustc
-bazel_bin=bazel
+bazel_bin="${ACYCLIC_BAZEL:-bazel}"
 if [[ "$bun_platform" == win32 ]]; then
   command -v rustup.exe >/dev/null 2>&1 && rustup_bin=rustup.exe
   command -v rustc.exe >/dev/null 2>&1 && rustc_bin=rustc.exe
-  command -v bazel.exe >/dev/null 2>&1 && bazel_bin=bazel.exe
+  if [[ -z "${ACYCLIC_BAZEL:-}" ]] && command -v bazel.exe >/dev/null 2>&1; then
+    bazel_bin=bazel.exe
+  fi
 fi
 "$BASH" "$root/scripts/ensure-rust-target.sh" wasm32-unknown-unknown "$rustup_bin" "$rustc_bin" >&2
 

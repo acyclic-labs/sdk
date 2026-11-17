@@ -663,6 +663,25 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
 
     for (key, prefix, frame, before, after, outcome) in &captures {
         for cut in 0..=frame.len() {
+            // Exhaust the actual recovery parser at every byte. Physical
+            // recovery then covers each distinct framing/repair boundary.
+            assert_eq!(
+                read_frame(std::io::Cursor::new(&frame[..cut]), u64::try_from(cut)?)?.is_some(),
+                cut == frame.len(),
+                "frame {key:?}, cut {cut} admitted a partial command"
+            );
+            if ![
+                0,
+                1,
+                4,
+                frame.len() - FRAME_CHECKSUM_BYTES,
+                frame.len() - 1,
+                frame.len(),
+            ]
+            .contains(&cut)
+            {
+                continue;
+            }
             let mut bytes = prefix.clone();
             bytes.extend_from_slice(&frame[..cut]);
             std::fs::write(&path, &bytes)?;
@@ -976,6 +995,34 @@ async fn a_journal_torn_before_its_header_completed_is_created_again()
     let limits = LocalStreamLimits::default();
     let header = encode_header(limits, 0)?;
     for cut in 0..header.len() {
+        let mut partial = header[..cut].to_vec();
+        assert_eq!(
+            read_header(
+                std::io::Cursor::new(&partial),
+                u64::try_from(cut)?,
+                limits,
+                0
+            )?,
+            None
+        );
+        for index in 0..cut {
+            partial[index] ^= 1;
+            assert!(matches!(
+                read_header(
+                    std::io::Cursor::new(&partial),
+                    u64::try_from(cut)?,
+                    limits,
+                    0
+                ),
+                Err(LocalStreamError::Corrupt)
+            ));
+            partial[index] ^= 1;
+        }
+        // Empty, first-byte and final-byte tears traverse the same physical
+        // restart path; every canonical and corrupt byte cut was checked above.
+        if ![0, 1, header.len() - 1].contains(&cut) {
+            continue;
+        }
         std::fs::write(
             &path,
             header.get(..cut).ok_or(StreamError::InvalidArgument)?,
