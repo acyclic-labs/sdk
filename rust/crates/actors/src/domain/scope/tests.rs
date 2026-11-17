@@ -90,13 +90,8 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
                 admitted = Some(ActorNamespace::new(name));
             });
             assert_eq!(allocations.count_total, 0);
-            assert_eq!(
-                admitted
-                    .ok_or("namespace admission did not complete")??
-                    .as_str()
-                    .as_ptr(),
-                original
-            );
+            let namespace = admitted.unwrap()?;
+            assert_eq!(namespace.as_str().as_ptr(), original);
         }
     }
     Ok(())
