@@ -261,10 +261,7 @@ rust_library(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    target_compatible_with = [
-        "@platforms//os:none",
-        "@platforms//cpu:wasm32",
-    ],
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "//rust/crates/markdown-work:acyclic_markdown_work_wasm",
         "//rust/vendor/syntect-5.3.0:syntect_wasm",

@@ -84,10 +84,7 @@ rust_library(
         "--check-cfg=cfg(feature, values(\"default\", \"default-fancy\", \"default-onig\", \"default-syntaxes\", \"default-themes\", \"dump-create\", \"dump-load\", \"fancy-regex\", \"flate2\", \"fnv\", \"html\", \"metadata\", \"onig\", \"parsing\", \"plist\", \"plist-load\", \"regex-fancy\", \"regex-onig\", \"regex-syntax\", \"test-support\", \"yaml-load\", \"yaml-rust\"))",
     ],
     lint_config = ":lints",
-    target_compatible_with = [
-        "@platforms//os:none",
-        "@platforms//cpu:wasm32",
-    ],
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "@wasm_crates//fancy-regex-0.20.2",
         "@wasm_crates//flate2-1.1.10",

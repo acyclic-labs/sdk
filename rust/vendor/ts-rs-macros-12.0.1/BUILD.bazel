@@ -9,8 +9,6 @@ FEATURES = [
         "termcolor",
     ]
 
-WASM_FEATURES = []
-
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"ts-rs-macros","CARGO_PKG_DESCRIPTION":"derive macro for ts-rs","CARGO_PKG_REPOSITORY":"https://github.com/Aleph-Alpha/ts-rs","CARGO_PKG_LICENSE":"MIT"}
 
 extract_cargo_lints(
@@ -74,33 +72,6 @@ isolated_test(
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
     tags = ["manual"],
-)
-
-rust_proc_macro(
-    name = "ts_rs_macros_wasm",
-    crate_name = "ts_rs_macros",
-    crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
-    edition = "2021",
-    version = "12.0.1",
-    crate_features = WASM_FEATURES,
-    rustc_env = PACKAGE_ENV,
-    rustc_flags = [
-        "--check-cfg=cfg(docsrs,test)",
-        "--check-cfg=cfg(feature, values(\"no-serde-warnings\", \"serde-compat\", \"termcolor\"))",
-    ],
-    lint_config = ":lints",
-    target_compatible_with = [
-        "@platforms//os:none",
-        "@platforms//cpu:wasm32",
-    ],
-    deps = [
-        "@wasm_crates//proc-macro2-1.0.107",
-        "@wasm_crates//quote-1.0.47",
-        "@wasm_crates//syn_2_0_119-2.0.119",
-    ],
-    visibility = ["//visibility:public"],
 )
 
 filegroup(

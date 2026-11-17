@@ -45,10 +45,7 @@ rust_library(
         "--check-cfg=cfg(feature, values())",
     ],
     lint_config = ":lints",
-    target_compatible_with = [
-        "@platforms//os:none",
-        "@platforms//cpu:wasm32",
-    ],
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "@wasm_crates//base64_0_23_1-0.23.1",
         "@wasm_crates//bytes-1.12.1",

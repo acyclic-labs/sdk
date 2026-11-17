@@ -801,10 +801,7 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    target_compatible_with = [
-        "@platforms//os:none",
-        "@platforms//cpu:wasm32",
-    ],
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     build_script_env = PACKAGE_ENV | {"TARGET":"wasm32-unknown-unknown"},
     deps = [
         "//compatibility:acyclic_proto_build",
@@ -830,10 +827,7 @@ rust_library(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    target_compatible_with = [
-        "@platforms//os:none",
-        "@platforms//cpu:wasm32",
-    ],
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         ":build_script_wasm",
     ] + [

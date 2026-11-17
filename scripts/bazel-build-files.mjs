@@ -672,7 +672,7 @@ function buildFile(p, graph) {
     ["rustc_env", "PACKAGE_ENV"],
     ["rustc_flags", opt === undefined && !checkCfg.length ? undefined : list([...(opt === undefined ? [] : [`-Copt-level=${opt}`]), ...checkCfg])],
     ["lint_config", q(":lints")],
-    ["target_compatible_with", graph ? list(["@platforms//os:none", "@platforms//cpu:wasm32"]) : undefined],
+    ["target_compatible_with", graph ? q(["@platforms//os:none", "@platforms//cpu:wasm32"]) : undefined],
   ];
   // Rendered dependencies of one target.
   const deps = (kinds, extra = [], extraMacros = []) => {
@@ -1070,7 +1070,7 @@ function moduleFile() {
         .flatMap(node => node.deps.map(dep => dep.pkg).filter(id => members.has(id) && libOf(packages.get(id)))))].sort().map(id => {
         const pkg = packages.get(id), lib = libOf(pkg);
         return rule("crate.annotation", [["crate", q(pkg.name)], ["repositories", list(["wasm_crates"])],
-          [lib.kind.includes("proc-macro") ? "override_target_proc_macro" : "override_target_lib", q(`${label(pkg)}:${crateName(lib)}_wasm`)]]);
+          [lib.kind.includes("proc-macro") ? "override_target_proc_macro" : "override_target_lib", q(`${label(pkg)}:${crateName(lib)}${lib.kind.includes("proc-macro") ? "" : "_wasm"}`)]]);
       }),
       rule("crate.from_specs", [["name", q("wasm_crates")], ["lockfile", q("//:cargo-wasm-bazel-lock.json")],
         ["cargo_lockfile", q("//:cargo-wasm-bazel.Cargo.lock")], ["supported_platform_triples", list([LINUX_GNU_TRIPLE, WASM_TRIPLE])]]),
@@ -1103,7 +1103,8 @@ if (wasm) {
 const rendered = new Map([...members].map(id => [id, new Set()]));
 const bodies = new Map([...members].map(id => {
   const pkg = packages.get(id);
-  return [dir(pkg), renderBuild(buildFile(pkg), wasmNodes.has(id) ? buildFile(pkg, wasmGraph) : undefined)];
+  // Procedural macros execute on the host, including when their consumer targets Wasm.
+  return [dir(pkg), renderBuild(buildFile(pkg), wasmNodes.has(id) && !libOf(pkg)?.kind.includes("proc-macro") ? buildFile(pkg, wasmGraph) : undefined)];
 }));
 // Coverage equals the cargo legs: every target `cargo test --all-features --no-run` builds.
 for (const id of members) {

@@ -125,10 +125,7 @@ rust_shared_library(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    target_compatible_with = [
-        "@platforms//os:none",
-        "@platforms//cpu:wasm32",
-    ],
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "//rust/crates/objects:acyclic_objects_wasm",
         "//rust/crates/stream:acyclic_stream_wasm",
@@ -159,10 +156,7 @@ rust_library(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
-    target_compatible_with = [
-        "@platforms//os:none",
-        "@platforms//cpu:wasm32",
-    ],
+    target_compatible_with = ["@platforms//os:none","@platforms//cpu:wasm32"],
     deps = [
         "//rust/crates/objects:acyclic_objects_wasm",
         "//rust/crates/stream:acyclic_stream_wasm",
