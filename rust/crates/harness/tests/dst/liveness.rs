@@ -501,6 +501,52 @@ fn observed_child(
     Ok(())
 }
 
+fn wait_woke_on_input(
+    requests: &[acyclic_harness::model::ModelRequest],
+    child: &str,
+) -> std::result::Result<(), String> {
+    let last = requests
+        .iter()
+        .rfind(|request| request_tag(request) == Some(child))
+        .ok_or_else(|| format!("{child} made no request"))?;
+    let result = last
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            ModelContentPart::ToolResult { name, content, .. } if name == "wait" => {
+                Some(serde_json::to_string(content).unwrap_or_default())
+            }
+            _ => None,
+        })
+        .ok_or_else(|| format!("{child} made no wait call"))?;
+    if !result.contains("\"kind\":\"input\"") {
+        return Err(format!("{child}'s wait did not wake on input: {result}"));
+    }
+    Ok(())
+}
+
+fn merged(
+    requests: &[acyclic_harness::model::ModelRequest],
+    parent: &str,
+    expected: &str,
+) -> std::result::Result<(), String> {
+    let read = requests
+        .iter()
+        .filter(|request| request_tag(request) == Some(parent))
+        .filter_map(|request| settlements(request).ok())
+        .flatten()
+        .find(|settled| settled.call.call_id == "read-merged")
+        .ok_or_else(|| format!("{parent} never read the merged file"))?;
+    if !read.succeeded() || !read.rendered().contains(expected) {
+        return Err(format!(
+            "{parent} read the wrong merged contents: {}",
+            read.rendered()
+        ));
+    }
+    Ok(())
+}
+
 fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
     let (event, parent) = settlement(seed);
     let mode = parent;
@@ -528,12 +574,17 @@ fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
                     window: (1, usize::MAX),
                     mode: oracle::crash_mode("crash_after", seed).ok_or("crash mode")?,
                 };
-                let (crashed, recovered) = crash
+                let (crashed, mut recovered) = crash
                     .recover(vec![vec![("recover", tag("recover"))]])
                     .await?;
                 if !crashed.in_window {
                     return Ok(false);
                 }
+                // A child that settled before the crash stays quiet after
+                // reopening, so keep the pre-crash requests as evidence.
+                let mut requests = crashed.requests;
+                requests.append(&mut recovered.requests);
+                recovered.requests = requests;
                 recovered
             } else {
                 let incarnation = world
@@ -561,22 +612,14 @@ fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
             observed_child(&incarnation.requests, "root", "w")?;
             observed_child(&incarnation.requests, "w", "g")?;
             if event == "send_delivery" {
-                // The delivery itself must have reached each child before it
-                // answered, rather than the child settling from its brief.
-                let sent = incarnation
-                    .requests
-                    .iter()
-                    .filter(|request| {
-                        settlements(request).is_ok_and(|settled| {
-                            settled
-                                .iter()
-                                .any(|settled| settled.call.name == "send" && settled.succeeded())
-                        })
-                    })
-                    .count();
-                if sent == 0 {
-                    return Err(format!("{event}/{parent} delivered no message"));
-                }
+                // Each child must wake on the delivered input, not on its
+                // wait deadline.
+                wait_woke_on_input(&incarnation.requests, "d")?;
+                wait_woke_on_input(&incarnation.requests, "g")?;
+            }
+            if event == "merge_done" {
+                merged(&incarnation.requests, "root", "d wrote d.txt")?;
+                merged(&incarnation.requests, "w", "g wrote g.txt")?;
             }
             Ok(true)
         })
