@@ -544,7 +544,10 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-harness-hosting",
+ "acyclic-harness-local",
  "acyclic-harness-search",
+ "acyclic-harness-suite",
  "acyclic-harness-tui",
  "acyclic-host-platform",
  "acyclic-machines",
@@ -632,6 +635,7 @@ dependencies = [
  "blake3",
  "bytes",
  "futures",
+ "proptest",
  "prost",
  "pulldown-cmark",
  "serde",
@@ -804,6 +808,115 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-harness-hosting"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
+ "acyclic-machines",
+ "acyclic-native-runtime",
+ "acyclic-objects",
+ "acyclic-stream",
+ "async-stream",
+ "base64 0.23.1",
+ "blake3",
+ "bytes",
+ "futures",
+ "prost",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "acyclic-harness-local"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
+ "acyclic-harness-hosting",
+ "acyclic-harness-search",
+ "acyclic-host-platform",
+ "acyclic-machines",
+ "acyclic-machines-daytona",
+ "acyclic-native-runtime",
+ "acyclic-objects",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "arrayvec",
+ "async-stream",
+ "async-trait",
+ "base64 0.23.1",
+ "blake3",
+ "bytes",
+ "diffy",
+ "dirs",
+ "ed25519-dalek",
+ "futures",
+ "getrandom 0.4.3",
+ "hex",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "js-sys",
+ "jsonschema",
+ "keyring",
+ "loom",
+ "notify",
+ "once_cell",
+ "proc-macro2",
+ "proptest",
+ "prost",
+ "prost-reflect",
+ "pulldown-cmark",
+ "ratatui",
+ "rcgen",
+ "regex-lite",
+ "reqwest 0.12.28",
+ "rmcp",
+ "rustix",
+ "rustls",
+ "rustls-platform-verifier",
+ "same-file",
+ "schemars",
+ "serde",
+ "serde-saphyr",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "sha2 0.11.1",
+ "shuttle",
+ "sse-stream",
+ "syn 3.0.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "toml",
+ "tonic",
+ "tonic-prost",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "tsify",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "which",
+ "x509-parser",
+]
+
+[[package]]
 name = "acyclic-harness-metrics"
 version = "0.2.0"
 dependencies = [
@@ -919,6 +1032,30 @@ name = "acyclic-harness-settings-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "acyclic-harness-suite"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
+ "acyclic-harness-hosting",
+ "acyclic-native-runtime",
+ "acyclic-objects",
+ "acyclic-stream",
+ "acyclic-test-support",
+ "async-trait",
+ "base64 0.23.1",
+ "bytes",
+ "ed25519-dalek",
+ "futures",
+ "prost",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

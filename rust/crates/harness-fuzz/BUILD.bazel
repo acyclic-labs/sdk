@@ -1846,7 +1846,7 @@ rust_binary(
     crate_root = "fuzz_targets/native_session_log.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/harness:src/local/host_process/fixtures/claude-code-completed.jsonl",
+        "//rust/crates/harness-local:src/local/host_process/fixtures/claude-code-completed.jsonl",
     ],
     edition = "2024",
     version = "0.0.0",
@@ -2113,9 +2113,9 @@ rust_binary(
     crate_root = "fuzz_targets/oidc.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/harness:fixtures/conformance/identity/dex/jwks.body",
-        "//rust/crates/harness:fixtures/conformance/identity/dex/manifest.json",
-        "//rust/crates/harness:fixtures/conformance/identity/dex/token.body",
+        "//rust/crates/harness-suite:fixtures/conformance/identity/dex/jwks.body",
+        "//rust/crates/harness-suite:fixtures/conformance/identity/dex/manifest.json",
+        "//rust/crates/harness-suite:fixtures/conformance/identity/dex/token.body",
     ],
     edition = "2024",
     version = "0.0.0",

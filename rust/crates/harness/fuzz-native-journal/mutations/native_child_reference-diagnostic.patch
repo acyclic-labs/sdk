@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/host_workspace.rs
-+++ b/rust/crates/harness/src/local/host_workspace.rs
+--- a/rust/crates/harness-local/src/local/host_workspace.rs
++++ b/rust/crates/harness-local/src/local/host_workspace.rs
 @@ -30,3 +30,3 @@
 -        Err(Error::Invalid(
 -            "child reference is not one portable path component".into(),

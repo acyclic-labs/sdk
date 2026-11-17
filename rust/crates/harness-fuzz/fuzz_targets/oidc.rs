@@ -8,11 +8,13 @@ use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
 
-const CAPTURE: &str = "../../harness/fixtures/conformance/identity/dex/";
-const JWKS: &[u8] = include_bytes!("../../harness/fixtures/conformance/identity/dex/jwks.body");
-const RESPONSE: &str = include_str!("../../harness/fixtures/conformance/identity/dex/token.body");
+const CAPTURE: &str = "../../harness-suite/fixtures/conformance/identity/dex/";
+const JWKS: &[u8] =
+    include_bytes!("../../harness-suite/fixtures/conformance/identity/dex/jwks.body");
+const RESPONSE: &str =
+    include_str!("../../harness-suite/fixtures/conformance/identity/dex/token.body");
 const MANIFEST: &str =
-    include_str!("../../harness/fixtures/conformance/identity/dex/manifest.json");
+    include_str!("../../harness-suite/fixtures/conformance/identity/dex/manifest.json");
 
 struct Source<'a>(&'a [u8]);
 impl oidc::JwksSource for Source<'_> {

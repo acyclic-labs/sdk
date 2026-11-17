@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -45,6 +45,36 @@ export function localCargoPackages() {
   return packages;
 }
 
+
+// The publication order is a topological order of the publishable local crates:
+// every crate follows the local crates it depends on. Deriving it from Cargo
+// metadata means a new publishable crate cannot be left out of the inventory.
+export function publicationOrder(packages) {
+  const publishable = packages.filter(item => item.source === null && (item.publish === null || item.publish.includes("crates-io")));
+  const byName = new Map(publishable.map(item => [item.name, item]));
+  const remaining = new Map(publishable.map(item => [item.name, new Set(item.dependencies
+    .filter(dependency => dependency.kind !== "dev" && byName.has(dependency.name))
+    .map(dependency => dependency.name))]));
+  const order = [];
+  while (remaining.size) {
+    const ready = [...remaining]
+      .filter(([, dependencies]) => [...dependencies].every(name => !remaining.has(name)))
+      .map(([name]) => name)
+      .sort();
+    if (!ready.length) fail("Cargo publication order has a cycle");
+    for (const name of ready) {
+      order.push(name);
+      remaining.delete(name);
+    }
+  }
+  return order;
+}
+
+function generate() {
+  const order = publicationOrder(localCargoPackages());
+  writeFileSync(join(root, "release", "cargo-crates.json"), `${JSON.stringify(order, null, 2)}\n`);
+}
+
 export function metadata(releaseVersion) {
   const packages = localCargoPackages();
   const publishable = packages.filter(item => item.source === null && (item.publish === null || item.publish.includes("crates-io")));
@@ -54,6 +84,8 @@ export function metadata(releaseVersion) {
   }
   const unpublishable = publicationDependencyErrors(packages, byName);
   if (unpublishable.length) fail(unpublishable.join("\n"));
+  const missingReadmes = readmeErrors(publishable);
+  if (missingReadmes.length) fail(missingReadmes.join("\n"));
   const position = new Map(order.map((name, index) => [name, index]));
   for (const item of publishable) {
     if (releaseVersion && item.version !== releaseVersion) fail(`${item.name} is not version ${releaseVersion}`);
@@ -65,6 +97,16 @@ export function metadata(releaseVersion) {
     }
   }
   return byName;
+}
+
+// `cargo package` refuses a declared readme that is not in the crate, so the
+// publication inventory checks the file before the release reaches Cargo.
+export function readmeErrors(packages) {
+  return packages.flatMap(item => {
+    if (!item.readme) return [];
+    const path = resolve(dirname(item.manifest_path), item.readme);
+    return existsSync(path) ? [] : [`${item.name} declares missing readme ${item.readme}`];
+  });
 }
 
 // `cargo package` rejects every non-dev local dependency, optional or not, that
@@ -183,8 +225,9 @@ async function publish(sourceSha, releaseVersion) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [command, sourceSha, releaseVersion] = process.argv.slice(2);
-  if (command === "check" && sourceSha === undefined && releaseVersion === undefined) metadata();
+  if (command === "generate" && sourceSha === undefined && releaseVersion === undefined) generate();
+  else if (command === "check" && sourceSha === undefined && releaseVersion === undefined) metadata();
   else if (command === "check" && sourceSha && releaseVersion) metadata(releaseVersion);
   else if (command === "publish" && sourceSha && releaseVersion) await publish(sourceSha, releaseVersion);
-  else fail("usage: publish-cargo-crates.mjs check [SOURCE_SHA VERSION] | publish SOURCE_SHA VERSION");
+  else fail("usage: publish-cargo-crates.mjs generate | check [SOURCE_SHA VERSION] | publish SOURCE_SHA VERSION");
 }

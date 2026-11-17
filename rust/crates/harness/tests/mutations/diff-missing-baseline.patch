@@ -1,7 +1,7 @@
-diff --git a/rust/crates/harness/src/local/files.rs b/rust/crates/harness/src/local/files.rs
+diff --git a/rust/crates/harness-local/src/local/files.rs b/rust/crates/harness-local/src/local/files.rs
 index e74e4569e29..edd15cf1385 100644
---- a/rust/crates/harness/src/local/files.rs
-+++ b/rust/crates/harness/src/local/files.rs
+--- a/rust/crates/harness-local/src/local/files.rs
++++ b/rust/crates/harness-local/src/local/files.rs
 @@ -235,6 +235,12 @@ impl LocalHarness {
              .unwrap_or_else(|| workspace.view())
              .workspace();

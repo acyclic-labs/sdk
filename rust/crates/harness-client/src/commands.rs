@@ -254,7 +254,7 @@ impl CommandCatalog {
         }
         Ok(Some(match &spec.action {
             CommandAction::View {} => CommandResolution::View {
-                path: crate::client::ui::UiPath::new(arguments)
+                path: crate::ui::UiPath::new(arguments)
                     .map_err(|error| Error::Invalid(error.to_string()))?
                     .as_str()
                     .to_owned(),

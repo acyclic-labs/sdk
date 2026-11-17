@@ -622,7 +622,7 @@ fn unmeasured_constructor_is_confined_to_private_read_entry_points() -> Result<(
         Ok(())
     }
     let needle = [".into_", "unmeasured("].concat();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let root = acyclic_test_support::source_path("rust/crates/harness-core").join("src");
     let mut sources = Vec::new();
     visit(&root, &root, &mut sources)?;
     assert_eq!(unmeasured_sites_confined(&sources, &needle), Ok(()));

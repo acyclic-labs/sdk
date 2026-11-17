@@ -1,7 +1,7 @@
-diff --git b/rust/crates/harness/src/local/checkout_tools.rs a/rust/crates/harness/src/local/checkout_tools.rs
+diff --git b/rust/crates/harness-local/src/local/checkout_tools.rs a/rust/crates/harness-local/src/local/checkout_tools.rs
 index a358e18f748..7ded8fd502d 100644
---- b/rust/crates/harness/src/local/checkout_tools.rs
-+++ a/rust/crates/harness/src/local/checkout_tools.rs
+--- b/rust/crates/harness-local/src/local/checkout_tools.rs
++++ a/rust/crates/harness-local/src/local/checkout_tools.rs
 @@ -110,17 +110,6 @@ impl CheckoutTools {
                      "workspace differs from the bound project volume".into(),
                  ));
