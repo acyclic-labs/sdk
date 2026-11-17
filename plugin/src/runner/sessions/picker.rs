@@ -1,4 +1,5 @@
 //! The visible page and one highlighted session's disposable live previews.
+use super::super::{SESSION_PRICES, session_prices};
 use super::*;
 use acyclic_harness::{
     client::{DiffProjection, DiffQueryEvent, DiffSummary, InputPreviewStep},
@@ -75,10 +76,8 @@ fn previews(
             // absent file leaves usage unpriced; no currency is guessed.
             let prices = async {
                 if let Some(prices) = prices { return Ok::<_, Failure>(prices); }
-                let files = selected.client_files(selected.client_session(), vec!["prices.jsonl".into()], None).await?;
-                let prices = files.files.get("prices.jsonl").and_then(Option::as_ref)
-                    .map(|file| acyclic_harness::executor::ModelPrices::from_jsonl(file.text.as_bytes()))
-                    .transpose()?.unwrap_or_default();
+                let files = selected.client_files(selected.client_session(), vec![SESSION_PRICES.into()], None).await?;
+                let prices = session_prices(files.files.get(SESSION_PRICES).and_then(Option::as_ref))?;
                 Ok::<_, Failure>(Arc::new(prices))
             }.await;
             match prices {

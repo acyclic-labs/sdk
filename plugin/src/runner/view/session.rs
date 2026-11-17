@@ -1,4 +1,5 @@
 //! Disposable projections of the selected conversation's UI-session volume.
+use super::super::{SESSION_PRICES as PRICES, session_prices};
 use super::*;
 use acyclic_harness::{
     OperationId,
@@ -34,7 +35,6 @@ struct PendingFeedback {
 }
 
 const COMMANDS: &str = "commands/commands.json";
-const PRICES: &str = "prices.jsonl";
 const FEEDBACK: &str = "feedback.json";
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -113,13 +113,7 @@ impl Session {
         }
         let source = self.snapshot.files.get(PRICES).and_then(Option::as_ref);
         if source.map(|file| file.descriptor()) != self.price_source.as_ref() {
-            let prices = match source {
-                Some(file) => {
-                    acyclic_harness::executor::ModelPrices::from_jsonl(file.text.as_bytes())?
-                }
-                None => Default::default(),
-            };
-            self.prices = Arc::new(prices);
+            self.prices = Arc::new(session_prices(source)?);
             self.price_source = source.map(|file| file.descriptor().clone());
         }
         let layout = self

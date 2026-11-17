@@ -40,6 +40,16 @@ use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use futures::{FutureExt as _, future::LocalBoxFuture};
 use std::{future::Future, io::IsTerminal as _, sync::Arc};
 
+const SESSION_PRICES: &str = "prices.jsonl";
+
+fn session_prices(
+    file: Option<&acyclic_harness::client_files::ClientFile>,
+) -> acyclic_harness::Result<acyclic_harness::executor::ModelPrices> {
+    file.map(|file| acyclic_harness::executor::ModelPrices::from_jsonl(file.text.as_bytes()))
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
 // Construct each phase on its own call frame. Boxing an already constructed
 // future in the awaiting frame still retains its construction scratch space
 // throughout nested polls, and devirtualization can inline its poll there too.
