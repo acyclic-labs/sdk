@@ -1,6 +1,6 @@
-import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import {pathToFileURL} from 'node:url';
+import {trackedFiles} from './policy-core.mjs';
 
 // Tests, fixtures, docs and retained evidence may name the disabled forms to
 // prove the guard; every other tracked file must leave incremental on.
@@ -37,7 +37,7 @@ export function violations(file, source) {
   return found;
 }
 
-export function checkIncremental(files = execFileSync('git', ['ls-files', '-z'], {encoding: 'utf8'}).split('\0').filter(Boolean)) {
+export function checkIncremental(files = trackedFiles()) {
   const found = [];
   for (const file of files) {
     if (excluded(file)) continue;
