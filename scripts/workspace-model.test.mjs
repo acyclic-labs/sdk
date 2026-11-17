@@ -6,13 +6,14 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {assertRegistryPinsCurrent, workspaceBrowserGraph, workspaceGraph, workspacePackages, workspaceProfileMetadata, versionMatches} from './workspace-model.mjs';
+import {workspacePackages as testPackages, wasmPackages} from './check-crate-tests.mjs';
 
 test('manifest and Bazel lock projection preserves aliases, target edges and local feature forwarding', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-model-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
   write('Cargo.toml', '[workspace]\nmembers=["app"]\nexclude=["backend"]\n[workspace.package]\nversion="0.1.0"\nedition="2024"\n[workspace.dependencies]\nrenamed={package="backend",path="backend",version="=0.1.0",default-features=false}\n');
-  write('app/Cargo.toml', '[package]\nname="app"\nversion.workspace=true\nedition.workspace=true\n[dependencies]\nrenamed.workspace=true\n[features]\ntest-support=["renamed/test-support"]\n[target.\'cfg(windows)\'.dependencies]\nwin="1"\n[[bin]]\nname="custom"\npath="src/main.rs"\n');
+  write('app/Cargo.toml', '[package]\nname="app"\nversion.workspace=true\nedition.workspace=true\n[dependencies]\nrenamed.workspace=true\n[features]\ntest-support=["renamed/test-support"]\nwasm=[]\n[target.\'cfg(windows)\'.dependencies]\nwin="1"\n[[bin]]\nname="custom"\npath="src/main.rs"\n');
   write('app/src/main.rs', 'fn main() {}\n');
   write('backend/Cargo.toml', '[package]\nname="backend"\nversion="0.1.0"\n[features]\ntest-support=[]\ndefault=[]\n');
   write('backend/src/lib.rs', '');
@@ -29,6 +30,8 @@ test('manifest and Bazel lock projection preserves aliases, target edges and loc
   const workspaceOnly = workspaceProfileMetadata(root, {workspaceOnly: true});
   assert.deepEqual(profile.packages.map(p => p.name), ['app', 'backend']);
   assert.deepEqual(workspaceOnly.packages.map(p => p.name), ['app']);
+  assert.deepEqual(testPackages(workspaceOnly), ['app']);
+  assert.deepEqual(wasmPackages(workspaceOnly), ['app']);
   assert.deepEqual(profile.packages.find(p => p.name === 'app').targets.map(t => t.name), ['custom']);
   assert.equal(profile.packages.find(p => p.name === 'app').dependencies[0].rename, 'renamed');
   assert.deepEqual(profile.workspace_members, workspaceOnly.workspace_members);
