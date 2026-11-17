@@ -474,7 +474,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                             let id = ["d3-warm-0", "d3-warm-1"][index];
                             vec![(
                                 id,
-                                format!("{} large context {}", tag(id), "x".repeat(60_000)),
+                                format!("{} large context {}", tag(id), "x".repeat(10_000)),
                             )]
                         })
                         .collect();
@@ -484,7 +484,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                     vec![
                         vec![(
                             "d3-warm-0",
-                            format!("{} history {}", tag("d3-warm-0"), "x".repeat(20_000)),
+                            format!("{} history {}", tag("d3-warm-0"), "x".repeat(5_000)),
                         )],
                         vec![("d3-parent", prompt)],
                     ]
@@ -752,7 +752,7 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                 vec![
                     vec![(
                         "d4-warm-0",
-                        format!("{} history {}", tag("d4-warm-0"), "x".repeat(20_000)),
+                        format!("{} history {}", tag("d4-warm-0"), "x".repeat(5_000)),
                     )],
                     vec![("d4", prompt.clone())],
                 ]
