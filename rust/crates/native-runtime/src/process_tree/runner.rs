@@ -719,10 +719,48 @@ struct HostSpawn {
     envp: [*const libc::c_char; 1],
 }
 
+/// The first clone is a child of the spawning owner's parent (the warden).
+/// Clone once more with `CLONE_PARENT` so the actual host is a sibling of that
+/// warden, outside the per-case custody tree that retires the owner.
+extern "C" fn host_child(argument: *mut libc::c_void) -> libc::c_int {
+    let mut stack = [0_u8; 16 * 1024];
+    // SAFETY: the second child runs on this local stack until exec replaces
+    // it; the first child exits immediately after the clone.
+    let top = unsafe {
+        stack
+            .as_mut_ptr()
+            .add(stack.len())
+            .cast::<libc::c_void>()
+    };
+    // SAFETY: the argument is the parent-owned record, and CLONE_PARENT makes
+    // the host a sibling of the warden that owns this first child.
+    let pid = unsafe {
+        libc::clone(
+            host_exec,
+            top,
+            libc::CLONE_PARENT | libc::SIGCHLD,
+            argument,
+        )
+    };
+    if pid < 0 {
+        // SAFETY: the status descriptor is inherited from the parent.
+        unsafe {
+            let spawn = &*argument.cast::<HostSpawn>();
+            let error = std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO);
+            libc::write(spawn.status, (&raw const error).cast(), 4);
+            libc::_exit(127);
+        }
+    }
+    // SAFETY: the second child owns the exec and the status pipe now.
+    unsafe { libc::_exit(0) }
+}
+
 /// Executes the sealed image in packet-device-host mode. Only raw descriptor
 /// operations run here: the owner may hold allocator and runtime locks that
 /// this clone did not copy.
-extern "C" fn host_child(argument: *mut libc::c_void) -> libc::c_int {
+extern "C" fn host_exec(argument: *mut libc::c_void) -> libc::c_int {
     // SAFETY: the parent keeps this record and its strings alive until the
     // status pipe closes after exec.
     let spawn = unsafe { &*argument.cast::<HostSpawn>() };
