@@ -23,6 +23,8 @@ export const wasmPackages = {
   machines: {
     cargo: ["-p", "acyclic-machines-wasm"],
     artifact: "acyclic_machines_wasm",
+    runtime: true,
+    build: true,
   },
   inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm", runtime: true, build: true },
   harness: {
