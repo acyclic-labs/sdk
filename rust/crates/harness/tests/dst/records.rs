@@ -217,7 +217,6 @@ fn check_record<'a>(
     kind: &'a str,
     reader: &'a str,
     emitted: &'a Emitted,
-    harness: &'a Arc<LocalHarness>,
 ) -> EntryFuture<'a, std::result::Result<(), String>> {
     entry(async move {
         match kind {
