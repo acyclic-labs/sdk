@@ -225,11 +225,14 @@ test('registry dependencies are selected from the current Cargo lock', t => {
   const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
   write('Cargo.toml', '[workspace]\nmembers=["app"]\n');
   write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nnew_crate="1"\n');
-  write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["new_crate 1.0.0"]\n' +
-    ['1.0.0', '1.1.0'].map(version => `[[package]]\nname="new_crate"\nversion="${version}"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n`).join(''));
+  const source = 'registry+https://github.com/rust-lang/crates.io-index';
+  write('Cargo.lock', `version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["new_crate 1.0.0 (${source})"]\n` +
+    [['1.0.0', source], ['1.0.0', 'registry+https://example.invalid/index'], ['1.1.0', source]]
+      .map(([version, registry]) => `[[package]]\nname="new_crate"\nversion="${version}"\nsource="${registry}"\n`).join(''));
   write('cargo-bazel.Cargo.lock', 'version=4\n[[package]]\nname="direct-cargo-bazel-deps"\nversion="0.0.1"\n');
   write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {}}));
   assert.throws(() => assertRegistryPinsCurrent(root), /new_crate.*1\.0\.0.*repin/i);
+  assert.equal(workspaceGraph(root).resolve.nodes[0].deps[0].pkg, `${source}#new_crate@1.0.0`);
 });
 
 test('browser registry inputs retain direct default-feature requests', t => {
