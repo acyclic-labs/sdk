@@ -83,7 +83,8 @@ function assertCacheable(file, text) {
 }
 const bazelrc = path.join(root, ".bazelrc");
 if (fs.existsSync(bazelrc)) {
-  for (const [line] of fs.readFileSync(bazelrc, "utf8").matchAll(new RegExp(`^.*${UNCACHEABLE_FLAGS.source}.*$`, "gm"))) {
+  for (const line of fs.readFileSync(bazelrc, "utf8").split("\n")) {
+    if (line.trimStart().startsWith("#") || !UNCACHEABLE_FLAGS.test(line)) continue;
     throw new Error(`STEP_FAILED bazel-build-files: .bazelrc sets ${line.trim()}, which makes every test uncacheable; recovery: declare the input in the test target`);
   }
 }
