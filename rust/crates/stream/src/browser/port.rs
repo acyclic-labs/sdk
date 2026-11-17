@@ -92,7 +92,7 @@ impl CommandJournal for BrowserPort<'_> {
         Ok(JournalPage {
             entries,
             head,
-            at_millis: BrowserClock.now_unix_millis(),
+            at_millis: SystemUnixMillisClock.now_unix_millis(),
         })
     }
 
@@ -108,7 +108,7 @@ impl CommandJournal for BrowserPort<'_> {
             return Err(StreamError::InvalidArgument);
         }
         let at_millis = frames.last().ok_or(StreamError::InvalidArgument)?.at_millis;
-        let now = BrowserClock.now_unix_millis();
+        let now = SystemUnixMillisClock.now_unix_millis();
         if frames
             .iter()
             .any(|frame| frame.deadline.is_some_and(|deadline| now >= deadline))
