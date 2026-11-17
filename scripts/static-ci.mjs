@@ -3,8 +3,12 @@ import fs from 'node:fs';
 import {pinnedActions} from './static-policy.mjs';
 import {trackedFiles} from './policy-core.mjs';
 import {checkJavaScript, requireSyntaxRuntime} from './javascript-syntax.mjs';
+import {checkIncremental} from './check-incremental.mjs';
 
 requireSyntaxRuntime();
+
+const incremental=checkIncremental();
+if(incremental.length)throw new Error(incremental.join('\n'));
 
 const all=trackedFiles(process.cwd(), ['.', ':!managed-agents']).filter(file=>fs.existsSync(file));
 const git=(...args)=>execFileSync('git',args,{ maxBuffer: Infinity,encoding:'utf8'}).trim();

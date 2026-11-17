@@ -46,6 +46,8 @@ jobs:
       # Vendored crates keep their upstream bytes.
       - name: Check that the whole tree has no whitespace errors
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents'
+      - name: Check that no tracked file disables incremental compilation
+        run: node scripts/check-incremental.mjs
       # Formatting differs between rustfmt releases (macro bodies among
       # them), so it is checked with the pinned toolchain the gate uses.
       - name: Install the pinned rustfmt
