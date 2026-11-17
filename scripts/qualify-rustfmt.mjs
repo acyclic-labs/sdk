@@ -18,13 +18,6 @@ const VENDORED = ":(exclude)rust/vendor/**";
 // fixtures outside the archive remain checked.
 const CAPTURED_EVIDENCE = ":(exclude)scripts/tests/fixtures/proof-policy/**";
 
-// Returns {workspace, edition} for one manifest: `workspace` is the
-// [workspace.package] edition (false when absent, null for no workspace root),
-// `edition` the package edition, "inherit", or null for a virtual manifest.
-export function parseManifest(text) {
-  return parseManifests({ "Cargo.toml": text })["Cargo.toml"];
-}
-
 // The planner uses Python's standard tomllib. Parse the entire manifest set in
 // one invocation, independently of the JavaScript runtime running this gate.
 export function parseManifests(texts) {

@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { filesByEdition, parseManifest, qualifyRustfmt } from "./qualify-rustfmt.mjs";
+import { filesByEdition, parseManifests, qualifyRustfmt } from "./qualify-rustfmt.mjs";
+
+const parseManifest = text => parseManifests({"Cargo.toml": text})["Cargo.toml"];
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const clean = "pub fn f() -> u8 {\n    1\n}\n";
