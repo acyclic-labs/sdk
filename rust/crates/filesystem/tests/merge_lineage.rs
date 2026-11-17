@@ -540,7 +540,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    target.write_text("/target-race", "winner").await?;
+    target.write_text("/source-after-plan", "winner").await?;
     assert!(matches!(
         stale_plan
             .apply(
@@ -554,6 +554,7 @@ async fn merge_plans_are_immutable_stale_safe_and_publication_is_idempotent()
             .await?,
         JoinOutcome::StaleTarget(_)
     ));
+    target.remove("/source-after-plan").await?;
     assert!(unbounded!(target, read("/source-after-plan", 16)).is_err());
 
     let current_plan = source

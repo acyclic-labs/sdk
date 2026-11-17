@@ -127,11 +127,6 @@ mod public_conformance;
 #[path = "../src/sync.rs"]
 mod sync;
 
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod sync {
-    pub(crate) use acyclic_native_runtime::InlineMutex as Mutex;
-}
-
 #[cfg(not(loom))]
 mod fs_concurrency_bench;
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
