@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { GuestActivation, definitionHandler } from "../src/guest-host.js";
+import { loadWasmModule } from "../src/client.js";
 import { verifyDefinitionHost } from "../src/definition-conformance.js";
 import { defineActor, GUEST_ABI_VERSION, type GuestContext, type GuestEvent } from "../src/guest.js";
 
@@ -125,6 +126,27 @@ const guestContext = (id: string, namespace: string): GuestContext<Record<string
   env: {}, clock: () => 0n, deliveryId: null, admittedIdentity: null,
   actor: { id, account: Array.from(encoder.encode("account")), namespace, class: null },
   retryKey() { throw new Error("no delivery"); },
+});
+
+test("front-door deliveries resolve relative targets and preserve absolute URLs and HTTP bytes", async () => {
+  const wasm = await loadWasmModule();
+  const shared = JSON.parse(readFileSync(new URL("../../../../rust/crates/actors/tests/fixtures/guest-record.json", import.meta.url), "utf8"));
+  for (const [url, expectedUrl] of [["/", "https://actor.invalid/"],
+    ["/echo?query=a%20b", "https://actor.invalid/echo?query=a%20b"],
+    ["https://original.example/echo?query=a%20b", "https://original.example/echo?query=a%20b"]]) {
+    const { actor } = recordingActor({ name: "counter", version: "1" });
+    const activation = new GuestActivation({ ...actor, async fetch(_state, request) {
+      return new Response(encoder.encode(JSON.stringify({ url: request.url, method: request.method,
+        body: Array.from(new Uint8Array(await request.arrayBuffer())), header: request.headers.get("x-original") })),
+      { status: 201, headers: { "x-reply": "original" } });
+    } }, null, guestContext("one", "counter"));
+    const response = encoder.encode(JSON.stringify({ url: expectedUrl, method: "POST", body: [0, 255], header: "original" }));
+    const expected = wasm.encodeTransition("counter", "1", new Uint8Array(),
+      wasm.encodeInvokeResponse(201, ["x-reply"], ["original"], response));
+    expect(await activation.deliver(wasm, wasm.decodeDelivery(Uint8Array.from(shared.delivery)),
+      { method: "POST", url: url!, headers: [["x-original", "original"]], body: Uint8Array.of(0, 255) }))
+      .toEqual(expected);
+  }
 });
 
 test("onRecord answers a Rust-captured delivery through the Rust wire codec, refusing non-canonical frames first", async () => {
