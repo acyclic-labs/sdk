@@ -128,10 +128,9 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
     let max_branch_bytes = u64::try_from(MAX_BRANCH_BYTES)
         .map_err(|_| Error::Invalid("branch page bound does not fit u64".into()))?;
     let read_bound = 2 * (INDEX_DEPTH + INDEX_RECORDS);
-    let encoding_bound = 2
-        * (INDEX_DEPTH + INDEX_RECORDS)
-        * (2 * max_branch_bytes + RECORD_FRAMING_BYTES)
-        + ENVELOPE_BYTES;
+    let encoding_bound =
+        2 * (INDEX_DEPTH + INDEX_RECORDS) * (2 * max_branch_bytes + RECORD_FRAMING_BYTES)
+            + ENVELOPE_BYTES;
     let mut first = (0, 0);
     let mut last = (0, 0);
     for step in 0..450 {
