@@ -94,17 +94,21 @@ impl HttpTransport for Capacity {
 struct RateRefusal {
     origin: tokio::time::Instant,
     refuse_at: usize,
+    retry_without_delay: bool,
     log: Mutex<Vec<(Duration, u16)>>,
 }
 
 impl HttpTransport for RateRefusal {
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         let mut log = self.log.lock().unwrap();
-        let status = if log.len() == self.refuse_at {
+        let status = if log.len() == self.refuse_at
+            || (self.retry_without_delay && log.len() == self.refuse_at + 1)
+        {
             429
         } else {
             200
         };
+        let retry_after = (status == 429 && log.len() == self.refuse_at).then_some(RETRY_AFTER);
         log.push((self.now(), status));
         Box::pin(async move {
             Ok(HttpResponse {
@@ -113,7 +117,7 @@ impl HttpTransport for RateRefusal {
                 // for one of these bodies to complete after the cooldown.
                 body: Box::pin(futures::stream::pending()),
                 request_id: None,
-                retry_after: (status == 429).then_some(RETRY_AFTER),
+                retry_after,
             })
         })
     }
@@ -143,6 +147,7 @@ fn rate_refusal_paces_its_waiters_across_the_provider_window() -> Result<()> {
             let transport = Arc::new(RateRefusal {
                 origin: tokio::time::Instant::now(),
                 refuse_at: accepted,
+                retry_without_delay: false,
                 log: Mutex::default(),
             });
             let provider = crate::tests::provider_with(
@@ -229,6 +234,62 @@ fn rate_refusal_paces_its_waiters_across_the_provider_window() -> Result<()> {
     }
     Ok(())
 }
+#[test]
+fn a_refusal_without_a_delay_keeps_the_paced_queue_spaced() -> Result<()> {
+    use acyclic_harness_core::model::ModelEvent;
+    paused().block_on(async {
+        let transport = Arc::new(RateRefusal {
+            origin: tokio::time::Instant::now(),
+            refuse_at: 0,
+            retry_without_delay: true,
+            log: Mutex::default(),
+        });
+        let provider = crate::tests::provider_with(
+            Adapter::Chat,
+            "https://provider.test/v1",
+            transport.clone(),
+        );
+        let (request, dispatch) = crate::tests::request(&provider)?;
+        let mut refused = provider.generate(&request, dispatch);
+        assert!(matches!(
+            refused.next().now_or_never(),
+            Some(Some(Ok(ModelEvent::Wait(ModelWait::Started { .. }))))
+        ));
+        let mut queued: Vec<_> = (0..3)
+            .map(|_| provider.generate(&request, dispatch))
+            .collect();
+        for response in &mut queued {
+            assert!(matches!(
+                response.next().now_or_never(),
+                Some(Some(Ok(ModelEvent::Wait(ModelWait::AdmissionStarted {
+                    cause: ModelAdmissionCause::Cooldown { until }
+                })))) if until == RETRY_AFTER
+            ));
+        }
+        tokio::time::advance(RETRY_AFTER + Duration::from_nanos(1)).await;
+        assert!(matches!(
+            refused.next().now_or_never(),
+            Some(Some(Ok(ModelEvent::Wait(
+                ModelWait::AdmissionFinished { .. }
+            ))))
+        ));
+        // The retry is refused again, this time without a replacement delay.
+        assert!(refused.next().now_or_never().is_some());
+        let first = queued[0].next().now_or_never();
+        assert!(matches!(
+            first,
+            Some(Some(Ok(ModelEvent::Wait(
+                ModelWait::AdmissionFinished { .. }
+            ))))
+        ));
+        for response in &mut queued[1..] {
+            assert!(response.next().now_or_never().is_none());
+        }
+        Ok::<_, acyclic_harness_core::Error>(())
+    })?;
+    Ok(())
+}
+
 fn paused() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()

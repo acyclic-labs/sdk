@@ -435,9 +435,9 @@ impl Permit {
                 }
                 state.window = Some(wait);
                 state.pace = None;
+                state.revoke();
                 self.opens = Some(until);
             }
-            state.revoke();
             return self.opens.is_some();
         }
         false

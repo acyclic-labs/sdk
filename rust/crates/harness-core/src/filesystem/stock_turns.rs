@@ -472,7 +472,7 @@ impl TurnExecutors for StockExecutors {
                             .as_ref()?
                             .resolve_shared(selected)
                             .ok()
-                            .map(|resolved| resolved as Arc<dyn crate::model::ModelProvider>),
+                            .map(|resolved| Arc::clone(&resolved.1)),
                     })),
                 )?;
             }

@@ -1402,7 +1402,18 @@ mod tests {
                     crate::runtime::test_context::private_volume(74)?,
                 )),
                 maximum_bytes: None,
-                templates: None,
+                templates: Some((
+                    CreationConfig {
+                        question_plugin: false,
+                        topology: None,
+                        continuation: None,
+                        context: crate::agent::SpawnContext::Fresh,
+                        template: None,
+                        peers: Default::default(),
+                        model: None,
+                    },
+                    Arc::new(ChildModel),
+                )),
                 saturation: Some(Arc::new(|_: Option<&str>| {
                     Some(Arc::new(Saturated) as Arc<dyn crate::model::ModelProvider>)
                 })),
