@@ -1,4 +1,38 @@
 load(":node_test.bzl", "node_test")
+load(":typescript_fixture.bzl", "typescript_fixture")
+
+typescript_fixture(
+    name = "machines_http2_fixture",
+    auth = "//wasm:auth",
+    machines = "//wasm:machines",
+    npm = "@npm_test_packages//:packages",
+    srcs = [
+        "//:scripts/fixture-server.mjs",
+        "//:typescript/packages/auth/package.json",
+        "//:typescript/packages/auth/src/credential.ts",
+        "//:typescript/packages/auth/src/credential-connect.ts",
+        "//:typescript/packages/auth/src/wasm.ts",
+        "//:typescript/packages/machines/package.json",
+        "//:typescript/packages/machines/src/grpc.ts",
+        "//:typescript/packages/machines/src/transport.ts",
+        "//:typescript/packages/machines/src/rpc-transport.ts",
+        "//:typescript/packages/machines/src/wasm-runtime.ts",
+        "//:typescript/packages/machines/src/owned-stream.ts",
+        "//:typescript/packages/machines/test/grpc.test.mjs",
+        "//:typescript/packages/machines/test/fixtures/server.pem",
+        "//:typescript/packages/machines/test/fixtures/server-key.pem",
+        "//compatibility:proto/validation/v1/options.proto",
+        "//compatibility:proto/harness/v2/resources.proto",
+        "//rust/crates/machines:proto/machines/v1/machines.proto",
+    ],
+)
+
+node_test(
+    name = "machines_http2_test",
+    srcs = [":machines_http2_fixture"],
+    entry = "scripts/policy/machines_http2_fixture/typescript/packages/machines/test/grpc.test.mjs",
+    name_pattern = "RPC bridge distinguishes server refusal from expired response custody",
+)
 
 node_test(
     name = "wasm_metadata_test",
