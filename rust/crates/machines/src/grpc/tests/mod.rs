@@ -214,7 +214,7 @@ operation_service! {
         &self,
         request: Request<wire::MachineMutationRequest>,
     ) -> Result<Response<wire::MutationAdmission>, Status> {
-        let WatchReply::Script(_) = &self.watch else {
+        let WatchReply::Script(script) = &self.watch else {
             return Err(Status::unimplemented("suspend"));
         };
         let request = request.into_inner();
@@ -233,6 +233,17 @@ operation_service! {
         };
         if request.machine != admission.machine {
             return Err(Status::invalid_argument("machine was substituted"));
+        }
+        let original = script.lock().expect("observation script").results.clone();
+        if let Some(original) = original {
+            let machine = decode_machine(admission.machine.as_ref())
+                .map_err(|error| Status::internal(error.to_string()))?;
+            original.suspend(machine, self.expected_key).await
+                .map_err(|error| Status::failed_precondition(error.to_string()))?;
+            let mut admission = admission.clone();
+            admission.operation = Some(encode_operation(original.recover_operation(self.expected_key).await
+                .map_err(|error| Status::internal(error.to_string()))?));
+            return Ok(Response::new(admission));
         }
         Ok(Response::new(admission.clone()))
     }
@@ -504,6 +515,34 @@ async fn serve_operation_service(
     ),
     Box<dyn std::error::Error + Send + Sync>,
 > {
+    serve_operation_service_with(service, |request: Request<()>| {
+        let values: Vec<_> = request.metadata().get_all("authorization").iter().collect();
+        if values.len() != 1
+            || values
+                .first()
+                .is_none_or(|value| *value != "Bearer opaque.account+/=")
+        {
+            return Err(Status::unauthenticated("missing or substituted bearer"));
+        }
+        Ok(request)
+    })
+    .await
+}
+
+async fn serve_operation_service_with<I>(
+    service: OperationService,
+    authorization: I,
+) -> Result<
+    (
+        GrpcProvider,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    ),
+    Box<dyn std::error::Error + Send + Sync>,
+>
+where
+    I: tonic::service::Interceptor + Clone + Send + Sync + 'static,
+{
     // Contract fixtures keep real HTTP/2 framing and generated RPCs, while
     // Tokio owns every wakeup. A paused clock cannot outrun kernel socket I/O.
     let (incoming, connections) = tokio::sync::mpsc::channel(1);
@@ -512,18 +551,7 @@ async fn serve_operation_service(
         Server::builder()
             .add_service(MachinesServiceServer::with_interceptor(
                 service,
-                |request: Request<()>| {
-                    let values: Vec<_> =
-                        request.metadata().get_all("authorization").iter().collect();
-                    if values.len() != 1
-                        || values
-                            .first()
-                            .is_none_or(|value| *value != "Bearer opaque.account+/=")
-                    {
-                        return Err(Status::unauthenticated("missing or substituted bearer"));
-                    }
-                    Ok(request)
-                },
+                authorization,
             ))
             .serve_with_incoming_shutdown(ReceiverStream::new(connections), async {
                 let _ = shutdown_rx.await;

@@ -89,6 +89,12 @@ impl From<CredentialCacheError> for CredentialError {
     }
 }
 
+/// Local credential admission failed after the original transport returned.
+/// This cannot attest that an original effect was refused before dispatch.
+#[derive(Debug, thiserror::Error)]
+#[error("original response credential admission failed")]
+pub struct ResponseCredentialError(#[source] pub(crate) CredentialError);
+
 /// One native renewal invocation, cancelled by dropping its future.
 #[cfg(not(target_arch = "wasm32"))]
 pub type CredentialFuture = Pin<Box<dyn Future<Output = Result<String, CredentialError>> + Send>>;
