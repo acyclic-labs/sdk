@@ -124,10 +124,30 @@ fn failed(tag_name: &'static str) -> Plan {
     }
 }
 
+fn failed_fatal(tag_name: &'static str) -> Plan {
+    Plan {
+        tag: tag_name,
+        steps: vec![
+            vec![call(
+                &format!("{tag_name}-read"),
+                "read",
+                json!({"path": "marker.txt"}),
+            )],
+            Vec::new(),
+        ],
+        fail_once: Some((
+            1,
+            acyclic_harness::test_support::ScriptedEvent::Fatal {
+                error: "child turn failed".into(),
+            },
+        )),
+    }
+}
+
 fn names(topology: &str) -> Vec<&'static str> {
     match topology {
         "grandchild" => vec!["g-start"],
-        "batch_spawn" => vec!["b0", "b1"],
+        "batch_spawn" => vec!["b0", "b1", "b2", "b3"],
         _ => vec!["leaf-start", "leaf-tool", "leaf-fail"],
     }
 }
@@ -142,8 +162,10 @@ fn root_steps(topology: &str) -> Vec<Vec<acyclic_harness::model::ToolCall>> {
             vec![
                 spawn("c4-spawn-b0", "b0", "c4-batch"),
                 spawn("c4-spawn-b1", "b1", "c4-batch"),
+                spawn("c4-spawn-b2", "b2", "c4-batch"),
+                spawn("c4-spawn-b3", "b3", "c4-batch"),
             ],
-            vec![wait("c4-wait-batch", &["b0", "b1"])],
+            vec![wait("c4-wait-batch", &["b0", "b1", "b2", "b3"])],
         ],
         _ => vec![
             vec![
@@ -199,7 +221,11 @@ fn plans(seed: u64) -> Vec<Plan> {
         },
         settled("c4-start"),
         tool("c4-tool"),
-        failed("c4-fail"),
+        if fault(seed) == "undecided_failure" {
+            failed_fatal("c4-fail")
+        } else {
+            failed("c4-fail")
+        },
         settled("c4-batch"),
         settled("c4-g-start"),
         Plan {
@@ -247,6 +273,9 @@ fn settled_names(results: &[(String, serde_json::Value)]) -> Vec<String> {
 fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), String> {
     let fault = fault(seed);
     let topology = topology(seed);
+    if !requests.iter().any(|request| request.summary) {
+        return Err(format!("{fault}/{topology}: no background summary request"));
+    }
     let results = wait_results(requests)?;
     let found = settled_names(&results);
     // A recovered root observes its direct child; the middle agent's own
