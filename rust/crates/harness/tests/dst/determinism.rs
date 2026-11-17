@@ -202,6 +202,10 @@ fn x1_cross_process_child() {
     println!("DST_X1_CHILD_DIGEST={digest}");
 }
 
+fn hex(digest: [u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn world(seed: u64) -> std::result::Result<bool, String> {
     // The world is the seed's class slot; the scheduler seed stays the full
     // requested seed so a deeper sweep can walk past the class count.
@@ -210,13 +214,17 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
     let second = replay_generator(seed, class)?;
     if first != second {
         return Err(format!(
-            "X1 {class} seed {seed} diverged in-process: {first} != {second}"
+            "X1 {class} seed {seed} diverged in-process: {} != {}",
+            hex(first),
+            hex(second)
         ));
     }
     let child = cross_process_digest(seed, class)?;
     if first != child {
         return Err(format!(
-            "X1 {class} seed {seed} diverged across processes: {first} != {child}"
+            "X1 {class} seed {seed} diverged across processes: {} != {}",
+            hex(first),
+            hex(child)
         ));
     }
     // The entropy-erased control replays the same production turn with the
@@ -234,6 +242,6 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             Ok(())
         })
     })?;
-    println!("DST_X1_DIGEST={class} {first}");
+    println!("DST_X1_DIGEST={class} {}", hex(first));
     Ok(true)
 }
