@@ -1,6 +1,20 @@
 load(":node_test.bzl", "node_test")
 
 node_test(
+    name = "bazel_build_files_test",
+    srcs = [
+        "//:rust-toolchain.toml",
+        "//:scripts/bazel-build-files.mjs",
+        "//:scripts/bazel-build-files.test.mjs",
+        "//:scripts/bazel-executables.mjs",
+        "//:scripts/check-bazel-lockfile.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-model.mjs",
+    ],
+    entry = "scripts/bazel-build-files.test.mjs",
+)
+
+node_test(
     name = "workspace_model_test",
     srcs = [
         "//:scripts/policy-core.mjs",
