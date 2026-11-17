@@ -1390,7 +1390,7 @@ where
         let parent = agents.state(parent).await?;
         let child_state = agents.state(child).await?;
         let (journal, _bindings, policy_bytes) = self
-            .parent_review_binding(&parent, Some(policy))
+            .parent_review_binding(&parent, Some(policy), None)
             .await
             .map_err(fail)?;
         let policy_text = std::str::from_utf8(&policy_bytes)
@@ -1424,6 +1424,7 @@ where
         &self,
         parent: &AgentState,
         policy: Option<&FileRef>,
+        stop: Option<acyclic_actors::guest::CancellationToken>,
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
         Bindings<A, O>,
@@ -1440,7 +1441,7 @@ where
         }
         let retained = policy.map(std::slice::from_ref).unwrap_or(&[]);
         let (journal, bindings, _) = self
-            .journal(self.admit(parent)?, &[], retained, None, None)
+            .journal(self.admit(parent)?, &[], retained, None, stop)
             .await?;
         let bytes = match policy {
             Some(policy) => {
@@ -2619,15 +2620,17 @@ where
         agent: &'a AgentState,
         inbox: u64,
         cursor: u64,
+        stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, Result<crate::agent::ApprovalSelection>> {
-        Box::pin(self.select_approval_page(agent, inbox, cursor))
+        Box::pin(self.select_approval_page(agent, inbox, cursor, stop))
     }
     fn triage<'a>(
         &'a self,
         agent: &'a AgentState,
         selection: &'a crate::agent::ApprovalSelection,
+        stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, Result<crate::agent::OpenTriage>> {
-        Box::pin(self.review_approval_page(agent, selection))
+        Box::pin(self.review_approval_page(agent, selection, stop))
     }
 
     fn settle<'a>(&'a self, agent: &'a AgentState, turn: OperationId) -> BoxFuture<'a, Result<()>> {

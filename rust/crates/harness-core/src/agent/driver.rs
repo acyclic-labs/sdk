@@ -283,8 +283,9 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
         agent: &'a AgentState,
         inbox: u64,
         cursor: u64,
+        stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<super::ApprovalSelection>> {
-        let _ = (agent, inbox, cursor);
+        let _ = (agent, inbox, cursor, stop);
         Box::pin(async {
             Err(crate::Error::Unsupported(
                 "parent review is not bound".into(),
@@ -297,8 +298,9 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
         &'a self,
         agent: &'a AgentState,
         selection: &'a super::ApprovalSelection,
+        stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<OpenTriage>> {
-        let _ = (agent, selection);
+        let _ = (agent, selection, stop);
         Box::pin(async {
             Err(crate::Error::Unsupported(
                 "parent review is not bound".into(),
@@ -367,15 +369,17 @@ impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
         agent: &'a AgentState,
         inbox: u64,
         cursor: u64,
+        stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<super::ApprovalSelection>> {
-        (**self).select_approvals(agent, inbox, cursor)
+        (**self).select_approvals(agent, inbox, cursor, stop)
     }
     fn triage<'a>(
         &'a self,
         agent: &'a AgentState,
         selection: &'a super::ApprovalSelection,
+        stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<OpenTriage>> {
-        (**self).triage(agent, selection)
+        (**self).triage(agent, selection, stop)
     }
 
     fn settle<'a>(
@@ -1345,7 +1349,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
         &'a self,
         agent: &'a AgentState,
         cursor: u64,
-        _cancellation: acyclic_actors::guest::CancellationToken,
+        cancellation: acyclic_actors::guest::CancellationToken,
     ) -> super::ReviewFuture<'a> {
         Box::pin(async move {
             let pending = agent
@@ -1354,12 +1358,17 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 .ok_or(Error::Record("review has no original control"))?;
             let result = if let Some(selected) = &pending.selected {
                 self.host
-                    .triage(agent, selected)
+                    .triage(agent, selected, cancellation)
                     .await
                     .map(super::ReviewStep::Reviewed)
             } else {
                 self.host
-                    .select_approvals(agent, pending.range.start, cursor.min(pending.range.end))
+                    .select_approvals(
+                        agent,
+                        pending.range.start,
+                        cursor.min(pending.range.end),
+                        cancellation,
+                    )
                     .await
                     .map(super::ReviewStep::Selected)
             };

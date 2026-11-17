@@ -264,14 +264,23 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
         }
     }
     let selected = turns
-        .select_approval_page(&parent_state, first.ok_or("no source records")?, end)
+        .select_approval_page(
+            &parent_state,
+            first.ok_or("no source records")?,
+            end,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
         .await?;
     assert!(selected.policy.is_some());
     let mut foreign = selected.clone();
     foreign.source = children[0].path.clone();
     assert!(
         turns
-            .review_approval_page(&parent_state, &foreign)
+            .review_approval_page(
+                &parent_state,
+                &foreign,
+                acyclic_actors::guest::CancellationToken::new(),
+            )
             .await
             .is_err()
     );
@@ -280,12 +289,39 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
         0,
         "foreign page reached inference"
     );
+    let stopped = acyclic_actors::guest::CancellationToken::new();
+    stopped.cancel();
+    assert!(matches!(
+        turns
+            .review_approval_page(&parent_state, &selected, stopped)
+            .await,
+        Err(Error::InteractionRejected(
+            crate::InteractionRejection::Cancelled
+        ))
+    ));
+    assert_eq!(
+        reviewer.request_count(),
+        0,
+        "cancelled review reached inference"
+    );
     private
         .write_text("/policy/attention.md", "CHANGED_TRUSTED_POLICY")
         .await?;
-    let reviewed = turns.review_approval_page(&parent_state, &selected).await?;
+    let reviewed = turns
+        .review_approval_page(
+            &parent_state,
+            &selected,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
     // Reopen the original page after durable decisions but before wake publication.
-    let replayed = turns.review_approval_page(&parent_state, &selected).await?;
+    let replayed = turns
+        .review_approval_page(
+            &parent_state,
+            &selected,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
     assert_eq!(reviewed.summary, replayed.summary);
     let wakes = |outs: &[Out]| {
         outs.iter()
@@ -568,10 +604,19 @@ async fn decided_without_wakes(
     }
     let end = delivered[1] + 1;
     let selected = turns
-        .select_approval_page(&parent_before, delivered[0], end)
+        .select_approval_page(
+            &parent_before,
+            delivered[0],
+            end,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
         .await?;
     let prepared = turns
-        .review_approval_page(&parent_before, &selected)
+        .review_approval_page(
+            &parent_before,
+            &selected,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
         .await?;
     assert!(prepared.summary.is_none());
     assert_eq!(prepared.outs.len(), 2);

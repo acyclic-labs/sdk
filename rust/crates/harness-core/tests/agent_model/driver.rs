@@ -1249,6 +1249,7 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
             agent: &'a AgentState,
             inbox: u64,
             cursor: u64,
+            _: acyclic_actors::guest::CancellationToken,
         ) -> BoxFuture<'a, acyclic_harness_core::Result<ApprovalSelection>> {
             let selected = ApprovalSelection {
                 source: agent.path.clone(),
@@ -1261,6 +1262,7 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
             &'a self,
             _: &'a AgentState,
             selection: &'a ApprovalSelection,
+            _: acyclic_actors::guest::CancellationToken,
         ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTriage>> {
             self.selected.lock().unwrap().push(selection.clone());
             let summary = self.summary.clone();
