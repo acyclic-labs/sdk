@@ -5,7 +5,7 @@ import { browserTest } from "../../../../scripts/browser-test.mjs";
 
 if (typeof Bun !== "undefined") {
   const built = await Bun.build({ entrypoints: [new URL("remote-session.browser.ts", import.meta.url).pathname], outdir: import.meta.dirname, naming: "remote-session.browser.js", target: "browser", plugins: [{ name: "existing-wasm", setup(build) {
-    build.onResolve({ filter: /@acyclic\/stream-wasm$/ }, () => ({ path: "../generated/wasm/acyclic_stream_wasm.js", external: true }));
+    build.onResolve({ filter: /@acyclic\/stream-wasm$/ }, () => ({ path: "../../@acyclic/stream-wasm/index.js", external: true }));
   } }] });
   if (!built.success) throw new AggregateError(built.logs, "browser bundle failed");
   const node = spawn("node", [new URL(import.meta.url).pathname], { stdio: "inherit", windowsHide: true });
