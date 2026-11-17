@@ -428,9 +428,19 @@ fn d3_service(transition: &'static str, _dialect: &'static str) -> ScriptedModel
         };
         Ok(answer)
     };
+    // The summary worlds need their smaller warmups to cross the window;
+    // the remaining transitions keep a generous window.
+    let context_tokens = if matches!(
+        transition,
+        "compaction_applied" | "background_summary" | "context_review"
+    ) {
+        65_536
+    } else {
+        131_072
+    };
     ScriptedModelProvider::responding(responder).with_context_capacity(
         acyclic_harness::context::ModelContextCapacity {
-            context_tokens: 81_920,
+            context_tokens,
             output_tokens: Some(4_096),
             output_shares_context: false,
         },
