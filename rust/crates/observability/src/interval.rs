@@ -1,6 +1,8 @@
 //! Original monotonic coordinates for offline research projections.
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+mod unix;
+
 fn checked_elapsed(started: Instant, finished: Instant) -> Option<std::time::Duration> {
     // Windows duration subtraction tolerates small reversed observations.
     // Projection requires their original order before converting to a duration.
@@ -141,14 +143,9 @@ impl UnixClockAnchor {
         if interval.finished_ns < interval.started_ns {
             return Err(IntervalError::Reversed);
         }
-        let map = |offset: u128| {
-            let midpoint = self.read_window_ns / 2;
-            if offset >= midpoint {
-                self.observed_unix_ns.checked_add(offset - midpoint)
-            } else {
-                self.observed_unix_ns.checked_sub(midpoint - offset)
-            }
-            .ok_or(IntervalError::UnixRange)
+        let map = |offset| {
+            unix::project_offset(self.observed_unix_ns, self.read_window_ns, offset)
+                .ok_or(IntervalError::UnixRange)
         };
         Ok(UnixIntervalEstimate {
             domain: self.domain,

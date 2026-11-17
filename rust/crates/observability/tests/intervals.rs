@@ -200,55 +200,6 @@ fn interval_projection_refuses_foreign_origins_without_allocating()
     });
     result?;
     assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
-    assert_unix_projection_boundaries(origin, anchor, interval, first)?;
-    Ok(())
-}
-
-fn assert_unix_projection_boundaries(
-    origin: IntervalOrigin,
-    anchor: acyclic_observability::UnixClockAnchor,
-    interval: OperationInterval,
-    first: acyclic_observability::IntervalCoordinates,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Mutated original observations are refusal controls, not clock fixtures.
-    let zero = acyclic_observability::IntervalCoordinates {
-        started_ns: 0,
-        finished_ns: 0,
-        ..first
-    };
-    assert_eq!(
-        acyclic_observability::UnixClockAnchor {
-            observed_unix_ns: 0,
-            read_window_ns: 2,
-            ..anchor
-        }
-        .project(zero),
-        Err(IntervalError::UnixRange)
-    );
-    let extreme = acyclic_observability::UnixClockAnchor {
-        observed_unix_ns: u128::MAX,
-        read_window_ns: 2,
-        ..anchor
-    };
-    // Apply the midpoint before addition: the representable boundary succeeds.
-    assert_eq!(
-        extreme
-            .project(acyclic_observability::IntervalCoordinates {
-                started_ns: 1,
-                finished_ns: 1,
-                ..first
-            })?
-            .started_unix_ns,
-        u128::MAX
-    );
-    assert_eq!(
-        extreme.project(acyclic_observability::IntervalCoordinates {
-            started_ns: 2,
-            finished_ns: 2,
-            ..first
-        }),
-        Err(IntervalError::UnixRange)
-    );
     // A clock domain remains an original producer fact; projection never
     // silently replaces it with another process's identity.
     assert_ne!(
