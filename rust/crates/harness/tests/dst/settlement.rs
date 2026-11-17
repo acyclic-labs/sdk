@@ -13,7 +13,7 @@ const FILES: [(&str, &str); 3] = [
 ];
 
 /// Faults this world drives, in seed order.
-const FAULTS: [&str; 7] = [
+const FAULTS: [&str; 6] = [
     "none",
     "crash_before",
     "crash_after",
@@ -57,12 +57,7 @@ fn fault(seed: u64) -> &'static str {
 fn variants(seed: u64) -> Vec<Variant> {
     ENTRIES
         .iter()
-        .map(|entry| {
-            Variant::from([
-                ("entry", *entry),
-                ("fault", fault(seed)),
-            ])
-        })
+        .map(|entry| Variant::from([("entry", *entry), ("fault", fault(seed))]))
         .collect()
 }
 
@@ -214,7 +209,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 let crash = oracle::Crash {
                     seed,
                     files: &FILES,
-                    plans: || plans(false, false),
+                    plans: || plans(false),
                     prompts: vec![vec![a1.clone()]],
                     window: (0, 1),
                     mode,
