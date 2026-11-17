@@ -179,11 +179,11 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     current.value.resize(count, None);
                     done.value.clear();
                     done.value.resize(count, 0);
-                    for index in 0..count {
+                    for (index, entry) in entries.iter_mut().enumerate() {
                         let is_root =
                             examine_item(accounting, None, || paths.get(index).is_root())?;
                         if is_root {
-                            entries[index].record = Some(root);
+                            entry.record = Some(root);
                             done.value[index] = 1;
                             if observe && capture_terminal {
                                 let expected =
@@ -209,7 +209,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     for depth in 0..maximum_depth {
                         pending.value.clear();
                         active.value.clear();
-                        for index in 0..count {
+                        for (index, entry) in entries.iter_mut().enumerate() {
                             let finished = examine_item(accounting, None, || {
                                 done.value[index] != 0 || paths.get(index).depth() <= depth
                             })?;
@@ -222,7 +222,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 .payload
                             else {
                                 if matches!(mode, PathBatchMode::Optional) {
-                                    entries[index] = PathBatchEntry {
+                                    *entry = PathBatchEntry {
                                         record: None,
                                         parent: None,
                                         resolved_components: usize_to_u64(depth),
