@@ -1,0 +1,10 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+kani_test(
+    name = "lease_decision",
+    src = "proof.rs",
+    srcs = ["//rust/crates/filesystem:src/native_mount/cached_binding/decision.rs"],
+    harness = "production::proofs::decision_requires_a_binding_and_lease_and_checks_each_path_at_most_once",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)
