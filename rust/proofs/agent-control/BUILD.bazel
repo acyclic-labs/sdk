@@ -12,7 +12,7 @@ kani_test(
         "//conditions:default": "//rust/crates/harness-core:tests/formal/agent_control.rs",
     }),
     srcs = [
-        "//rust/crates/harness-core:src/agent/kernel.rs",
+        "//rust/crates/harness-control:src/agent.rs",
         "//rust/crates/harness-core:src/agent/release.rs",
         "//rust/crates/harness-core:tests/formal/agent_control_model.rs",
         "//rust/crates/harness-core:tests/formal/agent_control_contract.rs",

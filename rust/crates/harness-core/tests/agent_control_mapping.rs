@@ -68,7 +68,8 @@ fn extract(
                 let syn::Lit::Str(path) = &literal.lit else {
                     return false;
                 };
-                value.path.is_ident("path") && path.value() == "../../src/agent/kernel.rs"
+                value.path.is_ident("path")
+                    && path.value() == "../../../harness-control/src/agent.rs"
             })
     });
     if !original {
@@ -200,7 +201,7 @@ fn mapping(kernel: &str, model: &str, shell: &str, harness: &str) -> Result<(), 
 #[cfg(feature = "test-support")]
 pub(crate) fn original() -> Result<(Inventory, Mapping), String> {
     let (inventory, mapping) = extract(
-        include_str!("../src/agent/kernel.rs"),
+        acyclic_harness_control::AGENT_SOURCE,
         include_str!("formal/agent_control_model.rs"),
         include_str!("../src/agent/machine.rs"),
         include_str!("formal/agent_control.rs"),
@@ -453,7 +454,7 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
         }
     }
     let file = syn::parse_file(source).map_err(|error| error.to_string())?;
-    let kernel = syn::parse_file(include_str!("../src/agent/kernel.rs"))
+    let kernel = syn::parse_file(acyclic_harness_control::AGENT_SOURCE)
         .map_err(|error| error.to_string())?;
     let control_inputs = kernel
         .items
@@ -497,7 +498,7 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
 
 #[test]
 fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
-    let kernel = include_str!("../src/agent/kernel.rs");
+    let kernel = acyclic_harness_control::AGENT_SOURCE;
     let model = include_str!("formal/agent_control_model.rs");
     let shell = include_str!("../src/agent/machine.rs");
     let harness = include_str!("formal/agent_control.rs");
@@ -527,7 +528,11 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
         mapping(&changed, model, shell, harness).unwrap_err(),
         "shipping kernel calls and model transition coverage differ"
     );
-    let changed = harness.replacen("../../src/agent/kernel.rs", "parallel_kernel.rs", 1);
+    let changed = harness.replacen(
+        "../../../harness-control/src/agent.rs",
+        "parallel_kernel.rs",
+        1,
+    );
     assert_ne!(changed, harness);
     assert_eq!(
         mapping(kernel, model, shell, &changed).unwrap_err(),

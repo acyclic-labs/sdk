@@ -44,9 +44,9 @@ pub use history::{
 };
 mod input;
 mod input_preview;
+pub use acyclic_harness_control::agent as kernel;
 pub(crate) use input::input as turn_input;
 pub use input_preview::{InputPreview, InputPreviewStep, InputSelection};
-pub mod kernel;
 mod layout;
 mod lifecycle;
 pub use lifecycle::{AgentComposer, AgentLifecycle, CLOSE};

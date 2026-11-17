@@ -3,7 +3,7 @@
 //! counterexample (`kani tests/formal/agent_control_negative.rs` reports every
 //! harness FAILED).
 
-#[path = "../../src/agent/kernel.rs"]
+#[path = "../../../harness-control/src/agent.rs"]
 mod production;
 
 include!("agent_control_model.rs");

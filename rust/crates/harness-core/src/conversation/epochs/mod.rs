@@ -9,9 +9,9 @@ use super::FileRef;
 use acyclic_stream::StreamPath;
 use serde::{Deserialize, Serialize};
 
-mod kernel;
+use acyclic_harness_control::epochs::kernel;
+pub use acyclic_harness_control::epochs::protocol;
 pub use kernel::{Boundary, Cut, fits, inherited, token_bound};
-pub mod protocol;
 mod snapshot;
 mod summary;
 pub use snapshot::EncodedSnapshot;

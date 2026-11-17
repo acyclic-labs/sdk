@@ -2,9 +2,9 @@
 
 //! Verify the production epoch kernels without translating the async runtime.
 
-#[path = "../../../crates/harness-core/src/conversation/epochs/kernel.rs"]
+#[path = "../../../crates/harness-control/src/epochs/kernel.rs"]
 pub mod kernel;
-#[path = "../../../crates/harness-core/src/conversation/epochs/protocol.rs"]
+#[path = "../../../crates/harness-control/src/epochs/protocol.rs"]
 pub mod protocol;
 
 mod proofs {
