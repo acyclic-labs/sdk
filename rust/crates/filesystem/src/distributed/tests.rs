@@ -2,7 +2,7 @@ use super::*;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, CommittedMutation, IdempotencyKey,
     IdempotencyObservation, IdempotencyOutcome, MemoryStream, ReadRequest, RecordStream,
-    StreamError, StreamProvider,
+    StreamCategory, StreamError, StreamProvider,
 };
 use futures::TryStreamExt;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};

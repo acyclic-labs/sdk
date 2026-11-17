@@ -1,6 +1,7 @@
 use super::*;
 use acyclic_stream::{
-    IdempotencyKey, MemoryLimits, MemoryStream, OwnedBytes, StreamError, StreamProvider,
+    IdempotencyKey, MemoryLimits, MemoryStream, OwnedBytes, StreamCategory, StreamError,
+    StreamProvider,
 };
 use state_record::{CompanionKind, PortableRoot, StateRecord};
 
@@ -504,7 +505,10 @@ async fn stale_root_or_authorization_publishes_no_other_root() -> TestResult {
             store.submit(publication, &mut work).await?,
             FilesystemCommitOutcome::Rejected(_)
         ));
-        assert_eq!(provider.tail(right).await, Err(StreamError::NotFound));
+        assert_eq!(
+        provider.tail(right).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
         assert_eq!(provider.tail(left).await?, if stale_policy { 1 } else { 2 });
     }
     Ok(())
@@ -561,7 +565,10 @@ async fn cross_provider_observation_and_oversize_total_refuse_before_submit() ->
     ));
     assert_eq!(publication.request(), &before);
     assert!(publication.request_mut().is_some());
-    assert_eq!(provider.tail(path).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider.tail(path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     Ok(())
 }
 
@@ -633,12 +640,12 @@ async fn prepared_commit_cannot_mix_or_switch_provider_owners() -> TestResult {
         FilesystemCommitOutcome::Unknown { .. }
     ));
     assert_eq!(
-        provider.tail(path.clone()).await,
-        Err(StreamError::NotFound)
+        provider.tail(path.clone()).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     assert_eq!(
-        foreign_provider.tail(path).await,
-        Err(StreamError::NotFound)
+        foreign_provider.tail(path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     Ok(())
 }
@@ -678,7 +685,10 @@ async fn exact_expiry_is_retained_with_the_unknown_request() -> TestResult {
         }
         _ => return Err("expired publication was admitted".into()),
     }
-    assert_eq!(provider.tail(path).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider.tail(path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     Ok(())
 }
 
@@ -754,7 +764,10 @@ async fn canonical_request_keeps_the_earliest_expiry_for_external_and_owned_subm
                     .tail(StreamPath::new(format!("actor/{suffix}"))?)
                     .await;
                 if expired {
-                    assert_eq!(tail, Err(StreamError::NotFound));
+                    assert_eq!(
+                    tail.map_err(|error| error.category()),
+                    Err(StreamCategory::NotFound)
+                );
                 } else {
                     assert_eq!(tail?, 1);
                 }
@@ -854,7 +867,10 @@ async fn native_submission_keeps_the_canonical_exact_expiry_and_original_request
         }
         _ => return Err("native submission bypassed its exact expiry".into()),
     }
-    assert_eq!(provider.tail(path).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider.tail(path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     Ok(())
 }
 
@@ -1110,8 +1126,8 @@ async fn prepared_state_batches_reconcile_all_roots_and_refs_from_exact_records(
         assert!(publication.request_mut().is_none());
         assert_eq!(publication.request().effects[0].mutations.len(), count + 1);
         assert_eq!(
-            provider.tail(first.clone()).await,
-            Err(StreamError::NotFound)
+            provider.tail(first.clone()).await.map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
 
         // Capture a real provider decision, then discard the reply. Recovery
@@ -1258,10 +1274,13 @@ async fn final_state_fence_refusal_preserves_original_request_and_collection_cus
         before.backend_write_operations
     );
     assert_eq!(
-        provider.tail(original_path).await,
-        Err(StreamError::NotFound)
+        provider.tail(original_path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
-    assert_eq!(provider.tail(staged_path).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider.tail(staged_path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     let mut collecting = Box::pin(collection.begin());
     assert!(futures::poll!(collecting.as_mut()).is_pending());
     // The original owner is the producer of the collection wake. Dropping it

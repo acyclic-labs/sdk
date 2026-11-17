@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_stream::{IdempotencyKey, MemoryStream, OwnedBytes, StreamError};
+use acyclic_stream::{IdempotencyKey, MemoryStream, OwnedBytes, StreamCategory, StreamError};
 
 #[tokio::test]
 async fn native_request_transfer_keeps_original_context_and_live_commit_backing()
@@ -106,7 +106,10 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
     assert_eq!(commit.request(), &request);
     assert_eq!(commit.allocation.as_ref().unwrap().bytes(), retained + 23);
     assert_eq!(root.live_allocation_bytes(), live);
-    assert_eq!(provider.tail(path).await, Err(StreamError::NotFound));
+    assert_eq!(
+        provider.tail(path).await.map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     drop(stopped);
     drop(request);
     drop(commit);
