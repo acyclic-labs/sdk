@@ -557,7 +557,13 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                         .take_while(|message| message.role == ModelRole::System)
                         .collect();
                     if source_prefix.is_empty() || source_prefix != worker_prefix {
-                        return fail("the background call did not reuse the agent prefix");
+                        return fail(&format!(
+                            "the background call did not reuse the agent prefix: source {} worker {} source_roles {:?} worker_roles {:?}",
+                            source_prefix.len(),
+                            worker_prefix.len(),
+                            source_prefix.iter().map(|m| m.role).collect::<Vec<_>>(),
+                            worker_prefix.iter().map(|m| m.role).collect::<Vec<_>>(),
+                        ));
                     }
                 }
                 "length_continuation" => {
