@@ -1,6 +1,6 @@
 import {workspaceGraph} from './workspace-model.mjs';
 import {readFileSync} from 'node:fs';
-import {evaluateCfg, featureClosure, trackedFiles} from './policy-core.mjs';
+import {evaluateCfg, featureClosure, readSources, trackedFiles} from './policy-core.mjs';
 
 // Inspect declarations, not unified enabled features: a dev dependency or
 // another workspace member must not accidentally supply the missing edge.
@@ -225,10 +225,9 @@ if (import.meta.main) {
   // Resolve every optional and target-specific edge, including registry crates.
   const metadata = workspaceGraph(process.cwd(), null);
   console.log(`test-support forwarding: ${checkTestSupport(metadata)} dependency declarations checked`);
-  const files = trackedFiles(process.cwd(), ['*.rs']);
-  const sources = files.map(file => [file, readFileSync(file, 'utf8')]);
-  const commands = trackedFiles(process.cwd(), [':!scripts/tests/fixtures'])
-    .filter(file => COMMAND_FILE.test(file)).map(file => [file, readFileSync(file, 'utf8')]);
+  const sources = await readSources(process.cwd(), trackedFiles(process.cwd(), ['*.rs']));
+  const commands = await readSources(process.cwd(), trackedFiles(process.cwd(), [':!scripts/tests/fixtures'])
+    .filter(file => COMMAND_FILE.test(file)));
   console.log(`loom opt-in: ${checkLoomOptIn(metadata, sources)} model packages checked, ` +
     `${checkNoLoomCfgFlag(commands)} command files without a hand-passed loom cfg`);
   console.log(`test-support deserialized members: ${checkDeserializedTestSupport(sources)} Rust sources checked`);

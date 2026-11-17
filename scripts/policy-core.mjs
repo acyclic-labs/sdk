@@ -1,6 +1,7 @@
 import {execFileSync} from 'node:child_process';
 import {existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
+import {readFile} from 'node:fs/promises';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -21,6 +22,15 @@ export function readUtf8(file) {
 export function trackedFiles(root = process.cwd(), paths = [], {untracked = false, ...options} = {}) {
   return execFileSync('git', ['ls-files', '-z', ...(untracked ? ['--cached', '--others', '--exclude-standard'] : []), '--', ...paths],
     {...options, cwd: root, encoding: 'utf8', maxBuffer: Infinity}).split('\0').filter(Boolean);
+}
+
+// Read ordered pages of the working tree, releasing descriptors between pages.
+export async function readSources(root, files) {
+  const pageSize = 64, sources = [];
+  for (let start = 0; start < files.length; start += pageSize)
+    sources.push(...await Promise.all(files.slice(start, start + pageSize).map(async file =>
+      [file, await readFile(resolve(root, file), 'utf8')])));
+  return sources;
 }
 
 const manifests = new Map();
