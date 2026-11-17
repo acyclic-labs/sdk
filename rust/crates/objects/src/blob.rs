@@ -102,7 +102,7 @@ mod content_digest_tests {
     #[test]
     fn logical_checksums_cross_chunk_and_frame_boundaries() {
         let bytes: Vec<_> = (0..(3 * 65536 + 19))
-            .map(|index| (index % 251) as u8)
+            .map(|index| u8::try_from(index % 251).unwrap())
             .collect();
         let expected_sha256: [u8; 32] = Sha256::digest(&bytes).into();
         let expected_blake3 = Digest::of(&bytes);
