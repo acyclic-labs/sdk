@@ -619,7 +619,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
         "WindowsUsnCheckpoint::to_bytes",
         &mut manifest,
     )?;
-    for (name, bytes) in acyclic_machines::identity_codec_fuzz::seeds() {
+    for (name, bytes) in acyclic_machines::identity_codec_fuzz::seeds()? {
         save(
             "ids",
             name,
