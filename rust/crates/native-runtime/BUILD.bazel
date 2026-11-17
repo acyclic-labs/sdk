@@ -490,6 +490,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
@@ -608,7 +609,20 @@ isolated_test(
     binary = ":observability_cases",
     binaries = {":acyclic-process-host":"acyclic-process-host"},
     id = "acyclic-native-runtime::observability",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "observability_full-cloud",
+    binary = ":observability_cases",
+    binaries = {":acyclic-process-host":"acyclic-process-host"},
+    id = "acyclic-native-runtime::observability",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(

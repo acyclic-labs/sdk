@@ -83,7 +83,19 @@ isolated_test(
     name = "acyclic_test_support_test",
     binary = ":acyclic_test_support_test_cases",
     id = "acyclic-test-support",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "acyclic_test_support_test_full-cloud",
+    binary = ":acyclic_test_support_test_cases",
+    id = "acyclic-test-support",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 rust_test(
@@ -119,7 +131,19 @@ isolated_test(
     name = "uninstalled",
     binary = ":uninstalled_cases",
     id = "acyclic-test-support::uninstalled",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
+)
+
+isolated_test(
+    name = "uninstalled_full-cloud",
+    binary = ":uninstalled_cases",
+    id = "acyclic-test-support::uninstalled",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual"],
 )
 
 filegroup(
