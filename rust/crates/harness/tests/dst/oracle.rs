@@ -131,7 +131,7 @@ pub(super) fn done(tag: &str) -> String {
 
 /// The first index after a complete tool exchange: every call before it has
 /// its result, so a cut there preserves whole dependency groups.
-fn complete_exchange_cut(source: &[ModelMessage]) -> Option<usize> {
+pub(super) fn complete_exchange_cut(source: &[ModelMessage]) -> Option<usize> {
     let mut pending = std::collections::BTreeSet::new();
     let mut saw_result = false;
     for (index, message) in source.iter().enumerate() {
@@ -627,4 +627,38 @@ pub(super) fn simulate<T>(
 
 pub(super) fn failed(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[test]
+fn summary_cut_waits_for_parallel_results() {
+    let call = |id: &str| ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
+            id.into(),
+            "write".into(),
+            serde_json::json!({}),
+        ))),
+    };
+    let result = |id: &str| ModelMessage {
+        role: ModelRole::Tool,
+        content: ModelContent::Part(ModelContentPart::ToolResult {
+            call_id: id.into(),
+            name: "write".into(),
+            content: ToolResultContent::Json {
+                value: serde_json::json!({"ok": true}),
+            },
+        }),
+    };
+    // Parallel calls: the cut waits for the second result.
+    assert_eq!(
+        complete_exchange_cut(&[call("a"), call("b"), result("a"), result("b")]),
+        Some(4)
+    );
+    // Sequential calls: the first complete exchange is the cut.
+    assert_eq!(
+        complete_exchange_cut(&[call("a"), result("a"), call("b"), result("b")]),
+        Some(2)
+    );
+    // No result yet: no complete exchange.
+    assert_eq!(complete_exchange_cut(&[call("a"), call("b")]), None);
 }

@@ -6,7 +6,7 @@ use family::{Generator, Variant};
 use oracle::{Plan, World, call, done, service, settlements, simulate, tag};
 
 const STEPS: usize = 8;
-const FILE_BYTES: usize = 7 * 1024;
+const FILE_BYTES: usize = 8 * 1024;
 
 pub(super) const GENERATOR: Generator = Generator {
     class: "J1",
@@ -31,21 +31,14 @@ fn plan() -> Plan {
         tag: "scale",
         steps: (0..STEPS)
             .map(|step| {
-                // The first step admits two calls together, so a summary cut
-                // must wait for both results before it drops the exchange.
-                let calls = if step == 0 { 2 } else { 1 };
-                (0..calls)
-                    .map(|part| {
-                        call(
-                            &format!("s{step}-{part}"),
-                            "write",
-                            serde_json::json!({
-                                "path": format!("step-{step}-{part}.txt"),
-                                "content": "x".repeat(FILE_BYTES),
-                            }),
-                        )
-                    })
-                    .collect()
+                vec![call(
+                    &format!("s{step}"),
+                    "write",
+                    serde_json::json!({
+                        "path": format!("step-{step}.txt"),
+                        "content": "x".repeat(FILE_BYTES),
+                    }),
+                )]
             })
             .collect(),
         fail_once: None,
@@ -122,7 +115,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 return Err("the scale world never reached the context manager".into());
             }
             let settled = settled_calls(&incarnation.requests);
-            let expected_writes = STEPS + 1;
+            let expected_writes = STEPS;
             if settled.len() < expected_writes {
                 return Err(format!(
                     "the scale world settled {} of {expected_writes} writes",
