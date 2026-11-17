@@ -59,6 +59,21 @@ test('manifest and Bazel lock projection preserves aliases, target edges and loc
   assert.deepEqual(node(selected, 'backend').features, ['test-support']);
 });
 
+test('crate test planning keeps default members and all wasm workspace members distinct', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-test-selection-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  fs.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\nmembers=["app", "tool"]\ndefault-members=["app"]\n');
+  for (const name of ['app', 'tool']) {
+    fs.mkdirSync(path.join(root, name, 'src'), {recursive: true});
+    fs.writeFileSync(path.join(root, name, 'Cargo.toml'), `[package]\nname="${name}"\nversion="0.1.0"\n${name === 'tool' ? '[features]\nwasm=[]\n' : ''}`);
+    fs.writeFileSync(path.join(root, name, 'src/lib.rs'), '');
+  }
+  const metadata = workspaceProfileMetadata(root, {workspaceOnly: true});
+  assert.deepEqual(testPackages(metadata), ['app']);
+  assert.deepEqual(wasmPackages(metadata), ['tool']);
+  assert.deepEqual(consumers(metadata).map(item => item.name), ['app']);
+});
+
 test('captured sibling path dependencies stay inside the declared source boundary', t => {
   const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-sibling-'));
   t.after(() => fs.rmSync(sourceRoot, {recursive: true, force: true}));
