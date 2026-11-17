@@ -809,7 +809,6 @@ impl<K: Ord + Clone> Registration<K> {
             index.burn(token);
         }
     }
-}
 
     /// Take over a token parked for this key, as when a predecessor
     /// registration retired after this one registered.
@@ -849,6 +848,7 @@ impl<K: Ord + Clone> Registration<K> {
             }
         }
     }
+}
 
 impl<K: Ord + Clone> Drop for Registration<K> {
     fn drop(&mut self) {
