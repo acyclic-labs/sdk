@@ -8,6 +8,14 @@ pub struct Child<K, P> {
 #[path = "../../crates/collections/src/page/selection.rs"]
 mod production;
 
+#[derive(Debug, PartialEq, Eq)]
+enum Failure {
+    Missing,
+    Admission,
+    Invalid,
+    Terminal,
+}
+
 #[kani::proof]
 #[kani::unwind(4)]
 fn group_selection_failures_are_terminal() {
@@ -25,32 +33,32 @@ fn group_selection_failures_are_terminal() {
         cursor.select(
             |position| {
                 if mode == 1 {
-                    Err("missing")
+                    Err(Failure::Missing)
                 } else {
-                    keys.get(position).ok_or("missing")
+                    keys.get(position).ok_or(Failure::Missing)
                 }
             },
             |left, right| {
                 if mode == 2 {
-                    Err("admission")
+                    Err(Failure::Admission)
                 } else {
                     Ok(left.cmp(right))
                 }
             },
-            || "invalid",
+            || Failure::Invalid,
         )
     };
     let result = select(&mut cursor);
     if mode == 4 {
         assert_eq!(result, Ok(Some(0..1)));
-        assert_eq!(select(&mut cursor), Err("invalid"));
+        assert_eq!(select(&mut cursor), Err(Failure::Invalid));
     } else {
         assert_eq!(
             result,
             Err(match mode {
-                1 => "missing",
-                2 => "admission",
-                _ => "invalid",
+                1 => Failure::Missing,
+                2 => Failure::Admission,
+                _ => Failure::Invalid,
             })
         );
     }
@@ -58,8 +66,8 @@ fn group_selection_failures_are_terminal() {
         cursor.select::<u8, _>(
             |_| panic!("terminal cursor examined a key"),
             |_, _| panic!("terminal cursor compared a key"),
-            || "terminal",
+            || Failure::Terminal,
         ),
-        Err("terminal")
+        Err(Failure::Terminal)
     );
 }
