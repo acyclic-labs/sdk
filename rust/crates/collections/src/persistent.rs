@@ -222,6 +222,19 @@ fn retire<V, A, const N: usize, C, K>(node: Arc<Body<V, A, N, C, K>>) {
     drop(Arc::into_inner(node));
 }
 
+impl<V, A, const N: usize, C, K> Drop for Tree<V, A, N, C, K> {
+    fn drop(&mut self) {
+        // The last view frees the shared cut's Arc allocation before its
+        // original funding retires, so the physical counter never sees an
+        // allocation outliving its credit.
+        if let Some(before) = self.before.take()
+            && let Some(cut) = Arc::into_inner(before)
+        {
+            drop(cut);
+        }
+    }
+}
+
 impl<V, A, const N: usize, C: Copy, K> Clone for Tree<V, A, N, C, K> {
     fn clone(&self) -> Self {
         Self {
