@@ -200,11 +200,13 @@ impl CustodyTransfer {
             &mut custody.holder,
             Holder::Store(Arc::clone(&self.capacity)),
         );
+        // Finish the transfer before invoking the permitted return callback:
+        // unwinding must never refund bytes the store already keeps.
+        custody.sealed = false;
+        self.reserved = 0;
         if let Holder::Invocation { owner, .. } = previous {
             owner.release(kept);
         }
-        custody.sealed = false;
-        self.reserved = 0;
     }
 }
 
