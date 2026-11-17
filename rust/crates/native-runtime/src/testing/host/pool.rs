@@ -35,8 +35,16 @@ impl Pool {
     }
 
     pub(super) fn park(&self) -> bool {
+        let unavailable = self.unavailable.fetch_add(1, Ordering::SeqCst) + 1;
+        // Read the width after claiming this slot: another worker may have
+        // started between the claim and the read, and the earlier width would
+        // hide the saturated state from the driver.
         let started = self.started.load(Ordering::SeqCst);
-        started != 0 && self.unavailable.fetch_add(1, Ordering::SeqCst) + 1 == started
+        let saturated = started != 0 && unavailable == started;
+        if saturated {
+            self.changed();
+        }
+        saturated
     }
 
     pub(super) fn resume(&self) {
@@ -46,9 +54,7 @@ impl Pool {
     // A controlled running closure remains atomic. An unscoped physical job
     // may await the root, so it cannot be mistaken for an available worker.
     pub(crate) fn unscoped(&self) -> Occupant<'_> {
-        if self.park() {
-            self.changed();
-        }
+        self.park();
         Occupant(self)
     }
 
