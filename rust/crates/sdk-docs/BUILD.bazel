@@ -130,20 +130,7 @@ filegroup(
 )
 
 
-exports_files([
-        "src/concrete_versions.rs",
-        "src/concrete_versions/tests.rs",
-        "src/projection.rs",
-        "src/public_api/decode.rs",
-        "src/publication.rs",
-        "src/relative_spans.rs",
-        "src/tests.rs",
-        "src/tests/identity.rs",
-        "src/tests/projection.rs",
-        "src/tests/publication.rs",
-        "src/tests/rustdoc_adapter.rs",
-        "src/tests/scratch.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

@@ -238,6 +238,8 @@ filegroup(
 )
 
 
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
+
 filegroup(
     name = "tree/corpus/guest_json",
     srcs = glob(["corpus/guest_json/**"], allow_empty = True),

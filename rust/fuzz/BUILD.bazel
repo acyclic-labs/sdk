@@ -1007,12 +1007,7 @@ filegroup(
 )
 
 
-exports_files([
-        "corpus/client_files/committed-snapshot",
-        "corpus/client_files/conditional-publication",
-        "corpus/client_files/mismatched-reply-path",
-        "corpus/client_files/stream-query-snapshot",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

@@ -1216,28 +1216,7 @@ filegroup(
 )
 
 
-exports_files([
-        "conformance/stream.json",
-        "examples/provider-conformance.rs",
-        "examples/stream-typescript-consumer.rs",
-        "proto/stream/v1/session.proto",
-        "proto/stream/v1/stream.proto",
-        "src/change.rs",
-        "src/change/sync.rs",
-        "src/http/shared.rs",
-        "src/interest.rs",
-        "src/lib/error.rs",
-        "src/pull.rs",
-        "src/pull_tests.rs",
-        "src/query_sync.rs",
-        "src/query_sync/budgeted.rs",
-        "src/query_sync/locks.rs",
-        "src/query_sync/parity.rs",
-        "src/query_sync/watch.rs",
-        "tests/credential_javascript.rs",
-        "tests/support/follow_contract.rs",
-        "tests/support/follow_data.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

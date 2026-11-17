@@ -1656,19 +1656,7 @@ filegroup(
 )
 
 
-exports_files([
-        "examples/native-runtime-positional-io.rs",
-        "src/claim/record.rs",
-        "src/file_lock.rs",
-        "src/process_tree/external_host/arguments.rs",
-        "src/process_tree/external_host/corpus/linux-arguments.json",
-        "src/process_tree/external_host/corpus/linux-endpoints.json",
-        "tests/claim_codec/oracle.rs",
-        "tests/owner_codec/oracle.rs",
-        "tests/report_port/corpus/request",
-        "tests/report_port/oracle.rs",
-        "tests/signing_reference/oracle.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

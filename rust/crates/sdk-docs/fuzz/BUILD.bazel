@@ -78,14 +78,7 @@ filegroup(
 )
 
 
-exports_files([
-        "corpus/metadata_output/native-missing-manifest.stderr",
-        "corpus/metadata_output/native-workspace.json",
-        "corpus/rustdoc_adapter/valid.json",
-        "metadata_output.rs",
-        "path_identity.rs",
-        "relative_spans.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

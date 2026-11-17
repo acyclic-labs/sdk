@@ -114,12 +114,10 @@ const EMBED = /include(?:_str|_bytes)?!\(\s*(concat!\(\s*)?(env!\(\s*"CARGO_MANI
 const MOD = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+(?:r#)?(\w+)[ \t]*;/gm;
 const TEST_DIRS = /^(tests|benches|examples)\//;
 const trackedSet = new Set(tracked);
-const exported = new Map();
-// A file of another package, exported from its owner.
+// A file of another package. Every package exports each of its files (exportsRule), so a test
+// here or in a workspace that depends on the SDK can declare any SDK file it reads.
 function fileLabel(file) {
   const owner = ownerOf(file);
-  if (!exported.has(owner)) exported.set(owner, new Set());
-  exported.get(owner).add(within(owner, file));
   return `//${owner}:${within(owner, file)}`;
 }
 function closure(crateDir, rootFile) {
@@ -299,7 +297,7 @@ function scriptData(p) {
     return files.map(file => (ownerOf(file) === dir(p) ? within(dir(p), file) : fileLabel(file)));
   });
 }
-const exportsRule = owner => (exported.has(owner) ? `\nexports_files(${list([...exported.get(owner)].sort())}, visibility = ["//visibility:public"])\n` : "") +
+const exportsRule = owner => `\nexports_files(${glob(["**"], ["BUILD.bazel"])}, visibility = ["//visibility:public"])\n` +
   [...(trees.get(owner) ?? [])].sort().map(rel => `\n${rule("filegroup", [
     ["name", q(rel ? `tree/${rel}` : "tree")],
     ["srcs", glob([rel ? `${rel}/**` : "**"], [])],
@@ -815,7 +813,6 @@ const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
-exports_files(${list(["Cargo.lock", "Cargo.toml", ...(fs.existsSync(path.join(root, "clippy.toml")) ? ["clippy.toml"] : [])])})
 ${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${linuxMusl}${windowsCcToolchain()}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.

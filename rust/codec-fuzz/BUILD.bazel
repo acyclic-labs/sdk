@@ -1278,9 +1278,4 @@ filegroup(
 )
 
 
-exports_files([
-        "corpus/harness_codecs/mcp-http-invalid-utf8-frontier",
-        "corpus/harness_codecs/usage-llamacpp-text-literal-extension",
-        "corpus/protobuf/acyclic.actors.v1.InvokeActorRequest-semantic",
-        "corpus/protobuf/acyclic.actors.v1.InvokeWorkerRequest-semantic",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])

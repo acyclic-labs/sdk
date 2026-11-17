@@ -80,13 +80,4 @@ filegroup(
 )
 
 
-exports_files([
-        "src/attr/enum.rs",
-        "src/attr/field.rs",
-        "src/attr/mod.rs",
-        "src/attr/struct.rs",
-        "src/attr/variant.rs",
-        "src/deps.rs",
-        "src/optional.rs",
-        "src/utils.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])

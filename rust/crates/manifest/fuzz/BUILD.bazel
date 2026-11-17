@@ -48,9 +48,7 @@ filegroup(
 )
 
 
-exports_files([
-        "corpus/manifest_json/valid.json",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

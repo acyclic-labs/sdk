@@ -290,10 +290,7 @@ filegroup(
 )
 
 
-exports_files([
-        "examples/inference-typescript-consumer.rs",
-        "proto/inference/v1/inference.proto",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

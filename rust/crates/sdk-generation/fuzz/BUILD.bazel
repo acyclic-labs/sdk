@@ -115,15 +115,7 @@ filegroup(
 )
 
 
-exports_files([
-        "archive-members-native.json",
-        "archive_members.rs",
-        "corpus/archive_members/native-package",
-        "corpus/fixture_replay/git-layout",
-        "git_layout.rs",
-        "identity_record.rs",
-        "source_identities.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

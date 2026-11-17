@@ -2562,33 +2562,7 @@ filegroup(
 )
 
 
-exports_files([
-        "examples/embedded_workspace.rs",
-        "fixtures/fuse/linux-kernel-packets.json",
-        "src/access/projection.rs",
-        "src/access/projection/registry.rs",
-        "src/access/projection/registry/tests.rs",
-        "src/access/retry.rs",
-        "src/arc_layout.rs",
-        "src/git_compat/capture/incremental.rs",
-        "src/git_compat/capture/traversal.rs",
-        "src/git_compat/merge_markers.rs",
-        "src/materializer/backend.rs",
-        "src/materializer/directory_preparation.rs",
-        "src/materializer/publication.rs",
-        "src/native_mount/adapter/folded_cache.rs",
-        "src/native_mount/darwin_mount/tests/mod.rs",
-        "src/native_mount/fence_io.rs",
-        "src/native_mount/fuse/mount/reply_check.rs",
-        "src/native_mount/projfs/callback_path.rs",
-        "src/operation_window/lease_path/encoding.rs",
-        "src/windows_test_filesystems.rs",
-        "tests/access_input.rs",
-        "tests/path_input.rs",
-        "tests/support/git_markers_oracle.rs",
-        "tests/support/native_access.rs",
-        "tests/support/unbounded.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

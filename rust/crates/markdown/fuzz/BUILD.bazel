@@ -86,9 +86,7 @@ filegroup(
 )
 
 
-exports_files([
-        "corpus/streaming/control-delimiter-context",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

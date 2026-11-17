@@ -163,25 +163,7 @@ filegroup(
 )
 
 
-exports_files([
-        "corpus/follow_contract/guard-checked",
-        "corpus/follow_contract/watermarks-held-flush",
-        "corpus/follow_contract/watermarks-impossible",
-        "corpus/follow_contract/watermarks-legacy",
-        "corpus/grpc_status/objects-error-detail",
-        "corpus/session/all-short-commit",
-        "corpus/session/browser-all-held-flush",
-        "corpus/session/browser-all-short-commit",
-        "corpus/session/browser-latest-empty-key",
-        "corpus/session/browser-latest-impossible-durable",
-        "corpus/session/browser-latest-jump",
-        "corpus/session/browser-opened-empty",
-        "corpus/session/browser-opened-foreign",
-        "corpus/session/browser-opened-matching",
-        "corpus/session/latest-empty-key",
-        "corpus/session/latest-impossible-durable",
-        "corpus/session/latest-jump",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

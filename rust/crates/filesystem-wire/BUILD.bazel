@@ -154,10 +154,7 @@ filegroup(
 )
 
 
-exports_files([
-        "proto/filesystem/v2/filesystem.proto",
-        "proto/protocol/v1/protocol.proto",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",
