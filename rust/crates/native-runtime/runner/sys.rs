@@ -851,14 +851,10 @@ pub fn peer_user(file: Fd) -> Result<u32, Errno> {
 }
 
 pub fn accept(listener: Fd) -> Result<Fd, Errno> {
-    // SAFETY: no peer address is requested. Both flags apply to the fresh fd.
-    unsafe {
-        call(
-            number::ACCEPT4,
-            [arg(listener), 0, 0, O_CLOEXEC as usize | 0o4000, 0, 0],
-        )
-    }
-    .map(fd)
+    // SAFETY: no peer address is requested. The accepted control stays
+    // blocking: a receipt that cannot be written must wait for its owner to
+    // drain it, never be dropped as EAGAIN and lose the retirement ack.
+    unsafe { call(number::ACCEPT4, [arg(listener), 0, 0, O_CLOEXEC as usize, 0, 0]) }.map(fd)
 }
 
 pub const EPOLL_IN: u32 = 1;
