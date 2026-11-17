@@ -147,6 +147,181 @@ async fn creation_publishes_files_in_its_one_commit_and_recovers_only_them()
 }
 
 #[tokio::test]
+async fn creation_attributes_are_published_and_recovery_requires_them() -> Result<(), Box<dyn Error>>
+{
+    let config = crate::VolumeInitialization {
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
+        access_policy: Some(crate::access::INITIAL_POLICY),
+    };
+    let operation = IdempotencyKey::from_bytes([0xe5; 16]).operation_id();
+    let cancellation = CancellationToken::new();
+    let files = [("/report.json", OwnedBytes::from_static(b"{\"ok\":true}"))];
+    let name = crate::kernel::AttributeName::new(
+        crate::kernel::AttributeClass::PosixXattr,
+        b"user.creation".to_vec(),
+    )?;
+    let value = OwnedBytes::from_static(b"metadata");
+    let attributes = vec![crate::CreationAttribute {
+        path: "/report.json".into(),
+        name: name.clone(),
+        value: value.clone(),
+    }];
+    let fs = Fs::memory();
+    let created = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "journal",
+            config,
+            crate::CreationOperation::populated_with_attributes(
+                operation,
+                &files,
+                attributes.clone(),
+            ),
+            budget()?,
+            &cancellation,
+            None,
+        )
+        .await?;
+    let workspace = unbounded!(fs, open_workspace("journal"))?;
+    let head = unbounded!(workspace, head())?;
+    assert_eq!(
+        unbounded!(head, read_named_attribute("/report.json", &name, None))?
+            .map(|chunk| chunk.bytes),
+        Some(value.clone())
+    );
+    let retried = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "journal",
+            config,
+            crate::CreationOperation::populated_with_attributes(operation, &files, attributes),
+            read_only()?,
+            &cancellation,
+            None,
+        )
+        .await?;
+    assert_eq!(retried.value.id(), created.value.id());
+    // Negative controls: a retry that omits the creation's attribute, names
+    // an attribute on an unknown path, or repeats one attribute is not this
+    // creation, and recovery rejects each by reads alone.
+    let omitted = crate::CreationOperation::populated(operation, &files);
+    let unknown = vec![crate::CreationAttribute {
+        path: "/missing.json".into(),
+        name: name.clone(),
+        value: value.clone(),
+    }];
+    let repeated = vec![
+        crate::CreationAttribute {
+            path: "/report.json".into(),
+            name: name.clone(),
+            value: value.clone(),
+        },
+        crate::CreationAttribute {
+            path: "/report.json".into(),
+            name: name.clone(),
+            value: value.clone(),
+        },
+    ];
+    for creation in [
+        omitted,
+        crate::CreationOperation::populated_with_attributes(operation, &files, unknown),
+        crate::CreationOperation::populated_with_attributes(operation, &files, repeated),
+    ] {
+        let failure = fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                "journal",
+                config,
+                creation,
+                read_only()?,
+                &cancellation,
+                None,
+            )
+            .await
+            .err()
+            .ok_or("a mismatched attribute creation recovered")?;
+        assert!(
+            matches!(
+                failure.error,
+                WorkspaceError::Filesystem(FsError::CreationRejected)
+            ),
+            "{:?}",
+            failure.error
+        );
+    }
+    // Negative control: the same operation and files with another attribute
+    // value are not this creation, and recovery rejects them by reads alone.
+    let changed = vec![crate::CreationAttribute {
+        path: "/report.json".into(),
+        name,
+        value: OwnedBytes::from_static(b"other"),
+    }];
+    let failure = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "journal",
+            config,
+            crate::CreationOperation::populated_with_attributes(operation, &files, changed),
+            read_only()?,
+            &cancellation,
+            None,
+        )
+        .await
+        .err()
+        .ok_or("a creation with another attribute value recovered")?;
+    assert!(
+        matches!(
+            failure.error,
+            WorkspaceError::Filesystem(FsError::CreationRejected)
+        ),
+        "{:?}",
+        failure.error
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_creation_with_attributes_is_rejected() -> Result<(), Box<dyn Error>> {
+    let config = crate::VolumeInitialization {
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
+        access_policy: Some(crate::access::INITIAL_POLICY),
+    };
+    let operation = IdempotencyKey::from_bytes([0xe6; 16]).operation_id();
+    let cancellation = CancellationToken::new();
+    let name = crate::kernel::AttributeName::new(
+        crate::kernel::AttributeClass::PosixXattr,
+        b"user.creation".to_vec(),
+    )?;
+    let attributes = vec![crate::CreationAttribute {
+        path: "/report.json".into(),
+        name,
+        value: OwnedBytes::from_static(b"metadata"),
+    }];
+    let fs = Fs::memory();
+    // An empty creation publishes no file, so it has nowhere to put an
+    // attribute. It must be rejected, not published with the attributes lost.
+    let failure = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "journal",
+            config,
+            crate::CreationOperation::populated_with_attributes(operation, &[], attributes),
+            budget()?,
+            &cancellation,
+            None,
+        )
+        .await
+        .err()
+        .ok_or("an empty creation with attributes was published")?;
+    assert!(
+        matches!(
+            failure.error,
+            WorkspaceError::Filesystem(FsError::CreationRejected)
+        ),
+        "{:?}",
+        failure.error
+    );
+    // The rejected creation published nothing.
+    assert!(unbounded!(fs, open_workspace("journal")).is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn recovery_pages_a_root_larger_than_one_directory_page() -> Result<(), Box<dyn Error>> {
     let mut volume = VolumeConfig::portable(Lifecycle::Ephemeral);
     volume.limits.maximum_directory_page_entries = 2;
@@ -315,5 +490,212 @@ async fn paged_file_creation_retry_has_linear_work() -> Result<(), Box<dyn Error
             failure.error
         );
     }
+    Ok(())
+}
+
+/// Recovery groups attributes by path once, so a retry with one attribute per
+/// file grows with the file count instead of scanning every attribute for
+/// every file.
+#[tokio::test]
+async fn paged_attribute_creation_retry_has_linear_work() -> Result<(), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    let name = crate::kernel::AttributeName::new(
+        crate::kernel::AttributeClass::PosixXattr,
+        b"user.creation".to_vec(),
+    )?;
+    let value = OwnedBytes::from_static(b"metadata");
+    let operation = IdempotencyKey::from_bytes([0xe6; 16]).operation_id();
+    let config = crate::VolumeInitialization {
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
+        access_policy: Some(crate::access::INITIAL_POLICY),
+    };
+    let mut previous = None;
+    for count in [256_usize, 512] {
+        let names: Vec<_> = (0..count).map(|index| format!("/f{index:04}")).collect();
+        let files: Vec<_> = names
+            .iter()
+            .map(|path| (path.as_str(), OwnedBytes::from_static(b"x")))
+            .collect();
+        let attributes: Vec<_> = names
+            .iter()
+            .map(|path| crate::CreationAttribute {
+                path: path.clone(),
+                name: name.clone(),
+                value: value.clone(),
+            })
+            .collect();
+        let creation = || {
+            crate::CreationOperation::populated_with_attributes(
+                operation,
+                &files,
+                attributes.clone(),
+            )
+        };
+        let fs = Fs::memory();
+        let mut creation_allowance = budget()?;
+        creation_allowance.bytes_copied = count as u64 * 64 * 1024;
+        creation_allowance.peak_allocation_bytes = count as u64 * 16 * 1024;
+        let created = fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                "linear-attributes",
+                config,
+                creation(),
+                creation_allowance,
+                &cancellation,
+                None,
+            )
+            .await
+            .map_err(|failure| format!("creating {count} attributes: {failure:?}"))?;
+        let allowance = WorkBudget {
+            bytes_copied: creation_allowance.bytes_copied,
+            ..read_only()?
+        };
+        let retried = fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                "linear-attributes",
+                config,
+                creation(),
+                allowance,
+                &cancellation,
+                None,
+            )
+            .await
+            .map_err(|failure| format!("retrying {count} attributes: {failure:?}"))?;
+        assert_eq!(retried.value.id(), created.value.id());
+        assert_eq!(retried.work.authority_records_appended, 0);
+        assert_eq!(retried.work.backend_write_operations, 0);
+        assert_linear_work(count, retried.work.items_examined, &mut previous);
+    }
+    Ok(())
+}
+
+/// Recovery retires each attribute page before listing the next, so a retry's
+/// peak allocation is bounded by one page of names, not by every name it
+/// listed. Names four times longer than the page therefore add at most a
+/// couple of pages of peak, never one copy per listed name.
+#[tokio::test]
+async fn attribute_creation_retry_peak_is_bounded_by_one_page() -> Result<(), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    let operation = IdempotencyKey::from_bytes([0xe7; 16]).operation_id();
+    let config = crate::VolumeInitialization {
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
+        access_policy: Some(crate::access::INITIAL_POLICY),
+    };
+    let files = [("/f", OwnedBytes::from_static(b"x"))];
+    let count = 2_048_usize;
+    let short = 8_usize;
+    let long = 512_usize;
+    let mut peaks = Vec::new();
+    for length in [short, long] {
+        let attributes = (0..count)
+            .map(|index| {
+                Ok(crate::CreationAttribute {
+                    path: "/f".to_owned(),
+                    name: crate::kernel::AttributeName::new(
+                        crate::kernel::AttributeClass::PosixXattr,
+                        format!("user.{index:04}{}", "x".repeat(length)).into_bytes(),
+                    )?,
+                    value: OwnedBytes::from_static(b"v"),
+                })
+            })
+            .collect::<Result<Vec<_>, crate::kernel::AttributeError>>()?;
+        let creation = || {
+            crate::CreationOperation::populated_with_attributes(
+                operation,
+                &files,
+                attributes.clone(),
+            )
+        };
+        let fs = Fs::memory();
+        let created = fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                "attribute-pages",
+                config,
+                creation(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                None,
+            )
+            .await?;
+        let retried = fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                "attribute-pages",
+                config,
+                creation(),
+                read_only()?,
+                &cancellation,
+                None,
+            )
+            .await?;
+        assert_eq!(retried.value.id(), created.value.id());
+        peaks.push(retried.work.peak_allocation_bytes);
+    }
+    let page = u64::from(crate::facade::ATTRIBUTE_PAGE_ENTRIES);
+    let added = (long - short) as u64;
+    assert!(
+        peaks[1] <= peaks[0] + 2 * page * added,
+        "a retry kept every listed attribute name: short names peaked at {}, long names at {}",
+        peaks[0],
+        peaks[1]
+    );
+    Ok(())
+}
+
+/// Recovery reads each attribute value and releases it before reading the
+/// next, so a retry's peak allocation is bounded by one value, not by every
+/// value it compared.
+#[tokio::test]
+async fn attribute_creation_retry_peak_is_bounded_by_one_value() -> Result<(), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    let operation = IdempotencyKey::from_bytes([0xe8; 16]).operation_id();
+    let config = crate::VolumeInitialization {
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
+        access_policy: Some(crate::access::INITIAL_POLICY),
+    };
+    let files = [("/f", OwnedBytes::from_static(b"x"))];
+    let count = 64_usize;
+    let value_bytes = 64 * 1024_usize;
+    let value = OwnedBytes::from(vec![0x5a; value_bytes]);
+    let attributes = (0..count)
+        .map(|index| {
+            Ok(crate::CreationAttribute {
+                path: "/f".to_owned(),
+                name: crate::kernel::AttributeName::new(
+                    crate::kernel::AttributeClass::PosixXattr,
+                    format!("user.{index:04}").into_bytes(),
+                )?,
+                value: value.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, crate::kernel::AttributeError>>()?;
+    let creation = || {
+        crate::CreationOperation::populated_with_attributes(operation, &files, attributes.clone())
+    };
+    let fs = Fs::memory();
+    let created = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "attribute-values",
+            config,
+            creation(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            None,
+        )
+        .await?;
+    // One value plus the listing and file reads fit; every value at once does not.
+    let mut allowance = read_only()?;
+    allowance.peak_allocation_bytes = 1024 * 1024;
+    let retried = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "attribute-values",
+            config,
+            creation(),
+            allowance,
+            &cancellation,
+            None,
+        )
+        .await
+        .map_err(|failure| format!("retrying {count} attribute values: {failure:?}"))?;
+    assert_eq!(retried.value.id(), created.value.id());
     Ok(())
 }
