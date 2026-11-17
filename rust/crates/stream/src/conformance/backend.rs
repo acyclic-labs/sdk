@@ -108,34 +108,61 @@ macro_rules! stream_conformance_suite {
 /// history, and append/read/follow zero-control request budgets.
 pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
     let provider = backend.provider();
+    let namespace = StreamPath::new("wave1")?;
+    // Histories own disjoint subtrees and keys. Overlap their I/O so a local
+    // provider can group durability, and remote providers overlap transport.
+    // The checks sharing `conformance/*` remain ordered below; request-budget
+    // accounting runs after every history has completed.
+    let (mut failures, independent, histories) = futures::join!(
+        contract_history(provider),
+        async {
+            macro_rules! checks {
+                ($($name:ident => $future:expr),+ $(,)?) => {{
+                    let ($($name,)+) = futures::join!($($future,)+);
+                    let mut failures = Vec::new();
+                    $(record(&mut failures, stringify!($name), $name);)+
+                    failures
+                }};
+            }
+            checks!(
+                absence => super::absence::verify(provider),
+                selected_child_tails => super::views::selected_child_tails(provider),
+                views => super::views::verify(provider),
+                selected => super::selected::verify(provider),
+                key_seek => super::key_seek::verify(provider),
+                soft => super::soft::verify(provider),
+                selectors => super::selectors::verify(provider),
+                ephemeral => super::ephemeral::verify(provider),
+            )
+        },
+        futures::future::join_all(wave1::Case::ALL.map(|case| {
+            let namespace = &namespace;
+            async move {
+                (
+                    case.name(),
+                    histories::wave1::verify_case(provider, namespace, case).await,
+                )
+            }
+        })),
+    );
+    failures.extend(independent);
+    for (name, result) in histories {
+        record(&mut failures, name, result);
+    }
+    record(
+        &mut failures,
+        "budget",
+        workload(backend, 3, "budget").await,
+    );
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(Failure::Cases(failures))
+    }
+}
+
+async fn contract_history(provider: &dyn StreamProvider) -> Vec<(&'static str, Failure)> {
     let mut failures = Vec::new();
-    record(
-        &mut failures,
-        "absence",
-        super::absence::verify(provider).await,
-    );
-    record(
-        &mut failures,
-        "selected_child_tails",
-        super::views::selected_child_tails(provider).await,
-    );
-    record(&mut failures, "views", super::views::verify(provider).await);
-    record(
-        &mut failures,
-        "selected",
-        super::selected::verify(provider).await,
-    );
-    record(
-        &mut failures,
-        "key_seek",
-        super::key_seek::verify(provider).await,
-    );
-    record(&mut failures, "soft", super::soft::verify(provider).await);
-    record(
-        &mut failures,
-        "selectors",
-        super::selectors::verify(provider).await,
-    );
     record(&mut failures, "contract", verify_contract(provider).await);
     record(
         &mut failures,
@@ -157,14 +184,6 @@ pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
         "page_tail_bytes",
         super::verify_page_tail_bytes(provider).await,
     );
-    let namespace = StreamPath::new("wave1")?;
-    for case in wave1::Case::ALL {
-        record(
-            &mut failures,
-            case.name(),
-            histories::wave1::verify_case(provider, &namespace, case).await,
-        );
-    }
     record(
         &mut failures,
         "atomic",
@@ -175,21 +194,7 @@ pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
         "deadline",
         super::atomic::deadline(provider).await,
     );
-    record(
-        &mut failures,
-        "ephemeral",
-        super::ephemeral::verify(provider).await,
-    );
-    record(
-        &mut failures,
-        "budget",
-        workload(backend, 3, "budget").await,
-    );
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(Failure::Cases(failures))
-    }
+    failures
 }
 
 fn record<T>(

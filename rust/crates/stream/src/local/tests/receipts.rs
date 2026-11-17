@@ -225,8 +225,8 @@ async fn native_publication(provider: &LocalStream, entry: u8) -> Result<Arc<Met
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_publication_workers_preserve_provider_scope_and_both_device_prefixes() -> Result {
-    for entry in 0..3 {
-        for scoped in [false, true] {
+    futures::future::try_join_all((0..3).flat_map(|entry| {
+        [false, true].map(move |scoped| async move {
             let selected_directory = tempfile::tempdir()?;
             let foreign_directory = tempfile::tempdir()?;
             let selected = LocalStream::open(selected_directory.path(), Default::default()).await?;
@@ -291,8 +291,10 @@ async fn native_publication_workers_preserve_provider_scope_and_both_device_pref
             for meter in meters {
                 meter.assert_refunded();
             }
-        }
-    }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })
+    }))
+    .await?;
     Ok(())
 }
 

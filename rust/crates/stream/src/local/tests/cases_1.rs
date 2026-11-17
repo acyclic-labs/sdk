@@ -247,16 +247,23 @@ async fn emitted_history_drains_replay_and_refuses_repair_after_semantic_failure
             .await?;
     }
     let count = u32::try_from(REPLAY_PIPELINE_COMMANDS * 4)?;
-    for index in 1..u64::from(count) {
-        provider
-            .append(AppendRequest {
-                path: paths[2].clone(),
-                records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
-                if_tail: Some(index),
-                idempotency_key: IdempotencyKey::unique(),
-            })
-            .await?;
-    }
+    // Replay needs every emitted frame, but only the final setup cut must be
+    // durable. Use the public phase boundary instead of flushing each frame.
+    deferring_provider_durability(&provider, async {
+        for index in 1..u64::from(count) {
+            provider
+                .append(AppendRequest {
+                    path: paths[2].clone(),
+                    records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
+                    if_tail: Some(index),
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await?;
+        }
+        Ok::<_, StreamError>(())
+    })
+    .await?;
+    provider.durability_barrier().await?;
     let mut expected = Vec::new();
     for path in &paths {
         expected.push(history(&provider, path, count).await?);
