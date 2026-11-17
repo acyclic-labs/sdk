@@ -1,9 +1,8 @@
-import { isMain } from "./policy-core.mjs";
+import { isMain, repositoryUrl as root } from "./policy-core.mjs";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { compatibilityArtifacts } from "./generated-bindings.mjs";
 
-const root = new URL("..", import.meta.url);
 // Writing is explicit: ordinary imports and checks never bless changed inputs.
 const write = isMain(import.meta.url) && process.argv[2] === "write";
 const manifest = JSON.parse(readFileSync(new URL("compatibility/manifest.json", root), "utf8"));

@@ -1,13 +1,11 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { checkManifestFields } from "./policy-core.mjs";
+import { checkManifestFields, repositoryRoot, repositoryUrl as root } from "./policy-core.mjs";
 import "./check-compatibility-digests.mjs";
 import { packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 import { sha256File } from "./file-digest.mjs";
 import { retiredRuntimeFindings } from "./retired-runtime.mjs";
 
-const root = new URL("..", import.meta.url);
 const load = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
 const ajv = new Ajv2020({ allErrors: true });
 ajv.compile(await load("rust/crates/conformance/schemas/runner-report.schema.json"));
@@ -96,7 +94,7 @@ for (const [family, crates, npmConsumers, rustConsumers] of families) {
   for (const consumer of rustConsumers)
     fields.push([`rust/crates/${consumer}/Cargo.toml`, ["dependencies", `acyclic-${family}`, "version"], `=${crateVersion}`]);
 }
-checkManifestFields(fileURLToPath(root), fields);
+checkManifestFields(repositoryRoot, fields);
 const filesystemVersion = compatibility.families.filesystem.version;
 const nativeSource = await readFile(new URL("typescript/packages/filesystem/src/native.ts", root), "utf8");
 const nativePackageVersion = nativeSource.match(/const PACKAGE_VERSION = "([^"]+)";/)?.[1];
