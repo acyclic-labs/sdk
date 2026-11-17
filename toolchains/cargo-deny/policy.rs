@@ -95,7 +95,7 @@ pub fn check(entry: &Value, registry: &Value, policy: &toml::Value) -> Result<Ve
     let name = entry["name"].as_str().ok_or("missing crate name")?;
     let version = Version::parse(entry["version"].as_str().ok_or("missing crate version")?)
         .map_err(|e| e.to_string())?;
-    let Some(repository) = entry.get("repository") else {
+    let Some(repository) = entry.get("repository").filter(|value| !value.is_null()) else {
         if name == "direct-cargo-bazel-deps" {
             return Ok(vec![]);
         }
