@@ -105,17 +105,24 @@ async fn kept_request_bytes_funded_by_their_caller_leave_the_callers_ledger() ->
 // the second write does not copy the whole payload or reserve it again.
 #[tokio::test]
 async fn a_landed_body_is_shared_when_appended_again() -> TestResult<()> {
+    use acyclic_native_runtime::{NativeCustody, NativeReadMeter, ReadAllocation};
     let provider = MemoryStream::default();
     let capacity = Arc::clone(&provider.capacity);
-    let source = path("custody/shared/source")?;
     let destination = path("custody/shared/destination")?;
-    let body = Bytes::from(vec![7_u8; 64 * 1024]);
-    let body_len = body.len() as u64;
+    let body_len = 64 * 1024;
+    let owner = Arc::new(Meter::default());
+    let custody = NativeCustody::new(&owner.original())?;
+    let meter: Arc<dyn NativeReadMeter> = Arc::clone(&custody) as _;
+    let allocation = ReadAllocation::new(&meter, body_len)?;
+    let body = Bytes::from_vec_with_guard(vec![7_u8; body_len], allocation, meter)
+        .map_err(|_| std::io::Error::other("store-funded body construction failed"))?;
+    let backing = body.backing();
+    custody.reserve(&capacity)?.complete();
     let writer = Arc::new(Meter::default());
     provider
         .native_append(
             AppendRequest {
-                path: source.clone(),
+                path: destination,
                 records: vec![AppendRecord {
                     value: body,
                     headers: Default::default(),
@@ -129,7 +136,7 @@ async fn a_landed_body_is_shared_when_appended_again() -> TestResult<()> {
     let record = provider
         .read(ReadRequest {
             key: None,
-            path: source,
+            path: path("custody/shared/destination")?,
             from: 0,
             limit: 1,
             at_least: Default::default(),
@@ -139,25 +146,10 @@ async fn a_landed_body_is_shared_when_appended_again() -> TestResult<()> {
         .await
         .into_iter()
         .next()
-        .ok_or("the landed record is absent")??;
-    let before = capacity.held();
-    let writer = Arc::new(Meter::default());
-    provider
-        .native_append(
-            AppendRequest {
-                path: destination,
-                records: vec![AppendRecord {
-                    value: record.value,
-                    headers: record.headers,
-                }],
-                if_tail: Some(0),
-                idempotency_key: crate::IdempotencyKey::unique(),
-            },
-            writer.original(),
-        )
-        .await??;
-    assert!(
-        capacity.held().saturating_sub(before) < body_len,
+        .ok_or("the retained record is absent")??;
+    assert_eq!(
+        record.value.backing(),
+        backing,
         "appending a store-funded body copied its payload again"
     );
     Ok(())
