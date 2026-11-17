@@ -206,30 +206,34 @@ fn feature_profile_source() -> Fixture {
     fs::create_dir_all(root.join("release")).unwrap();
     fs::write(
         root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"rust/crates/demo\"]\nresolver = \"2\"\n",
+        include_str!("fixtures/feature-profile/Cargo.toml"),
     )
     .unwrap();
     fs::write(
         root.join("rust-toolchain.toml"),
-        "[toolchain]\nchannel = \"1.98.1\"\nprofile = \"minimal\"\n",
+        include_str!("fixtures/feature-profile/rust-toolchain.toml"),
     )
     .unwrap();
-    fs::write(root.join("release/cargo-crates.json"), "[\"demo\"]\n").unwrap();
+    fs::write(
+        root.join("release/cargo-crates.json"),
+        include_str!("fixtures/feature-profile/release/cargo-crates.json"),
+    )
+    .unwrap();
     fs::write(
         root.join("rust/crates/demo/Cargo.toml"),
-        "[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[features]\ndefault = [\"base\"]\nbase = []\nextra = []\n",
+        include_str!("fixtures/feature-profile/rust/crates/demo/Cargo.toml"),
     )
     .unwrap();
     fs::write(
         root.join("rust/crates/demo/src/lib.rs"),
-        "pub struct Always;\n\n#[cfg(feature = \"base\")]\npub fn base_only() {}\n\n#[cfg(feature = \"default\")]\npub fn default_only() {}\n\n#[cfg(not(feature = \"extra\"))]\npub fn overloaded(value: u64) -> u64 { value }\n\n#[cfg(feature = \"extra\")]\npub fn overloaded(value: &str) -> usize { value.len() }\n\n#[cfg(feature = \"extra\")]\npub struct FeatureOnly;\n",
+        include_str!("fixtures/feature-profile/rust/crates/demo/src/lib.rs"),
     )
     .unwrap();
     // This dependency-free lockfile is the exact lock input for the fixture;
     // no network or workspace checkout is involved in the producer run.
     fs::write(
         root.join("Cargo.lock"),
-        "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+        include_str!("fixtures/feature-profile/Cargo.lock"),
     )
     .unwrap();
     let output = directory.path().join("output");
