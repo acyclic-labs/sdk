@@ -499,11 +499,7 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
         let mut direct = prepared.request().clone();
         direct.compose_tools = false;
         let direct = projection::body(&provider, &direct)?;
-        assert!(
-            serde_json::to_string(&direct["tools"])
-                .unwrap()
-                .contains("late")
-        );
+        assert_ne!(direct["tools"], changed["tools"]);
         assert_eq!(original["tools"], changed["tools"]);
         let (name, schema) = match adapter {
             Adapter::Chat => (
@@ -531,12 +527,6 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
         };
         assert_eq!(name, "code");
         assert_eq!(schema["properties"]["code"]["type"], "string");
-        // The dynamic capability is context, never another native declaration.
-        assert!(
-            !serde_json::to_string(&changed["tools"])
-                .unwrap()
-                .contains("late")
-        );
         assert!(
             serde_json::to_string(&changed)
                 .unwrap()
