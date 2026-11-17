@@ -190,6 +190,7 @@ pub(crate) use access_policy::policy_confirmation;
 #[cfg(all(test, loom))]
 pub(crate) use access_policy::policy_revision_is_current;
 pub use attributes::NamedAttributeWriteMode;
+pub(crate) use attributes::{ATTRIBUTE_PAGE_ENTRIES, AttributePageSize};
 use authored_compile::clone_authored_path;
 #[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]
 use authored_compile::clone_borrowed_authored_descriptor;
@@ -288,11 +289,11 @@ use transactions::mutation_path_owned_bytes;
 
 use tree::list_directory_to_file_root_with_accounting;
 use volume_creation::CREATION_FINGERPRINT_DOMAIN;
-pub use volume_creation::{CreationAttribute, CreationOperation};
 pub use volume_creation::VolumeInitialization;
 use volume_creation::creation_commit;
 use volume_creation::creation_fingerprint;
 use volume_creation::merge_creation_backend_work;
+pub use volume_creation::{CreationAttribute, CreationOperation};
 pub use work::FsResult;
 pub use work::FsWork;
 use work::add;

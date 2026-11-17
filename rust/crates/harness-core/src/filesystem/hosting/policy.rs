@@ -47,7 +47,10 @@ impl RootPolicySeed {
             &acyclic_fs::CancellationToken::new(),
         )?;
         let value = io.encode(
-            &(1_u8, (file, Option::<&crate::resources::GenerationRef>::None)),
+            &(
+                1_u8,
+                (file, Option::<&crate::resources::GenerationRef>::None),
+            ),
             io.remaining().map_err(crate::Error::from)?.bytes_encoded,
             true,
         )?;
