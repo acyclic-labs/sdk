@@ -428,9 +428,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await?;
         // Populated files are authored by the creation itself, under the
         // operation a retry repeats.
-        let Some(creation) = creation.filter(|creation| !creation.files.is_empty()) else {
+        let Some(creation) = creation else {
             return Ok(empty);
         };
+        if creation.files.is_empty() {
+            // An empty generation has no file to carry an attribute, so the
+            // grouping creation and recovery share rejects one here before
+            // the empty-file shortcut.
+            group_creation_attributes(creation.files, &creation.attributes, accounting)?
+                .retire(accounting)?;
+            return Ok(empty);
+        }
         // The checkout and its transaction run in an admitted heap frame, so
         // no caller's future embeds them.
         let mut frame_allocation = None;
