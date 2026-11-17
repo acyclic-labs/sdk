@@ -378,20 +378,18 @@ impl AddSubscriptionRequest {
         subscription: SubscriptionSpec,
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
-        let wire = wire::AddSubscriptionRequest {
+        crate::contract::validate_idempotency_key(&idempotency_key)?;
+        Ok(Self {
             namespace: None,
             account_id: Vec::new(),
-            actor_id: actor_id.as_str().to_owned(),
-            subscription: Some(subscription.into()),
+            actor_id,
+            subscription,
             idempotency_key,
-        };
-        Self::try_from(wire)
+        })
     }
 
-    /// Re-runs the canonical request validator without recursively invoking
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        let wire: wire::AddSubscriptionRequest = self.clone().into();
-        crate::validate_add_subscription(&wire).map_err(DomainError::Contract)
+        crate::contract::validate_idempotency_key(&self.idempotency_key).map_err(Into::into)
     }
 
     /// Returns the Actor identity.
