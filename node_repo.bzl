@@ -44,7 +44,11 @@ tool(
 """
 
 def _node_repository_impl(ctx):
-    os = {"mac os x": "macos"}.get(ctx.os.name, ctx.os.name)
+    os = ctx.os.name
+    if os.startswith("windows"):
+        os = "windows"
+    else:
+        os = {"mac os x": "macos"}.get(os, os)
     cpu = {"arm64": "aarch64", "amd64": "x86_64"}.get(ctx.os.arch, ctx.os.arch)
     key = "%s-%s" % (os, cpu)
     if key not in _RELEASES:
