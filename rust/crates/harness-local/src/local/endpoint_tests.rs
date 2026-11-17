@@ -584,8 +584,11 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     eprintln!("tree reader: authored private UI followed; managed outputs refused");
     let outside = AgentPath::root(&crate::agent::AgentId::from_bytes([0; 16]));
     assert_eq!(
-        reader.head(outside.status().map_err(storage)?).await,
-        Err(StreamError::AccessDenied)
+        reader
+            .head(outside.status().map_err(storage)?)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::AccessDenied)
     );
     let directory_connection = harness.connect_sessions().await?;
     let session =
@@ -642,8 +645,11 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         );
     }
     assert_eq!(
-        reader.head(session.root.status().map_err(storage)?).await,
-        Err(StreamError::AccessDenied)
+        reader
+            .head(session.root.status().map_err(storage)?)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::AccessDenied)
     );
     // The primitive filters broad discovery to authorized children. A directory
     // owner can discover both roots; this original tree credential sees only its own.
@@ -799,8 +805,9 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
                 if_tail: None,
                 idempotency_key: IdempotencyKey::unique(),
             })
-            .await,
-        Err(StreamError::Unavailable)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Unavailable)
     );
     assert!(cut.0.load(Ordering::SeqCst));
     let original = stream
