@@ -1475,14 +1475,25 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             let progress = ExecutionProgress::controlled(progress);
             if stop.is_cancelled()
                 && !matches!(
-                    progress,
+                    &progress,
                     Ok(ExecutionProgress::Ready(_) | ExecutionProgress::Controlled(_))
                 )
             {
                 self.host.settle(agent, turn).await.map_err(host_error)?;
                 // A cancel or archive stops this turn: it settles durably as
-                // a cancelled entry holding its prompt and the answer it
-                // streamed so far, with no further model request.
+                // a cancelled entry holding its prompt, the answer it streamed
+                // so far, and every call that settled before the stop. The
+                // next turn's model sees those settlements.
+                let stopped = match progress {
+                    Ok(ExecutionProgress::Ended(ended)) => {
+                        let (_, output) = *ended;
+                        Stopped {
+                            outcome: TurnOutcome::Cancelled,
+                            settled: output,
+                        }
+                    }
+                    _ => Stopped::without_steps(TurnOutcome::Cancelled),
+                };
                 let entry = interrupted(
                     agent,
                     &open,
@@ -1490,7 +1501,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     inbox,
                     input,
                     notices,
-                    Stopped::without_steps(TurnOutcome::Cancelled),
+                    stopped,
                 )
                 .await?;
                 return settle_effects(

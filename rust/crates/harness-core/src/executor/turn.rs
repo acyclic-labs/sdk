@@ -190,6 +190,7 @@ impl StockExecution<'_> {
         // step's messages start. A failure keeps exactly the settled steps.
         let mut settled = 0_u32;
         let mut unsettled = None;
+        let mut settled_call = false;
         let progress = async {
             while input.max_steps.is_none_or(|maximum| steps < maximum) {
                 if let Some(control) = journal.supervision().await? {
@@ -441,7 +442,24 @@ impl StockExecution<'_> {
                         ExecutionProgress::Controlled(control) => {
                             return Ok(ExecutionProgress::Controlled(control));
                         }
-                        ExecutionProgress::Ready(()) => {}
+                        ExecutionProgress::Ready(()) => {
+                            // This call settled; a later failure keeps it in the
+                            // transcript the next turn sees.
+                            unsettled = Some(prior_messages.len());
+                            settled_call = true;
+                            // The turn's own stop ends the turn before another
+                            // call can start, after the call it interrupted.
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if futures::FutureExt::now_or_never(
+                                journal.model_cancellation(),
+                            )
+                            .is_some()
+                            {
+                                return Err(Error::InteractionRejected(
+                                    crate::InteractionRejection::Cancelled,
+                                ));
+                            }
+                        }
                         ExecutionProgress::Pending(wait) => {
                             return Ok(ExecutionProgress::Pending(wait));
                         }
@@ -475,7 +493,7 @@ impl StockExecution<'_> {
             // completed: their applied effects stay in the transcript the
             // next turn's model sees, however often the turn is redelivered.
             Err(error) if error.settles_turn() => {
-                if settled == 0 {
+                if settled == 0 && !settled_call {
                     return Err(error);
                 }
                 if let Some(at) = unsettled {
@@ -483,7 +501,11 @@ impl StockExecution<'_> {
                 }
                 let transcript =
                     self.settled_transcript(steering.into_retired(), prior_messages, true, "")?;
-                let mut output = TurnOutput::new(String::new(), Value::Null, settled);
+                let mut output = TurnOutput::new(
+                    String::new(),
+                    Value::Null,
+                    if settled_call { steps } else { settled },
+                );
                 output.transcript = transcript;
                 return Ok(ExecutionProgress::Ended(Box::new((error, output))));
             }
