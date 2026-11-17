@@ -19,11 +19,15 @@ def _deny_test_impl(ctx):
         outputs = [snapshot],
         mnemonic = "CargoDenyWorkspace",
     )
+    cargo = [file for file in ctx.files._cargo if file.short_path.endswith("/bin/cargo")]
+    rustc = [file for file in ctx.files._rustc if file.short_path.endswith("/bin/rustc")]
+    if len(cargo) != 1 or len(rustc) != 1:
+        fail("Rust toolchain must expose exactly one Cargo and rustc binary")
     links = {
         "deny-workspace": snapshot,
         "deny-tool/cargo-deny": ctx.file._deny,
-        "deny-compiler/bin/cargo": ctx.file._cargo,
-        "deny-compiler/bin/rustc": ctx.file._rustc,
+        "deny-compiler/bin/cargo": cargo[0],
+        "deny-compiler/bin/rustc": rustc[0],
     }
     for file in ctx.files._registry:
         links["deny-registry/" + _relative_external(file)] = file
@@ -49,8 +53,8 @@ deny_test = rule(
         "_snapshot": attr.label(default = "//toolchains/cargo-deny:snapshot.mjs", allow_single_file = True),
         "_runner": attr.label(default = "//toolchains/cargo-deny:offline.mjs", allow_single_file = True),
         "_deny": attr.label(default = "@cargo_deny_binary//:cargo-deny", allow_single_file = True),
-        "_cargo": attr.label(default = "@rust_linux_x86_64__x86_64-unknown-linux-gnu__stable_tools//:bin/cargo", allow_single_file = True),
-        "_rustc": attr.label(default = "@rust_linux_x86_64__x86_64-unknown-linux-gnu__stable_tools//:bin/rustc", allow_single_file = True),
+        "_cargo": attr.label(default = "@rust_linux_x86_64__x86_64-unknown-linux-gnu__stable_tools//:cargo", allow_files = True),
+        "_rustc": attr.label(default = "@rust_linux_x86_64__x86_64-unknown-linux-gnu__stable_tools//:rustc", allow_files = True),
         "_rustc_lib": attr.label(default = "@rust_linux_x86_64__x86_64-unknown-linux-gnu__stable_tools//:rustc_lib", allow_files = True),
         "_advisories": attr.label(default = "@cargo_deny_advisories//:data", allow_files = True),
         "_registry": attr.label(default = "@cargo_deny_registry//:data", allow_files = True),
