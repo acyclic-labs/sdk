@@ -1,0 +1,17 @@
+[package]
+name = "acyclic-harness-control-checks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Correspondence of harness production control, solver and trace sources"
+
+[dependencies]
+acyclic-harness-control = { path = "../harness-control", features = ["test-support"] }
+acyclic-test-support = { path = "../test-support" }
+syn = { version = "=3.0.9", features = ["full", "visit"] }
+
+[lints]
+workspace = true

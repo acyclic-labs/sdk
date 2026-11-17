@@ -144,8 +144,7 @@ acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support
 acyclic-test-support = { path = "../test-support" }
 # Hooks record under cfg(test) too, so lib tests observe them without test-support.
 acyclic-differential = { version = "=0.2.0", path = "../differential" }
-proc-macro2 = "=1.0.107"
-syn = { version = "=3.0.9", features = ["full", "visit"] }
+acyclic-harness-control-checks = { path = "../harness-control-checks" }
 proptest.workspace = true
 diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
