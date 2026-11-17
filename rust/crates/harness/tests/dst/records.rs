@@ -466,7 +466,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 .await
                 .map_err(oracle::failed)?;
             for reader in READERS {
-                entry(check_record(kind, reader, &emitted, &harness)).await?;
+                entry(check_record(kind, reader, &emitted)).await?;
             }
             Ok(true)
         })
