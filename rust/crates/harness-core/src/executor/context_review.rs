@@ -9,6 +9,8 @@ const INSTRUCTION: &str = "You manage this worker's context outside its turns. D
 #[serde(deny_unknown_fields)]
 struct Decision {
     version: u32,
+    #[serde(deserialize_with = "Option::deserialize")]
+    #[heap_layout(as = Option<String>)]
     summary: Option<String>,
     review_at_input_tokens: u64,
 }
@@ -577,13 +579,7 @@ impl<'a> StockExecution<'a> {
                 drop(session);
                 scope.finish(0)?;
                 return self
-                    .reject_decision(
-                        journal,
-                        (input.operation_id, step),
-                        defect.to_owned(),
-                        rejected.is_some(),
-                        capacity,
-                    )
+                    .reject_decision(journal, (input.operation_id, step), defect.to_owned())
                     .await;
             }
         };
@@ -619,8 +615,6 @@ impl<'a> StockExecution<'a> {
                         journal,
                         (input.operation_id, step),
                         decode_rejection(&error),
-                        rejected.is_some(),
-                        capacity,
                     )
                     .await;
             }
@@ -654,8 +648,6 @@ impl<'a> StockExecution<'a> {
                     journal,
                     (input.operation_id, step),
                     "version must be 1, review_at_input_tokens must be positive and below the capacity, and summary must be nonempty, or null with review_at_input_tokens above the current input".to_owned(),
-                    rejected.is_some(),
-                    capacity,
                 )
                 .await;
         }
@@ -676,17 +668,14 @@ impl<'a> StockExecution<'a> {
     }
 
     /// A malformed, empty or invalid decision is the reviewer's defect, never
-    /// the worker's: the context stays unreviewed. The first rejection is
-    /// re-asked with its reason at the next response boundary; a second defers
-    /// review until the input reaches capacity, where the independent capacity
-    /// backstop compacts.
+    /// the worker's: the context stays unreviewed. Each rejection is fed back
+    /// at the next response boundary. Boundaries provide backpressure without
+    /// imposing a retry count; the independent capacity backstop still compacts.
     async fn reject_decision(
         &self,
         journal: &dyn ExecutionJournal,
         (operation, step): (OperationId, u32),
         reason: String,
-        reasked: bool,
-        capacity: crate::context::ModelContextCapacity,
     ) -> Result<Option<Receipt<'a>>> {
         // The stream records why the settled reply authorised nothing, so a
         // reader sees the defect without the model call's private output.
@@ -704,12 +693,7 @@ impl<'a> StockExecution<'a> {
                 journal.append(operation, &key, &event, self.io)?.await
             })
             .await?;
-        let mut state = self.review.state.lock().await;
-        if reasked {
-            state.review_at = u64::from(capacity.context_tokens);
-        } else {
-            state.rejected = Some(reason);
-        }
+        self.review.state.lock().await.rejected = Some(reason);
         Ok(None)
     }
 

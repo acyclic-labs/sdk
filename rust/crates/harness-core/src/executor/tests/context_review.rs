@@ -711,17 +711,18 @@ async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Resu
 }
 
 /// A reviewer's malformed, empty or invalid decision never fails the worker.
-/// It is re-asked once with its reason; a second defect keeps the unreviewed
-/// context until capacity. The first two payloads are the ones DeepSeek
+/// Every defect is re-asked with its reason at a response boundary, until a
+/// valid reply resumes ordinary review. The first two payloads are ones DeepSeek
 /// returned in GC-274: a raw newline inside a JSON string, and no text.
 #[tokio::test]
-async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()> {
+async fn defective_context_decisions_remain_retryable_until_a_valid_reply() -> Result<()> {
     let raw_newline =
         "{\"version\":1,\"summary\":\"line one\nline two\",\"review_at_input_tokens\":500}";
     for decision in [
         raw_newline.to_owned(),
         String::new(),
         "not JSON".to_owned(),
+        json!({"version":1,"review_at_input_tokens":500}).to_string(),
         json!({"version":1,"summary":"x","review_at_input_tokens":500,"quoted_field_name":true})
             .to_string(),
         json!({"version":"quoted_value","summary":"x","review_at_input_tokens":500}).to_string(),
@@ -748,6 +749,8 @@ async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()
                 reply(&decision),
                 response(),
                 reply(&decision),
+                response(),
+                reply(r#"{"version":1,"summary":null,"review_at_input_tokens":1000}"#),
                 response(),
             ])
             .with_context_capacity(crate::context::ModelContextCapacity {
@@ -785,7 +788,7 @@ async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()
             },
         ];
         let worker = async {
-            for step in 0..3 {
+            for step in 0..4 {
                 let events = execution.model_step(journal, &input, step, &prior).await?;
                 let (_, records) = execution
                     .model_records(journal, input.operation_id, step, ModelPurpose::Response)
@@ -807,18 +810,18 @@ async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()
                         original_metadata(&events),
                     )
                     .await?;
-                if step < 2 {
+                if step < 3 {
                     execution.review.completed.notified().await;
                     assert_eq!(provider.request_count(), requests + 1);
                 } else {
                     assert_eq!(
                         provider.request_count(),
                         requests,
-                        "after the re-ask, review waits for capacity"
+                        "the valid decision sets the next review boundary"
                     );
                 }
             }
-            for step in 0..3 {
+            for step in 0..4 {
                 let (_, rejected) = execution
                     .step_records(journal, input.operation_id, step, false, None, |event| {
                         matches!(
@@ -849,12 +852,16 @@ async fn defective_context_decisions_reask_once_then_keep_history() -> Result<()
             };
             assert!(!rejected(&ask));
             assert!(rejected(&reask), "the re-ask carries its rejection");
+            assert!(
+                rejected(&provider.request(5).unwrap()),
+                "a second rejection is retryable too"
+            );
             Ok(ExecutionProgress::Ready(()))
         };
         execution
             .with_context_review(journal, &input, worker)
             .await?;
-        assert_eq!(provider.request_count(), 5);
+        assert_eq!(provider.request_count(), 7);
     }
     Ok(())
 }
