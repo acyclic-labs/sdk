@@ -27,6 +27,9 @@ prost.workspace = true
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+
 [dev-dependencies]
 acyclic-test-support = { path = "../test-support" }
 
