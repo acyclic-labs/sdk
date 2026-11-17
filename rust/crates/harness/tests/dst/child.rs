@@ -297,14 +297,32 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
         if !tool_result {
             return Err(format!("{fault}: the first tool never settled"));
         }
-        let tool_error = requests
-            .iter()
-            .flat_map(|request| settlements(request).unwrap_or_default())
-            .any(|settled| settled.call.name == "read" && !settled.succeeded());
-        if !tool_error {
-            return Err(format!(
-                "{fault}: the child's failure never reached its model"
-            ));
+        if fault == "undecided_failure" {
+            let failed = results.iter().any(|(_, value)| {
+                value
+                    .get("settled")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|entries| {
+                        entries.iter().any(|entry| {
+                            entry.get("name").and_then(serde_json::Value::as_str)
+                                == Some("leaf-fail")
+                                && entry.get("failed").is_some()
+                        })
+                    })
+            });
+            if !failed {
+                return Err(format!("{fault}: the parent never saw the failed child"));
+            }
+        } else {
+            let tool_error = requests
+                .iter()
+                .flat_map(|request| settlements(request).unwrap_or_default())
+                .any(|settled| settled.call.name == "read" && !settled.succeeded());
+            if !tool_error {
+                return Err(format!(
+                    "{fault}: the child's failure never reached its model"
+                ));
+            }
         }
     }
     Ok(())
