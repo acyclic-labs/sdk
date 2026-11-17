@@ -160,7 +160,9 @@ fn subscription_start_ingress_and_payload_are_lossless() {
 #[kani::unwind(40)]
 fn subscription_observation_numeric_projection_is_lossless() {
     let cursors: CursorValues = kani::any();
-    let value = super::SubscriptionObservation::try_from(subscription(cursors)).unwrap();
+    let value = super::SubscriptionObservation::try_from(subscription(cursors));
+    assert!(value.is_ok());
+    let Ok(value) = value else { return };
     assert_subscription_projection(&value, cursors);
     let wire: crate::wire::SubscriptionObservation = value.into();
     assert_subscription_wire_projection(&wire, cursors);
@@ -260,8 +262,9 @@ fn actor_observation_and_response_numeric_projection_is_lossless() {
     let epoch: u64 = kani::any();
     let revision: u64 = kani::any();
     let cursors: Option<CursorValues> = kani::any();
-    let value =
-        super::ActorObservation::try_from(observation(millis, epoch, revision, cursors)).unwrap();
+    let value = super::ActorObservation::try_from(observation(millis, epoch, revision, cursors));
+    assert!(value.is_ok());
+    let Ok(value) = value else { return };
     assert_observation_projection(&value, millis, epoch, revision, cursors);
     let wire: crate::wire::ActorObservation = value.into();
     assert_observation_wire_projection(&wire, millis, epoch, revision, cursors);
@@ -277,16 +280,18 @@ fn actor_observation_and_response_numeric_projection_is_lossless() {
         };
         let response = super::DeploymentResponse::try_from(crate::wire::DeploymentResponse {
             deployment: present.then_some(deployment.clone()),
-        })
-        .unwrap();
+        });
+        assert!(response.is_ok());
+        let Ok(response) = response else { return };
         assert_eq!(response.deployment().is_some(), present);
         let wire: crate::wire::DeploymentResponse = response.into();
         assert_eq!(wire.deployment, present.then_some(deployment.clone()));
         let response =
             super::UpdateNamespaceResponse::try_from(crate::wire::UpdateNamespaceResponse {
                 deployment: present.then_some(deployment.clone()),
-            })
-            .unwrap();
+            });
+        assert!(response.is_ok());
+        let Ok(response) = response else { return };
         let wire: crate::wire::UpdateNamespaceResponse = response.into();
         assert_eq!(wire.deployment, present.then_some(deployment));
     }
@@ -321,8 +326,9 @@ fn update_expected_configuration_revision_is_lossless() {
         }),
         expected_configuration_revision: revision,
         idempotency_key: "i".into(),
-    })
-    .unwrap();
+    });
+    assert!(value.is_ok());
+    let Ok(value) = value else { return };
     assert_eq!(value.expected_configuration_revision(), revision);
     let wire: crate::wire::UpdateNamespaceRequest = value.into();
     assert_eq!(wire.expected_configuration_revision, revision);

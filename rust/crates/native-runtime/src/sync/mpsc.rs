@@ -34,7 +34,11 @@ pub(crate) fn sync_channel<T>(capacity: usize) -> (SyncSender<T>, Receiver<T>) {
 
 impl<T> SyncSender<T> {
     pub(crate) fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        let mut state = self.0.state.lock().unwrap();
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.receiver {
             return Err(TrySendError::Disconnected(value));
         }
@@ -48,7 +52,11 @@ impl<T> SyncSender<T> {
 }
 impl<T> Receiver<T> {
     pub(crate) fn recv(&self) -> Result<T, RecvError> {
-        let mut state = self.0.state.lock().unwrap();
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if let Some(value) = state.items.pop_front() {
                 return Ok(value);
@@ -56,18 +64,30 @@ impl<T> Receiver<T> {
             if !state.sender {
                 return Err(RecvError);
             }
-            state = self.0.ready.wait(state).unwrap();
+            state = self
+                .0
+                .ready
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 }
 impl<T> Drop for SyncSender<T> {
     fn drop(&mut self) {
-        self.0.state.lock().unwrap().sender = false;
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sender = false;
         self.0.ready.notify_one();
     }
 }
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        self.0.state.lock().unwrap().receiver = false;
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .receiver = false;
     }
 }
