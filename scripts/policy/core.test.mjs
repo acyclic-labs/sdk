@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
 import {checkFileCopies, checkManifestFields, checkTypeScriptReferences, featureClosure, readSources, toml, trackedFiles} from '../policy-core.mjs';
+import {workspaceMembers} from '../workspace-manifests.mjs';
 import {fuzz as licenseGraph} from '../check-js-licenses.fuzz.mjs';
 
 test('shared license graph conformance: aliases, cycles and canonical physical reads', () =>
@@ -81,8 +82,15 @@ test('source pages retain every input under a configured descriptor budget', t =
 test('manifest policy checks declared identities and exact packaged source bytes', t => {
   const root = mkdtempSync(join(tmpdir(), 'policy-manifests-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
-  writeFileSync(join(root, 'Cargo.toml'), '[package]\nversion = "1.0.0"\n[package.metadata]\nreleased = 2026-11-17\n[workspace.package]\nversion = "2.0.0"\n');
+  writeFileSync(join(root, 'Cargo.toml'), '[package]\nversion = "1.0.0"\n[package.metadata]\nreleased = 2026-11-17\n[workspace]\nmembers = ["first/.", "second"]\n[workspace.dependencies]\nsecond = {path="second"}\n[workspace.package]\nversion = "2.0.0"\n');
   writeFileSync(join(root, 'package.json'), JSON.stringify({dependencies: {'@acyclic-labs/stream': '3.0.0'}}));
+  for (const directory of ['first', 'second']) mkdirSync(join(root, directory));
+  writeFileSync(join(root, 'first/Cargo.toml'), '[package]\nname="first"\n[dependencies]\nsecond.workspace=true\nvendor={path="../vendor"}\n[target.unix.dev-dependencies]\nsecond={path="../second"}\n');
+  writeFileSync(join(root, 'second/Cargo.toml'), '[package]\nname="second"\n');
+  assert.deepEqual([...workspaceMembers(root)], [
+    ['first/.', {name: 'first', dependencies: [{directory: 'second', kind: 'normal'}, {directory: 'second', kind: 'dev'}]}],
+    ['second', {name: 'second', dependencies: []}],
+  ]);
   const checks = [['Cargo.toml', ['package', 'version'], '1.0.0'], ['package.json', ['dependencies', '@acyclic-labs/stream'], '3.0.0']];
   checkManifestFields(root, checks);
   assert.throws(() => checkManifestFields(root, [['Cargo.toml', ['package', 'metadata', 'released'], '2026-11-17']]), /must be/);
