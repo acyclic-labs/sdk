@@ -3,7 +3,7 @@ use super::*;
 
 thread_local! {
     static GIT: PathBuf = resolve_git();
-    static COMPILER: sync::Arc<Toolchain> = resolve_cargo();
+    static COMPILER: sync::Arc<PathBuf> = sync::Arc::new(binary("CARGO"));
     #[cfg(windows)]
     static LINKER: (String, PathBuf) = resolve_linker();
     #[cfg(windows)]
@@ -71,14 +71,6 @@ pub(super) fn path() -> std::ffi::OsString {
     .unwrap()
 }
 
-// Leaf slot: initialization only runs explicit rustup probes, acquiring no
-// fixture or SDK cache lock. Publish Cargo and its immutable fixture recordings
-// together, and release this lock before any Cargo work or fixture locks.
-struct Toolchain {
-    cargo: sync::Arc<PathBuf>,
-    probes: BTreeMap<Vec<std::ffi::OsString>, std::process::Output>,
-}
-static CARGO: sync::Mutex<Option<sync::Arc<Toolchain>>> = sync::Mutex::new(None);
 // Independent leaf slots: constructors do not acquire another fixture slot.
 static FIXTURES: [sync::Mutex<Option<sync::Arc<Fixture>>>; 3] =
     [const { sync::Mutex::new(None) }; 3];
@@ -98,14 +90,11 @@ pub(super) fn fixture(kind: u8) -> sync::Arc<Fixture> {
 }
 
 pub(super) fn cargo() -> sync::Arc<PathBuf> {
-    COMPILER.with(|compiler| sync::Arc::clone(&compiler.cargo))
+    COMPILER.with(sync::Arc::clone)
 }
 
 pub(super) fn rustc() -> PathBuf {
-    cargo()
-        .parent()
-        .unwrap()
-        .join(format!("rustc{}", std::env::consts::EXE_SUFFIX))
+    binary("rustc")
 }
 
 pub(super) fn configure(command: &mut Command) {
@@ -126,16 +115,7 @@ pub(super) fn configure(command: &mut Command) {
                 ""
             },
         )
-        .env(
-            "RUSTUP_TOOLCHAIN",
-            cargo()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .file_name()
-                .unwrap(),
-        );
+        .env("RUSTC", rustc());
     #[cfg(windows)]
     {
         command.env("TEMP", temp_dir()).env("TMP", temp_dir());
@@ -174,72 +154,6 @@ fn resolve_linker() -> (String, PathBuf) {
         ),
         linker.clone(),
     )
-}
-
-fn resolve_cargo() -> sync::Arc<Toolchain> {
-    sync::get_or_try_init(&CARGO, || {
-        let commands = [
-            vec!["which", "cargo", "--toolchain", "1.98.1"],
-            vec!["which", "cargo", "--toolchain", "nightly-2026-07-01"],
-            vec![
-                "target",
-                "list",
-                "--installed",
-                "--toolchain",
-                "nightly-2026-07-01",
-            ],
-        ];
-        let mut probes = BTreeMap::new();
-        let mut cargo = None;
-        for arguments in commands {
-            let output = Command::new("rustup")
-                .env("RUSTUP_AUTO_INSTALL", "0")
-                .args(&arguments)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{}", output_message(&output));
-            if cargo.is_none() {
-                cargo = Some(sync::Arc::new(PathBuf::from(
-                    String::from_utf8(output.stdout.clone()).unwrap().trim(),
-                )));
-            }
-            probes.insert(
-                arguments
-                    .into_iter()
-                    .map(std::ffi::OsString::from)
-                    .collect(),
-                output,
-            );
-        }
-        Ok::<_, std::convert::Infallible>(Toolchain {
-            cargo: cargo.unwrap(),
-            probes,
-        })
-    })
-    .unwrap()
-}
-
-// Real recorded provisioning outputs for this test binary's fixed, explicitly
-// selected toolchains. Production selection and wrapper-freshness controls use
-// the real executor. Only these exact explicit rustup commands are replayed.
-pub(super) fn tool_output(command: &Command) -> Option<std::process::Output> {
-    if command.get_program() != "rustup" {
-        return None;
-    }
-    for (key, value) in command.get_envs() {
-        if ["RUSTUP_HOME", "RUSTUP_DIST_SERVER", "RUSTUP_UPDATE_ROOT"]
-            .iter()
-            .any(|name| key.as_encoded_bytes().eq_ignore_ascii_case(name.as_bytes()))
-            && value != std::env::var_os(key).as_deref()
-        {
-            return None;
-        }
-    }
-    let arguments = command
-        .get_args()
-        .map(std::ffi::OsString::from)
-        .collect::<Vec<_>>();
-    COMPILER.with(|compiler| compiler.probes.get(&arguments).cloned())
 }
 
 pub(super) fn binary(name: &str) -> PathBuf {
