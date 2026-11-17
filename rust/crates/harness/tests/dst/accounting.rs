@@ -16,9 +16,10 @@ fn path(name: &str) -> NamespacePath {
 fn fixture_path_keys_are_accounted_in_held_files() -> std::result::Result<(), String> {
     let temporary = tempfile::tempdir().map_err(|error| error.to_string())?;
     std::fs::write(temporary.path().join("a"), b"a").map_err(|error| error.to_string())?;
-    std::fs::write(temporary.path().join("longer-name"), b"b").map_err(|error| error.to_string())?;
-    let runtime = acyclic_native_runtime::testing::seeded_runtime(71)
+    std::fs::write(temporary.path().join("longer-name"), b"b")
         .map_err(|error| error.to_string())?;
+    let runtime =
+        acyclic_native_runtime::testing::seeded_runtime(71).map_err(|error| error.to_string())?;
     runtime.block_on(async {
         tokio::time::pause();
         let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(71);
