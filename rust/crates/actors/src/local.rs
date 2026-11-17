@@ -51,6 +51,9 @@ use std::{collections::BTreeMap, sync::Arc};
 /// platform handles, so it never travels as a cause; [`Error::into_cause`]
 /// keeps the failure but discards custody. Callers that may retry must
 /// extract custody before converting.
+///
+/// With the default boxed publication custody, this type occupies at most
+/// 24 bytes; cold payloads remain behind pointers on the success path.
 #[derive(Debug)]
 pub enum Error<C = Box<PreparedPublish>> {
     /// A shared call journal is malformed or cannot be addressed.
@@ -154,6 +157,8 @@ pub enum Error<C = Box<PreparedPublish>> {
     /// A request contradicts the durable state machine.
     Invalid(&'static str),
 }
+
+const _: () = assert!(std::mem::size_of::<Error>() <= 24);
 
 impl<C> std::fmt::Display for Error<C> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
