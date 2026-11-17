@@ -81,9 +81,8 @@ if (import.meta.main) {
   if (values.proto) step("proto", resolve(values.proto), []);
   const place = (source, destination) => {
     if (!source) return;
-    rmSync(join(root, destination), { recursive: true, force: true });
     mkdirSync(join(root, destination), { recursive: true });
-    cpSync(resolve(source), join(root, destination), { recursive: true });
+    cpSync(resolve(source), join(root, destination), { recursive: true, force: true });
   };
   for (const spec of values.wasm ?? []) {
     const [source, destination] = spec.split("=");
