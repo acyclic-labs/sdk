@@ -1210,6 +1210,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     {
                         let handoff = handoffs.remove(&actor);
                         self.due(&actor, !handoff)?;
+                        self.register_alarm(&actor).await?;
                         self.activate(&actor, cursor);
                     }
                     seen.insert(shard, cursor);
@@ -1268,16 +1269,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     for actor in actors {
                         if self.store.scheduling_shard(&actor) == shard && self.includes(&actor) {
                             self.due(&actor, true)?;
-                            // A recovered actor's persisted alarm is registered
-                            // through the same function a resident delivery uses.
-                            // A due alarm stays in the due index, so the next
-                            // rearm fires it at once; a future one is its wake.
-                            if let Some(slot) = self.slot(&actor) {
-                                let snapshot = self.store.load(&actor).await?;
-                                if let Some(state) = snapshot.state() {
-                                    slot.registration.update_alarm(state.alarm())?;
-                                }
-                            }
+                            self.register_alarm(&actor).await?;
                         }
                     }
                     match next {
@@ -1471,6 +1463,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     /// Read one page of a due window from entry `from`; after its last page,
     /// the shard's next window past it.
+    /// Register a recovered actor's persisted alarm through the same function
+    /// a resident delivery uses. A due alarm stays in the due index, so the
+    /// next rearm fires it at once; a future one is its wake.
+    async fn register_alarm(&self, actor: &ActorReference) -> Result<(), Error> {
+        if let Some(slot) = self.slot(actor) {
+            let snapshot = self.store.load(actor).await?;
+            if let Some(state) = snapshot.state() {
+                slot.registration.update_alarm(state.alarm())?;
+            }
+        }
+        Ok(())
+    }
+
     async fn open_window(&self, shard: u16, window: u64, from: u64) -> Result<Opened, Error> {
         let (actors, entry) = self.store.window_actors(shard, window, from).await?;
         let next = match entry {
