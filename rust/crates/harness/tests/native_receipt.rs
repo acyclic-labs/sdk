@@ -215,5 +215,19 @@ async fn a_cancelled_tool_call_settles_as_an_error_and_the_owner_continues()
         }
         PromptOutcome::Failed(message) => panic!("the owner did not continue: {message}"),
     }
+    let request = provider
+        .request(1)
+        .ok_or("the next model request is absent")?;
+    let carried = request.messages.iter().any(|message| {
+        message.content.parts().iter().any(|part| {
+            matches!(part, ModelContentPart::ToolResult {
+                content: ToolResultContent::Error { message }, ..
+            } if message.contains(interruption))
+        })
+    });
+    assert!(
+        carried,
+        "the next model request lost the interruption diagnostic"
+    );
     Ok(())
 }

@@ -198,6 +198,7 @@ impl StockExecution<'_> {
                 }
                 let step = steps;
                 (settled, unsettled) = (step, None);
+                settled_call = false;
                 steps = steps.checked_add(1).ok_or_else(|| {
                     stock_boundary(
                         self.io,
@@ -426,7 +427,8 @@ impl StockExecution<'_> {
                 }
                 stock_retire_text(text, self.io)?;
                 stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
-                for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
+                let mut calls = stock_into_iter(calls, self.io)?;
+                while let Some((invocation, invocation_index)) = calls.next() {
                     match self
                         .resolve_tool_call(
                             journal,
@@ -453,6 +455,16 @@ impl StockExecution<'_> {
                             if futures::FutureExt::now_or_never(journal.model_cancellation())
                                 .is_some()
                             {
+                                // Calls after the interrupted one never started.
+                                // Remove their assistant parts so the next turn
+                                // never sees a call without a result.
+                                let remaining: Vec<_> = calls.collect();
+                                for (_, index) in remaining.iter().rev() {
+                                    if prior_messages.get(*index).is_some() {
+                                        prior_messages.remove(*index);
+                                    }
+                                }
+                                unsettled = Some(prior_messages.len());
                                 return Err(Error::InteractionRejected(
                                     crate::InteractionRejection::Cancelled,
                                 ));
