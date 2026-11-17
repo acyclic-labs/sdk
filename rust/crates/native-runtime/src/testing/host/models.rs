@@ -15,7 +15,7 @@ fn callback_readiness_cannot_overtake_its_driver_notification() {
                 self.published.store(true, Ordering::SeqCst);
             }
         }
-        let host = Host::new(1);
+        let host = Host::new(1, Progress::new());
         let ready = Arc::new(AtomicBool::new(false));
         let callback_ready = ready.clone();
         let worker = host.clone();
@@ -65,7 +65,7 @@ fn callback_readiness_cannot_overtake_its_driver_notification() {
 #[test]
 fn abandoned_driver_and_original_wake_release_the_parked_slot() {
     loom::model(|| {
-        let host = Host::new(1);
+        let host = Host::new(1, Progress::new());
         let driver = Driver(host.clone());
         let ready = Arc::new(AtomicBool::new(false));
         let published = ready.clone();
@@ -106,7 +106,7 @@ fn abandoned_driver_and_original_wake_release_the_parked_slot() {
 #[test]
 fn readiness_racing_worker_parking_cannot_be_lost() {
     loom::model(|| {
-        let host = Host::new(1);
+        let host = Host::new(1, Progress::new());
         let source = Arc::new(AtomicBool::new(false));
         let published = source.clone();
         let (sender, receiver) = loom::sync::mpsc::channel::<Waker>();
@@ -143,7 +143,7 @@ fn readiness_racing_worker_parking_cannot_be_lost() {
 #[test]
 fn queue_capacity_and_physical_terminal_wakes_are_latched() {
     loom::model(|| {
-        let host = Host::new(1);
+        let host = Host::new(1, Progress::new());
         // A scripted capacity/terminal source exercises the actual Host latch.
         // Native admission and retirement have their own queue properties.
         // Register the real polling waker before both publications; no
@@ -207,7 +207,7 @@ fn physical_occupants_outside_the_schedule_cannot_block_the_driver() {
                     self.1.notify_one();
                 }
             }
-            let host = Host::new(1);
+            let host = Host::new(1, Progress::new());
             let worker = host.clone();
             let reply = Arc::new(AtomicBool::new(false));
             let callback = reply.clone();
@@ -288,7 +288,7 @@ fn physical_occupants_outside_the_schedule_cannot_block_the_driver() {
 fn physical_terminal_cannot_overtake_its_worker_step() {
     loom::model(|| {
         use crate::TaskTerminal;
-        let host = Host::new(1);
+        let host = Host::new(1, Progress::new());
         let terminal = Arc::new(crate::CompletionMutex::new(crate::CompletionState::<()> {
             task_pending: true,
             result: Some(Ok(())),

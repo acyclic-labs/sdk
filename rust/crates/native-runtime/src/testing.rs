@@ -186,6 +186,7 @@ struct Inner {
     state: Mutex<State>,
     entropy: Option<Arc<entropy::Source>>,
     executor: Option<Arc<executor::Executor>>,
+    progress: Arc<host::Progress>,
     // Its own lock: a call records when its last holder drops, which can be
     // anywhere, including while `state` is held.
     ledger: Arc<Mutex<ledger::Ledger>>,
@@ -303,6 +304,7 @@ impl Schedule {
                 .filter(|_| entropy)
                 .map(|seed| Arc::new(entropy::Source::new(seed))),
             executor,
+            progress: host::Progress::new(),
         });
         let controller = Arc::new(Controller(inner.clone()));
         (Self(inner, Some(controller)), receiver)
@@ -391,6 +393,34 @@ impl Schedule {
     /// Task owners waiting on streams are excluded; they cannot hide a missing follow.
     pub fn pending_native_work(&self) -> usize {
         self.0.state().native_active
+    }
+
+    /// Native workers that are parked on their original future.
+    pub fn parked_native_work(&self) -> usize {
+        self.0.progress.parked()
+    }
+
+    /// True when the only live owners are native and every one of them is
+    /// parked: no simulated task can deliver their completion.
+    pub fn is_stalled(&self) -> bool {
+        let state = self.0.state();
+        state.active == state.native_active
+            && state.native_active > 0
+            && self.0.progress.stalled()
+            && self.0.progress.parked() == state.native_active
+    }
+
+    /// Resolves once every native owner is parked and none is running.
+    pub async fn stalled(&self) {
+        std::future::poll_fn(|cx| {
+            if self.is_stalled() {
+                Poll::Ready(())
+            } else {
+                self.0.progress.register(cx.waker());
+                Poll::Pending
+            }
+        })
+        .await;
     }
 
     /// Original submissions and their completion trace, including cancellation.
@@ -593,10 +623,10 @@ where
         CURRENT.scope(Some(owned.clone()), async move {
             owned.pause("blocking:submitted").await;
             let host = if owned.schedule.0.executor.is_some() {
-                Some(host::Host::for_workers(crate::workers(
-                    &crate::BLOCKING_WORKERS,
-                    false,
-                )?))
+                Some(host::Host::for_workers(
+                    crate::workers(&crate::BLOCKING_WORKERS, false)?,
+                    owned.schedule.0.progress.clone(),
+                ))
             } else {
                 None
             };
@@ -673,7 +703,12 @@ pub(crate) fn submit(
                         .0
                         .executor
                         .as_ref()
-                        .map(|_| host::Host::for_workers(workers));
+                        .map(|_| {
+                            host::Host::for_workers(
+                                workers,
+                                owned.schedule.0.progress.clone(),
+                            )
+                        });
                     host::Work::bind(&mut job, Some(owned.clone()), host.clone());
                     match host {
                         Some(host) => host.drive(queued(job, workers)).await,
