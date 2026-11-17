@@ -293,7 +293,10 @@ impl<'io> StockExecution<'io> {
                         &invocation.call_id,
                         tool.executor.cancellable_on_drop(),
                         None,
-                        self.call_tool_executor(tool, &mut observed, invocation, false),
+                        acyclic_native_runtime::cost::operation(
+                            tool_operation_name(&invocation.name),
+                            self.call_tool_executor(tool, &mut observed, invocation, false),
+                        ),
                     )
                     .await?
                 {
@@ -317,7 +320,10 @@ impl<'io> StockExecution<'io> {
                         &invocation.call_id,
                         tool.executor.cancellable_on_drop(),
                         cancellation,
-                        self.call_tool_executor(tool, context, invocation, claimed || reexecuted),
+                        acyclic_native_runtime::cost::operation(
+                            tool_operation_name(&invocation.name),
+                            self.call_tool_executor(tool, context, invocation, claimed || reexecuted),
+                        ),
                     )
                     .await?
                 }
@@ -894,5 +900,22 @@ impl<'io> StockExecution<'io> {
             self.append_hook_context(_hook_context, feedback)?;
         }
         Ok((content, Some(result)))
+    }
+}
+
+/// The cost-ledger operation a tool call is charged to.
+fn tool_operation_name(name: &str) -> &'static str {
+    match name.split('@').next().unwrap_or(name) {
+        "write" => "write",
+        "edit" => "edit",
+        "remove" => "remove",
+        "read" => "read",
+        "send" => "send",
+        "spawn" => "spawn",
+        "wait" => "wait",
+        "fs" => "fs_diff",
+        "shell" => "shell",
+        "code" => "code",
+        _ => "tool",
     }
 }

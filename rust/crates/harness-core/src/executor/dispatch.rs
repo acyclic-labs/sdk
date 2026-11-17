@@ -286,8 +286,9 @@ impl StockExecution<'_> {
                     attempt.generate(self.selected_provider().as_ref(), &request, dispatch);
                 (Either::Right(generated), live.then_some(source))
             };
-            let observed = self
-                .record_model_events(
+            let observed = acyclic_native_runtime::cost::operation(
+                "model_step",
+                self.record_model_events(
                     journal,
                     ObservedCall {
                         operation_id: input.operation_id,
@@ -302,8 +303,9 @@ impl StockExecution<'_> {
                     (stream, source),
                     #[cfg(feature = "research")]
                     phase,
-                )
-                .await?;
+                ),
+            )
+            .await?;
             if purpose == ModelPurpose::Response && admission.completed {
                 self.retain_response_request(journal, input, step, prior_messages.len(), request)
                     .await?;
