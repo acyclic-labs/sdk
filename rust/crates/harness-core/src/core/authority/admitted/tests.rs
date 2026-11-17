@@ -1163,9 +1163,12 @@ fn original_turn_interrupt_wakes_every_checkpoint_and_refuses_ready_completion()
         {
             let stop = acyclic_actors::guest::CancellationToken::new();
             journal = journal.with_stop(stop.clone());
-            let bound = journal
-                .working_checkpoint_authority()
-                .expect("journal custody");
+            let bound = match kind {
+                CheckpointKind::Execution => journal.execution_checkpoint_authority(),
+                CheckpointKind::Working | CheckpointKind::ModelRequest => journal
+                    .working_checkpoint_authority()
+                    .expect("journal custody"),
+            };
             source.checkpoint_hold.store(true, Ordering::SeqCst);
             let mut proof: BoxProviderFuture<'_, Result<[u8; 64]>> = match kind {
                 CheckpointKind::Execution => {

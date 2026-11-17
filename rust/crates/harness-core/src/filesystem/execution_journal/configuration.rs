@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::VolumeOwner;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
@@ -166,6 +167,11 @@ where
         let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
         let volume = volume.copy_in_quota(&mut quota)?;
         let verifier = verifier.copy_in_quota(&mut quota)?;
+        let VolumeOwner::Agent(owner) = volume.owner() else {
+            return Err(invalid("execution journal requires an agent owner"));
+        };
+        let (execution_checkpoint_verifier, execution_checkpoint_alternate) =
+            verifier.execution_checkpoint_verifiers(*owner, &mut quota)?;
         let scope = scope.copy_in_quota(&mut quota)?;
         let _native_metadata = quota.into_custody()?;
         Ok(Self {
@@ -175,6 +181,8 @@ where
             host,
             volume,
             verifier,
+            execution_checkpoint_verifier,
+            execution_checkpoint_alternate,
             scope,
             input_verifier: None,
             bound_selection: None,
@@ -281,6 +289,8 @@ where
     #[must_use]
     pub fn with_stop(mut self, stop: acyclic_actors::guest::CancellationToken) -> Self {
         self.verifier.bind_checkpoint_stop(&stop);
+        self.execution_checkpoint_verifier
+            .bind_checkpoint_stop(&stop);
         self.stop = Some(stop);
         self
     }
