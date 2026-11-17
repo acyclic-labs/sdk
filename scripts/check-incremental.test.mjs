@@ -16,6 +16,7 @@ test('the check refuses every way incremental compilation is disabled', () => {
     ['rust/src/main.rs', 'process.env["CARGO_INCREMENTAL"] = "0";\n'],
     ['.github/workflows/x.yml', 'env:\n  CARGO_INCREMENTAL: 0\n'],
     ['.github/workflows/x.yml', '"CARGO_INCREMENTAL": "0"\n'],
+    ['.github/workflows/x.yml', '"CARGO_INCREMENTAL" = "0"\n'],
     ['rust/src/main.rs', '.env(\n    "CARGO_INCREMENTAL",\n    "0",\n);\n'],
     ['rust/src/main.rs', 'env::set_var(\n    "CARGO_INCREMENTAL",\n    "0",\n);\n'],
     ['scripts/build.mjs', 'process.env.CARGO_INCREMENTAL = "0";\n'],
