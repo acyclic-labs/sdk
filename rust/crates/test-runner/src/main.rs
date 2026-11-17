@@ -348,9 +348,10 @@ const RUNNER_PREFIX: &str = "acyclic-";
 /// it removes what its cases left. So on Unix the runner holds an exclusive `flock` on its
 /// directory for its whole life, which the kernel releases however the process ends, and every
 /// new runner reclaims each runner directory of its own user whose lock it can take: that runner
-/// is gone. Claiming, reclaiming and removal all run under a lock on the root itself, so a scan
-/// never sees a directory between its creation and its owner's lock or while it is removed.
-/// Another user's directories are left alone. A root's process ids are not unique across
+/// is gone. Claiming, reclaiming and removal all run under its user's lock file in the root, so a
+/// scan never sees a directory between its creation and its owner's lock or while it is removed.
+/// The lock file is the user's own and readable by no one else, so another user can neither hold
+/// it nor stall these steps; another user's directories are left alone. A root's process ids are not unique across
 /// sandboxes, so the directory is named randomly and created exclusively.
 struct RunnerDirectory {
     #[cfg(unix)]
@@ -370,8 +371,9 @@ impl RunnerDirectory {
         // space or inodes its creation needs.
         #[cfg(unix)]
         let root_lock = {
-            let lock = lock_root(root)?;
-            reclaim(root, acyclic_native_runtime::private_file::effective_user())?;
+            let user = acyclic_native_runtime::private_file::effective_user();
+            let lock = lock_user(root, user)?;
+            reclaim(root, user)?;
             lock
         };
         let mut attempt = 0_u64;
@@ -406,16 +408,66 @@ impl RunnerDirectory {
     /// Removes the directory once every case has ended.
     fn release(&self) -> Result<(), String> {
         #[cfg(unix)]
-        let _root = lock_root(&self.root)?;
-        fs::remove_dir_all(&self.path).map_err(|error| failed("remove", &self.path, error))
+        let _user = lock_user(
+            &self.root,
+            acyclic_native_runtime::private_file::effective_user(),
+        )?;
+        remove(&self.path)
     }
 }
 
-/// Takes the root's lock, which serializes every runner's claim, reclaim and removal.
+/// Removes a runner directory and everything in it. A case may leave a directory it made
+/// unwritable; the runner owns the whole tree, so it restores its own access to each directory
+/// first, and no leftover outlives its runner's reclaim.
+fn remove(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    restore_access(path)?;
+    fs::remove_dir_all(path).map_err(|error| failed("remove", path, error))
+}
+
+/// Gives the owner full access to `path` and every directory under it, following no link.
 #[cfg(unix)]
-fn lock_root(root: &Path) -> Result<File, String> {
-    let lock = File::open(root).map_err(|error| failed("open", root, error))?;
-    lock.lock().map_err(|error| failed("lock", root, error))?;
+fn restore_access(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let metadata = fs::symlink_metadata(path).map_err(|error| failed("inspect", path, error))?;
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    if metadata.permissions().mode() & 0o700 != 0o700 {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|error| failed("restore access to", path, error))?;
+    }
+    for entry in fs::read_dir(path).map_err(|error| failed("list", path, error))? {
+        restore_access(&entry.map_err(|error| failed("list", path, error))?.path())?;
+    }
+    Ok(())
+}
+
+/// Takes `user`'s lock file in `root`, which serializes that user's runners' claim, reclaim and
+/// removal. It is created readable only by its owner; a file there that `user` does not own was
+/// put there by someone else, and is refused rather than locked.
+#[cfg(unix)]
+fn lock_user(root: &Path, user: u32) -> Result<File, String> {
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    let path = root.join(format!("{RUNNER_PREFIX}{user}.lock"));
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|error| failed("open", &path, error))?;
+    let metadata = lock
+        .metadata()
+        .map_err(|error| failed("inspect", &path, error))?;
+    if !metadata.is_file() || metadata.uid() != user {
+        return Err(format!(
+            "{} is not a file of user {user}; recovery: its owner removes it",
+            path.display()
+        ));
+    }
+    lock.lock().map_err(|error| failed("lock", &path, error))?;
     Ok(lock)
 }
 
@@ -437,7 +489,7 @@ fn reclaim(root: &Path, user: u32) -> Result<(), String> {
         }
         let abandoned = File::open(&path).map_err(|error| failed("open", &path, error))?;
         match abandoned.try_lock() {
-            Ok(()) => fs::remove_dir_all(&path).map_err(|error| failed("reclaim", &path, error))?,
+            Ok(()) => remove(&path)?,
             Err(fs::TryLockError::WouldBlock) => {}
             Err(fs::TryLockError::Error(error)) => return Err(failed("lock", &path, error)),
         }
@@ -641,8 +693,8 @@ mod tests {
         }
     }
 
-    /// A runner reclaims the directory of a runner that is gone, keeps a live runner's, and
-    /// never touches another program's entry of a similar name.
+    /// A runner reclaims the directory of a runner that is gone, even one its cases left unwritable,
+    /// keeps a live runner's, and never touches another program's entry of a similar name.
     #[cfg(unix)]
     #[test]
     fn a_runner_reclaims_only_directories_whose_runner_is_gone() {
@@ -651,6 +703,14 @@ mod tests {
         let live = RunnerDirectory::claim(&root).unwrap();
         let gone = RunnerDirectory::claim(&root).unwrap();
         fs::write(gone.path.join("left-behind"), "").unwrap();
+        // A case may end with a directory it made unwritable, its entries still in it.
+        let sealed = gone.path.join("sealed");
+        fs::create_dir(&sealed).unwrap();
+        fs::write(sealed.join("entry"), "").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
+        }
         let gone_path = gone.path.clone();
         drop(gone);
         let other = root.join(format!("{RUNNER_PREFIX}0000000g"));
