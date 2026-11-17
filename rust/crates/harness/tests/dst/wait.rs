@@ -123,8 +123,7 @@ fn failed(tag_name: &'static str) -> Plan {
         steps: Vec::new(),
         fail_once: Some((
             0,
-            ScriptedEvent::Refused {
-                status: 401,
+            ScriptedEvent::Interrupted {
                 error: "child turn failed".into(),
             },
         )),
