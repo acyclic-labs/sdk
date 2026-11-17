@@ -74,10 +74,7 @@ async fn a_same_turn_stop_archives_newly_admitted_children() -> Result {
         host.send(
             &root,
             &user(),
-            &InboxRecord::ApprovalRequested(ApprovalRequested {
-                child: child.clone(),
-                id: intent("turn"),
-            }),
+            &InboxRecord::Approval(Approval { id: intent("turn") }),
         )
         .await?;
         let failures = host.runtime().drain().await;
@@ -1392,7 +1389,9 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
     assert!(matches!(
         handler
             .on_record(foreign, Some(checkpoint), CancellationToken::new())
-            .await,
+            .await
+            .as_ref()
+            .map_err(acyclic_actors::guest::GuestError::category),
         Err(acyclic_actors::guest::GuestError::Handler(_))
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
