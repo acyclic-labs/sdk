@@ -439,34 +439,6 @@ impl<K: Ord + Clone> ReadySet<K> {
         )
     }
 
-    /// Earliest wake of a parked alarm, which only re-registering its key
-    /// delivers.
-    pub fn next_parked_wake(&self) -> Option<u64> {
-        let index = self
-            .core
-            .index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        index.parked_wakes.first().map(|&(at, _)| at)
-    }
-
-    /// At most `limit` keys whose parked alarm wakes by `now_unix_ms`. Their
-    /// tokens stay parked until each key registers again.
-    pub fn parked_due(&self, now_unix_ms: u64, limit: usize) -> Vec<K> {
-        let index = self
-            .core
-            .index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        index
-            .parked_wakes
-            .iter()
-            .take_while(|&&(at, _)| at <= now_unix_ms)
-            .take(limit)
-            .map(|(_, key)| key.clone())
-            .collect()
-    }
-
     /// Count a delivery of `key` in flight until the returned guard drops.
     pub fn flight(&self, key: &K) -> Flight<K> {
         self.core
@@ -786,46 +758,8 @@ impl<K: Ord + Clone> Registration<K> {
             index.burn(token);
         }
     }
-
-    /// Take over a token parked for this key, as when a predecessor
-    /// registration retired after this one registered.
-    pub fn adopt_parked(&self) {
-        let mut index = self
-            .core
-            .index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(key) = index.entries.get(&self.id).map(|entry| entry.key.clone()) else {
-            return;
-        };
-        if let Some(token) = index.unpark(&key)
-            && let Err(token) = index.hold(self.id, token)
-        {
-            index.park(key, token);
-        }
-    }
-
-    /// Take over the alarm filed in an opened window starting at
-    /// `window_start_unix_ms` before the window may be passed. The actor's
-    /// delivery replaces the claim with its committed alarm.
-    pub fn claim_alarm(&self, window_start_unix_ms: u64) {
-        let mut index = self
-            .core
-            .index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(entry) = index.entries.get(&self.id) else {
-            return;
-        };
-        if entry.token.is_none() {
-            let key = entry.key.clone();
-            let token = index.mint(&key, window_start_unix_ms, None);
-            if let Err(token) = index.hold(self.id, token) {
-                index.park(key, token);
-            }
-        }
-    }
 }
+
 impl<K: Ord + Clone> Drop for Registration<K> {
     fn drop(&mut self) {
         let mut index = self
