@@ -810,10 +810,7 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     let Some(tool) = tool else {
                         return fail("the length-cut context review made no tool call");
                     };
-                    if request_tag(
-                        tool,
-                        &["d4-warm-0", "d4-warm-1", "d4-warm-2", "d4-warm-3", "d4"],
-                    ) != Some("d4")
+                    if newest_length_prompt(tool, &warmups, &prompt) != Some(LengthPrompt::Current)
                     {
                         return fail("the length-cut context review tool call answered the warmup");
                     }
