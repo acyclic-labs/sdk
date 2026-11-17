@@ -54,3 +54,61 @@ pub(super) fn gather(
     }
     Ok(facts)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn volume_environment_discovers_tools_from_its_admitted_directory() -> crate::Result<()> {
+        let directory =
+            tempfile::tempdir().map_err(|error| crate::Error::Storage(error.to_string()))?;
+        let provider = std::sync::Arc::new(
+            crate::test_support::ScriptedModelProvider::new([
+                crate::test_support::ScriptedTurn::Text("ENVIRONMENT_REPLY".into()),
+            ])
+            .with_context_capacity(crate::context::ModelContextCapacity {
+                context_tokens: 1_000_000,
+                output_tokens: Some(4096),
+                output_shares_context: false,
+            }),
+        );
+        let project = crate::local::tests::volume(directory.path()).await?;
+        let mut config =
+            crate::local::tests::volume_config(directory.path(), project, provider.clone())?;
+        config.environment_platform = crate::native_environment::PlatformPolicy::Native;
+        let harness = std::sync::Arc::new(crate::local::tests::open_scripted(config).await?);
+        harness.agents().await?;
+        match crate::test_support::prompt_settled(&harness, "environment", "show environment")
+            .await?
+        {
+            crate::test_support::PromptOutcome::Settled(_, _) => {}
+            crate::test_support::PromptOutcome::Failed(message) => {
+                return Err(crate::Error::Conflict(format!(
+                    "environment prompt failed: {message}"
+                )));
+            }
+        }
+        let request = provider
+            .request(0)
+            .ok_or_else(|| crate::Error::NotFound("model request".into()))?;
+        let text = crate::local::tests::request_text(&harness, &request).await?;
+        assert!(text.contains("<cwd>.</cwd>"), "{text}");
+        assert!(text.contains("git: available"), "{text}");
+        // Negative control: a relative directory names no executable search root.
+        let relative = gather(
+            Some(Path::new(".")),
+            0,
+            &crate::native_environment::PlatformPolicy::Native,
+        )?;
+        assert!(
+            relative
+                .tooling
+                .as_deref()
+                .is_some_and(|tooling| tooling.contains("git: absent")),
+            "{:?}",
+            relative.tooling
+        );
+        Ok(())
+    }
+}

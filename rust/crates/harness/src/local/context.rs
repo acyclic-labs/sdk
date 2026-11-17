@@ -368,7 +368,9 @@ impl LocalHarness {
                 manifest
                     .conventions
                     .push(workspace.context_line().to_owned());
-                if self.checkout_context {
+                if !super::open::uses_native_execution(&self.tools)? {
+                    None
+                } else if self.checkout_context {
                     let (selected, _) = workspace.selected_view().await?;
                     // A selected branch can use a separate physical mount. Reuse
                     // that admitted handle; never report the base mount for it.
@@ -386,9 +388,7 @@ impl LocalHarness {
                     } else {
                         None
                     };
-                    if !super::open::uses_native_execution(&self.tools)? {
-                        None
-                    } else if selected.is_none() || workspace.mounted.is_none() {
+                    if selected.is_none() || workspace.mounted.is_none() {
                         workspace.native_cwd()?.map(std::path::Path::to_path_buf)
                     } else {
                         selected_mount
@@ -399,10 +399,13 @@ impl LocalHarness {
                             .map(std::path::Path::to_path_buf)
                     }
                 } else {
-                    Some(std::path::PathBuf::from("."))
+                    // A configured volume has an admitted native directory too;
+                    // executable discovery needs it even though the model sees
+                    // the task-relative `.` everywhere.
+                    workspace.native_cwd()?.map(std::path::Path::to_path_buf)
                 }
             } else {
-                Some(std::path::PathBuf::from("."))
+                None
             };
             manifest.environment = Some(environment::gather(
                 cwd.as_deref(),
