@@ -14,6 +14,10 @@ readme = "README.md"
 keywords = ["agents", "filesystem", "mcp", "workspaces"]
 categories = ["command-line-utilities", "development-tools"]
 
+[package.metadata.bazel]
+# The identity tests start the host Node runtime.
+test-env-inherit = ["PATH"]
+
 [package.metadata.bazel.test-tools.main]
 node = "@nodejs//:node"
 

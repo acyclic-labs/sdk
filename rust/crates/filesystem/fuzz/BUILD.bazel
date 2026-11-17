@@ -1007,7 +1007,7 @@ isolated_test(
 isolated_test(
     name = "model_full-cloud",
     binary = ":model_cases",
-    binaries = {":access":"access",":decoded_cache":"decoded_cache",":decoder_work":"decoder_work",":encoder_work":"encoder_work",":fuse_reply":"fuse_reply",":git_markers":"git_markers",":git_pending":"git_pending",":merge_directory_resolution":"merge_directory_resolution",":native_ascii_leaf":"native_ascii_leaf",":native_device":"native_device",":paths":"paths",":session_fs":"session_fs",":window_state":"window_state",":workspace_name":"workspace_name"},
+    binaries = {":access":"access",":decoded_cache":"decoded_cache",":decoder_work":"decoder_work",":encoder_work":"encoder_work",":fuse_reply":"fuse_reply",":git_markers":"git_markers",":git_pending":"git_pending",":merge_directory_resolution":"merge_directory_resolution",":native_ascii_leaf":"native_ascii_leaf",":native_device":"native_device",":paths":"paths",":session_fs":"session_fs",":window_state":"window_state",":workspace_name":"workspace_name","@nodejs//:node":"node"},
     id = "acyclic-fs-fuzz::model",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -1119,7 +1119,7 @@ isolated_test(
 isolated_test(
     name = "window_state_test_full-cloud",
     binary = ":window_state_test_cases",
-    binaries = {":access":"access",":decoded_cache":"decoded_cache",":decoder_work":"decoder_work",":encoder_work":"encoder_work",":fuse_reply":"fuse_reply",":git_markers":"git_markers",":git_pending":"git_pending",":merge_directory_resolution":"merge_directory_resolution",":native_ascii_leaf":"native_ascii_leaf",":native_device":"native_device",":paths":"paths",":session_fs":"session_fs",":window_state":"window_state",":workspace_name":"workspace_name"},
+    binaries = {":access":"access",":decoded_cache":"decoded_cache",":decoder_work":"decoder_work",":encoder_work":"encoder_work",":fuse_reply":"fuse_reply",":git_markers":"git_markers",":git_pending":"git_pending",":merge_directory_resolution":"merge_directory_resolution",":native_ascii_leaf":"native_ascii_leaf",":native_device":"native_device",":paths":"paths",":session_fs":"session_fs",":window_state":"window_state",":workspace_name":"workspace_name","@nodejs//:node":"node"},
     id = "acyclic-fs-fuzz::window_state",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

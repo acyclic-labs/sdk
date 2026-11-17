@@ -58,16 +58,19 @@ isolated_test(
     id = "acyclic-stream-typescript-models::main",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH","BUN_INSTALL","HOME"],
 )
 
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-stream-typescript-models::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
+    env_inherit = ["PATH","BUN_INSTALL","HOME"],
     tags = ["manual"],
 )
 

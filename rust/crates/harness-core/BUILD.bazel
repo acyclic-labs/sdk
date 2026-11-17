@@ -337,6 +337,7 @@ isolated_test(
 isolated_test(
     name = "acyclic_harness_core_test_full-cloud",
     binary = ":acyclic_harness_core_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-harness-core",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -520,6 +521,7 @@ isolated_test(
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-harness-core::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -655,6 +657,7 @@ isolated_test(
 isolated_test(
     name = "computed_ui_records_full-cloud",
     binary = ":computed_ui_records_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-harness-core::computed_ui_records",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

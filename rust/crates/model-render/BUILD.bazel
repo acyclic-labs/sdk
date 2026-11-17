@@ -76,6 +76,7 @@ isolated_test(
 isolated_test(
     name = "acyclic_model_render_test_full-cloud",
     binary = ":acyclic_model_render_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-model-render",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

@@ -10,6 +10,9 @@ default-run = "sdk-generation"
 
 [package.metadata.bazel]
 test-workers = 1
+# The cli_regressions harness selects the pinned rustup toolchains and their
+# installed targets; these are the host facts the package's tests read.
+test-env-inherit = ["PATH", "RUSTUP_HOME", "CARGO_HOME"]
 
 [package.metadata.bazel.test-tools.sdk_generation_test]
 CARGO = "//:toolchain_cargo"

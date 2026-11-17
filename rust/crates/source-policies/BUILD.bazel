@@ -388,6 +388,7 @@ isolated_test(
 isolated_test(
     name = "acyclic_source_policies_test_full-cloud",
     binary = ":acyclic_source_policies_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-source-policies",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

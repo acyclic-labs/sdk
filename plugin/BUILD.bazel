@@ -138,17 +138,20 @@ isolated_test(
     id = "acyclic-plugin",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["no-sandbox"],
 )
 
 isolated_test(
     name = "acyclic_plugin_test_full-cloud",
     binary = ":acyclic_plugin_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-plugin",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["manual","no-sandbox"],
 )
 
@@ -299,17 +302,20 @@ isolated_test(
     id = "acyclic-plugin::bin/acyclic",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["no-sandbox"],
 )
 
 isolated_test(
     name = "acyclic_test_full-cloud",
     binary = ":acyclic_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-plugin::bin/acyclic",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["manual","no-sandbox"],
 )
 
@@ -458,17 +464,20 @@ isolated_test(
     id = "acyclic-plugin::bin/graphcoder",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["no-sandbox"],
 )
 
 isolated_test(
     name = "graphcoder_test_full-cloud",
     binary = ":graphcoder_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-plugin::bin/graphcoder",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["manual","no-sandbox"],
 )
 
@@ -584,6 +593,7 @@ isolated_test(
     id = "acyclic-plugin::main",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["no-sandbox"],
 )
 
@@ -596,6 +606,7 @@ isolated_test(
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["manual","no-sandbox"],
 )
 
@@ -707,18 +718,20 @@ isolated_test(
     id = "acyclic-plugin::cli",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["no-sandbox"],
 )
 
 isolated_test(
     name = "cli_full-cloud",
     binary = ":cli_cases",
-    binaries = {":acyclic":"acyclic",":graphcoder":"graphcoder"},
+    binaries = {":acyclic":"acyclic",":graphcoder":"graphcoder","@nodejs//:node":"node"},
     id = "acyclic-plugin::cli",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["manual","no-sandbox"],
 )
 
