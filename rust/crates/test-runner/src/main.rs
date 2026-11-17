@@ -775,6 +775,49 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// A lock file in the process's `HOME` does not block a runner: the lock is the runner's own
+    /// directory in the shared root, so jobs with different `HOME` values share one lock.
+    #[cfg(unix)]
+    #[test]
+    fn a_home_lock_file_does_not_block_a_runner() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = env::temp_dir().join(format!("acyclic-home-root-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let home = env::temp_dir().join(format!("acyclic-home-{}", std::process::id()));
+        fs::create_dir(&home).unwrap();
+        let lock_directory = home.join(".acyclic-test-runner");
+        fs::create_dir(&lock_directory).unwrap();
+        fs::set_permissions(&lock_directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let user = acyclic_native_runtime::private_file::effective_user();
+        // A directory at the lock path is not a file the old lock code would accept.
+        fs::create_dir(lock_directory.join(format!("{RUNNER_PREFIX}{user}.lock"))).unwrap();
+        let output = Command::new(env::current_exe().unwrap())
+            .args(["tests::home_lock_runner", "--exact", "--nocapture"])
+            .env("ACYCLIC_HOME_LOCK_ROOT", &root)
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// Acts as a runner whose `HOME` holds a lock file the old lock code would refuse.
+    #[cfg(unix)]
+    #[test]
+    fn home_lock_runner() {
+        if let Some(root) = env::var_os("ACYCLIC_HOME_LOCK_ROOT") {
+            let runner = RunnerDirectory::claim(Path::new(&root)).unwrap();
+            assert!(runner.path.is_dir());
+            runner.release().unwrap();
+        }
+    }
+
     /// A lock file that is not private is refused, so a pre-created public entry cannot be used.
     #[cfg(unix)]
     #[test]
