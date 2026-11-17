@@ -9,14 +9,18 @@ async function mutant(file, original, replacement) {
  const source = readFileSync(new URL(file, import.meta.url), 'utf8');
  assert.equal(source.split(original).length, 2, 'mutation must match one production branch');
  const mutated = source.replace(original, replacement);
- const moduleUrl = text => 'data:text/javascript;base64,' + Buffer.from(text
-  .replace("from 'typescript-parser'", 'from ' + JSON.stringify(import.meta.resolve('typescript-parser')))).toString('base64');
- const sourceUrl = file.endsWith('/index.mjs') ? moduleUrl(mutated)
-  : new URL('./source-policy/index.mjs', import.meta.url).href;
+ const moduleUrl = (text, owner, overrides = {}) => 'data:text/javascript;base64,' + Buffer.from(text
+  .replace(/from (['"])([^'"]+)\1/g, (_, quote, specifier) => 'from ' + JSON.stringify(overrides[specifier]
+   ?? (specifier.startsWith('.') ? new URL(specifier, new URL(owner, import.meta.url)).href : import.meta.resolve(specifier))))).toString('base64');
+ const nativeUrl = file.endsWith('/native.mjs') ? moduleUrl(mutated, file)
+  : new URL('./source-policy/native.mjs', import.meta.url).href;
+ const sourceUrl = file.endsWith('/project.mjs') ? new URL('./source-policy/index.mjs', import.meta.url).href
+  : moduleUrl(file.endsWith('/index.mjs') ? mutated : readFileSync(new URL('./source-policy/index.mjs', import.meta.url), 'utf8'),
+   './source-policy/index.mjs', {'./native.mjs': nativeUrl});
  const graphSource = file.endsWith('/project.mjs') ? mutated
   : readFileSync(new URL('./source-policy/project.mjs', import.meta.url), 'utf8');
- return {source: await import(sourceUrl), graph: await import(moduleUrl(graphSource
-  .replace("from './index.mjs'", 'from ' + JSON.stringify(sourceUrl))))};
+ return {source: await import(sourceUrl), graph: await import(moduleUrl(graphSource,
+  './source-policy/project.mjs', {'./index.mjs': sourceUrl}))};
 }
 
 // Count entries into the real compiler, without replacing its implementation.
@@ -83,11 +87,11 @@ test('non-script and retired snapshots validate source without irrelevant compil
 });
 
 test('source fuzz oracles reject planted decoder, graph and disposition defects', async () => {
- for (const [original, replacement, file, source] of [
+ for (const [original, replacement, file, source, owner = 'index.mjs'] of [
   ['return cFamily.test(file) || ', 'return false || ', 'control.c', ''],
   ['(?:rs|[cm]?[jt]s|', '(?:[cm]?[jt]s|', 'control.rs', ''],
   ['throw new SourceSyntaxError(', 'throw new Error(', 'control.ts', '}'],
-  ['const malformed = message => new SourceSyntaxError(', 'const malformed = message => new Error(', 'control.ps1', '<#'],
+  ['const malformed = message => new SourceSyntaxError(', 'const malformed = message => new Error(', 'control.ps1', '<#', 'native.mjs'],
   ['sites.push({file, line: t.line, kind, fingerprint, start: t.start});',
    'sites.push({file, line: 0, kind, fingerprint, start: t.start});', 'control.ts', 'Bun.sleep(1);'],
   ['sites.push({file, line: t.line, kind, fingerprint, start: t.start});',
@@ -95,7 +99,7 @@ test('source fuzz oracles reject planted decoder, graph and disposition defects'
   ['sites.push({file, line: t.line, kind, fingerprint, start: t.start});',
    "sites.push({file: 'foreign.ts', line: t.line, kind, fingerprint, start: t.start});", 'control.ts', 'Bun.sleep(1);'],
  ]) {
-  const parser = await mutant('./source-policy/index.mjs', original, replacement);
+  const parser = await mutant('./source-policy/' + owner, original, replacement);
   assert.throws(() => targets.fuzzSource(file, Buffer.from(source), parser.source), {name: 'AssertionError'});
  }
  const lexer = await mutant('./source-policy/index.mjs', 'embeddedCandidate(spelling) ?', 'false ?');
