@@ -723,6 +723,51 @@ async fn held_file_reads_detect_in_place_modification() -> Result<(), Box<dyn Er
     Ok(())
 }
 
+#[test]
+fn fixture_versions_change_on_a_same_length_replacement() -> Result<(), Box<dyn Error>> {
+    let temporary = tempfile::tempdir()?;
+    let root = temporary.path().join("source");
+    std::fs::create_dir(&root)?;
+    std::fs::write(root.join("file"), b"before")?;
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let (schedule, _events) = acyclic_native_runtime::testing::Schedule::seeded(71);
+    schedule.set_native_times_provider(|_| acyclic_native_runtime::testing::NativeTimes {
+        created_ns: Some(1),
+        modified_ns: Some(1),
+        accessed_ns: Some(1),
+        changed_ns: Some(1),
+    });
+    runtime.block_on(schedule.scope(async {
+        let source = native_source(&root).await?;
+        let reference = source_reference(&source).await?;
+        let cancellation = CancellationToken::new();
+        let node = lookup_node(&source, reference.clone(), &path("/file")?, &cancellation).await?;
+        let file = source
+            .open_file(
+                reference,
+                &path("/file")?,
+                node.version,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        assert_eq!(
+            read(file.as_ref(), 0, 6, &cancellation)?.as_ref(),
+            b"before"
+        );
+        let replacement = root.join("replacement");
+        std::fs::write(&replacement, b"after!")?;
+        std::fs::rename(&replacement, root.join("file"))?;
+        assert!(matches!(
+            read_failure(file.as_ref()),
+            Some(DemandError::StaleVersion)
+        ));
+        Ok::<_, Box<dyn Error>>(())
+    }))?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn held_file_reads_detect_path_replacement() -> Result<(), Box<dyn Error>> {
     let (temporary, _source, file) = held_file(b"before").await?;
