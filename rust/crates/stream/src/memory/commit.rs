@@ -464,6 +464,7 @@ impl MemoryStream {
         // A custody-funded write owns its growth chain. Sharing it would let
         // another writer install buffers still charged to the first writer's
         // custody, with no transfer to the store.
+        #[cfg(not(target_arch = "wasm32"))]
         let pending = pending.filter(|_| self.custody.is_none());
         if let Some(pending) = pending.as_ref().filter(|pending| pending.segment >= top) {
             return Ok(Some(Arc::clone(pending)));
