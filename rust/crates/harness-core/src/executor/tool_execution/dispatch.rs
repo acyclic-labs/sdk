@@ -5,10 +5,10 @@ pub(super) struct DispatchRecord(());
 
 /// How a started call is decided once its producer is fenced and
 /// reconciliation cannot settle it. Only the durable start record decides
-/// whether it may wait: no executor can retain a call that ran in-process.
+/// whether it may run again: a dispatched effect is never repeated here.
 pub(super) enum FencedStart {
-    /// Dispatched to another host, whose settlement or fence decides it.
-    Retained(DispatchRecord),
+    /// Dispatched to another host: never run the effect again here.
+    Dispatched(DispatchRecord),
     /// Ran only inside its fenced owner and ended with it: the model's
     /// interrupted failure.
     Interrupted,
@@ -30,7 +30,7 @@ impl FencedStart {
             )
         });
         if dispatched {
-            Self::Retained(DispatchRecord(()))
+            Self::Dispatched(DispatchRecord(()))
         } else if reexecutes {
             Self::Reexecuted
         } else {
@@ -60,8 +60,9 @@ impl<'io> StockExecution<'io> {
     ) -> Result<ToolInvocationOutcome<'io>> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
-        // A fenced start's producer is not this owner, which is never fenced
-        // itself; its own start record decides reconciliation's unknown.
+        // The previous invocation retired either with its provider owner or
+        // through the executor's drop-cancellation contract. Its original
+        // start record decides reconciliation's unknown.
         let decision =
             fenced.map(|records| FencedStart::of(records, tool.executor.reexecutes_fenced()));
         let reexecuted = matches!(decision, Some(FencedStart::Reexecuted));
@@ -267,12 +268,7 @@ impl<'io> StockExecution<'io> {
                     return Err(failure.into_error());
                 }
                 Ok(ExecutionProgress::Ended(ended)) => return Err(ended.0),
-                Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
-                    return self
-                        .interrupted(journal, identity, &invocation.call_id, error)
-                        .await;
-                }
-                Err(error) => return Err(error),
+                Err(error) => Some(Err(error)),
             }
         } else {
             None
@@ -335,6 +331,19 @@ impl<'io> StockExecution<'io> {
             succeeded = execution.as_ref().is_ok_and(|result| result.is_some()),
             "tool executor returned"
         );
+        let execution = match execution {
+            Err(error)
+                if started
+                    && !self.stock.reconciliation_only
+                    && !error.is_native_failure()
+                    && error.leaves_effect_uncertain() =>
+            {
+                tracing::error!(%operation_id, call_id = %invocation.call_id, ?error,
+                    "tool reconciliation left its original outcome unknown");
+                Ok(None)
+            }
+            result => result,
+        };
         let result = match execution {
             Ok(Some(result)) => result,
             Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
@@ -355,11 +364,27 @@ impl<'io> StockExecution<'io> {
                     )
                     .await;
             }
-            // Unknown completion while its producer may be live, including a
-            // dispatched one, retains the original invocation for later
-            // reconciliation; it does not establish a terminal tool failure.
-            // An uncertain re-execution stays fenced, so the next attempt
-            // executes it again.
+            // A redelivery already tried the original receipt and any safe
+            // keyed re-execution. An inconclusive outcome is now feedback to
+            // the model, not another pending handler that can end its agent.
+            // This settles the tool reply only: the effect may still complete,
+            // and an unsafe effect is never dispatched again.
+            Ok(None) | Err(Error::Indeterminate(_))
+                if started && !self.stock.reconciliation_only =>
+            {
+                return self
+                    .settle_tool_failure(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::Interrupted,
+                        Error::Indeterminate(invocation.operation_id),
+                    )
+                    .await
+                    .map(|content| ToolInvocationOutcome::Settled(content, None));
+            }
+            // The first attempt retains its original operation for redelivery.
             Ok(None) | Err(Error::Indeterminate(_)) => {
                 return Err(Error::Indeterminate(operation_id));
             }
