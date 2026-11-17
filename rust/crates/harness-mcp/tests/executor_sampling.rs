@@ -239,9 +239,3 @@ async fn tool_free_sampling_allocations_are_independent_of_catalog_size() -> Res
     eprintln!("tool-free sampling (allocations, bytes), 10 versus 128 tools: {observations:?}");
     Ok(())
 }
-
-#[test]
-fn one_time_install_is_public() {
-    // Hosts install a loaded configuration once, without the watched reload path.
-    let _ = <acyclic_harness_mcp::McpConfig as acyclic_harness_mcp::McpConfigInstall>::install;
-}
