@@ -493,9 +493,7 @@ async fn a_failed_turn_without_a_completed_step_is_not_replayed() -> Result<()> 
     };
     let input = ModelContent::Text("same prompt".into());
     let mut context = TurnContext::new(&root, vec![(0, entry)], OperationId::new(), &input)?;
-    context
-        .expand_inputs(&*bindings.content.reader)
-        .await?;
+    context.expand_inputs(&*bindings.content.reader).await?;
     assert!(
         context.settled.is_empty(),
         "a failed turn with no completed step is not history"
