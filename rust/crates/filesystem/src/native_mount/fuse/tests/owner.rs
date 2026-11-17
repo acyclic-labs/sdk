@@ -112,7 +112,7 @@ fn entry_invalidation_cannot_block_the_lookup_that_releases_its_inode_lock()
     let mut session = mount(source, volume, root.path())?;
     let io = transport(&session);
     assert!(
-        io.connection.get().is_some(),
+        io.has_connection(),
         "failed controls require original kernel abort custody"
     );
     let parent = session
@@ -133,9 +133,7 @@ fn entry_invalidation_cannot_block_the_lookup_that_releases_its_inode_lock()
             // happens before scoped joins, including a failing inline control.
             drop(self.release.take());
             if self.armed {
-                if let Some(connection) = self.io.connection.get() {
-                    let _ = connection.abort();
-                }
+                self.io.abort_connection();
             }
         }
     }
@@ -745,9 +743,7 @@ fn an_open_waits_for_its_cached_size_without_holding_a_callback_worker()
             fn drop(&mut self) {
                 drop(self.release.take());
                 if self.armed {
-                    if let Some(connection) = self.io.connection.get() {
-                        let _ = connection.abort();
-                    }
+                    self.io.abort_connection();
                 }
             }
         }
