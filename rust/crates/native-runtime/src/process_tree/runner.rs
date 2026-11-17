@@ -937,6 +937,8 @@ fn host_frame(status: &mut File) -> io::Result<Option<(u8, i32)>> {
 fn register_host(host: i32) {
     // SAFETY: fstat only reads this process's descriptor.
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstat only reads this process's descriptor into initialized
+    // storage.
     if unsafe { libc::fstat(HOST_PIDS, &raw mut stat) } != 0
         || stat.st_mode & libc::S_IFMT != libc::S_IFIFO
     {
