@@ -293,12 +293,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 .and_then(|state| state.checkpoint())
                 .ok_or(Error::Record("descendant checkpoint is absent"))?;
             let child_state = crate::agent::checkpoint::decode(&child_state.bytes)?.state;
-            if !child_state.closed {
-                return state.transition(Vec::new(), false);
-            }
-            // A terminal report can precede Archive. Read the closed checkpoint
-            // before traversing again, so children spawned after our first
-            // snapshot cannot escape the stop's wait.
+            // A terminal report can precede Archive and remove the child from
+            // its parent's cascade. Completion itself prevents further spawns;
+            // traverse its terminal checkpoint to cover children created after
+            // our first snapshot without waiting for another terminal report.
             let mut effects = Vec::new();
             let mut descendants = self
                 .descendant_status(
@@ -641,7 +639,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
     }
 
     /// One status subscription per open descendant, so a stop acknowledges
-    /// only after every descendant has consumed its archive. The
+    /// only after every descendant is terminal. The
     /// traversal pages the persistent child index; it retains no
     /// subtree-sized list.
     async fn descendant_status(
@@ -684,13 +682,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     // status is still ahead.
                     None => (None, 0),
                 };
-                // A prior completion keeps its original outcome on archive.
-                // Its closed checkpoint proves it can spawn no more children;
-                // the traversal below still visits its existing descendants.
-                let archived = state
+                // A prior completion keeps its original outcome and may leave
+                // the parent's open index before Archive arrives. Completion
+                // prevents further spawns; still traverse its descendants.
+                let settled = state
                     .as_ref()
-                    .is_some_and(|state| state.closed && matches!(state.phase, Phase::Done { .. }));
-                if !archived {
+                    .is_some_and(|state| matches!(state.phase, Phase::Done { .. }));
+                if !settled {
                     if actor_state.paused() {
                         let key = crate::agent::intent_key(
                             "file-controls",
