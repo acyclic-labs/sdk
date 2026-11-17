@@ -142,27 +142,6 @@ impl VisibleFiles {
 }
 
 impl Conversation {
-    /// Select a UI session through the same file-root query as agent files.
-    pub async fn client_files(
-        &self,
-        session: OperationId,
-        paths: Vec<String>,
-        after: Option<FileCut>,
-    ) -> Result<ClientFiles> {
-        self.files(FileRoot::ClientSession { session }, paths, after)
-            .await
-    }
-
-    /// Publish UI-session files through the common conditional publisher.
-    pub async fn publish_client_files(
-        &self,
-        session: OperationId,
-        operation: OperationId,
-        changes: Vec<ClientFileChange>,
-    ) -> Result<GenerationRef> {
-        self.publish_files(FileRoot::ClientSession { session }, operation, changes)
-            .await
-    }
     /// Bounded authored-file previews with the original publication follow.
     pub async fn agent_file_previews(
         &self,

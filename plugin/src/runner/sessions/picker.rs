@@ -76,7 +76,7 @@ fn previews(
             // absent file leaves usage unpriced; no currency is guessed.
             let prices = async {
                 if let Some(prices) = prices { return Ok::<_, Failure>(prices); }
-                let files = selected.client_files(selected.client_session(), vec![SESSION_PRICES.into()], None).await?;
+                let files = selected.files(acyclic_harness::client_files::FileRoot::ClientSession { session: selected.client_session() }, vec![SESSION_PRICES.into()], None).await?;
                 let prices = session_prices(files.files.get(SESSION_PRICES).and_then(Option::as_ref))?;
                 Ok::<_, Failure>(Arc::new(prices))
             }.await;

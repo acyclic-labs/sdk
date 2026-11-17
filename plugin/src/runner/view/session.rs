@@ -192,8 +192,8 @@ impl Session {
             );
         }
         let published = conversation
-            .publish_client_files(
-                conversation.client_session(),
+            .publish_files(
+                root(conversation),
                 pending.operation,
                 vec![pending.change.clone()],
             )
@@ -205,7 +205,7 @@ impl Session {
             return Err(error.into());
         }
         let snapshot = conversation
-            .client_files(conversation.client_session(), paths(), None)
+            .files(root(conversation), paths(), None)
             .await?;
         self.snapshot = snapshot;
         self.project()?;
@@ -221,7 +221,7 @@ impl Session {
         // Preparation does not advance the displayed snapshot. A failed edit
         // leaves the original file follow responsible for other UI changes.
         let snapshot = conversation
-            .client_files(conversation.client_session(), vec![FEEDBACK.into()], None)
+            .files(root(conversation), vec![FEEDBACK.into()], None)
             .await?;
         let source = snapshot.files.get(FEEDBACK).and_then(Option::as_ref);
         let mut document = match source {
@@ -259,8 +259,8 @@ impl Session {
             return Ok(());
         }
         conversation
-            .publish_client_files(
-                conversation.client_session(),
+            .publish_files(
+                root(conversation),
                 OperationId::new(),
                 vec![ClientFileChange {
                     path: PRICES.into(),
@@ -509,8 +509,8 @@ mod tests {
         let (snapshot, ()) = futures::try_join!(
             follow(Arc::clone(&conversation), reader.snapshot.cut.clone()).map_err(Failure::from),
             conversation
-                .publish_client_files(
-                    conversation.client_session(),
+                .publish_files(
+                    root(&conversation),
                     pending.operation,
                     vec![pending.change.clone()]
                 )
@@ -995,8 +995,8 @@ mod tests {
         replacement["revision"] = "selected-2".into();
         replacement["currency"] = "EUR".into();
         conversation
-            .publish_client_files(
-                conversation.client_session(),
+            .publish_files(
+                root(&conversation),
                 OperationId::new(),
                 vec![ClientFileChange {
                     path: PRICES.into(),
