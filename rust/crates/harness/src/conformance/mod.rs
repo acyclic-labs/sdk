@@ -36,18 +36,34 @@ pub const LEGACY_MARKER_INVENTORY: &[u8] = include_bytes!("../../conformance/leg
 pub use crate::agent_conformance_suite as suite;
 
 /// Implementation of [`suite!`]; factories provide disposable backend storage.
+/// Each vector is its own case under a module named for the backend, so each
+/// case's time and failure are its own vector's.
 #[macro_export]
 macro_rules! agent_conformance_suite {
-    ($factory:path) => {
-        $crate::agent_conformance_suite!(agent_conformance, $factory);
-    };
-    ($name:ident, $factory:path) => {
+    (@cases $name:ident; $($case:ident $vector:ident),*) => {$(
         #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
         #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-        async fn $name() -> $crate::conformance::Result {
-            let backend = $factory().await?;
-            $crate::conformance::verify(&backend).await
+        async fn $case() -> $crate::conformance::Result {
+            let backend = super::$name().await?;
+            $crate::conformance::verify_vector(&backend, $crate::conformance::Vector::$vector).await
         }
+    )*};
+    ($name:ident, $factory:path) => {
+        // The factory resolves in the caller's scope, through a function that
+        // shares the module's name, so no case can shadow any part of its path.
+        async fn $name() -> $crate::conformance::Result<impl $crate::conformance::Backend> {
+            Ok($factory().await?)
+        }
+        mod $name {
+            $crate::agent_conformance_suite!(@cases $name;
+                controls Controls, spawn Spawn, reply Reply, publication Publication,
+                admission Admission, identity Identity, roots Roots, approvals Approvals,
+                guest_wire GuestWire, interrupt Interrupt, activation_checkpoint ActivationCheckpoint,
+                restart Restart, serving_protocol ServingProtocol);
+        }
+    };
+    ($factory:path) => {
+        $crate::agent_conformance_suite!(agent_conformance, $factory);
     };
 }
 
@@ -152,27 +168,104 @@ pub fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
 /// The suite is erased at this boundary, so a backend's entry future holds one
 /// pointer and its compile-time layout depth does not grow with the vectors.
 pub fn verify(backend: &dyn Backend) -> BoxProviderFuture<'_, Result> {
-    acyclic_stream::erase_provider_future(move || verify_vectors(backend))
+    acyclic_stream::erase_provider_future(move || async move {
+        for vector in Vector::ALL {
+            verify_vector(backend, vector).await?;
+        }
+        Ok(())
+    })
 }
 
-async fn verify_vectors(backend: &dyn Backend) -> Result {
-    identified("controls", vectors::controls(backend).await)?;
-    identified("spawn", vectors::spawn_cut(backend).await)?;
-    identified("reply", reply::verify(backend).await)?;
-    identified("publication", publication::verify(backend).await)?;
-    identified("admission", admission::verify(backend).await)?;
-    identified("identity", identity::verify(backend).await)?;
-    identified("roots", roots::verify(backend).await)?;
-    identified("approvals", approvals::verify(backend).await)?;
-    identified("guest wire", wire::verify(backend).await)?;
-    identified("runtime interrupt (G41)", interrupt::verify(backend).await)?;
-    identified(
-        "activation checkpoint (G40)",
-        dispatcher::verify(backend).await,
-    )?;
-    identified("restart", vectors::restart(backend).await)?;
-    identified("serving protocol", protocol::verify(backend).await)?;
-    Ok(())
+/// One portable vector. Each starts from fresh backend storage, so any one
+/// runs alone with the same meaning it has within [`verify`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Vector {
+    /// Agent controls.
+    Controls,
+    /// The spawn cut.
+    Spawn,
+    /// Replies.
+    Reply,
+    /// Workspace publication.
+    Publication,
+    /// Admission.
+    Admission,
+    /// Identity.
+    Identity,
+    /// Root preparation.
+    Roots,
+    /// Approvals.
+    Approvals,
+    /// The guest wire.
+    GuestWire,
+    /// Runtime interrupt (G41).
+    Interrupt,
+    /// Activation checkpoint (G40).
+    ActivationCheckpoint,
+    /// Restart at every crash boundary.
+    Restart,
+    /// The serving protocol.
+    ServingProtocol,
+}
+
+impl Vector {
+    /// Every vector, in the order [`verify`] runs them.
+    pub const ALL: [Self; 13] = [
+        Self::Controls,
+        Self::Spawn,
+        Self::Reply,
+        Self::Publication,
+        Self::Admission,
+        Self::Identity,
+        Self::Roots,
+        Self::Approvals,
+        Self::GuestWire,
+        Self::Interrupt,
+        Self::ActivationCheckpoint,
+        Self::Restart,
+        Self::ServingProtocol,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Controls => "controls",
+            Self::Spawn => "spawn",
+            Self::Reply => "reply",
+            Self::Publication => "publication",
+            Self::Admission => "admission",
+            Self::Identity => "identity",
+            Self::Roots => "roots",
+            Self::Approvals => "approvals",
+            Self::GuestWire => "guest wire",
+            Self::Interrupt => "runtime interrupt (G41)",
+            Self::ActivationCheckpoint => "activation checkpoint (G40)",
+            Self::Restart => "restart",
+            Self::ServingProtocol => "serving protocol",
+        }
+    }
+}
+
+/// Execute one portable vector against fresh backend storage, erased like
+/// [`verify`].
+pub fn verify_vector(backend: &dyn Backend, vector: Vector) -> BoxProviderFuture<'_, Result> {
+    acyclic_stream::erase_provider_future(move || async move {
+        let result = match vector {
+            Vector::Controls => vectors::controls(backend).await,
+            Vector::Spawn => vectors::spawn_cut(backend).await,
+            Vector::Reply => reply::verify(backend).await,
+            Vector::Publication => publication::verify(backend).await,
+            Vector::Admission => admission::verify(backend).await,
+            Vector::Identity => identity::verify(backend).await,
+            Vector::Roots => roots::verify(backend).await,
+            Vector::Approvals => approvals::verify(backend).await,
+            Vector::GuestWire => wire::verify(backend).await,
+            Vector::Interrupt => interrupt::verify(backend).await,
+            Vector::ActivationCheckpoint => dispatcher::verify(backend).await,
+            Vector::Restart => vectors::restart(backend).await,
+            Vector::ServingProtocol => protocol::verify(backend).await,
+        };
+        identified(vector.name(), result)
+    })
 }
 
 /// Additional real-issuer control, using the same host fixture and production

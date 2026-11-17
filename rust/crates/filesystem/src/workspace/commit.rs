@@ -306,9 +306,11 @@ pub enum TransactionRebase<A: 'static, O: 'static> {
     /// The current head is now the candidate's immutable base and its sparse
     Rebased(Generation<A, O>),
     /// The candidate already stands on the current head: nothing moved. A
-    /// commit that conflicted here was refused by a dependency outside this
-    /// volume's head, such as an observed policy cut, so committing again
-    /// conflicts again; a retry needs a new candidate, not a rebase.
+    /// commit that conflicted here was refused either by a dependency outside
+    /// this volume's head, such as an observed policy cut, or because another
+    /// member's refusal rejected the commit group it shared, which publishes
+    /// nothing. The candidate may commit again unchanged only once the caller
+    /// has ruled out, or renewed, each such outside dependency.
     Current(Generation<A, O>),
     /// One or more exact observed or mutated regions changed upstream.
     Conflicted {

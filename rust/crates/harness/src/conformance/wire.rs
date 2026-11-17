@@ -36,9 +36,13 @@ impl Drop for Dropped {
     }
 }
 
+/// A guest whose every turn stalls. Each turn counts its start and its drop,
+/// and records whether an earlier turn was still alive when it started.
 struct Stalled {
     manifest: Manifest,
+    started: Arc<AtomicUsize>,
     aborted: Arc<AtomicUsize>,
+    overlapped: Arc<AtomicUsize>,
 }
 impl Handler for Stalled {
     fn manifest(&self) -> &Manifest {
@@ -50,6 +54,13 @@ impl Handler for Stalled {
         _: Option<&'a Checkpoint>,
         _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
+        // The runtime admits one turn per actor at a time, and a timed-out
+        // input is attempted again. So every earlier turn must already have
+        // been dropped by its timeout when the next one starts.
+        let earlier = self.started.fetch_add(1, Ordering::SeqCst);
+        if self.aborted.load(Ordering::SeqCst) != earlier {
+            self.overlapped.fetch_add(1, Ordering::SeqCst);
+        }
         let aborted = Dropped(self.aborted.clone());
         Box::pin(async move {
             let _aborted = aborted;
@@ -65,10 +76,14 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     strict(handler.manifest())?;
     let mut manifest = wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?;
     manifest.limits = acyclic_actors::domain::ActorLimits::new(1, 1 << 20, 1 << 16)?;
+    let started = Arc::new(AtomicUsize::new(0));
     let aborted = Arc::new(AtomicUsize::new(0));
+    let overlapped = Arc::new(AtomicUsize::new(0));
     let handler = backend.handler(Arc::new(Stalled {
         manifest,
+        started: started.clone(),
         aborted: aborted.clone(),
+        overlapped: overlapped.clone(),
     }))?;
     let host = vectors::hosting(provider.clone(), handler, None)?;
     let root = host
@@ -77,7 +92,17 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     super::dispatcher::until(&host, std::future::pending())
         .await
         .expect_err("guest timeout did not surface a failure");
-    if aborted.load(Ordering::SeqCst) != 1 {
+    // Whether the retry has started when the failure surfaces is scheduling,
+    // so count turns rather than expecting exactly one. None may outlive the
+    // host, and none may still be running when the next one starts.
+    let started = started.load(Ordering::SeqCst);
+    if started == 0 {
+        return Err("stalled guest turn never started".into());
+    }
+    if overlapped.load(Ordering::SeqCst) != 0 {
+        return Err("a timed-out guest turn was still running when its retry started".into());
+    }
+    if aborted.load(Ordering::SeqCst) != started {
         return Err("timed-out guest turn was not aborted".into());
     }
     let snapshot = acyclic_harness_core::agent::actor_store(&provider)?

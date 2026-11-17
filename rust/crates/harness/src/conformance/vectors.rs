@@ -241,8 +241,19 @@ pub(crate) async fn restart(backend: &dyn Backend) -> Result {
             let storage = backend.fresh().await?;
             let provider = Arc::new(Observed::new(storage.open().await?));
             provider.crash_at(at, fault);
-            if program(backend, provider.clone()).await.is_ok() {
-                return Err(format!("crash boundary {at}/{fault:?} was not exercised").into());
+            // The process ends where the crash fires: the program stops there,
+            // whatever its retries would have done next.
+            let crashed = Box::pin(provider.crashed());
+            let run = Box::pin(program(backend, provider.clone()));
+            let ended = match futures::future::select(crashed, run).await {
+                futures::future::Either::Left(_) => None,
+                futures::future::Either::Right((ended, _)) => Some(ended),
+            };
+            if !provider.has_crashed() {
+                return Err(match ended {
+                    Some(Err(error)) => error,
+                    _ => format!("crash boundary {at}/{fault:?} was not exercised").into(),
+                });
             }
             drop(provider);
             let reopened = Arc::new(Observed::new(storage.open().await?));

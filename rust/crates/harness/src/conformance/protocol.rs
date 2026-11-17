@@ -533,7 +533,8 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         )
         .await;
         if !matches!(refused, Err(ref error)
-            if error.downcast_ref::<StreamError>() == Some(&StreamError::AccessDenied))
+            if error.downcast_ref::<StreamError>().map(StreamError::category)
+                == Some(StreamCategory::AccessDenied))
         {
             return Err("an outside-tree command did not return typed AccessDenied".into());
         }

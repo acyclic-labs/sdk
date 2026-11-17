@@ -429,37 +429,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )?),
             };
             if let Some(prior) = prior {
-                if host::publication_evidence(prior.evidence(), io)? != receipt_bytes.as_ref() {
-                    return Err(stock_boundary(
+                return self
+                    .replay_publication(
+                        prior,
+                        provisional,
+                        &metadata_key,
+                        &receipt_bytes,
+                        grant,
                         io,
-                        crate::wire::ErrorCode::Conflict,
-                        "upload identity belongs to a different request",
-                    ));
-                }
-                let prior = prior.into_generation();
-                let generation = (self).generation_ref_id(prior.id(), io)?;
-                bounded_io::retain(&prior, io).await?;
-                let version = bounded_io::hex_key(generation.as_resource().key(), io)?;
-                let indexed = read_file_annotation(
-                    &prior,
-                    provisional.path(),
-                    &metadata_key,
-                    Some(receipt_bytes.len() as u64),
-                    io,
-                )
-                .await?;
-                if indexed.as_deref() != Some(receipt_bytes.as_ref()) {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Conflict,
-                        "upload metadata index does not match",
-                    ));
-                }
-                crate::executor::with_history_io(io, |work| {
-                    provisional.pin_version(version, work)
-                })?;
-                grant.recheck(io)?;
-                return self.seal_publication(provisional, io);
+                    )
+                    .await;
             }
             let absolute = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
@@ -499,7 +478,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     None
                 }
             };
-            let generation = self
+            let mut candidate = self
                 .apply_authorized_generation(
                     &opened,
                     (policy_fence, grant, root_fence),
@@ -507,11 +486,55 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &mutations,
                     IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
                     active_io,
-                    receipt_bytes,
-                    metadata_key,
+                    receipt_bytes.clone(),
+                    metadata_key.clone(),
                     staged,
                 )?
                 .await?;
+            // Only a candidate with a root dependency comes back stale: either
+            // the root moved after its cut, or a concurrent member's refusal
+            // failed its commit group. Both take another writer's attempt, so
+            // each pass follows that writer. The writer may be this operation's
+            // own concurrent retry, whose receipt then answers.
+            let generation = loop {
+                let transaction = match candidate {
+                    host::Candidate::Published(generation) => break generation,
+                    host::Candidate::Stale(transaction) => transaction,
+                };
+                if let Some(prior) = active_io.sdk(
+                    opened
+                        .operation_publication(operation, None, active_io, active_io.cancellation())
+                        .await,
+                )? {
+                    drop(transaction);
+                    return self
+                        .replay_publication(
+                            prior,
+                            provisional,
+                            &metadata_key,
+                            &receipt_bytes,
+                            grant,
+                            io,
+                        )
+                        .await;
+                }
+                let root_cut = active_io.sdk(
+                    root.capture_policy_cut(active_io, active_io.cancellation())
+                        .await,
+                )?;
+                let (root_generation, root_fence) = self
+                    .authorize_content_write(&root, grant, path, true, ceiling, io)?
+                    .await?;
+                let _root_hold = active_io.guard_owned(root_generation.logical_owned_bytes()?)?;
+                candidate = Self::recommit_authorized_generation(
+                    transaction,
+                    (policy_fence, grant, root_fence),
+                    root_cut,
+                    active_io,
+                    receipt_bytes.clone(),
+                )?
+                .await?;
+            };
             let generation_reference = (self).generation_ref_id(generation.id(), io)?;
             let version = bounded_io::hex_key(generation_reference.as_resource().key(), io)?;
             bounded_io::retain(&generation, io).await?;
@@ -520,6 +543,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             grant.recheck(io)?;
             self.seal_publication(provisional, io)
         })
+    }
+    /// Answers a publication from the receipt its operation already committed.
+    async fn replay_publication(
+        &self,
+        prior: acyclic_fs::OperationPublication<A, O>,
+        mut provisional: FileRef,
+        metadata_key: &AttributeName,
+        receipt_bytes: &[u8],
+        grant: &ContentGrant,
+        io: Option<&PreparationIo>,
+    ) -> Result<FileRef>
+    where
+        A: 'static,
+        O: 'static,
+    {
+        if host::publication_evidence(prior.evidence(), io)? != receipt_bytes {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "upload identity belongs to a different request",
+            ));
+        }
+        let prior = prior.into_generation();
+        let generation = (self).generation_ref_id(prior.id(), io)?;
+        bounded_io::retain(&prior, io).await?;
+        let version = bounded_io::hex_key(generation.as_resource().key(), io)?;
+        let indexed = read_file_annotation(
+            &prior,
+            provisional.path(),
+            metadata_key,
+            Some(receipt_bytes.len() as u64),
+            io,
+        )
+        .await?;
+        if indexed.as_deref() != Some(receipt_bytes) {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "upload metadata index does not match",
+            ));
+        }
+        crate::executor::with_history_io(io, |work| provisional.pin_version(version, work))?;
+        grant.recheck(io)?;
+        self.seal_publication(provisional, io)
     }
     #[inline(never)]
     fn read_retained_file<'a>(

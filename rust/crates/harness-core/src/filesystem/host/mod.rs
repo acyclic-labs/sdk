@@ -216,6 +216,7 @@ pub use keys::{filesystem_key, workspace_ref};
 pub(in crate::filesystem) use metadata::read_file_annotation;
 pub(in crate::filesystem) use publication::decode_content_metadata;
 pub(in crate::filesystem) use reads::{SelectedCut, read_generation};
+pub(in crate::filesystem) use workspaces::Candidate;
 
 use crate::executor::stock_boundary;
 

@@ -81,7 +81,7 @@ pages. A short page without its actor settlement fence and a page with a
 continuation both retain their original input. Local conversations and hosted
 Session consumers use this same cursor rule. The retained
 `mutations/execution_query_settlement_loss.patch` removes the production fence;
-the existing `local::local_native` vector must then fail with
+the existing `local::local_native::serving_protocol` case must then fail with
 `execution cursor retired an input without its actor fence`. This control
 derives its page from the real serving result; it introduces no alternate
 execution model or readiness loop.

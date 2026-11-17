@@ -31,6 +31,13 @@ pub(crate) struct Observed {
     captured: tokio::sync::watch::Sender<usize>,
     fault: Mutex<Option<(FaultAt, Fault)>>,
     crash: Mutex<Option<(usize, Fault)>>,
+    /// Set when the armed call starts: every later call fails before storage.
+    fired: std::sync::atomic::AtomicBool,
+    /// Announced when the armed crash has happened: as its call starts for
+    /// `Before`, and once its storage call finished for `After`. A crash ends the process that owns this
+    /// provider, so the provider serves no later call: a retry cannot reach
+    /// storage past it, and only a reopen continues.
+    crashed: tokio::sync::watch::Sender<bool>,
 }
 
 #[derive(Default)]
@@ -52,6 +59,8 @@ impl Observed {
             captured: tokio::sync::watch::Sender::new(0),
             fault: Mutex::new(None),
             crash: Mutex::new(None),
+            fired: std::sync::atomic::AtomicBool::new(false),
+            crashed: tokio::sync::watch::Sender::new(false),
         }
     }
 
@@ -127,16 +136,41 @@ impl Observed {
         take(&mut capture.lock().unwrap_or_else(|error| error.into_inner()))
     }
 
+    /// Crashes the process at call `at`: before that call reaches storage, or
+    /// after it lands. From then on every call fails before storage.
     pub fn crash_at(&self, at: usize, fault: Fault) {
         *self.crash.lock().unwrap_or_else(|e| e.into_inner()) = Some((at, fault));
     }
 
-    /// The call-ordinal crash armed for this provider call, if any.
+    /// Whether the armed crash has happened.
+    pub fn has_crashed(&self) -> bool {
+        *self.crashed.borrow()
+    }
+
+    /// Resolves once the armed crash has happened.
+    pub async fn crashed(&self) {
+        let mut crashed = self.crashed.subscribe();
+        crashed
+            .wait_for(|crashed| *crashed)
+            .await
+            .expect("the crash watch lives as long as its provider");
+    }
+
+    /// The crash for this provider call: `Before` for every call after the
+    /// crash fired, and the armed fault for the call it is armed at.
     fn crash_fault(&self) -> Option<Fault> {
         let at = self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.fired.load(Ordering::SeqCst) {
+            return Some(Fault::Before);
+        }
         let mut crash = self.crash.lock().unwrap_or_else(|e| e.into_inner());
         if crash.as_ref().is_some_and(|(step, _)| *step == at) {
-            crash.take().map(|(_, fault)| fault)
+            self.fired.store(true, Ordering::SeqCst);
+            let fault = crash.take().map(|(_, fault)| fault);
+            if matches!(fault, Some(Fault::Before)) {
+                self.crashed.send_replace(true);
+            }
+            fault
         } else {
             None
         }
@@ -155,6 +189,7 @@ impl Observed {
         }
         let result = operation.await;
         if matches!(fault, Some(Fault::After)) {
+            self.crashed.send_replace(true);
             return Err(StreamError::Unavailable);
         }
         result
@@ -347,6 +382,7 @@ impl Observed {
                 None => operation.await,
             };
             if matches!(crash, Some(Fault::After)) {
+                self.crashed.send_replace(true);
                 return Ok(Err(StreamError::Unavailable.into()));
             }
             result

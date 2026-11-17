@@ -38,7 +38,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             String,
             acyclic_fs::StagedContent,
         )>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Candidate<A, O>>> {
         self.publish_selected_operation(
             workspace,
             mutations,
@@ -49,6 +49,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Some((evidence, metadata_key)),
             staged,
         )
+    }
+
+    /// Commits a [`Candidate::Stale`] again under a newly captured root cut
+    /// and root authorization. Its volume observations and mutations still
+    /// hold, since its head never moved.
+    pub(in crate::filesystem) fn recommit_authorized_generation<'a>(
+        transaction: acyclic_fs::Transaction<A, O>,
+        authorization: (
+            acyclic_fs::access::PolicyFence,
+            &'a ContentGrant,
+            acyclic_fs::access::PolicyFence,
+        ),
+        root_cut: acyclic_fs::PolicyCut,
+        io: &'a PreparationIo,
+        evidence: acyclic_stream::OwnedBytes,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Candidate<A, O>>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || {
+            root_cut.scope(async move {
+                let context = publication_context(evidence, io)?;
+                Self::commit_candidate(
+                    transaction,
+                    io,
+                    FilePublication::Authorized(
+                        authorization.0,
+                        authorization.1,
+                        Some(authorization.2),
+                    ),
+                    Some(context),
+                )?
+                .await
+            })
+        })
     }
 
     #[cfg(test)]
@@ -90,7 +122,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None,
                 None,
             )?
-            .await
+            .await?
+            .published(io)
         })
     }
 
@@ -108,7 +141,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             String,
             acyclic_fs::StagedContent,
         )>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Candidate<A, O>>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || {
             let operation = async move {
                 let operation = operation()?;
@@ -196,7 +229,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let context = evidence
                     .map(|(evidence, _)| publication_context(evidence, io))
                     .transpose()?;
-                Self::commit_contextual_publication(transaction, io, publication, context)?.await
+                Self::commit_candidate(transaction, io, publication, context)?.await
             };
             match root_cut {
                 Some(cut) => futures::future::Either::Left(cut.scope(operation)),
@@ -249,7 +282,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     pub(in crate::filesystem::host) fn commit_contextual_publication<'a>(
-        mut transaction: acyclic_fs::Transaction<A, O>,
+        transaction: acyclic_fs::Transaction<A, O>,
         io: &'a PreparationIo,
         publication: FilePublication<'a>,
         context: Option<(
@@ -258,6 +291,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             acyclic_fs::PublicationPermit,
         )>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            Self::commit_candidate(transaction, io, publication, context)?
+                .await?
+                .published(io)
+        })
+    }
+
+    /// Commits `transaction`, rebasing it over concurrent publications to its
+    /// volume. A refusal by a dependency outside that volume returns the
+    /// untouched candidate rather than an error.
+    pub(in crate::filesystem::host) fn commit_candidate<'a>(
+        mut transaction: acyclic_fs::Transaction<A, O>,
+        io: &'a PreparationIo,
+        publication: FilePublication<'a>,
+        context: Option<(
+            acyclic_fs::Digest,
+            acyclic_stream::OwnedBytes,
+            acyclic_fs::PublicationPermit,
+        )>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Candidate<A, O>>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let commit = loop {
                 let context = context.clone();
@@ -341,34 +394,71 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 // Concurrent publications to one volume are optimistic; a
                 // candidate whose exact observations and mutations still hold
                 // advances onto the new head, and any overlap stays a conflict.
-                if matches!(commit, TransactionCommit::Conflict { .. })
-                    && publication.rebases()
-                    && matches!(
-                        io.receive(
-                            transaction
-                                .rebase(1, io.remaining()?, io.cancellation())
-                                .await,
-                        )?,
-                        acyclic_fs::TransactionRebase::Rebased(_)
-                    )
-                {
-                    continue;
+                if matches!(commit, TransactionCommit::Conflict { .. }) && publication.rebases() {
+                    match io.receive(
+                        transaction
+                            .rebase(1, io.remaining()?, io.cancellation())
+                            .await,
+                    )? {
+                        acyclic_fs::TransactionRebase::Rebased(_) => continue,
+                        // The head never moved. Nothing was published by a
+                        // refused commit group, so a concurrent member's own
+                        // refusal fails every member of its group. Without a
+                        // dependency outside this volume that is the only
+                        // cause, and each pass follows another writer's
+                        // attempt, so the unchanged candidate commits again.
+                        // A root dependency may itself have moved instead, so
+                        // only its owner can build the next candidate.
+                        acyclic_fs::TransactionRebase::Current(_) => {
+                            if matches!(publication, FilePublication::Authorized(_, _, Some(_))) {
+                                return Ok(Candidate::Stale(transaction));
+                            }
+                            continue;
+                        }
+                        acyclic_fs::TransactionRebase::Conflicted { .. } => {}
+                    }
                 }
                 break commit;
             };
             match commit {
                 TransactionCommit::Committed(generation)
-                | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+                | TransactionCommit::AlreadyCommitted(generation) => {
+                    Ok(Candidate::Published(generation))
+                }
                 TransactionCommit::Conflict { .. }
                 | TransactionCommit::Fenced
-                | TransactionCommit::IdempotencyConflict => Err(stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Conflict,
-                    "workspace publication conflicted or was fenced",
-                )),
+                | TransactionCommit::IdempotencyConflict => Err(publication_conflict(io)),
             }
         })
     }
+}
+
+/// One commit's outcome for the publisher that owns its dependencies.
+pub(in crate::filesystem) enum Candidate<A: 'static, O: 'static> {
+    Published(Generation<A, O>),
+    /// The volume head never moved, yet a commit with a root dependency was
+    /// refused: the root moved after its cut, or a concurrent member's
+    /// refusal failed its commit group. Only the dependency's owner can tell
+    /// these apart, by renewing the dependency before committing again.
+    Stale(acyclic_fs::Transaction<A, O>),
+}
+
+impl<A: 'static, O: 'static> Candidate<A, O> {
+    /// The generation, for a publisher whose every dependency is its volume.
+    pub(in crate::filesystem) fn published(self, io: &PreparationIo) -> Result<Generation<A, O>> {
+        match self {
+            Self::Published(generation) => Ok(generation),
+            Self::Stale(_) => Err(publication_conflict(io)),
+        }
+    }
+}
+
+fn publication_conflict(io: &PreparationIo) -> Error {
+    stock_boundary(
+        Some(io),
+        crate::wire::ErrorCode::Conflict,
+        "workspace publication conflicted or was fenced",
+    )
 }
 
 pub(in crate::filesystem::host) fn publication_context(
