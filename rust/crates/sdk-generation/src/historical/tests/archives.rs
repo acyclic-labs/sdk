@@ -45,6 +45,12 @@ fn retained_inventory_accepts_exact_flat_and_nested_members_only() {
 
 #[test]
 fn separate_producer_resolution_retains_original_lock_and_rejects_config_inventory_drift() {
+    compiler::with(
+        separate_producer_resolution_retains_original_lock_and_rejects_config_inventory_drift_world,
+    );
+}
+
+fn separate_producer_resolution_retains_original_lock_and_rejects_config_inventory_drift_world() {
     let fixture = Fixture::new();
     fs::write(
         fixture.path().join("Cargo.lock"),
@@ -469,6 +475,10 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
 }
 #[test]
 fn cargo_binary_target_produces_native_receipt_without_public_api_admission() {
+    compiler::with(cargo_binary_target_produces_native_receipt_without_public_api_admission_world);
+}
+
+fn cargo_binary_target_produces_native_receipt_without_public_api_admission_world() {
     use sdk_docs::rustdoc_profiles::{
         execute_profile, observe_rustdoc, ProfileSpec, RustdocTarget,
     };
