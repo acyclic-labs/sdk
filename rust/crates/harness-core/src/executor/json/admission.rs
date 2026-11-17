@@ -659,7 +659,7 @@ fn typed_cost(
     cost: LayoutCost,
     code: Option<crate::wire::ErrorCode>,
 ) -> Result<(JsonValueShape, LayoutCost)> {
-    if shape.unresolved_raw() || cost.refused {
+    if shape.unresolved_raw() || cost.is_refused() {
         // The typed decode would reject this document: an input failure,
         // classified like every other malformed source.
         return Err(input_error(JsonInputError::Shape, code));

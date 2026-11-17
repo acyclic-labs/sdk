@@ -395,12 +395,14 @@ pub struct LayoutCost {
     buffered: u64,
     /// Largest buffer held while one container is built.
     moving: u64,
-    /// Containers at positions the type ignores.
-    pub undescribed: u64,
     /// The document has a shape the layout does not bound.
-    pub refused: bool,
+    refused: bool,
 }
 impl LayoutCost {
+    /// Whether the walk encountered a shape its layout does not bound.
+    pub const fn is_refused(self) -> bool {
+        self.refused
+    }
     /// Maximum heap bytes of the typed decode.
     pub fn bytes(self) -> u64 {
         // Escaped strings decode through one scratch vector that grows by
@@ -446,7 +448,6 @@ impl LayoutCost {
         let tagged = candidates.buffers();
         let mut kept = 0;
         if candidates.is_empty() {
-            self.undescribed += 1;
             self.skipped_depth = self.skipped_depth.max(u64::from(placement.depth) + 1);
         } else {
             let mut accepted = false;
