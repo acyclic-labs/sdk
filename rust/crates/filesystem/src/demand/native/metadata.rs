@@ -52,16 +52,10 @@ fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing:
 }
 
 fn version(path: &[u8], metadata: &HostStat) -> SourceVersion {
-    #[cfg(feature = "test-support")]
-    if let Some(times) = fixture_times(metadata) {
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic-fs-native-source-version-v1\0");
-        hash.update(&metadata.len().to_le_bytes());
-        hash.update(path);
-        hash.update(&times.modified_ns.unwrap_or_default().to_le_bytes());
-        hash.update(&times.changed_ns.unwrap_or_default().to_le_bytes());
-        return SourceVersion(*hash.finalize().as_bytes());
-    }
+    // The read-time version stays physical: a replacement between lookup and
+    // read must still be detected. Only the identity written into the
+    // generation root is fixture-derived.
+    let _ = path;
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-version-v1\0");
     hash.update(&metadata.len().to_le_bytes());
