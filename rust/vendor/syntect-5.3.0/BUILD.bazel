@@ -32,6 +32,7 @@ rust_library(
     crate_features = FEATURES,
     rustc_env = PACKAGE_ENV,
     rustc_flags = [
+        "-Copt-level=3",
         "--check-cfg=cfg(docsrs,test)",
         "--check-cfg=cfg(feature, values(\"default\", \"default-fancy\", \"default-onig\", \"default-syntaxes\", \"default-themes\", \"dump-create\", \"dump-load\", \"fancy-regex\", \"flate2\", \"fnv\", \"html\", \"metadata\", \"onig\", \"parsing\", \"plist\", \"plist-load\", \"regex-fancy\", \"regex-onig\", \"regex-syntax\", \"test-support\", \"yaml-load\", \"yaml-rust\"))",
     ],

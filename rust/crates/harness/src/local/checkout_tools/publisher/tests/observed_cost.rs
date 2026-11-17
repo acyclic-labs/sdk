@@ -8,6 +8,12 @@ fn publication_source(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The rescan bound is a work count, so the tree only has to be populated
+/// enough for a whole-tree scan to be observable.
+fn minimal_source(root: &Path) -> Result<()> {
+    std::fs::write(root.join("source.txt"), b"source\n").map_err(storage)
+}
+
 #[tokio::test]
 async fn concurrent_publications_preserve_each_volume_payload() -> Result<()> {
     let (_directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
@@ -21,7 +27,7 @@ async fn concurrent_publications_preserve_each_volume_payload() -> Result<()> {
 /// whatever the watcher can prove about its delivery.
 #[tokio::test]
 async fn concurrent_checkout_writes_never_rescan_the_tree() -> Result<()> {
-    let (_directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
+    let (_directory, _state, harness, publisher) = seeded_cost_fixture(minimal_source).await?;
     publisher.tools.publish_baseline().await?;
     // The first capture may still establish the cursor's baseline.
     let (_, _) = publisher

@@ -5,11 +5,11 @@ use crate::{
     highlighting::ThemeSet,
     parsing::{LazyContexts, SyntaxSet},
 };
-use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
-use serde::{de::DeserializeOwned, Serialize};
+use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
+use serde::{Serialize, de::DeserializeOwned};
 use std::io::{Read, Write};
 
-fn check_type<T: DeserializeOwned + Serialize>(data: &[u8], compressed: bool) -> Option<T> {
+fn check_round_trip<T: DeserializeOwned + Serialize>(data: &[u8], compressed: bool) -> Option<T> {
     let value: T = if compressed {
         dumps::from_reader(data)
     } else {
@@ -19,9 +19,15 @@ fn check_type<T: DeserializeOwned + Serialize>(data: &[u8], compressed: bool) ->
     let encoded = dumps::dump_binary(&value);
     let restored: T = dumps::from_reader(&encoded[..]).unwrap();
     assert_eq!(
-        serde_json::to_value(&value).unwrap(),
-        serde_json::to_value(restored).unwrap()
+        dumps::dump_binary(&restored),
+        encoded,
+        "a dump round trip must preserve its canonical encoding"
     );
+    Some(value)
+}
+
+fn check_type<T: DeserializeOwned + Serialize>(data: &[u8], compressed: bool) -> Option<T> {
+    let value = check_round_trip::<T>(data, compressed)?;
 
     let raw = if compressed {
         let mut raw = Vec::new();
@@ -70,9 +76,25 @@ fn check_rejected<T: DeserializeOwned>(raw: &[u8], fault: &str) {
 /// Inputs that do not decode as a supported dump type have no round-trip claim.
 pub fn check_syntax_data(data: &[u8]) {
     if let Some(syntaxes) = check_type::<SyntaxSet>(data, false) {
-        for syntax in syntaxes.syntaxes() {
-            let _ = check_type::<LazyContexts>(&syntax.serialized_lazy_contexts, true);
+        let mut syntaxes = syntaxes.syntaxes().iter();
+        // The malformed-envelope matrix is a property of the dump type, not
+        // of each bundled grammar; run it once and round-trip every grammar.
+        if let Some(first) = syntaxes.next() {
+            let _ = check_type::<LazyContexts>(&first.serialized_lazy_contexts, true);
+        }
+        for syntax in syntaxes {
+            let _ = check_round_trip::<LazyContexts>(&syntax.serialized_lazy_contexts, true);
         }
     }
     let _ = check_type::<ThemeSet>(data, true);
+}
+
+/// Round-trips a syntax set and every bundled grammar without repeating the
+/// malformed-envelope matrix, which [`check_syntax_data`] already covers.
+pub fn check_syntax_round_trip(data: &[u8]) {
+    if let Some(syntaxes) = check_round_trip::<SyntaxSet>(data, false) {
+        for syntax in syntaxes.syntaxes() {
+            let _ = check_round_trip::<LazyContexts>(&syntax.serialized_lazy_contexts, true);
+        }
+    }
 }
