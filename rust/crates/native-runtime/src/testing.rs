@@ -698,17 +698,9 @@ pub(crate) fn submit(
             owned.pause("native:submitted").await;
             let result = match crate::workers(pool, job.meter().is_some()) {
                 Ok(workers) => {
-                    let host = owned
-                        .schedule
-                        .0
-                        .executor
-                        .as_ref()
-                        .map(|_| {
-                            host::Host::for_workers(
-                                workers,
-                                owned.schedule.0.progress.clone(),
-                            )
-                        });
+                    let host = owned.schedule.0.executor.as_ref().map(|_| {
+                        host::Host::for_workers(workers, owned.schedule.0.progress.clone())
+                    });
                     host::Work::bind(&mut job, Some(owned.clone()), host.clone());
                     match host {
                         Some(host) => host.drive(queued(job, workers)).await,
