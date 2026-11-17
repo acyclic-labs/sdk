@@ -1680,15 +1680,12 @@ async fn run<T: TurnDriver + ?Sized>(
     let input = match picked {
         Pick::Nothing => return Ok(()),
         Pick::Review => {
-            let review = crate::core::until_turn_stopped(
-                Some(cancellation.clone()),
-                async {
-                    driver
-                        .review(state, cursor, cancellation.clone())
-                        .await
-                        .map_err(|error| crate::Error::Agent(Box::new(error)))
-                },
-            )
+            let review = crate::core::until_turn_stopped(Some(cancellation.clone()), async {
+                driver
+                    .review(state, cursor, cancellation.clone())
+                    .await
+                    .map_err(|error| crate::Error::Agent(Box::new(error)))
+            })
             .await;
             let review = match review {
                 Ok(review) => Ok(review),
