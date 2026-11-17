@@ -98,7 +98,7 @@ const workspaceMetadata = (() => {
     version: base.version,
     workspace_root: ".",
     metadata: base.metadata,
-  }, null, 2) + "\n";
+  }) + "\n";
 })();
 const packages = new Map(runs.flatMap(run => run.packages.map(p => [p.id, p])));
 const workspace = new Set(runs.flatMap(run => run.workspace_members));
