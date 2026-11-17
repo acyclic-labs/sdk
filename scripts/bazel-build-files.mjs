@@ -1017,7 +1017,7 @@ function moduleFile() {
     `xwin(name = "xwin")\n\n`,
     // The musl toolchain is registered before the hub so it wins over the gnu toolchain, which
     // rules_rust also considers compatible with the musl platform.
-    `register_toolchains("//:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__${LINUX_MUSL_TRIPLE}__${channelName}", "@rust_toolchains//:all")\n\n`,
+    `register_toolchains("//${WINDOWS_TOOLCHAIN_PACKAGE}:windows_cc_toolchain_registration", "@rust_toolchains//:rust_linux_musl__${LINUX_MUSL_TRIPLE}__${channelName}", "@rust_toolchains//:all", dev_dependency = True)\n\n`,
     `crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")\n\n`,
     // Third-party packages and features only the all-features resolution reaches, pinned for
     // crate_universe's default-features resolution, which unifies them in.
