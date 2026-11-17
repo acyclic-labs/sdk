@@ -1,6 +1,17 @@
 load(":node_test.bzl", "node_test")
 
 node_test(
+    name = "package_entrypoints_test",
+    srcs = [
+        "package-entrypoints.test.mjs",
+        "//:wasm_auth_node_modules",
+        "//:wasm_actors_node_modules",
+        "//:wasm_inference_node_modules",
+    ],
+    entry = "scripts/policy/package-entrypoints.test.mjs",
+)
+
+node_test(
     name = "wasm_metadata_test",
     srcs = [
         "wasm-metadata.test.mjs",

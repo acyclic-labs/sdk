@@ -10,6 +10,7 @@ _PACKAGES = {
     "@connectrpc/connect-node": "@connectrpc/connect-node",
     "@typescript/vfs": "@typescript/vfs",
     "debug": "debug",
+    "ignore": "ignore",
     "ms": "ms",
 }
 

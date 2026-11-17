@@ -22,7 +22,7 @@ export async function bindingTools(packages, {families = [...packages], native =
   ])].sort();
 }
 
-export async function projectBindings(packages, {tools, check = false, families = [...packages], native = false, sourceCommit = undefined}) {
+export async function projectBindings(packages, {tools, check = false, families = [...packages], native = false, sourceCommit = undefined, protobuf = true}) {
   const [{generateFiles}, {generateProto}, {write: generateActors}] = await Promise.all([
     import("./generated-bindings.mjs"), import("./generate-proto.mjs"), import("./generate-actors.mjs"),
   ]);
@@ -33,7 +33,7 @@ export async function projectBindings(packages, {tools, check = false, families 
       stdio:["ignore", "pipe", "inherit"], ...options});
   };
   if (packages.has("auth")) await generateFiles(root, output => run(AUTH, [output]), [], check);
-  generateProto(packages, check);
+  if (protobuf) generateProto(packages, check);
   if (packages.has("actors")) await generateActors(check, {routes:() => tools.get(ACTORS), codegen:(args, options) => run(PROTO_CODEGEN, args, options)});
   if (packages.has("workers")) {
     await generateFiles(join(root, "typescript/packages/workers/src/generated"), destination => run(MANIFEST, [destination]), [], check);

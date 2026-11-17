@@ -1085,10 +1085,17 @@ function moduleFile() {
 }
 
 const harnessTools = new Set();
+const runtimeTools = new Set();
 if (wasm) {
   const {packageClosure} = await import(pathToFileURL(path.join(root,"scripts/package-closure.mjs")).href);
   const {bindingTools} = await import(pathToFileURL(path.join(root,"scripts/project-bindings.mjs")).href);
   for (const tool of await bindingTools(packageClosure(root,"harness-actor"))) harnessTools.add(tool);
+  for (const selection of wasmSelections.filter(selection => selection.runtime)) {
+    for (const tool of await bindingTools(packageClosure(root, selection.outputPackage))) {
+      runtimeTools.add(tool);
+      harnessTools.add(tool);
+    }
+  }
 }
 
 // Bodies first: rendering them records every file another package takes by label.
@@ -1167,13 +1174,23 @@ const runtimeFilegroups = [...workspaceRuntimeDeps.values()].map(dep => {
       }))],
     ])}` : "");
 }).join("\n");
+const runtimePackageNames = [...workspaceRuntimeDeps.values()].map(dep => dep.dir.split("/").at(-1));
+const runtimeBuild = runtimePackageNames.length ? `\n${rule("typescript_packages", [
+  ["name", q("sdk_typescript_packages")],
+  ["packages", list(runtimePackageNames)],
+  ["srcs", glob(["scripts/*.mjs", "scripts/vendor/**", "typescript/packages/*/package.json"], []) + " + " + list(["//:package.json", ...[...workspaceRuntimeDeps.values()].map(dep => `:${workspaceTargetName(dep.name)}`)])],
+  ["protos", starlarkDict([...workspaceRuntimeDeps.values()].filter(dep => packagedTypeScriptBindings.some(([, names]) => names.includes(dep.dir.split("/").at(-1))))
+    .map(dep => [`:${workspaceTargetName(dep.name)}_proto`, dep.dir.split("/").at(-1)]))],
+  ["tools", starlarkDict([...runtimeTools].sort().map(label => [label, label]))],
+])}` + runtimePackageNames.map(name => `\n${rule("filegroup", [
+  ["name", q(`sdk_typescript_${name}`)],
+  ["srcs", list([":sdk_typescript_packages"])],
+  ["output_group", q(name)],
+])}`).join("") : "";
 const wasmNodeModulesRules = runtimeFilegroups + (runtimeSelections.length ? "\n" : "") + runtimeSelections.map(selection => {
   const deps = wasmNodeModules.get(selection.name) ?? [];
-  const packages = deps.map(dep => [dep.dir ? `:${workspaceTargetName(dep.name)}` : `@${dep.repository}//:files`, `${dep.name}=${dep.dir ?? ""}`]);
+  const packages = deps.map(dep => [dep.dir ? `:sdk_typescript_${dep.dir.split("/").at(-1)}` : `@${dep.repository}//:files`, `${dep.name}=`]);
   for (const dep of deps.filter(dep => dep.dir)) {
-    if (packagedTypeScriptBindings.some(([, names]) => names.includes(dep.dir.split("/").at(-1)))) {
-      packages.push([`:${workspaceTargetName(dep.name)}_proto`, `${dep.name}/generated/proto=`]);
-    }
     const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
     if (generated) packages.push([generated.name, `${dep.name}/generated/wasm=`]);
   }
@@ -1190,7 +1207,7 @@ const files = new Map([
   ["rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json", workspaceMetadata],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
-${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:proto_js.bzl", "proto_js")\n' : ""}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${wasmNodeModulesRules}${sourcesRule}${exportsRule("")}`],
+${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:proto_js.bzl", "proto_js")\nload("//:typescript_packages.bzl", "typescript_packages")\n' : ""}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${runtimeFilegroups}${runtimeBuild}${wasmNodeModulesRules.slice(runtimeFilegroups.length)}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}

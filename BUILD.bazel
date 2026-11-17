@@ -3,6 +3,7 @@
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 load("//:node_modules.bzl", "node_modules")
 load("//:proto_js.bzl", "proto_js")
+load("//:typescript_packages.bzl", "typescript_packages")
 
 constraint_setting(
     name = "libc",
@@ -293,13 +294,93 @@ proto_js(
     },
 )
 
+typescript_packages(
+    name = "sdk_typescript_packages",
+    packages = [
+        "auth",
+        "actors",
+        "core",
+        "stream",
+        "inference",
+    ],
+    srcs = glob(["scripts/*.mjs","scripts/vendor/**","typescript/packages/*/package.json"], allow_empty = True) + [
+        "//:package.json",
+        ":workspace_acyclic_labs_auth",
+        ":workspace_acyclic_labs_actors",
+        ":workspace_acyclic_labs_core",
+        ":workspace_acyclic_labs_stream",
+        ":workspace_acyclic_labs_inference",
+    ],
+    protos = {
+        ":workspace_acyclic_labs_auth_proto": "auth",
+        ":workspace_acyclic_labs_actors_proto": "actors",
+        ":workspace_acyclic_labs_stream_proto": "stream",
+        ":workspace_acyclic_labs_inference_proto": "inference",
+    },
+    tools = {
+        "//rust/crates/actors-wasm:actors-wasm-rpc-inventory": "//rust/crates/actors-wasm:actors-wasm-rpc-inventory",
+        "//rust/crates/actors:actors-authorization_example": "//rust/crates/actors:actors-authorization_example",
+        "//rust/crates/actors:actors-http-routes_example": "//rust/crates/actors:actors-http-routes_example",
+        "//rust/crates/actors:actors-rpc-inventory": "//rust/crates/actors:actors-rpc-inventory",
+        "//rust/crates/auth:generate_example": "//rust/crates/auth:generate_example",
+        "//rust/crates/inference-wasm:inference-typescript-http-routes_example": "//rust/crates/inference-wasm:inference-typescript-http-routes_example",
+        "//rust/crates/inference-wasm:inference-typescript-terminal-metadata_example": "//rust/crates/inference-wasm:inference-typescript-terminal-metadata_example",
+        "//rust/crates/inference-wasm:inference-typescript-widths_example": "//rust/crates/inference-wasm:inference-typescript-widths_example",
+        "//rust/crates/inference:inference-typescript-defaults_example": "//rust/crates/inference:inference-typescript-defaults_example",
+        "//rust/crates/proto-codegen:sdk-proto-codegen": "//rust/crates/proto-codegen:sdk-proto-codegen",
+        "//rust/crates/stream:stream-authorization_example": "//rust/crates/stream:stream-authorization_example",
+        "//rust/crates/stream:stream-http-contract": "//rust/crates/stream:stream-http-contract",
+        "//rust/crates/stream:stream-rpc-inventory": "//rust/crates/stream:stream-rpc-inventory",
+        "//rust/crates/stream:token-operations_example": "//rust/crates/stream:token-operations_example",
+    },
+)
+
+filegroup(
+    name = "sdk_typescript_auth",
+    srcs = [
+        ":sdk_typescript_packages",
+    ],
+    output_group = "auth",
+)
+
+filegroup(
+    name = "sdk_typescript_actors",
+    srcs = [
+        ":sdk_typescript_packages",
+    ],
+    output_group = "actors",
+)
+
+filegroup(
+    name = "sdk_typescript_core",
+    srcs = [
+        ":sdk_typescript_packages",
+    ],
+    output_group = "core",
+)
+
+filegroup(
+    name = "sdk_typescript_stream",
+    srcs = [
+        ":sdk_typescript_packages",
+    ],
+    output_group = "stream",
+)
+
+filegroup(
+    name = "sdk_typescript_inference",
+    srcs = [
+        ":sdk_typescript_packages",
+    ],
+    output_group = "inference",
+)
+
 node_modules(
     name = "wasm_auth_node_modules",
     packages = {
-        ":workspace_acyclic_labs_auth": "@acyclic-labs/auth=typescript/packages/auth",
+        ":sdk_typescript_auth": "@acyclic-labs/auth=",
         "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
         "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
-        ":workspace_acyclic_labs_auth_proto": "@acyclic-labs/auth/generated/proto=",
         "//wasm:auth": "@acyclic-labs/auth/generated/wasm=",
     },
     visibility = ["//visibility:public"],
@@ -308,14 +389,12 @@ node_modules(
 node_modules(
     name = "wasm_actors_node_modules",
     packages = {
-        ":workspace_acyclic_labs_actors": "@acyclic-labs/actors=typescript/packages/actors",
-        ":workspace_acyclic_labs_core": "@acyclic-labs/core=typescript/packages/core",
+        ":sdk_typescript_actors": "@acyclic-labs/actors=",
+        ":sdk_typescript_core": "@acyclic-labs/core=",
         "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
         "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
-        ":workspace_acyclic_labs_auth": "@acyclic-labs/auth=typescript/packages/auth",
-        ":workspace_acyclic_labs_actors_proto": "@acyclic-labs/actors/generated/proto=",
+        ":sdk_typescript_auth": "@acyclic-labs/auth=",
         "//wasm:actors": "@acyclic-labs/actors/generated/wasm=",
-        ":workspace_acyclic_labs_auth_proto": "@acyclic-labs/auth/generated/proto=",
         "//wasm:auth": "@acyclic-labs/auth/generated/wasm=",
     },
     visibility = ["//visibility:public"],
@@ -325,15 +404,13 @@ node_modules(
     name = "wasm_stream_node_modules",
     directory = "node_modules",
     packages = {
-        ":workspace_acyclic_labs_stream": "@acyclic-labs/stream=typescript/packages/stream",
-        ":workspace_acyclic_labs_core": "@acyclic-labs/core=typescript/packages/core",
+        ":sdk_typescript_stream": "@acyclic-labs/stream=",
+        ":sdk_typescript_core": "@acyclic-labs/core=",
         "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
         "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
         "@npm_workspace_connectrpc_connect_node//:files": "@connectrpc/connect-node=",
-        ":workspace_acyclic_labs_auth": "@acyclic-labs/auth=typescript/packages/auth",
-        ":workspace_acyclic_labs_stream_proto": "@acyclic-labs/stream/generated/proto=",
+        ":sdk_typescript_auth": "@acyclic-labs/auth=",
         "//wasm:stream": "@acyclic-labs/stream/generated/wasm=",
-        ":workspace_acyclic_labs_auth_proto": "@acyclic-labs/auth/generated/proto=",
         "//wasm:auth": "@acyclic-labs/auth/generated/wasm=",
     },
     visibility = ["//visibility:public"],
@@ -342,14 +419,12 @@ node_modules(
 node_modules(
     name = "wasm_inference_node_modules",
     packages = {
-        ":workspace_acyclic_labs_inference": "@acyclic-labs/inference=typescript/packages/inference",
-        ":workspace_acyclic_labs_core": "@acyclic-labs/core=typescript/packages/core",
+        ":sdk_typescript_inference": "@acyclic-labs/inference=",
+        ":sdk_typescript_core": "@acyclic-labs/core=",
         "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
         "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
-        ":workspace_acyclic_labs_auth": "@acyclic-labs/auth=typescript/packages/auth",
-        ":workspace_acyclic_labs_inference_proto": "@acyclic-labs/inference/generated/proto=",
+        ":sdk_typescript_auth": "@acyclic-labs/auth=",
         "//wasm:inference": "@acyclic-labs/inference/generated/wasm=",
-        ":workspace_acyclic_labs_auth_proto": "@acyclic-labs/auth/generated/proto=",
         "//wasm:auth": "@acyclic-labs/auth/generated/wasm=",
     },
     visibility = ["//visibility:public"],

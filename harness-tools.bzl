@@ -20,4 +20,8 @@ HARNESS_TOOLS = {
     "//rust/crates/stream:stream-rpc-inventory": Label("//rust/crates/stream:stream-rpc-inventory"),
     "//rust/crates/stream:token-operations_example": Label("//rust/crates/stream:token-operations_example"),
     "//rust/crates/workers:workers-authorization_example": Label("//rust/crates/workers:workers-authorization_example"),
+    "//rust/crates/inference-wasm:inference-typescript-http-routes_example": Label("//rust/crates/inference-wasm:inference-typescript-http-routes_example"),
+    "//rust/crates/inference-wasm:inference-typescript-terminal-metadata_example": Label("//rust/crates/inference-wasm:inference-typescript-terminal-metadata_example"),
+    "//rust/crates/inference-wasm:inference-typescript-widths_example": Label("//rust/crates/inference-wasm:inference-typescript-widths_example"),
+    "//rust/crates/inference:inference-typescript-defaults_example": Label("//rust/crates/inference:inference-typescript-defaults_example"),
 }
