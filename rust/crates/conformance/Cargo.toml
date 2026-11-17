@@ -10,6 +10,9 @@ publish = false
 description = "Internal black-box conformance suites for Acyclic service providers"
 readme = "README.md"
 
+[package.metadata.bazel.test-tools.graphcoder_backends]
+acyclic = "//plugin:acyclic"
+
 [features]
 local-hotpath = []
 local-hotpath-proofs = ["local-hotpath", "acyclic-stream/test-support"]
