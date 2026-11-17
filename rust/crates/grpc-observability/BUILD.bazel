@@ -69,6 +69,7 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//futures-0.3.34",
         "@sdk_crates//http-body-1.1.0",

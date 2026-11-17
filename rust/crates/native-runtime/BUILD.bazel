@@ -172,6 +172,7 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
+        "//rust/crates/observability:acyclic_observability",
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//loom-0.7.3",
         "@sdk_crates//proptest-1.12.0",
