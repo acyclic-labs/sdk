@@ -39,8 +39,10 @@ test('real Cargo targets retain feature closure, alternatives, platform independ
   mkdirSync(join(broken, 'tests/nested'));
   symlinkSync('absent.rs', join(broken, 'tests/nested/main.rs'), 'file');
   assert.match(testFeatureFindings(broken)[0], /ENOENT/);
-  for (const path of ['Cargo.toml', 'tests/case.rs']) {
-    assert.match(testFeatureFindings(fixture(t, '', '', {[path]: Buffer.from([0xff])}))[0], /encoding utf-8/);
+  for (const [path, bytes] of [['tests/case.rs', Buffer.from([0xff])], ['Cargo.toml', Buffer.concat([
+    Buffer.from('[package]\nname="example"\nversion="0.0.0"\ndescription="'), Buffer.from([0xff]), Buffer.from('"\n'),
+  ])]]) {
+    assert.equal(testFeatureFindings(fixture(t, '', '', {[path]: bytes})).length, 1);
   }
 });
 
