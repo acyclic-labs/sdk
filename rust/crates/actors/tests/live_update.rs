@@ -30,7 +30,7 @@ use std::{
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const AGENTS: usize = 3;
 const ACTORS: usize = 7;
-const STEPS: u64 = 24;
+const STEPS: usize = 24;
 
 fn path(value: impl Into<String>) -> Result<StreamPath> {
     Ok(StreamPath::new(value.into())?)
@@ -116,7 +116,7 @@ struct Route {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Request {
     agent: usize,
-    step: u64,
+    step: usize,
     resume: bool,
 }
 impl Request {
@@ -129,12 +129,12 @@ impl Request {
         )
     }
     fn target(&self) -> usize {
-        (self.agent + usize::try_from(self.step).expect("small proof step")) % ACTORS
+        (self.agent + self.step) % ACTORS
     }
 }
 #[derive(Default, Serialize, Deserialize)]
 struct State {
-    seen: BTreeMap<usize, u64>,
+    seen: BTreeMap<usize, usize>,
     pending: Option<JournalPosition>,
 }
 #[derive(Serialize, Deserialize)]
@@ -206,7 +206,7 @@ impl Handler for Package {
                     return Err(guest("changed original operation"));
                 }
             } else if let Some(last) = state.seen.insert(request.agent, request.step)
-                && last.checked_add(u64::try_from(ACTORS).map_err(guest)?) != Some(request.step)
+                && last.checked_add(ACTORS) != Some(request.step)
             {
                 return Err(guest("duplicate or reordered delivery"));
             }
@@ -682,7 +682,7 @@ async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
         }
     }
     assert!(rollback && resumed);
-    assert_eq!(delivered.len(), AGENTS * usize::try_from(STEPS)? + 1);
+    assert_eq!(delivered.len(), AGENTS * STEPS + 1);
     for agent in 0..AGENTS {
         for step in 0..STEPS {
             assert!(delivered.contains(&format!("agent-{agent}/step-{step}")));
