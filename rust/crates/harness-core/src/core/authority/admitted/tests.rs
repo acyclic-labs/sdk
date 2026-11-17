@@ -983,7 +983,10 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
                 .map_err(|_| Error::Invalid("fixture ceiling".into()))?;
         let caller = root.bootstrap_scope(
             "turn",
-            &Capabilities::new([ceiling]),
+            &Capabilities::new([
+                crate::contract::capability::HARNESS_HOST.to_owned(),
+                ceiling,
+            ]),
             Some(AgentId::from_bytes(agent.to_bytes())),
             &mut None,
         )?;
