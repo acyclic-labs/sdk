@@ -672,8 +672,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         let mut stack = Vec::new();
         let mut children = children.clone();
         children.bind(Arc::clone(self.store.provider()));
-        stack.push((parent.clone(), children));
-        while let Some((parent, children)) = stack.pop() {
+        stack.push((parent.clone(), children, true));
+        while let Some((parent, children, watched)) = stack.pop() {
             let mut after = None;
             while let Some(id) = children.page(after.as_ref(), 1).await?.pop() {
                 after = Some(id.clone());
@@ -738,7 +738,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                             .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
                         effects.extend(request.effects);
                     }
-                    if !reported {
+                    if watched && !reported {
                         changes.push(SubscriptionChange::Add {
                             id: format!("{DESCENDANT_STATUS}{}", child.as_str()),
                             path: child.status()?,
@@ -747,16 +747,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     }
                 }
                 if let Some(state) = state
-                    && state.reported
+                    && !archived
                 {
                     // A reported descendant never publishes a second terminal
-                    // status. Its archive cascade still settles its open
-                    // children, so walk only that reported frontier. Every
-                    // other descendant's Archived status already waits for
-                    // its whole subtree.
+                    // status, so its children are watched directly. An
+                    // unreported descendant's Archived status already waits
+                    // for its whole subtree; its children are visited only to
+                    // close and resume any paused descendant below it.
                     let mut open = state.open_children.clone();
                     open.bind(Arc::clone(self.store.provider()));
-                    stack.push((child, open));
+                    stack.push((child, open, watched && reported));
                 }
             }
         }
