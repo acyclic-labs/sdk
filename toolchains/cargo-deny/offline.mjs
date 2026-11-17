@@ -8,6 +8,8 @@ const input=path.join(root,workspace),source=path.join(input,'deny-workspace'),t
 fs.cpSync(source,tree,{recursive:true,dereference:true});
 const home=path.join(tmp,'cargo-home'),db=path.join(home,'advisory-dbs','advisory-db-3157b0e258782691');
 fs.mkdirSync(home,{recursive:true});fs.cpSync(path.join(input,'deny-advisories'),db,{recursive:true,dereference:true});
+const advisories=fs.readdirSync(path.join(db,'crates'),{recursive:true,withFileTypes:true}).filter(entry=>entry.isFile()&&entry.name.endsWith('.md'));
+if(!advisories.length)throw Error('pinned advisory snapshot contains no regular advisory files');
 // The committed snapshot's actual fetch time, not the time this test happened to run.
 fs.mkdirSync(path.join(db,'.git'));const fetchHead=path.join(db,'.git','FETCH_HEAD');fs.writeFileSync(fetchHead,'');
 const pinned=new Date('2026-11-17T10:14:35Z');fs.utimesSync(fetchHead,pinned,pinned);
