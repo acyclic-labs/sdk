@@ -31,6 +31,7 @@ function fixture({ module = false } = {}) {
   cpSync("scripts/jsonc.mjs", join(root, "scripts/jsonc.mjs"));
   cpSync("scripts/protobuf-bindings.mjs", join(root, "scripts/protobuf-bindings.mjs"));
   cpSync("scripts/generate-stream-token-operations.mjs", join(root, "scripts/generate-stream-token-operations.mjs"));
+  cpSync("scripts/generate-stream-http-contract.mjs", join(root, "scripts/generate-stream-http-contract.mjs"));
   if (module) writeFileSync(join(root, "MODULE.bazel"), 'module(name = "fixture")\n');
   cpSync("rust-toolchain.toml", join(root, "rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));

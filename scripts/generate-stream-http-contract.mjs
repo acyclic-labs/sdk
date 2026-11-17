@@ -4,6 +4,7 @@ const KINDS = new Set([
 ]);
 
 export const rust = ["//rust/crates/stream:stream-http-contract"];
+export const runtimeOutputs = ["typescript/packages/stream/src/http-contract.ts"];
 
 function readRustContract(stdout) {
   const contract = JSON.parse(stdout);
@@ -59,5 +60,5 @@ export function decodeHttpResponseFor(route: string, responseJson: string, follo
   return decodeHttpResponseWasm(route, responseJson, followed);
 }
 `;
-  return { "typescript/packages/stream/src/http-contract.ts": source };
+  return { [runtimeOutputs[0]]: source };
 }

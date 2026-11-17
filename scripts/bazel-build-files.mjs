@@ -16,6 +16,7 @@ import { repositoryRoot, toml, tomlFiles, trackedFiles } from "./policy-core.mjs
 import { parseJsonc } from "./jsonc.mjs";
 import { packagedTypeScriptBindings } from "./protobuf-bindings.mjs";
 import { runtimeOutputs as streamTokenOutputs } from "./generate-stream-token-operations.mjs";
+import { runtimeOutputs as streamHttpOutputs } from "./generate-stream-http-contract.mjs";
 
 // The workspace this generator describes. It defaults to the repository that holds this
 // script, and --root points the same generator at another Cargo workspace (Cloud).
@@ -1309,7 +1310,7 @@ const wasmGeneratedRules = wasmGenerated.map(g => rule("wasm_package", [
 const wasmNodeModulesRules = wasmSelections.filter(selection => selection.runtime).map(selection => {
   const deps = wasmNodeModules.get(selection.name) ?? [];
   const filegroups = deps.filter(dep => dep.dir).map(dep => {
-    const contractOutputs = streamTokenOutputs.filter(file => file.startsWith(`${dep.dir}/`));
+    const contractOutputs = [...streamTokenOutputs, ...streamHttpOutputs].filter(file => file.startsWith(`${dep.dir}/`));
     return rule("filegroup", [
     ["name", q(workspaceTargetName(dep.name))],
     // Pin and name runtime protobuf projections: absent files must fail analysis.
