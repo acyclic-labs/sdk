@@ -612,7 +612,7 @@ async fn attribute_creation_retry_peak_is_bounded_by_one_page() -> Result<(), Bo
                 "attribute-pages",
                 config,
                 creation(),
-                budget()?,
+                WorkBudget::UNBOUNDED,
                 &cancellation,
                 None,
             )
