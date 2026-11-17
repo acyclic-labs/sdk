@@ -96,33 +96,36 @@ fn answer(
                 Body::from(json.to_string())
             };
             response(status, "json", body)
-        } else if let Some(events) = bound.as_ref().ok().and_then(|bound| {
+        } else if let Some((bound, events)) = bound.as_ref().ok().and_then(|bound| {
             host.engine
                 .reply_events(namespace, endpoint, &body, bound, tokens.unwrap_or(0))
+                .map(|events| (bound, events))
         }) {
             let mut gates = bound
-                .as_ref()
-                .expect("bound SSE reply")
                 .pause_after
                 .iter()
                 .map(|marker| {
+                    let encoded = serde_json::to_string(marker).map_err(std::io::Error::other)?;
+                    let encoded = encoded
+                        .strip_prefix('"')
+                        .and_then(|text| text.strip_suffix('"'))
+                        .ok_or_else(|| std::io::Error::other("string encoding has no quotes"))?
+                        .to_owned();
                     let (sender, receiver) = tokio::sync::oneshot::channel();
                     host.chunks
                         .insert((namespace.to_owned(), marker.clone()), sender);
-                    (marker.clone(), receiver)
+                    Ok((marker.clone(), (encoded, receiver)))
                 })
-                .collect::<std::collections::BTreeMap<_, _>>();
+                .collect::<std::io::Result<std::collections::BTreeMap<_, _>>>()?;
             let events = events
                 .into_iter()
                 .map(|text| {
                     let marker = gates
-                        .keys()
-                        .find(|marker| {
-                            let encoded = serde_json::to_string(marker).expect("string encoding");
-                            text.contains(&encoded[1..encoded.len() - 1])
-                        })
-                        .cloned();
-                    let gate = marker.and_then(|marker| gates.remove(&marker));
+                        .iter()
+                        .find(|(_, (encoded, _))| text.contains(encoded))
+                        .map(|(marker, _)| marker.clone());
+                    let gate =
+                        marker.and_then(|marker| gates.remove(&marker).map(|(_, gate)| gate));
                     (text, gate)
                 })
                 .collect::<Vec<_>>();
@@ -137,7 +140,7 @@ fn answer(
                     })
                 },
             );
-            let hold = bound.as_ref().is_ok_and(|step| step.hold);
+            let hold = bound.hold;
             let tail = stream::once(async move {
                 if hold {
                     std::future::pending::<()>().await;
