@@ -49,6 +49,8 @@ export function workspacePackages(root) {
   for (const member of rootManifest.workspace?.members ?? []) for (const file of expand(member)) manifests.add(slash(file));
   if (rootManifest.package) manifests.add('Cargo.toml');
   const members = new Set(manifests);
+  for (const patch of Object.values(rootManifest.patch?.['crates-io'] ?? {}))
+    if (patch.path) manifests.add(slash(path.join(patch.path, 'Cargo.toml')));
   const packages = [];
   const pending = [...manifests];
   tomlFiles(root, pending);
@@ -118,6 +120,8 @@ export function workspacePackages(root) {
       }
     }
     if (own.build !== false) target('custom-build', {}, typeof own.build === 'string' ? own.build : 'build.rs', 'build-script-build');
+    const rank = t => t.kind.includes('custom-build') ? 5 : t.kind.includes('bench') ? 4 : t.kind.includes('test') ? 3 : t.kind.includes('example') ? 2 : t.kind.includes('bin') ? 1 : 0;
+    targets.sort((a, b) => rank(a) - rank(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     const p = {name: own.name, version: own.version, id: `path+file://${slash(directory)}#${own.name}@${own.version}`,
       source: null, dependencies, targets, features, manifest_path: path.join(directory, 'Cargo.toml'), workspace_member: members.has(file),
       publish: own.publish === false ? [] : own.publish === true ? null : own.publish ?? null, metadata: own.metadata ?? null, authors: own.authors ?? [], categories: own.categories ?? [], keywords: own.keywords ?? []};
@@ -172,7 +176,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     if (at !== tokens.length) throw Error(`invalid target condition ${cfg}`);
     return result;
   };
-  const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : [])]));
+  const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features ?? [])]));
   const active = (p, d) => !d.optional || [...enabled.get(p.id)].some(f => f === `dep:${d.rename ?? d.name}` || f.startsWith(`${d.rename ?? d.name}/`));
   let changed = true;
   while (changed) {
@@ -208,8 +212,23 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     }
     return {id: p.id, deps: [...deps.values()], features: Object.keys(p.features).filter(f => enabled.get(p.id).has(f)).sort()};
   });
-  nodes.push(...registry.map(p => ({id: p.id, deps: [], features: Object.keys(p.features)})));
-  return {packages, workspace_members: local.filter(p => p.workspace_member).map(p => p.id), workspace_root: root,
+  const selected = value => Array.isArray(value) ? value : [...(value?.common ?? []), ...Object.entries(value?.selects ?? {}).flatMap(([cfg, entries]) => allPlatforms || (universe.conditions[cfg] ?? [cfg]).includes(triple) ? entries : [])];
+  nodes.push(...registry.map(p => {
+    const pinned = universe.crates[`${p.name} ${p.version}`];
+    const deps = [];
+    for (const [attributes, kind] of [[pinned?.common_attrs, null], [pinned?.build_script_attrs, 'build']])
+      for (const entry of [...selected(attributes?.deps), ...selected(attributes?.proc_macro_deps)]) {
+        const dependency = packages.find(x => `${x.name} ${x.version}` === entry.id);
+        if (!dependency) throw Error(`Bazel crate lock dependency missing: ${entry.id}`);
+        deps.push({name: entry.alias ?? entry.target, pkg: dependency.id, dep_kinds: [{kind, target: null}]});
+      }
+    return {id: p.id, deps, features: Object.keys(p.features)};
+  }));
+  const reached = new Set(local.map(p => p.id)), pending = [...reached];
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  while (pending.length) for (const dep of byId.get(pending.pop())?.deps ?? [])
+    if (!reached.has(dep.pkg)) {reached.add(dep.pkg); pending.push(dep.pkg);}
+  return {packages: packages.filter(p => reached.has(p.id)), workspace_members: local.filter(p => p.workspace_member).map(p => p.id), workspace_root: root,
     workspace_default_members: local.filter(p => p.workspace_member).map(p => p.id), version: 1,
-    metadata: toml(root, 'Cargo.toml').workspace?.metadata ?? null, resolve: {nodes}};
+    metadata: toml(root, 'Cargo.toml').workspace?.metadata ?? null, resolve: {nodes: nodes.filter(p => reached.has(p.id))}};
 }
