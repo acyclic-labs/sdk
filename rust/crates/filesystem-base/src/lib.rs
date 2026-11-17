@@ -6,4 +6,5 @@
 #![deny(unsafe_code)]
 
 pub mod numeric;
+pub mod ready;
 pub mod text_merge;

@@ -9,7 +9,7 @@ use super::{
     Arc, Condvar, Mutex, NativeMountError, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, Readiness,
     Runtime, SendContext, lock_recover,
 };
-use crate::native_mount::shared::ready::ReadyViews;
+use acyclic_fs_base::ready::ReadyViews;
 use std::sync::Weak;
 
 pub(super) struct ServiceHook {
