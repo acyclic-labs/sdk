@@ -291,6 +291,19 @@ mod tests {
             unprovided(r#"Run `shell` with `{"command":"make test"}`."#),
             Ok(vec!["make"])
         );
+        // A call's other options, numeric or boolean, never hide its command.
+        assert_eq!(
+            unprovided(r#"Run `shell` with `{"command":"make test","timeout_ms":1000}`."#),
+            Ok(vec!["make"])
+        );
+        assert_eq!(
+            unprovided(r#"Run `shell` with `{"command":"make test","tty":true}`."#),
+            Ok(vec!["make"])
+        );
+        assert_eq!(
+            unprovided(r#"Search with `fs` with `{"command":"grep x","timeout_ms":1000}`."#),
+            Ok(vec![])
+        );
         assert!(unprovided(r#"Run `{"command":"grep x"}`."#).is_err());
         assert!(unprovided(r#"Run `fs`, then `{"command":"grep x"}`."#).is_err());
         assert_eq!(
