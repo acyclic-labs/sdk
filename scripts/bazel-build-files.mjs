@@ -560,7 +560,9 @@ function buildFile(p) {
     ];
   };
   const env = { ...configEnv, ...Object.fromEntries([["CARGO_PKG_NAME", p.name], ["CARGO_PKG_DESCRIPTION", p.description], ["CARGO_PKG_REPOSITORY", p.repository], ["CARGO_PKG_LICENSE", p.license], ["CARGO_PKG_RUST_VERSION", p.rust_version]].filter(([, v]) => v)) };
+  const clippyConfig = fs.existsSync(path.join(path.dirname(p.manifest_path), "clippy.toml")) ? q("clippy.toml") : undefined;
   const common = target => [
+    ["clippy_config", clippyConfig],
     ["edition", q(target.edition)],
     ["version", q(p.version)],
     ["crate_features", "FEATURES"],
@@ -651,7 +653,7 @@ function buildFile(p) {
       ["data", plus(glob(["**"], ["BUILD.bazel", ...NOT_LIB]), list([...(readsRepository(p) ? repositorySources : []), ...scriptData(p)]), scriptEnv.get(p.id).length ? platformSelect(p.id, vars => vars.map(([, file]) => file)) : undefined)],
       ["pkg_name", q(p.name)],
       ["links", p.links ? q(p.links) : undefined],
-      ...common(script),
+      ...common(script).filter(([k]) => k !== "clippy_config"),
       ["build_script_env", scriptEnv.get(p.id).length ? `PACKAGE_ENV | ${platformSelect(p.id, vars => Object.fromEntries(vars.map(([variable, file]) => [variable, `$(execpath ${file})`])))}` : "PACKAGE_ENV"],
       ...deps(["build"]),
     ]]);
