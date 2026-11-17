@@ -117,11 +117,14 @@ export function checkFileCopies(root, copies) {
 
 // Set iteration visits newly reached features once, including cycles and
 // implicit dependency names that have no declared feature table entry.
-export function featureClosure(features = {}, roots) {
+export function reachable(roots, edges) {
   const reached = new Set(roots);
-  for (const feature of reached)
-    for (const next of Object.hasOwn(features, feature) ? features[feature] : []) reached.add(next);
+  for (const item of reached) for (const next of edges(item)) reached.add(next);
   return reached;
+}
+
+export function featureClosure(features = {}, roots) {
+  return reachable(roots, feature => Object.hasOwn(features, feature) ? features[feature] : []);
 }
 
 // Every package with a compiler configuration belongs to the root build.
