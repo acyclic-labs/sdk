@@ -13,7 +13,7 @@ node_test(
 node_test(
     name = "native_lexer_test",
     srcs = [
-        "//:scripts/source-policy/native.mjs",
+        "//:scripts/source-policy/index.mjs",
         "//:scripts/source-policy/native.test.mjs",
         "//:scripts/graphcoder-conpty.cs",
     ],
