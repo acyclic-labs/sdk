@@ -28,7 +28,7 @@ def _npm_codegen_repository_impl(ctx):
         ctx.download_and_extract(
             url = "https://registry.npmjs.org/%s/-/%s-%s.tgz" % (name, filename, version),
             integrity = record[3],
-            stripPrefix = "package",
+            stripPrefix = filename if name.startswith("@types/") else "package",
             output = "node_modules/" + destination,
         )
     patch = ctx.read(ctx.attr.connect_patch)

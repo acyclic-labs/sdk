@@ -1,9 +1,20 @@
 load(":node_test.bzl", "node_test")
+load("//:typescript_consumer.bzl", "typescript_consumer")
+
+typescript_consumer(
+    name = "package_entrypoints_types",
+    packages = {
+        "//:wasm_auth_node_modules": "@acyclic-labs/auth",
+        "//:wasm_actors_node_modules": "@acyclic-labs/actors",
+        "//:wasm_inference_node_modules": "@acyclic-labs/inference",
+    },
+)
 
 node_test(
     name = "package_entrypoints_test",
     srcs = [
         "package-entrypoints.test.mjs",
+        ":package_entrypoints_types",
         "//:wasm_auth_node_modules",
         "//:wasm_actors_node_modules",
         "//:wasm_inference_node_modules",
