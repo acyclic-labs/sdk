@@ -100,7 +100,6 @@ acyclic_test_support::cases! {
         seed_34 => 34,
         seed_35 => 35,
         seed_36 => 36,
-        seed_1000 => 1000,
     ],
 }
 
@@ -307,3 +306,12 @@ fn two_incarnations_reopen_the_same_state() -> std::result::Result<(), String> {
     })
 }
 
+
+#[test]
+fn seed_1000_maps_to_a_world() -> std::result::Result<(), String> {
+    if world(1000)? {
+        Ok(())
+    } else {
+        Err("X1 seed 1000 did not reach its world".into())
+    }
+}
