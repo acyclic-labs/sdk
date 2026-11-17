@@ -13,18 +13,32 @@ export function trackedFiles(root = process.cwd(), paths = [], options = {}) {
 }
 
 const manifests = new Map();
+export function parseToml(texts) {
+  return JSON.parse(execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-I', '-c', `
+import json, sys, tomllib
+documents = {}
+for path, text in json.load(sys.stdin).items():
+    try:
+        documents[path] = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        sys.exit(f"{path}: {error}")
+json.dump(documents, sys.stdout)
+`], {input: JSON.stringify(texts), encoding: 'utf8', maxBuffer: Infinity}));
+}
+
 export function toml(root, file) {
   const key = resolve(root, file);
-  if (!manifests.has(key)) manifests.set(key, JSON.parse(execFileSync('python3', ['-I', '-c',
-    "import json, sys, tomllib; json.dump(tomllib.load(open(sys.argv[1], 'rb')), sys.stdout)", key], {encoding: 'utf8'})));
+  if (!manifests.has(key)) manifests.set(key, parseToml({[file]: readFileSync(key, 'utf8')})[file]);
   return manifests.get(key);
 }
 
 // Expectations name actual parsed fields, independently of manifest formatting.
 export function checkManifestFields(root, expectations) {
+  const files = [...new Set(expectations.map(([file]) => file))];
+  const parsed = parseToml(Object.fromEntries(files.filter(file => file.endsWith('.toml')).map(file => [file, readFileSync(resolve(root, file), 'utf8')])));
+  for (const file of files.filter(file => !file.endsWith('.toml'))) parsed[file] = JSON.parse(readFileSync(resolve(root, file), 'utf8'));
   for (const [file, keys, expected] of expectations) {
-    const document = file.endsWith('.toml') ? toml(root, file) : JSON.parse(readFileSync(resolve(root, file), 'utf8'));
-    const actual = keys.reduce((value, key) => value?.[key], document);
+    const actual = keys.reduce((value, key) => value?.[key], parsed[file]);
     if (actual !== expected) throw new Error(`${file}: ${keys.join('.')} must be ${JSON.stringify(expected)}; found ${JSON.stringify(actual)}`);
   }
 }

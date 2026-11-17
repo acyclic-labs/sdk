@@ -5,12 +5,12 @@
 // Cargo.toml, as `cargo fmt` would. Vendored crates and hash-bound historical
 // source captures are data, not current source: formatting them would
 // invalidate their receipts.
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMain, trackedFiles } from "./policy-core.mjs";
+import { isMain, parseToml, trackedFiles } from "./policy-core.mjs";
 
 const VENDORED = ":(exclude)rust/vendor/**";
 // capture.json, review.json and sources.json within this evidence archive bind
@@ -28,9 +28,18 @@ export function parseManifest(text) {
 // The planner uses Python's standard tomllib. Parse the entire manifest set in
 // one invocation, independently of the JavaScript runtime running this gate.
 export function parseManifests(texts) {
-  return JSON.parse(execFileSync(process.platform === "win32" ? "python" : "python3", [
-    fileURLToPath(new URL("./rustfmt-manifests.py", import.meta.url)),
-  ], { input: JSON.stringify(texts), encoding: "utf8", maxBuffer: Infinity }));
+  return Object.fromEntries(Object.entries(parseToml(texts)).map(([path, manifest]) => {
+    const {workspace, package: pkg} = manifest;
+    for (const table of [workspace, pkg, workspace?.package])
+      if (table !== undefined && (table === null || typeof table !== 'object' || Array.isArray(table)))
+        throw new Error(`${path}: workspace and package must be TOML tables`);
+    const edition = pkg === undefined ? null : pkg.edition ?? "2015";
+    return [path, {
+      workspace: workspace === undefined ? null : workspace.package?.edition ?? false,
+      edition: edition?.workspace === true ? "inherit" : edition,
+      ...(pkg && Object.hasOwn(pkg, 'workspace') ? {workspacePath: pkg.workspace} : {}),
+    }];
+  }));
 }
 
 const nearest = (path, table) => {
