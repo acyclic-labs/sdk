@@ -324,9 +324,7 @@ fn expected_tools(node: &str) -> BTreeSet<String> {
                 .into_iter()
                 .collect();
         }
-        "worker" | "advisor" | "reviewer" => {
-            &["read", "write", "send", "spawn", COMMAND_TOOL]
-        }
+        "worker" | "advisor" | "reviewer" => &["read", "write", "send", "spawn", COMMAND_TOOL],
         _ => unreachable!("known node"),
     };
     allowed.iter().map(|name| (*name).to_owned()).collect()
