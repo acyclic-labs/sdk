@@ -89,6 +89,11 @@ impl From<CredentialCacheError> for CredentialError {
     }
 }
 
+/// Local credential admission failed before the original transport acquired the request.
+#[derive(Debug, thiserror::Error)]
+#[error("original request credential admission failed")]
+pub struct RequestCredentialError;
+
 /// Local credential admission failed after the original transport returned.
 /// This cannot attest that an original effect was refused before dispatch.
 #[derive(Debug, thiserror::Error)]

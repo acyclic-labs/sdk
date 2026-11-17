@@ -1,13 +1,18 @@
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError, type Transport } from "@connectrpc/connect";
-import { ResponseCredentialError } from "@acyclic-labs/auth/credential-connect";
+import { RequestCredentialError, ResponseCredentialError } from "@acyclic-labs/auth/credential-connect";
 import { MachinesService } from "../generated/proto/machines/v1/machines_pb.js";
 
 type RpcMethod = Parameters<Transport["unary"]>[0] | Parameters<Transport["stream"]>[0];
 
 function bridgeFailure(error: unknown): unknown {
-  if (!(error instanceof ResponseCredentialError)) return error;
-  return Object.assign(new ConnectError(error.rawMessage, error.code), { responseCredentialAdmission: true });
+  if (error instanceof RequestCredentialError) {
+    return Object.assign(new ConnectError(error.rawMessage, error.code), { requestCredentialAdmission: true });
+  }
+  if (error instanceof ResponseCredentialError) {
+    return Object.assign(new ConnectError(error.rawMessage, error.code), { responseCredentialAdmission: true });
+  }
+  return error;
 }
 
 /** Binary projection for the same-module Rust provider. Authentication, duplex
