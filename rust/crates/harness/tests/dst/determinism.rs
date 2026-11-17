@@ -49,7 +49,8 @@ const WORLDS: [&str; 37] = [
 const FILES: [(&str, &str); 1] = [("base.txt", "base\n")];
 
 /// One seed per class world. A world runs the same production turn twice and
-/// the entropy-erased control once, then reports all three X1 run variants.
+/// the entropy-erased control once. The class generators own the per-class
+/// worlds; this generic replay does not claim their variants.
 pub(super) const GENERATOR: Generator = Generator {
     class: "X1",
     seeds: every_class_world_replays_byte_identically::VALUES,
@@ -106,17 +107,11 @@ fn run(seed: u64) -> std::result::Result<(), String> {
     GENERATOR.run(seed)
 }
 
-fn variants(seed: u64) -> Vec<Variant> {
-    let class = usize::try_from(seed)
-        .ok()
-        .and_then(|index| WORLDS.get(index).copied());
-    let Some(class) = class else {
-        return Vec::new();
-    };
-    ["same_process", "cross_process", "entropy_erased"]
-        .into_iter()
-        .map(|run| Variant::from([("run", run), ("world", class)]))
-        .collect()
+/// The generic replay does not run the per-class generator worlds or a
+/// cross-process peer, so it declares no X1 variants; the coverage gate counts
+/// them as uncovered.
+fn variants(_seed: u64) -> Vec<Variant> {
+    Vec::new()
 }
 
 fn plans(class: &'static str) -> Vec<Plan> {
