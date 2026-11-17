@@ -164,8 +164,9 @@ test("a write refreshes the module lockfile through the selected Bazel, a check 
     // recorder that answers only the `mod` invocation: the fixture runs on every platform.
     const recorder = join(root, "fake-bazel.mjs");
     writeFileSync(recorder, `import { appendFileSync } from "node:fs";
-if (process.argv[1] === "mod" && process.argv[2] === "deps") {
-  appendFileSync(process.env.FIXTURE_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
+import { basename } from "node:path";
+if (basename(process.argv[1]) === "mod" && process.argv[2] === "deps") {
+  appendFileSync(process.env.FIXTURE_LOG, JSON.stringify([basename(process.argv[1]), ...process.argv.slice(2)]) + "\\n");
   process.exit(Number(process.env.FIXTURE_STATUS ?? 0));
 }
 `);
