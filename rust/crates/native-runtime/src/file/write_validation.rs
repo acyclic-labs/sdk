@@ -36,12 +36,9 @@ fn validate_unordered_write_batch(writes: &[OwnedWrite]) -> io::Result<()> {
 
 // Both ordering paths admit exactly this same positional range.
 fn write_end(write: &OwnedWrite) -> io::Result<u64> {
-    let end = write
+    write
         .offset
         .checked_add(write.bytes.len() as u64)
-        .ok_or(io::ErrorKind::InvalidInput)?;
-    if write.offset == u64::MAX {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    Ok(end)
+        .filter(|_| write.offset != u64::MAX)
+        .ok_or_else(|| io::ErrorKind::InvalidInput.into())
 }
