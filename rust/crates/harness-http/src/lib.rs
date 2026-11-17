@@ -148,7 +148,3 @@ pub use browser_credentials::BrowserCredentialResolver;
 
 mod retry;
 pub use retry::{response_retry_after, retry_after, retry_after_at};
-
-// Measurement: leaf crate edit.
-
-// Measurement: warm leaf crate edit.
