@@ -484,6 +484,8 @@ impl PreparedCommit {
             let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
             let time = self.provider.admitted_time(&state, [&body])?;
             let id = commit_identity(decision, digest);
+            self.provider
+                .keep_body(&mut body.value, &mut body.headers)?;
             bind_body(&mut self.plan, body)?;
             for history in &mut self.plan.histories {
                 if let History::Batch { records, .. } =

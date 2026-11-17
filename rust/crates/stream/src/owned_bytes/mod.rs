@@ -424,12 +424,18 @@ impl OwnedBytes {
         if self.data.meter().is_none() || self.matches_meter(meter) {
             return Ok(self.clone());
         }
+        let length = self.len();
         let copied =
-            u64::try_from(self.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+            u64::try_from(length).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         meter.admit_codec(0, copied, 0)?;
-        let bytes = self.as_slice().to_vec();
+        let mut claim = ReadAllocation::new(meter, length)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|error| meter.allocation_failed(error))?;
+        claim.reconcile_capacity(bytes.capacity())?;
+        bytes.extend_from_slice(self.as_slice());
         meter.record_codec(0, copied, 0)?;
-        let claim = ReadAllocation::new(meter, self.len())?;
         Self::from_vec_with_guard(bytes, claim, Arc::clone(meter)).map_err(|failure| match failure
             .into_error()
         {
