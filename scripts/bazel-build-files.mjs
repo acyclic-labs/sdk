@@ -418,12 +418,8 @@ const platformRules = [...scriptPlatforms].sort().map(platform => {
 // A package with [package.metadata.bazel] repository-rust-sources = true compiles and builds
 // from every Rust source in the repository; each package then exports its own as `rust_sources`.
 const readsRepository = p => p.metadata?.bazel?.["repository-rust-sources"] === true;
-const repositorySources = [...members].some(id => readsRepository(packages.get(id)))
-  ? ["//:rust_sources", ...memberDirs.map(d => `//${d}:rust_sources`).sort()]
-  : [];
-const sourcesRule = repositorySources.length
-  ? `\n${rule("filegroup", [["name", q("rust_sources")], ["srcs", glob(["**/*.rs"], [])], ["visibility", q(["//visibility:public"])]])}\n`
-  : "";
+const repositorySources = ["//:rust_sources", ...memberDirs.map(d => `//${d}:rust_sources`).sort()];
+const sourcesRule = `\n${rule("filegroup", [["name", q("rust_sources")], ["srcs", glob(["**/*.rs"], [])], ["visibility", q(["//visibility:public"])]])}\n`;
 // Files a build script reads beyond its package, from [package.metadata.bazel]
 // build-script-data = ["relative/path", ...]: each path names one tracked file or every tracked
 // file under a directory, relative to the package. A path that names nothing fails generation.
@@ -1005,6 +1001,11 @@ const workspaceManifests = `
 ${rule("filegroup", [
     ["name", q("workspace-manifests")],
     ["srcs", list([...new Set([...members].map(id => `${dir(packages.get(id))}/Cargo.toml`))].sort().map(fileLabel).concat(["Cargo.lock"]))],
+    ["visibility", q(["//visibility:public"])],
+  ])}
+${rule("filegroup", [
+    ["name", q("workspace-rust-sources")],
+    ["srcs", list(repositorySources)],
     ["visibility", q(["//visibility:public"])],
   ])}
 `;

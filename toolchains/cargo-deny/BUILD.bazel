@@ -1,1 +1,9 @@
-exports_files(["index-lock.json", "registry.bzl", "repositories.bzl"])
+load(":deny_test.bzl", "deny_test")
+
+exports_files(["index-lock.json", "registry.bzl", "repositories.bzl", "snapshot.mjs", "offline.mjs"])
+
+deny_test(
+    name = "offline_test",
+    srcs = ["//:Cargo.toml", "//:.cargo/config.toml", "//:deny.toml", "//:workspace-manifests", "//:workspace-rust-sources"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
