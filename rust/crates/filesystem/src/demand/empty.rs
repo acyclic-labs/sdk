@@ -167,6 +167,7 @@ pub(super) fn directory_node(version: SourceVersion) -> SourceNode {
     SourceNode {
         kind: SourceNodeKind::Directory,
         file_identity: version.0,
+        physical_identity: version.0,
         link_count: None,
         device: None,
         logical_bytes: None,

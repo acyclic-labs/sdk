@@ -355,8 +355,11 @@ pub struct SourceMetadata {
 pub struct SourceNode {
     /// Source node kind.
     pub kind: SourceNodeKind,
-    /// Stable path-independent source identity. Hard-link aliases share it.
+    /// Stable path-independent source identity written into replay traces.
+    /// A fixture replay derives it from the logical path, never the inode.
     pub file_identity: [u8; 32],
+    /// Physical host identity, for held-versus-named replacement checks.
+    pub physical_identity: [u8; 32],
     /// Exact number of source namespace bindings when the provider exposes it.
     pub link_count: Option<u64>,
     /// Native device identity for character and block devices.

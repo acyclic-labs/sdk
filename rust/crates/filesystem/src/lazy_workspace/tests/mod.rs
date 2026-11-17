@@ -61,6 +61,7 @@ impl CountingSource {
             node: SourceNode {
                 kind: SourceNodeKind::RegularFile,
                 file_identity: [8; 32],
+                physical_identity: [8; 32],
                 link_count: Some(1),
                 device: None,
                 logical_bytes: Some(bytes.len() as u64),

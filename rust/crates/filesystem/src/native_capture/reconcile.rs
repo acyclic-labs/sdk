@@ -716,7 +716,7 @@ pub(super) fn source_capture_id(
     let metadata = &observed;
     #[cfg(not(target_os = "linux"))]
     let _ = (root, path);
-    let identity = crate::demand::native::file_identity(logical, metadata);
+    let identity = crate::demand::native::source_identity(logical, metadata);
     Ok(crate::demand::source_file_id(
         &namespace,
         &identity,

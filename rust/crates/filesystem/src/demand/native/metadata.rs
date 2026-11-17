@@ -18,10 +18,18 @@ pub(crate) fn path_key(path: &NamespacePath) -> Vec<u8> {
 }
 
 fn child_path_key(parent: &NamespacePath, name: &crate::kernel::LogicalName) -> Vec<u8> {
-    let mut key = path_key(parent);
-    key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
-    key.extend_from_slice(name.as_bytes());
-    key
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = (parent, name);
+        Vec::new()
+    }
+    #[cfg(feature = "test-support")]
+    {
+        let mut key = path_key(parent);
+        key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
+        key.extend_from_slice(name.as_bytes());
+        key
+    }
 }
 
 #[cfg(feature = "test-support")]
@@ -85,15 +93,7 @@ fn version(path: &[u8], metadata: &HostStat) -> SourceVersion {
 /// with neither handles nor birth times (a few) cannot tell reuse apart by
 /// identity alone.
 #[cfg(unix)]
-pub(crate) fn file_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
-    #[cfg(feature = "test-support")]
-    if fixture_times(metadata).is_some() {
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic-fs-native-source-file-fixture-v1\0");
-        hash.update(path);
-        hash.update(&metadata.len().to_le_bytes());
-        return *hash.finalize().as_bytes();
-    }
+pub(crate) fn file_identity(metadata: &HostStat) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-file-v1\0");
     hash.update(&(metadata.raw.st_dev as u64).to_le_bytes());
@@ -111,19 +111,36 @@ pub(crate) fn file_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
 }
 
 #[cfg(windows)]
-pub(crate) fn file_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
-    #[cfg(feature = "test-support")]
-    if fixture_times(metadata).is_some() {
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic-fs-native-source-file-fixture-v1\0");
-        hash.update(path);
-        hash.update(&metadata.len().to_le_bytes());
-        return *hash.finalize().as_bytes();
-    }
+pub(crate) fn file_identity(metadata: &HostStat) -> [u8; 32] {
     windows_file_identity(
         u64::from(metadata.volume_serial_number),
         metadata.raw.FileId.cast_unsigned(),
     )
+}
+
+/// The stable identity a fixture replay writes into its generation root. It
+/// is a function of the logical path and length, never the host inode, so a
+/// recreated checkout replays the same root. Physical checks keep using
+/// [`file_identity`].
+#[cfg(feature = "test-support")]
+pub(crate) fn fixture_identity(path: &[u8], metadata: &HostStat) -> Option<[u8; 32]> {
+    fixture_times(metadata)?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic-fs-native-source-file-fixture-v1\0");
+    hash.update(path);
+    hash.update(&metadata.len().to_le_bytes());
+    Some(*hash.finalize().as_bytes())
+}
+
+/// The identity written into a generation root: the fixture identity when a
+/// replay installed one, else the physical identity.
+pub(crate) fn source_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
+    #[cfg(feature = "test-support")]
+    if let Some(identity) = fixture_identity(path, metadata) {
+        return identity;
+    }
+    let _ = path;
+    file_identity(metadata)
 }
 
 /// The identity of the file with host index `index` on the volume whose

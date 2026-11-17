@@ -313,7 +313,7 @@ impl NativeChanges {
                         inner.root.held(work).and_then(|root| root.stat(path, work))
                     });
                     match metadata {
-                        Ok(metadata) => Some(file_identity(&path_key(&name), &metadata)),
+                        Ok(metadata) => Some(file_identity(&metadata)),
                         Err(DemandError::Io(error))
                             if matches!(
                                 error.kind(),

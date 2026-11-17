@@ -31,6 +31,7 @@ async fn reopened_overlay_source_alias_keeps_decoded_credit_until_last_drop() {
             node: crate::demand::SourceNode {
                 kind: crate::demand::SourceNodeKind::RegularFile,
                 file_identity: [0x65; 32],
+                physical_identity: [0x65; 32],
                 link_count: Some(1),
                 device: None,
                 logical_bytes: Some(1),
