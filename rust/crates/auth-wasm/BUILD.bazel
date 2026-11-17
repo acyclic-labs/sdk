@@ -91,7 +91,7 @@ rust_test(
     ],
     lint_config = ":lints",
     deps = [
-        "@sdk_crates//ed25519-dalek-3.0.0",
+        "//rust/crates/auth:acyclic_auth",
         "@sdk_crates//proptest-1.12.0",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
@@ -122,9 +122,6 @@ rust_test(
     crate_root = "tests/snapshot.rs",
     srcs = [
         "tests/snapshot.rs",
-        "//rust/crates/auth:tests/common/mod.rs",
-        "//rust/crates/auth:tests/common/signed.rs",
-        "//rust/crates/auth:tests/common/trust.rs",
     ],
     edition = "2024",
     version = "0.2.0",
@@ -143,7 +140,6 @@ rust_test(
         ":acyclic_auth_wasm",
     ] + [
         "//rust/crates/auth:acyclic_auth",
-        "@sdk_crates//ed25519-dalek-3.0.0",
         "@sdk_crates//js-sys-0.3.94",
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//prost-0.14.4",
