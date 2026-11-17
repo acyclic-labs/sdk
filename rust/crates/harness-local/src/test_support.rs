@@ -256,57 +256,39 @@ pub async fn prompt_settled(
     prompt: &str,
 ) -> crate::Result<PromptOutcome> {
     use crate::agent::{AgentOutcome, Phase, Reply, TurnOutcome};
-    use crate::local::Event;
+    use crate::local::agent_conversation::Settlement;
     let conversation =
         crate::local::agent_conversation::Conversation::open(harness.connect().await?);
     let mut events = conversation.observe(None).await?;
     let inbox = conversation.send(id, prompt).await?;
-    let mut phase = None;
-    let (sequence, entry) = loop {
-        let dropped = match conversation.reply(id, inbox).await? {
-            Reply::Answered {
-                sequence, entry, ..
-            } => break (sequence, entry),
-            Reply::Dropped => true,
-            Reply::Pending | Reply::Continuing { .. } => false,
-        };
-        if dropped {
-            // A failure may already have committed before the reply query.
-            phase = Some(conversation.phase().await?);
-        }
-        match phase.take() {
-            Some(Phase::Done {
-                outcome: AgentOutcome::Failed { message },
-            }) => return Ok(PromptOutcome::Failed(message)),
-            Some(Phase::Done {
-                outcome: AgentOutcome::FailedDiagnostic { diagnostic },
-            }) => {
-                return Ok(PromptOutcome::Failed(format!(
-                    "diagnostic: {} ({} bytes)",
-                    diagnostic.path()?,
-                    diagnostic.bytes
-                )));
-            }
-            Some(Phase::Done { outcome }) => {
-                return Err(crate::Error::Conflict(format!(
-                    "root agent ended before its prompt settled: {outcome:?}"
-                )));
-            }
-            _ => {}
-        }
-        if dropped {
-            return Err(crate::Error::Conflict(format!("prompt {id} was cancelled")));
-        }
-        loop {
-            match events.next().await? {
-                Event::Status(status) => {
-                    // The original reply wins over a later terminal event.
-                    phase = Some(status.phase);
-                    break;
+    let (sequence, entry) = match conversation.wait_reply(id, inbox, &mut events).await? {
+        Settlement::Reply(Reply::Answered {
+            sequence, entry, ..
+        }) => (sequence, entry),
+        Settlement::Reply(Reply::Dropped) | Settlement::Ended(_) => {
+            match conversation.phase().await? {
+                Phase::Done {
+                    outcome: AgentOutcome::Failed { message },
+                } => return Ok(PromptOutcome::Failed(message)),
+                Phase::Done {
+                    outcome: AgentOutcome::FailedDiagnostic { diagnostic },
+                } => {
+                    return Ok(PromptOutcome::Failed(format!(
+                        "diagnostic: {} ({} bytes)",
+                        diagnostic.path()?,
+                        diagnostic.bytes
+                    )));
                 }
-                Event::Turn { .. } => break,
-                Event::Delta | Event::Input { .. } => {}
+                Phase::Done { outcome } => {
+                    return Err(crate::Error::Conflict(format!(
+                        "root agent ended before its prompt settled: {outcome:?}"
+                    )));
+                }
+                _ => return Err(crate::Error::Conflict(format!("prompt {id} was cancelled"))),
             }
+        }
+        Settlement::Reply(_) | Settlement::Approval { .. } => {
+            return Err(crate::Error::Conflict("unsettled prompt reply".into()));
         }
     };
     if let TurnOutcome::Failed { message } = &entry.outcome {

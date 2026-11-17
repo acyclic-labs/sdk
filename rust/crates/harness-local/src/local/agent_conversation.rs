@@ -935,6 +935,28 @@ impl Conversation {
         inbox: u64,
         events: &mut super::Observer,
     ) -> Result<Settlement> {
+        self.settle_with(id, inbox, events, true).await
+    }
+
+    /// Waits through approval statuses while external approvers use the shared
+    /// decision files. Every status stays in the settlement engine, including
+    /// an immediate failure or reply after an approval request.
+    pub async fn wait_reply(
+        &self,
+        id: &str,
+        inbox: u64,
+        events: &mut super::Observer,
+    ) -> Result<Settlement> {
+        self.settle_with(id, inbox, events, false).await
+    }
+
+    async fn settle_with(
+        &self,
+        id: &str,
+        inbox: u64,
+        events: &mut super::Observer,
+        stop_for_approval: bool,
+    ) -> Result<Settlement> {
         if !events.belongs_to(&self.connection) {
             return Err(Error::Invalid(
                 "settlement requires an observer from the original connection with live conversation and status follows; recovery: observe this conversation again".into(),
@@ -952,7 +974,7 @@ impl Conversation {
                 if let Some(reason) = ended(&status) {
                     return Ok(Settlement::Ended(reason));
                 }
-                if let Phase::WaitingApproval { id, binding } = status.phase {
+                if stop_for_approval && let Phase::WaitingApproval { id, binding } = status.phase {
                     return Ok(Settlement::Approval { id, binding });
                 }
             }
