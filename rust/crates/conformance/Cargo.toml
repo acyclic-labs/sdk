@@ -10,7 +10,7 @@ publish = false
 description = "Internal black-box conformance suites for Acyclic service providers"
 readme = "README.md"
 
-# The GraphCoder backend suite runs the plugin's cyclic binary, given as CARGO_BIN_EXE_acyclic.
+# The GraphCoder backend suite runs the plugin's acyclic binary, given as CARGO_BIN_EXE_acyclic.
 [package.metadata.bazel.test-tools.graphcoder_backends]
 acyclic = "//plugin:acyclic"
 
