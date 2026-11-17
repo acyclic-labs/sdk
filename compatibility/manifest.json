@@ -39,7 +39,7 @@
     "objects": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:e08577e48662ed91ff294cf740bc17b97823882b84c00b4a95e0bf9a5e6f6b60",
+      "schemaDigest": "sha256:9dd9b624dcb6b5ca00991b0e9153c889b4839ebaadd6fbe3a02fa52ec7a4c3ce",
       "descriptorDigest": "sha256:7fe1f68a7cfaaf2fb808eff5fe6530d1c5cc23882a05531ed5a36d7115d7cd08",
       "conformanceDigest": "sha256:fc5c392f15d39b9f7b5120607776dd9f1bcd31bc1e8ecf8b17e708323c7df0ca"
     },
