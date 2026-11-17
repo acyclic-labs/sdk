@@ -734,15 +734,7 @@ impl Fixture {
         )
         .unwrap();
         let archive = self.path().join("release.crate");
-        command_output(
-            Command::new("tar")
-                .arg("-cf")
-                .arg(&archive)
-                .arg("-C")
-                .arg(self.path())
-                .arg("historical-fixture-0.1.0"),
-        )
-        .unwrap();
+        fixture_archive::pack(&entry, &archive);
         let checksum = crate::sha256_file(&archive)
             .unwrap()
             .trim_start_matches("sha256:")
@@ -782,3 +774,6 @@ mod archives;
 mod dependency;
 
 mod archive_codec;
+
+#[path = "../../tests/support/archive.rs"]
+mod fixture_archive;
