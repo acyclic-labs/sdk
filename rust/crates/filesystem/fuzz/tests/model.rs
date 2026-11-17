@@ -59,6 +59,7 @@ mod cache {
     }
 }
 
+#[path = "retry.rs"]
 mod retry;
 
 #[path = "../../src/access/projection.rs"]
