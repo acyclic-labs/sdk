@@ -150,6 +150,8 @@ pub(crate) async fn check_diagnostic_read(
             }),
         ]),
         ScriptedTurn::Text("inspected".into()),
+        // The default completion flow asks for one feedback retrospective.
+        ScriptedTurn::Text("none".into()),
     ]));
     let mut tools = ToolRegistry::default();
     tools.register(
@@ -223,7 +225,7 @@ pub(crate) async fn check_diagnostic_read(
         .await?;
     assert_eq!(output.text, "inspected");
     let requests = model.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     let value = requests[1]
         .messages
         .iter()
