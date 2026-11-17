@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   affectedTargets, bazelLabel, changedPathsFromGit, isGlobalInput, parseLabels, selectionExpression,
@@ -106,8 +107,8 @@ test("the command maps a base..head diff through the Bazel query", () => {
     const bazel = join(root, "bazel");
     writeFileSync(bazel, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(capture)}\nprintf '//rust/crates/a:test\\n'\n`);
     chmodSync(bazel, 0o755);
-    const run = args => spawnSync(process.execPath, [resolve("scripts/affected-bazel-targets.mjs"), "--root", root, ...args], {
-      cwd: resolve("."), env: { ...process.env, ACYCLIC_BAZEL: bazel }, encoding: "utf8",
+    const run = args => spawnSync(process.execPath, [fileURLToPath(new URL("./affected-bazel-targets.mjs", import.meta.url)), "--root", root, ...args], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)), env: { ...process.env, ACYCLIC_BAZEL: bazel }, encoding: "utf8",
     });
     const selected = run(["--base", "HEAD~1", "--head", "HEAD", "--json"]);
     assert.equal(selected.status, 0, selected.stderr);
