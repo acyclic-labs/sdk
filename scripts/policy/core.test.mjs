@@ -4,11 +4,26 @@ import {copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {checkFileCopies, checkManifestFields, toml, trackedFiles} from '../policy-core.mjs';
+import {checkFileCopies, checkManifestFields, featureClosure, toml, trackedFiles} from '../policy-core.mjs';
 import {fuzz as licenseGraph} from '../check-js-licenses.fuzz.mjs';
 
 test('shared license graph conformance: aliases, cycles and canonical physical reads', () =>
   licenseGraph(Uint8Array.of(7, 0, 1, 2, 3, 4, 5, 6, 7)));
+
+test('feature expansion agrees with transitive matrices for every three-node graph and root set', () => {
+  const names = ['a', 'b', 'constructor'];
+  for (let edges = 0; edges < 512; edges++) {
+    const graph = names.map((_, i) => names.map((_, j) => Boolean(edges & (1 << (i * 3 + j)))));
+    const features = Object.fromEntries(names.map((name, i) => [name, names.filter((_, j) => graph[i][j])]));
+    for (let k = 0; k < 3; k++) for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) graph[i][j] ||= graph[i][k] && graph[k][j];
+    for (let roots = 0; roots < 8; roots++) {
+      const selected = names.filter((_, i) => roots & (1 << i));
+      const expected = names.filter((_, j) => selected.includes(names[j]) || names.some((name, i) => selected.includes(name) && graph[i][j]));
+      assert.deepEqual([...featureClosure(features, selected)].sort(), expected.sort());
+    }
+  }
+  assert.deepEqual([...featureClosure({}, ['constructor'])], ['constructor']);
+});
 
 test('Git inventory preserves path bytes, pathspecs, and missing tracked files', t => {
   const root = mkdtempSync(join(tmpdir(), 'policy-core-'));

@@ -1,6 +1,8 @@
 // Admit requested root features against Cargo's defining packages. This is a
 // request identity, not a resolved dependency/cfg graph or a compiler receipt.
 // Library, test, native and wasm invocations must still run independently.
+import {featureClosure} from './policy-core.mjs';
+
 export function selectCargoFeatures(items, names, flags) {
   const fail = detail => {
     throw new Error(`STEP_FAILED cargo-feature-selection: ${detail}; recovery: node scripts/check-feature-matrix.mjs --list`);
@@ -38,25 +40,13 @@ export function selectCargoFeatures(items, names, flags) {
     // "default") is valid. Dependency feature tokens remain Cargo's authority.
     roots: packages.map(item => ({
       id: item.id,
-      features: declaredFeatures(item, [
+      features: [...featureClosure(item.features, [
         ...requested.get(item.name),
         ...(defaults && Object.hasOwn(item.features, "default") ? ["default"] : []),
         ...(all ? Object.keys(item.features) : []),
-      ]),
+      ])].sort(),
     })),
   };
-}
-
-function declaredFeatures(item, features) {
-  const seen = new Set();
-  const pending = [...features];
-  while (pending.length) {
-    const entry = pending.pop();
-    if (seen.has(entry)) continue;
-    seen.add(entry);
-    if (Object.hasOwn(item.features, entry)) pending.push(...item.features[entry]);
-  }
-  return [...seen].sort();
 }
 
 // Projection keeps the original requested feature policy. Never substitute
@@ -79,7 +69,7 @@ export function cargoFeatureArguments(selection, { manifest = false, target, tar
 /** Declared package-local expansion used by the existing full matrix. This
  * does not resolve dependency, target or development-feature unification. */
 export function enabled(item, features) {
-  return declaredFeatures(item, features).join(" ");
+  return [...featureClosure(item.features, features)].sort().join(" ");
 }
 
 export function featureSets(item) {

@@ -94,6 +94,19 @@ node_test(
 )
 
 node_test(
+    name = "test_support_test",
+    srcs = [
+        "//:scripts/check-test-support.mjs",
+        "//:scripts/check-test-support.test.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-model.mjs",
+        "//rust/crates/mcp:build.rs",
+    ],
+    entry = "scripts/check-test-support.test.mjs",
+    name_pattern = "missing forwarding fails",
+)
+
+node_test(
     name = "native_lexer_test",
     srcs = [
         "//:scripts/source-policy/index.mjs",

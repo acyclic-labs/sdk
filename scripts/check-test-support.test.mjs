@@ -100,6 +100,9 @@ test('local feature chains forward, including cycles, but unrelated enabled feat
   metadata.consumer.features['test-support'] = [];
   metadata.node.features = ['test-support', 'fixtures'];
   assert.throws(() => checkTestSupport(metadata), /must forward/);
+  const implicit = fixture({alias: 'constructor', optional: true});
+  implicit.consumer.features['test-support'] = ['constructor', 'constructor?/test-support'];
+  assert.equal(checkTestSupport(implicit), 1);
 });
 
 test('dev dependency unification cannot conceal a missing production forwarding edge', () => {
