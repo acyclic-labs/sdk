@@ -137,13 +137,7 @@ pub async fn put_blob(
     blobs: &dyn Blobs,
     request: wire::PutBlobRequest,
 ) -> Result<Served<wire::PutResponse>, Error> {
-    let expected = convert::digest(request.digest.as_ref())?;
-    // Received bytes are hashed once, here at the trust boundary.
-    let body = crate::Sealed::new(request.body.into());
-    if Digest::sealed(&body) != expected {
-        return Err(wire::ErrorCode::DigestMismatch.into());
-    }
-    let references = convert::digests(&request.references)?;
+    let (body, references) = member(request)?;
     let put = blobs.put_durable(body, references).await?;
     Ok((convert::wire_put(&put), put_revision(&put)))
 }
