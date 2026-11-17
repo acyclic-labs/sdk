@@ -423,11 +423,7 @@ async fn recovery_requires_the_complete_creation_attribute_set() -> Result<(), B
     fs.create_workspace_with_operation::<_, (), WorkspaceError>(
         "journal",
         config,
-        crate::CreationOperation::populated_with_attributes(
-            operation,
-            &files,
-            attributes.clone(),
-        ),
+        crate::CreationOperation::populated_with_attributes(operation, &files, attributes.clone()),
         budget()?,
         &cancellation,
         None,

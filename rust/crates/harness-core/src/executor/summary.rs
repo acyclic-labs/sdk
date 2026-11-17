@@ -3,10 +3,7 @@ use super::*;
 /// The number of leading system messages `with_request_prefix` replaces with
 /// the recorded request prefix. An empty prefix replaces nothing, so the
 /// source's own leading messages stay in the request and in its cut.
-pub(super) fn replaced_leading(
-    source: &crate::context::Context,
-    prefix: &[ModelMessage],
-) -> usize {
+pub(super) fn replaced_leading(source: &crate::context::Context, prefix: &[ModelMessage]) -> usize {
     if prefix.is_empty() {
         return 0;
     }

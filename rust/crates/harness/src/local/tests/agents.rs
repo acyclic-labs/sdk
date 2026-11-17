@@ -5610,8 +5610,10 @@ async fn file_stop_closes_the_whole_subtree() -> Result<()> {
         return Err(Error::Invalid("child was closed".into()));
     };
     let (intent, _) = crate::agent::requested_child(&child, inbox).map_err(agent)?;
-    let SpawnOutcome::Spawned { child: grandchild } =
-        agents.spawned(&child, inbox, &intent).await.map_err(agent)?
+    let SpawnOutcome::Spawned { child: grandchild } = agents
+        .spawned(&child, inbox, &intent)
+        .await
+        .map_err(agent)?
     else {
         return Err(Error::Invalid("grandchild was refused".into()));
     };
