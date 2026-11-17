@@ -251,3 +251,41 @@ async fn imports_check_both_signed_grants_through_the_policy_compiler() -> Resul
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn host_clock_ahead_of_wall_time_still_grants_whole_volume_copy()
+-> Result<(), Box<dyn Error>> {
+    use acyclic_stream::UnixMillisClock as _;
+    let start = acyclic_stream::SystemUnixMillisClock.now_unix_millis() + 5_000;
+    let (clock, _control) = acyclic_actors::local::ControlledClock::new(start);
+    let fixture = Fixture::with_clock(Arc::new(clock)).await?;
+    let destination = VolumeRef::new(
+        fixture.volume.provider().clone(),
+        "clock-ahead-target".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("owner".into()),
+        &mut None,
+    )?;
+    let destination_grant = legacy(&fixture, &destination, VolumeOperation::Write)?;
+    let source = signed(
+        &fixture,
+        &fixture.volume,
+        VolumeOperation::Read,
+        &[Action::List, Action::Read, Action::Fork],
+        "**",
+        None,
+    )?;
+    fixture
+        .host
+        .fork_volume(
+            &fixture.volume,
+            &source,
+            &fixture.generation()?,
+            &destination,
+            &destination_grant,
+            None,
+            &IdempotencyKey::new("clock-ahead-copy")?,
+        )
+        .await?;
+    Ok(())
+}
