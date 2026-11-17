@@ -40,11 +40,11 @@ fn host_is_owned(pid: Pid) -> bool {
         return false;
     }
     let mut name = [0; 24];
-    let Some(pid) = record::name(pid, &mut name).map(CStr::to_bytes) else {
+    let Some(name) = record::name(pid, &mut name).map(CStr::to_bytes) else {
         return false;
     };
     let mut path = [0; 64];
-    let Some(status) = host_path(pid, b"/status\0", &mut path) else {
+    let Some(status) = host_path(name, b"/status\0", &mut path) else {
         return false;
     };
     let Ok(file) = sys::open(status, sys::O_RDONLY | sys::O_CLOEXEC) else {
@@ -93,7 +93,7 @@ fn host_is_owned(pid: Pid) -> bool {
     if sys::getpgid(pid) != Ok(pid) {
         return false;
     }
-    let Some(exe) = host_path(pid, b"/exe\0", &mut path) else {
+    let Some(exe) = host_path(name, b"/exe\0", &mut path) else {
         return false;
     };
     let Ok(host_exe) = sys::open(exe, sys::O_RDONLY | sys::O_CLOEXEC) else {
