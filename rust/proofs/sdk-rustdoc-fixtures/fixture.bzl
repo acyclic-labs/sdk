@@ -1,5 +1,7 @@
 """Cache real Rustdoc JSON as declared, independently keyed fixture actions."""
 
+load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain", "use_cpp_toolchain")
+
 def _repository_path(path):
     return path.split("/", 2)[2] if path.startswith("../") else path
 
@@ -60,10 +62,14 @@ def _rustdoc_fixture_impl(ctx):
     args.add("--")
     args.add_all(ctx.attr.cargo_flags)
     compiler = ctx.attr._rustup[DefaultInfo]
+    tool_inputs = [compiler.data_runfiles.files]
+    if ctx.attr.needs_linker:
+        tool_inputs.append(find_cpp_toolchain(ctx).all_files)
     ctx.actions.run(
         executable = ctx.executable._producer,
         arguments = [args],
-        inputs = depset([file for file, _ in sources] + [ctx.file._rustup], transitive = [compiler.data_runfiles.files]),
+        inputs = depset([file for file, _ in sources] + [ctx.file._rustup], transitive = tool_inputs),
+        use_default_shell_env = ctx.attr.needs_linker,
         outputs = [output],
         mnemonic = "FixtureRustdoc",
         progress_message = "Building Rustdoc fixture %{label}",
@@ -72,6 +78,7 @@ def _rustdoc_fixture_impl(ctx):
 
 rustdoc_fixture = rule(
     implementation = _rustdoc_fixture_impl,
+    toolchains = use_cpp_toolchain(),
     attrs = {
         "srcs": attr.label_list(allow_files = True, mandatory = True),
         "fixture_root": attr.string(mandatory = True),
@@ -81,6 +88,7 @@ rustdoc_fixture = rule(
         "selected_lock": attr.string(),
         "library_name": attr.string(),
         "proc_macro": attr.bool(),
+        "needs_linker": attr.bool(),
         "package": attr.string(mandatory = True),
         "cargo_flags": attr.string_list(),
         "_producer": attr.label(default = ":producer", executable = True, cfg = "exec"),
@@ -88,7 +96,7 @@ rustdoc_fixture = rule(
     },
 )
 
-def rustdoc_fixture_set(srcs, fixture_root, package, profiles, mapped_sources = {}, manifest_path = "Cargo.toml", owner_path = "", selected_lock = "", library_name = "", proc_macro = False):
+def rustdoc_fixture_set(srcs, fixture_root, package, profiles, mapped_sources = {}, manifest_path = "Cargo.toml", owner_path = "", selected_lock = "", library_name = "", proc_macro = False, needs_linker = False):
     for name, flags in profiles.items():
         rustdoc_fixture(
             name = name,
@@ -101,5 +109,6 @@ def rustdoc_fixture_set(srcs, fixture_root, package, profiles, mapped_sources = 
             selected_lock = selected_lock,
             library_name = library_name,
             proc_macro = proc_macro,
+            needs_linker = needs_linker,
             cargo_flags = flags,
         )

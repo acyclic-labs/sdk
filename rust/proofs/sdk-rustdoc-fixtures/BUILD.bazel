@@ -81,6 +81,7 @@ rustdoc_fixture_set(
     package = "demo",
     owner_path = "rust/crates/demo",
     mapped_sources = _SHARED,
+    needs_linker = True,
     profiles = {"excluded_demo_" + name: flags for name, flags in _EXCLUDED_PROFILES.items()},
 )
 
