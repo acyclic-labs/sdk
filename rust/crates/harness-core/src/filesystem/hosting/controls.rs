@@ -274,20 +274,46 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 ));
             }
             let status = StatusRecord::decode(&record.value)?;
-            if !matches!(
-                status.phase,
-                Phase::Done {
-                    outcome: AgentOutcome::Archived
-                }
-            ) {
+            if !matches!(status.phase, Phase::Done { .. }) {
                 return state.transition(Vec::new(), false);
             }
+            let actor = ActorReference::new(
+                delivery.actor.account().as_bytes(),
+                delivery.actor.namespace().as_str().as_bytes(),
+                child.id().as_str().as_bytes(),
+            )
+            .map_err(|_| Error::Record("descendant identity"))?;
+            let observed = self
+                .store
+                .load(&actor)
+                .await
+                .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
+            let child_state = observed
+                .state()
+                .and_then(|state| state.checkpoint())
+                .ok_or(Error::Record("descendant checkpoint is absent"))?;
+            let child_state = crate::agent::checkpoint::decode(&child_state.bytes)?.state;
+            if !child_state.closed {
+                return state.transition(Vec::new(), false);
+            }
+            // A terminal report can precede Archive. Read the closed checkpoint
+            // before traversing again, so children spawned after our first
+            // snapshot cannot escape the stop's wait.
+            let mut effects = Vec::new();
+            let descendants = self
+                .descendant_status(
+                    &delivery.actor,
+                    &child,
+                    &child_state.open_children,
+                    &mut effects,
+                )
+                .await?;
             let remaining = delivery
                 .subscriptions
                 .iter()
                 .filter(|(id, _)| id.starts_with(DESCENDANT_STATUS))
                 .count();
-            let mut transition = if remaining == 1 {
+            let mut transition = if remaining == 1 && descendants.is_empty() {
                 let position = crate::supervision::Position {
                     stream: child.status()?,
                     sequence,
@@ -300,10 +326,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         None,
                     )
                     .await?;
-                state.transition(vec![effect], true)?
+                effects.push(effect);
+                state.transition(effects, true)?
             } else {
-                state.transition(Vec::new(), false)?
+                state.transition(effects, false)?
             };
+            transition.subscriptions.extend(descendants);
             transition.subscriptions.push(SubscriptionChange::Remove {
                 id: subscription.to_owned(),
             });
@@ -609,7 +637,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
     }
 
     /// One status subscription per open descendant, so a stop acknowledges
-    /// only after every descendant has published its archived state. The
+    /// only after every descendant has consumed its archive. The
     /// traversal pages the persistent child index; it retains no
     /// subtree-sized list.
     async fn descendant_status(
@@ -652,7 +680,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     // status is still ahead.
                     None => (None, 0),
                 };
-                if state.as_ref().is_none_or(|state| !state.closed) {
+                // A prior completion keeps its original outcome on archive.
+                // Its closed checkpoint proves it can spawn no more children;
+                // the traversal below still visits its existing descendants.
+                let archived = state
+                    .as_ref()
+                    .is_some_and(|state| state.closed && matches!(state.phase, Phase::Done { .. }));
+                if !archived {
                     if actor_state.paused() {
                         let key = crate::agent::intent_key(
                             "file-controls",
