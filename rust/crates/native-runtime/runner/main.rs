@@ -71,11 +71,18 @@ extern "C" fn start() -> ! {
     let code = match prepare() {
         Ok(()) => {
             if sys::is_listener(CONTROL).unwrap_or(false) {
-                return sys::exit(if packet_device::serve(CONTROL).is_ok() {
-                    0
-                } else {
-                    1
-                });
+                let result = packet_device::serve(CONTROL);
+                let status = match result {
+                    Ok(()) => {
+                        packet_device::trace_host("idle", 0);
+                        0
+                    }
+                    Err(error) => {
+                        packet_device::trace_host("error", error.0);
+                        error.0.max(1)
+                    }
+                };
+                return sys::exit(status);
             }
             let mut body = Mapped::EMPTY;
             while let Ok(Some(received)) = receive(&mut body) {
