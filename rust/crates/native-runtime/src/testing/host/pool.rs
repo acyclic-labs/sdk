@@ -40,11 +40,7 @@ impl Pool {
         // started between the claim and the read, and the earlier width would
         // hide the saturated state from the driver.
         let started = self.started.load(Ordering::SeqCst);
-        let saturated = started != 0 && unavailable == started;
-        if saturated {
-            self.changed();
-        }
-        saturated
+        started != 0 && unavailable == started
     }
 
     pub(super) fn resume(&self) {
@@ -54,7 +50,9 @@ impl Pool {
     // A controlled running closure remains atomic. An unscoped physical job
     // may await the root, so it cannot be mistaken for an available worker.
     pub(crate) fn unscoped(&self) -> Occupant<'_> {
-        self.park();
+        if self.park() {
+            self.changed();
+        }
         Occupant(self)
     }
 
