@@ -741,8 +741,8 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
         .projected_file_bytes(projection_limits.file_bytes)?;
     }
     for (at, pair) in requests.windows(2).enumerate() {
-        if at + 1 == 16 {
-            continue; // The history page changes its selected base at this cut.
+        if at + 1 == 2 * 16 {
+            continue; // The history page changes its selected base at turn 16.
         }
         assert!(
             pair[1].messages.starts_with(&pair[0].messages),
