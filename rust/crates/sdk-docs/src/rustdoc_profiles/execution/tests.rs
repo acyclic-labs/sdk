@@ -44,11 +44,50 @@ fn workspace_metadata_relocates_windows_path_components() {
     assert_eq!(graph["target"], "./crate/src/lib.rs");
     assert_eq!(graph["sibling"], "C:/build/sdk-other/Cargo.toml");
 
+    let source = acyclic_test_support::source_path(
+        "rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json",
+    );
+    let mut metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
+    metadata["workspace_root"] = "C:/build/sdk".into();
+    metadata["packages"][0]["manifest_path"] = "C:/build/sdk-other/Cargo.toml".into();
+    metadata["packages"][0]["dependencies"] = serde_json::json!([{
+        "name": "external", "source": null, "req": "*", "kind": null,
+        "rename": null, "optional": false, "uses_default_features": true,
+        "features": [], "target": null, "registry": null, "path": "C:/build/sdk-other"
+    }]);
+    let temp = tempfile::tempdir().unwrap();
+    let graph_path = temp.path().join("graph.json");
+    fs::write(&graph_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    let loaded = load_workspace_metadata(temp.path(), &graph_path).unwrap();
+    assert_eq!(
+        loaded.packages[0].manifest_path.as_str(),
+        "C:/build/sdk-other/Cargo.toml"
+    );
+    assert_eq!(
+        loaded.packages[0].dependencies[0]
+            .path
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "C:/build/sdk-other"
+    );
+
     let mut posix = serde_json::json!({"manifest": r"/source/back\slash/Cargo.toml"});
     relocate_metadata(&mut posix, "/source", r"/destination/back\slash");
     assert_eq!(
         posix["manifest"],
         r"/destination/back\slash/back\slash/Cargo.toml"
+    );
+    let mut ids = serde_json::json!({
+        "inside": "path+file:///work/sdk/dep#dep@1.0.0",
+        "outside": "path+file:///archive/work/sdk/dep#dep@1.0.0"
+    });
+    relocate_metadata(&mut ids, "/work/sdk", "/checkout");
+    assert_eq!(ids["inside"], "path+file:///checkout/dep#dep@1.0.0");
+    assert_eq!(
+        ids["outside"],
+        "path+file:///archive/work/sdk/dep#dep@1.0.0"
     );
 }
 proptest! {

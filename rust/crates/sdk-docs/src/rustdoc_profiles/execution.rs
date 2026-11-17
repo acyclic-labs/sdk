@@ -121,13 +121,13 @@ pub fn load_workspace_metadata(root: &Path, path: &Path) -> Result<Metadata, Pro
     let mut metadata: Metadata = serde_json::from_value(value)
         .map_err(|error| ProfileError::InvalidRustdoc(format!("workspace metadata: {error}")))?;
     for package in &mut metadata.packages {
-        package.manifest_path = cargo_metadata::camino::Utf8PathBuf::from_path_buf(
-            root.join(package.manifest_path.as_std_path()),
-        )
+        package.manifest_path = cargo_metadata::camino::Utf8PathBuf::from_path_buf(workspace_path(
+            root,
+            package.manifest_path.as_std_path(),
+        ))
         .map_err(|_| ProfileError::InvalidRustdoc("workspace metadata path is not UTF-8".into()))?;
         for target in &mut package.targets {
-            target.src_path = root
-                .join(target.src_path.as_std_path())
+            target.src_path = workspace_path(root, target.src_path.as_std_path())
                 .try_into()
                 .map_err(|_| {
                     ProfileError::InvalidRustdoc("workspace target path is not UTF-8".into())
@@ -135,20 +135,38 @@ pub fn load_workspace_metadata(root: &Path, path: &Path) -> Result<Metadata, Pro
         }
         for dependency in &mut package.dependencies {
             if let Some(path) = &mut dependency.path {
-                *path = root.join(path.as_std_path()).try_into().map_err(|_| {
-                    ProfileError::InvalidRustdoc("workspace dependency path is not UTF-8".into())
-                })?;
+                *path = workspace_path(root, path.as_std_path())
+                    .try_into()
+                    .map_err(|_| {
+                        ProfileError::InvalidRustdoc(
+                            "workspace dependency path is not UTF-8".into(),
+                        )
+                    })?;
             }
         }
     }
     metadata.workspace_root =
         cargo_metadata::camino::Utf8PathBuf::from_path_buf(root.to_owned())
             .map_err(|_| ProfileError::InvalidRustdoc("workspace root is not UTF-8".into()))?;
-    metadata.target_directory = root
-        .join(metadata.target_directory.as_std_path())
+    metadata.target_directory = workspace_path(root, metadata.target_directory.as_std_path())
         .try_into()
         .map_err(|_| ProfileError::InvalidRustdoc("workspace target path is not UTF-8".into()))?;
     Ok(metadata)
+}
+
+fn workspace_path(root: &Path, path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    let windows = text.as_bytes().get(1) == Some(&b':') || text.starts_with(r"\\");
+    if path.is_absolute()
+        || (windows
+            && crate::path_identity::components(&text, true).is_some_and(|parts| {
+                matches!(parts[0].as_str(), "drive-root" | "drive-relative" | "unc")
+            }))
+    {
+        path.to_owned()
+    } else {
+        root.join(path)
+    }
 }
 
 fn relocate_metadata(value: &mut serde_json::Value, old: &str, root: &str) {
@@ -183,10 +201,18 @@ fn relocate_metadata(value: &mut serde_json::Value, old: &str, root: &str) {
                 } else {
                     format!("{}{suffix}", root.trim_end_matches('/'))
                 };
-            } else if normalized.starts_with("path+file://") {
-                *text = normalized
-                    .replace(&format!("{old}#"), &format!("{root}#"))
-                    .replace(&format!("{old}/"), &format!("{root}/"));
+            } else if let Some(id) = normalized.strip_prefix("path+file://") {
+                if let Some((path, suffix)) = id.split_once('#') {
+                    if let Some(rebased) = crate::path_identity::rebase(path, &old, marker, windows)
+                    {
+                        let suffix_path = rebased.strip_prefix(marker).unwrap();
+                        *text = format!(
+                            "path+file://{}{}#{suffix}",
+                            root.trim_end_matches('/'),
+                            suffix_path
+                        );
+                    }
+                }
             }
         }
         serde_json::Value::Array(values) => {
