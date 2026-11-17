@@ -96,7 +96,7 @@ export const compatibilityArtifacts = {
   harness: {
     schemaDigest: "rust/crates/harness-core/proto/harness/v2/harness.proto",
     descriptorDigest: "compatibility/descriptors/harness-v2.bin",
-    conformanceDigest: "rust/crates/harness/conformance/legacy-harness.json",
+    conformanceDigest: "rust/crates/harness-suite/conformance/legacy-harness.json",
   },
   filesystem: {
     schemaDigest: "rust/crates/filesystem-wire/proto/filesystem/v2/filesystem.proto",
@@ -129,7 +129,7 @@ export const compatibilityArtifacts = {
   },
 };
 
-export const nativeWasmVector = "rust/crates/harness/conformance/native-wasm-event-v2.json";
+export const nativeWasmVector = "rust/crates/harness-suite/conformance/native-wasm-event-v2.json";
 // Only checkout-owned copies belong here. Validate at import so every consumer,
 // including generators, rejects build outputs before reading or writing them.
 export const packagedSourceCopies = [

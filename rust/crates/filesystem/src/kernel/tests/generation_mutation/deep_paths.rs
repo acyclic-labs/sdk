@@ -1,5 +1,5 @@
 use super::*;
-use crate::kernel::Child;
+use crate::kernel::{Child, lookup_path_refs};
 
 async fn deep_directory_fixture(
     store: &MemoryObjectStore,

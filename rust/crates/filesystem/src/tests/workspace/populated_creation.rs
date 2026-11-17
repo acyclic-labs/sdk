@@ -640,3 +640,62 @@ async fn attribute_creation_retry_peak_is_bounded_by_one_page() -> Result<(), Bo
     );
     Ok(())
 }
+
+/// Recovery reads each attribute value and releases it before reading the
+/// next, so a retry's peak allocation is bounded by one value, not by every
+/// value it compared.
+#[tokio::test]
+async fn attribute_creation_retry_peak_is_bounded_by_one_value() -> Result<(), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    let operation = IdempotencyKey::from_bytes([0xe8; 16]).operation_id();
+    let config = crate::VolumeInitialization {
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
+        access_policy: Some(crate::access::INITIAL_POLICY),
+    };
+    let files = [("/f", OwnedBytes::from_static(b"x"))];
+    let count = 64_usize;
+    let value_bytes = 64 * 1024_usize;
+    let value = OwnedBytes::from(vec![0x5a; value_bytes]);
+    let attributes = (0..count)
+        .map(|index| {
+            Ok(crate::CreationAttribute {
+                path: "/f".to_owned(),
+                name: crate::kernel::AttributeName::new(
+                    crate::kernel::AttributeClass::PosixXattr,
+                    format!("user.{index:04}").into_bytes(),
+                )?,
+                value: value.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, crate::kernel::AttributeError>>()?;
+    let creation = || {
+        crate::CreationOperation::populated_with_attributes(operation, &files, attributes.clone())
+    };
+    let fs = Fs::memory();
+    let created = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "attribute-values",
+            config,
+            creation(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            None,
+        )
+        .await?;
+    // One value plus the listing and file reads fit; every value at once does not.
+    let mut allowance = read_only()?;
+    allowance.peak_allocation_bytes = 1024 * 1024;
+    let retried = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "attribute-values",
+            config,
+            creation(),
+            allowance,
+            &cancellation,
+            None,
+        )
+        .await
+        .map_err(|failure| format!("retrying {count} attribute values: {failure:?}"))?;
+    assert_eq!(retried.value.id(), created.value.id());
+    Ok(())
+}

@@ -633,6 +633,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 for key in requested {
                     let attribute = attributes.get(key.ordinal).ok_or(FsError::InvalidDiff)?;
+                    let before = readonly_standalone_live(accounting);
                     let actual = checkout
                         .read_named_attribute_with_accounting(
                             &path,
@@ -641,7 +642,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             accounting,
                             cancellation,
                         )
-                        .await?;
+                        .await;
+                    readonly_cleanup_standalone(accounting, before, 0)?;
+                    let actual = actual?;
                     if actual.map(|chunk| chunk.bytes).as_deref() != Some(attribute.value.as_ref())
                     {
                         return Ok(false);
