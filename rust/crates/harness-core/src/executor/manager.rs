@@ -58,19 +58,13 @@ impl StockExecution<'_> {
         let leading = super::summary::replaced_leading(&source, prefix);
         let request_count = prefix
             .len()
-            .checked_add(
-                source
-                    .messages
-                    .len()
-                    .checked_sub(leading)
-                    .ok_or_else(|| {
-                        stock_boundary(
-                            self.io,
-                            crate::wire::ErrorCode::Invalid,
-                            "context manager source count underflows",
-                        )
-                    })?,
-            )
+            .checked_add(source.messages.len().checked_sub(leading).ok_or_else(|| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "context manager source count underflows",
+                )
+            })?)
             .ok_or_else(|| {
                 stock_boundary(
                     self.io,
@@ -176,8 +170,8 @@ impl StockExecution<'_> {
             // selected immutable window escapes this preparation scope.
             let scope = crate::filesystem::PreparationScope::new(self.io)?;
             let session = self.preparing(scope.io());
-            let (source, instruction) = session
-                .manager_material(context, start..end, previous, instruction, prefix)?;
+            let (source, instruction) =
+                session.manager_material(context, start..end, previous, instruction, prefix)?;
             let admitted = session
                 .admit_summary_window(journal, turn, (source, prefix), instruction, purpose)
                 .await;
