@@ -61,6 +61,14 @@ fn valid_entry_source(source: Option<&wire::EntrySource>, name: &str) -> bool {
     })
 }
 
+pub(super) fn valid_jurisdiction(jurisdiction: &str, worker: bool) -> bool {
+    if worker {
+        jurisdiction.is_empty()
+    } else {
+        matches!(jurisdiction, "" | "eu" | "us" | "fedramp")
+    }
+}
+
 /// Validates an explicit namespace or named script deployment before admission.
 pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), ContractError> {
     if !request.publication.is_empty() {
@@ -77,7 +85,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
             return Err(ContractError::InvalidArgument);
         }
     }
-    if !matches!(request.jurisdiction.as_str(), "" | "eu" | "us" | "fedramp")
+    if !valid_jurisdiction(&request.jurisdiction, request.worker_limits.is_some())
         || !domain::valid_code_sha256(&request.code_sha256)
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.name)
@@ -90,7 +98,6 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
                 crate::addressing::validate_dns_label(request.name.as_bytes()).is_ok()
                     && domain::WorkerLimits::try_from(limits.clone()).is_ok()
                     && request.subscriptions.is_empty()
-                    && request.jurisdiction.is_empty()
             }
             _ => false,
         }

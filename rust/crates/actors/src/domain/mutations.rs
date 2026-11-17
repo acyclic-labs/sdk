@@ -131,11 +131,10 @@ impl DeploymentRequest {
     }
     /// Set a namespace restriction while retaining the authenticated account.
     pub fn with_jurisdiction(mut self, jurisdiction: String) -> Result<Self, DomainError> {
-        if !matches!(jurisdiction.as_str(), "" | "eu" | "us" | "fedramp") {
+        if !crate::contract::valid_jurisdiction(&jurisdiction, self.worker_limits.is_some()) {
             return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
         }
         self.jurisdiction = jurisdiction;
-        self.validate_from_proto()?;
         Ok(self)
     }
     /// Set the account, jurisdiction and compare-and-replace deployment revision.
@@ -146,9 +145,6 @@ impl DeploymentRequest {
         expected_revision: u64,
     ) -> Result<Self, DomainError> {
         crate::addressing::validate_account(&account)?;
-        if !matches!(jurisdiction.as_str(), "" | "eu" | "us" | "fedramp") {
-            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
-        }
         self.account_id = account;
         self.jurisdiction = jurisdiction;
         self.expected_revision = expected_revision;
