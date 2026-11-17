@@ -194,12 +194,8 @@ fn state_steps(form: &str, prefix: &str, include_mid: bool) -> Vec<Vec<ToolCall>
                 json!({"agents": ["ok", "start"], "need": 1}),
             ),
         ]);
-        // A merged child, then a wait for it.
-        steps.push(vec![call(
-            &format!("{prefix}-merge"),
-            "fs",
-            json!({"command": "merge agents/merge"}),
-        )]);
+        // A settled child's fork is handed back by the host, so the wait
+        // reports the merged state without a separate merge command.
         steps.push(vec![waited(form, &format!("{prefix}-merged"), &["merge"], None)]);
         // Archive a running child and a parked child.
         steps.push(vec![call(
