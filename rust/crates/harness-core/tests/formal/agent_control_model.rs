@@ -114,12 +114,6 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
             }
         }
     }
-    if model.control.closed && model.open > 0 && kani::any::<bool>() {
-        // A child may report `ChildDone` before or after its archive request.
-        let done = 1 + kani::any::<usize>() % model.open;
-        model.open -= done;
-        model.pending -= done.min(model.pending);
-    }
     if model.control.closed {
         let cascade = (kernel.cascade)(model.control, model.pending, model.open);
         assert!(cascade.archive <= MAX_FANOUT && cascade.archive <= model.pending);
@@ -299,12 +293,10 @@ fn archive_drains_and_reports_exactly_once(kernel: Kernel) {
         asks: 0,
     };
     step(kernel, &mut model, Some(Admit::Archive), open_children);
-    // Only the alarm wakes an archived agent that receives no further input;
-    // each child's `ChildDone` is an inbox record that drains the open set.
+    // Every child reports `ChildDone`; only the alarm then wakes the archived
+    // agent to send the remaining archive requests and its one report.
+    model.open = 0;
     for _ in 0..(MAX_CHILDREN / MAX_FANOUT + 1) {
-        while model.open > 0 {
-            step(kernel, &mut model, Some(Admit::Input), open_children);
-        }
         if (kernel.alarm)(model.control, false, false, model.pending).is_none() {
             break;
         }
