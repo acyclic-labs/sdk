@@ -477,7 +477,9 @@ async fn request_semantic_denial_preserves_an_existing_original_ledger_failure()
             let token = CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(FINITE_BUDGET, &token)
                 .map_err(|(error, _)| error)?;
-            work.with_original_leaf(|leaf| leaf.poison_native_original_work());
+            // An unmatched cleanup acknowledgement poisons the production meter.
+            work.runtime_meter()
+                .cancel_reserved_operations(acyclic_native_runtime::NativeOperationKind::Read, 1);
             let before = work.receipt();
             if cancelled {
                 token.cancel();
