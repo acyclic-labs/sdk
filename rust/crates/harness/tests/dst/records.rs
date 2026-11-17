@@ -86,16 +86,6 @@ where
     Ok(())
 }
 
-fn recovery_round_trip<T>(value: &T) -> std::result::Result<(), String>
-where
-    T: Serialize + DeserializeOwned,
-{
-    // Journal records use the same canonical JSON codec the journal stages;
-    // this is the recovery wire format for those records. Durable agent
-    // records use their own MessagePack path and are checked separately.
-    json_round_trip(value)
-}
-
 fn same_json<T: Serialize>(left: &T, right: &T) -> bool {
     serde_json::to_vec(left).ok() == serde_json::to_vec(right).ok()
 }
