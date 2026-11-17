@@ -11,6 +11,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { bazelCommand } from "./bazel-executables.mjs";
 import { repositoryRoot, toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
 
 // The workspace this generator describes. It defaults to the repository that holds this
@@ -1022,5 +1023,5 @@ if (mode === "check" && stale.length) {
 // This generator owns the module files, so it also owns the resolution they produce. A write refreshes the
 // committed lockfile; every other Bazel command runs with --lockfile_mode=error and refuses a stale one.
 if (mode === "write" && fs.existsSync(path.join(root, "MODULE.bazel"))) {
-  execFileSync("bazel", ["mod", "deps", "--lockfile_mode=update"], { cwd: root, stdio: "inherit" });
+  execFileSync(bazelCommand(), ["mod", "deps", "--lockfile_mode=update"], { cwd: root, stdio: "inherit" });
 }
