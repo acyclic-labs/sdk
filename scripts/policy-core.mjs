@@ -5,10 +5,13 @@ import {fileURLToPath} from 'node:url';
 
 export const isMain = url => Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(url);
 
+export const repositoryRoot = resolve(import.meta.dirname, '..');
+
 // Git paths are NUL-delimited, including names with newlines or quoting characters.
 // Each policy owns its pathspecs; discovery never silently drops missing files.
-export function trackedFiles(root = process.cwd(), paths = [], options = {}) {
-  return execFileSync('git', ['ls-files', '-z', '--', ...paths],
+/** @param {string} [root] @param {string[]} [paths] @param {import('node:child_process').ExecFileSyncOptions & {untracked?: boolean}} [options] */
+export function trackedFiles(root = process.cwd(), paths = [], {untracked = false, ...options} = {}) {
+  return execFileSync('git', ['ls-files', '-z', ...(untracked ? ['--cached', '--others', '--exclude-standard'] : []), '--', ...paths],
     {...options, cwd: root, encoding: 'utf8', maxBuffer: Infinity}).split('\0').filter(Boolean);
 }
 

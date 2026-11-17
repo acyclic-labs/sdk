@@ -2,6 +2,7 @@ import {execFileSync} from 'node:child_process';
 import {readFileSync, writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {gitBatchSources} from './source-policy/git.mjs';
+import {trackedFiles} from './policy-core.mjs';
 
 export async function checkNoPolling(args, {cwd = process.cwd(), env = process.env, logger = console} = {}) {
  const [base, output] = args;
@@ -16,8 +17,7 @@ export async function checkNoPolling(args, {cwd = process.cwd(), env = process.e
    : args.length !== 1 || !base || base.startsWith('-'))
    throw new Error('expected one baseline Git revision, or --inventory followed by a new output file');
   const git = (args, options) => execFileSync('git', args, {cwd, env, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: Infinity, ...options});
-  const files = git(['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {encoding: 'utf8'})
-   .split('\0').filter(file => file && sourceInScope(file));
+  const files = trackedFiles(cwd, [], {untracked: true, env, stdio: ['pipe', 'pipe', 'pipe']}).filter(sourceInScope);
   const afterSources = new Map();
   for (const file of files) {
    try { afterSources.set(file, readFileSync(resolve(cwd, file), 'utf8')); }

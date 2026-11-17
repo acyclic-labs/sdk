@@ -2,12 +2,11 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
+import { repositoryRoot as root, trackedFiles } from "./policy-core.mjs";
 import { spawnSync } from "node:child_process";
 
 const MAX_RECEIPT_BYTES = 1_048_576;
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGES = JSON.parse(readFileSync(join(root, "release", "npm-packages.json"), "utf8"))
   .filter(item => item.source === "typescript");
 
@@ -36,7 +35,7 @@ function expectedAssets() {
 async function create(output, sourceSha, buildReceipt, retained) {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceSha)) fail("source commit must be a full lowercase Git object ID");
   // Keep verify-only publication staging independent of the archive validator:
-  // publish-npm.yml copies this script without its repository-local imports.
+  // publish-npm.yml copies this script and the shared policy core, without validators.
   const { validateArchive } = await import("./validate-npm-package.mjs");
   const original = retained ? await retainedCompilerFiles(retained, sourceSha, buildReceipt) : undefined;
   const { build, receiptSha256: buildSha256 } = readCompilerBuild(buildReceipt, sourceSha, original);
@@ -201,7 +200,8 @@ function trackedCompilerPaths() {
   const roots = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "rust", "proto", "scripts", "compatibility", "release", "typescript", "package.json", "bun.lock", "tsconfig.json", "tsconfig.base.json"];
   if (checkedGit(["status", "--porcelain=v1", "--untracked-files=all", "--", ...roots]).trim()) fail("compiler source is not a clean captured checkout");
   if (/^[a-zS] /m.test(checkedGit(["ls-files", "-v", "--", ...roots]))) fail("compiler source has concealed index changes");
-  return new Set(checkedGit(["ls-files", "-z", "--", ...roots]).split("\0").filter(Boolean));
+  try { return new Set(trackedFiles(root, roots)); }
+  catch (error) { fail(`source inspection failed: ${error.message}`); }
 }
 
 function collectRegularFiles(name, paths, omitOutputs = false) {

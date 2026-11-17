@@ -10,14 +10,17 @@ test('Git inventory preserves path bytes, pathspecs, and missing tracked files',
   const root = mkdtempSync(join(tmpdir(), 'policy-core-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   execFileSync('git', ['init', '-q', root]);
-  const paths = ['space name.rs', 'quote"name.rs', 'line\nbreak.rs', 'tab\tname.rs', 'unicodé.rs', 'Cargo.toml'];
+  const paths = ['space name.rs', 'quote"name.rs', 'line\nbreak.rs', 'tab\tname.rs', 'unicodé.rs', 'Cargo.toml', '.gitignore'];
   for (const path of paths) writeFileSync(join(root, path), '');
   writeFileSync(join(root, 'Cargo.toml'), '[package]\nname = "literal#value"\nedition = "2024"\n');
+  writeFileSync(join(root, '.gitignore'), 'ignored.rs\n');
   execFileSync('git', ['add', '.'], {cwd: root});
   rmSync(join(root, paths[0]));
   writeFileSync(join(root, 'untracked.rs'), '');
+  writeFileSync(join(root, 'ignored.rs'), '');
   assert.deepEqual(trackedFiles(root).sort(), paths.sort());
   assert.deepEqual(trackedFiles(root, ['*.rs', ':!tab*']).sort(), paths.filter(path => path.endsWith('.rs') && !path.startsWith('tab')));
+  assert.deepEqual(trackedFiles(root, ['*.rs'], {untracked: true}).sort(), [...paths.filter(path => path.endsWith('.rs')), 'untracked.rs'].sort());
   assert.equal(toml(root, 'Cargo.toml').package.name, 'literal#value');
   assert.throws(() => toml(root, 'absent.toml'));
 });

@@ -11,14 +11,13 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
+import { repositoryRoot, toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
 
 // The workspace this generator describes. It defaults to the repository that holds this
 // script, and --root points the same generator at another Cargo workspace (Cloud).
 const args = process.argv.slice(2);
 const rootAt = args.indexOf("--root");
-const root = rootAt < 0 ? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..") : path.resolve(args[rootAt + 1]);
+const root = rootAt < 0 ? repositoryRoot : path.resolve(args[rootAt + 1]);
 if (rootAt >= 0) args.splice(rootAt, 2);
 const runnerAt = args.indexOf("--test-runner");
 const testRunner = runnerAt < 0 ? "//rust/crates/test-runner:isolated_test.bzl" : args[runnerAt + 1];

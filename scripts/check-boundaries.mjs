@@ -1,12 +1,10 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
-import { isMain, trackedFiles } from "./policy-core.mjs";
+import { join, relative } from "node:path";
+import { isMain, repositoryRoot as root, trackedFiles } from "./policy-core.mjs";
 
 import { assertByteSnapshotBoundary } from "./wasm-source-policy.mjs";
 
-const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const forbiddenContent = [
   /acyclic(?:[-_.:/]|\\)(?:internal|private)(?:[-_.:/\\]|$)/i,
   /(?:package|import)\s+["']?[^\s"']*(?:internal|private)[^\s"']*/i,

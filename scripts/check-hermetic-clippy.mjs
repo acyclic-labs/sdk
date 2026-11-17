@@ -1,9 +1,6 @@
-import { isMain } from "./policy-core.mjs";
+import { isMain, repositoryRoot as root } from "./policy-core.mjs";
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
-import path from 'node:path';
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = 'rust/crates/harness/tests/ui/native-environment/Cargo.toml';
 export function hermeticCompilerPlans() {
   return [false, true].map(negative => ({negative, args: ['clippy', '--locked', '--manifest-path', manifest,

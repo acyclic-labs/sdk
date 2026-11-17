@@ -1,11 +1,9 @@
-import { trackedFiles } from "./policy-core.mjs";
+import { repositoryRoot as sourceRoot, trackedFiles } from "./policy-core.mjs";
 import ignore from "ignore";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
 let tracked;
 
 // Pinned outputs are compared. Ignored build outputs are regenerated from the

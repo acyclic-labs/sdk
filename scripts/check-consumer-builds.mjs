@@ -2,16 +2,14 @@
 // Code generation is a separate boundary from `cargo check`: async layout
 // queries can overflow only when a downstream executable is monomorphized.
 // One package per invocation keeps unrelated workspace features out of it.
-import { isMain } from "./policy-core.mjs";
+import { isMain, repositoryRoot as root } from "./policy-core.mjs";
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { selectionWorker, workerEnv } from './check-feature-matrix.mjs';
 import { workspaceDefaults } from './workspace-defaults.mjs';
 import { runCommand } from './run-command.mjs';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const libraryKinds = new Set(['lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro']);
 
 export function consumers(metadata) {

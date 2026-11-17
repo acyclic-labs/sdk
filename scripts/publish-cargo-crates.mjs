@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 
-import { isMain } from "./policy-core.mjs";
+import { isMain, repositoryRoot as root } from "./policy-core.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { RegistryPublicationUnobservable, publicationCommand, observePublication } from "./registry-publication.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const order = JSON.parse(readFileSync(join(root, "release", "cargo-crates.json"), "utf8"));
 const equivalents = JSON.parse(readFileSync(join(root, "release", "cargo-equivalent-archives.json"), "utf8"));
 

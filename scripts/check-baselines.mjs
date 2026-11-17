@@ -1,13 +1,11 @@
-import { isMain } from "./policy-core.mjs";
+import { isMain, repositoryRoot as root } from "./policy-core.mjs";
 import "./check-compatibility-digests.mjs";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { compatibilityArtifacts, nativeWasmVector, packagedSourceCopies } from "./generated-bindings.mjs";
 import { generate } from "./proto-codegen.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 export function checkDescriptors(sourceRoot = root) {
   const output = mkdtempSync(join(tmpdir(), "sdk-descriptors-"));
