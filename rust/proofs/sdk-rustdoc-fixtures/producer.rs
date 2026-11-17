@@ -4,19 +4,17 @@ fn main() {
     let mut args = env::args_os().skip(1);
     let output = PathBuf::from(args.next().unwrap());
     let rustup = fs::canonicalize(args.next().unwrap()).unwrap();
-    let fixture_root = args.next().unwrap().into_string().unwrap();
     let package = args.next().unwrap().into_string().unwrap();
     let root = output.with_extension("work");
     let source = root.join("source");
     let target = root.join("target");
     fs::create_dir_all(&source).unwrap();
-    for argument in args.by_ref() {
+    while let Some(argument) = args.next() {
         if argument == "--" {
             break;
         }
         let input = PathBuf::from(argument);
-        let text = input.to_string_lossy().replace('\\', "/");
-        let relative = text.strip_prefix(&fixture_root).unwrap();
+        let relative = args.next().unwrap();
         let destination = source.join(relative);
         fs::create_dir_all(destination.parent().unwrap()).unwrap();
         fs::copy(input, destination).unwrap();
