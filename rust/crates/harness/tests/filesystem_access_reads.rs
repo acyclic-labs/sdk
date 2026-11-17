@@ -482,7 +482,9 @@ async fn expiry_crossing_between_authorization_and_read_confirmation_refuses()
     let scope = fixture.issuer.bootstrap_scope(
         "expiring-read",
         &Capabilities::new([
-            fixture.volume.capability(VolumeOperation::Read, &mut None)?,
+            fixture
+                .volume
+                .capability(VolumeOperation::Read, &mut None)?,
             capability.to_scope_label()?,
         ]),
         fixture.scope.agent(),
@@ -997,7 +999,11 @@ impl acyclic_harness::filesystem::TurnExecutors for NoTurns {
         'a,
         acyclic_harness::Result<Arc<dyn acyclic_harness::executor::Executor>>,
     > {
-        Box::pin(async { Err(acyclic_harness::Error::Unsupported("read-only fixture".into())) })
+        Box::pin(async {
+            Err(acyclic_harness::Error::Unsupported(
+                "read-only fixture".into(),
+            ))
+        })
     }
 }
 
@@ -1049,7 +1055,9 @@ async fn hosted_read_refuses_a_capability_expired_on_the_execution_clock()
     let scope = fixture.issuer.bootstrap_scope(
         "expiring-hosted-read",
         &Capabilities::new([
-            fixture.volume.capability(VolumeOperation::Read, &mut None)?,
+            fixture
+                .volume
+                .capability(VolumeOperation::Read, &mut None)?,
             capability.to_scope_label()?,
         ]),
         fixture.scope.agent(),

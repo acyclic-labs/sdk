@@ -311,7 +311,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 let clock = native_clock.clone();
                                 async move {
                                     let check = || -> Result<()> {
-                                        let now = crate::filesystem::access::clock_now(clock.as_ref())?;
+                                        let now =
+                                            crate::filesystem::access::clock_now(clock.as_ref())?;
                                         require_publication_fence(fence, "volume", now)?;
                                         require_publication_fence(root_fence, "root", now)?;
                                         if let Some(authority) = &authority {

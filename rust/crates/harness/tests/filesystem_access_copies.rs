@@ -253,8 +253,8 @@ async fn imports_check_both_signed_grants_through_the_policy_compiler() -> Resul
 }
 
 #[tokio::test]
-async fn host_clock_ahead_of_wall_time_still_grants_whole_volume_copy()
--> Result<(), Box<dyn Error>> {
+async fn host_clock_ahead_of_wall_time_still_grants_whole_volume_copy() -> Result<(), Box<dyn Error>>
+{
     use acyclic_stream::UnixMillisClock as _;
     let start = acyclic_stream::SystemUnixMillisClock.now_unix_millis() + 5_000;
     let (clock, _control) = acyclic_actors::local::ControlledClock::new(start);

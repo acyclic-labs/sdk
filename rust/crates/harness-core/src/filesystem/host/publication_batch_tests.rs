@@ -1413,10 +1413,8 @@ async fn expiry_crossing_between_authorization_and_commit_refuses_publication() 
     let expiry = wall / 1000 + 10;
     let start = wall + 5_000;
     let (clock, control) = acyclic_actors::local::ControlledClock::new(start);
-    let provider =
-        ProviderRef::new("expiry".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let mut host =
-        FilesystemHost::new_with_clock(Fs::memory(), &provider, None, Arc::new(clock))?;
+    let provider = ProviderRef::new("expiry".into(), "filesystem".into(), "1".into(), &mut None)?;
+    let mut host = FilesystemHost::new_with_clock(Fs::memory(), &provider, None, Arc::new(clock))?;
     let agent = crate::AgentId::from_bytes([40; 16]);
     let volume = VolumeRef::new(
         provider,
