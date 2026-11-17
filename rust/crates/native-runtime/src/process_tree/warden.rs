@@ -12,6 +12,60 @@ use super::record::{self, BOOT_BYTES, START_BYTES};
 use super::sys::{self, Errno, Fd, Pid};
 use core::ffi::CStr;
 
+/// The packet-device hosts this tree's program started. They are children of
+/// the warden only because `CLONE_PARENT` makes them siblings of the program;
+/// they serve every owner in the namespace, so tree retirement must not kill
+/// them. The program registers each host's PID over a pipe before it exits.
+#[cfg(target_os = "linux")]
+const HOST_PIDS: Fd = 198;
+#[cfg(target_os = "linux")]
+const MAXIMUM_HOSTS: usize = 8;
+
+#[cfg(target_os = "linux")]
+struct Hosts {
+    pids: [Pid; MAXIMUM_HOSTS],
+    count: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl Hosts {
+    const EMPTY: Self = Self {
+        pids: [0; MAXIMUM_HOSTS],
+        count: 0,
+    };
+
+    fn contains(&self, pid: Pid) -> bool {
+        self.pids
+            .get(..self.count)
+            .is_some_and(|pids| pids.contains(&pid))
+    }
+
+    fn add(&mut self, pid: Pid) {
+        if pid > 0
+            && !self.contains(pid)
+            && let Some(slot) = self.pids.get_mut(self.count)
+        {
+            *slot = pid;
+            self.count += 1;
+        }
+    }
+
+    fn remove(&mut self, pid: Pid) {
+        let Some(index) = self
+            .pids
+            .get(..self.count)
+            .and_then(|pids| pids.iter().position(|&candidate| candidate == pid))
+        else {
+            return;
+        };
+        let last = self.count.saturating_sub(1);
+        if let (Some(slot), Some(tail)) = (self.pids.get_mut(index), self.pids.get(last).copied()) {
+            *slot = tail;
+        }
+        self.count = last;
+    }
+}
+
 /// Runs in the owner's direct child. On macOS it already leads its own
 /// process group; on Linux it creates that group here and later returns to
 /// `home`, the runner's group. Returns only in the program's process, which
@@ -68,6 +122,18 @@ pub(super) fn enter(
             return Err(error);
         }
     };
+    // The program registers packet-device hosts it starts, so retirement
+    // leaves them alive and reaps them when they exit.
+    #[cfg(target_os = "linux")]
+    let [host_pids, host_pids_out] = match sys::pipe() {
+        Ok(ends) => ends,
+        Err(error) => {
+            sys::close(admission);
+            sys::close(admit);
+            unlink();
+            return Err(error);
+        }
+    };
     let program = match sys::fork() {
         Ok(0) => {
             // Descriptors the program never uses.
@@ -76,6 +142,12 @@ pub(super) fn enter(
             sys::close(admit);
             #[cfg(target_os = "linux")]
             sys::close(control);
+            #[cfg(target_os = "linux")]
+            {
+                sys::close(host_pids);
+                sys::dup_onto(host_pids_out, HOST_PIDS, false)?;
+                sys::close(host_pids_out);
+            }
             admitted_by_warden(admission)?;
             return Ok(());
         }
@@ -83,11 +155,18 @@ pub(super) fn enter(
         Err(error) => {
             sys::close(admission);
             sys::close(admit);
+            #[cfg(target_os = "linux")]
+            {
+                sys::close(host_pids);
+                sys::close(host_pids_out);
+            }
             unlink();
             return Err(error);
         }
     };
     sys::close(admission);
+    #[cfg(target_os = "linux")]
+    sys::close(host_pids_out);
     // A warden forked from a multithreaded owner holds every descriptor the
     // owner had, including other trees' pipe ends. Release them before the
     // group move, so no other tree's peer outlives that tree's program
@@ -113,6 +192,8 @@ pub(super) fn enter(
         name,
         #[cfg(target_os = "linux")]
         control,
+        #[cfg(target_os = "linux")]
+        host_pids,
     )
 }
 
@@ -315,6 +396,7 @@ fn supervise(
     program: Pid,
     name: &CStr,
     #[cfg(target_os = "linux")] control: Fd,
+    #[cfg(target_os = "linux")] host_pids: Fd,
 ) -> ! {
     // Graceful requests to the group reach the program; the warden reports
     // the program's own outcome.
@@ -326,9 +408,11 @@ fn supervise(
     // Inherited descriptors, including the reply pipe and the program's
     // standard streams, close here.
     #[cfg(target_os = "linux")]
-    close_except([directory, record, watch, control], warden);
+    close_except([directory, record, watch, control, host_pids], warden);
     #[cfg(target_vendor = "apple")]
     close_except([directory, record, watch], warden);
+    #[cfg(target_os = "linux")]
+    let mut hosts = Hosts::EMPTY;
     let status = await_exit(
         watch,
         owner,
@@ -337,8 +421,19 @@ fn supervise(
         control,
         #[cfg(target_os = "linux")]
         warden,
+        #[cfg(target_os = "linux")]
+        host_pids,
+        #[cfg(target_os = "linux")]
+        &mut hosts,
     );
-    let status = drain(watch, warden, program, status);
+    let status = drain(
+        watch,
+        warden,
+        program,
+        status,
+        #[cfg(target_os = "linux")]
+        &hosts,
+    );
     if directory >= 0 {
         let _ = sys::unlinkat(directory, name);
     }
@@ -348,19 +443,53 @@ fn supervise(
 /// Waits for the program to exit, returning its status, or for the owner to
 /// exit, returning `None`.
 #[cfg(target_os = "linux")]
-fn await_exit(watch: Fd, _owner: Pid, program: Pid, control: Fd, warden: Pid) -> Option<i32> {
+fn await_exit(
+    watch: Fd,
+    _owner: Pid,
+    program: Pid,
+    control: Fd,
+    warden: Pid,
+    host_pids: Fd,
+    hosts: &mut Hosts,
+) -> Option<i32> {
     // An unreaped child's PID cannot be reused.
     let child = sys::pidfd(program).ok()?;
     let mut ready = [
         sys::PollFd::readable(watch),
         sys::PollFd::readable(child),
         sys::PollFd::readable(control),
+        sys::PollFd::readable(host_pids),
     ];
     loop {
         match sys::poll(&mut ready) {
             Ok(_) => {}
-            Err(Errno(sys::EINTR)) => continue,
+            Err(Errno(sys::EINTR)) => {
+                if let Some(status) = reap_spare(program, hosts) {
+                    return Some(status);
+                }
+                continue;
+            }
             Err(_) => return None,
+        }
+        // Read host registrations before the program's exit: the program
+        // writes them before it exits, and retirement must not kill a host
+        // whose registration is already in the pipe.
+        if ready[3].ready() {
+            let mut buffer = [0_u8; 4 * MAXIMUM_HOSTS];
+            match sys::read(host_pids, &mut buffer) {
+                Ok(read) => {
+                    for chunk in buffer.get(..read).unwrap_or_default().as_chunks::<4>().0 {
+                        hosts.add(Pid::from_ne_bytes(*chunk));
+                    }
+                }
+                Err(Errno(sys::EINTR)) => continue,
+                Err(_) => {}
+            }
+            // The intermediate clone exits at once; reap it here rather than
+            // leaving one zombie per host launch until the tree retires.
+            if let Some(status) = reap_spare(program, hosts) {
+                return Some(status);
+            }
         }
         if ready[1].ready() {
             return reap(program);
@@ -420,11 +549,33 @@ fn reap(program: Pid) -> Option<i32> {
     }
 }
 
+/// Reaps every exited child that is not the program, returning the program's
+/// status if it was among them. The intermediate host clone exits at once;
+/// leaving it unreaped would keep one zombie per host launch.
+#[cfg(target_os = "linux")]
+fn reap_spare(program: Pid, hosts: &mut Hosts) -> Option<i32> {
+    loop {
+        match sys::wait(-1, 1) {
+            Ok((reaped, raw)) if reaped == program => return Some(raw),
+            Ok((reaped, _)) if reaped > 0 => hosts.remove(reaped),
+            Ok(_) => return None,
+            Err(Errno(sys::EINTR)) => continue,
+            Err(_) => return None,
+        }
+    }
+}
+
 /// Kills and reaps every remaining descendant. As child subreaper, every
 /// orphaned descendant becomes this warden's child, so an empty wait means
 /// the whole tree is gone.
 #[cfg(target_os = "linux")]
-fn drain(_watch: Fd, warden: Pid, program: Pid, mut status: Option<i32>) -> Option<i32> {
+fn drain(
+    _watch: Fd,
+    warden: Pid,
+    program: Pid,
+    mut status: Option<i32>,
+    hosts: &Hosts,
+) -> Option<i32> {
     let mut path = [0_u8; 64];
     let Some(children) = children_path(warden, &mut path) else {
         return status;
@@ -446,8 +597,14 @@ fn drain(_watch: Fd, warden: Pid, program: Pid, mut status: Option<i32>) -> Opti
         // The warden left this group, and its live PID keeps the group's ID
         // from naming any other group: this reaches only the tree.
         let _ = sys::kill(-warden, sys::SIGKILL);
-        if !kill_children(children) {
+        if !kill_children(children, hosts) {
             // Without the children listing, the tree still dies as a group.
+            return status;
+        }
+        // A registered packet-device host is not part of the tree. Once only
+        // hosts remain, the tree is gone and the warden must not wait for a
+        // host that other owners still use.
+        if only_hosts(children, hosts) {
             return status;
         }
         match sys::wait(-1, 0) {
@@ -471,9 +628,10 @@ fn children_path(warden: Pid, buffer: &mut [u8; 64]) -> Option<&CStr> {
     CStr::from_bytes_with_nul(buffer.get(..length)?).ok()
 }
 
-/// Sends SIGKILL to each listed child. False when the listing is unavailable.
+/// Sends SIGKILL to each listed child that is not a registered host. False
+/// when the listing is unavailable.
 #[cfg(target_os = "linux")]
-fn kill_children(path: &CStr) -> bool {
+fn kill_children(path: &CStr, hosts: &Hosts) -> bool {
     let Ok(file) = sys::open(path, sys::O_RDONLY | sys::O_CLOEXEC) else {
         return false;
     };
@@ -488,7 +646,9 @@ fn kill_children(path: &CStr) -> bool {
                         .saturating_mul(10)
                         .saturating_add(Pid::from(byte - b'0')),
                 );
-            } else if let Some(child) = current.take() {
+            } else if let Some(child) = current.take()
+                && !hosts.contains(child)
+            {
                 let _ = sys::kill(child, sys::SIGKILL);
             }
         }
@@ -496,11 +656,46 @@ fn kill_children(path: &CStr) -> bool {
             break;
         }
     }
-    if let Some(child) = current {
+    if let Some(child) = current
+        && !hosts.contains(child)
+    {
         let _ = sys::kill(child, sys::SIGKILL);
     }
     sys::close(file);
     true
+}
+
+/// Whether every listed child is a registered packet-device host.
+#[cfg(target_os = "linux")]
+fn only_hosts(path: &CStr, hosts: &Hosts) -> bool {
+    let Ok(file) = sys::open(path, sys::O_RDONLY | sys::O_CLOEXEC) else {
+        return false;
+    };
+    let mut buffer = [0_u8; 512];
+    let mut current: Option<Pid> = None;
+    let mut only = true;
+    while let Ok(read) = record::read_full(file, &mut buffer) {
+        for byte in buffer.iter().take(read) {
+            if byte.is_ascii_digit() {
+                current = Some(
+                    current
+                        .unwrap_or(0)
+                        .saturating_mul(10)
+                        .saturating_add(Pid::from(byte - b'0')),
+                );
+            } else if let Some(child) = current.take() {
+                only &= hosts.contains(child);
+            }
+        }
+        if read < buffer.len() {
+            break;
+        }
+    }
+    if let Some(child) = current {
+        only &= hosts.contains(child);
+    }
+    sys::close(file);
+    only
 }
 
 /// Kills the tree's process group and waits for each member to exit.

@@ -187,16 +187,18 @@ impl HostIo {
 
     /// Aborts the connection while its device is still open, then releases the
     /// control. A retained control could otherwise name a later connection
-    /// that reused the same device number.
+    /// that reused the same device number. The lock stays held through the
+    /// abort, so a concurrent `stop` cannot close the device before this
+    /// abort has reached the kernel.
     pub(super) fn abort_connection(&self) {
-        let connection = self
+        let mut connection = self
             .connection
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        if let Some(connection) = connection
-            && let Err(error) = connection.abort()
-        {
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(control) = connection.take() else {
+            return;
+        };
+        if let Err(error) = control.abort() {
             tracing::error!(%error, "FUSE connection abort failed");
         }
     }

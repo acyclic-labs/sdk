@@ -59,6 +59,9 @@ const ON_RELEASE: u8 = 16;
 /// Resource limits a request carries: every Linux limit, 0..`RLIM_NLIMITS`.
 const LIMITS: u32 = 16;
 
+/// The warden's host-registration pipe, inherited by the program.
+const HOST_PIDS: RawFd = 198;
+
 /// Appends current launch settings restored after the static runner's exec.
 /// Kernel security restrictions are inherited by a fresh runner on every
 /// launch: status fields cannot attest Landlock or other opaque policies.
@@ -719,9 +722,27 @@ struct HostSpawn {
     envp: [*const libc::c_char; 1],
 }
 
+/// The packet-device host's status frames, each a tag and a native-endian
+/// 32-bit value: the host's PID, or the errno that stopped its exec.
+const HOST_STARTED: u8 = b'P';
+const HOST_FAILED: u8 = b'E';
+
+/// Writes one status frame. Only raw descriptor operations run here.
+fn host_report(status: RawFd, tag: u8, value: i32) {
+    let mut frame = [0_u8; 5];
+    frame[0] = tag;
+    frame[1..].copy_from_slice(&value.to_ne_bytes());
+    // SAFETY: the status descriptor is inherited from the parent.
+    unsafe {
+        libc::write(status, frame.as_ptr().cast(), frame.len());
+    }
+}
+
 /// The first clone is a child of the spawning owner's parent (the warden).
 /// Clone once more with `CLONE_PARENT` so the actual host is a sibling of that
-/// warden, outside the per-case custody tree that retires the owner.
+/// warden, outside the per-case custody tree that retires the owner. The
+/// warden is told the host's PID, so it leaves the host alive and reaps it
+/// when it exits instead of killing it with the tree.
 extern "C" fn host_child(argument: *mut libc::c_void) -> libc::c_int {
     let mut stack = [0_u8; 16 * 1024];
     // SAFETY: the second child runs on this local stack until exec replaces
@@ -734,25 +755,18 @@ extern "C" fn host_child(argument: *mut libc::c_void) -> libc::c_int {
     };
     // SAFETY: the argument is the parent-owned record, and CLONE_PARENT makes
     // the host a sibling of the warden that owns this first child.
-    let pid = unsafe {
-        libc::clone(
-            host_exec,
-            top,
-            libc::CLONE_PARENT | libc::SIGCHLD,
-            argument,
-        )
-    };
+    let pid = unsafe { libc::clone(host_exec, top, libc::CLONE_PARENT | libc::SIGCHLD, argument) };
+    // SAFETY: the status descriptor is inherited from the parent.
+    let spawn = unsafe { &*argument.cast::<HostSpawn>() };
     if pid < 0 {
-        // SAFETY: the status descriptor is inherited from the parent.
-        unsafe {
-            let spawn = &*argument.cast::<HostSpawn>();
-            let error = std::io::Error::last_os_error()
-                .raw_os_error()
-                .unwrap_or(libc::EIO);
-            libc::write(spawn.status, (&raw const error).cast(), 4);
-            libc::_exit(127);
-        }
+        let error = std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EIO);
+        host_report(spawn.status, HOST_FAILED, error);
+        // SAFETY: ends this clone.
+        unsafe { libc::_exit(127) }
     }
+    host_report(spawn.status, HOST_STARTED, pid);
     // SAFETY: the second child owns the exec and the status pipe now.
     unsafe { libc::_exit(0) }
 }
@@ -777,7 +791,7 @@ extern "C" fn host_exec(argument: *mut libc::c_void) -> libc::c_int {
             let error = std::io::Error::last_os_error()
                 .raw_os_error()
                 .unwrap_or(libc::EIO);
-            libc::write(spawn.status, (&raw const error).cast(), 4);
+            host_report(spawn.status, HOST_FAILED, error);
             libc::_exit(127);
         }
         libc::syscall(
@@ -791,7 +805,7 @@ extern "C" fn host_exec(argument: *mut libc::c_void) -> libc::c_int {
         let error = std::io::Error::last_os_error()
             .raw_os_error()
             .unwrap_or(libc::EIO);
-        libc::write(spawn.status, (&raw const error).cast(), 4);
+        host_report(spawn.status, HOST_FAILED, error);
         libc::_exit(127);
     }
 }
@@ -845,18 +859,54 @@ pub(super) fn start_packet_device_host(
     }
     drop(status_write);
     let mut status_read = File::from(status_read);
-    let mut status = [0_u8; 4];
+    let Some((tag, value)) = host_frame(&mut status_read)? else {
+        return Err(io::ErrorKind::BrokenPipe.into());
+    };
+    if tag == HOST_FAILED {
+        return Err(io::Error::from_raw_os_error(value));
+    }
+    if tag != HOST_STARTED {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    register_host(value);
+    match host_frame(&mut status_read)? {
+        None => Ok(()),
+        Some((HOST_FAILED, error)) => Err(io::Error::from_raw_os_error(error)),
+        Some(_) => Err(io::ErrorKind::InvalidData.into()),
+    }
+}
+
+/// Reads one host status frame, or `None` at end of file.
+fn host_frame(status: &mut File) -> io::Result<Option<(u8, i32)>> {
+    let mut frame = [0_u8; 5];
     let mut filled = 0;
-    while filled < status.len() {
-        match status_read.read(&mut status[filled..]) {
-            Ok(0) => break,
+    while filled < frame.len() {
+        match status.read(&mut frame[filled..]) {
+            Ok(0) if filled == 0 => return Ok(None),
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
             Ok(length) => filled += length,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
         }
     }
-    if filled == status.len() {
-        return Err(io::Error::from_raw_os_error(i32::from_ne_bytes(status)));
+    let value = i32::from_ne_bytes(frame[1..].try_into().map_err(|_| io::ErrorKind::InvalidData)?);
+    Ok(Some((frame[0], value)))
+}
+
+/// Tells the warden that `host` is a packet-device host, not a tree member.
+/// The warden passes this pipe to the program at a fixed descriptor; a
+/// top-level owner has no warden and no pipe, so there is nothing to tell.
+fn register_host(host: i32) {
+    // SAFETY: fstat only reads this process's descriptor.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(HOST_PIDS, &raw mut stat) } != 0
+        || stat.st_mode & libc::S_IFMT != libc::S_IFIFO
+    {
+        return;
     }
-    Ok(())
+    // SAFETY: the warden's pipe is open for writing; a full pipe only delays
+    // registration, and the host is still a child of the warden.
+    unsafe {
+        libc::write(HOST_PIDS, (&raw const host).cast(), 4);
+    }
 }
