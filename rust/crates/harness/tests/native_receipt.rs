@@ -83,8 +83,8 @@ async fn a_cancelled_tool_call_settles_as_an_error_and_the_owner_continues()
         model::{Model, ModelContentPart, ModelEvent, ToolCall, ToolResultContent},
         runtime::ToolContext,
         test_support::{
-            PromptOutcome, ScriptedEvent, ScriptedModelProvider, ScriptedTurn, local_harness_config,
-            prompt_settled,
+            PromptOutcome, ScriptedEvent, ScriptedModelProvider, ScriptedTurn,
+            local_harness_config, prompt_settled,
         },
         tool::{
             JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult,
@@ -185,7 +185,10 @@ async fn a_cancelled_tool_call_settles_as_an_error_and_the_owner_continues()
     let interruption = "tool was interrupted before its outcome was recorded";
     match first {
         PromptOutcome::Settled(entry, output) => {
-            assert_eq!(entry.outcome, acyclic_harness::agent::TurnOutcome::Cancelled);
+            assert_eq!(
+                entry.outcome,
+                acyclic_harness::agent::TurnOutcome::Cancelled
+            );
             let carried = output.transcript.iter().any(|message| {
                 message.content.parts().iter().any(|part| {
                     matches!(part, ModelContentPart::ToolResult {
@@ -204,7 +207,10 @@ async fn a_cancelled_tool_call_settles_as_an_error_and_the_owner_continues()
     }
     match prompt_settled(&harness, "after", "AFTER_PROMPT").await? {
         PromptOutcome::Settled(entry, output) => {
-            assert_eq!(entry.outcome, acyclic_harness::agent::TurnOutcome::Completed);
+            assert_eq!(
+                entry.outcome,
+                acyclic_harness::agent::TurnOutcome::Completed
+            );
             assert_eq!(output.text, "AFTER");
         }
         PromptOutcome::Failed(message) => panic!("the owner did not continue: {message}"),

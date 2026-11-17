@@ -1494,16 +1494,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     }
                     _ => Stopped::without_steps(TurnOutcome::Cancelled),
                 };
-                let entry = interrupted(
-                    agent,
-                    &open,
-                    turn,
-                    inbox,
-                    input,
-                    notices,
-                    stopped,
-                )
-                .await?;
+                let entry = interrupted(agent, &open, turn, inbox, input, notices, stopped).await?;
                 return settle_effects(
                     agent,
                     &open,
