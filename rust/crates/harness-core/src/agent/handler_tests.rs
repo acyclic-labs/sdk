@@ -1283,10 +1283,12 @@ impl TurnDriver for CancelledReview {
                         policy: None,
                     },
                 )),
-                _ => Ok(crate::agent::ReviewStep::Reviewed(crate::agent::OpenTriage {
-                    summary: None,
-                    outs: Vec::new(),
-                })),
+                _ => Ok(crate::agent::ReviewStep::Reviewed(
+                    crate::agent::OpenTriage {
+                        summary: None,
+                        outs: Vec::new(),
+                    },
+                )),
             }
         })
     }
@@ -1303,8 +1305,8 @@ impl TurnDriver for CancelledReview {
 }
 
 #[tokio::test]
-async fn a_cancelled_review_keeps_its_page_for_the_next_step() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn a_cancelled_review_keeps_its_page_for_the_next_step()
+-> Result<(), Box<dyn std::error::Error>> {
     let id = AgentId::from_bytes([77; 16]);
     let path = AgentPath::root(&id);
     let adopted = ForkAdopted {
@@ -1336,7 +1338,11 @@ async fn a_cancelled_review_keeps_its_page_for_the_next_step() -> Result<(), Box
     )
     .await?;
     assert_eq!(
-        first.state.approval_control.as_ref().map(|control| control.range.clone()),
+        first
+            .state
+            .approval_control
+            .as_ref()
+            .map(|control| control.range.clone()),
         Some(1..2),
         "a cancelled review dropped its pending child asks"
     );

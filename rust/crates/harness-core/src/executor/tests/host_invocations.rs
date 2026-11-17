@@ -405,13 +405,14 @@ impl ExecutionJournal for StaleReplay<'_> {
         maximum: u32,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
-        if self.1.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |stale| {
-            stale.checked_sub(1)
-        }).is_ok()
+        if self
+            .1
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |stale| {
+                stale.checked_sub(1)
+            })
+            .is_ok()
         {
-            return crate::conversation::BoundedContentFuture::new(io, || async {
-                Ok(Vec::new())
-            });
+            return crate::conversation::BoundedContentFuture::new(io, || async { Ok(Vec::new()) });
         }
         self.0.replay(operation, after, maximum, io)
     }
@@ -506,7 +507,9 @@ async fn concurrent_host_starts_share_one_parent_binding() -> Result<()> {
         name: "write".into(),
         arguments: json!({"path":"second.txt"}),
     };
-    execution.ensure_host_started(&journal, parent, &first).await?;
+    execution
+        .ensure_host_started(&journal, parent, &first)
+        .await?;
     execution
         .ensure_host_started(&journal, parent, &second)
         .await?;
@@ -524,8 +527,8 @@ async fn concurrent_host_starts_share_one_parent_binding() -> Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn host_start_replay_releases_its_records() -> Result<()> {
-    let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536)
-        .await?;
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
     let journal = storage.journal();
     let parent = OperationId::new();
     journal

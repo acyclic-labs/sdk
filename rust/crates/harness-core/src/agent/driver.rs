@@ -1359,11 +1359,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     .map(super::ReviewStep::Reviewed)
             } else {
                 self.host
-                    .select_approvals(
-                        agent,
-                        pending.range.start,
-                        cursor.min(pending.range.end),
-                    )
+                    .select_approvals(agent, pending.range.start, cursor.min(pending.range.end))
                     .await
                     .map(super::ReviewStep::Selected)
             };
