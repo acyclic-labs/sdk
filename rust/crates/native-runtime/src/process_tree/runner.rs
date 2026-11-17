@@ -708,40 +708,109 @@ pub(super) fn retire_runner() {
     }
 }
 
+/// The packet-device host's inherited descriptors and exec arguments.
+struct HostSpawn {
+    executable: RawFd,
+    listener: RawFd,
+    admission: RawFd,
+    events: RawFd,
+    status: RawFd,
+    argv: [*const libc::c_char; 2],
+    envp: [*const libc::c_char; 1],
+}
+
+/// Executes the sealed image in packet-device-host mode. Only raw descriptor
+/// operations run here: the owner may hold allocator and runtime locks that
+/// this clone did not copy.
+extern "C" fn host_child(argument: *mut libc::c_void) -> libc::c_int {
+    // SAFETY: the parent keeps this record and its strings alive until the
+    // status pipe closes after exec.
+    let spawn = unsafe { &*argument.cast::<HostSpawn>() };
+    // SAFETY: dup2 and execveat take only inherited descriptors and the
+    // parent-owned argument vectors; no allocation or lock is taken.
+    unsafe {
+        if libc::dup2(spawn.listener, 0) < 0
+            || libc::dup2(spawn.admission, 1) < 0
+            || libc::dup2(spawn.events, 2) < 0
+        {
+            let error = std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO);
+            libc::write(spawn.status, (&raw const error).cast(), 4);
+            libc::_exit(127);
+        }
+        libc::syscall(
+            libc::SYS_execveat,
+            spawn.executable,
+            c"".as_ptr(),
+            spawn.argv.as_ptr(),
+            spawn.envp.as_ptr(),
+            libc::AT_EMPTY_PATH,
+        );
+        let error = std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EIO);
+        libc::write(spawn.status, (&raw const error).cast(), 4);
+        libc::_exit(127);
+    }
+}
+
 /// Start the same sealed image in packet-device-host mode. The listening
 /// socket itself selects the role; no owner address space is forked.
+///
+/// The host is cloned with `CLONE_PARENT`, so it is a sibling of this owner
+/// rather than its child. Retiring this owner's process tree, including a
+/// subreaper's per-case custody, therefore cannot kill a host that other
+/// owners still use. The host exits by itself when its last session detaches.
 pub(super) fn start_packet_device_host(
     listener: OwnedFd,
     admission: File,
     events: OwnedFd,
 ) -> io::Result<()> {
     let executable = image()?;
-    let (started, child) = std::sync::mpsc::sync_channel::<std::process::Child>(1);
-    // Admit the reaper before spawning the external effect. A spawn failure
-    // closes this channel and retires the unused reaper immediately.
-    std::thread::Builder::new()
-        .name("acyclic-mount-host-reaper".into())
-        .spawn(move || {
-            if let Ok(mut child) = child.recv()
-                && let Err(error) = child.wait()
-            {
-                tracing::error!(%error, "packet device host wait failed");
-            }
-        })?;
-    let mut child = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()))
-        .env_clear()
-        .stdin(listener)
-        .stdout(admission)
-        .stderr(events)
-        .process_group(0)
-        .spawn()?;
-    if let Err(error) = started.send(child) {
-        child = error.0;
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(io::Error::other(
-            "packet device host reaper exited during admission",
-        ));
+    let (status_read, status_write) = pipe()?;
+    let mut spawn = HostSpawn {
+        executable: executable.as_raw_fd(),
+        listener: listener.as_raw_fd(),
+        admission: admission.as_raw_fd(),
+        events: events.as_raw_fd(),
+        status: status_write.as_raw_fd(),
+        argv: [c"acyclic-process-host".as_ptr(), std::ptr::null()],
+        envp: [std::ptr::null()],
+    };
+    // The child runs on this stack until exec replaces it. Keep the storage
+    // in place until the status pipe reports the exec outcome.
+    let mut stack = vec![0_u8; 64 * 1024];
+    let top = stack
+        .as_mut_ptr()
+        .add(stack.len())
+        .cast::<libc::c_void>();
+    // SAFETY: the child entry takes only the parent-owned record and stack;
+    // CLONE_PARENT makes the host a sibling of this owner.
+    let pid = unsafe {
+        libc::clone(
+            host_child,
+            top,
+            libc::CLONE_PARENT | libc::SIGCHLD,
+            (&raw mut spawn).cast(),
+        )
+    };
+    if pid < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    drop(status_write);
+    let mut status = [0_u8; 4];
+    let mut filled = 0;
+    while filled < status.len() {
+        match (&status_read).read(&mut status[filled..]) {
+            Ok(0) => break,
+            Ok(length) => filled += length,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if filled == status.len() {
+        return Err(io::Error::from_raw_os_error(i32::from_ne_bytes(status)));
     }
     Ok(())
 }
