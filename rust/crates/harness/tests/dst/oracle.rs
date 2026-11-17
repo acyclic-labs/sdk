@@ -213,71 +213,91 @@ pub(super) struct Incarnation {
 }
 
 thread_local! {
-    /// Live world slots on this test thread, keyed by case and seed. Reusing
-    /// the first free slot makes a repeated world use the same absolute path.
-    static WORLD_SLOTS: std::cell::RefCell<
-        std::collections::BTreeMap<(String, u64), Vec<bool>>,
-    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    /// Incarnation traces captured by an X1 replay, and whether the next world
+    /// erases the scheduler's entropy source. Both are inputs of the test
+    /// thread that owns the seeded runtime.
+    static RECORDING: std::cell::RefCell<Option<Vec<serde_json::Value>>> =
+        const { std::cell::RefCell::new(None) };
+    static ERASE_ENTROPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// A world directory whose absolute path is a function of its case, seed and
-/// slot, never of the host's random temporary name. Model requests announce
-/// that path, so a random name would make an otherwise identical replay differ.
+/// Runs `body`, returning every incarnation it produced as a replay trace.
+pub(super) fn record<T>(body: impl FnOnce() -> T) -> (T, Vec<serde_json::Value>) {
+    RECORDING.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+    let result = body();
+    let trace = RECORDING.with(|trace| trace.borrow_mut().take().unwrap_or_default());
+    (result, trace)
+}
+
+/// Runs `body` with every world's scheduler entropy source erased.
+pub(super) fn erase_entropy<T>(body: impl FnOnce() -> T) -> T {
+    ERASE_ENTROPY.with(|erase| erase.set(true));
+    let result = body();
+    ERASE_ENTROPY.with(|erase| erase.set(false));
+    result
+}
+
+fn erasing_entropy() -> bool {
+    ERASE_ENTROPY.with(std::cell::Cell::get)
+}
+
+fn record_incarnation(incarnation: &Incarnation, directory: &Path) {
+    RECORDING.with(|recording| {
+        let Some(trace) = recording.borrow_mut().as_mut() else {
+            return;
+        };
+        let mut value = serde_json::json!({
+            "prompts": format!("{:?}", incarnation.prompts),
+            "requests": serde_json::to_value(&incarnation.requests)
+                .unwrap_or(serde_json::Value::Null),
+            "dispatched_at": incarnation.dispatched_at,
+            "crashed": format!("{:?}", incarnation.crashed),
+            "durable": incarnation.durable,
+        });
+        normalize_paths(&mut value, directory.to_string_lossy().as_ref(), "<world>");
+        trace.push(value);
+    });
+}
+
+/// Replaces the host's random directory with the stable logical name a replay
+/// compares. The physical location is exclusively owned by this world and is
+/// never part of the trace.
+fn normalize_paths(value: &mut serde_json::Value, physical: &str, logical: &str) {
+    match value {
+        serde_json::Value::String(text) => {
+            if text.contains(physical) {
+                *text = text.replace(physical, logical);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                normalize_paths(item, physical, logical);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                normalize_paths(item, physical, logical);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A world directory this world alone owns. Its physical path never enters a
+/// replay trace; only the logical `<world>` marker above does.
 struct WorldDirectory {
-    path: std::path::PathBuf,
-    key: (String, u64),
-    slot: usize,
+    directory: tempfile::TempDir,
 }
 
 impl WorldDirectory {
-    fn new(seed: u64) -> std::io::Result<Self> {
-        let key = (
-            std::thread::current().name().unwrap_or("dst").to_owned(),
-            seed,
-        );
-        let slot = WORLD_SLOTS.with(|slots| {
-            let mut slots = slots.borrow_mut();
-            let used = slots.entry(key.clone()).or_default();
-            match used.iter().position(|used| !used) {
-                Some(slot) => {
-                    used[slot] = true;
-                    slot
-                }
-                None => {
-                    used.push(true);
-                    used.len() - 1
-                }
-            }
-        });
-        let digest = blake3::hash(format!("{}:{}:{slot}", key.0, key.1).as_bytes());
-        let root = if Path::new("/dev/shm").is_dir() {
-            std::path::PathBuf::from("/dev/shm")
-        } else {
-            std::env::temp_dir()
-        };
-        let path = root.join(format!("acyclic-dst-{}", &digest.to_hex()[..16]));
-        if path.exists() {
-            std::fs::remove_dir_all(&path)?;
-        }
-        std::fs::create_dir(&path)?;
-        Ok(Self { path, key, slot })
+    fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            directory: temporary_directory()?,
+        })
     }
 
     fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for WorldDirectory {
-    fn drop(&mut self) {
-        WORLD_SLOTS.with(|slots| {
-            if let Some(used) = slots.borrow_mut().get_mut(&self.key) {
-                if let Some(used) = used.get_mut(self.slot) {
-                    *used = false;
-                }
-            }
-        });
-        let _ = std::fs::remove_dir_all(&self.path);
+        self.directory.path()
     }
 }
 
@@ -312,7 +332,8 @@ impl World {
         service: ScriptedModelProvider,
         entropy: bool,
     ) -> Result<Self> {
-        let directory = WorldDirectory::new(seed).map_err(storage)?;
+        let entropy = entropy && !erasing_entropy();
+        let directory = WorldDirectory::new().map_err(storage)?;
         let checkout = directory.path().join("checkout");
         std::fs::create_dir(&checkout).map_err(storage)?;
         for (path, body) in files {
@@ -443,8 +464,8 @@ impl World {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
                     }
-                    // Retire every native mount and worker before the next
-                    // replay can reuse this world's deterministic path.
+                    // Retire every native mount and worker before this world
+                    // directory is dropped.
                     let harness = Arc::try_unwrap(harness).map_err(|_| {
                         Error::Invalid("world harness still has live connections".into())
                     })?;
@@ -470,13 +491,15 @@ impl World {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
-            Ok(Incarnation {
+            let incarnation = Incarnation {
                 prompts,
                 requests: provider.requests(),
                 dispatched_at,
                 durable: counter.durable_write_count(),
                 crashed,
-            })
+            };
+            record_incarnation(&incarnation, self.directory.path());
+            Ok(incarnation)
         })
     }
 

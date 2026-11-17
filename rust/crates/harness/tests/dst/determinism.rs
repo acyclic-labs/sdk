@@ -1,9 +1,8 @@
 //! Determinism: every class world replays from its seed to the same trace,
-//! and erasing the scheduler's entropy source changes that trace.
+//! in this process and in a fresh one, and erasing the scheduler's entropy
+//! source changes that trace.
 use super::*;
-use family::{Generator, Variant};
-use oracle::{Plan, World, call, failed, service, tag};
-use serde_json::json;
+use family::{GENERATORS, Generator, Variant};
 
 /// The X1 world dimension, in `classes.json` order.
 const WORLDS: [&str; 37] = [
@@ -12,10 +11,8 @@ const WORLDS: [&str; 37] = [
     "J2", "O1", "R1", "S1", "T1",
 ];
 
-const FILES: [(&str, &str); 1] = [("base.txt", "base\n")];
-
-/// One seed per class world. A world runs the same production turn twice and
-/// the entropy-erased control once, then reports all three X1 run variants.
+/// One seed per class world. A world replays the class generator twice, then
+/// the entropy-erased control, and a fresh process replays it once more.
 pub(super) const GENERATOR: Generator = Generator {
     class: "X1",
     seeds: every_class_world_replays_byte_identically::VALUES,
@@ -72,75 +69,45 @@ fn run(seed: u64) -> std::result::Result<(), String> {
     GENERATOR.run(seed)
 }
 
+/// The class world a schedule seed selects. The seed itself stays the
+/// schedule seed, so a deeper sweep can run any class at any seed.
+fn class(seed: u64) -> &'static str {
+    let index = usize::try_from(seed % WORLDS.len() as u64).unwrap_or_default();
+    WORLDS.get(index).copied().unwrap_or("A1")
+}
+
+fn generator(class: &str) -> std::result::Result<&'static Generator, String> {
+    GENERATORS
+        .iter()
+        .copied()
+        .find(|generator| generator.class == class)
+        .ok_or_else(|| format!("X1 class {class} has no generator"))
+}
+
 fn variants(seed: u64) -> Vec<Variant> {
-    let class = usize::try_from(seed)
-        .ok()
-        .and_then(|index| WORLDS.get(index).copied());
-    let Some(class) = class else {
-        return Vec::new();
-    };
+    let class = class(seed);
     ["same_process", "cross_process", "entropy_erased"]
         .into_iter()
         .map(|run| Variant::from([("run", run), ("world", class)]))
         .collect()
 }
 
-fn plans(class: &'static str) -> Vec<Plan> {
-    let content = format!("{class}\n");
-    vec![Plan {
-        tag: class,
-        steps: vec![vec![
-            call(
-                "x1-write",
-                "write",
-                json!({
-                    "path": "out.txt",
-                    "content": content,
-                    "ifVersion": "absent",
-                }),
-            ),
-            call(
-                "x1-read",
-                "read",
-                json!({
-                    "path": "out.txt",
-                }),
-            ),
-        ]],
-        fail_once: None,
-    }]
+fn digest(trace: &[serde_json::Value]) -> blake3::Hash {
+    blake3::hash(&serde_json::to_vec(trace).unwrap_or_default())
 }
 
-struct Replay {
-    digest: blake3::Hash,
-    trace: serde_json::Value,
-}
-
-async fn trace(
+fn trace(
     seed: u64,
-    class: &'static str,
     erase_entropy: bool,
-) -> std::result::Result<Replay, String> {
-    let mut world = if erase_entropy {
-        World::without_entropy(seed, &FILES, service(plans(class)))
+) -> std::result::Result<(bool, Vec<serde_json::Value>), String> {
+    let generator = generator(class(seed))?;
+    let run = || (generator.world)(seed);
+    let (result, trace) = if erase_entropy {
+        oracle::record(|| oracle::erase_entropy(run))
     } else {
-        World::new(seed, &FILES, service(plans(class)))
-    }
-    .map_err(failed)?;
-    let prompts = [vec![(class, tag(class))]];
-    let incarnation = world.incarnation(None, &prompts).await.map_err(failed)?;
-    // Every replayed input stays in the digest, including the exact durable
-    // count at each dispatch. The count after the last dispatch is not a replay
-    // input: independent host stores finish their own writes after the model
-    // has settled, and their interleaving is not the seed's to reproduce.
-    let trace = serde_json::json!({
-        "prompts": format!("{:?}", incarnation.prompts),
-        "requests": serde_json::to_value(&incarnation.requests).map_err(failed)?,
-        "dispatched_at": incarnation.dispatched_at,
-        "crashed": format!("{:?}", incarnation.crashed),
-    });
-    let digest = blake3::hash(&serde_json::to_vec(&trace).map_err(failed)?);
-    Ok(Replay { digest, trace })
+        oracle::record(run)
+    };
+    Ok((result?, trace))
 }
 
 fn short(value: &serde_json::Value) -> String {
@@ -191,31 +158,85 @@ fn first_difference(left: &serde_json::Value, right: &serde_json::Value) -> Stri
     walk("trace", left, right)
 }
 
-fn world(seed: u64) -> std::result::Result<bool, String> {
-    let class = usize::try_from(seed)
-        .ok()
-        .and_then(|index| WORLDS.get(index).copied())
-        .ok_or_else(|| format!("X1 seed {seed} names no world"))?;
-    oracle::simulate(seed, || {
-        entry(async move {
-            let first = trace(seed, class, false).await?;
-            let second = trace(seed, class, false).await?;
-            if first.digest != second.digest {
-                return Err(format!(
-                    "X1 {class} seed {seed} diverged in-process at {}: {} != {}",
-                    first_difference(&first.trace, &second.trace),
-                    first.digest,
-                    second.digest,
-                ));
-            }
-            let erased = trace(seed, class, true).await?;
-            if first.digest == erased.digest {
-                return Err(format!(
-                    "X1 {class} seed {seed} entropy erasure did not change the trace"
-                ));
-            }
-            println!("DST_X1_DIGEST={class} {}", first.digest);
-            Ok(true)
+fn child_digest(seed: u64) -> std::result::Result<blake3::Hash, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let output = std::process::Command::new(executable)
+        .args([
+            "--exact",
+            "determinism::x1_child",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("DST_X1_CHILD", "1")
+        .env("DST_X1_SEED", seed.to_string())
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "fresh-process replay failed: {}\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout),
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let marker = format!("DST_X1_DIGEST={} ", class(seed));
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(&marker))
+        .ok_or_else(|| format!("fresh-process replay printed no digest: {stdout}"))
+        .and_then(|digest| {
+            blake3::Hash::from_hex(digest.trim()).map_err(|error| error.to_string())
         })
-    })
+}
+
+/// The fresh-process half of an X1 replay. The parent passes the schedule
+/// seed; this process runs the same class world once and prints its digest.
+#[test]
+fn x1_child() {
+    if std::env::var_os("DST_X1_CHILD").is_none() {
+        return;
+    }
+    let seed = std::env::var("DST_X1_SEED")
+        .ok()
+        .and_then(|seed| seed.parse().ok())
+        .unwrap_or_default();
+    world(seed).unwrap_or_else(|error| panic!("{error}"));
+}
+
+fn world(seed: u64) -> std::result::Result<bool, String> {
+    let class = class(seed);
+    if std::env::var_os("DST_X1_CHILD").is_some() {
+        let (_, trace) = trace(seed, false)?;
+        println!("DST_X1_DIGEST={class} {}", digest(&trace));
+        return Ok(true);
+    }
+    let (reached, first) = trace(seed, false)?;
+    let (_, second) = trace(seed, false)?;
+    if digest(&first) != digest(&second) {
+        return Err(format!(
+            "X1 {class} seed {seed} diverged in-process at {}: {} != {}",
+            first_difference(
+                &serde_json::Value::Array(first.clone()),
+                &serde_json::Value::Array(second.clone()),
+            ),
+            digest(&first),
+            digest(&second),
+        ));
+    }
+    let (_, erased) = trace(seed, true)?;
+    if digest(&first) == digest(&erased) {
+        return Err(format!(
+            "X1 {class} seed {seed} entropy erasure did not change the trace"
+        ));
+    }
+    let fresh = child_digest(seed)?;
+    if fresh != digest(&first) {
+        return Err(format!(
+            "X1 {class} seed {seed} diverged in a fresh process: {} != {}",
+            digest(&first),
+            fresh,
+        ));
+    }
+    println!("DST_X1_DIGEST={class} {}", digest(&first));
+    Ok(reached)
 }

@@ -1,17 +1,23 @@
-pub(crate) fn path_key(path: &NamespacePath) -> Vec<u8> {
-    let mut key = Vec::new();
+pub(crate) fn path_key(path: &NamespacePath) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic-fs-native-path-key-v1\0");
     for name in path.components() {
-        key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
-        key.extend_from_slice(name.as_bytes());
+        hash.update(&(name.as_bytes().len() as u64).to_le_bytes());
+        hash.update(name.as_bytes());
     }
-    key
+    *hash.finalize().as_bytes()
 }
 
-fn child_path_key(parent: &NamespacePath, name: &crate::kernel::LogicalName) -> Vec<u8> {
-    let mut key = path_key(parent);
-    key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
-    key.extend_from_slice(name.as_bytes());
-    key
+fn child_path_key(parent: &NamespacePath, name: &crate::kernel::LogicalName) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic-fs-native-path-key-v1\0");
+    for component in parent.components() {
+        hash.update(&(component.as_bytes().len() as u64).to_le_bytes());
+        hash.update(component.as_bytes());
+    }
+    hash.update(&(name.as_bytes().len() as u64).to_le_bytes());
+    hash.update(name.as_bytes());
+    *hash.finalize().as_bytes()
 }
 
 #[cfg(feature = "test-support")]
@@ -33,17 +39,98 @@ fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing:
     })
 }
 
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct FixtureObject {
+    device: u64,
+    object: u64,
+    birth_ns: Option<i128>,
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Default)]
+struct FixtureVersions {
+    identities: std::collections::HashMap<FixtureObject, [u8; 32]>,
+    ordinals: std::collections::HashMap<([u8; 32], SourceVersion), u64>,
+    next: std::collections::HashMap<[u8; 32], u64>,
+}
+
+#[cfg(feature = "test-support")]
+fn fixture_versions() -> &'static std::sync::Mutex<FixtureVersions> {
+    static VERSIONS: std::sync::OnceLock<std::sync::Mutex<FixtureVersions>> =
+        std::sync::OnceLock::new();
+    VERSIONS.get_or_init(|| std::sync::Mutex::new(FixtureVersions::default()))
+}
+
+/// A fixture identity is the first logical name observed for one physical
+/// object. Every alias of that object shares it, and a rename keeps it, while
+/// a replacement is a new object with a new identity. The physical key is the
+/// host's, so a replay's recreated files each get the identity of the name
+/// they are first observed under, independent of the host's inode numbers.
+#[cfg(feature = "test-support")]
+fn fixture_identity(path: &[u8], metadata: &HostStat) -> Option<[u8; 32]> {
+    fixture_times(metadata)?;
+    let identity = metadata.identity();
+    let object = FixtureObject {
+        device: identity.device,
+        object: identity.object,
+        birth_ns: metadata.birth_time().and_then(system_time_nanos),
+    };
+    let mut versions = fixture_versions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Some(*versions.identities.entry(object).or_insert_with(|| {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic-fs-native-file-fixture-v2\0");
+        hash.update(path);
+        hash.update(&metadata.len().to_le_bytes());
+        *hash.finalize().as_bytes()
+    }))
+}
+
+/// A fixture version is the object's identity plus the ordinal of its physical
+/// state in this replay. The ordinal is assigned on first observation, so a
+/// recreated world sees the same sequence, while an in-place edit or a
+/// replacement advances it. The host's actual timestamps only select the
+/// state; they never enter the value.
+#[cfg(feature = "test-support")]
+fn fixture_version(path: &[u8], metadata: &HostStat) -> Option<SourceVersion> {
+    let identity = fixture_identity(path, metadata)?;
+    let state = physical_version(metadata);
+    let mut versions = fixture_versions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = (identity, state);
+    let ordinal = match versions.ordinals.get(&key).copied() {
+        Some(ordinal) => ordinal,
+        None => {
+            let next = versions.next.entry(identity).or_default();
+            let ordinal = *next;
+            *next = next.saturating_add(1);
+            versions.ordinals.insert(key, ordinal);
+            ordinal
+        }
+    };
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic-fs-native-source-version-fixture-v2\0");
+    hash.update(&identity);
+    hash.update(&ordinal.to_le_bytes());
+    Some(SourceVersion(*hash.finalize().as_bytes()))
+}
+
 fn version(path: &[u8], metadata: &HostStat) -> SourceVersion {
     #[cfg(feature = "test-support")]
-    if let Some(times) = fixture_times(metadata) {
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic-fs-native-source-version-v1\0");
-        hash.update(&metadata.len().to_le_bytes());
-        hash.update(path);
-        hash.update(&times.modified_ns.unwrap_or_default().to_le_bytes());
-        hash.update(&times.changed_ns.unwrap_or_default().to_le_bytes());
-        return SourceVersion(*hash.finalize().as_bytes());
+    if let Some(version) = fixture_version(path, metadata) {
+        return version;
     }
+    #[cfg(not(feature = "test-support"))]
+    let _ = path;
+    physical_version(metadata)
+}
+
+/// The host's own change token: length, identity and timestamps. It is never
+/// written into a replay trace; fixture versions above are.
+pub(crate) fn physical_version(metadata: &HostStat) -> SourceVersion {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-version-v1\0");
     hash.update(&metadata.len().to_le_bytes());
@@ -77,13 +164,11 @@ fn version(path: &[u8], metadata: &HostStat) -> SourceVersion {
 #[cfg(unix)]
 pub(crate) fn file_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
     #[cfg(feature = "test-support")]
-    if fixture_times(metadata).is_some() {
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic-fs-native-source-file-fixture-v1\0");
-        hash.update(path);
-        hash.update(&metadata.len().to_le_bytes());
-        return *hash.finalize().as_bytes();
+    if let Some(identity) = fixture_identity(path, metadata) {
+        return identity;
     }
+    #[cfg(not(feature = "test-support"))]
+    let _ = path;
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-file-v1\0");
     hash.update(&(metadata.raw.st_dev as u64).to_le_bytes());
@@ -103,13 +188,11 @@ pub(crate) fn file_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
 #[cfg(windows)]
 pub(crate) fn file_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
     #[cfg(feature = "test-support")]
-    if fixture_times(metadata).is_some() {
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic-fs-native-source-file-fixture-v1\0");
-        hash.update(path);
-        hash.update(&metadata.len().to_le_bytes());
-        return *hash.finalize().as_bytes();
+    if let Some(identity) = fixture_identity(path, metadata) {
+        return identity;
     }
+    #[cfg(not(feature = "test-support"))]
+    let _ = path;
     windows_file_identity(
         u64::from(metadata.volume_serial_number),
         metadata.raw.FileId.cast_unsigned(),
