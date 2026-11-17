@@ -471,7 +471,8 @@ fn shared_host_survives_first_owner_tree_retirement()
             root.as_os_str().as_bytes()
         }) {
             // SAFETY: a NUL-terminated path and a detach flag.
-            unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
+            let detached = unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
+            eprintln!("DETACH {} => {} {:?}", root.display(), detached, std::io::Error::last_os_error());
         }
     }
     Ok(())
