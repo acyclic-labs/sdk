@@ -28,22 +28,23 @@ rust_library(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     deps = [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/stream:acyclic_stream",
-        "@crates//base64_0_23_1-0.23.1",
-        "@crates//bytes-1.12.1",
-        "@crates//ed25519-dalek-3.0.0",
-        "@crates//futures-0.3.34",
-        "@crates//http-1.5.0",
-        "@crates//p256-0.14.0",
-        "@crates//reqwest_0_12_28-0.12.28",
-        "@crates//ring-0.17.14",
-        "@crates//serde-1.0.229",
-        "@crates//serde_json-1.0.154",
+        "@sdk_crates//base64_0_23_1-0.23.1",
+        "@sdk_crates//bytes-1.12.1",
+        "@sdk_crates//ed25519-dalek-3.0.0",
+        "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//http-1.5.0",
+        "@sdk_crates//p256-0.14.0",
+        "@sdk_crates//reqwest_0_12_28-0.12.28",
+        "@sdk_crates//ring-0.17.14",
+        "@sdk_crates//serde-1.0.229",
+        "@sdk_crates//serde_json-1.0.154",
     ],
     visibility = ["//visibility:public"],
 )
@@ -60,6 +61,7 @@ rust_test(
         "--check-cfg=cfg(fuzzing)",
         "--check-cfg=cfg(loom)",
         "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
@@ -70,8 +72,20 @@ isolated_test(
     name = "acyclic_harness_oidc_test",
     binary = ":acyclic_harness_oidc_test_cases",
     id = "acyclic-harness-oidc",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
     tags = ["no-sandbox"],
+)
+
+isolated_test(
+    name = "acyclic_harness_oidc_test_full-cloud",
+    binary = ":acyclic_harness_oidc_test_cases",
+    id = "acyclic-harness-oidc",
+    only = "::full_cloud::",
+    wrapper = "//:scripts/full-cloud-test.sh",
+    wrapper_data = ["//:scripts/local-cloud.mjs"],
+    limit_seconds = 10,
+    tags = ["manual","no-sandbox"],
 )
 
 filegroup(
@@ -80,6 +94,8 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",
