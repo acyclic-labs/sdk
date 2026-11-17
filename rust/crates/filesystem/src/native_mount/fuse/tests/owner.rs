@@ -455,16 +455,6 @@ fn shared_host_survives_first_owner_tree_retirement()
     assert_eq!(std::fs::read(parent_root.path().join("parent"))?, b"before");
     // Retire the first owner's whole process tree, including its descendants.
     tree.terminate(None)?;
-    // The first owner's mount outlives its process tree. Detach it so the
-    // shared host sees the last session leave and the temporary directory is
-    // no longer a live mount when the test runner removes it.
-    if let Ok(path) = std::ffi::CString::new({
-        use std::os::unix::ffi::OsStrExt as _;
-        child_root.path().as_os_str().as_bytes()
-    }) {
-        // SAFETY: a NUL-terminated path and a detach flag.
-        unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
-    }
     std::fs::write(parent_root.path().join("parent"), b"after")?;
     assert_eq!(std::fs::read(parent_root.path().join("parent"))?, b"after");
     // The host belongs to the last attached session. Dropping this one is the
@@ -473,6 +463,16 @@ fn shared_host_survives_first_owner_tree_retirement()
     let host_exit = process_event(host, false)?;
     drop(session);
     wait_exit(&host_exit)?;
+    // The first owner's mount outlives its tree and its shared host. Detach
+    // the now-dead mount so the temporary directory is not a live mount when
+    // the test runner removes it.
+    if let Ok(path) = std::ffi::CString::new({
+        use std::os::unix::ffi::OsStrExt as _;
+        child_root.path().as_os_str().as_bytes()
+    }) {
+        // SAFETY: a NUL-terminated path and a detach flag.
+        unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
+    }
     Ok(())
 }
 
