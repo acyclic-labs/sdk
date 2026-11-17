@@ -91,14 +91,46 @@ fn host_is_owned(pid: Pid) -> bool {
     let Ok(host_exe) = sys::open(exe, sys::O_RDONLY | sys::O_CLOEXEC) else {
         return false;
     };
-    let host_identity = sys::file_identity(host_exe);
-    sys::close(host_exe);
     let Ok(self_exe) = sys::open(c"/proc/self/exe", sys::O_RDONLY | sys::O_CLOEXEC) else {
+        sys::close(host_exe);
         return false;
     };
-    let self_identity = sys::file_identity(self_exe);
+    let same = same_executable(host_exe, self_exe);
+    sys::close(host_exe);
     sys::close(self_exe);
-    host_identity.is_ok() && host_identity == self_identity
+    same
+}
+
+/// The runner image is a sealed memory file created independently by each
+/// launch, so its inode is not shared. Its bytes are: compare the executable
+/// contents the kernel exposes for both processes.
+#[cfg(target_os = "linux")]
+fn same_executable(left: Fd, right: Fd) -> bool {
+    let mut left_buffer = [0_u8; 4096];
+    let mut right_buffer = [0_u8; 4096];
+    loop {
+        let left_read = match sys::read(left, &mut left_buffer) {
+            Ok(read) => read,
+            Err(Errno(sys::EINTR)) => continue,
+            Err(_) => return false,
+        };
+        let mut right_read = 0;
+        while right_read < left_read {
+            match sys::read(right, &mut right_buffer[right_read..left_read]) {
+                Ok(0) => return false,
+                Ok(read) => right_read += read,
+                Err(Errno(sys::EINTR)) => {}
+                Err(_) => return false,
+            }
+        }
+        if left_buffer.get(..left_read) != right_buffer.get(..left_read) {
+            return false;
+        }
+        if left_read == 0 {
+            let mut extra = [0_u8; 1];
+            return matches!(sys::read(right, &mut extra), Ok(0));
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
