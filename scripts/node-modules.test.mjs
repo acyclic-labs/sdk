@@ -34,14 +34,16 @@ local_path_override(module_name = "dependency", path = "dependency")
     const run = (...args) => execFileSync(bazelCommand(), ["--batch", `--output_base=${join(root, "output")}`, ...args], {
       cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     });
-    run("build", "--remote_download_outputs=toplevel", "@dependency//:runtime");
+    const symlinkPrefix = join(root, "bazel-");
+    run("build", `--symlink_prefix=${symlinkPrefix}`, "--remote_download_outputs=toplevel", "@dependency//:runtime");
     const output = run("cquery", "@dependency//:runtime", "--output=files").trim();
-    const executionRoot = run("info", "execution_root").trim();
-    assert.deepEqual(readdirSync(join(executionRoot, output), { recursive: true }).sort(), [
+    assert.ok(output.startsWith("bazel-out/"), `unexpected output path: ${output}`);
+    const outputDirectory = join(`${symlinkPrefix}out`, output.slice("bazel-out/".length));
+    assert.deepEqual(readdirSync(outputDirectory, { recursive: true }).map(file => file.replaceAll("\\", "/")).sort(), [
       "@scope", "@scope/pkg", "@scope/pkg/package.json", "@scope/pkg/src", "@scope/pkg/src/index.ts",
     ].sort());
     for (const file of ["package.json", "src/index.ts"]) {
-      assert.equal(readFileSync(join(executionRoot, output, "@scope/pkg", file), "utf8"), readFileSync(join(dependency, "pkg", file), "utf8"));
+      assert.equal(readFileSync(join(outputDirectory, "@scope/pkg", file), "utf8"), readFileSync(join(dependency, "pkg", file), "utf8"));
     }
   } finally {
     if (existsSync(join(root, "output"))) makeDirectoriesWritable(join(root, "output"));
