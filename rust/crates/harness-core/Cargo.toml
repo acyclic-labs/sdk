@@ -41,12 +41,13 @@ path = "tests/computed_ui_records.rs"
 [features]
 research = ["acyclic-observability/research"]
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance", "acyclic-machines/conformance"]
-test-support = ["acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
+test-support = ["acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
 model-checking = ["acyclic-mcp/model-checking", "dep:loom", "dep:same-file", "acyclic-fs/model-checking"]
 browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-stream/wasm", "dep:tsify"]
 
 [dependencies]
+acyclic-harness-layout = { version = "=0.2.0", path = "../harness-layout" }
 memchr = "=2.8.3"
 pulldown-cmark.workspace = true
 tar = { version = "=0.4.46", default-features = false }
@@ -136,6 +137,7 @@ hyper = { version = "1", default-features = false }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "process"] }
 
 [dev-dependencies]
+acyclic-harness-layout = { version = "=0.2.0", path = "../harness-layout", features = ["test-support"] }
 acyclic-actors = { version = "=0.2.0", path = "../actors", features = ["conformance"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }

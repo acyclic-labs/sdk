@@ -27,6 +27,7 @@
   "acyclic-harness-tui",
   "acyclic-model-render",
   "acyclic-mcp",
+  "acyclic-harness-layout",
   "acyclic-harness-core",
   "acyclic-harness-client",
   "acyclic-harness-hosting",

@@ -1002,9 +1002,9 @@ fn buffered_escaped_strings_reserve_every_copy() {
     // outer buffer owns unreserved.
     fn capped<T: crate::HeapLayout>(cap: u64, value: &impl Serialize) -> u64 {
         let bytes = serde_json::to_vec(value).unwrap();
-        super::layout::tests::COPY_CAP.set(cap);
+        super::layout::test_support::COPY_CAP.set(cap);
         let reserved = layout_reservation::<T>(&bytes);
-        super::layout::tests::COPY_CAP.set(u64::MAX);
+        super::layout::test_support::COPY_CAP.set(u64::MAX);
         reserved.unwrap()
     }
     for (reserved, peak) in [
@@ -1030,9 +1030,9 @@ fn rejected_strings_reserve_their_error_message() {
     let (_, peak) = assert_layout_covers_decode(&value);
     // Negative control: without the message the reservation falls short.
     let bytes = serde_json::to_vec(&value).unwrap();
-    super::layout::tests::MESSAGES.set(false);
+    super::layout::test_support::MESSAGES.set(false);
     let reserved = layout_reservation::<Choice>(&bytes);
-    super::layout::tests::MESSAGES.set(true);
+    super::layout::test_support::MESSAGES.set(true);
     let reserved = reserved.unwrap();
     assert!(reserved < peak, "{reserved} reserved / {peak} decode peak");
 }
@@ -1059,9 +1059,9 @@ fn flattened_maps_reserve_every_record_tree() {
     // Negative control: without the flattened trees the reservation falls
     // short of the measured decode.
     let bytes = serde_json::to_vec(&records).unwrap();
-    super::layout::tests::FLATTENED.set(false);
+    super::layout::test_support::FLATTENED.set(false);
     let reserved = layout_reservation::<Vec<Record>>(&bytes);
-    super::layout::tests::FLATTENED.set(true);
+    super::layout::test_support::FLATTENED.set(true);
     let reserved = reserved.unwrap();
     assert!(reserved < peak, "{reserved} reserved / {peak} decode peak");
 }
