@@ -17,8 +17,8 @@ rust_test(
     name = "ready_cases",
     crate_root = "src/ready.rs",
     srcs = [
+        "//rust/crates/filesystem-base:src/ready.rs",
         "src/ready.rs",
-        "//rust/crates/filesystem:src/native_mount/shared/ready.rs",
     ],
     edition = "2024",
     version = "0.2.0",

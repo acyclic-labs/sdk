@@ -10,9 +10,9 @@
 //! invalidation for every view runs on one thread.
 
 use super::*;
-use crate::native_mount::shared::ready::ReadyViews;
 use crate::native_mount::shared::view_table::ViewLease;
 use crate::native_mount::shared::views::{NamedView, NamedViews};
+use acyclic_fs_base::ready::ReadyViews;
 use std::sync::Condvar;
 use std::sync::atomic::AtomicBool;
 
