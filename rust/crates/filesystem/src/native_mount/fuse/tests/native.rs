@@ -485,14 +485,14 @@ pub(super) fn measured_write_copy_refusal_precedes_the_real_source_write()
     opened.write_range(0, Bytes::from_static(b"original"))?;
     let cancellation = crate::CancellationToken::new();
     let mut budget = FINITE_HANDLER_POLICY;
-    budget.bytes_copied = 0;
+    budget.bytes_copied = 3;
     let failure = crate::native_mount::run_native_mount_handler(budget, &cancellation, |work| {
-        let bytes = crate::native_mount::fuse::fuse_source_chunk(b"replacement", work)?;
+        let bytes = crate::native_mount::shared::input::source_chunk(b"replacement", work)?;
         opened
             .write_range_with_meter(0, bytes, false, work)
             .map_err(crate::NativeMountError::Source)
     })
-    .expect_err("zero copied-byte authority must refuse the packet before source mutation");
+    .expect_err("insufficient copied-byte authority must refuse the whole packet before copying");
     assert_eq!(failure.1.bytes_copied, 0);
     assert_eq!(failure.1.backend_write_operations, 0);
     assert_eq!(opened.read_range(0, 8)?.as_ref(), b"original");

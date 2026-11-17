@@ -72,6 +72,7 @@ use requests::*;
 mod protocol;
 use protocol::*;
 
+use super::shared::input::source_chunk;
 mod allocation;
 use allocation::*;
 

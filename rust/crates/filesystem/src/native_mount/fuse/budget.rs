@@ -186,31 +186,6 @@ pub(super) fn fuse_copy_bytes(
     Ok(copied)
 }
 
-pub(super) fn fuse_source_chunk(
-    bytes: &[u8],
-    work: &NativeMaterializationWork,
-) -> Result<crate::kernel::OwnedSourceChunk, NativeMountError> {
-    let copied = fuse_copy_bytes(bytes, work)?;
-    let logical_owned_bytes = copied.capacity() as u64;
-    let owned = acyclic_stream::OwnedBytes::from_vec_with_guard(
-        copied.value,
-        copied.custody,
-        work.runtime_meter(),
-    )
-    .map_err(|failure| match failure.into_error() {
-        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-            NativeMountError::from(work.runtime_error(error))
-        }
-        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-            unreachable!("initialized vector")
-        }
-    })?;
-    Ok(crate::kernel::OwnedSourceChunk::intrinsic(
-        owned,
-        logical_owned_bytes,
-    ))
-}
-
 pub(super) fn fuse_path<'a>(
     capacity: usize,
     components: impl Iterator<Item = &'a [u8]>,

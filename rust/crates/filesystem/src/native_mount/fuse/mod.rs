@@ -58,6 +58,7 @@ use libc::{
 const DETACHED_COPY_CHUNK_BYTES: u32 = 1024 * 1024;
 const MAXIMUM_DIRECTORY_STREAMS: usize = 256;
 
+use super::shared::input::source_chunk;
 mod budget;
 use budget::*;
 
