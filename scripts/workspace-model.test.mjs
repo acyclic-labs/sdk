@@ -225,7 +225,8 @@ test('registry dependencies are selected from the current Cargo lock', t => {
   const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
   write('Cargo.toml', '[workspace]\nmembers=["app"]\n');
   write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nnew_crate="1"\n');
-  write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["new_crate"]\n[[package]]\nname="new_crate"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
+  write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["new_crate 1.0.0"]\n' +
+    ['1.0.0', '1.1.0'].map(version => `[[package]]\nname="new_crate"\nversion="${version}"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n`).join(''));
   write('cargo-bazel.Cargo.lock', 'version=4\n[[package]]\nname="direct-cargo-bazel-deps"\nversion="0.0.1"\n');
   write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {}}));
   assert.throws(() => assertRegistryPinsCurrent(root), /new_crate.*1\.0\.0.*repin/i);
