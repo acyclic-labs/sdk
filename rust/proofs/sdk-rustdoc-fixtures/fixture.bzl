@@ -80,6 +80,7 @@ def _rustdoc_fixture_impl(ctx):
         arguments = [args],
         inputs = depset([file for file, _ in sources] + [ctx.file._rustup], transitive = tool_inputs),
         env = linker_env,
+        use_default_shell_env = ctx.attr.needs_linker,
         outputs = [output],
         mnemonic = "FixtureRustdoc",
         progress_message = "Building Rustdoc fixture %{label}",
