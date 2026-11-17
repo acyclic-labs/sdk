@@ -7,57 +7,10 @@ import { fileURLToPath } from "node:url";
 import { checkByteSnapshotBoundary } from "./wasm-source-policy.mjs";
 import { packageClosure } from "./package-closure.mjs";
 import { copyWasmArtifacts, isWasmArtifactPath } from "./archive-utils.mjs";
-import { nativeFamily } from "./native-family.mjs";
+import { wasmPackages, wasmSelection } from "./wasm-packages.mjs";
 import { generationKey, memoizedGeneration } from "./generation-cache.mjs";
 import { memberDirectory } from "./workspace-manifests.mjs";
 import { recordGeneration } from "./generated-bindings.mjs";
-
-const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen_(?:[0-9a-f]+)?_+convert__closures_+invoke_[^:\s]*:.*\r?\n/gm;
-const stripHarnessClosureShims = output => {
-  for (const name of ["acyclic_harness_wasm.d.ts", "acyclic_harness_wasm_bg.wasm.d.ts"]) {
-    const declaration = resolve(output, name);
-    const source = readFileSync(declaration, "utf8");
-    const normalized = source.replace(closureInvokeShim, "");
-    if (normalized !== source) writeFileSync(declaration, normalized);
-  }
-};
-
-/** Every published WASM package. Building and checking both read this one table. */
-export const wasmPackages = {
-  auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm" },
-  actors: { family: true },
-  filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
-  stream: { family: true },
-  objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
-  manifest: { cargo: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers" },
-  machines: {
-    cargo: ["-p", "acyclic-machines-wasm"],
-    artifact: "acyclic_machines_wasm",
-  },
-  inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm" },
-  harness: {
-    cargo: ["-p", "acyclic-harness-providers", "--features", "wasm-journal"],
-    artifact: "acyclic_harness_providers",
-    outName: "acyclic_harness_wasm",
-    postprocess: stripHarnessClosureShims,
-    targetDirectory: "harness-wasm",
-  },
-};
-
-/** The Cargo selection and outputs of one package; a native family reads its committed provenance. */
-export function wasmSelection(name) {
-  const entry = wasmPackages[name];
-  if (!entry.family) {
-    const { cargo: selection, artifact, outName = artifact, postprocess, targetDirectory } = entry;
-    return { selection, artifact, outName, postprocess, targetDirectory };
-  }
-  const family = nativeFamily(name);
-  const { artifact, outName, targetDirectory } = family.wasm;
-  const selection = ["-p", family.wasmPackageName,
-    ...(family.wasm.noDefaultFeatures ? ["--no-default-features"] : []),
-    ...(family.wasm.features.length ? ["--features", family.wasm.features.join(",")] : [])];
-  return { selection, artifact, outName, targetDirectory, family };
-}
 
 const packages = wasmPackages;
 
@@ -89,14 +42,8 @@ async function buildWasm() {
   if (!pinned) throw new Error("Cargo.toml no longer pins wasm-bindgen to an exact version");
   const expectedVersion = `wasm-bindgen ${pinned}`;
   const cargoHome = resolve(process.env.CARGO_HOME ?? join(homedir(), ".cargo"));
-  const resolveWasmBindgen = () => {
-    const explicit = wasmBindgenArgument || process.env.ACYCLIC_WASM_BINDGEN_BIN;
-    if (explicit) return explicit;
-    if (capture("wasm-bindgen", ["--version"]) === expectedVersion) return "wasm-bindgen";
-    if (process.platform === "win32") return resolve(cargoHome, "bin", "wasm-bindgen.exe");
-    return capture("bash", [resolve(root, "scripts", "ensure-wasm-bindgen.sh")]);
-  };
-  const wasmBindgen = resolveWasmBindgen();
+  const wasmBindgen = wasmBindgenArgument || process.env.ACYCLIC_WASM_BINDGEN_BIN
+    || capture("bash", [resolve(root, "scripts", "ensure-wasm-bindgen.sh")]);
   if (!wasmBindgen || capture(wasmBindgen, ["--version"]) !== expectedVersion) {
     throw new Error(`${expectedVersion} is required to build WASM packages`);
   }
@@ -110,7 +57,7 @@ async function buildWasm() {
   // strips CARGO_PROFILE_DEV_* still produces the same module and key as the SDK's published dev build.
   if (profile === "dev") process.env.CARGO_PROFILE_DEV_DEBUG = "0";
 
-  const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("./archive-utils.mjs", import.meta.url)), readFileSync(new URL("./wasm-source-policy.mjs", import.meta.url))]);
+  const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("./wasm-packages.mjs", import.meta.url)), readFileSync(new URL("./archive-utils.mjs", import.meta.url)), readFileSync(new URL("./wasm-source-policy.mjs", import.meta.url))]);
 
   const grouped = process.env.ACYCLIC_WASM_GROUPS_PREPARED === "1";
   const targets = grouped ? [packageArgument] : packageArgument

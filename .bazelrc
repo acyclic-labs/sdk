@@ -31,3 +31,7 @@ test --test_env=PATH --test_env=RUSTUP_HOME --test_env=CARGO_HOME
 # ("Operation not permitted"). Tests on macOS therefore run outside it, as under Cargo.
 common --enable_platform_specific_config
 test:macos --strategy=TestRunner=local
+
+# The wasm crate universe is a separate extension usage: its feature resolution must not merge
+# with the host universe.
+common --experimental_isolated_extension_usages

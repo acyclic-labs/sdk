@@ -129,6 +129,7 @@ const follow = (async () => {
 })();
 let returned = false;
 let releaseReconnect: (() => void) | undefined;
+let reconnecting: (() => void) | undefined;
 let connecting = false;
 async function command(action: string): Promise<unknown> {
   switch (action) {
@@ -154,13 +155,18 @@ async function command(action: string): Promise<unknown> {
       stoppedAt ??= seen;
       if (timerActive) { timerActive = false; callback!(); }
       break;
-    case "reconnect":
+    case "reconnect": {
+      const reconnected = new Promise<void>(resolve => { reconnecting = resolve; });
       peer.beforeConnect = async () => {
         connecting = true;
+        reconnecting?.();
         await new Promise<void>(resolve => { releaseReconnect = resolve; });
       };
       peer.disconnect();
+      // The reconnection is the event under test; wait for it instead of a fixed tick.
+      await reconnected;
       break;
+    }
     case "releaseReconnect": peer.beforeConnect = undefined; releaseReconnect?.(); break;
     case "cleanup": cleanup = true; stoppedAt ??= seen; cancel.abort(); break;
     case "finish":

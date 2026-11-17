@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { nativeFamily } from "../native-family.mjs";
+import { nativeFamily } from "../native-family-contract.mjs";
 
 /** Synthetic archive evidence only; these bytes do not qualify a WASM runtime. */
 export async function writeWasmReceiptFixture(parent, key, source, inventory) {
