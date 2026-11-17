@@ -571,8 +571,9 @@ name = "decoy-owner"
         )
         .unwrap();
         let mut command = cargo_metadata::MetadataCommand::new();
+        let cargo = std::path::PathBuf::from(acyclic_test_support::host_tool!("CARGO"));
         crate::rustdoc_profiles::CargoExecutionContext {
-            cargo_path: Some(&acyclic_test_support::fixture_compiler::binary("CARGO")),
+            cargo_path: Some(&cargo),
             lock_selection: None,
         }
         .configure_metadata(&mut command)

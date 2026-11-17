@@ -49,6 +49,9 @@ pub use render_cache::{read_rustdoc, read_rustdoc_json, rustdoc_worker, with_rus
 
 #[cfg(test)]
 fn with_fixture_compiler<T>(operation: impl FnOnce() -> T) -> T {
+    if std::env::var_os("CARGO_BIN_EXE_CARGO").is_none() {
+        return operation();
+    }
     let mut command =
         std::process::Command::new(acyclic_test_support::fixture_compiler::binary("CARGO"));
     acyclic_test_support::fixture_compiler::configure(&mut command);
