@@ -128,7 +128,7 @@ impl acyclic_harness_core::filesystem::TurnContext for ProjectTasks {
                     Arc::new(send_files::PausedPublisher {
                         inner: authority
                             .journal
-                            .output_content(turn)?
+                            .output_content(turn, None)?
                             .and_then(|content| content.writer)
                             .ok_or_else(|| {
                                 acyclic_harness_core::Error::Invalid(
