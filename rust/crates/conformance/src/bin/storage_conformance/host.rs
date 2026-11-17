@@ -4,9 +4,7 @@ use acyclic_objects::{
     Store,
     s3::{Capabilities as S3Capabilities, S3Medium},
 };
-use acyclic_stream::{
-    BoxProviderFuture, LocalStream, LocalStreamLimits, StreamProvider, postgres::PostgresStream,
-};
+use acyclic_stream::{BoxProviderFuture, LocalStream, LocalStreamLimits, postgres::PostgresStream};
 use std::{sync::Arc, time::Instant};
 
 #[path = "endpoint.rs"]
@@ -63,15 +61,17 @@ impl Storage for Domain {
     fn staging_directory(&self) -> &std::path::Path {
         self.directory.path()
     }
-    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>> {
+    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<acyclic_agent_host_conformance::Stream>>> {
         Box::pin(async move {
             match &self.providers.database {
                 Some(database) => Ok(Arc::new(
                     PostgresStream::connect(database, &self.namespace).await?,
-                ) as Arc<dyn StreamProvider>),
+                )
+                    as Arc<acyclic_agent_host_conformance::Stream>),
                 None => Ok(Arc::new(
                     LocalStream::open(self.directory.path(), LocalStreamLimits::default()).await?,
-                ) as Arc<dyn StreamProvider>),
+                )
+                    as Arc<acyclic_agent_host_conformance::Stream>),
             }
         })
     }

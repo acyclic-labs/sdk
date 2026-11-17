@@ -33,6 +33,18 @@ pub enum RequestClass {
     Token,
 }
 
+impl RequestClass {
+    /// A heads request's class: a pure child page enumerates a namespace,
+    /// every other heads request probes existence and tails.
+    pub fn of_heads(request: &crate::HeadsRequest) -> Self {
+        if request.paths.is_empty() && request.children.is_some() {
+            Self::List
+        } else {
+            Self::Head
+        }
+    }
+}
+
 /// An immutable ledger snapshot, or the difference between two snapshots.
 /// A component equal to `u64::MAX` has lost precision and stays unknown in
 /// subsequent deltas. These values never certify hidden physical work.

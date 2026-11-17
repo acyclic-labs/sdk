@@ -84,3 +84,130 @@ async fn counter_only_keeps_effects_and_dispatch_counts_without_request_retentio
     assert_eq!(samples[0], samples[1], "capture changed dispatch work");
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+/// One call of every native method, issued and dropped: a call is counted
+/// when it is made, before its future is polled.
+type NativeCall = fn(&dyn NativeStreamProvider, &Arc<dyn acyclic_native_runtime::NativeReadMeter>);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_calls() -> Vec<(&'static str, NativeCall)> {
+    fn path() -> StreamPath {
+        StreamPath::new("native-count").unwrap()
+    }
+    fn heads(children: bool) -> HeadsRequest {
+        HeadsRequest {
+            at: None,
+            retained: Default::default(),
+            durable_through: None,
+            projection: HeadProjection::Watermarks,
+            paths: Default::default(),
+            children: children.then(|| ChildrenPageRequest {
+                offset: 0,
+                tail_stream: None,
+                parent: Some(path()),
+                after: None,
+                hierarchy_version: None,
+                limit: 1,
+            }),
+            limit: 1,
+            at_least: RevisionCut::default(),
+        }
+    }
+    fn commit() -> CommitRequest {
+        CommitRequest {
+            deadline_unix_millis: None,
+            effects: Vec::new(),
+            idempotency_key: IdempotencyKey::unique(),
+        }
+    }
+    vec![
+        ("durability barrier", |p, m| {
+            drop(p.native_durability_barrier(m.clone()))
+        }),
+        ("prepared durability barrier", |p, m| {
+            drop(p.prepare_native_durability_barrier(m.clone()))
+        }),
+        ("inspect idempotency", |p, m| {
+            drop(p.native_inspect_idempotency(IdempotencyKey::unique(), m.clone()))
+        }),
+        ("tail", |p, m| drop(p.native_tail(path(), m.clone()))),
+        ("heads", |p, m| {
+            drop(p.native_heads(heads(false), m.clone()))
+        }),
+        ("child page", |p, m| {
+            drop(p.native_heads(heads(true), m.clone()))
+        }),
+        ("read", |p, m| {
+            drop(p.native_read(
+                ReadRequest {
+                    key: None,
+                    path: path(),
+                    from: 0,
+                    limit: 1,
+                    at_least: RevisionCut::default(),
+                },
+                m.clone(),
+            ))
+        }),
+        ("follow", |p, m| {
+            drop(p.native_follow(FollowRequest::new(path(), 0), m.clone()))
+        }),
+        ("write", |p, m| {
+            drop(p.native_write(WriteRequest::Commit(commit()), m.clone()))
+        }),
+        ("guarded commit", |p, m| {
+            let guard = NativeCommitGuard::new(Vec::new(), Box::new(|| Box::pin(async { Ok(()) })));
+            drop(p.native_commit_guarded(commit(), None, m.clone(), guard))
+        }),
+        ("prepared commit", |p, m| {
+            let capacity = PreparedRecordCapacity {
+                payload_bytes: 0,
+                keys: 0,
+                attributes: 0,
+            };
+            drop(p.native_prepare_commit(commit(), capacity, m.clone()))
+        }),
+    ]
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn every_native_forward_counts_like_the_provider_negative_control() -> Result {
+    let meter = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|_| "native work admission")?
+    .runtime_meter();
+    for capture in [true, false] {
+        let inner = Arc::new(Counted::new(MemoryStream::default()));
+        let dispatched = inner.ledger();
+        let observed = if capture {
+            Observed::capturing(inner.clone())
+        } else {
+            Observed::counters(inner.clone())
+        };
+        for (name, call) in native_calls() {
+            call(&observed, &meter);
+            assert_eq!(
+                observed.requests.requests(),
+                dispatched.requests(),
+                "native {name} skipped or misclassified the request ledger"
+            );
+        }
+        // Negative control: a forward that bypasses the observer's count is
+        // caught by the same comparison.
+        for (name, call) in native_calls() {
+            let before = observed.requests.requests();
+            call(&*inner, &meter);
+            assert_eq!(observed.requests.requests(), before);
+            assert_ne!(
+                observed.requests.requests(),
+                dispatched.requests(),
+                "an uncounted native {name} went unnoticed"
+            );
+        }
+    }
+    Ok(())
+}

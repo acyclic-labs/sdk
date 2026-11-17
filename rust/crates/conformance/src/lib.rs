@@ -15,7 +15,6 @@ pub mod runner;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
 use acyclic_objects::Blobs;
-use acyclic_stream::StreamProvider;
 #[cfg(test)]
 use acyclic_stream::StreamProviderExt as _;
 

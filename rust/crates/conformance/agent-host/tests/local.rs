@@ -4,7 +4,7 @@
 use acyclic_actors::guest::Handler;
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
 use acyclic_stream::{
-    BoxProviderFuture, LocalStream, LocalStreamLimits, StreamError, StreamPath, StreamProvider,
+    BoxProviderFuture, LocalStream, LocalStreamLimits, StreamError, StreamPath,
     StreamProviderExt as _, testing::Counted,
 };
 use std::sync::Arc;
@@ -21,11 +21,11 @@ impl Storage for Directory {
         Box::pin(async { Ok(acyclic_agent_host_conformance::Objects::memory()) })
     }
 
-    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>> {
+    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<acyclic_agent_host_conformance::Stream>>> {
         Box::pin(async move {
             Ok(
                 Arc::new(LocalStream::open(self.0.path(), LocalStreamLimits::default()).await?)
-                    as Arc<dyn StreamProvider>,
+                    as Arc<acyclic_agent_host_conformance::Stream>,
             )
         })
     }

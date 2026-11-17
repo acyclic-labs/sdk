@@ -22,7 +22,7 @@ mod vectors;
 mod wire;
 
 use acyclic_actors::guest::Handler;
-use acyclic_stream::{BoxProviderFuture, ProviderPlatform, StreamProvider};
+use acyclic_stream::{BoxProviderFuture, ProviderPlatform};
 use std::sync::Arc;
 
 pub use performance::{Measurement, Scale, ScaleMeasurement, bench, scale};
@@ -105,6 +105,15 @@ impl Objects {
     }
 }
 
+/// The provider a backend opens. Off wasm it carries the native surface, so a
+/// native filesystem consumer reaches the real provider, never a refusing
+/// default.
+#[cfg(not(target_arch = "wasm32"))]
+pub type Stream = dyn acyclic_stream::NativeStreamProvider;
+/// The provider a backend opens.
+#[cfg(target_arch = "wasm32")]
+pub type Stream = dyn acyclic_stream::StreamProvider;
+
 /// A fresh consistency domain. Every `open` must reopen the same durable data;
 /// no provider session or host survives a crash vector.
 pub trait Storage: ProviderPlatform {
@@ -112,7 +121,7 @@ pub trait Storage: ProviderPlatform {
     #[cfg(not(target_arch = "wasm32"))]
     fn staging_directory(&self) -> &std::path::Path;
     /// Open a new session on this vector's retained storage.
-    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>>;
+    fn open(&self) -> BoxProviderFuture<'_, Result<Arc<Stream>>>;
     /// Provision an empty object domain for the filesystem-backed vectors.
     fn objects(&self) -> BoxProviderFuture<'_, Result<Objects>>;
 }

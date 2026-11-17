@@ -19,7 +19,7 @@ enum FaultAt {
 }
 
 pub(crate) struct Observed {
-    pub inner: Arc<dyn StreamProvider>,
+    pub inner: Arc<super::Stream>,
     pub requests: RequestLedger,
     // A history-read sentinel, independent of the aggregate request budget.
     pub history_reads: AtomicUsize,
@@ -40,7 +40,7 @@ struct Capture {
 }
 
 impl Observed {
-    pub fn new(inner: Arc<dyn StreamProvider>) -> Self {
+    pub fn new(inner: Arc<super::Stream>) -> Self {
         Self {
             inner,
             requests: RequestLedger::new(),
@@ -57,7 +57,7 @@ impl Observed {
 
     /// Only the finite exact-retry vectors retain requests. Counter and scale
     /// workloads use `new`, with no history allocation, lock or request clone.
-    pub fn capturing(inner: Arc<dyn StreamProvider>) -> Self {
+    pub fn capturing(inner: Arc<super::Stream>) -> Self {
         Self {
             capture: Some(Mutex::default()),
             ..Self::new(inner)
@@ -65,7 +65,7 @@ impl Observed {
     }
 
     /// Count dispatches without retaining requests or consulting fault state.
-    pub fn counters(inner: Arc<dyn StreamProvider>) -> Self {
+    pub fn counters(inner: Arc<super::Stream>) -> Self {
         Self {
             counter_only: true,
             ..Self::new(inner)
@@ -131,6 +131,17 @@ impl Observed {
         *self.crash.lock().unwrap_or_else(|e| e.into_inner()) = Some((at, fault));
     }
 
+    /// The call-ordinal crash armed for this provider call, if any.
+    fn crash_fault(&self) -> Option<Fault> {
+        let at = self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut crash = self.crash.lock().unwrap_or_else(|e| e.into_inner());
+        if crash.as_ref().is_some_and(|(step, _)| *step == at) {
+            crash.take().map(|(_, fault)| fault)
+        } else {
+            None
+        }
+    }
+
     async fn io<T>(
         &self,
         operation: impl std::future::Future<Output = Result<T, StreamError>> + ProviderTask,
@@ -138,15 +149,7 @@ impl Observed {
         if self.counter_only {
             return operation.await;
         }
-        let at = self.calls.fetch_add(1, Ordering::SeqCst);
-        let fault = {
-            let mut crash = self.crash.lock().unwrap_or_else(|e| e.into_inner());
-            if crash.as_ref().is_some_and(|(step, _)| *step == at) {
-                crash.take().map(|(_, fault)| fault)
-            } else {
-                None
-            }
-        };
+        let fault = self.crash_fault();
         if matches!(fault, Some(Fault::Before)) {
             return Err(StreamError::Unavailable);
         }
@@ -166,6 +169,20 @@ impl Observed {
             | acyclic_stream::WriteRequest::CommitAccepted(request) => request,
             _ => return Err(StreamError::InvalidArgument),
         };
+        match self.commit_fault(request) {
+            Some(Fault::Before) => Err(StreamError::Unavailable),
+            Some(Fault::Refuse) => Err(StreamError::AccessDenied),
+            Some(Fault::After) => {
+                self.inner.write(command).await?;
+                Err(StreamError::Unavailable)
+            }
+            None => self.inner.write(command).await,
+        }
+    }
+
+    /// Captures one commit and selects the fault armed for it, at the same
+    /// boundary on the portable and native paths.
+    fn commit_fault(&self, request: &CommitRequest) -> Option<Fault> {
         let index = if let Some(capture) = &self.capture {
             let mut capture = capture.lock().unwrap_or_else(|error| error.into_inner());
             // Keep captured order and fault ordinals at the same boundary even
@@ -178,25 +195,14 @@ impl Observed {
         } else {
             self.commit_count.fetch_add(1, Ordering::SeqCst)
         };
-        let fault = {
-            let mut fault = self.fault.lock().unwrap_or_else(|e| e.into_inner());
-            if fault.as_ref().is_some_and(|(at, _)| match at {
-                FaultAt::Index(at) => *at == index,
-                FaultAt::Matching(matches) => matches(request),
-            }) {
-                fault.take().map(|(_, fault)| fault)
-            } else {
-                None
-            }
-        };
-        match fault {
-            Some(Fault::Before) => Err(StreamError::Unavailable),
-            Some(Fault::Refuse) => Err(StreamError::AccessDenied),
-            Some(Fault::After) => {
-                self.inner.write(command).await?;
-                Err(StreamError::Unavailable)
-            }
-            None => self.inner.write(command).await,
+        let mut fault = self.fault.lock().unwrap_or_else(|e| e.into_inner());
+        if fault.as_ref().is_some_and(|(at, _)| match at {
+            FaultAt::Index(at) => *at == index,
+            FaultAt::Matching(matches) => matches(request),
+        }) {
+            fault.take().map(|(_, fault)| fault)
+        } else {
+            None
         }
     }
 }
@@ -219,12 +225,7 @@ impl StreamProvider for Observed {
         &self,
         request: acyclic_stream::HeadsRequest,
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
-        self.requests
-            .record(if request.paths.is_empty() && request.children.is_some() {
-                RequestClass::List
-            } else {
-                RequestClass::Head
-            });
+        self.requests.record(RequestClass::of_heads(&request));
         self.io(self.inner.heads(request)).await
     }
     fn write(
@@ -288,8 +289,207 @@ impl StreamProvider for Observed {
     }
 }
 
+/// Native calls reach the same provider as portable ones, with the same
+/// request ledger, call-ordinal crashes and commit faults. A native consumer
+/// therefore never meets a refusing default in place of the real provider, and
+/// the explicit trait makes every native method a required forward.
 #[cfg(not(target_arch = "wasm32"))]
-impl acyclic_stream::NativeStreamProvider for Observed {}
+impl Observed {
+    /// Records one native call: its request class, and a history read.
+    fn count(&self, call: Native) {
+        self.requests.record(call.class);
+        if call.history && !self.counter_only {
+            self.history_reads.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// The one native forward: it counts the call before the inner call is
+    /// made, then applies the armed crash and commit faults. Every native
+    /// method goes through it, so a forwarded call cannot skip the ledger.
+    fn native<'a, T: Send + 'a, E: From<StreamError> + Send + 'a>(
+        &'a self,
+        call: Native,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        commit: Option<CommitRequest>,
+        forward: impl FnOnce(
+            Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        ) -> NativeProviderFuture<'a, T, E>,
+    ) -> NativeProviderFuture<'a, T, E> {
+        self.count(call);
+        let operation = forward(Arc::clone(&meter));
+        self.faulted(&meter, commit, operation)
+    }
+
+    fn faulted<'a, T: Send + 'a, E: From<StreamError> + Send + 'a>(
+        &'a self,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        commit: Option<CommitRequest>,
+        operation: NativeProviderFuture<'a, T, E>,
+    ) -> NativeProviderFuture<'a, T, E> {
+        if self.counter_only {
+            return operation;
+        }
+        NativeProviderFuture::new(meter, async move {
+            let crash = self.crash_fault();
+            if matches!(crash, Some(Fault::Before)) {
+                return Ok(Err(StreamError::Unavailable.into()));
+            }
+            let result = match commit
+                .as_ref()
+                .and_then(|request| self.commit_fault(request))
+            {
+                Some(Fault::Before) => return Ok(Err(StreamError::Unavailable.into())),
+                Some(Fault::Refuse) => return Ok(Err(StreamError::AccessDenied.into())),
+                Some(Fault::After) => match operation.await? {
+                    Ok(_) => Ok(Err(StreamError::Unavailable.into())),
+                    Err(error) => Ok(Err(error)),
+                },
+                None => operation.await,
+            };
+            if matches!(crash, Some(Fault::After)) {
+                return Ok(Err(StreamError::Unavailable.into()));
+            }
+            result
+        })
+    }
+}
+
+/// What a native call records: its request class, and whether it reads history.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+struct Native {
+    class: RequestClass,
+    history: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Native {
+    const DATA: Self = Self::of(RequestClass::Data);
+    const HISTORY: Self = Self {
+        class: RequestClass::Data,
+        history: true,
+    };
+    const fn of(class: RequestClass) -> Self {
+        Self {
+            class,
+            history: false,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::ExplicitNativeStreamProvider for Observed {
+    fn native_durability_barrier(
+        &self,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, ()> {
+        self.native(Native::DATA, meter, None, |meter| {
+            self.inner.native_durability_barrier(meter)
+        })
+    }
+    fn prepare_native_durability_barrier(
+        &self,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<NativeProviderFuture<'_, ()>> {
+        // Counted before preparation, so a refused preparation still counts,
+        // as it does at the provider.
+        self.count(Native::DATA);
+        let operation = self
+            .inner
+            .prepare_native_durability_barrier(Arc::clone(&meter))?;
+        Ok(self.faulted(&meter, None, operation))
+    }
+    fn native_inspect_idempotency(
+        &self,
+        key: IdempotencyKey,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
+        self.native(Native::of(RequestClass::Metadata), meter, None, |meter| {
+            self.inner.native_inspect_idempotency(key, meter)
+        })
+    }
+    fn native_tail(
+        &self,
+        path: StreamPath,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, u64> {
+        self.native(Native::of(RequestClass::Head), meter, None, |meter| {
+            self.inner.native_tail(path, meter)
+        })
+    }
+    fn native_heads(
+        &self,
+        request: HeadsRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, Heads> {
+        let call = Native::of(RequestClass::of_heads(&request));
+        self.native(call, meter, None, |meter| {
+            self.inner.native_heads(request, meter)
+        })
+    }
+    fn native_read(
+        &self,
+        request: ReadRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, NativeRecordStream> {
+        self.native(Native::HISTORY, meter, None, |meter| {
+            self.inner.native_read(request, meter)
+        })
+    }
+    fn native_follow(
+        &self,
+        request: FollowRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, NativeRecordStream> {
+        self.capture(|capture| capture.follows.push((request.path.clone(), request.from)));
+        self.native(Native::HISTORY, meter, None, |meter| {
+            self.inner.native_follow(request, meter)
+        })
+    }
+    fn native_write(
+        &self,
+        request: WriteRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, WriteOutcome> {
+        let commit = match &request {
+            WriteRequest::Commit(commit) | WriteRequest::CommitAccepted(commit)
+                if !self.counter_only =>
+            {
+                Some(commit.clone())
+            }
+            _ => None,
+        };
+        self.native(Native::DATA, meter, commit, |meter| {
+            self.inner.native_write(request, meter)
+        })
+    }
+    fn native_commit_guarded(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: Option<u64>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        before: NativeCommitGuard,
+    ) -> NativeProviderFuture<'_, CommitOutcome, NativeCommitError> {
+        let commit = (!self.counter_only).then(|| request.clone());
+        self.native(Native::DATA, meter, commit, |meter| {
+            self.inner
+                .native_commit_guarded(request, deadline_unix_millis, meter, before)
+        })
+    }
+    fn native_prepare_commit(
+        &self,
+        request: CommitRequest,
+        capacity: PreparedRecordCapacity,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
+        // A prepared ingress has not published, so an armed commit fault
+        // refuses it before preparation, as it would refuse the commit.
+        let commit = (!self.counter_only).then(|| request.clone());
+        self.native(Native::DATA, meter, commit, |meter| {
+            self.inner.native_prepare_commit(request, capacity, meter)
+        })
+    }
+}
 
 impl acyclic_harness_core::filesystem::attestation::AttestedProvider for Observed {}
 
