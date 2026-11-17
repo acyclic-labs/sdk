@@ -194,7 +194,7 @@ async fn a_foreign_control_event_recomputes_settlement_without_redispatch_or_ano
     Ok(())
 }
 
-pub(super) async fn admitted_files(
+async fn admitted_files(
     stream: &Arc<MemoryStream>,
     path: &AgentPath,
     operation: OperationId,
