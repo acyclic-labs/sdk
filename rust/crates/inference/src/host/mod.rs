@@ -6,7 +6,11 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 use zeroize::Zeroize;
 
 use crate::MAXIMUM_MESSAGE_BYTES;
-use crate::contract;
+use crate::contract::{
+    self, fixed, nonzero, validate_context_view, validate_evaluation_admission,
+    validate_evaluation_spec, validate_evaluation_view, validate_receipt, validate_run_view,
+    validate_warm_view,
+};
 use crate::obs;
 use crate::wire;
 
@@ -65,6 +69,12 @@ pub enum Error {
     Observation(#[from] tonic::Status),
 }
 
+impl From<contract::Error> for Error {
+    fn from(error: contract::Error) -> Self {
+        Self::Invalid(error.message())
+    }
+}
+
 impl Error {
     /// Stable, message-free name of this failure class.
     #[must_use]
@@ -86,6 +96,8 @@ struct Connection {
 }
 
 /// Authenticated customer connection; infrastructure remains entirely service-owned.
+/// Static and renewed bearer credentials use shared Auth admission, with no
+/// client-specific byte ceiling.
 #[derive(Clone)]
 pub struct Inference(Arc<Connection>);
 
@@ -163,7 +175,7 @@ impl Inference {
             if !receipt.retained {
                 return Err(Error::Invalid("creation did not retain a revision"));
             }
-            fixed(&receipt.revision)
+            fixed(&receipt.revision).map_err(Error::from)
         })
     }
 
@@ -409,8 +421,7 @@ impl Inference {
                 .await?
                 .into_inner();
             let view = response.run.ok_or(Error::Invalid("missing Run response"))?;
-            contract::validate_generated_run_view(&view, run_id, context)
-                .map_err(contract_error)?;
+            contract::validate_generated_run_view(&view, run_id, context)?;
             Ok(run_id)
         })
     }
@@ -441,7 +452,7 @@ impl Inference {
     ) -> Result<RunEvents, Error> {
         obs::operation!("acyclic.inference.run.watch", async {
             let view = self.inspect_run(run_id).await?;
-            let state = contract::watch_run_start(&view, from_sequence).map_err(contract_error)?;
+            let state = contract::watch_run_start(&view, from_sequence)?;
             if state.is_terminal() {
                 return Ok(RunEvents {
                     stream: None,
@@ -497,7 +508,7 @@ impl Inference {
                 .into_inner();
             contract::validate_retain_response(&view, request)
                 .map_err(|error| Error::Invalid(error.message()))?;
-            fixed(&view.commitment)
+            fixed(&view.commitment).map_err(Error::from)
         })
     }
 
