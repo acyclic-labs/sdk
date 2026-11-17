@@ -6,5 +6,6 @@
 #![deny(unsafe_code)]
 
 pub mod numeric;
+/// Readiness bookkeeping shared by native namespace adapters.
 pub mod ready;
 pub mod text_merge;
