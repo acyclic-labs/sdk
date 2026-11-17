@@ -218,11 +218,24 @@ fn tool_with_usage() -> ScriptedTurn {
     ])
 }
 
-fn manager_rewrite(request: &ModelRequest) -> ScriptedTurn {
+fn manager_rewrite_text(request: &ModelRequest) -> String {
     let drop_through = request.messages.len().saturating_sub(1).max(1);
-    ScriptedTurn::Text(
-        json!({"version":1,"drop_through":drop_through,"summary":"compacted history"}).to_string(),
-    )
+    json!({"version":1,"drop_through":drop_through,"summary":"compacted history"}).to_string()
+}
+
+fn manager_rewrite(request: &ModelRequest) -> ScriptedTurn {
+    ScriptedTurn::Text(manager_rewrite_text(request))
+}
+
+fn length_stopped_rewrite(request: &ModelRequest) -> ScriptedTurn {
+    ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Content {
+            delta: manager_rewrite_text(request),
+        }),
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: json!({"finish_reason":"length","usage":{"completion_tokens":8192}}),
+        }),
+    ])
 }
 
 fn review_decision_text() -> String {
@@ -611,10 +624,10 @@ fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvide
     let state = Mutex::new(LengthState { step: 0 });
     let responder = move |request: &ModelRequest| {
         if request.summary {
-            return Ok(if call == "context_review" {
-                length_stopped_review()
-            } else {
-                length_stop(content, "dst")
+            return Ok(match call {
+                "context_review" => length_stopped_review(),
+                "summary" => length_stopped_rewrite(request),
+                _ => length_stop(content, "dst"),
             });
         }
         if request_tag(request, &["d4-after"]).is_some() {
