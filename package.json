@@ -25,7 +25,7 @@
     "check:no-polling": "node scripts/check-no-polling.mjs",
     "check:wasm": "node scripts/check-wasm.mjs",
     "check:docs": "node --test scripts/check-sdk-readmes.test.mjs && node scripts/web-docs-build.mjs readmes",
-    "check:baselines": "node --test scripts/web-docs-incremental.test.mjs scripts/build-generation.test.mjs scripts/generate-proto.test.mjs scripts/check-baselines.test.mjs scripts/native-producer-entrypoints.test.mjs && node --test scripts/wasm-size-artifacts.test.mjs scripts/generate-client-types.test.mjs scripts/archive-utils.test.mjs && bun scripts/check-stream-protocol-contract.mjs && node --test scripts/generate-actors.test.mjs && node --test scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs && bun scripts/check-baselines.mjs"
+    "check:baselines": "node --test scripts/web-docs-incremental.test.mjs scripts/build-generation.test.mjs scripts/generate-proto.test.mjs scripts/check-baselines.test.mjs scripts/native-producer-entrypoints.test.mjs && node --test scripts/wasm-size-artifacts.test.mjs scripts/generate-client-types.test.mjs scripts/archive-utils.test.mjs scripts/package-resolution.test.mjs && bun scripts/check-stream-protocol-contract.mjs && node --test scripts/generate-actors.test.mjs && node --test scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs && bun scripts/check-baselines.mjs"
   },
   "devDependencies": {
     "@bufbuild/buf": "1.75.0",
