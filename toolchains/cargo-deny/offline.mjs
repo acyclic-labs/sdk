@@ -10,7 +10,7 @@ fs.mkdirSync(db,{recursive:true});
 // The root of WalkDir follows this one symlink; its descendants are regular
 // files in Bazel's cached tree artifact, so no per-test database copy is needed.
 fs.symlinkSync(path.join(input,'deny-advisories','crates'),path.join(db,'crates'),'dir');
-const advisories=fs.readdirSync(path.join(db,'crates'),{recursive:true,withFileTypes:true}).filter(entry=>entry.isFile()&&entry.name.endsWith('.md'));
+const advisories=fs.readdirSync(path.join(db,'crates'),{recursive:true,withFileTypes:true}).filter(entry=>entry.name.endsWith('.md')&&fs.statSync(path.join(entry.parentPath,entry.name)).isFile());
 if(!advisories.length)throw Error('pinned advisory snapshot contains no regular advisory files');
 // The committed snapshot's actual fetch time, not the time this test happened to run.
 fs.mkdirSync(path.join(db,'.git'));const fetchHead=path.join(db,'.git','FETCH_HEAD');fs.writeFileSync(fetchHead,'');
