@@ -445,14 +445,10 @@ where
         let ancestry = acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(
             filesystem.stream_provider(),
         ));
-        let volumes = FilesystemHost::new_with_clock(
-            filesystem,
-            &provider,
-            None,
-            turns.clock.clone(),
-        )
-        .and_then(|host| host.with_project_families(ancestry))
-        .map_err(turn)?;
+        let volumes =
+            FilesystemHost::new_with_clock(filesystem, &provider, None, turns.clock.clone())
+                .and_then(|host| host.with_project_families(ancestry))
+                .map_err(turn)?;
         Self::on(
             issuer,
             admission,
