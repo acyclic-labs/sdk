@@ -1,6 +1,7 @@
 use semver::{Version, VersionReq};
 use serde_json::Value;
 use std::{env, fs};
+mod policy;
 
 fn read(name: &str) -> Value {
     let path = env::var(name).expect("Bazel supplies the input path");
@@ -39,10 +40,28 @@ fn resolved_crates_have_no_unpatched_advisories() {
     let lock = read("CRATE_LOCK");
     let acknowledgements = read("ADVISORY_ACKNOWLEDGEMENTS");
     let acknowledgements = acknowledgements.as_object().expect("acknowledgement map");
+    let policy_file = env::var("DENY_POLICY").expect("Bazel supplies the policy path");
+    let policy: toml::Value =
+        toml::from_str(&fs::read_to_string(policy_file).expect("read policy"))
+            .expect("valid policy TOML");
     let crates = lock["crates"].as_object().expect("resolved crate map");
     assert!(!crates.is_empty(), "resolved crate map must not be empty");
     let mut failures = Vec::new();
+    for file in env::var("WORKSPACE_MANIFESTS")
+        .expect("Bazel supplies manifests")
+        .split_whitespace()
+        .filter(|p| p.ends_with("Cargo.toml"))
+    {
+        let text = fs::read_to_string(file).expect("read workspace manifest");
+        failures.extend(
+            policy::check_manifest(file, &text, &policy).expect("valid workspace manifest policy"),
+        );
+    }
     for entry in crates.values() {
+        failures.extend(
+            policy::check(entry, &index["registry"], &policy)
+                .expect("valid, pinned dependency policy inputs"),
+        );
         let Some(url) = entry
             .pointer("/repository/Http/url")
             .and_then(Value::as_str)
