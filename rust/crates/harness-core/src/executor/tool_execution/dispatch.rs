@@ -827,7 +827,7 @@ impl<'io> StockExecution<'io> {
         }) {
             return Err(Error::Indeterminate(operation_id));
         }
-        let key = tool_settlement_key(step, call_id, ToolTerminalOutcome::Completed, self.io)?;
+        let key = tool_settlement_key(step, call_id, self.io)?;
         let event = ExecutionEvent::ToolCompleted {
             step,
             call_id: stock_string_copy(call_id, self.io)?,
