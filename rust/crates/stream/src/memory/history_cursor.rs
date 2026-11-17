@@ -8,6 +8,32 @@ pub(crate) struct HistoryCursor {
     opening_tail: Option<u64>,
     registration: Option<crate::interest::Interest<StreamPath, Signals>>,
 }
+#[cfg(not(target_arch = "wasm32"))]
+type CursorWork<'a> = Option<&'a crate::native::Work>;
+#[cfg(target_arch = "wasm32")]
+type CursorWork<'a> = Option<&'a ()>;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn pinned_with_work(
+    path: &PathState,
+    tail: u64,
+    work: Option<&crate::native::Work>,
+) -> Result<PinnedHistory, StreamError> {
+    match work {
+        Some(work) => PinnedHistory::new(path, tail, &mut MeterWork(work)),
+        None => PinnedHistory::new(path, tail, &mut ReadOnlyWork),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn pinned_with_work(
+    path: &PathState,
+    tail: u64,
+    _work: Option<&()>,
+) -> Result<PinnedHistory, StreamError> {
+    PinnedHistory::new(path, tail, &mut ReadOnlyWork)
+}
+
 impl HistoryCursor {
     async fn initial(
         path: Option<&PathState>,
@@ -81,7 +107,11 @@ impl HistoryCursor {
         } else {
             from
         };
-        let mut cursor = Self::new(path, path.tail, start)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = work.as_deref();
+        #[cfg(target_arch = "wasm32")]
+        let work = None;
+        let mut cursor = Self::new(path, path.tail, start, work)?;
         #[cfg(not(target_arch = "wasm32"))]
         {
             cursor.work = work;
@@ -177,9 +207,14 @@ impl HistoryCursor {
             registration: None,
         }
     }
-    fn new(path: &PathState, tail: u64, next: u64) -> Result<Self, StreamError> {
+    fn new(
+        path: &PathState,
+        tail: u64,
+        next: u64,
+        work: CursorWork<'_>,
+    ) -> Result<Self, StreamError> {
         let records = FiniteRead {
-            history: PinnedHistory::new(path, tail, &mut ReadOnlyWork)?,
+            history: pinned_with_work(path, tail, work)?,
             window: path.prefix_window(next, tail),
             key: None,
             next,
@@ -210,7 +245,11 @@ impl HistoryCursor {
         let appended = matches!((&history.root, root.map(AsRef::as_ref)),
             (Some(old), Some(History::Batch { parent: Some(parent), .. })) if Arc::ptr_eq(old, parent));
         let keep_page = appended && tail >= history.tail;
-        let pinned = PinnedHistory::new(path, tail, &mut ReadOnlyWork)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = self.work.as_deref();
+        #[cfg(target_arch = "wasm32")]
+        let work = None;
+        let pinned = pinned_with_work(path, tail, work)?;
         self.records.history = pinned;
         if !keep_page {
             self.records.window = None;
