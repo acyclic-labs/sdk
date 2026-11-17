@@ -472,3 +472,9 @@ filegroup(
 
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
+
+filegroup(
+    name = "tree/rust/proofs/sdk-rustdoc-fixtures",
+    srcs = glob(["rust/proofs/sdk-rustdoc-fixtures/**"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
