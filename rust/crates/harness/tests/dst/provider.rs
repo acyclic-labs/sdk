@@ -302,8 +302,8 @@ fn d3_service(transition: &'static str) -> ScriptedModelProvider {
     let responder = move |request: &ModelRequest| {
         if request.summary {
             return Ok(match transition {
-                "compaction_applied" | "background_summary" => manager_rewrite(request),
-                "context_review" => review_decision(),
+                "compaction_applied" => manager_rewrite(request),
+                "background_summary" | "context_review" => review_decision(),
                 _ => ScriptedTurn::Text("unexpected summary request".into()),
             });
         }
@@ -388,6 +388,7 @@ fn d3_service(transition: &'static str) -> ScriptedModelProvider {
                 ]),
                 _ => ScriptedTurn::Text(done(found_tag)),
             },
+            "background_summary" => text_with_usage(done(found_tag), 100),
             "context_review" => match step {
                 0 => tool_with_usage(),
                 _ => text_with_usage(done(found_tag), 100),
@@ -544,6 +545,16 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                         .collect();
                     if source_prefix.is_empty() || source_prefix != worker_prefix {
                         return fail("the background call did not reuse the agent prefix");
+                    }
+                    let background = summaries.iter().any(|request| {
+                        request.messages.iter().any(|message| {
+                            serde_json::to_string(&message.content)
+                                .unwrap_or_default()
+                                .contains("review_at_input_tokens")
+                        })
+                    });
+                    if !background {
+                        return fail("the background call was not a context review");
                     }
                 }
                 "length_continuation" => {
