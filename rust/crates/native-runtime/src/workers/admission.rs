@@ -325,6 +325,7 @@ pub(crate) fn wake_capacity_waiter(waiter: Option<Waker>) {
 }
 
 pub(crate) fn notify_capacity_released(admission: &Arc<Mutex<AdmissionState>>) -> super::Running {
+    let owner = Arc::clone(admission);
     let running;
     {
         let mut admission = admission
@@ -333,7 +334,7 @@ pub(crate) fn notify_capacity_released(admission: &Arc<Mutex<AdmissionState>>) -
         debug_assert_ne!(admission.queued_jobs, 0, "native queue accounting lost");
         admission.queued_jobs = admission.queued_jobs.saturating_sub(1);
         admission.running_jobs += 1;
-        running = super::Running(Arc::clone(admission));
+        running = super::Running(owner);
         if admission.notifying {
             // A waiter already visited by the active notifier may have polled
             // while the channel was full. Cover this release in a fresh pass.
