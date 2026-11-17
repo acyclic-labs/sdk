@@ -14,7 +14,7 @@ use std::{
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 #[doc(hidden)]
 pub mod codec_fuzz;
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[doc(hidden)]
 pub mod hooks_codec_fuzz;
 mod model;

@@ -945,7 +945,7 @@ pub struct ModelEventAdmission {
 
 #[cfg(test)]
 pub(crate) mod tests;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support;
 

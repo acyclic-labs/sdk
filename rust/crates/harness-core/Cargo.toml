@@ -37,7 +37,7 @@ path = "tests/computed_ui_records.rs"
 [features]
 research = ["acyclic-observability/research"]
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance", "acyclic-machines/conformance"]
-test-support = ["dep:acyclic-test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
+test-support = ["acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "acyclic-fs/model-checking"]
 browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-stream/wasm", "dep:tsify"]
@@ -56,7 +56,6 @@ zeroize.workspace = true
 once_cell = "1.21.3"
 pin-project-lite = "0.2.17"
 acyclic-differential = { version = "=0.2.0", path = "../differential", optional = true }
-acyclic-test-support = { path = "../test-support", optional = true }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }

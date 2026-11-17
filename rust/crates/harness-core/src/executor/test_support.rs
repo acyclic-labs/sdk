@@ -272,7 +272,7 @@ impl ExecutionJournal for Journal {
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         #[cfg(not(target_arch = "wasm32"))]
-        acyclic_test_support::differential::record(("journal append", expected_tail));
+        acyclic_differential::record(("journal append", expected_tail));
         if io.is_some() {
             return Err(crate::Error::Unsupported(
                 "finite test journal append is unavailable".into(),
@@ -308,7 +308,7 @@ impl ExecutionJournal for Journal {
         media_type: &'static str,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
-        acyclic_test_support::differential::record(("journal stage", bytes.len() as u64));
+        acyclic_differential::record(("journal stage", bytes.len() as u64));
         if io.is_some() {
             return Err(crate::Error::Unsupported(
                 "finite test journal stage is unavailable".into(),
@@ -351,7 +351,7 @@ impl ExecutionJournal for Journal {
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         #[cfg(not(target_arch = "wasm32"))]
-        acyclic_test_support::differential::record((
+        acyclic_differential::record((
             "journal load",
             reference.descriptor().byte_length(),
         ));

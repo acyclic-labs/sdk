@@ -16,7 +16,7 @@ impl Drop for Timeout {
     }
 }
 
-pub(super) async fn delay(duration: std::time::Duration) -> crate::Result<()> {
+pub async fn delay(duration: std::time::Duration) -> crate::Result<()> {
     // setTimeout takes signed 32-bit milliseconds. Split longer waits, and round fractional
     // milliseconds up so Retry-After is never shortened by the conversion.
     let mut remaining = duration.as_millis() + u128::from(duration.subsec_nanos() % 1_000_000 != 0);
@@ -72,13 +72,13 @@ fn performance_millis() -> Option<f64> {
 }
 
 /// Span coordinates must never substitute a wall clock for a monotonic one.
-pub(super) fn monotonic_now() -> Option<std::time::Duration> {
+pub fn monotonic_now() -> Option<std::time::Duration> {
     std::time::Duration::try_from_secs_f64(performance_millis()? / 1000.0).ok()
 }
 
 /// Original timer clock, with the existing wall-clock fallback for realms
 /// without `performance.now`. Span capture uses `monotonic_now` instead.
-pub(super) fn now() -> std::time::Duration {
+pub fn now() -> std::time::Duration {
     let millis = performance_millis().unwrap_or_else(js_sys::Date::now);
     // `max` maps NaN to zero and `min` keeps the conversion finite.
     std::time::Duration::from_secs_f64(millis.max(0.0).min(1e15) / 1000.0)
