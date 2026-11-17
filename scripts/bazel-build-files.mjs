@@ -181,9 +181,6 @@ for (const selection of wasmSelections) {
 const wasmWorkspaceFeatures = new Map(), wasmPinned = new Map();
 for (const [id, features] of wasmTreeFeatures) (members.has(id) ? wasmWorkspaceFeatures : wasmPinned).set(id, features);
 const dir = p => path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/");
-// A vendored path crate's BUILD file is owned by the crate universe: its path spec writes the
-// target that selects the wasm32 dependency set, so the generator must not restate it.
-const vendored = p => dir(p).startsWith("rust/vendor/") && wasmPinned.has(p.id);
 tomlFiles(root, [...new Set(["Cargo.toml", "rust-toolchain.toml", ...base.packages.filter(p => p.source === null).map(p => path.relative(root, p.manifest_path))])]);
 // Local path crates are first-party: their BUILD files are generated here, so the
 // crate universe must not carry them as local path dependencies. Cargo tests only the
@@ -686,7 +683,7 @@ function wasmEdges(p) {
     if (!lib) continue;
     const macro = lib.kind.includes("proc-macro");
     const name = members.has(dep)
-      ? `${label(target)}:${crateName(lib)}${macro || vendored(target) ? "" : "_wasm"}`
+      ? `${label(target)}:${crateName(lib)}${macro ? "" : "_wasm"}`
       : macro ? hubLabel(dep) : wasmHubLabel(dep);
     const declaration = p.dependencies.find(entry => entry.name === target.name);
     const alias = declaration?.rename?.replaceAll("-", "_") ?? crateName(lib);
@@ -914,7 +911,7 @@ function buildFile(p) {
   // separate targets so a host build never selects a wasm action and vice versa.
   // Only crates the wasm selections actually reach get a wasm variant. A host-only member has
   // no wasm dependency graph to render, so emitting an empty one is a broken target.
-  if (wasmTreeFeatures.has(p.id) && !vendored(p)) {
+  if (wasmTreeFeatures.has(p.id)) {
     const wasmFeatures = [...(wasmWorkspaceFeatures.get(p.id) ?? [])].sort();
     const wasmDeps = wasmEdges(p);
     // A build script sees the same features as the crate it generates for: the wasm variant must
@@ -1244,11 +1241,10 @@ function moduleFile() {
 }
 
 // Bodies first: rendering them records every file another package takes by label.
-const generatedMembers = [...members].filter(id => !vendored(packages.get(id)));
-const rendered = new Map(generatedMembers.map(id => [id, new Set()]));
-const bodies = new Map(generatedMembers.map(id => [dir(packages.get(id)), buildFile(packages.get(id))]));
+const rendered = new Map([...members].map(id => [id, new Set()]));
+const bodies = new Map([...members].map(id => [dir(packages.get(id)), buildFile(packages.get(id))]));
 // Coverage equals the cargo legs: every target `cargo test --all-features --no-run` builds.
-for (const id of generatedMembers) {
+for (const id of members) {
   const p = packages.get(id), expected = new Set();
   for (const t of workspace.has(id) ? p.targets : [libOf(p)].filter(Boolean)) {
     // Each output kind of a target is its own rendered rule; one that is not rendered fails the check.
