@@ -364,7 +364,7 @@ impl SharedFuseView {
     }
 
     /// Retires the view; the instance stays up while other views hold it.
-    pub(super) fn retire(&mut self) -> bool {
+    pub(super) fn retire(&mut self) -> Result<bool, NativeMountError> {
         self.entry.retire()
     }
 }
