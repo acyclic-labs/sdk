@@ -1,0 +1,22 @@
+load(":deny_test.bzl", "advisory_index", "index_test")
+load("@rules_rust//rust:defs.bzl", "rust_test")
+
+advisory_index(name = "advisory_db")
+
+index_test(
+    name = "index_test",
+)
+
+rust_test(
+    name = "offline_test",
+    edition = "2024",
+    crate_root = "audit.rs",
+    srcs = ["audit.rs"],
+    data = [":advisory_db", ":acknowledgements.json", "//:cargo-bazel-lock.json"],
+    env = {
+        "ADVISORY_INDEX": "$(rootpath :advisory_db)",
+        "ADVISORY_ACKNOWLEDGEMENTS": "$(rootpath :acknowledgements.json)",
+        "CRATE_LOCK": "$(rootpath //:cargo-bazel-lock.json)",
+    },
+    deps = ["@sdk_crates//semver-1.0.28", "@sdk_crates//serde_json-1.0.154"],
+)

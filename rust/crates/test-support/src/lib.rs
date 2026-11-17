@@ -9,6 +9,8 @@ pub mod cases;
 /// Language-independent source/model coverage and reachability checks.
 pub mod correspondence;
 pub mod differential;
+/// Declared compiler tools and their companion directories for fixture commands.
+pub mod fixture_compiler;
 mod fixtures;
 /// Finite trace conformance through the same checked correspondence inventory.
 pub mod trace;

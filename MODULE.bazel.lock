@@ -256,6 +256,19 @@
         }
       }
     },
+    "//toolchains/cargo-deny:repositories.bzl%cargo_deny": {
+      "general": {
+        "bzlTransitiveDigest": "a5NJiyGbpFfecCAyIe6fIVFB1CpHcG+xtA3we+vKZhU=",
+        "usagesDigest": "BedfTFd2OqSe+bnsUkJuzOwP+dRYyyK1HarrpwFqhDU=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "cargo_deny_advisories": {
+            "repoRuleId": "@@//toolchains/cargo-deny:repositories.bzl%_archive",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "//toolchains/kani:repositories.bzl%kani": {
       "general": {
         "bzlTransitiveDigest": "gMZzP1xD7oaj/Z+9mtXgLdhK0Ai5pQnbAcpYvv0rubk=",

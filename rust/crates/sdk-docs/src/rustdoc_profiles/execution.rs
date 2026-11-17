@@ -466,6 +466,11 @@ pub fn execute_profile(
 
 #[test]
 fn prepared_rustdoc_producer_is_reused_for_any_profile_order() {
+    crate::with_fixture_compiler(prepared_rustdoc_producer_world);
+}
+
+#[cfg(test)]
+fn prepared_rustdoc_producer_world() {
     // Isolate the counters from other tests that select different fixture compilers.
     if std::env::var_os("SDK_DOCS_PREPARED_CHILD").is_none() {
         let thread = std::thread::current();

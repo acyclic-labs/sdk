@@ -15,6 +15,9 @@ categories = ["filesystem"]
 [package.metadata.bazel.test-tools.main]
 node = "@nodejs//:node"
 
+[package.metadata.bazel.test-tools.acyclic_native_runtime_test]
+node = "@nodejs//:node"
+
 [[bin]]
 name = "acyclic-process-host"
 path = "src/bin/acyclic-process-host.rs"

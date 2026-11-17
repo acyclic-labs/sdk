@@ -67,5 +67,9 @@ include("//:cargo.MODULE.bazel")
 # Artifact conformance executes the published Cargo and Rustdoc producers.
 sdk_compilers = use_extension("//toolchains/sdk:repositories.bzl", "sdk_compilers", dev_dependency = True)
 use_repo(sdk_compilers, "sdk_compilers")
+# Security policy uses a pinned advisory snapshot.
+cargo_deny = use_extension("//toolchains/cargo-deny:repositories.bzl", "cargo_deny", dev_dependency = True)
+use_repo(cargo_deny, "cargo_deny_advisories")
+
 wasm_bindgen_cli = use_repo_rule("//:wasm_bindgen.bzl", "wasm_bindgen_cli")
 wasm_bindgen_cli(name = "wasm_bindgen")
