@@ -239,6 +239,6 @@ exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visib
 genrule(
     name = "probe_tools",
     outs = ["probe_tools.txt"],
-    cmd = "ls -d node_modules/.bin/tsc node_modules/.bin/buf node_modules/typescript/bin/tsc > $@ 2>&1 || true; ls -d /home/var/.bun/bin/bun >> $@ 2>&1 || true; echo PATH=$$PATH >> $@",
+    cmd = "test -e node_modules/.bin/tsc && test -e node_modules/.bin/buf && test -e node_modules/typescript/bin/tsc && echo present > $@",
     local = 1,
 )
