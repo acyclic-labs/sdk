@@ -424,17 +424,17 @@ impl OwnedBytes {
         if self.data.meter().is_none() || self.matches_meter(meter) {
             return Ok(self.clone());
         }
-        let copied = u64::try_from(self.len())
-            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let copied =
+            u64::try_from(self.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         meter.admit_codec(0, copied, 0)?;
         let bytes = self.as_slice().to_vec();
         meter.record_codec(0, copied, 0)?;
         let claim = ReadAllocation::new(meter, self.len())?;
-        Self::from_vec_with_guard(bytes, claim, Arc::clone(meter)).map_err(|failure| {
-            match failure.into_error() {
-                PreparedOwnedBytesError::Admission(error) => error,
-                PreparedOwnedBytesError::NotFullyInitialized => io::ErrorKind::InvalidData.into(),
-            }
+        Self::from_vec_with_guard(bytes, claim, Arc::clone(meter)).map_err(|failure| match failure
+            .into_error()
+        {
+            PreparedOwnedBytesError::Admission(error) => error,
+            PreparedOwnedBytesError::NotFullyInitialized => io::ErrorKind::InvalidData.into(),
         })
     }
     /// Compares the original allocation-owner identity.
