@@ -7,9 +7,7 @@ use acyclic_harness::{
     executor::{ContextUsage, ModelUsageTotals, TurnOutput},
     local::agent_conversation::Conversation,
     model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent},
-    test_support::{
-        PromptOutcome, local_harness_config, prompt_settled,
-    },
+    test_support::{PromptOutcome, local_harness_config, prompt_settled},
     tool::{RecordedInvocation, ToolInvocation},
 };
 use acyclic_harness_tui::{BlockKind, TranscriptRows};
@@ -63,9 +61,7 @@ fn record(seed: u64) -> &'static str {
 fn variants(seed: u64) -> Vec<Variant> {
     READERS
         .iter()
-        .map(|reader| {
-            Variant::from([("record", record(seed)), ("reader", *reader)])
-        })
+        .map(|reader| Variant::from([("record", record(seed)), ("reader", *reader)]))
         .collect()
 }
 
@@ -170,11 +166,7 @@ fn recorded(call: &ToolCall) -> RecordedInvocation {
     }
 }
 
-fn check_record(
-    kind: &str,
-    reader: &str,
-    emitted: &Emitted,
-) -> std::result::Result<(), String> {
+fn check_record(kind: &str, reader: &str, emitted: &Emitted) -> std::result::Result<(), String> {
     match kind {
         "accounting_header" => {
             let usage = &emitted.usage;
@@ -345,13 +337,9 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             let checkout = directory.path().join("checkout");
             std::fs::create_dir_all(&checkout).map_err(oracle::failed)?;
             std::fs::write(checkout.join("a.txt"), "alpha\n").map_err(oracle::failed)?;
-            let model = Model::new("scripted".into(), "dst".into(), "1".into())
-                .map_err(oracle::failed)?;
-            let call = ToolCall::new(
-                "s1-read".into(),
-                "read".into(),
-                json!({"path": "a.txt"}),
-            );
+            let model =
+                Model::new("scripted".into(), "dst".into(), "1".into()).map_err(oracle::failed)?;
+            let call = ToolCall::new("s1-read".into(), "read".into(), json!({"path": "a.txt"}));
             let provider = Arc::new(oracle::service(vec![oracle::Plan {
                 tag: "s1",
                 steps: vec![vec![call]],
@@ -362,7 +350,11 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 .without_user_settings()
                 .workspace_mounting(acyclic_harness::local::WorkspaceMounting::Physical)
                 .state_directory(directory.path().join("state"));
-            let harness = Arc::new(entry(LocalHarness::open(config)).await.map_err(oracle::failed)?);
+            let harness = Arc::new(
+                entry(LocalHarness::open(config))
+                    .await
+                    .map_err(oracle::failed)?,
+            );
             let output = match entry(prompt_settled(&harness, "s1", "[dst:s1]"))
                 .await
                 .map_err(oracle::failed)?
@@ -372,7 +364,9 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                     return Err(format!("the record turn failed: {message}"));
                 }
             };
-            let emitted = entry(emitted(&harness, output)).await.map_err(oracle::failed)?;
+            let emitted = entry(emitted(&harness, output))
+                .await
+                .map_err(oracle::failed)?;
             for reader in READERS {
                 check_record(kind, reader, &emitted)?;
             }
