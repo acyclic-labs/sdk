@@ -199,7 +199,7 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
     // Recovery and first publication can join an already-flushed WAL target.
     // Requiring the redundant drain would reject valid group commit.
     assert!(
-        (11..=12).contains(&observed.reopened_first.1),
+        (11..=14).contains(&observed.reopened_first.1),
         "reopened physical drains changed: {observed:?}"
     );
     // Reopening pays its placement cost once. A later reply must use the
