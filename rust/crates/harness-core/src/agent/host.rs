@@ -114,7 +114,11 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         volumes: Option<Arc<dyn SpawnVolumes>>,
         lifecycle: Option<Arc<dyn AgentLifecycle>>,
     ) -> Result<Self, Error> {
-        let mut handler = AgentHandler::new(actor_store(&provider)?, driver, limits)
+        let mut handler = AgentHandler::new(
+            actor_store(&provider)?.with_clock(clock.clone()),
+            driver,
+            limits,
+        )
             .map_err(|_| Error::Record("agent handler manifest"))?;
         if let Some(volumes) = &volumes {
             handler = handler.with_spawn_volumes(volumes.clone());
@@ -176,10 +180,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         clock: Arc<dyn Clock>,
         composer: Option<Arc<dyn Composer>>,
     ) -> Result<Self, Error> {
-        let published = actor_store(&provider)?.with_composer(Arc::new(AgentComposer::wrapping(
-            Arc::clone(&provider),
-            composer,
-        )));
+        let published = actor_store(&provider)?
+            .with_clock(clock.clone())
+            .with_composer(Arc::new(AgentComposer::wrapping(
+                Arc::clone(&provider),
+                composer,
+            )));
         Ok(Self {
             agents: Agents::new(actor_store(&provider)?),
             // Agents of other bindings may share this stream's actor root;

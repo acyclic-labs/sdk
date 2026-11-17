@@ -136,6 +136,8 @@ impl ClockControl {
         self.registered.send_replace(None);
     }
 
+    /// Advance the shared time to `unix_ms`, waking every reached waiter.
+    /// Equal time is a no-op; reversal refuses without changing time or waking.
     pub fn advance_to(&mut self, unix_ms: u64) -> Result<(), ClockError> {
         let mut result = Ok(());
         self.time.send_if_modified(|current| {
