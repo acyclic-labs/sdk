@@ -63,7 +63,6 @@
   "scripts/full-cloud-test.sh",
   "scripts/graphcoder-e2e/artifacts.test.mjs",
   "scripts/graphcoder-e2e/process-report-windows.test.mjs",
-  "scripts/graphcoder-e2e/termination.test.mjs",
   "scripts/harness-package-closure.mjs",
   "scripts/node-tests.mjs",
   "scripts/publish-cargo-crates.mjs",
@@ -85,7 +84,6 @@
   "typescript/packages/actors/test/browser-http-conformance.mjs",
   "typescript/packages/actors/test/grpc-conformance.mjs",
   "typescript/packages/objects/test/v1-grpc-conformance.mjs",
-  "typescript/packages/sdk/test/process.test.mjs",
   "typescript/packages/stream/test/grpc-provider-conformance.mjs",
   "typescript/packages/stream/test/http-provider-conformance.mjs"
 ]
