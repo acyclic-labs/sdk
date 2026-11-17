@@ -902,3 +902,23 @@ async fn a_late_parked_alarm_moves_into_the_live_registration() -> TestResult {
     assert_eq!(runtime.ready[class].next_deadline(), Some(150));
     Ok(())
 }
+
+/// The registered-deadline signal keeps the highest active deadline until the
+/// controller clears it, so an earlier waiter cannot hide a later one.
+#[tokio::test]
+async fn registered_deadline_keeps_the_highest_until_cleared() -> TestResult {
+    let (clock, mut control) = ControlledClock::new(100);
+    let mut later = Box::pin(clock.sleep_until(200));
+    assert!(futures::poll!(later.as_mut()).is_pending());
+    let mut earlier = Box::pin(clock.sleep_until(150));
+    assert!(futures::poll!(earlier.as_mut()).is_pending());
+    let mut observed = clock.registered_at_least(200);
+    assert!(matches!(
+        futures::poll!(observed.as_mut()),
+        std::task::Poll::Ready(200)
+    ));
+    control.clear_registered();
+    let mut cleared = clock.registered_at_least(200);
+    assert!(futures::poll!(cleared.as_mut()).is_pending());
+    Ok(())
+}

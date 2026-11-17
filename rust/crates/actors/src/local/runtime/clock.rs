@@ -169,7 +169,15 @@ impl Clock for ControlledClock {
         let mut time = self.time.clone();
         let registered = self.registered.clone();
         Box::pin(async move {
-            registered.send_replace(Some(deadline_unix_ms));
+            // Keep the highest deadline until the controller clears it: an
+            // earlier waiter must not hide a later one from the observer.
+            registered.send_if_modified(|current| match current {
+                Some(at) if *at >= deadline_unix_ms => false,
+                _ => {
+                    *current = Some(deadline_unix_ms);
+                    true
+                }
+            });
             loop {
                 if *time.borrow_and_update() >= deadline_unix_ms {
                     return Ok(());
