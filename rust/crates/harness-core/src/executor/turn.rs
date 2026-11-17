@@ -191,6 +191,7 @@ impl StockExecution<'_> {
         let mut settled = 0_u32;
         let mut unsettled = None;
         let mut settled_call = false;
+        let mut unanswered = Vec::new();
         let progress = async {
             while input.max_steps.is_none_or(|maximum| steps < maximum) {
                 if let Some(control) = journal.supervision().await? {
@@ -427,8 +428,10 @@ impl StockExecution<'_> {
                 }
                 stock_retire_text(text, self.io)?;
                 stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
-                let mut calls = stock_into_iter(calls, self.io)?;
-                while let Some((invocation, invocation_index)) = calls.next() {
+                let calls: Vec<_> = stock_into_iter(calls, self.io)?.collect();
+                unanswered.clear();
+                unanswered.extend(calls.iter().map(|(_, index)| *index));
+                for (invocation, invocation_index) in calls {
                     match self
                         .resolve_tool_call(
                             journal,
@@ -445,8 +448,9 @@ impl StockExecution<'_> {
                             return Ok(ExecutionProgress::Controlled(control));
                         }
                         ExecutionProgress::Ready(()) => {
-                            // This call settled; a later failure keeps it in the
-                            // transcript the next turn sees.
+                            // This call settled; a later stop or failure keeps it
+                            // in the transcript the next turn sees.
+                            unanswered.retain(|index| *index != invocation_index);
                             unsettled = Some(prior_messages.len());
                             settled_call = true;
                             // The turn's own stop ends the turn before another
@@ -454,16 +458,6 @@ impl StockExecution<'_> {
                             if futures::FutureExt::now_or_never(journal.model_cancellation())
                                 .is_some()
                             {
-                                // Calls after the interrupted one never started.
-                                // Remove their assistant parts so the next turn
-                                // never sees a call without a result.
-                                let remaining: Vec<_> = calls.collect();
-                                for (_, index) in remaining.iter().rev() {
-                                    if prior_messages.get(*index).is_some() {
-                                        prior_messages.remove(*index);
-                                    }
-                                }
-                                unsettled = Some(prior_messages.len());
                                 return Err(Error::InteractionRejected(
                                     crate::InteractionRejection::Cancelled,
                                 ));
@@ -507,6 +501,11 @@ impl StockExecution<'_> {
                 }
                 if let Some(at) = unsettled {
                     prior_messages.truncate(at);
+                }
+                for index in unanswered.iter().rev() {
+                    if prior_messages.get(*index).is_some() {
+                        prior_messages.remove(*index);
+                    }
                 }
                 let transcript =
                     self.settled_transcript(steering.into_retired(), prior_messages, true, "")?;
