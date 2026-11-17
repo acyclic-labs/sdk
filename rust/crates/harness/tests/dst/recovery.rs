@@ -214,9 +214,11 @@ fn crash_reopen(point: Cut) -> Result<()> {
             "the old request was regenerated or the new prompt did not dispatch"
         );
         if let Some(interrupted) = dispatched {
+            // The reconciled prompt's follow-up keeps its turn's operation;
+            // the new prompt's own request is the next dispatch.
             assert_ne!(
                 interrupted.operation_id,
-                provider.dispatches()[0].operation_id,
+                provider.dispatches()[1].operation_id,
                 "the new prompt reused the interrupted operation"
             );
         }
