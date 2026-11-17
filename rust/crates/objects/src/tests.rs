@@ -2145,6 +2145,7 @@ async fn listing_work_is_bounded_with_pending_puts() -> Result<(), Box<dyn std::
             length: 1,
             stored: 1,
             references: Vec::new(),
+            sha256: None,
             version: [1; 16],
             dying: None,
             condemned: 0,

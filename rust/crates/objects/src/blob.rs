@@ -234,7 +234,7 @@ pub struct Manifest {
 }
 
 const MANIFEST_MAGIC: &[u8; 20] = b"acyclic-manifest-v2\0";
-const ENVELOPE_MAGIC: &[u8; 16] = b"acyclic-blob-v2\0";
+const ENVELOPE_MAGIC: &[u8; 16] = b"acyclic-blob-v3\0";
 const BATCH_MAGIC: &[u8] = b"acyclic-retained-v1\0";
 const INCARNATION_MAGIC: &[u8] = b"acyclic-incarnation-v1\0";
 const EPOCH_MAGIC: &[u8] = b"acyclic-epoch-v1\0";
@@ -374,6 +374,7 @@ pub(crate) struct Envelope {
     pub(crate) length: u64,
     pub(crate) stored: u64,
     pub(crate) references: Vec<Digest>,
+    pub(crate) sha256: Option<[u8; 32]>,
     /// Unique to the put that published this blob; names its payload and
     /// index keys, so no actor working on an earlier blob of the same digest
     /// can match anything of this one.
@@ -391,9 +392,12 @@ pub(crate) struct Envelope {
 
 impl Envelope {
     pub(crate) fn encode(&self) -> Result<Vec<u8>, Error> {
+        if self.kind == Kind::Blob && self.sha256.is_some() {
+            return Err(invalid());
+        }
         let references = u32::try_from(self.references.len())
             .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
-        let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + 62 + self.references.len() * 32);
+        let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + 95 + self.references.len() * 32);
         bytes.extend_from_slice(ENVELOPE_MAGIC);
         bytes.push(match self.kind {
             Kind::Blob => 1,
@@ -405,6 +409,8 @@ impl Envelope {
         for reference in &self.references {
             bytes.extend_from_slice(reference.as_bytes());
         }
+        bytes.push(u8::from(self.sha256.is_some()));
+        bytes.extend_from_slice(&self.sha256.unwrap_or_default());
         bytes.extend_from_slice(&self.version);
         bytes.push(u8::from(self.dying.is_some()));
         bytes.extend_from_slice(&self.dying.unwrap_or_default());
@@ -432,6 +438,13 @@ impl Envelope {
         let stored = reader.u64()?;
         let count = reader.u32()? as usize;
         let references = reader.vector(count, 32, allocation, |reader| reader.digest())?;
+        let present = reader.take(1)?;
+        let checksum: [u8; 32] = reader.take(32)?.try_into().map_err(|_| corrupt())?;
+        let sha256 = match present {
+            [0] if checksum == [0; 32] => None,
+            [1] if kind == Kind::Manifest => Some(checksum),
+            _ => return Err(corrupt()),
+        };
         let nonce = |reader: &mut Reader<'_>| -> Result<[u8; 16], Error> {
             reader.take(16)?.try_into().map_err(|_| corrupt())
         };
@@ -448,6 +461,7 @@ impl Envelope {
             length,
             stored,
             references,
+            sha256,
             version,
             dying,
             condemned,

@@ -28,6 +28,9 @@ message BlobInfo {
   // Logical length: the payload for a blob, the sum of parts for a manifest.
   uint64 length = 3;
   repeated Digest references = 4;
+  // Publisher-declared logical SHA-256, present only for a manifest that
+  // supplied one. Objects does not verify this declaration.
+  optional bytes sha256 = 5;
 }
 // A verified acknowledgement. Its length was compared with the stored envelope
 // in the caller's own account under the caller's current grant.

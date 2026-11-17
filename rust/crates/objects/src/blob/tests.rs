@@ -15,6 +15,7 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
         length: 22,
         stored: 64,
         references: vec![Digest::of(b"persisted codec corpus")],
+        sha256: None,
         version: [1; 16],
         dying: None,
         condemned: 9,
@@ -30,7 +31,7 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
             Manifest::decode(bytes).map(|_| ())
         }),
         (
-            "corpus/object_persistence/head-v2-live",
+            "corpus/object_persistence/head-v3-live",
             envelope.encode()?,
             ENVELOPE_MAGIC,
             |bytes| Envelope::decode(bytes).map(|_| ()),
