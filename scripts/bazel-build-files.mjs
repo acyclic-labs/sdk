@@ -1066,13 +1066,7 @@ ${rule("platform", [["name", q("linux_musl")], ["constraint_values", list(["@pla
 const wasmTools = wasmRoots.size ? `
 ${rule("rust_wasm_bindgen_toolchain", [
   ["name", q("wasm_bindgen_toolchain_impl")],
-  ["browser", q("@firefox")],
-  ["browser_type", q("firefox")],
   ["wasm_bindgen_cli", q("@rules_rust_wasm_bindgen//3rdparty:wasm_bindgen_cli")],
-  ["wasm_bindgen_test_runner", q("@rules_rust_wasm_bindgen//3rdparty:wasm_bindgen_test_runner")],
-  ["webdriver", q("@geckodriver")],
-  ["webdriver_args", list(["--verbose"])],
-  ["webdriver_json", q("@rules_rust_wasm_bindgen//:webdriver.json")],
   ["visibility", q(["//visibility:public"])],
 ])}
 ${rule("toolchain", [["name", q("wasm_bindgen_toolchain_registration")], ["toolchain", q(":wasm_bindgen_toolchain_impl")], ["toolchain_type", q("@rules_rust_wasm_bindgen//:toolchain_type")]])}
