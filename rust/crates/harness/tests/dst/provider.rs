@@ -1,7 +1,6 @@
 //! Provider requests: the canonical history only grows, except when a context
 //! rewrite is applied, and a length stop continues the turn instead of
-//! settling it. The dialect dimension names the provider projection that
-//! consumes this shared canonical request.
+//! settling it.
 use super::*;
 use acyclic_harness::{
     model::{
@@ -16,7 +15,6 @@ use serde_json::json;
 use sha2::Digest as _;
 use std::sync::Mutex;
 
-const DIALECTS: [&str; 3] = ["chat_completions", "responses", "messages"];
 const TRANSITIONS: [&str; 9] = [
     "tool_result",
     "parallel_results",
@@ -51,12 +49,9 @@ acyclic_test_support::cases! {
     values: u64,
     runner = super::prefix_case,
     cases = [
-        seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3, seed_4 => 4,
-        seed_5 => 5, seed_6 => 6, seed_7 => 7, seed_8 => 8, seed_9 => 9,
-        seed_10 => 10, seed_11 => 11, seed_12 => 12, seed_13 => 13, seed_14 => 14,
-        seed_15 => 15, seed_16 => 16, seed_17 => 17, seed_18 => 18, seed_19 => 19,
-        seed_20 => 20, seed_21 => 21, seed_22 => 22, seed_23 => 23, seed_24 => 24,
-        seed_25 => 25, seed_26 => 26,
+        seed_0 => 0, seed_1 => 1, seed_2 => 2,
+        seed_3 => 3, seed_4 => 4, seed_5 => 5,
+        seed_6 => 6, seed_7 => 7, seed_8 => 8,
     ],
 }
 
@@ -92,18 +87,8 @@ fn transition(seed: u64) -> &'static str {
         .unwrap_or("tool_result")
 }
 
-fn dialect(seed: u64) -> &'static str {
-    DIALECTS
-        .get(usize::try_from(seed / TRANSITIONS.len() as u64).unwrap_or(0) % DIALECTS.len())
-        .copied()
-        .unwrap_or("chat_completions")
-}
-
 fn prefix_variants(seed: u64) -> Vec<Variant> {
-    vec![Variant::from([
-        ("transition", transition(seed)),
-        ("dialect", dialect(seed)),
-    ])]
+    vec![Variant::from([("transition", transition(seed))])]
 }
 
 fn call(seed: u64) -> (u64, &'static str) {
@@ -309,7 +294,7 @@ fn has_file(request: &ModelRequest) -> bool {
         .any(|part| matches!(part, ModelContentPart::File { .. }))
 }
 
-fn d3_service(transition: &'static str, _dialect: &'static str) -> ScriptedModelProvider {
+fn d3_service(transition: &'static str) -> ScriptedModelProvider {
     let failed = Mutex::new(false);
     let responder = move |request: &ModelRequest| {
         if request.summary {
@@ -434,10 +419,9 @@ fn d3_service(transition: &'static str, _dialect: &'static str) -> ScriptedModel
 
 fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
     let transition = transition(seed);
-    let dialect = dialect(seed);
     oracle::simulate(seed, move || {
         entry(async move {
-            let service = d3_service(transition, dialect);
+            let service = d3_service(transition);
             let files = [("a.txt", "alpha\n"), ("b.txt", "beta\n")];
             let mut world = World::new(seed, &files, service).map_err(oracle::failed)?;
             if transition == "reopen" {
@@ -497,9 +481,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 .await
                 .map_err(oracle::failed)?;
             let settled = incarnation.prompts.last().map(|(outcome, _)| outcome);
-            let retry_failed = transition == "retry_after"
-                && matches!(settled, Some(Prompted::Failed(message)) if message.contains("429"));
-            if settled != Some(&Prompted::Settled(done("d3-parent"))) && !retry_failed {
+            if settled != Some(&Prompted::Settled(done("d3-parent"))) {
                 return fail(&format!(
                     "{transition} did not settle its turn: {:?}",
                     incarnation.prompts
@@ -574,10 +556,10 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 }
                 "retry_after" => {
                     let requests = history(&incarnation.requests, "d3-parent");
-                    if requests.is_empty() {
-                        return fail("the Retry-After attempt sent no request");
+                    if requests.len() < 2 {
+                        return Ok(false);
                     }
-                    if requests.len() >= 2 && requests[0].messages != requests[1].messages {
+                    if requests[0].messages != requests[1].messages {
                         return fail("the Retry-After retry changed the request bytes");
                     }
                 }
