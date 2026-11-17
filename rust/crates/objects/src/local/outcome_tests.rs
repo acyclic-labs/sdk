@@ -446,20 +446,6 @@ async fn mutation_outcome(
     Ok(())
 }
 
-async fn mutation_outcomes_preserve_physical_uncertainty_and_no_effect_refusals()
--> Result<(), Box<dyn std::error::Error>> {
-    for operation in ["create", "replace", "remove", "remove-if"] {
-        for fault in [
-            DurableFault::After,
-            DurableFault::Torn(1),
-            DurableFault::Failed,
-        ] {
-            mutation_outcome(operation, fault).await?;
-        }
-    }
-    Ok(())
-}
-
 async fn assert_cut_stopped(
     medium: &LocalMedium,
     schedule: &Schedule,
@@ -553,7 +539,7 @@ async fn compacting_mutation(
 
 async fn maintenance_failure_cannot_refuse_an_already_visible_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
-    for remove in [false, true] {
+    futures::future::try_join_all([false, true].map(|remove| async move {
         // Capture this OS's actual successful flush/rename trace, then cut its
         // original calls. No invented syscall inventory or replacement medium.
         let trace = compacting_mutation(remove, None).await?;
@@ -569,12 +555,14 @@ async fn maintenance_failure_cannot_refuse_an_already_visible_mutation()
             cuts.iter().any(|call| call.operation == "namespace:rename"),
             "{trace:?}"
         );
-        for call in cuts {
-            for fault in [DurableFault::Before, DurableFault::After] {
-                compacting_mutation(remove, Some((call.ordinal, fault))).await?;
-            }
-        }
-    }
+        futures::future::try_join_all(cuts.into_iter().flat_map(|call| {
+            [DurableFault::Before, DurableFault::After]
+                .map(move |fault| compacting_mutation(remove, Some((call.ordinal, fault))))
+        }))
+        .await?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }))
+    .await?;
     Ok(())
 }
 
@@ -582,7 +570,35 @@ async fn maintenance_failure_cannot_refuse_an_already_visible_mutation()
 async fn physical_outcomes_preserve_visible_mutations_and_uncertainty()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
-    mutation_outcomes_preserve_physical_uncertainty_and_no_effect_refusals().await?;
-    maintenance_failure_cannot_refuse_an_already_visible_mutation().await?;
+    let mutations: Vec<_> = ["create", "replace", "remove", "remove-if"]
+        .into_iter()
+        .flat_map(|operation| {
+            [
+                DurableFault::After,
+                DurableFault::Torn(1),
+                DurableFault::Failed,
+            ]
+            .map(move |fault| mutation_outcome(operation, fault))
+        })
+        .collect();
+    let planned = mutations.len();
+    let (schedule, mut events) = Schedule::new();
+    let mut in_flight = 0;
+    drive(
+        &schedule,
+        &mut events,
+        |_| {
+            in_flight = in_flight.max(schedule.pending_native_work());
+        },
+        async {
+            futures::future::try_join_all(mutations).await?;
+            maintenance_failure_cannot_refuse_an_already_visible_mutation().await
+        },
+    )
+    .await?;
+    assert!(
+        in_flight >= planned,
+        "independent roots serialized: {in_flight} < {planned}"
+    );
     Ok(())
 }
