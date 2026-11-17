@@ -212,8 +212,10 @@ struct Inner {
     entropy: Option<Arc<entropy::Source>>,
     executor: Option<Arc<executor::Executor>>,
     progress: Arc<host::Progress>,
-    /// A seeded world's own one-worker native pool.
-    workers: std::sync::OnceLock<std::io::Result<crate::workers::NativeWorkers>>,
+    /// A seeded world's own one-worker callback pool.
+    blocking_workers: std::sync::OnceLock<std::io::Result<crate::workers::NativeWorkers>>,
+    /// A seeded world's own one-worker native pool, separate from callbacks.
+    native_workers: std::sync::OnceLock<std::io::Result<crate::workers::NativeWorkers>>,
     // Its own lock: a call records when its last holder drops, which can be
     // anywhere, including while `state` is held.
     ledger: Arc<Mutex<ledger::Ledger>>,
@@ -340,7 +342,8 @@ impl Schedule {
                 .map(|seed| Arc::new(entropy::Source::new(seed))),
             executor,
             progress: host::Progress::new(),
-            workers: std::sync::OnceLock::new(),
+            blocking_workers: std::sync::OnceLock::new(),
+            native_workers: std::sync::OnceLock::new(),
         });
         if inner.executor.is_some() {
             crate::workers::start_seeded_world();
@@ -349,11 +352,24 @@ impl Schedule {
         (Self(inner, Some(controller)), receiver)
     }
 
-    /// The one-worker native pool owned by this seeded world.
-    pub(crate) fn simulation_workers(&self) -> std::io::Result<&crate::workers::NativeWorkers> {
+    /// The one-worker callback pool owned by this seeded world.
+    pub(crate) fn simulation_blocking_workers(
+        &self,
+    ) -> std::io::Result<&crate::workers::NativeWorkers> {
         self.0
-            .workers
-            .get_or_init(crate::workers::simulation_workers)
+            .blocking_workers
+            .get_or_init(|| crate::workers::simulation_workers("acyclic-dst-callback"))
+            .as_ref()
+            .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
+    }
+
+    /// The one-worker native pool owned by this seeded world.
+    pub(crate) fn simulation_native_workers(
+        &self,
+    ) -> std::io::Result<&crate::workers::NativeWorkers> {
+        self.0
+            .native_workers
+            .get_or_init(|| crate::workers::simulation_workers("acyclic-dst-native"))
             .as_ref()
             .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
     }
@@ -675,7 +691,7 @@ where
                 .0
                 .executor
                 .as_ref()
-                .map(|_| owned.schedule.simulation_workers())
+                .map(|_| owned.schedule.simulation_blocking_workers())
                 .transpose()?;
             let host = workers
                 .map(|workers| host::Host::for_workers(workers, owned.schedule.0.progress.clone()));
@@ -750,7 +766,7 @@ pub(crate) fn submit(
         CURRENT.scope(Some(owned.clone()), async move {
             owned.pause("native:submitted").await;
             let workers = if owned.schedule.0.executor.is_some() {
-                owned.schedule.simulation_workers()
+                owned.schedule.simulation_native_workers()
             } else {
                 crate::workers(pool, job.meter().is_some())
             };
