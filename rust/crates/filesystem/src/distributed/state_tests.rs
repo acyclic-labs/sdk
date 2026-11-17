@@ -1468,8 +1468,9 @@ async fn oversized_state_batch_leaves_the_original_request_and_no_published_pref
         assert_eq!(
             provider
                 .tail(StreamPath::new(format!("large/root{index}"))?)
-                .await,
-            Err(StreamError::NotFound)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
     }
     Ok(())

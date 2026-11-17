@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_stream::{IdempotencyKey, MemoryStream, OwnedBytes, StreamCategory, StreamError};
+use acyclic_stream::{IdempotencyKey, MemoryStream, OwnedBytes, StreamCategory};
 
 #[tokio::test]
 async fn native_request_transfer_keeps_original_context_and_live_commit_backing()
