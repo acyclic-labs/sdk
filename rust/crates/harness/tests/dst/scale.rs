@@ -51,7 +51,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
         entry(async move {
             let provider = Arc::new(service(vec![plan()]).with_context_capacity(
                 ModelContextCapacity {
-                    context_tokens: 4096,
+                    context_tokens: 16384,
                     output_tokens: Some(1024),
                     output_shares_context: false,
                 },
@@ -73,7 +73,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 text(ModelRole::System, "instructions"),
                 text(
                     ModelRole::User,
-                    &format!("{} {}", tag("scale"), "x".repeat(1024)),
+                    &format!("{} {}", tag("scale"), "x".repeat(8 * 1024)),
                 ),
                 text(ModelRole::User, "settled history"),
             ];
