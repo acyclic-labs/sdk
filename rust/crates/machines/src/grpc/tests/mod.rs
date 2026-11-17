@@ -214,7 +214,7 @@ operation_service! {
         &self,
         request: Request<wire::MachineMutationRequest>,
     ) -> Result<Response<wire::MutationAdmission>, Status> {
-        let WatchReply::Script(_) = &self.watch else {
+        let WatchReply::Script(script) = &self.watch else {
             return Err(Status::unimplemented("suspend"));
         };
         let request = request.into_inner();
@@ -233,6 +233,17 @@ operation_service! {
         };
         if request.machine != admission.machine {
             return Err(Status::invalid_argument("machine was substituted"));
+        }
+        let original = script.lock().expect("observation script").results.clone();
+        if let Some(original) = original {
+            let machine = decode_machine(admission.machine.as_ref())
+                .map_err(|error| Status::internal(error.to_string()))?;
+            original.suspend(machine, self.expected_key).await
+                .map_err(|error| Status::failed_precondition(error.to_string()))?;
+            let mut admission = admission.clone();
+            admission.operation = Some(encode_operation(original.recover_operation(self.expected_key).await
+                .map_err(|error| Status::internal(error.to_string()))?));
+            return Ok(Response::new(admission));
         }
         Ok(Response::new(admission.clone()))
     }

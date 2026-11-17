@@ -2,6 +2,7 @@
 //! Channel shares its connection; no per-product authority pool or refresh loop.
 use crate::credential::{
     CredentialAction, CredentialError, CredentialPending, CredentialProvider, ResolvedCredential,
+    ResponseCredentialError,
 };
 use std::{
     future::{Future, Ready},
@@ -43,13 +44,24 @@ pub enum ConnectError {
 
 impl From<CredentialError> for Status {
     fn from(error: CredentialError) -> Self {
-        let mut status = match error.denial_cause() {
-            Some(cause) => cause.into(),
-            None => Self::unavailable("credential source unavailable or changed"),
-        };
-        status.set_source(Arc::new(error));
-        status
+        credential_status(error.denial_cause(), error)
     }
+}
+
+fn credential_status(
+    denial: Option<crate::DenialCause>,
+    error: impl std::error::Error + Send + Sync + 'static,
+) -> Status {
+    let mut status = match denial {
+        Some(cause) => cause.into(),
+        None => Status::unavailable("credential source unavailable or changed"),
+    };
+    status.set_source(Arc::new(error));
+    status
+}
+
+fn response_credential_error(error: CredentialError) -> Status {
+    credential_status(error.denial_cause(), ResponseCredentialError(error))
 }
 
 fn stopped_status(reason: crate::operation::Stopped) -> Status {
@@ -350,10 +362,10 @@ pub async fn admit_response<T>(
     if response.as_ref().is_err_and(|error| {
         error.code() == tonic::Code::Unauthenticated && std::error::Error::source(error).is_none()
     }) {
-        lease.reject().await.map_err(Status::from)?;
+        lease.reject().await.map_err(response_credential_error)?;
     }
     if response.is_ok() {
-        lease.check().await.map_err(Status::from)?;
+        lease.check().await.map_err(response_credential_error)?;
     }
     response
 }

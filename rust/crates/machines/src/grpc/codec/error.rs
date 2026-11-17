@@ -1,19 +1,21 @@
 use super::*;
 
 // These statuses cannot attest whether the original effect was dispatched.
-fn uncertain_effect(code: tonic::Code) -> bool {
-    matches!(
-        code,
-        tonic::Code::Unavailable
-            | tonic::Code::DeadlineExceeded
-            | tonic::Code::Cancelled
-            | tonic::Code::Unknown
-            | tonic::Code::Internal
-    )
+fn uncertain_effect(status: &tonic::Status) -> bool {
+    std::error::Error::source(status)
+        .is_some_and(|cause| cause.is::<acyclic_auth::credential::ResponseCredentialError>())
+        || matches!(
+            status.code(),
+            tonic::Code::Unavailable
+                | tonic::Code::DeadlineExceeded
+                | tonic::Code::Cancelled
+                | tonic::Code::Unknown
+                | tonic::Code::Internal
+        )
 }
 
 pub(in super::super) fn mutation_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
-    if value.code() != tonic::Code::FailedPrecondition {
+    if value.code() != tonic::Code::FailedPrecondition || uncertain_effect(&value) {
         return guest_error(ProviderError::Indeterminate(key), value);
     }
     Precondition::from_wire(value.details())
@@ -28,14 +30,14 @@ pub(in super::super) fn watch_error(key: IdempotencyKey, value: tonic::Status) -
 }
 pub(in super::super) fn recovery_error(key: IdempotencyKey, value: tonic::Status) -> ProviderError {
     let classification = match value.code() {
-        code if uncertain_effect(code) => ProviderError::Indeterminate(key),
+        _ if uncertain_effect(&value) => ProviderError::Indeterminate(key),
         _ => ProviderError::Rejected(value.message().into()),
     };
     classification.with_cause(value)
 }
 pub(in super::super) fn read_error(value: tonic::Status) -> ProviderError {
     let classification = match value.code() {
-        code if code != tonic::Code::Internal && uncertain_effect(code) => {
+        code if code != tonic::Code::Internal && uncertain_effect(&value) => {
             ProviderError::Unavailable
         }
         tonic::Code::NotFound => ProviderError::NotFound(value.message().into()),
@@ -51,7 +53,7 @@ pub(in super::super) fn guest_error(
     value: tonic::Status,
 ) -> ProviderError {
     let classification = match value.code() {
-        code if uncertain_effect(code) => uncertain,
+        _ if uncertain_effect(&value) => uncertain,
         tonic::Code::Unimplemented => ProviderError::Unsupported(value.message().into()),
         _ => ProviderError::Rejected(value.message().into()),
     };
