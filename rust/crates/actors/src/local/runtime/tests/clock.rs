@@ -863,4 +863,3 @@ async fn a_recovered_alarm_armed_by_a_running_host_fires_once() -> TestResult {
     );
     Ok(())
 }
-
