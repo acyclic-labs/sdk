@@ -6,7 +6,11 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 use zeroize::Zeroize;
 
 use crate::MAXIMUM_MESSAGE_BYTES;
-use crate::contract::{self, fixed, nonzero};
+use crate::contract::{
+    self, fixed, nonzero, validate_context_view, validate_evaluation_admission,
+    validate_evaluation_spec, validate_evaluation_view, validate_receipt, validate_run_view,
+    validate_warm_view,
+};
 use crate::obs;
 use crate::wire;
 
@@ -417,7 +421,7 @@ impl Inference {
                 .await?
                 .into_inner();
             let view = response.run.ok_or(Error::Invalid("missing Run response"))?;
-            contract::validate_generated_run_view(&view, run_id, context).map_err(Error::from)?;
+            contract::validate_generated_run_view(&view, run_id, context)?;
             Ok(run_id)
         })
     }
@@ -448,7 +452,7 @@ impl Inference {
     ) -> Result<RunEvents, Error> {
         obs::operation!("acyclic.inference.run.watch", async {
             let view = self.inspect_run(run_id).await?;
-            let state = contract::watch_run_start(&view, from_sequence).map_err(Error::from)?;
+            let state = contract::watch_run_start(&view, from_sequence)?;
             if state.is_terminal() {
                 return Ok(RunEvents {
                     stream: None,

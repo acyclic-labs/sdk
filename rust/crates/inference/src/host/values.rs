@@ -56,45 +56,9 @@ impl RunEvents {
             self.state.finish().map_err(Error::Invalid)?;
             return Ok(None);
         };
-        contract::watch_run_event(&mut self.state, &event).map_err(Error::from)?;
+        contract::watch_run_event(&mut self.state, &event)?;
         Ok(Some(event))
     }
-}
-
-fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<(), Error> {
-    contract::validate_evaluation_spec(spec).map_err(Error::from)
-}
-
-fn validate_evaluation_admission(
-    view: &wire::EvaluationView,
-    expected: [u8; 16],
-    spec: &wire::EvaluationSpec,
-) -> Result<(), Error> {
-    contract::validate_evaluation_admission(view, expected, spec).map_err(Error::from)
-}
-
-fn validate_evaluation_view(view: &wire::EvaluationView, expected: [u8; 16]) -> Result<(), Error> {
-    contract::validate_evaluation_view(view, expected).map_err(Error::from)
-}
-
-fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Result<(), Error> {
-    contract::validate_run_view(view, expected).map_err(Error::from)
-}
-
-fn validate_context_view(view: &wire::ContextView, expected: [u8; 32]) -> Result<(), Error> {
-    contract::validate_context_view(view, expected).map_err(Error::from)
-}
-
-fn validate_warm_view(
-    view: &wire::WarmView,
-    expected_context: Option<[u8; 32]>,
-    expected_commitment: Option<[u8; 32]>,
-) -> Result<(), Error> {
-    contract::validate_warm_view(view, expected_context, expected_commitment).map_err(Error::from)
-}
-
-fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), Error> {
-    contract::validate_receipt(receipt).map_err(Error::from)
 }
 
 /// Allocates a fresh item identity before its exact text bytes are dispatched.
