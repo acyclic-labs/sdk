@@ -9,6 +9,9 @@ repository.workspace = true
 description = "Object content stores behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-objects"
 
+[features]
+conformance = ["acyclic-harness-core/conformance", "acyclic-objects/conformance", "acyclic-stream/conformance"]
+
 [dependencies]
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }

@@ -468,6 +468,9 @@ mod typescript;
 #[doc(hidden)]
 pub use native::HookCheck;
 pub use native::HookExecution;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use native::run_hook;
 // Negative-control seam for the facade's `mcp_identity_tests`: substitutes the
 // hook subject.
 #[cfg(any(test, feature = "test-support"))]

@@ -238,55 +238,6 @@ fn claude_json_and_codex_toml_are_additive_and_match_standard_events() -> Result
     Ok(())
 }
 
-#[tokio::test]
-async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()> {
-    use super::native::run_hook;
-    let process_error = Error::process_io;
-    use tokio::io::AsyncReadExt;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(process_error)?;
-    let address = listener.local_addr().map_err(process_error)?;
-    let hook = HookSpec {
-        run: HookRun::Executable {
-            executable: std::env::current_exe().map_err(process_error)?.to_string_lossy().into_owned(),
-            argv: vec!["--exact".into(), "hooks::tests::native_hooks_default_user_guards_and_project_trust_use_one_shared_script".into(),
-                "--nocapture".into(), "--skip".into(), format!("hook-child:{address}")],
-        },
-        timeout_ms: None,
-        failure: HookFailure::Report,
-    };
-    let root = std::env::current_dir().map_err(process_error)?;
-    let mut future = Box::pin(run_hook(
-        Arc::new(hook),
-        (root.clone(), root, vec![]),
-        Arc::new(|| Ok(())),
-        Some(65_536),
-        None,
-        None,
-    ));
-    let (mut stream, _) = tokio::select! {
-        result = listener.accept() => result.map_err(process_error)?,
-        result = &mut future => return Err(Error::Invalid(format!("hook exited before handshake: {result:?}"))),
-    };
-    assert_eq!(stream.read_u8().await.map_err(process_error)?, 1);
-    drop(future);
-    let mut bytes = Vec::new();
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        stream.read_to_end(&mut bytes),
-    )
-    .await
-    .map_err(|_| Error::Invalid("cancelled hook process stayed alive".into()))?;
-    match result {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
-        Err(error) => return Err(process_error(error)),
-    }
-    assert!(bytes.is_empty());
-    Ok(())
-}
-
 #[test]
 fn invalid_hook_replacement_is_atomic() -> Result<()> {
     let mut hooks = Hooks::default();

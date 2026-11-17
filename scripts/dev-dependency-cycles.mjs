@@ -1,6 +1,9 @@
 // A crate's dev-dependency closure must not reach the crate itself. Cargo permits such a
 // cycle, but builds the crate twice (test and dependency copies), so types from the two copies
 // are distinct. The BUILD generator refuses to render a workspace that would do this.
+//
+// Only the first edge may be a dev dependency. Once we are inside that dependency's build,
+// Cargo does not include its dev dependencies, so following them reports valid workspaces.
 export function devDependencyCycles(members, nodes) {
   const cycles = [];
   for (const id of members) {
@@ -19,7 +22,9 @@ export function devDependencyCycles(members, nodes) {
       }
       if (seen.has(current)) continue;
       seen.add(current);
-      for (const dep of nodes.get(current)?.deps ?? []) pending.push([...path, dep.pkg]);
+      for (const dep of nodes.get(current)?.deps ?? []) {
+        if (dep.dep_kinds.some(kind => kind.kind !== "dev")) pending.push([...path, dep.pkg]);
+      }
     }
   }
   return cycles;

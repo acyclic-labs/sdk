@@ -52,7 +52,7 @@ consumer-features = [{ features = ["browser"], target = "wasm32-unknown-unknown"
 
 [features]
 research = ["acyclic-harness-core/research"]
-conformance = ["dep:acyclic-harness-suite", "acyclic-fs/conformance", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/test-support", "acyclic-harness-core/test-support", "dep:ed25519-dalek"]
+conformance = ["dep:acyclic-harness-suite", "acyclic-fs/conformance", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/test-support", "acyclic-harness-core/test-support", "acyclic-harness-objects/conformance", "dep:ed25519-dalek"]
 test-support = ["acyclic-harness-hosting/test-support", "acyclic-harness-local/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support", "acyclic-harness-devices/test-support", "acyclic-harness-mcp/test-support", "acyclic-harness-native-settings/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
 browser = ["wasm", "acyclic-objects/javascript", "acyclic-fs/browser", "acyclic-harness-core/browser"]

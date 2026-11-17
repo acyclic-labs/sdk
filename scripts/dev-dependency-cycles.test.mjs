@@ -32,3 +32,11 @@ test("checks every platform graph", () => {
   ]);
   assert.deepEqual([clean, cyclic].flatMap(graph => devDependencyCycles(new Set(["root"]), graph)), [["helper", "root"]]);
 });
+
+test("accepts crates that depend on each other only for tests", () => {
+  const nodes = new Map([
+    ["root", { deps: [edge("helper", "dev")] }],
+    ["helper", { deps: [edge("root", "dev")] }],
+  ]);
+  assert.deepEqual(devDependencyCycles(new Set(["root", "helper"]), nodes), []);
+});
