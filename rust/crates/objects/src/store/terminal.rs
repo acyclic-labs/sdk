@@ -183,21 +183,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let name = format!("{fence:016x}.{}.{}", Digest::of(&batch).to_hex(), nonce()?);
         let tag = format!("f{}.{name}", Digest::of(root.as_bytes()).to_hex());
         let key = format!("{}{name}", self.fenced_prefix(root));
-        let first = references.first().ok_or_else(invalid)?;
-        let held = (std::mem::size_of::<String>() + self.index_key(first, &tag).len()) as u64
-            * references.len() as u64;
-        self.medium.allocate(held).map_err(medium)?;
-        self.medium
-            .reserve_writes(2 * references.len() as u64 + 4)
-            .map_err(medium)?;
-        match self.commit_batch(&references, &tag, &key, batch).await {
-            Ok(()) => {}
-            Err(Commit::Unknown(error) | Commit::Unflushed(error)) => return Err(error),
-            Err(Commit::Failed(error)) => {
-                self.unreference(&references, &tag).await?;
-                return Err(error);
-            }
-        }
+        self.commit_retention(&references, &tag, &key, batch, 2)
+            .await?;
         if !self.terminal_replace(observed, state.terminal).await? {
             self.medium.remove(&key).await.map_err(moved)?;
             self.unreference(&references, &tag).await?;

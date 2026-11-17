@@ -966,6 +966,32 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .map_err(Commit::Unflushed)
     }
 
+    /// Admit and publish one batch, retaining unknown outcomes for recovery.
+    async fn commit_retention(
+        &self,
+        references: &[Digest],
+        tag: &str,
+        key: &str,
+        batch: Vec<u8>,
+        extra_writes: u64,
+    ) -> Result<(), Error> {
+        let first = references.first().ok_or_else(invalid)?;
+        let held = (std::mem::size_of::<String>() + self.index_key(first, tag).len()) as u64
+            * references.len() as u64;
+        self.medium.allocate(held).map_err(medium)?;
+        self.medium
+            .reserve_writes(2 * references.len() as u64 + 2 + extra_writes)
+            .map_err(medium)?;
+        match self.commit_batch(references, tag, key, batch).await {
+            Ok(()) => Ok(()),
+            Err(Commit::Unknown(error) | Commit::Unflushed(error)) => Err(error),
+            Err(Commit::Failed(error)) => {
+                self.unreference(references, tag).await?;
+                Err(error)
+            }
+        }
+    }
+
     /// Removes `tag`'s index keys, once its holder is gone.
     async fn unreference(&self, children: &[Digest], tag: &str) -> Result<(), Error> {
         for child in children {
@@ -1611,28 +1637,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 // equal batch never removes them.
                 let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
                 let tag = Self::batch_tag(root, &name);
-                // The index-key vector is charged before any key is written, so a
-                // refused charge leaves nothing to clean up. Every key has one
-                // length: a fixed-width prefix and this tag.
-                let first = references.first().ok_or_else(invalid)?;
-                let key = self.index_key(first, &tag).len();
-                let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
-                self.medium.allocate(held).map_err(medium)?;
-                // Every write is withheld before the first key: n keys, then either
-                // their n removals or the batch and the one flush. A
-                // refused budget leaves nothing behind, and removing the keys of a
-                // retain that failed is never refused.
-                let n = references.len() as u64;
-                self.medium.reserve_writes(2 * n + 2).map_err(medium)?;
                 let key = format!("{}{name}", self.root_prefix(root));
-                match self.commit_batch(&references, &tag, &key, batch).await {
-                    Ok(()) => {}
-                    Err(Commit::Unknown(error) | Commit::Unflushed(error)) => return Err(error),
-                    Err(Commit::Failed(error)) => {
-                        self.unreference(&references, &tag).await?;
-                        return Err(error);
-                    }
-                }
+                self.commit_retention(&references, &tag, &key, batch, 0)
+                    .await?;
                 Ok(Retained {
                     references: references.len() as u64,
                     revision: Some(issued.commit()),
