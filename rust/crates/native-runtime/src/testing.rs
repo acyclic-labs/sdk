@@ -212,10 +212,8 @@ struct Inner {
     entropy: Option<Arc<entropy::Source>>,
     executor: Option<Arc<executor::Executor>>,
     progress: Arc<host::Progress>,
-    /// A seeded world's own one-worker callback pool.
-    blocking_workers: std::sync::OnceLock<std::io::Result<crate::workers::NativeWorkers>>,
-    /// A seeded world's own one-worker native pool, separate from callbacks.
-    native_workers: std::sync::OnceLock<std::io::Result<crate::workers::NativeWorkers>>,
+    /// A seeded world's own one-worker host handoff.
+    host_pool: std::sync::OnceLock<Arc<host::Pool>>,
     // Its own lock: a call records when its last holder drops, which can be
     // anywhere, including while `state` is held.
     ledger: Arc<Mutex<ledger::Ledger>>,
@@ -334,33 +332,15 @@ impl Schedule {
                 .map(|seed| Arc::new(entropy::Source::new(seed))),
             executor,
             progress: host::Progress::new(),
-            blocking_workers: std::sync::OnceLock::new(),
-            native_workers: std::sync::OnceLock::new(),
+            host_pool: std::sync::OnceLock::new(),
         });
         let controller = Arc::new(Controller(inner.clone()));
         (Self(inner, Some(controller)), receiver)
     }
 
-    /// The one-worker callback pool owned by this seeded world.
-    pub(crate) fn simulation_blocking_workers(
-        &self,
-    ) -> std::io::Result<&crate::workers::NativeWorkers> {
-        self.0
-            .blocking_workers
-            .get_or_init(|| crate::workers::simulation_workers("acyclic-dst-callback"))
-            .as_ref()
-            .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
-    }
-
-    /// The one-worker native pool owned by this seeded world.
-    pub(crate) fn simulation_native_workers(
-        &self,
-    ) -> std::io::Result<&crate::workers::NativeWorkers> {
-        self.0
-            .native_workers
-            .get_or_init(|| crate::workers::simulation_workers("acyclic-dst-native"))
-            .as_ref()
-            .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
+    /// The one-worker host handoff owned by this seeded world.
+    pub(crate) fn host_pool(&self) -> Arc<host::Pool> {
+        self.0.host_pool.get_or_init(|| host::Pool::new(1)).clone()
     }
 
     /// Instruments only this explicitly scoped future and its owned descendants.
@@ -675,15 +655,14 @@ where
         active,
         CURRENT.scope(Some(owned.clone()), async move {
             owned.pause("blocking:submitted").await;
-            let workers = owned
-                .schedule
-                .0
-                .executor
-                .as_ref()
-                .map(|_| owned.schedule.simulation_blocking_workers())
-                .transpose()?;
-            let host = workers
-                .map(|workers| host::Host::for_workers(workers, owned.schedule.0.progress.clone()));
+            let host = if owned.schedule.0.executor.is_some() {
+                Some(host::Host::for_pool(
+                    owned.schedule.host_pool(),
+                    owned.schedule.0.progress.clone(),
+                ))
+            } else {
+                None
+            };
             let completion = crate::run_blocking_io(
                 move || {
                     let _inline = crate::InlineBlocking::enter();
@@ -691,7 +670,7 @@ where
                 },
                 None,
             );
-            let result = host_work(completion, host, workers).await;
+            let result = host_work(completion, host).await;
             owned.pause("blocking:completed").await;
             result
         }),
@@ -704,7 +683,7 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    tokio::spawn(async move { host_work(crate::run_blocking_io(work, None), None, None).await })
+    tokio::spawn(async move { host_work(crate::run_blocking_io(work, None), None).await })
 }
 
 /// The one task that owns a blocking closure's result.
@@ -717,14 +696,10 @@ enum BlockingOwner<T> {
 async fn host_work<T>(
     completion: std::io::Result<crate::NativeCompletion<T>>,
     host: Option<Arc<host::Host>>,
-    workers: Option<&crate::workers::NativeWorkers>,
 ) -> std::io::Result<T> {
     let mut completion = completion?;
     if let Some(mut job) = completion.pending.take() {
-        let workers = match workers {
-            Some(workers) => workers,
-            None => crate::workers(&crate::BLOCKING_WORKERS, false)?,
-        };
+        let workers = crate::workers(&crate::BLOCKING_WORKERS, false)?;
         host::Work::bind(&mut job, Context::current(), host.clone());
         if let Some(host) = host {
             host.drive(queued(job, workers)).await?;
@@ -754,15 +729,13 @@ pub(crate) fn submit(
         active,
         CURRENT.scope(Some(owned.clone()), async move {
             owned.pause("native:submitted").await;
-            let workers = if owned.schedule.0.executor.is_some() {
-                owned.schedule.simulation_native_workers()
-            } else {
-                crate::workers(pool, job.meter().is_some())
-            };
-            let result = match workers {
+            let result = match crate::workers(pool, job.meter().is_some()) {
                 Ok(workers) => {
                     let host = owned.schedule.0.executor.as_ref().map(|_| {
-                        host::Host::for_workers(workers, owned.schedule.0.progress.clone())
+                        host::Host::for_pool(
+                            owned.schedule.host_pool(),
+                            owned.schedule.0.progress.clone(),
+                        )
                     });
                     host::Work::bind(&mut job, Some(owned.clone()), host.clone());
                     match host {
