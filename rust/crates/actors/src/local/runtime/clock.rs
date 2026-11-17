@@ -31,6 +31,10 @@ pub trait Clock: UnixMillisClock + ProviderPlatform + 'static {
 /// Wall clock over the shared native absolute alarm or browser event loop.
 pub struct SystemClock;
 impl UnixMillisClock for SystemClock {
+    fn is_system_clock(&self) -> bool {
+        true
+    }
+
     fn now_unix_millis(&self) -> u64 {
         acyclic_stream::SystemUnixMillisClock.now_unix_millis()
     }

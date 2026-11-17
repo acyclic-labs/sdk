@@ -44,8 +44,11 @@ impl PartialEq for LocalOptions {
             && self.object_cache == other.object_cache
             && match (&self.clock, &other.clock) {
                 (None, None) => true,
-                (Some(left), Some(right)) => std::sync::Arc::ptr_eq(left, right),
-                _ => false,
+                (Some(left), Some(right)) => {
+                    std::sync::Arc::ptr_eq(left, right)
+                        || (left.is_system_clock() && right.is_system_clock())
+                }
+                (None, Some(clock)) | (Some(clock), None) => clock.is_system_clock(),
             }
     }
 }

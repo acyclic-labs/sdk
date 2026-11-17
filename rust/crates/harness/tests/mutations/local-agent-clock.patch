@@ -1,7 +1,7 @@
-diff --git a/rust/crates/harness/src/local/agents.rs b/rust/crates/harness/src/local/agents.rs
---- a/rust/crates/harness/src/local/agents.rs
-+++ b/rust/crates/harness/src/local/agents.rs
-@@ -992,7 +992,7 @@
+diff --git a/rust/crates/harness-local/src/local/agents.rs b/rust/crates/harness-local/src/local/agents.rs
+--- a/rust/crates/harness-local/src/local/agents.rs
++++ b/rust/crates/harness-local/src/local/agents.rs
+@@ -999,7 +999,7 @@
                  history_turns: HISTORY_TURNS,
              },
              actors: ActorLimits::default(),

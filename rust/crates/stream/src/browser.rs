@@ -54,6 +54,10 @@ impl Default for BrowserStreamLimits {
 
 struct BrowserClock;
 impl UnixMillisClock for BrowserClock {
+    fn is_system_clock(&self) -> bool {
+        true
+    }
+
     fn now_unix_millis(&self) -> u64 {
         // Invalid/unavailable clocks fail deadline admission closed.
         js_sys::Date::now().to_string().parse().unwrap_or(u64::MAX)

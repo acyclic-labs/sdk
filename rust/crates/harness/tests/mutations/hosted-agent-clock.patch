@@ -1,7 +1,7 @@
-diff --git a/rust/crates/harness/src/server/actors.rs b/rust/crates/harness/src/server/actors.rs
---- a/rust/crates/harness/src/server/actors.rs
-+++ b/rust/crates/harness/src/server/actors.rs
-@@ -200,7 +200,7 @@
+diff --git a/rust/crates/harness-local/src/server/actors.rs b/rust/crates/harness-local/src/server/actors.rs
+--- a/rust/crates/harness-local/src/server/actors.rs
++++ b/rust/crates/harness-local/src/server/actors.rs
+@@ -206,7 +206,7 @@
                  Turns {
                      executors: Arc::new(executors),
                      limits: execution.turns,
