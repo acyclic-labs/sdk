@@ -4,7 +4,12 @@ mod production;
 #[kani::proof]
 fn committed_time_is_the_exact_clamped_monotonic_projection() {
     let (previous, sampled): (u64, u64) = kani::any();
-    let exact = u128::from(previous).max(u128::from(sampled) * 1_000);
-    let actual = production::committed_time(previous, sampled);
-    assert_eq!(u128::from(actual), exact.min(u128::from(u64::MAX)));
+    let expected = if sampled > u64::MAX / 1_000 {
+        u64::MAX
+    } else if sampled * 1_000 > previous {
+        sampled * 1_000
+    } else {
+        previous
+    };
+    assert_eq!(production::committed_time(previous, sampled), expected);
 }
