@@ -85,6 +85,11 @@ export function checkManifestFields(root, expectations) {
   }
 }
 
+export function checkFileCopies(root, copies) {
+  for (const [source, copy] of copies) if (!readFileSync(resolve(root, source)).equals(readFileSync(resolve(root, copy))))
+    throw new Error(`packaged source drift: ${copy}`);
+}
+
 // Evaluate the positive cfg formula directly, without expanding its Cartesian
 // product of alternatives. A negated feature cannot be expressed by Cargo's
 // positive required-features list, even inside a currently satisfied branch.
