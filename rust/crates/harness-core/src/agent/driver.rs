@@ -1345,7 +1345,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
         &'a self,
         agent: &'a AgentState,
         cursor: u64,
-        cancellation: acyclic_actors::guest::CancellationToken,
+        _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> super::ReviewFuture<'a> {
         Box::pin(async move {
             let pending = agent
@@ -1353,23 +1353,15 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 .as_ref()
                 .ok_or(Error::Record("review has no original control"))?;
             let result = if let Some(selected) = &pending.selected {
-                crate::core::until_turn_stopped(
-                    Some(cancellation),
-                    self.host.triage(agent, selected),
-                )
-                .await
-                .map(super::ReviewStep::Reviewed)
+                self.host
+                    .triage(agent, selected)
+                    .await
+                    .map(super::ReviewStep::Reviewed)
             } else {
-                crate::core::until_turn_stopped(
-                    Some(cancellation),
-                    self.host.select_approvals(
-                        agent,
-                        pending.range.start,
-                        cursor.min(pending.range.end),
-                    ),
-                )
-                .await
-                .map(super::ReviewStep::Selected)
+                self.host
+                    .select_approvals(agent, pending.range.start, cursor.min(pending.range.end))
+                    .await
+                    .map(super::ReviewStep::Selected)
             };
             result.map_err(host_error)
         })
