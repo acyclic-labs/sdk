@@ -290,20 +290,6 @@ pub enum ReadIssue {
     Refused(#[source] StreamError),
 }
 
-impl PartialEq for ReadIssue {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::AccessDenied, Self::AccessDenied)
-            | (Self::RetentionLost, Self::RetentionLost)
-            | (Self::HierarchyChanged, Self::HierarchyChanged) => true,
-            (Self::Refused(left), Self::Refused(right)) => left.category() == right.category(),
-            _ => false,
-        }
-    }
-}
-
-impl Eq for ReadIssue {}
-
 /// What the client can promise about freshness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Connectivity {
@@ -875,7 +861,7 @@ impl Reader {
             Want::Range { stream, .. } | Want::Last { stream, .. } => stream,
             Want::Listing { parent, .. } => parent,
         };
-        if self.issues.get(path) == Some(&ReadIssue::AccessDenied) {
+        if matches!(self.issues.get(path), Some(ReadIssue::AccessDenied)) {
             return None;
         }
         match want {
@@ -1817,7 +1803,10 @@ mod reader_tests {
             HeadObservation::Applied
         );
         assert_eq!(reader.cache.tail(&stream), Some(10));
-        assert_eq!(reader.issues.get(&stream), Some(&ReadIssue::RetentionLost));
+        assert!(matches!(
+            reader.issues.get(&stream),
+            Some(ReadIssue::RetentionLost)
+        ));
     }
 
     #[test]
@@ -1861,7 +1850,10 @@ mod reader_tests {
             reader.cache.anchor(&child, 0),
             Some(CommitId::from_bytes([2; 32]))
         );
-        assert_eq!(reader.issues.get(&child), Some(&ReadIssue::RetentionLost));
+        assert!(matches!(
+            reader.issues.get(&child),
+            Some(ReadIssue::RetentionLost)
+        ));
         // A child denial does not revoke an independent source grant.
         reader.denied(&child);
         assert_eq!(reader.cache.record(&source, 0).unwrap().as_ref(), b"new");
@@ -1927,7 +1919,10 @@ mod reader_tests {
             HeadObservation::Applied
         );
         assert_eq!(reader.cache.fork(&stream), Some(&changed));
-        assert_eq!(reader.issues.get(&stream), Some(&ReadIssue::RetentionLost));
+        assert!(matches!(
+            reader.issues.get(&stream),
+            Some(ReadIssue::RetentionLost)
+        ));
 
         // If a later primitive origin observation already won, an older
         // conflicting Head must reobserve before its follow can be accepted.
@@ -2204,10 +2199,12 @@ mod reader_tests {
         reader.complete(op.id(), Outcome::Records(vec![fetched(1, 10)]), 1);
         assert!(reader.cache.record(&child, 1).is_none());
         assert!(!reader.cache.origin_known(&child));
-        assert_eq!(
-            reader.issues().collect::<Vec<_>>(),
-            vec![(&source, ReadIssue::RetentionLost)]
-        );
+        let issues = reader.issues().collect::<Vec<_>>();
+        let [(path, issue)] = issues.as_slice() else {
+            panic!("expected exactly one retained issue");
+        };
+        assert_eq!(*path, &source);
+        assert!(matches!(issue, ReadIssue::RetentionLost));
     }
 
     #[test]
@@ -2376,10 +2373,12 @@ mod reader_tests {
         assert!(reader.cache.record(&child, 0).is_none());
         assert!(reader.cache.record(&grandchild, 0).is_none());
         assert!(reader.cache.record(&stream, 10).is_none());
-        assert_eq!(
-            reader.issues().collect::<Vec<_>>(),
-            vec![(&stream, ReadIssue::AccessDenied)]
-        );
+        let issues = reader.issues().collect::<Vec<_>>();
+        let [(path, issue)] = issues.as_slice() else {
+            panic!("expected exactly one denied issue");
+        };
+        assert_eq!(*path, &stream);
+        assert!(matches!(issue, ReadIssue::AccessDenied));
         // A changed page boundary invalidates only later pages of that
         // parent, even at the largest logical page, without walking history.
         let parent = StreamPath::new("test/pages").unwrap();
@@ -2783,7 +2782,10 @@ mod reader_tests {
             assert_eq!(denied_reads.issues().count(), heads.len() - 1);
             assert!(
                 heads.keys().filter(|path| *path != &denied).all(|path| {
-                    denied_reads.issues.get(path) == Some(&ReadIssue::AccessDenied)
+                    matches!(
+                        denied_reads.issues.get(path),
+                        Some(ReadIssue::AccessDenied)
+                    )
                 })
             );
 
@@ -3170,10 +3172,12 @@ mod reader_tests {
             .insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None, None);
         reader.replaced(&stream);
         assert!(reader.cache.record(&stream, 0).is_none());
-        assert_eq!(
-            reader.issues().collect::<Vec<_>>(),
-            vec![(&stream, ReadIssue::RetentionLost)]
-        );
+        let issues = reader.issues().collect::<Vec<_>>();
+        let [(path, issue)] = issues.as_slice() else {
+            panic!("expected exactly one retained issue");
+        };
+        assert_eq!(*path, &stream);
+        assert!(matches!(issue, ReadIssue::RetentionLost));
         assert_eq!(reader.connectivity(), Connectivity::Online);
         assert_eq!(
             Failure::of(&StreamError::PrefixNotRetained),

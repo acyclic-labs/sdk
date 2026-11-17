@@ -896,10 +896,11 @@ mod tests {
             assert!(driver.follows.is_empty());
             assert!(driver.waiting.is_empty(), "refused source was requeued");
             assert_eq!(reader.next_deadline(), None);
-            assert_eq!(
+            assert!(matches!(
                 reader.issues.get(&path),
-                Some(&ReadIssue::Refused(StreamError::InvalidResponse))
-            );
+                Some(ReadIssue::Refused(error))
+                    if error.category() == acyclic_stream::StreamCategory::InvalidResponse
+            ));
             assert_eq!(
                 reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
                 original.value.as_slice().as_ptr()
@@ -951,10 +952,11 @@ mod tests {
                 vec![&path],
                 "a refused read must become observable rather than stay pending"
             );
-            assert_eq!(
+            assert!(matches!(
                 reader.issue(&path),
-                Some(&ReadIssue::Refused(StreamError::NotFound))
-            );
+                Some(ReadIssue::Refused(error))
+                    if error.category() == acyclic_stream::StreamCategory::NotFound
+            ));
             assert!(std::ptr::eq(
                 reader.issue(&path).unwrap(),
                 reader.issues.get(&path).unwrap()
@@ -1007,10 +1009,11 @@ mod tests {
                 b"unrelated committed row",
                 "a definite refusal cannot delay another stream"
             );
-            assert_eq!(
+            assert!(matches!(
                 reader.issue(&path),
-                Some(&ReadIssue::Refused(StreamError::NotFound))
-            );
+                Some(ReadIssue::Refused(error))
+                    if error.category() == acyclic_stream::StreamCategory::NotFound
+            ));
 
             provider
                 .append(AppendRequest {
