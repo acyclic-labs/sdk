@@ -21,6 +21,9 @@ def _deny_test_impl(ctx):
     )
     advisory_map = ctx.actions.declare_file(ctx.label.name + ".advisory-inputs.json")
     ctx.actions.write(advisory_map, json.encode([[file.path, _relative_external(file)] for file in ctx.files._advisories]))
+    members = sorted([_relative_external(file) for file in ctx.files._advisories if _relative_external(file).startswith("crates/") and _relative_external(file).endswith(".md") and len(_relative_external(file).split("/")) == 3])
+    if not members:
+        fail("advisory snapshot has no crate advisory member")
     advisory_tree = ctx.actions.declare_directory(ctx.label.name + ".advisories")
     ctx.actions.run(
         executable = ctx.executable._node,
@@ -49,7 +52,7 @@ def _deny_test_impl(ctx):
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
     ctx.actions.write(
         script,
-        "#!/bin/sh\ncd \"$TEST_SRCDIR/$TEST_WORKSPACE\" || exit 1\nexec \"%s\" \"%s\" \"$TEST_SRCDIR/$TEST_WORKSPACE/deny-compiler/bin/cargo\"\n" % (ctx.executable._node.short_path, ctx.file._runner.short_path),
+        "#!/bin/sh\ncd \"$TEST_SRCDIR/$TEST_WORKSPACE\" || exit 1\nexec \"%s\" \"%s\" \"$TEST_SRCDIR/$TEST_WORKSPACE/deny-compiler/bin/cargo\" \"%s\"\n" % (ctx.executable._node.short_path, ctx.file._runner.short_path, members[0]),
         is_executable = True,
     )
     return [DefaultInfo(executable = script, runfiles = runfiles)]
