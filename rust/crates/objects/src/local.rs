@@ -999,7 +999,6 @@ impl std::fmt::Debug for LocalMedium {
 #[cfg(test)]
 mod isolation_tests {
     use super::*;
-    use futures::FutureExt as _;
 
     fn bytes(value: &[u8]) -> OwnedBytes {
         OwnedBytes::from(value.to_vec())
@@ -1326,7 +1325,12 @@ mod isolation_tests {
 
     #[test]
     fn local_storage_progresses_with_an_occupied_input_worker() {
-        let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
+        // Saturate this executor independently of the host's CPU count.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
         let (started, starting) = std::sync::mpsc::channel();
         let (release, held) = std::sync::mpsc::channel::<()>();
         let input = runtime.spawn_blocking(move || {
@@ -1335,9 +1339,6 @@ mod isolation_tests {
         });
         starting.recv().unwrap();
         runtime.block_on(async {
-            // The old route cannot start until the input producer closes.
-            let mut old_route = Box::pin(tokio::task::spawn_blocking(|| ()));
-            assert!(old_route.as_mut().now_or_never().is_none());
             let root = tempfile::tempdir().unwrap();
             let store = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
                 .await
@@ -1378,11 +1379,11 @@ mod isolation_tests {
                 b"after"
             );
             assert!(
-                !store
+                store
                     .replace(stale, OwnedBytes::from(b"wrong".to_vec()))
                     .await
                     .unwrap()
-                    .is_some()
+                    .is_none()
             );
             assert!(
                 store
@@ -1393,7 +1394,6 @@ mod isolation_tests {
             // Dropping the sole input producer terminates the blocked read.
             drop(release);
             assert!(input.await.unwrap().is_err());
-            old_route.await.unwrap();
         });
     }
 }
