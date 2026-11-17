@@ -31,7 +31,7 @@ await Promise.all(Array.from({length: 16}, async () => {
       const entry = JSON.parse(line);
       if (!versions.has(entry.vers)) continue;
       if (entry.name !== name || entry.cksum !== versions.get(entry.vers) || typeof entry.yanked !== 'boolean') throw Error(`${name} ${entry.vers}: invalid index entry`);
-      records[entry.vers] = entry.yanked;
+      records[entry.vers] = {yanked: entry.yanked, checksum: entry.cksum};
     }
     for (const version of versions.keys()) if (!(version in records)) throw Error(`${name} ${version}: missing pinned index entry`);
     found.set(name, records);

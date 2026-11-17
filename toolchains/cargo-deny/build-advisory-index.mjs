@@ -4,8 +4,8 @@ import {readFileSync, writeFileSync} from 'node:fs';
 import {gunzipSync} from 'node:zlib';
 import {ranges} from './advisory-ranges.mjs';
 
-const [archive, output] = process.argv.slice(2);
-if (!archive || !output) throw Error('expected advisory archive and output path');
+const [archive, registryFile, output] = process.argv.slice(2);
+if (!archive || !registryFile || !output) throw Error('expected advisory archive, registry state and output path');
 const tar = gunzipSync(readFileSync(archive));
 const crates = Object.create(null);
 for (let offset = 0; offset + 512 <= tar.length;) {
@@ -39,4 +39,6 @@ for (let offset = 0; offset + 512 <= tar.length;) {
 }
 if (!Object.keys(crates).length) throw Error('pinned archive contains no crate advisories');
 for (const entries of Object.values(crates)) entries.sort((a, b) => a.id.localeCompare(b.id, 'en'));
-writeFileSync(output, JSON.stringify(Object.fromEntries(Object.entries(crates).sort(([a], [b]) => a.localeCompare(b, 'en')))) + '\n');
+const registry = JSON.parse(readFileSync(registryFile, 'utf8'));
+if (!/^[0-9a-f]{40}$/.test(registry.commit) || !registry.crates || !Object.keys(registry.crates).length) throw Error('invalid pinned registry state');
+writeFileSync(output, JSON.stringify({advisories: Object.fromEntries(Object.entries(crates).sort(([a], [b]) => a.localeCompare(b, 'en'))), registry}) + '\n');

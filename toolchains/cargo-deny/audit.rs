@@ -55,7 +55,7 @@ fn resolved_crates_have_no_unpatched_advisories() {
         let name = entry["name"].as_str().expect("crate name");
         let version = Version::parse(entry["version"].as_str().expect("crate version"))
             .expect("valid crate version");
-        if let Some(advisories) = index.get(name) {
+        if let Some(advisories) = index["advisories"].get(name) {
             for advisory in advisories.as_array().expect("advisories are an array") {
                 if !matches_any(&version, &advisory["patched"])
                     && !matches_any(&version, &advisory["unaffected"])

@@ -12,11 +12,12 @@ rust_test(
     edition = "2024",
     crate_root = "audit.rs",
     srcs = ["audit.rs"],
-    data = [":advisory_db", ":acknowledgements.json", "//:cargo-bazel-lock.json"],
+    data = [":advisory_db", ":acknowledgements.json", "//:cargo-bazel-lock.json", "//:deny.toml"],
     env = {
         "ADVISORY_INDEX": "$(rootpath :advisory_db)",
         "ADVISORY_ACKNOWLEDGEMENTS": "$(rootpath :acknowledgements.json)",
         "CRATE_LOCK": "$(rootpath //:cargo-bazel-lock.json)",
+        "DENY_POLICY": "$(rootpath //:deny.toml)",
     },
-    deps = ["@sdk_crates//semver-1.0.28", "@sdk_crates//serde_json-1.0.154"],
+    deps = ["@sdk_crates//semver-1.0.28", "@sdk_crates//serde_json-1.0.154", "@sdk_crates//toml-1.1.6+spec-1.1.0"],
 )
