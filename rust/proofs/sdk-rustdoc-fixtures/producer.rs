@@ -118,55 +118,45 @@ fn main() {
     if artifacts.as_os_str().is_empty() {
         fs::copy(rustdoc, output).unwrap();
     } else {
-        fn relocate(value: &mut serde_json::Value, prefix: &str) {
+        fn retain(
+            value: &mut serde_json::Value,
+            target: &std::path::Path,
+            artifacts: &std::path::Path,
+        ) {
             match value {
                 serde_json::Value::String(text) => {
-                    if let Some(suffix) = text.strip_prefix(prefix) {
-                        *text = format!("@fixture-target@{suffix}");
+                    let source = std::path::Path::new(text);
+                    if let Ok(relative) = source.strip_prefix(target) {
+                        let destination = artifacts.join(relative);
+                        assert!(
+                            source.is_file(),
+                            "missing Rustdoc artifact: {}",
+                            source.display()
+                        );
+                        if !destination.exists() {
+                            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                            fs::copy(source, destination).unwrap();
+                        }
+                        *text = format!("@fixture-target@/{}", relative.display());
                     }
                 }
                 serde_json::Value::Array(values) => {
-                    values.iter_mut().for_each(|value| relocate(value, prefix));
+                    values
+                        .iter_mut()
+                        .for_each(|value| retain(value, target, artifacts));
                 }
                 serde_json::Value::Object(values) => {
                     values
                         .values_mut()
-                        .for_each(|value| relocate(value, prefix));
+                        .for_each(|value| retain(value, target, artifacts));
                 }
                 _ => {}
             }
         }
         let mut json: serde_json::Value =
-            serde_json::from_slice(&fs::read(&rustdoc).unwrap()).unwrap();
-        fs::remove_file(rustdoc).unwrap();
-        relocate(&mut json, target.to_str().unwrap());
-        fs::rename(&target, &artifacts).unwrap();
-        fn check_artifacts(value: &serde_json::Value, artifacts: &std::path::Path) {
-            match value {
-                serde_json::Value::String(text) => {
-                    if let Some(suffix) = text.strip_prefix("@fixture-target@") {
-                        let path = artifacts.join(suffix.trim_start_matches(['/', '\\']));
-                        assert!(
-                            path.exists(),
-                            "missing Rustdoc artifact: {}",
-                            path.display()
-                        );
-                    }
-                }
-                serde_json::Value::Array(values) => {
-                    values
-                        .iter()
-                        .for_each(|value| check_artifacts(value, artifacts));
-                }
-                serde_json::Value::Object(values) => {
-                    values
-                        .values()
-                        .for_each(|value| check_artifacts(value, artifacts));
-                }
-                _ => {}
-            }
-        }
-        check_artifacts(&json, &artifacts);
+            serde_json::from_slice(&fs::read(rustdoc).unwrap()).unwrap();
+        fs::create_dir_all(&artifacts).unwrap();
+        retain(&mut json, &target, &artifacts);
         fs::write(output, serde_json::to_vec(&json).unwrap()).unwrap();
     }
     fs::remove_dir_all(root).unwrap();
