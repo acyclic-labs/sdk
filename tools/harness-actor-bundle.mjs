@@ -78,12 +78,12 @@ if (import.meta.main) {
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`STEP ${name} failed (exit ${result.status}); recovery: bun tools/harness-actor-bundle.mjs`);
   };
-  if (values.proto) step("proto", values.proto, []);
+  if (values.proto) step("proto", resolve(values.proto), []);
   const place = (source, destination) => {
     if (!source) return;
     rmSync(join(root, destination), { recursive: true, force: true });
     mkdirSync(join(root, destination), { recursive: true });
-    cpSync(source, join(root, destination), { recursive: true });
+    cpSync(resolve(source), join(root, destination), { recursive: true });
   };
   place(values["harness-wasm"], "typescript/packages/harness/generated/wasm");
   place(values["manifest-wasm"], "typescript/packages/workers/generated/wasm");

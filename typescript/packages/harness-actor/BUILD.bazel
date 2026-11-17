@@ -5,7 +5,7 @@ genrule(
     name = "proto",
     srcs = ["//:tools/generate-proto.mjs"],
     outs = ["proto.sh"],
-    cmd = "printf '#!/usr/bin/env bash\\nset -euo pipefail\\ncd \"$$BUILD_WORKSPACE_DIRECTORY\"\\nexec bun tools/generate-proto.mjs \"$$@\"\\n' > $@ && chmod +x $@",
+    cmd = "printf '#!/usr/bin/env bash\\nset -euo pipefail\\nexec bun \"$$BUILD_WORKSPACE_DIRECTORY/tools/generate-proto.mjs\" \"$$@\"\\n' > $@ && chmod +x $@",
     executable = True,
 )
 
@@ -18,6 +18,6 @@ genrule(
         "//rust/crates/manifest:acyclic_manifest_wasm",
     ],
     outs = ["bundle.sh"],
-    cmd = "printf '#!/usr/bin/env bash\\nset -euo pipefail\\ncd \"$$BUILD_WORKSPACE_DIRECTORY\"\\nexec bun tools/harness-actor-bundle.mjs --proto \"$(location :proto)\" --harness-wasm \"$(location //rust/crates/harness-providers:acyclic_harness_wasm)\" --manifest-wasm \"$(location //rust/crates/manifest:acyclic_manifest_wasm)\" \"$$@\"\\n' > $@ && chmod +x $@",
+    cmd = "printf '#!/usr/bin/env bash\\nset -euo pipefail\\nexec bun \"$$BUILD_WORKSPACE_DIRECTORY/tools/harness-actor-bundle.mjs\" --proto \"$(location :proto)\" --harness-wasm \"$(location //rust/crates/harness-providers:acyclic_harness_wasm)\" --manifest-wasm \"$(location //rust/crates/manifest:acyclic_manifest_wasm)\" \"$$@\"\\n' > $@ && chmod +x $@",
     executable = True,
 )
