@@ -406,3 +406,94 @@ async fn local_socket_metadata_must_be_owner_private() -> Result<(), Box<dyn std
     std::fs::remove_dir(&directory)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn native_rpc_retains_exact_lease_at_dispatch_and_reply()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use acyclic_auth::credential::{CredentialCache, CredentialSnapshot, CredentialValidity};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    for stage in ["dispatch", "reply", "rejection", "unchanged"] {
+        let cache = CredentialCache::new(
+            |_| async { CredentialSnapshot::new("opaque.account+/=".into(), [1; 32].into(), 100) },
+            || CredentialValidity {
+                now_unix_seconds: 1,
+                revision: Some([1; 32].into()),
+            },
+        );
+        let original = cache.resolve().await?;
+        let key = IdempotencyKey::new();
+        let operation = OperationId::new();
+        let machine = MachineId::new();
+        let state = operation_state(operation, wire::OperationStatus::Succeeded);
+        let service = OperationService {
+            guest: None,
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: state.clone(),
+            cancelled: state,
+            watch: WatchReply::Items(Vec::new()),
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let received = calls.clone();
+        let source = cache.clone();
+        let (provider, shutdown, server) =
+            serve_operation_service_with(service, move |request: Request<()>| {
+                if request
+                    .metadata()
+                    .get("authorization")
+                    .is_none_or(|value| value != "Bearer opaque.account+/=")
+                {
+                    return Err(Status::unauthenticated("original bearer absent"));
+                }
+                received.fetch_add(1, Ordering::SeqCst);
+                if stage == "reply" {
+                    source
+                        .invalidate()
+                        .map_err(|_| Status::unavailable("source owner lost"))?;
+                }
+                if stage == "rejection" {
+                    return Err(Status::unauthenticated("original bearer rejected"));
+                }
+                Ok(request)
+            })
+            .await?;
+        let provider = provider.with_credential_provider(cache.clone().into());
+        let mut client = provider.client().await?;
+        if stage == "dispatch" {
+            cache.invalidate()?;
+        }
+        let result = client.inspect_operation(operation_request(operation)).await;
+        if stage == "unchanged" {
+            assert_eq!(
+                result?.into_inner().operation.unwrap().value,
+                operation.as_bytes()
+            );
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.code(),
+                if stage == "rejection" {
+                    Code::Unauthenticated
+                } else {
+                    Code::Unavailable
+                }
+            );
+            if stage != "rejection" {
+                assert!(std::error::Error::source(&error).is_some());
+            }
+            assert!(
+                original.check().await.is_err(),
+                "the original lease must lose admission"
+            );
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            usize::from(stage != "dispatch")
+        );
+        let _ = shutdown.send(());
+        server.await??;
+    }
+    Ok(())
+}

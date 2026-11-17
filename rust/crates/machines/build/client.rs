@@ -61,9 +61,14 @@ pub fn generate(output: &Path) -> Result<(), Box<dyn std::error::Error>> {
             contract,
             "/// Invoke the original {name} RPC once.\n{signature};"
         )?;
+        let native_request = if method.client_streaming() {
+            "request"
+        } else {
+            "Request::new(request)"
+        };
         writeln!(
             native,
-            "{signature} {{ async move {{ Self::{rust}(self, request).await }} }}"
+            "{signature} {{ async move {{ let request = self.request({native_request})?; let response = self.inner.{rust}(request).await; self.admit(response).await }} }}"
         )?;
         let request = if method.client_streaming() {
             "request".to_owned()

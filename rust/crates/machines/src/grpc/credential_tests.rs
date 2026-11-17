@@ -33,8 +33,8 @@ fn credential_callbacks_are_fresh_sensitive_and_fail_before_rpc() {
                     }));
                     prop_assert!(provider.endpoint.authorization.0.is_none());
                     for value in &expected {
-                        let mut authorization = provider.endpoint.authorization().await.unwrap();
-                        let request = authorization.call(Request::new(())).unwrap();
+                        let client = provider.client().await.unwrap();
+                        let request = client.request(Request::new(())).unwrap();
                         let header = request.metadata().get("authorization").unwrap();
                         prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));
                         prop_assert!(header.is_sensitive());
@@ -42,7 +42,7 @@ fn credential_callbacks_are_fresh_sensitive_and_fail_before_rpc() {
                     prop_assert_eq!(index.load(Ordering::Relaxed), expected.len());
                     prop_assert!(matches!(
                         provider.client().await,
-                        Err(ProviderError::Rejected(_))
+                        Err(error) if matches!(error.classification(), ProviderError::Rejected(_))
                     ));
                     let key =
                         IdempotencyKey::parse("00000000-0000-0000-0000-000000000041").unwrap();

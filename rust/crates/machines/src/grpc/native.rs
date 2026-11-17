@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_auth::{channel, credential::ResolvedCredential};
 use tonic::transport::{
     Certificate, Channel, ClientTlsConfig, Endpoint as TonicEndpoint, Identity,
 };
@@ -40,8 +41,32 @@ impl Interceptor for BearerAuth {
     }
 }
 
-pub(super) type Client =
-    wire::machines_service_client::MachinesServiceClient<InterceptedService<Channel, BearerAuth>>;
+#[derive(Clone)]
+pub(super) struct Client {
+    pub(super) inner: wire::machines_service_client::MachinesServiceClient<
+        InterceptedService<channel::CredentialChannel, BearerAuth>,
+    >,
+    credential: Option<ResolvedCredential>,
+}
+
+impl Client {
+    pub(super) fn request<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
+        if let Some(credential) = &self.credential {
+            channel::retain_credential(&mut request, credential)?;
+        }
+        Ok(request)
+    }
+
+    pub(super) async fn admit<T>(
+        &self,
+        response: Result<tonic::Response<T>, Status>,
+    ) -> Result<tonic::Response<T>, Status> {
+        match &self.credential {
+            Some(credential) => channel::admit_response(credential, response).await,
+            None => response,
+        }
+    }
+}
 
 /// Authenticated remote Machines provider.
 #[derive(Clone)]
@@ -188,27 +213,23 @@ impl Provider<NativeEndpoint> {
 }
 
 impl NativeEndpoint {
-    pub(super) async fn authorization(&self) -> Result<BearerAuth, ProviderError> {
-        if let Some(provider) = &self.credential {
-            let token = provider.resolve().await.map_err(|_| {
-                ProviderError::Rejected("Machines credential renewal failed".into())
-            })?;
-            BearerAuth::new(&token)
-        } else {
-            Ok(self.authorization.clone())
-        }
-    }
-
     async fn authenticated_client(&self) -> Result<Client, ProviderError> {
-        let authorization = self.authorization().await?;
-        Ok(
-            wire::machines_service_client::MachinesServiceClient::with_interceptor(
-                self.channel.clone(),
-                authorization,
+        let credential = match &self.credential {
+            Some(provider) => Some(provider.resolve().await.map_err(|cause| {
+                ProviderError::Rejected("Machines credential renewal failed".into())
+                    .with_cause(cause)
+            })?),
+            None => None,
+        };
+        Ok(Client {
+            inner: wire::machines_service_client::MachinesServiceClient::with_interceptor(
+                channel::guard(self.channel.clone()),
+                self.authorization.clone(),
             )
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES),
-        )
+            credential,
+        })
     }
 }
 

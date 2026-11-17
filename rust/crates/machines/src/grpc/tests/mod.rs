@@ -504,6 +504,34 @@ async fn serve_operation_service(
     ),
     Box<dyn std::error::Error + Send + Sync>,
 > {
+    serve_operation_service_with(service, |request: Request<()>| {
+        let values: Vec<_> = request.metadata().get_all("authorization").iter().collect();
+        if values.len() != 1
+            || values
+                .first()
+                .is_none_or(|value| *value != "Bearer opaque.account+/=")
+        {
+            return Err(Status::unauthenticated("missing or substituted bearer"));
+        }
+        Ok(request)
+    })
+    .await
+}
+
+async fn serve_operation_service_with<I>(
+    service: OperationService,
+    authorization: I,
+) -> Result<
+    (
+        GrpcProvider,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    ),
+    Box<dyn std::error::Error + Send + Sync>,
+>
+where
+    I: tonic::service::Interceptor + Clone + Send + Sync + 'static,
+{
     // Contract fixtures keep real HTTP/2 framing and generated RPCs, while
     // Tokio owns every wakeup. A paused clock cannot outrun kernel socket I/O.
     let (incoming, connections) = tokio::sync::mpsc::channel(1);
@@ -512,18 +540,7 @@ async fn serve_operation_service(
         Server::builder()
             .add_service(MachinesServiceServer::with_interceptor(
                 service,
-                |request: Request<()>| {
-                    let values: Vec<_> =
-                        request.metadata().get_all("authorization").iter().collect();
-                    if values.len() != 1
-                        || values
-                            .first()
-                            .is_none_or(|value| *value != "Bearer opaque.account+/=")
-                    {
-                        return Err(Status::unauthenticated("missing or substituted bearer"));
-                    }
-                    Ok(request)
-                },
+                authorization,
             ))
             .serve_with_incoming_shutdown(ReceiverStream::new(connections), async {
                 let _ = shutdown_rx.await;
