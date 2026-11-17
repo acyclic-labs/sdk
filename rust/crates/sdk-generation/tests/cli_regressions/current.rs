@@ -458,7 +458,9 @@ fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
     let feature = "native-execution-observation-".repeat(8);
     let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
     let original = fs::read_to_string(&manifest).unwrap();
-    fs::write(&manifest, format!("{original}\n{feature} = []\n")).unwrap();
+    let declared = include_str!("../fixtures/feature-profile/rust/crates/demo/long-features.toml");
+    assert_eq!(declared, format!("{original}\n{feature} = []\n"));
+    fs::write(&manifest, declared).unwrap();
     git(&fixture.root, &["add", "."]);
     git(
         &fixture.root,
