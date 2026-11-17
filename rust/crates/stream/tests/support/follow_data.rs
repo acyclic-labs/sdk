@@ -158,7 +158,7 @@ pub fn exercise(next: u64, gap: u16, payload: &[u8], broken: bool) {
         "LATEST accepts a conflated cursor"
     );
     assert_eq!(
-        follow_sequence(follow.delivery, next, &data),
+        follow_sequence(follow.delivery, next, &data).map_err(|error| error.category()),
         Ok(next + gap - 1)
     );
     let canonical = data.encode_to_vec();
@@ -180,14 +180,20 @@ pub fn exercise(next: u64, gap: u16, payload: &[u8], broken: bool) {
         next: next + 1,
         opaque: Bytes::new(),
     };
-    assert_eq!(validate_follow(&follow, &resume), Ok(()));
+    assert_eq!(
+        validate_follow(&follow, &resume).map_err(|error| error.category()),
+        Ok(())
+    );
     follow.preceding_commit_id = Bytes::from_static(&[7; 31]);
     assert!(validate_follow(&follow, &resume).is_err());
     follow.preceding_commit_id = Bytes::from_static(&[7; 32]);
     follow.delivery = wire::SessionDelivery::Latest as i32;
     assert!(validate_follow(&follow, &resume).is_err());
     follow.preceding_commit_id = Bytes::new();
-    assert_eq!(validate_follow(&follow, &resume), Ok(()));
+    assert_eq!(
+        validate_follow(&follow, &resume).map_err(|error| error.category()),
+        Ok(())
+    );
 
     data.item = Some(wire::session_data::Item::Record(wire::Record {
         sequence: next,
@@ -200,7 +206,8 @@ pub fn exercise(next: u64, gap: u16, payload: &[u8], broken: bool) {
         opaque: Bytes::new(),
     });
     assert_eq!(
-        follow_sequence(wire::SessionDelivery::All as i32, next, &data),
+        follow_sequence(wire::SessionDelivery::All as i32, next, &data)
+            .map_err(|error| error.category()),
         Ok(next)
     );
     data.after = Some(wire::SessionCursor {

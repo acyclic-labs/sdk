@@ -190,7 +190,10 @@ fn an_older_peer_cannot_confirm_a_checked_follow() {
             .map_err(|error| error.category()),
         Err(StreamCategory::Unsupported)
     );
-    assert_eq!(confirm_follow(None, &opened), Ok(()));
+    assert_eq!(
+        confirm_follow(None, &opened).map_err(|error| error.category()),
+        Ok(())
+    );
 }
 
 fn reject_mutant(fault: Fault, invariant: &str) {
