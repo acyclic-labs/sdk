@@ -170,11 +170,16 @@ pub(crate) fn reserve_admitted<T>(
     let admitted = needed
         .checked_mul(width)
         .ok_or(Error::from(ErrorCode::QuotaExceeded))?;
+    let held = admitted
+        .checked_add(values.capacity() * width)
+        .ok_or(Error::from(ErrorCode::QuotaExceeded))?;
     allocation.admit(admitted)?;
     values
         .try_reserve_exact(additional)
         .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
-    allocation.capacity(admitted, values.capacity() * width)
+    // Both backings stay funded through reallocation; only the replacement
+    // remains live once it succeeds.
+    allocation.capacity(held, values.capacity() * width)
 }
 
 impl Manifest {
