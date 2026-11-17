@@ -61,7 +61,7 @@ fn credential_status(
 }
 
 fn response_credential_error(error: CredentialError) -> Status {
-    credential_status(error.denial_cause(), ResponseCredentialError(error))
+    credential_status(error.denial_cause(), ResponseCredentialError(Some(error)))
 }
 
 fn stopped_status(reason: crate::operation::Stopped) -> Status {

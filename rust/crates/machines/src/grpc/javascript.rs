@@ -255,5 +255,15 @@ fn status(error: JsValue) -> Status {
             "public Machines transport failed; recovery: retain the original operation identity"
                 .into()
         });
-    Status::new(code, message)
+    let mut status = Status::new(code, message);
+    if Reflect::get(&error, &JsValue::from_str("responseCredentialAdmission"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
+        status.set_source(std::sync::Arc::new(
+            acyclic_auth::credential::ResponseCredentialError::from_browser(),
+        ));
+    }
+    status
 }
