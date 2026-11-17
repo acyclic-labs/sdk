@@ -62,6 +62,7 @@ impl PartialEq for Evaluated {
 }
 
 mod prepared;
+pub(crate) use prepared::visit_module_sources;
 pub use prepared::{Evaluation, ModuleRead, Prepared, prepare};
 mod composition;
 pub use composition::{
