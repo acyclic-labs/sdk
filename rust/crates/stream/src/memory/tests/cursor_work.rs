@@ -346,7 +346,7 @@ fn singleton_reads_retain_the_window_inline_without_allocating() {
             if old {
                 old_cursor = BaselineCursor::new(stream, stream.tail, 0);
             } else {
-                cursor = HistoryCursor::new(stream, stream.tail, 0);
+                cursor = HistoryCursor::new(stream, stream.tail, 0).expect("read-only cut");
             }
         });
         measurements.push((allocation.count_total, allocation.bytes_total));

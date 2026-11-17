@@ -81,7 +81,7 @@ impl HistoryCursor {
         } else {
             from
         };
-        let mut cursor = Self::new(path, path.tail, start);
+        let mut cursor = Self::new(path, path.tail, start)?;
         #[cfg(not(target_arch = "wasm32"))]
         {
             cursor.work = work;
@@ -177,17 +177,15 @@ impl HistoryCursor {
             registration: None,
         }
     }
-    #[cfg(test)]
-    fn new(path: &PathState, tail: u64, next: u64) -> Self {
+    fn new(path: &PathState, tail: u64, next: u64) -> Result<Self, StreamError> {
         let records = FiniteRead {
-            history: PinnedHistory::new(path, tail, &mut ReadOnlyWork)
-                .expect("read-only history cut"),
+            history: PinnedHistory::new(path, tail, &mut ReadOnlyWork)?,
             window: path.prefix_window(next, tail),
             key: None,
             next,
             remaining: 0,
         };
-        Self {
+        Ok(Self {
             end: None,
             records,
             #[cfg(not(target_arch = "wasm32"))]
@@ -195,7 +193,7 @@ impl HistoryCursor {
             awaiting_creation: false,
             opening_tail: None,
             registration: None,
-        }
+        })
     }
     fn sync(&mut self, path: &PathState) -> Result<(), StreamError> {
         let root = path.history.as_ref();

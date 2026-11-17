@@ -176,7 +176,7 @@ fn disabling_the_index_exposes_the_historical_scan_slope() {
                 .unwrap()
                 .unwrap();
             let mut scanned = 0;
-            let mut cursor = HistoryCursor::new(&path, path.tail, 0);
+            let mut cursor = HistoryCursor::new(&path, path.tail, 0).expect("read-only cut");
             let expected = loop {
                 let record = cursor.next_record().await.unwrap().unwrap();
                 scanned += 1;
