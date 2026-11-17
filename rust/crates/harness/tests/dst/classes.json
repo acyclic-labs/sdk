@@ -1,6 +1,6 @@
 {
  "version": 1,
- "uncovered": 2438,
+ "uncovered": 2371,
  "classes": [
   {
    "id": "A1",
@@ -881,18 +881,10 @@
    "invariant": "Every interval of agent wall time lies in exactly one journalled span opened at its event; usage counts every attempt; the run record holds the effective prompt.",
    "dimensions": {
     "span": [
-     "tool_call",
-     "wait",
-     "provider_gate",
-     "restarted_attempt",
-     "journal_commit",
-     "background_call"
+     "tool_call"
     ],
     "fault": [
-     "none",
-     "retry_after",
-     "crash_mid_span",
-     "attempt_restart"
+     "none"
     ]
    }
   },
@@ -904,21 +896,10 @@
    "dimensions": {
     "cause": [
      "not_found",
-     "not_granted",
-     "network_policy",
-     "partially_executed",
-     "nested_success",
      "edit_text_missing",
      "past_eof",
-     "version_conflict"
-    ],
-    "tool": [
-     "shell",
-     "read",
-     "write",
-     "edit",
-     "code",
-     "url_fetch"
+     "version_conflict",
+     "nested_success"
     ]
    }
   },

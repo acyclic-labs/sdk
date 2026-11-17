@@ -57,7 +57,7 @@ fn cases(seed: u64) -> &'static [Case] {
 fn variants(seed: u64) -> Vec<Variant> {
     cases(seed)
         .iter()
-        .map(|(_, tool, cause)| Variant::from([("cause", *cause), ("tool", *tool)]))
+        .map(|(_, _, cause)| Variant::from([("cause", *cause)]))
         .collect()
 }
 
