@@ -87,7 +87,7 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
   // reached. Retained producer graphs instead use their selected lockfile.
   if (!patchConfig && !lockFile) for (const patch of patches)
     manifests.add(slash(path.relative(root, path.join(patch.directory, 'Cargo.toml'))));
-  const packages = [];
+  const packages = new Map();
   const pending = [...manifests];
   const enqueueLockedPatches = (name, version) => {
     if (!lock) return;
@@ -166,7 +166,10 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
             if (selected && declaration.path && rootManifest.workspace && !next.startsWith('../') && !path.isAbsolute(next) && !excluded(next)) {
               const dependency = toml(root, next);
               const explicitWorkspace = dependency.package?.workspace && path.resolve(local, dependency.package.workspace);
-              if (!dependency.workspace && (!explicitWorkspace || explicitWorkspace === root)) members.add(next);
+              if (!dependency.workspace && (!explicitWorkspace || explicitWorkspace === root) && !members.has(next)) {
+                members.add(next);
+                if (packages.has(next)) pending.push(next);
+              }
             }
           }
           dependencies.push({name: declaration.package ?? alias, rename: declaration.package ? alias : null,
@@ -215,10 +218,10 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
     for (const key of ['license', 'license-file', 'description', 'repository', 'homepage', 'documentation', 'links', 'default-run', 'rust-version']) p[key.replaceAll('-', '_')] = own[key] ?? null;
     p.edition = own.edition ?? '2015';
     p.readme = own.readme === false ? null : own.readme ?? ['README.md', 'README.txt', 'README'].find(name => exists(path.join(directory, name))) ?? null;
-    packages.push(p);
+    packages.set(file, p);
   }
-  for (const p of packages) p.workspace_member = members.has(slash(path.relative(root, p.manifest_path)));
-  return packages.sort((a, b) => a.name.localeCompare(b.name, 'en'));
+  for (const p of packages.values()) p.workspace_member = members.has(slash(path.relative(root, p.manifest_path)));
+  return [...packages.values()].sort((a, b) => a.name.localeCompare(b.name, 'en'));
 }
 
 function defaultWorkspaceMembers(root, local) {
