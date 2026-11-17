@@ -19,11 +19,11 @@ pub(super) fn write<const N: usize>(
     expires_at_millis: u64,
     length: usize,
     text: &mut [u8; N],
-) {
+) -> Result<(), hex::FromHexError> {
     const {
         assert!(N >= MAX_ENCODED_BYTES);
     };
-    write_buffer(workspace, lease, expires_at_millis, length, text);
+    write_buffer(workspace, lease, expires_at_millis, length, text)
 }
 
 // The production entry above retains its compile-time capacity bound. This
@@ -34,16 +34,15 @@ pub(super) fn write_buffer<const N: usize>(
     expires_at_millis: u64,
     length: usize,
     text: &mut [u8; N],
-) {
+) -> Result<(), hex::FromHexError> {
     text[..PREFIX.len()].copy_from_slice(PREFIX);
     let mut cursor = PREFIX.len();
     write_identity(
         workspace,
         text[cursor..cursor + workspace.len() * 2]
             .first_chunk_mut::<32>()
-            .expect("workspace identity slice has its fixed capacity"),
-        true,
-    );
+            .ok_or(hex::FromHexError::InvalidStringLength)?,
+    )?;
     cursor += workspace.len() * 2;
     text[cursor..cursor + SEPARATOR.len()].copy_from_slice(SEPARATOR);
     cursor += SEPARATOR.len();
@@ -51,9 +50,8 @@ pub(super) fn write_buffer<const N: usize>(
         lease,
         text[cursor..cursor + lease.len() * 2]
             .first_chunk_mut::<32>()
-            .expect("lease identity slice has its fixed capacity"),
-        false,
-    );
+            .ok_or(hex::FromHexError::InvalidStringLength)?,
+    )?;
     cursor += lease.len() * 2;
     text[cursor] = b'/';
     let mut number = expires_at_millis;
@@ -61,18 +59,18 @@ pub(super) fn write_buffer<const N: usize>(
         text[position] = b'0' + (number % 10) as u8;
         number /= 10;
     }
+    Ok(())
 }
 
-// The component harness checks canonical bytes. Its modifies-only contract
-// supplies the write effect to the caller's buffer-safety proofs; those stubs
-// do not establish the resulting path's byte semantics.
+// The component harness checks canonical bytes. Its contract supplies the
+// write effect and successful fixed-width encoding to buffer-safety proofs;
+// those stubs do not establish the resulting path's byte semantics.
 #[cfg_attr(kani, kani::modifies(text))]
+#[cfg_attr(kani, kani::ensures(|result| result.is_ok()))]
 #[inline]
-pub(super) fn write_identity(identity: [u8; 16], text: &mut [u8; 32], workspace: bool) {
-    let result = hex::encode_to_slice(identity, text);
-    if workspace {
-        result.expect("fixed-width workspace lease path has its exact hex capacity");
-    } else {
-        result.expect("fixed-width lease identity has its exact hex capacity");
-    }
+pub(super) fn write_identity(
+    identity: [u8; 16],
+    text: &mut [u8; 32],
+) -> Result<(), hex::FromHexError> {
+    hex::encode_to_slice(identity, text)
 }
