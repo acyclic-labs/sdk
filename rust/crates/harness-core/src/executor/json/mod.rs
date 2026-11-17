@@ -1,4 +1,5 @@
 //! Bounded JSON at the executor's existing IO boundary.
+//! Record schemas and literal decoding describe the same admitted document.
 use crate::{Error, Result};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
