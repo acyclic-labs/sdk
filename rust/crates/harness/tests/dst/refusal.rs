@@ -35,18 +35,21 @@ acyclic_test_support::cases! {
     module = every_refusal_names_its_true_cause,
     values: u64,
     runner = super::run,
-    cases = [seed_0 => 0, seed_1 => 1],
+    cases = [seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3, seed_4 => 4],
 }
 
 fn run(seed: u64) -> std::result::Result<(), String> {
     GENERATOR.run(seed)
 }
 
-/// The cases one world drives; a world stays well inside the per-case limit.
+/// The case one world drives; a world stays well inside the per-case limit.
 fn cases(seed: u64) -> &'static [Case] {
     match seed {
-        0 => &CASES[..3],
-        1 => &CASES[3..],
+        0 => &CASES[..1],
+        1 => &CASES[1..2],
+        2 => &CASES[2..3],
+        3 => &CASES[3..4],
+        4 => &CASES[4..],
         _ => &[],
     }
 }
