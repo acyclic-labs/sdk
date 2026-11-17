@@ -10,6 +10,8 @@ pub struct Module {
 }
 
 /// Compile a static settings module and resolve imports from its type-erased tree.
+/// Refuses invalid source, dynamic imports and imports outside the effective tree.
+/// Loading and evaluation remain the caller's responsibility.
 pub fn compile_module(path: &str, source: &[u8]) -> std::result::Result<Module, String> {
     let text = std::str::from_utf8(source).map_err(|_| format!("{path} is not UTF-8"))?;
     if path.ends_with(".json") {
