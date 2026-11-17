@@ -27,6 +27,8 @@ jobs:
         run: npm install --global @bazel/bazelisk@1.26.0
       - name: Audit resolved Rust dependencies offline
         run: bazelisk test --test_output=errors //toolchains/cargo-deny:offline_test
+      - name: Test advisory index parsing
+        run: bazelisk test --test_output=errors //toolchains/cargo-deny:index_test
       - name: Check lockfile and manifests without compiling
         run: node scripts/check-cargo-lock.mjs
         env:
