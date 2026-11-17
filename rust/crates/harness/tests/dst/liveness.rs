@@ -442,20 +442,41 @@ fn notices(request: &acyclic_harness::model::ModelRequest) -> BTreeSet<String> {
         .collect()
 }
 
-fn observed(
-    requests: &[acyclic_harness::model::ModelRequest],
-    node: &str,
-    expected: usize,
-) -> std::result::Result<(), String> {
-    let tagged: Vec<_> = requests
+fn settled_children(request: &acyclic_harness::model::ModelRequest) -> BTreeSet<String> {
+    request
+        .messages
         .iter()
-        .filter(|request| request_tag(request) == Some(node))
-        .collect();
-    let last = tagged
-        .last()
-        .ok_or_else(|| format!("{node} made no request"))?;
-    let seen = notices(last);
-    let wait_results = last
+        .filter_map(|message| message.content.notice_parts())
+        .flat_map(|(notices, _)| notices)
+        .filter(|notice| notice.kind == "child.settled")
+        .filter_map(|notice| {
+            notice
+                .body
+                .get("child")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn observed_child(
+    requests: &[acyclic_harness::model::ModelRequest],
+    parent: &str,
+    child: &str,
+) -> std::result::Result<(), String> {
+    let child_last = requests
+        .iter()
+        .rposition(|request| request_tag(request) == Some(child))
+        .ok_or_else(|| format!("{child} made no request"))?;
+    let first = requests
+        .iter()
+        .skip(child_last + 1)
+        .find(|request| request_tag(request) == Some(parent))
+        .ok_or_else(|| format!("{parent} made no request after {child} answered"))?;
+    let named = settled_children(first)
+        .iter()
+        .any(|path| path == child || path.rsplit('/').next() == Some(child));
+    let wait_result = first
         .messages
         .iter()
         .flat_map(|message| message.content.parts())
@@ -465,14 +486,16 @@ fn observed(
             }
             _ => None,
         })
-        .filter(|result| result.contains("\"settled\""))
-        .count();
-    if seen.len() < expected && wait_results == 0 {
+        .any(|result| {
+            result.contains("\"settled\"")
+                && (result.contains(&format!("[dst:{child}]"))
+                    || result.contains(&format!("\"{child}\""))
+                    || result.contains(&format!("/{child}\"")))
+        });
+    if !named && !wait_result {
         return Err(format!(
-            "{node}'s last request ({:?}) carries {} child settlements, expected {expected}: {}",
-            request_tag(last),
-            seen.len(),
-            serde_json::to_string(last).unwrap_or_default()
+            "{parent}'s first request after {child} answered carries no {child} settlement: {}",
+            serde_json::to_string(first).unwrap_or_default()
         ));
     }
     Ok(())
@@ -534,8 +557,9 @@ fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
                 incarnation
             };
             oracle::all_settled(&incarnation.requests)?;
-            observed(&incarnation.requests, "root", 2)?;
-            observed(&incarnation.requests, "w", 1)?;
+            observed_child(&incarnation.requests, "root", "d")?;
+            observed_child(&incarnation.requests, "root", "w")?;
+            observed_child(&incarnation.requests, "w", "g")?;
             if event == "send_delivery" {
                 // The delivery itself must have reached each child before it
                 // answered, rather than the child settling from its brief.
