@@ -589,6 +589,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
 
 struct LengthState {
     step: usize,
+    summary: usize,
 }
 
 /// The newest prompt a request carries, from the warmups or the selected case.
@@ -635,10 +636,20 @@ fn d4_service(
     warmups: Vec<String>,
     current: String,
 ) -> ScriptedModelProvider {
-    let state = Mutex::new(LengthState { step: 0 });
+    let state = Mutex::new(LengthState { step: 0, summary: 0 });
     let responder = move |request: &ModelRequest| {
         if request.summary {
-            return Ok(length_stop(content, "dst"));
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.summary += 1;
+            return Ok(if state.summary == 1 {
+                length_stop(content, "dst")
+            } else {
+                ScriptedTurn::Events(vec![ScriptedEvent::Error {
+                    error: "summary failed".into(),
+                }])
+            });
         }
         // The newest relevant prompt decides the answer. A later request
         // still carries the warmup in its history, so matching any older
