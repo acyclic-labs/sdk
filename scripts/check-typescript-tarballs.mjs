@@ -1,12 +1,11 @@
+import { repositoryRoot as root } from "./policy-core.mjs";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { validateArchive } from "./validate-npm-package.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const assembledDirectory = process.argv[2] === "--archives" ? resolve(process.argv[3]) : undefined;
 const packagesRoot = join(root, "typescript", "packages");
 const releasePackages = JSON.parse(await readFile(join(root, "release", "npm-packages.json"), "utf8"));

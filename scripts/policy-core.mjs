@@ -5,7 +5,8 @@ import {fileURLToPath} from 'node:url';
 
 export const isMain = url => Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(url);
 
-export const repositoryRoot = resolve(import.meta.dirname, '..');
+export const repositoryUrl = new URL('../', import.meta.url).href;
+export const repositoryRoot = resolve(fileURLToPath(repositoryUrl));
 
 // Git paths are NUL-delimited, including names with newlines or quoting characters.
 // Each policy owns its pathspecs; discovery never silently drops missing files.

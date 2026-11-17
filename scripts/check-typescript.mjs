@@ -1,3 +1,4 @@
+import { repositoryRoot as root } from "./policy-core.mjs";
 // The one TypeScript typecheck: every package under typescript/packages compiles
 // against freshly built WASM bindings, so a Rust binding change that breaks a
 // TypeScript consumer fails here, not in a downstream build.
@@ -7,10 +8,8 @@
 // the stable path keeps the WASM build incremental between runs.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const run = (program, args, cwd) => {
   const result = spawnSync(program, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   if (result.error || result.status !== 0) {
