@@ -1467,4 +1467,3 @@ async fn alarm_publication_wakes() -> TestResult {
     }
     Ok(())
 }
-
