@@ -334,6 +334,7 @@ impl World {
         entropy: bool,
     ) -> Result<Self> {
         let entropy = entropy && !erasing_entropy();
+        acyclic_fs::demand::native::reset_fixture_versions();
         let directory = WorldDirectory::new().map_err(storage)?;
         let checkout = directory.path().join("checkout");
         std::fs::create_dir(&checkout).map_err(storage)?;

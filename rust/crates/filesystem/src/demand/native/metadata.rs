@@ -62,6 +62,16 @@ fn fixture_versions() -> &'static std::sync::Mutex<FixtureVersions> {
     VERSIONS.get_or_init(|| std::sync::Mutex::new(FixtureVersions::default()))
 }
 
+/// Starts a new replay's fixture identity and version sequence. A world owns
+/// one physical directory, so its first observation of each object is the
+/// same ordinal in every replay.
+#[cfg(feature = "test-support")]
+pub fn reset_fixture_versions() {
+    *fixture_versions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = FixtureVersions::default();
+}
+
 /// A fixture identity is the first logical name observed for one physical
 /// object. Every alias of that object shares it, and a rename keeps it, while
 /// a replacement is a new object with a new identity. The physical key is the
