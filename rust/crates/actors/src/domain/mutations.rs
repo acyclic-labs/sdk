@@ -406,12 +406,14 @@ impl AddSubscriptionRequest {
     }
 }
 
-/// Remove subscription request after canonical scope, identifier and retry admission.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = RemoveSubscriptionRequest::validate_from_proto)]
+macro_rules! subscription_control {
+    ($request:ident, $export:literal, $doc:literal) => {
+#[doc = $doc]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = $request::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
-#[ts(export_to = "actors/RemoveSubscriptionRequest.ts")]
+#[ts(export_to = $export)]
 #[ts(rename_all = "camelCase")]
-pub struct RemoveSubscriptionRequest {
+pub struct $request {
     #[wire(tag = 1, string)]
     pub(super) actor_id: ActorId,
     #[wire(tag = 2)]
@@ -427,8 +429,8 @@ pub struct RemoveSubscriptionRequest {
     pub(super) account_id: Vec<u8>,
 }
 
-impl RemoveSubscriptionRequest {
-    /// Creates and validates a removal through the canonical request validator.
+impl $request {
+    /// Creates a subscription control request through canonical admission.
     pub fn new(
         actor_id: ActorId,
         subscription_id: String,
@@ -463,64 +465,19 @@ impl RemoveSubscriptionRequest {
         &self.idempotency_key
     }
 }
-
-/// Resume subscription request after canonical scope, identifier and retry admission.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = ResumeSubscriptionRequest::validate_from_proto)]
-#[derive(Clone, Debug, Eq, PartialEq, TS)]
-#[ts(export_to = "actors/ResumeSubscriptionRequest.ts")]
-#[ts(rename_all = "camelCase")]
-pub struct ResumeSubscriptionRequest {
-    #[wire(tag = 1, string)]
-    pub(super) actor_id: ActorId,
-    #[wire(tag = 2)]
-    subscription_id: String,
-    #[wire(tag = 3)]
-    idempotency_key: String,
-
-    #[wire(tag = 90, string)]
-    #[ts(optional)]
-    pub(super) namespace: Option<ActorNamespace>,
-    #[wire(tag = 91, bytes)]
-    #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
-    pub(super) account_id: Vec<u8>,
+    };
 }
 
-impl ResumeSubscriptionRequest {
-    /// Creates and validates resumption through the canonical request validator.
-    pub fn new(
-        actor_id: ActorId,
-        subscription_id: String,
-        idempotency_key: String,
-    ) -> Result<Self, DomainError> {
-        crate::contract::validate_subscription_identity(&subscription_id, &idempotency_key)?;
-        Ok(Self {
-            namespace: None,
-            account_id: Vec::new(),
-            actor_id,
-            subscription_id,
-            idempotency_key,
-        })
-    }
-    fn validate_from_proto(&self) -> Result<(), DomainError> {
-        crate::contract::validate_subscription_identity(
-            &self.subscription_id,
-            &self.idempotency_key,
-        )
-        .map_err(Into::into)
-    }
-    /// Returns the Actor identity.
-    pub fn actor_id(&self) -> &ActorId {
-        &self.actor_id
-    }
-    /// Returns the subscription identifier.
-    pub fn subscription_id(&self) -> &str {
-        &self.subscription_id
-    }
-    /// Returns the idempotency key.
-    pub fn idempotency_key(&self) -> &str {
-        &self.idempotency_key
-    }
-}
+subscription_control!(
+    RemoveSubscriptionRequest,
+    "actors/RemoveSubscriptionRequest.ts",
+    "Remove an admitted Actor subscription."
+);
+subscription_control!(
+    ResumeSubscriptionRequest,
+    "actors/ResumeSubscriptionRequest.ts",
+    "Resume an admitted Actor subscription."
+);
 
 /// Checkpoint has no canonical validator yet; only the Actor identity rule is
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
