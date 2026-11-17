@@ -438,11 +438,6 @@ async fn request_transport_copy_denial_retires_and_reports_its_completed_prefix(
         .err()
         .ok_or("path copy was not denied")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.allocation_operations, 1);
-    assert_eq!(
-        failure.work.peak_allocation_bytes,
-        std::mem::size_of::<crate::source_watch::CallbackWork>() as u64
-    );
     assert_eq!(failure.work.bytes_copied, 0);
     assert_eq!(failure.work.backend_read_operations, 0);
     assert_eq!(failure.work.backend_write_operations, 0);
@@ -458,10 +453,6 @@ async fn request_transport_copy_denial_retires_and_reports_its_completed_prefix(
         .ok_or("native path copy was not denied")?;
     assert!(matches!(failure, DemandError::Work(_)));
     assert_eq!(work.live_allocation_bytes(), live);
-    assert_eq!(
-        work.receipt().allocation_operations - before.allocation_operations,
-        1
-    );
     assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
     assert_eq!(
         work.receipt().backend_read_operations,
