@@ -19,18 +19,20 @@ _INPUTS = [
     "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust/crates/demo/src/lib.rs",
 ]
 
-rustdoc_fixture_set(
+_PROFILES = {
+    "default": [],
+    "no_default": ["--no-default-features"],
+    "base": ["--no-default-features", "--features", "base"],
+    "extra": ["--no-default-features", "--features", "extra"],
+    "all": ["--features", "base,extra"],
+}
+
+_FEATURE_DATA = rustdoc_fixture_set(
     srcs = _INPUTS,
     fixture_root = "rust/crates/sdk-generation/tests/fixtures/feature-profile/",
     package = "demo",
     owner_path = "rust/crates/demo",
-    profiles = {
-        "feature_default": [],
-        "feature_no_default": ["--no-default-features"],
-        "feature_base": ["--no-default-features", "--features", "base"],
-        "feature_extra": ["--no-default-features", "--features", "extra"],
-        "feature_all": ["--features", "base,extra"],
-    },
+    profiles = {"feature_" + name: flags for name, flags in _PROFILES.items()},
 )
 
 _RELOCATION_ROOT = "rust/crates/sdk-generation/tests/fixtures/relocation/"
@@ -47,7 +49,7 @@ _RELOCATION_MAPPED = {
     "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust-toolchain.toml": "rust-toolchain.toml",
 }
 
-rustdoc_fixture_set(
+_RELOCATION_DATA = rustdoc_fixture_set(
     srcs = _RELOCATION_INPUTS,
     fixture_root = _RELOCATION_ROOT,
     package = "demo",
@@ -55,16 +57,10 @@ rustdoc_fixture_set(
     mapped_sources = _RELOCATION_MAPPED,
     needs_linker = True,
     retain_artifacts = True,
-    profiles = {
-        "relocation_default": [],
-        "relocation_no_default": ["--no-default-features"],
-        "relocation_base": ["--no-default-features", "--features", "base"],
-        "relocation_extra": ["--no-default-features", "--features", "extra"],
-        "relocation_all": ["--features", "base,extra"],
-    },
+    profiles = {"relocation_" + name: flags for name, flags in _PROFILES.items()},
 )
 
-rustdoc_fixture_set(
+_RELOCATION_HELPER_DATA = rustdoc_fixture_set(
     srcs = _RELOCATION_INPUTS,
     fixture_root = _RELOCATION_ROOT,
     package = "relocation-helper",
@@ -77,20 +73,17 @@ rustdoc_fixture_set(
 _LONG = "native-execution-observation-" * 8
 _LONG_MANIFEST = "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust/crates/demo/long-features.toml"
 
-rustdoc_fixture_set(
+_LONG_DATA = rustdoc_fixture_set(
     srcs = _INPUTS,
     fixture_root = "rust/crates/sdk-generation/tests/fixtures/feature-profile/",
     package = "demo",
     owner_path = "rust/crates/demo",
     mapped_sources = {_LONG_MANIFEST: "rust/crates/demo/Cargo.toml"},
-    profiles = {
-        "long_default": [],
-        "long_no_default": ["--no-default-features"],
-        "long_base": ["--no-default-features", "--features", "base"],
-        "long_extra": ["--no-default-features", "--features", "extra"],
-        "long_feature": ["--no-default-features", "--features", _LONG],
-        "long_all": ["--features", "base,extra," + _LONG],
-    },
+    profiles = {"long_" + name: flags for name, flags in dict(
+        _PROFILES,
+        all = ["--features", "base,extra," + _LONG],
+        feature = ["--no-default-features", "--features", _LONG],
+    ).items()},
 )
 
 _EXCLUDED_ROOT = "rust/crates/sdk-generation/tests/fixtures/excluded-owners/"
@@ -110,25 +103,17 @@ _SHARED = {
     "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust-toolchain.toml": "rust-toolchain.toml",
     "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust/crates/demo/src/lib.rs": "rust/crates/demo/src/lib.rs",
 }
-_EXCLUDED_PROFILES = {
-    "default": [],
-    "no_default": ["--no-default-features"],
-    "base": ["--no-default-features", "--features", "base"],
-    "extra": ["--no-default-features", "--features", "extra"],
-    "all": ["--features", "base,extra"],
-}
-
-rustdoc_fixture_set(
+_EXCLUDED_DEMO_DATA = rustdoc_fixture_set(
     srcs = _EXCLUDED_INPUTS,
     fixture_root = _EXCLUDED_ROOT,
     package = "demo",
     owner_path = "rust/crates/demo",
     mapped_sources = _SHARED,
     needs_linker = True,
-    profiles = {"excluded_demo_" + name: flags for name, flags in _EXCLUDED_PROFILES.items()},
+    profiles = {"excluded_demo_" + name: flags for name, flags in _PROFILES.items()},
 )
 
-rustdoc_fixture_set(
+_EXCLUDED_MACROS_DATA = rustdoc_fixture_set(
     srcs = _EXCLUDED_INPUTS,
     fixture_root = _EXCLUDED_ROOT,
     package = "demo-macros",
@@ -138,10 +123,10 @@ rustdoc_fixture_set(
     library_name = "renamed_macro_target",
     proc_macro = True,
     mapped_sources = _SHARED,
-    profiles = {"excluded_macros_" + name: flags for name, flags in _EXCLUDED_PROFILES.items()},
+    profiles = {"excluded_macros_" + name: flags for name, flags in _PROFILES.items()},
 )
 
-rustdoc_fixture_set(
+_EXCLUDED_HELPER_DATA = rustdoc_fixture_set(
     srcs = _EXCLUDED_INPUTS,
     fixture_root = _EXCLUDED_ROOT,
     package = "demo-helper",
@@ -154,5 +139,8 @@ rustdoc_fixture_set(
 
 filegroup(
     name = "feature_profiles",
-    srcs = _INPUTS + _EXCLUDED_INPUTS + _RELOCATION_INPUTS + [_LONG_MANIFEST] + [":feature_default", ":feature_no_default", ":feature_base", ":feature_extra", ":feature_all", ":long_default", ":long_no_default", ":long_base", ":long_extra", ":long_feature", ":long_all", ":excluded_helper_default", ":relocation_default", ":relocation_no_default", ":relocation_base", ":relocation_extra", ":relocation_all", ":relocation_helper"] + [":excluded_demo_" + name for name in _EXCLUDED_PROFILES] + [":excluded_macros_" + name for name in _EXCLUDED_PROFILES],
+    srcs = {label: True for label in _FEATURE_DATA + _LONG_DATA +
+                                    _RELOCATION_DATA + _RELOCATION_HELPER_DATA +
+                                    _EXCLUDED_DEMO_DATA + _EXCLUDED_MACROS_DATA +
+                                    _EXCLUDED_HELPER_DATA}.keys(),
 )
