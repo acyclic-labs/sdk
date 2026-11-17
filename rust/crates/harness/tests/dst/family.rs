@@ -33,6 +33,8 @@ pub(super) const GENERATORS: &[&Generator] = &[
     &super::refusal::GENERATOR,
     &super::configuration::GENERATOR,
     &super::records::GENERATOR,
+    &super::provider::PREFIX_GENERATOR,
+    &super::provider::LENGTH_GENERATOR,
 ];
 
 impl Generator {
