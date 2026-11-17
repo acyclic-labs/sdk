@@ -824,9 +824,7 @@ async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_r
             ScriptedTurn::Text(r#"{"verdict":"allow","reason":null}"#.into()),
             ScriptedTurn::Text(r#"{"verdict":"deny","reason":null}"#.into()),
             ScriptedTurn::Text("allowed action settled".into()),
-            ScriptedTurn::Text("none".into()),
             ScriptedTurn::Text("denied action settled".into()),
-            ScriptedTurn::Text("none".into()),
         ])
         .reading_content(),
     );
@@ -1028,7 +1026,6 @@ async fn ended_parent_refuses(archived: bool) -> TestResult {
                 }),
             ]),
             ScriptedTurn::Text("refused action settled".into()),
-            ScriptedTurn::Text("none".into()),
         ])
         .reading_content(),
     );

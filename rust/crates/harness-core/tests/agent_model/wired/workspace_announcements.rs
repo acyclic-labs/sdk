@@ -656,7 +656,13 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
             matches!(turn, 0 | 2 | 3 | 4 | 5 | 9 | 16)
         );
         if let Some(document) = document {
-            let requests = model.requests();
+            // Each turn's own request; its settlement's retrospective only
+            // extends it.
+            let requests: Vec<_> = model
+                .requests()
+                .into_iter()
+                .filter(|request| !acyclic_harness_core::test_support::is_retrospective(request))
+                .collect();
             let request = requests.last().ok_or("missing model request")?;
             let text = selected_text(&files, &document.file).await?;
             // A removal can return to a document already in the prefix.
@@ -785,7 +791,6 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
                     }),
                 ]),
                 ScriptedTurn::Text("resumed with the original instructions".into()),
-                ScriptedTurn::Text("none".into()),
             ])
             .reading_content(),
         );

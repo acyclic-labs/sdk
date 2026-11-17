@@ -27,27 +27,32 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
         }));
         ScriptedTurn::Events(events)
     };
-    let provider = scripted([
-        ScriptedTurn::Text("root answer".into()),
-        report(2),
-        ScriptedTurn::Text("none".into()),
-        ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                "child-error".into(),
-                "absent-tool".into(),
-                json!({}),
-            ))),
-            ScriptedEvent::Event(ModelEvent::Completed {
-                metadata: json!({}),
-            }),
-        ]),
-        ScriptedTurn::Text("child answer after error".into()),
-        report(1),
-        ScriptedTurn::Text("none".into()),
-        ScriptedTurn::Text("grandchild answer".into()),
-        report(1),
-        ScriptedTurn::Text("none".into()),
-    ]);
+    // The retrospectives here report feedback, so the script answers them.
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Text("root answer".into()),
+            report(2),
+            ScriptedTurn::Text("none".into()),
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                    "child-error".into(),
+                    "absent-tool".into(),
+                    json!({}),
+                ))),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]),
+            ScriptedTurn::Text("child answer after error".into()),
+            report(1),
+            ScriptedTurn::Text("none".into()),
+            ScriptedTurn::Text("grandchild answer".into()),
+            report(1),
+            ScriptedTurn::Text("none".into()),
+        ])
+        .with_context_capacity(capacity())
+        .scripting_retrospectives(),
+    );
     let directory = tempfile::tempdir().map_err(crate::local::storage)?;
     let project = volume(directory.path()).await?;
     let harness = Arc::new(

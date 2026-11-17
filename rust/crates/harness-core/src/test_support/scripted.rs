@@ -121,6 +121,9 @@ struct State {
     dispatches: Vec<ModelDispatch>,
     recoveries: VecDeque<ScriptedReconciliation>,
     reconciliations: Vec<ModelDispatch>,
+    /// Takes each [retrospective](is_retrospective) reply from `turns`
+    /// instead of answering it `none`.
+    scripts_retrospectives: bool,
 }
 
 type ReconciliationObserver = dyn Fn(ModelDispatch) -> Result<()> + Send + Sync;
@@ -132,8 +135,30 @@ type ContentReader = (
     Option<u64>,
 );
 
+/// The seed feedback plugin's waking after-settlement notice. Every turn that
+/// settles with that plugin enabled asks the model this once more.
+pub const RETROSPECTIVE: &str =
+    "What slowed you down or blocked you? Append feedback records; reply none if nothing.";
+
+/// Whether `request` asks the [retrospective](RETROSPECTIVE): its newest
+/// model-visible input is that notice.
+#[must_use]
+pub fn is_retrospective(request: &ModelRequest) -> bool {
+    model_visible_messages(&request.messages)
+        .next_back()
+        .is_some_and(|message| {
+            message.role == crate::model::ModelRole::User
+                && matches!(&message.content,
+                    crate::model::ModelContent::Text(text) if text == RETROSPECTIVE)
+        })
+}
+
 /// Replays responses once and retains the exact requests delivered by the executor.
-/// Exhaustion fails instead of silently repeating the final response. A
+/// Exhaustion fails instead of silently repeating the final response. Each
+/// [retrospective](is_retrospective) request is recorded, observed and
+/// reconciled like any other but answered `none` without consuming a scripted
+/// turn, so a script states only its work whether or not the feedback plugin
+/// is enabled; [`Self::scripting_retrospectives`] scripts them instead. A
 /// [responding](Self::responding) provider instead answers each request from
 /// its content, for concurrent agents whose request order a seed decides.
 pub struct ScriptedModelProvider {
@@ -246,6 +271,14 @@ impl ScriptedModelProvider {
                 .collect::<Option<Vec<_>>>()?,
         };
         events.strip_prefix(observed).map(<[ModelEvent]>::to_vec)
+    }
+
+    /// Takes each retrospective reply from the script, for tests of the
+    /// retrospective itself: its tool calls, failures or accounting.
+    #[must_use]
+    pub fn scripting_retrospectives(self) -> Self {
+        self.lock().scripts_retrospectives = true;
+        self
     }
 
     /// Reads every file part's bytes through the reader the harness binds for
@@ -407,6 +440,7 @@ impl ScriptedModelProvider {
                 .push((dispatch, turn.clone()));
         }
         let waking = waking_child(request.request())?;
+        let retrospective = is_retrospective(request.request());
         let mut state = self.lock();
         state.requests.push(request);
         state.dispatches.push(dispatch);
@@ -414,6 +448,7 @@ impl ScriptedModelProvider {
             turns,
             wakes,
             woken,
+            scripts_retrospectives,
             ..
         } = &mut *state;
         if let Some(child) = &waking {
@@ -428,6 +463,7 @@ impl ScriptedModelProvider {
                     "scripted model has no wake turn left for {parent}, woken by {child}"
                 ))
             }),
+            _ if retrospective && !*scripts_retrospectives => Ok(ScriptedTurn::Text("none".into())),
             _ => turns
                 .pop_front()
                 .ok_or_else(|| Error::Invalid("scripted model exhausted".into())),

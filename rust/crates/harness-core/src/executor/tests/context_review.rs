@@ -24,8 +24,8 @@ fn original_metadata(events: &[ModelEvent]) -> &Value {
 async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Result<()> {
     let plugins = crate::plugins::seed().await?;
     for (count, retrospective) in [(2, false), (64, false), (2, true), (64, true)] {
-        let provider = Arc::new(ScriptedModelProvider::new(
-            (0..1 + usize::from(retrospective)).map(|_| {
+        let provider = Arc::new(
+            ScriptedModelProvider::new((0..1 + usize::from(retrospective)).map(|_| {
                 ScriptedTurn::Events(vec![
                     ScriptedEvent::Event(ModelEvent::Content {
                         delta: "done".into(),
@@ -34,8 +34,9 @@ async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Resu
                         metadata: json!({"usage":{"prompt_tokens":1024,"completion_tokens":1}}),
                     }),
                 ])
-            }),
-        ));
+            }))
+            .scripting_retrospectives(),
+        );
         let mut stock = StockExecutor::new(
             Model::new("fixture".into(), "selected".into(), "1".into())?,
             provider.clone(),

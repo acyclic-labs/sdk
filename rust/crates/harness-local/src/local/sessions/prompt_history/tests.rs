@@ -13,12 +13,9 @@ async fn prompt_history_reconnects_across_sessions_without_copying_inherited_pro
     let directory = tempfile::tempdir()?;
     let workspace = directory.path().join("workspace");
     std::fs::create_dir(&workspace)?;
-    let model = Arc::new(ScriptedModelProvider::new((0..5).flat_map(|_| {
-        [
-            ScriptedTurn::Text("answer".into()),
-            ScriptedTurn::Text("none".into()),
-        ]
-    })));
+    let model = Arc::new(ScriptedModelProvider::new(
+        (0..5).map(|_| ScriptedTurn::Text("answer".into())),
+    ));
     let local = Arc::new(
         LocalHarness::open(
             local_harness_config(

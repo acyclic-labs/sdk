@@ -311,7 +311,6 @@ fn pending_turn(reply: &str) -> (Arc<ScriptedModelProvider>, tokio::sync::mpsc::
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![crate::test_support::ScriptedEvent::Pending {}]),
             ScriptedTurn::Text(reply.into()),
-            ScriptedTurn::Text("none".into()),
         ])
         .with_context_capacity(capacity())
         .reading_content()
@@ -454,11 +453,8 @@ async fn in_turn_summary_remains_readable(mode: Mode) -> Result<()> {
     let script = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Text("FIRST".into()),
-            ScriptedTurn::Text("none".into()),
             ScriptedTurn::Text("SECOND".into()),
-            ScriptedTurn::Text("none".into()),
             ScriptedTurn::Text("AFTER".into()),
-            ScriptedTurn::Text("none".into()),
         ])
         .with_context_capacity(capacity())
         .reading_content(),
