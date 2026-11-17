@@ -66,13 +66,13 @@ pub trait McpConfigInstall {
     /// Connects configured servers and adds their tools without replacing caller tools.
     /// `workspace` must be the absolute project root. Required failures reject startup.
     /// Credential references resolve only through the host's `secrets`.
-    async fn install(
+    fn install(
         self,
         tools: ToolRegistry,
         workspace: &Path,
         limits: McpClientLimits,
         secrets: Arc<dyn acyclic_harness_core::secrets::SecretSource>,
-    ) -> Result<McpInstallation>;
+    ) -> impl std::future::Future<Output = Result<McpInstallation>> + Send;
 }
 
 /// Connects configured servers with a caller-supplied per-server connector.
