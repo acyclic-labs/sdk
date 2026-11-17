@@ -180,14 +180,6 @@ fn wait(id: &str, names: &[&str], need: Option<u32>, timeout: Option<u64>) -> To
     call(id, "wait", value)
 }
 
-fn input_wait(id: &str) -> ToolCall {
-    call(id, "wait", json!({"input": true}))
-}
-
-fn release(id: &str, target: &str) -> ToolCall {
-    call(id, "send", json!({"agent": target, "message": "release"}))
-}
-
 fn merge(id: &str, target: &str) -> ToolCall {
     call(
         id,
@@ -255,7 +247,7 @@ fn observe_steps(form: &str, state: &str, prefix: &str) -> Vec<Vec<ToolCall>> {
     }
 }
 
-fn spawn_steps(form: &str, state: &str, prefix: &str) -> Vec<ToolCall> {
+fn spawn_steps(form: &str, _state: &str, prefix: &str) -> Vec<ToolCall> {
     let mut step = vec![spawn(
         &format!("{prefix}-spawn-target"),
         "target",
@@ -338,7 +330,7 @@ fn root_steps(form: &str, state: &str, relation: &str) -> Vec<Vec<ToolCall>> {
     }
 }
 
-fn reopen_steps(form: &str, state: &str) -> Vec<Vec<ToolCall>> {
+fn reopen_steps(form: &str, _state: &str) -> Vec<Vec<ToolCall>> {
     vec![vec![form_wait(form, "reopen-wait", "target")]]
 }
 

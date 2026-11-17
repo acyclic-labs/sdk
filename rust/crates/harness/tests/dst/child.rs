@@ -187,7 +187,7 @@ fn check_steps(topology: &str) -> Vec<Vec<acyclic_harness::model::ToolCall>> {
 
 fn plans(seed: u64) -> Vec<Plan> {
     let topology = topology(seed);
-    let mut plans = vec![
+    let plans = vec![
         Plan {
             tag: "c4-root",
             steps: root_steps(topology),
@@ -330,7 +330,6 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
 
 fn world(seed: u64) -> std::result::Result<bool, String> {
     let fault = fault(seed);
-    let topology = topology(seed);
     oracle::simulate(seed, move || {
         entry(async move {
             let files = [("marker.txt", "marker\n")];
