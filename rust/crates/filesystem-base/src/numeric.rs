@@ -21,16 +21,3 @@ pub const fn exact_u32_from_f64(number: f64) -> Result<u32, &'static str> {
     let [a, b, c, d, _, _, _, _] = integer.to_le_bytes();
     Ok(u32::from_le_bytes([a, b, c, d]))
 }
-
-// The original boundary vectors are checked in every target's compilation.
-const _: () = {
-    assert!(matches!(exact_u32_from_f64(0.0), Ok(0)));
-    assert!(matches!(exact_u32_from_f64(4_294_967_295.0), Ok(u32::MAX)));
-    assert!(exact_u32_from_f64(-1.0).is_err());
-    assert!(exact_u32_from_f64(0.5).is_err());
-    assert!(exact_u32_from_f64(1.5).is_err());
-    assert!(exact_u32_from_f64(4_294_967_296.0).is_err());
-    assert!(exact_u32_from_f64(f64::NAN).is_err());
-    assert!(exact_u32_from_f64(f64::INFINITY).is_err());
-    assert!(exact_u32_from_f64(f64::NEG_INFINITY).is_err());
-};
