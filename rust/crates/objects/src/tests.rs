@@ -3188,17 +3188,9 @@ async fn a_recovered_parent_commits_only_with_its_closure_whole_and_indexed()
 /// The durable syncs `work` issues, by operation.
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 async fn syncs<T>(work: impl Future<Output = T>) -> (T, std::collections::BTreeMap<String, usize>) {
-    use acyclic_native_runtime::testing::Schedule;
+    use acyclic_native_runtime::testing::{Schedule, drive};
     let (schedule, mut events) = Schedule::new();
-    let driver = tokio::spawn(async move {
-        while let Some(boundary) = events.recv().await {
-            boundary.release();
-        }
-    });
-    let value = schedule.scope(work).await;
-    schedule.drained().await;
-    driver.abort();
-    let _ = driver.await;
+    let value = drive(&schedule, &mut events, |_| {}, work).await;
     let mut syncs = std::collections::BTreeMap::new();
     for call in schedule.durable_writes() {
         if call.operation.contains("sync") {
