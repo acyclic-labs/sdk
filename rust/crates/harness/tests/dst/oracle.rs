@@ -285,21 +285,86 @@ fn normalize_paths(value: &mut serde_json::Value, physical: &str, logical: &str)
     }
 }
 
-/// A world directory this world alone owns. Its physical path never enters a
-/// replay trace; only the logical `<world>` marker above does.
+thread_local! {
+    /// Live world slots on this test thread, keyed by case and seed. Reusing
+    /// the first free slot makes a repeated world use the same absolute path.
+    static WORLD_SLOTS: std::cell::RefCell<
+        std::collections::BTreeMap<(String, u64), Vec<bool>>,
+    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// A world directory whose absolute path is a function of its case, seed and
+/// slot, never of the host's random temporary name. An exclusive lock on a
+/// sibling file keeps another process running the same case and seed from
+/// deleting this world's live checkout.
 struct WorldDirectory {
-    directory: tempfile::TempDir,
+    path: std::path::PathBuf,
+    key: (String, u64),
+    slot: usize,
+    _lock: std::fs::File,
 }
 
 impl WorldDirectory {
-    fn new() -> std::io::Result<Self> {
+    fn new(seed: u64) -> std::io::Result<Self> {
+        let key = (
+            std::thread::current().name().unwrap_or("dst").to_owned(),
+            seed,
+        );
+        let slot = WORLD_SLOTS.with(|slots| {
+            let mut slots = slots.borrow_mut();
+            let used = slots.entry(key.clone()).or_default();
+            match used.iter().position(|used| !used) {
+                Some(slot) => {
+                    used[slot] = true;
+                    slot
+                }
+                None => {
+                    used.push(true);
+                    used.len() - 1
+                }
+            }
+        });
+        let digest = blake3::hash(format!("{}:{}:{slot}", key.0, key.1).as_bytes());
+        let root = if Path::new("/dev/shm").is_dir() {
+            std::path::PathBuf::from("/dev/shm")
+        } else {
+            std::env::temp_dir()
+        };
+        let name = format!("acyclic-dst-{}", &digest.to_hex()[..16]);
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(root.join(format!("{name}.lock")))?;
+        lock.lock()?;
+        let path = root.join(name);
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        std::fs::create_dir(&path)?;
         Ok(Self {
-            directory: temporary_directory()?,
+            path,
+            key,
+            slot,
+            _lock: lock,
         })
     }
 
     fn path(&self) -> &Path {
-        self.directory.path()
+        &self.path
+    }
+}
+
+impl Drop for WorldDirectory {
+    fn drop(&mut self) {
+        WORLD_SLOTS.with(|slots| {
+            if let Some(used) = slots.borrow_mut().get_mut(&self.key) {
+                if let Some(used) = used.get_mut(self.slot) {
+                    *used = false;
+                }
+            }
+        });
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 
@@ -336,7 +401,7 @@ impl World {
     ) -> Result<Self> {
         let entropy = entropy && !erasing_entropy();
         acyclic_fs::demand::native::reset_fixture_versions();
-        let directory = WorldDirectory::new().map_err(storage)?;
+        let directory = WorldDirectory::new(seed).map_err(storage)?;
         let checkout = directory.path().join("checkout");
         std::fs::create_dir(&checkout).map_err(storage)?;
         for (path, body) in files {
