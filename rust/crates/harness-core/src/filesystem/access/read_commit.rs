@@ -1,5 +1,4 @@
 use super::*;
-use acyclic_stream::UnixMillisClock as _;
 
 /// The selected data, policy and authenticated identity cannot be replaced or
 /// extracted. A read consumes this observation and fences its returned bytes.

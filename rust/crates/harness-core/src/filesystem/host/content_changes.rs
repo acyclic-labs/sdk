@@ -681,7 +681,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     io,
                     workspaces::FilePublication::Authorized(fence, grant, root_fence),
                     Some(workspaces::publication_context(receipt, io)?),
-                    self.clock(),
+                    self.clock_handle(),
                 )?;
                 match root_cut {
                     Some(cut) => cut.scope(publication).await?,
