@@ -109,7 +109,6 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        canonical: &crate::context::Context,
     ) -> Result<Vec<ModelMessage>> {
         let Some(reference) = self
             .response_projection(journal, input.operation_id, step)
@@ -119,16 +118,13 @@ impl StockExecution<'_> {
         };
         let (_, prepared) = self.load_response_projection(journal, &reference).await?;
         let messages = &prepared.request().messages;
+        // The agent prefix is the worker request's leading system header.
+        // Appended tool notices and later history follow it, so a message
+        // count difference would pull history into the prefix.
         let prefix = messages
-            .len()
-            .checked_sub(canonical.messages.len())
-            .ok_or_else(|| {
-                stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Storage,
-                    "worker request is shorter than its canonical context",
-                )
-            })?;
+            .iter()
+            .take_while(|message| message.role == ModelRole::System)
+            .count();
         crate::model::clone_messages(&messages[..prefix], self.io)
     }
 
@@ -235,7 +231,7 @@ impl StockExecution<'_> {
         let (eligible, message_limit) = selection;
         let (part, previous, _) = progress;
         let start = previous.map_or(0, |summary| summary.source_messages as usize);
-        let prefix = self.response_prefix(journal, input, step, context).await?;
+        let prefix = self.response_prefix(journal, input, step).await?;
         let end = self
             .manager_window(journal, turn, context, (eligible, None, &prefix), progress)
             .await?;
