@@ -83,6 +83,40 @@ impl ContentResidencyVerifier for TaskContext {
 }
 
 impl TaskContext {
+    // Journal output is admitted on the reading invocation's original IO.
+    // The binding's identity and the task's read ceiling remain unchanged;
+    // publication authority stays in host custody.
+    fn read_content<'a>(
+        &'a self,
+        binding: Option<&'a ContentBindings>,
+        io: Option<&ContentIo>,
+    ) -> Result<Option<std::borrow::Cow<'a, ContentBindings>>> {
+        if let (Some(binding), Some(output), Some((journal, operation)), Some(io)) =
+            (binding, &self.journal_output, &self.journal, io)
+            && binding.volume == output.volume
+        {
+            let mut content = journal
+                .output_content(*operation, Some(io))?
+                .ok_or_else(|| {
+                    content_error(
+                        Some(io),
+                        ErrorCode::Unsupported,
+                        "journal output is not bound",
+                    )
+                })?;
+            if content.volume != output.volume {
+                return Err(content_error(
+                    Some(io),
+                    ErrorCode::Conflict,
+                    "journal output identity changed",
+                ));
+            }
+            content.writer = None;
+            return Ok(Some(std::borrow::Cow::Owned(content)));
+        }
+        Ok(binding.map(std::borrow::Cow::Borrowed))
+    }
+
     /// The authored subtree shares the agent's original private publisher.
     /// Managed outputs retain their read-only route and cannot be overwritten
     /// through another spelling of the same volume. Projected `evals/` files
@@ -212,8 +246,9 @@ impl TaskContext {
         io: Option<&ContentIo>,
     ) -> Result<crate::conversation::Custody> {
         let grants = self.authorize_file_read(file, scope, grants, ReadExtent::Range(range), io)?;
-        let reader = self
-            .content_binding(Some(file.volume()))
+        let content = self.read_content(self.content_binding(Some(file.volume())), io)?;
+        let reader = content
+            .as_ref()
             .map(|content| content.reader.as_ref())
             .ok_or_else(|| {
                 content_error(io, ErrorCode::Unsupported, "content reader is not bound")
@@ -329,9 +364,11 @@ impl TaskContext {
                 "private directory page limit is invalid",
             ));
         }
-        let content = self.content_binding(Some(volume)).ok_or_else(|| {
-            content_error(io, ErrorCode::Unsupported, "content reader is not bound")
-        })?;
+        let content = self
+            .read_content(self.content_binding(Some(volume)), io)?
+            .ok_or_else(|| {
+                content_error(io, ErrorCode::Unsupported, "content reader is not bound")
+            })?;
         let (page, hold) = content
             .reader
             .list_private_directory(
@@ -408,6 +445,10 @@ impl TaskContext {
         io: Option<&ContentIo>,
     ) -> Result<(FileRef, crate::conversation::Custody, u64)> {
         let (volume, granted_prefix, path, expected_generation) = selection;
+        let admitted = self.read_content(Some(content), io)?;
+        let content = admitted.as_deref().ok_or_else(|| {
+            content_error(io, ErrorCode::Unsupported, "content reader is not bound")
+        })?;
         let (file, bytes, hold) = content
             .reader
             .read_private_path(
@@ -495,7 +536,9 @@ impl TaskContext {
             ReadExtent::Body,
             io,
         )?;
-        let reader = binding
+        let content = self.read_content(binding, io)?;
+        let reader = content
+            .as_ref()
             .map(|content| content.reader.as_ref())
             .ok_or_else(|| {
                 content_error(io, ErrorCode::Unsupported, "content reader is not bound")

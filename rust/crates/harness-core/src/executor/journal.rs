@@ -117,6 +117,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn output_content(
         &self,
         _operation: OperationId,
+        _io: Option<&PreparationIo>,
     ) -> Result<Option<crate::runtime::ContentBindings>> {
         Ok(None)
     }

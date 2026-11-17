@@ -443,7 +443,7 @@ impl TurnExecutors for StockExecutors {
             {
                 let writer = authority
                     .journal
-                    .output_content(turn)?
+                    .output_content(turn, None)?
                     .and_then(|content| content.writer)
                     .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?;
                 crate::tools::bind_agent_tools(

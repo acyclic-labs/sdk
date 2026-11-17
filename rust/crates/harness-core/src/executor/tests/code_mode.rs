@@ -934,30 +934,7 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    let mut content = storage.content_bindings();
-    let host =
-        crate::filesystem::FilesystemHost::new(filesystem, content.volume.provider(), Some(&io))?;
-    let reader = crate::filesystem::FilesystemContentVerifier::new(
-        host,
-        &storage.verifier(),
-        storage.owner_scope(),
-        65536,
-        Some(&io),
-    )?;
-    reader.supports_native_directory_list(&content.volume, &work)?;
-    let unrelated = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    assert_eq!(
-        reader
-            .supports_native_directory_list(&content.volume, &unrelated)
-            .unwrap_err()
-            .code(),
-        crate::wire::ErrorCode::Unauthorized,
-    );
-    content.reader = reader;
+    let content = storage.content_bindings();
     let scope = RuntimeScope::new(
         Capabilities::new([
             "tool:call:code".into(),
@@ -975,9 +952,10 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         ..Bindings::local()
     }
     .build()?
-    .agent_context(&Capabilities::default(), content)?;
+    .agent_context(&Capabilities::default(), content)?
+    .with_execution_journal(journal.clone(), operation)?;
     executor = executor
-        .with_tool_authority(scope, policy)?
+        .with_tool_authority(task.scope().clone(), policy)?
         .with_task_context(&task, operation)?;
     let execution = StockExecution {
         io: Some(&io),
@@ -1031,6 +1009,7 @@ async fn console_values_are_readable_from_the_original_tool_output_directory() -
         .turn_outputs()
         .tool_results(operation)
         .expect("host tool-output locator");
+    let directory = format!("{}{directory}", crate::layers::OUTPUT_PATH);
     let select = format!(
         r#"import {{list, read}} from 'acyclic';
         const values = [];

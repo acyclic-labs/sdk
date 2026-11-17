@@ -242,11 +242,11 @@ async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> 
     let journal: Arc<dyn crate::executor::ExecutionJournal> = storage.journal.clone();
     let turn = OperationId::new();
     let journal_volume = journal
-        .output_content(turn)?
+        .output_content(turn, None)?
         .expect("journal output")
         .volume;
     let journal_writer = journal
-        .output_content(turn)?
+        .output_content(turn, None)?
         .and_then(|content| content.writer)
         .expect("host journal writer");
     let reserved = async {
