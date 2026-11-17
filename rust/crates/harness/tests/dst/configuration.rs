@@ -18,6 +18,7 @@ use acyclic_harness::{
     test_support::{
         PromptOutcome, ScriptedEvent, ScriptedModelProvider, ScriptedTurn, prompt_settled,
     },
+    tools::shell::PLATFORM,
 };
 use acyclic_harness_client::{AgentCommand, AgentReply};
 use acyclic_stream::OwnedBytes;
@@ -39,6 +40,8 @@ const PATH_FILE: &str = "g1-path.txt";
 const PATH_MARKER: &str = "G1-PATH-";
 const PARENT_AUTHORITY: &str = "Instruction from your parent";
 const PEER_AUTHORITY: &str = "Peer input only";
+/// The one tool that runs the command-line executables a prompt names.
+const COMMAND_TOOL: &str = PLATFORM.name;
 
 const ITEMS: [&str; 9] = [
     "tool",
@@ -327,8 +330,8 @@ fn expected_tools(node: &str) -> BTreeSet<String> {
                 .into_iter()
                 .collect();
         }
-        "worker" | "forked_child" => &["read", "write", "send", "spawn"],
-        "advisor" | "reviewer" => &["read", "write", "send", "spawn"],
+        "worker" | "forked_child" => &["read", "write", "send", "spawn", COMMAND_TOOL],
+        "advisor" | "reviewer" => &["read", "write", "send", "spawn", COMMAND_TOOL],
         _ => unreachable!("known node"),
     };
     allowed.iter().map(|name| (*name).to_owned()).collect()
@@ -398,6 +401,11 @@ fn check_request(
         ));
     }
     let declared = commands(&system);
+    if !declared.is_empty() && !names.contains(COMMAND_TOOL) {
+        return Err(format!(
+            "{node} prompt names commands {declared:?} but its tools have no {COMMAND_TOOL} tool"
+        ));
+    }
     for command in &declared {
         if !TASK_TOOLS.contains(command) {
             return Err(format!(
@@ -717,9 +725,9 @@ async fn open(
         OwnedBytes::from(template(
             "fork",
             "worker",
-            "read, write, send, spawn",
+            &format!("read, write, send, spawn, {COMMAND_TOOL}"),
             &format!(
-                "{WORKER_MARKER} Use read, write, send and spawn. Run `$ git status` before editing."
+                "{WORKER_MARKER} Use read, write, send, spawn and {COMMAND_TOOL}. Run `$ git status` before editing."
             ),
         )),
     )
@@ -728,9 +736,9 @@ async fn open(
         OwnedBytes::from(template(
             "fresh",
             "worker",
-            "read, write, send, spawn",
+            &format!("read, write, send, spawn, {COMMAND_TOOL}"),
             &format!(
-                "{ADVISOR_MARKER} Use read, write, send and spawn. Run `$ git status` before advising."
+                "{ADVISOR_MARKER} Use read, write, send, spawn and {COMMAND_TOOL}. Run `$ git status` before advising."
             ),
         )),
     )
@@ -739,9 +747,9 @@ async fn open(
         OwnedBytes::from(template(
             "fresh",
             "worker",
-            "read, write, send, spawn",
+            &format!("read, write, send, spawn, {COMMAND_TOOL}"),
             &format!(
-                "{REVIEWER_MARKER} Use read, write, send and spawn. Run `$ git status` before reviewing."
+                "{REVIEWER_MARKER} Use read, write, send, spawn and {COMMAND_TOOL}. Run `$ git status` before reviewing."
             ),
         )),
     );
