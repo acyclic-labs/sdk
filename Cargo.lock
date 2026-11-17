@@ -686,6 +686,7 @@ dependencies = [
  "acyclic-differential",
  "acyclic-fs",
  "acyclic-harness-layout",
+ "acyclic-harness-modules",
  "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-mcp",
@@ -719,12 +720,6 @@ dependencies = [
  "memchr",
  "notify",
  "once_cell",
- "oxc_allocator",
- "oxc_codegen",
- "oxc_parser",
- "oxc_semantic",
- "oxc_span",
- "oxc_transformer",
  "p256",
  "pin-project-lite",
  "proc-macro2",
@@ -956,6 +951,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "acyclic-harness-modules"
+version = "0.2.0"
+dependencies = [
+ "oxc_allocator",
+ "oxc_codegen",
+ "oxc_parser",
+ "oxc_semantic",
+ "oxc_span",
+ "oxc_transformer",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

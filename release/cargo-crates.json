@@ -28,6 +28,7 @@
   "acyclic-model-render",
   "acyclic-mcp",
   "acyclic-harness-layout",
+  "acyclic-harness-modules",
   "acyclic-harness-core",
   "acyclic-harness-client",
   "acyclic-harness-hosting",
