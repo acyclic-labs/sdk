@@ -721,13 +721,19 @@ async fn compatible_endpoint_refusals_cannot_echo_credentials_into_failures() ->
                     let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
                     let baseline = work.live_allocation_bytes();
                     let error = {
-                        let mut stream = provider
+                        let stream = provider
                             .generate_with_native_work(&prepared, dispatch, &work)?
                             .await?;
-                        match stream.next().await {
-                            Some(Err(error)) => error,
-                            _ => panic!("refused request produced model output"),
-                        }
+                        stream
+                            .try_for_each(|(event, _custody)| async move {
+                                assert!(
+                                    matches!(event, ModelEvent::Wait(_)),
+                                    "refused request produced model output: {event:?}"
+                                );
+                                Ok(())
+                            })
+                            .await
+                            .expect_err("refused request")
                     };
                     assert!(!format!("{error:?} {error}").contains("scripted-key"));
                     drop(error);
