@@ -976,11 +976,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let head = |dispatcher: &Snapshot| {
             dispatcher::deadline_cursor(dispatcher).min(scheduling::window(now))
         };
-        let earliest =
-            futures::future::try_join_all(self.scheduling_shards.iter().zip(&loaded).map(
-                |(&shard, dispatcher)| self.store.next_window(shard, head(dispatcher)),
-            ))
-            .await?;
+        let earliest = futures::future::try_join_all(
+            self.scheduling_shards
+                .iter()
+                .zip(&loaded)
+                .map(|(&shard, dispatcher)| self.store.next_window(shard, head(dispatcher))),
+        )
+        .await?;
         for ((&shard, dispatcher), next) in self.scheduling_shards.iter().zip(&loaded).zip(earliest)
         {
             consumed.insert(shard, head(dispatcher));

@@ -964,7 +964,9 @@ impl LocalHarness {
     /// The running agents' completion event, when this harness has started
     /// them. Await it after dropping the harness to know the old runtime has
     /// released its live executions before another owner reopens the tree.
-    pub fn completion(&self) -> Option<impl std::future::Future<Output = Result<()>> + Send + 'static> {
+    pub fn completion(
+        &self,
+    ) -> Option<impl std::future::Future<Output = Result<()>> + Send + 'static> {
         self.agents.get().map(|hosted| hosted.runtime.completion())
     }
 

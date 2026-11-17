@@ -840,9 +840,7 @@ async fn a_recovered_alarm_armed_by_a_running_host_fires_once() -> TestResult {
     let armed = spawn_with(&store, "late-armed", &[b"set 50"]).await?;
     observe_while_running(
         serving.as_mut(),
-        state_after(&store, &armed, |state| {
-            state.alarm().pending() == Some(150)
-        }),
+        state_after(&store, &armed, |state| state.alarm().pending() == Some(150)),
     )
     .await?;
     assert!(first.release(&armed), "the waiting actor did not hibernate");

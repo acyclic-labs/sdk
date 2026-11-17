@@ -98,8 +98,12 @@ impl Mode {
             kind: AggregateKind::Task,
             id: "agent-conformance".into(),
         };
-        let issuer =
-            AuthorityRoot::with_clock("agent-conformance", [37; 32], audience.clone(), clock.clone());
+        let issuer = AuthorityRoot::with_clock(
+            "agent-conformance",
+            [37; 32],
+            audience.clone(),
+            clock.clone(),
+        );
         let filesystem = crate::resources::ProviderRef::new(
             "conformance".into(),
             "filesystem".into(),
