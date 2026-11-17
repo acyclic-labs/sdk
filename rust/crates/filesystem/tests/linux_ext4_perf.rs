@@ -503,7 +503,16 @@ async fn linux_working_set_cost_ledger_is_bounded() -> Result<(), Box<dyn std::e
         )
         .await?;
     let prepared = work.receipt();
-    panic!("prepared={prepared:?}");
+    assert_eq!(
+        prepared.materializations,
+        (DIRECTORIES * (FILES_PER_DIRECTORY + 1) + 1) as u64
+    );
+    assert_eq!(
+        prepared.source_entries_visited,
+        (DIRECTORIES * (FILES_PER_DIRECTORY + 1)) as u64
+    );
+    assert_eq!(prepared.source_bytes_read, 64);
+    assert!(prepared.authority_records_appended > 0);
     working_set.validate_for_presentation(&work).await?;
     let changed = write_changed_working_set_files(view.path(), DIRECTORIES, CHANGES)?;
     let before_capture = work.receipt();
