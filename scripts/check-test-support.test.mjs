@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {execFileSync} from 'node:child_process';
+import {readSources, trackedFiles} from './policy-core.mjs';
 import {readFileSync} from 'node:fs';
 import {checkDeserializedTestSupport, checkLoomOptIn, checkNoLoomCfgFlag, checkTestSupport, checkTestSupportExports} from './check-test-support.mjs';
 
@@ -164,9 +164,8 @@ test('test-visible re-exports require test-visible targets, including gated pare
   assert.equal(checkTestSupportExports(sources), 1);
 });
 
-test('workspace exports pass and restoring the original answer cfg is rejected', () => {
-  const files = execFileSync('git', ['ls-files', '--', '*.rs'], {encoding: 'utf8'}).split('\n').filter(Boolean);
-  const sources = files.map(file => [file, readFileSync(file, 'utf8')]);
+test('workspace exports pass and restoring the original answer cfg is rejected', async () => {
+  const sources = await readSources(process.cwd(), trackedFiles(process.cwd(), ['*.rs']));
   assert.ok(checkTestSupportExports(sources) > 0, 'workspace re-export inventory must not be empty');
   const answer = sources.find(([file]) => file === 'rust/crates/harness-local/src/local/host_process/children/answer.rs');
   assert.ok(answer);

@@ -4,27 +4,31 @@ import {copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {checkFileCopies, checkManifestFields, toml, trackedFiles} from '../policy-core.mjs';
+import {checkFileCopies, checkManifestFields, readSources, toml, trackedFiles} from '../policy-core.mjs';
 import {fuzz as licenseGraph} from '../check-js-licenses.fuzz.mjs';
 
 test('shared license graph conformance: aliases, cycles and canonical physical reads', () =>
   licenseGraph(Uint8Array.of(7, 0, 1, 2, 3, 4, 5, 6, 7)));
 
-test('Git inventory preserves path bytes, pathspecs, and missing tracked files', t => {
+test('Git inventory preserves path bytes, pathspecs, and missing tracked files', async t => {
   const root = mkdtempSync(join(tmpdir(), 'policy-core-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   execFileSync('git', ['init', '-q', root]);
   const paths = ['space name.rs', 'quote"name.rs', 'line\nbreak.rs', 'tab\tname.rs', 'unicodé.rs', 'Cargo.toml', '.gitignore'];
-  for (const path of paths) writeFileSync(join(root, path), '');
+  for (const path of paths) writeFileSync(join(root, path), path);
   writeFileSync(join(root, 'Cargo.toml'), '[package]\nname = "literal#value"\nedition = "2024"\n');
   writeFileSync(join(root, '.gitignore'), 'ignored.rs\n');
   execFileSync('git', ['add', '.'], {cwd: root});
-  rmSync(join(root, paths[0]));
+  const missing = paths[0];
+  rmSync(join(root, missing));
   writeFileSync(join(root, 'untracked.rs'), '');
   writeFileSync(join(root, 'ignored.rs'), '');
   assert.deepEqual(trackedFiles(root).sort(), paths.sort());
   assert.deepEqual(trackedFiles(root, ['*.rs', ':!tab*']).sort(), paths.filter(path => path.endsWith('.rs') && !path.startsWith('tab')));
   assert.deepEqual(trackedFiles(root, ['*.rs'], {untracked: true}).sort(), [...paths.filter(path => path.endsWith('.rs')), 'untracked.rs'].sort());
+  const existing = trackedFiles(root, ['*.rs', ':!space*']);
+  assert.deepEqual(await readSources(root, existing), existing.map(file => [file, file]));
+  await assert.rejects(readSources(root, [missing]), {code: 'ENOENT'});
   assert.equal(toml(root, 'Cargo.toml').package.name, 'literal#value');
   assert.throws(() => toml(root, 'absent.toml'));
 });
@@ -44,6 +48,18 @@ test('policy entrypoints reject violations through symlinks and stay inert on im
   assert.match(result.stderr, /scripts\/violation.sh invokes Cargo/);
   const imported = spawnSync(process.execPath, ['--input-type=module', '-e', 'await import("./scripts/check-cargo-callers.mjs")'], {cwd: root, encoding: 'utf8'});
   assert.equal(imported.status, 0, imported.stderr);
+});
+
+test('source pages retain every input under a configured descriptor budget', t => {
+  const root = mkdtempSync(join(tmpdir(), 'policy-sources-'));
+  t.after(() => rmSync(root, {recursive: true, force: true}));
+  const files = Array.from({length: 512}, (_, index) => `source-${index}.rs`);
+  for (const file of files) writeFileSync(join(root, file), file);
+  const script = 'const {readSources} = await import(process.argv[2]); console.log(JSON.stringify(await readSources(process.argv[1], JSON.parse(process.argv[3]))));';
+  const result = spawnSync('sh', ['-c', 'ulimit -n 128 && exec "$@"', 'source-pages', process.execPath,
+    '--input-type=module', '-e', script, root, new URL('../policy-core.mjs', import.meta.url).href, JSON.stringify(files)], {encoding: 'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), files.map(file => [file, file]));
 });
 
 test('manifest policy checks declared identities and exact packaged source bytes', t => {
