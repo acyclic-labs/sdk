@@ -8,46 +8,59 @@
   "exports": {
     "./grpc-refusal": {
       "types": "./dist/grpc-refusal.d.ts",
+      "bun": "./src/grpc-refusal.ts",
       "default": "./dist/grpc-refusal.js"
     },
     "./refusal": {
       "types": "./dist/refusal.d.ts",
+      "bun": "./src/refusal.ts",
       "default": "./dist/refusal.js"
     },
     "./credential-connect": {
       "types": "./dist/credential-connect.d.ts",
+      "bun": "./src/credential-connect.ts",
       "default": "./dist/credential-connect.js"
     },
     "./credential": {
       "types": "./dist/credential.d.ts",
+      "bun": "./src/credential.ts",
       "default": "./dist/credential.js"
     },
     "./addressing": {
       "types": "./dist/addressing.d.ts",
+      "bun": "./src/addressing.ts",
       "default": "./dist/addressing.js"
     },
     "./owned-bytes": {
       "types": "./dist/owned-bytes.d.ts",
+      "bun": "./src/owned-bytes.ts",
       "default": "./dist/owned-bytes.js"
     },
-    ".": "./dist/index.js",
+    ".": {
+      "bun": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
     "./holder": {
       "types": "./dist/holder.d.ts",
+      "bun": "./src/holder.ts",
       "default": "./dist/holder.js"
     },
     "./proto": {
       "types": "./generated/proto/auth/v1/auth_pb.d.ts",
+      "bun": "./src/proto.ts",
       "default": "./generated/proto/auth/v1/auth_pb.js"
     },
     "./guest-admission": {
       "types": "./dist/guest-admission.d.ts",
+      "bun": "./src/guest-admission.ts",
       "default": "./dist/guest-admission.js"
     },
     "./conformance": "./generated/conformance/secrets-v1.json"
   },
   "files": [
     "dist",
-    "generated"
+    "generated",
+    "src"
   ],
   "dependencies": {
     "@connectrpc/connect": "2.3.0",
