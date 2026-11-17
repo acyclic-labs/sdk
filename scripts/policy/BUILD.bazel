@@ -11,6 +11,16 @@ node_test(
 )
 
 node_test(
+    name = "native_lexer_test",
+    srcs = [
+        "//:scripts/source-policy/index.mjs",
+        "//:scripts/source-policy/native.test.mjs",
+        "//:scripts/graphcoder-conpty.cs",
+    ],
+    entry = "scripts/source-policy/native.test.mjs",
+)
+
+node_test(
     name = "static_ci_test",
     srcs = [
         "//:.gitattributes",

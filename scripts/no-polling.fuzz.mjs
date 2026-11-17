@@ -51,6 +51,9 @@ export function fuzz(data, analyze = sourcePolicy.pollingSites) {
  assert.ok(analyze('scripts/control.mjs', "import {setTimeout as pause} from 'node:timers'; pause(" + JSON.stringify(word) + ');').length);
  for (const [file, literal] of [
   ['scripts/control.rs', `r#"${word}"#`], ['scripts/control.rs', "'x'"],
+  ['scripts/control.cs', `@"${word}\\"`],
+  ['scripts/control.cs', `$@"""${word}""\\"`],
+  ['scripts/control.cs', `@$"${word}\\"`],
   ['scripts/control.ps1', `@"\n${word}\n"@`], ['scripts/control.py', `"""${word}"""`],
  ]) assert.ok(analyze(file, literal + '\nsleep(1)').some(site => site.kind === 'timer-or-readiness'));
  const sqlitePolicy = ['busy_timeout', 'busy_handler', 'sqlite3_busy_timeout', 'sqlite3_busy_handler'][data.length % 4];

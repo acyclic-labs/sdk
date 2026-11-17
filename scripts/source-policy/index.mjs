@@ -1,5 +1,7 @@
 import {createHash} from 'node:crypto';
-import ts from 'typescript-parser';
+import {createRequire} from 'node:module';
+const require = createRequire(import.meta.url);
+let ts;
 
 // This is a conservative source rule, not a liveness proof. Loops require an
 // exact finite-work or producer-event disposition. In particular, changing a
@@ -13,7 +15,6 @@ const loop = new Set(['for', 'while', 'loop', 'do']);
 const embeddedLoop = new RegExp('\\b(?:' + [...loop].join('|') + ')\\b', 'i');
 const embeddedKind = spelling => embeddedCandidate(spelling) ? 'embedded-timer-or-retry'
  : embeddedLoop.test(spelling) ? 'embedded-loop' : undefined;
-const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
 const hostObjects = new Set(['globalThis', 'window', 'global', 'Bun', 'process']);
 const opening = new Set(['(', '[', '{']);
 const closing = new Set([')', ']', '}']);
@@ -70,6 +71,8 @@ function constantString(expression) {
 }
 
 function scriptTokens(file, source) {
+ ts ??= require('typescript-parser');
+ const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
  // Both snapshots share a virtual root; no host filesystem lookup participates
  // in resolving a source binding, and the dependency pass reuses this AST.
  const parsed = ts.createSourceFile('/' + file, source, ts.ScriptTarget.Latest, true);
@@ -194,7 +197,8 @@ function nativeTokens(source, file) {
    if (!end) throw malformed('unterminated PowerShell here-string');
    emit(end.index + end[0].length, 'literal'); continue;
   }
-  const quote = tail[0];
+  const verbatim = file.endsWith('.cs') && tail.match(/^@\$?"/);
+  const quote = verbatim ? '"' : tail[0];
   if (yaml && !'[]{} ,#&*!|>\'"%@`'.includes(quote) && !/^[-?:](?:[ \t\r\n]|$)/.test(tail)) {
    // Quotes and unseparated hashes inside plain scalars are data. Only YAML
    // separation or a flow delimiter returns control to the quoted scanner.
@@ -221,12 +225,12 @@ function nativeTokens(source, file) {
   const character = rust && quote === "'" && tail.match(/^'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\r\n])'/u);
   if (character) { emit(at + character[0].length, 'literal'); continue; }
   if (quote === '"' || (!rust && quote === "'")) {
-   let end = at + 1;
+   let end = at + (verbatim ? verbatim[0].length : 1);
    while (end < source.length) {
-    if ((powershell || (yaml && quote === "'")) && source[end] === quote && source[end + 1] === quote) { end += 2; continue; }
+    if ((powershell || verbatim || (yaml && quote === "'")) && source[end] === quote && source[end + 1] === quote) { end += 2; continue; }
     if (source[end] === quote) break;
     end += powershell ? (quote === '"' && source[end] === '`' ? 2 : 1)
-     : yaml && quote === "'" ? 1 : (source[end] === '\\' ? 2 : 1);
+     : verbatim || yaml && quote === "'" ? 1 : (source[end] === '\\' ? 2 : 1);
    }
    if (end >= source.length) throw malformed('unterminated quoted string');
    emit(end + 1, 'literal'); continue;
