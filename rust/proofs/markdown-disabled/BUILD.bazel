@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
     name = "disabled",
@@ -7,7 +7,7 @@ rust_library(
     edition = "2024",
 )
 
-rust_binary(
+rust_test(
     name = "argument_elision",
     srcs = ["argument_elision.rs"],
     edition = "2024",

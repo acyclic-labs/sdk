@@ -2,5 +2,3 @@
 const _: () = {
     disabled::record!(scan(unavailable_argument()));
 };
-
-fn main() {}
