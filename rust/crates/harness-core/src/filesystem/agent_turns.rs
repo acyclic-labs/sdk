@@ -2314,6 +2314,16 @@ impl<'a> TurnContext<'a> {
             // the same prefix the failed one did.
             if !settled.replay_text && settled.transcript.is_empty() {
                 self.settled.remove(index);
+                if let Some(fork) = &mut self.fork
+                    && *fork > index
+                {
+                    *fork -= 1;
+                }
+                for (opened, _) in &mut self.ancestors {
+                    if *opened > index {
+                        *opened -= 1;
+                    }
+                }
             } else {
                 index += 1;
             }
@@ -2540,6 +2550,11 @@ impl<'a> TurnContext<'a> {
         if fork == Some(forked) {
             directive(&mut messages, &mut message_ids);
         }
+        for (opened, ancestor) in &ancestors {
+            if *opened == forked {
+                place(&mut messages, &mut message_ids, ancestor);
+            }
+        }
         if !announcements.is_empty() {
             for (part, content) in
                 crate::agent::announcement_messages(announcements, journal_reader, content_limits)
@@ -2624,8 +2639,10 @@ async fn staged_transcript(
                 role: ModelRole::Assistant,
                 content: ModelContent::Text(output.text),
             });
+            fallback
+        } else {
+            Vec::new()
         }
-        fallback
     } else {
         output.transcript
     })
