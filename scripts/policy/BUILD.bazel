@@ -1,6 +1,23 @@
 load(":node_test.bzl", "node_test")
 
 node_test(
+    name = "wasm_metadata_test",
+    srcs = [
+        "wasm-metadata.test.mjs",
+        "//compatibility:native-families/actors.json",
+        "//compatibility:native-families/stream.json",
+        "//:scripts/bazel-executables.mjs",
+        "//:scripts/generated-bindings.mjs",
+        "//:scripts/native-family.mjs",
+        "//:scripts/native-family-metadata.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/proto-codegen.mjs",
+        "//:scripts/wasm-packages.mjs",
+    ],
+    entry = "scripts/policy/wasm-metadata.test.mjs",
+)
+
+node_test(
     name = "bazel_build_files_test",
     srcs = [
         "//:rust-toolchain.toml",

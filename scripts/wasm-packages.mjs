@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { nativeFamily } from "./native-family.mjs";
+import { nativeFamily } from "./native-family-metadata.mjs";
 
 const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen_(?:[0-9a-f]+)?_+convert__closures_+invoke_[^:\s]*:.*\r?\n/gm;
 const stripHarnessClosureShims = output => {
