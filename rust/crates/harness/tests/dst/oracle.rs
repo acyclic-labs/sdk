@@ -209,6 +209,8 @@ pub(super) struct Incarnation {
     pub dispatched_at: Vec<usize>,
     /// Durable operations the whole incarnation performed.
     pub durable: usize,
+    /// Fresh source identities this incarnation drew from the schedule.
+    pub entropy: Vec<[u8; 16]>,
     pub crashed: Option<InjectedStorageFault>,
 }
 
@@ -251,9 +253,8 @@ fn record_incarnation(incarnation: &Incarnation, directory: &Path) {
             "prompts": format!("{:?}", incarnation.prompts),
             "requests": serde_json::to_value(&incarnation.requests)
                 .unwrap_or(serde_json::Value::Null),
-            "dispatched_at": incarnation.dispatched_at,
+            "entropy": incarnation.entropy,
             "crashed": format!("{:?}", incarnation.crashed),
-            "durable": incarnation.durable,
         });
         normalize_paths(&mut value, directory.to_string_lossy().as_ref(), "<world>");
         trace.push(value);
@@ -402,11 +403,17 @@ impl World {
             let mut driver = self.driver(scheduler, cut);
             let schedule = driver.schedule.clone();
             let counter = schedule.clone();
+            let drawn = Arc::new(Mutex::new(Vec::<[u8; 16]>::new()));
             let source_entropy = {
                 let schedule = schedule.clone();
+                let drawn = Arc::clone(&drawn);
                 Arc::new(move || {
                     let mut bytes = [0; 16];
                     schedule.fill_entropy(&mut bytes);
+                    drawn
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(bytes);
                     bytes
                 })
             };
@@ -498,11 +505,17 @@ impl World {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
+            let entropy = std::mem::take(
+                &mut *drawn
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
             let incarnation = Incarnation {
                 prompts,
                 requests: provider.requests(),
                 dispatched_at,
                 durable: counter.durable_write_count(),
+                entropy,
                 crashed,
             };
             record_incarnation(&incarnation, self.directory.path());
@@ -520,11 +533,17 @@ impl World {
         entry(async move {
             let mut driver = self.driver(self.seed, None);
             let schedule = driver.schedule.clone();
+            let drawn = Arc::new(Mutex::new(Vec::<[u8; 16]>::new()));
             let source_entropy = {
                 let schedule = schedule.clone();
+                let drawn = Arc::clone(&drawn);
                 Arc::new(move || {
                     let mut bytes = [0; 16];
                     schedule.fill_entropy(&mut bytes);
+                    drawn
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(bytes);
                     bytes
                 })
             };
