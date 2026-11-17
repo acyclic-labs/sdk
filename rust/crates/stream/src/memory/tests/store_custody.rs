@@ -21,8 +21,8 @@ async fn a_landed_write_leaves_nothing_on_its_writer_and_charges_the_store() -> 
     let capacity = Arc::clone(&provider.capacity);
     let path = path("custody/kept")?;
     let mut kept = vec![capacity.held()];
+    let writer = Arc::new(Meter::default());
     for tail in 0..64 {
-        let writer = Arc::new(Meter::default());
         let output = provider
             .native_append(request(&path, tail), writer.original())
             .await??;

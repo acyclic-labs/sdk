@@ -217,6 +217,9 @@ impl MemoryStream {
                 CommittedMutation::Append(append) => (&mut append.path, &mut append.records),
                 CommittedMutation::Fork(fork) => {
                     fork.source = self.keep_path(&fork.source)?;
+                    for path in &mut fork.exclude {
+                        *path = self.keep_path(path)?;
+                    }
                     (&mut fork.destination, &mut fork.records)
                 }
             };

@@ -285,8 +285,10 @@ impl NativeReadMeter for NativeCustody {
             Holder::Invocation { meter, .. } => meter.record_reserved_allocation(bytes),
             Holder::Store(_) => Ok(()),
         };
-        custody.withheld -= bytes;
-        custody.outstanding += bytes;
+        if result.is_ok() {
+            custody.withheld -= bytes;
+            custody.outstanding += bytes;
+        }
         result
     }
     fn allocation_failed(&self, error: std::collections::TryReserveError) -> io::Error {

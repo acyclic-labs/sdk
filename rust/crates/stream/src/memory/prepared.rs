@@ -434,7 +434,7 @@ impl PreparedCommit {
                 if stored.digest != digest {
                     return Err(StreamError::IdempotencyMismatch);
                 }
-                let result = copy_outcome(
+                let (result, mut output_claim) = copy_outcome(
                     stored,
                     self.provider.revisions.at(stored.index),
                     crate::PreparedRecordCapacity {
@@ -444,8 +444,9 @@ impl PreparedCommit {
                     },
                     (self.plan.result, self.plan.output_claim),
                 )?;
-                let _ = work.record(record_codec(&mut self.codec, copied_bytes(&result.0), 0));
-                return Ok(result);
+                self.provider.hand_back(&mut output_claim)?;
+                let _ = work.record(record_codec(&mut self.codec, copied_bytes(&result), 0));
+                return Ok((result, output_claim));
             }
             if state.ephemeral_key_is_spent(self.key.as_bytes(), |items| {
                 self.provider.record_replay_probe(&mut self.probes, items);
@@ -475,6 +476,8 @@ impl PreparedCommit {
             if !conflicts.is_empty() {
                 let value = CommitOutcome::Conflict(conflicts);
                 let _ = work.record(record_codec(&mut self.codec, 2 * copied_bytes(&value), 0));
+                let mut output_claim = output_claim;
+                self.provider.hand_back(&mut output_claim)?;
                 return Ok((value, output_claim));
             }
             let bytes = body.payload_bytes();
