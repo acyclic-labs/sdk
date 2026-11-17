@@ -1123,19 +1123,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             if !armed.is_empty() {
                                 return Poll::Ready(Event::Armed(armed));
                             }
-                            // Only a placing host can host a parked actor again.
                             let opens = windows
                                 .first()
-                                .map(|&(window, _)| scheduling::window_start(window))
-                                .into_iter()
-                                .chain(
-                                    self.ready
-                                        .iter()
-                                        .filter_map(ReadySet::next_parked_wake)
-                                        .min()
-                                        .filter(|_| self.places),
-                                )
-                                .min();
+                                .map(|&(window, _)| scheduling::window_start(window));
                             let next = match (
                                 self.ready.iter().filter_map(ReadySet::next_deadline).min(),
                                 opens,
@@ -1259,21 +1249,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     result?;
                     timer = None;
                     let now = self.clock.now_unix_millis();
-                    // Hosting a parked actor again moves its token into its
-                    // registration, which this same pass then wakes.
-                    if self.places {
-                        for actor in self
-                            .ready
-                            .iter()
-                            .flat_map(|ready| ready.parked_due(now, self.limits.work))
-                        {
-                            self.track(actor.clone())?;
-                            if let Some(slot) = self.slot(&actor) {
-                                slot.registration.adopt_parked();
-                            }
-                            self.wake(&actor);
-                        }
-                    }
                     self.wake_due(now);
                     // An opened window wakes its dormant actors, page by page;
                     // each delivery installs its exact committed deadline.
@@ -1293,13 +1268,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     for actor in actors {
                         if self.store.scheduling_shard(&actor) == shard && self.includes(&actor) {
                             self.due(&actor, true)?;
-                            // The resident takes the filed alarm over before
-                            // the window can be passed.
+                            // A recovered actor's persisted alarm is registered
+                            // through the same function a resident delivery uses.
+                            // A due alarm stays in the due index, so the next
+                            // rearm fires it at once; a future one is its wake.
                             if let Some(slot) = self.slot(&actor) {
-                                slot.registration
-                                    .claim_alarm(scheduling::window_start(window));
+                                let snapshot = self.store.load(&actor).await?;
+                                if let Some(state) = snapshot.state() {
+                                    slot.registration.update_alarm(state.alarm())?;
+                                }
                             }
-                            self.wake(&actor);
                         }
                     }
                     match next {

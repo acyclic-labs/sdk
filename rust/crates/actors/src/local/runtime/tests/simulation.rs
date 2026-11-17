@@ -1,6 +1,7 @@
 //! Random operation histories over the real local delivery loop.
 use super::*;
 use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
+use acyclic_stream::UnixMillisClock as _;
 
 mod composition;
 mod local;

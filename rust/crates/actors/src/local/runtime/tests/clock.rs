@@ -484,6 +484,70 @@ async fn a_replacement_host_fires_alarms_armed_before_the_checkpoint() -> TestRe
     Ok(())
 }
 
+/// A persisted alarm is registered on recovery through the same function a
+/// resident alarm uses. Advancing the shared clock to its deadline delivers it
+/// exactly once; a second advance does not deliver it again.
+#[tokio::test]
+async fn a_recovered_alarm_fires_once_when_the_clock_reaches_it() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let armed = spawn_with(&store, "recovered-armed", &[b"set 50"]).await?;
+    let shard = store.scheduling_shard(&armed);
+    let (clock, mut control) = ControlledClock::new(100);
+    let clock = Arc::new(clock);
+    let host = |clock: Arc<ControlledClock>| {
+        let runtime = Runtime::new(
+            crate::guest::Requests::default(),
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(Package::new()?),
+            clock as Arc<dyn Clock>,
+        )
+        .with_scheduling_shards([shard])?;
+        Ok::<_, Box<dyn std::error::Error>>(runtime)
+    };
+    let first = host(Arc::clone(&clock))?;
+    let tail = provider.tail(store.scheduling_path(shard)?).await?;
+    let (checkpoint, dispatcher) = first.dispatcher_store(shard)?;
+    {
+        let mut serving = Box::pin(first.run(|_, error| panic!("delivery failed: {error}")));
+        observe_while_running(
+            serving.as_mut(),
+            state_after(&checkpoint, &dispatcher, |state| {
+                state.cursor("activation") == Some(tail)
+            }),
+        )
+        .await?;
+    }
+    let pending = store.load(&armed).await?;
+    assert_eq!(
+        pending.state().and_then(|state| state.alarm().pending()),
+        Some(150)
+    );
+    assert!(records(&*provider, "out/recovered-armed").await?.is_empty());
+
+    let replacement = host(Arc::clone(&clock))?;
+    let mut serving = Box::pin(replacement.run(|_, error| panic!("delivery failed: {error}")));
+    control.advance_to(150)?;
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &armed, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
+    assert_eq!(
+        records(&*provider, "out/recovered-armed").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    control.advance_to(200)?;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        records(&*provider, "out/recovered-armed").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    Ok(())
+}
+
 struct Authority(AtomicU64);
 
 impl acyclic_stream::UnixMillisClock for Authority {

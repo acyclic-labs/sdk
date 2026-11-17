@@ -149,8 +149,11 @@ impl World {
             Op::Open => {
                 if let Some(opened) = self.openable() {
                     self.windows.pop_first();
+                    let alarm = self.alarm.clone();
                     let registration = self.host()?;
-                    registration.claim_alarm(window_start(opened));
+                    registration
+                        .update_alarm(&alarm)
+                        .map_err(|error| error.to_string())?;
                     registration.waker().wake_by_ref();
                     if self.consumed < opened + 1 {
                         self.consumed = opened + 1;
@@ -159,9 +162,6 @@ impl World {
                 }
             }
             Op::Due => {
-                if !self.set.parked_due(now, usize::MAX).is_empty() {
-                    self.host()?.adopt_parked();
-                }
                 self.set.wake_due(now, usize::MAX);
             }
             Op::Deliver(accepted) => {
