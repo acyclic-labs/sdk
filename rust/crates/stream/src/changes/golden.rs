@@ -29,12 +29,12 @@ fn qualify_marker(
     assert_eq!(take_marker_probes(), after);
     assert_eq!(
         validate(value, headers).map_err(|error| error.category()),
-        expected.clone().map(|_| ())
+        expected.map(|_| ())
     );
     assert_eq!(take_marker_probes(), after);
     assert_eq!(
         decode(value, headers).map_err(|error| error.category()),
-        expected.clone().map(|_| decoded.clone())
+        expected.map(|_| decoded.clone())
     );
     assert_eq!(take_marker_probes(), after);
 

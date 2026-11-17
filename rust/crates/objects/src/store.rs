@@ -759,22 +759,14 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
         // A root batch is acknowledged only once its closure and index keys
         // are durable, so one missing any of them was never acknowledged.
-        let mut pages = self.pages(format!("{}r/", self.state.prefix));
-        while let Some(page) = pages.next().await? {
-            for (key, _) in page {
-                if self.batch_survived(&key, &blobs).await? {
-                    continue;
-                }
-                self.medium.remove(&key).await.map_err(medium)?;
-                repaired.push(key);
-            }
-        }
-        let mut pages = self.pages(format!("{}f/", self.state.prefix));
-        while let Some(page) = pages.next().await? {
-            for (key, _) in page {
-                if !self.batch_survived(&key, &blobs).await? {
-                    self.medium.remove(&key).await.map_err(medium)?;
-                    repaired.push(key);
+        for kind in ["r", "f"] {
+            let mut pages = self.pages(format!("{}{kind}/", self.state.prefix));
+            while let Some(page) = pages.next().await? {
+                for (key, _) in page {
+                    if !self.batch_survived(&key, &blobs).await? {
+                        self.medium.remove(&key).await.map_err(medium)?;
+                        repaired.push(key);
+                    }
                 }
             }
         }
