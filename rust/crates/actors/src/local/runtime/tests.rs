@@ -1,5 +1,5 @@
 use super::*;
-use crate::conformance::{self, Failure, Package, Target};
+use crate::conformance::{self, Backend, Failure, Package};
 use crate::guest::{AlarmChange, Checkpoint, GuestFuture, Manifest, Transition};
 use crate::local::{Branch, PreparedPublish, Subscription};
 use acyclic_stream::StreamCategory;
@@ -251,7 +251,7 @@ impl<P: StreamProvider> Drop for LocalTarget<P> {
     }
 }
 
-impl<P: StreamProvider> Target for LocalTarget<P> {
+impl<P: StreamProvider> Backend for LocalTarget<P> {
     type Provider = P;
     fn requests(&self) -> RequestLedger {
         self.requests.clone()
@@ -335,7 +335,7 @@ struct DurableBackend {
     _directory: tempfile::TempDir,
 }
 
-impl Target for DurableBackend {
+impl Backend for DurableBackend {
     type Provider = Counted<LocalStream>;
     fn requests(&self) -> RequestLedger {
         self.target.requests()

@@ -88,9 +88,6 @@ pub trait Backend: ProviderPlatform {
     fn restart(&self) -> BoxProviderFuture<'_, std::result::Result<(), Error>>;
 }
 
-/// Compatibility spelling for the same backend contract.
-pub use Backend as Target;
-
 /// Register the complete suite using an async factory for a fresh running host.
 /// The backend must keep every runtime and disposable storage resource alive.
 pub use crate::actors_conformance_suite as suite;
@@ -1557,7 +1554,7 @@ async fn lineage<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failu
 
 /// One operation survives queued retries, pause, restart and a lost response.
 /// Both invocation and ordinary sends run through the original Package.
-async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn invoked<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     use crate::invocation::Invocation;
     let mut fixture = Fixture::create(target, run, "invoked").await?;
     fixture.send("clear").await?;
@@ -1813,7 +1810,7 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
 
 /// Every backend uses the same reservation accounting and generation fences.
 /// Expiry is a logical fence, never an assertion of external execution death.
-async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn reserved<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     use crate::reservation::{Decision, OwnerEvidence, Pool};
     let mut fixture = Fixture::create(target, run, "reserved").await?;
     fixture.send("pool 2").await?;
@@ -1971,7 +1968,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
 }
 
 /// Observe only committed checkpoint records; this does not poll or advance work.
-async fn wait_pool_used<T: Target + ?Sized>(
+async fn wait_pool_used<T: Backend + ?Sized>(
     fixture: &Fixture<'_, T>,
     expected: u64,
 ) -> Result<(), Failure> {
@@ -2022,7 +2019,7 @@ async fn wait_pool_used<T: Target + ?Sized>(
 
 /// A committed input cut is observed through the same original state stream.
 /// Waiting neither executes a paused input nor weakens its source anchor.
-async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn applied<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut fixture = Fixture::create(target, run, "applied").await?;
     fixture.send("emit").await?;
     fixture.expect(&["r0"]).await?;
@@ -2092,7 +2089,7 @@ async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
 
 /// A later control interrupts the current handler without consuming the
 /// intervening record or the control. Restart preserves all three cursors.
-async fn interrupted<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+async fn interrupted<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut actor = Fixture::create(target, run, "interrupted").await?;
     actor.send("wait").await?;
     actor.send("emit").await?;
