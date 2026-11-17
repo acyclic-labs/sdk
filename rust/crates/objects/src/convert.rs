@@ -53,6 +53,7 @@ pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {
             })
             .collect(),
         edges: wire_digests(&manifest.edges),
+        sha256: manifest.sha256.map(|digest| digest.to_vec()),
     }
 }
 
@@ -70,6 +71,11 @@ pub(crate) fn from_manifest(manifest: Option<&wire::Manifest>) -> Result<Manifes
             })
             .collect::<Result<_, Error>>()?,
         edges: digests(&manifest.edges)?,
+        sha256: manifest
+            .sha256
+            .as_ref()
+            .map(|digest| digest.as_slice().try_into().map_err(|_| invalid()))
+            .transpose()?,
     })
 }
 

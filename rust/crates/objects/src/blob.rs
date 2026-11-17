@@ -66,7 +66,7 @@ impl ContentDigests {
 
 #[cfg(test)]
 mod content_digest_tests {
-    use super::{ContentHasher, Digest};
+    use super::{ContentHasher, Digest, Manifest, Part};
 
     #[test]
     fn logical_checksums_are_independent_of_input_frames() {
@@ -85,6 +85,16 @@ mod content_digest_tests {
             assert_eq!(result.blake3(), Digest::of(b"abc"));
             assert_eq!(result.sha256().as_slice(), expected_sha256);
             assert_eq!(result.length(), 3);
+            let manifest = Manifest {
+                parts: vec![Part {
+                    digest: result.blake3(),
+                    length: result.length(),
+                }],
+                edges: Vec::new(),
+                sha256: Some(*result.sha256()),
+            };
+            let encoded = manifest.encode().unwrap();
+            assert_eq!(Manifest::decode(&encoded).unwrap(), manifest);
         }
     }
 }
@@ -217,9 +227,13 @@ pub struct Manifest {
     pub parts: Vec<Part>,
     /// Additional retained references.
     pub edges: Vec<Digest>,
+    /// A publisher-declared SHA-256 of the concatenated logical bytes, when an
+    /// external contract requires it. This is not a content address and is
+    /// not verified by manifest admission.
+    pub sha256: Option<[u8; 32]>,
 }
 
-const MANIFEST_MAGIC: &[u8; 20] = b"acyclic-manifest-v1\0";
+const MANIFEST_MAGIC: &[u8; 20] = b"acyclic-manifest-v2\0";
 const ENVELOPE_MAGIC: &[u8; 16] = b"acyclic-blob-v2\0";
 const BATCH_MAGIC: &[u8] = b"acyclic-retained-v1\0";
 const INCARNATION_MAGIC: &[u8] = b"acyclic-incarnation-v1\0";
@@ -280,14 +294,14 @@ impl Manifest {
         })
     }
 
-    /// Canonical v1 encoding; its BLAKE3 is the manifest's digest.
+    /// Canonical v2 encoding; its BLAKE3 is the manifest's digest.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let parts =
             u32::try_from(self.parts.len()).map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
         let edges =
             u32::try_from(self.edges.len()).map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
         let mut bytes = Vec::with_capacity(
-            MANIFEST_MAGIC.len() + 8 + self.parts.len() * 40 + self.edges.len() * 32,
+            MANIFEST_MAGIC.len() + 41 + self.parts.len() * 40 + self.edges.len() * 32,
         );
         bytes.extend_from_slice(MANIFEST_MAGIC);
         bytes.extend_from_slice(&parts.to_le_bytes());
@@ -299,6 +313,8 @@ impl Manifest {
         for edge in &self.edges {
             bytes.extend_from_slice(edge.as_bytes());
         }
+        bytes.push(u8::from(self.sha256.is_some()));
+        bytes.extend_from_slice(&self.sha256.unwrap_or_default());
         Ok(bytes)
     }
 
@@ -322,8 +338,19 @@ impl Manifest {
         })?;
         let count = reader.u32()? as usize;
         let edges = reader.vector(count, 32, allocation, |reader| reader.digest())?;
+        let present = reader.take(1)?;
+        let checksum: [u8; 32] = reader.take(32)?.try_into().map_err(|_| corrupt())?;
+        let sha256 = match present {
+            [0] if checksum == [0; 32] => None,
+            [1] => Some(checksum),
+            _ => return Err(corrupt()),
+        };
         reader.finish()?;
-        Ok(Self { parts, edges })
+        Ok(Self {
+            parts,
+            edges,
+            sha256,
+        })
     }
 
     /// Every outgoing reference, parts first, each digest once.

@@ -8,6 +8,7 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
             length: 7,
         }],
         edges: vec![Digest::from_bytes([4; 32])],
+        sha256: None,
     };
     let envelope = Envelope {
         kind: Kind::Manifest,

@@ -410,6 +410,7 @@ async fn verify_batches_and_manifest(
             },
         ],
         edges: vec![parent],
+        sha256: None,
     };
     let published = first.put_manifest(manifest.clone()).await;
     let Ok(Put::Created { verified }) = published else {
@@ -448,6 +449,7 @@ async fn verify_batches_and_manifest(
                 length: 999,
             }],
             edges: Vec::new(),
+            sha256: None,
         })
         .await;
     expect!(
