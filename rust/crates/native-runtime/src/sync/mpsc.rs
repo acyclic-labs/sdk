@@ -34,9 +34,8 @@ pub(crate) fn sync_channel<T>(capacity: usize) -> (SyncSender<T>, Receiver<T>) {
 
 impl<T> SyncSender<T> {
     pub(crate) fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        let mut state = match self.0.state.lock() {
-            Ok(state) => state,
-            Err(_) => return Err(TrySendError::Disconnected(value)),
+        let Ok(mut state) = self.0.state.lock() else {
+            return Err(TrySendError::Disconnected(value));
         };
         if !state.receiver {
             return Err(TrySendError::Disconnected(value));
