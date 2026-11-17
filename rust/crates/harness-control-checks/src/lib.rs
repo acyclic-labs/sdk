@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
+#![cfg(any(test, feature = "repository-checks"))]
 //! Structural drift check; execution traces must separately check shell effects.
 #[cfg(test)]
 use acyclic_test_support::correspondence;
