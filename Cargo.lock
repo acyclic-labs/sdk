@@ -686,6 +686,7 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
+ "acyclic-harness-layout",
  "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-mcp",
@@ -831,6 +832,18 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "acyclic-harness-layout"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-native-runtime",
+ "acyclic-stream",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
