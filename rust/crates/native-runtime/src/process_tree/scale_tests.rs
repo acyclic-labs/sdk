@@ -42,6 +42,23 @@ fn threads() -> io::Result<u64> {
     Ok(crate::resources::process_resources()?.threads)
 }
 
+fn service_counts() -> io::Result<Vec<(&'static str, usize)>> {
+    [
+        ("native", &crate::workers::NATIVE_WORKERS),
+        ("host", &crate::workers::BLOCKING_WORKERS),
+        ("persistence", &crate::workers::PERSISTENCE_WORKERS),
+        ("process", &crate::workers::PROCESS_WORKERS),
+        ("output", &crate::workers::OUTPUT_WORKERS),
+    ]
+    .into_iter()
+    .map(|(name, slot)| {
+        let workers = crate::workers(slot, false)?;
+        let started = workers.admission.lock().unwrap().started_workers;
+        Ok((name, started))
+    })
+    .collect()
+}
+
 pub(super) struct Quiet;
 
 impl CaptureHandler for Quiet {
@@ -82,6 +99,7 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
             .await
     })?;
     assert!(outcome.result.is_ok_and(|output| output.status.success()));
+    eprintln!("services before: {:?}", service_counts()?);
     let baseline = threads()?;
     // The assertion needs more than four times the pool width, not a
     // population proportional to the machine's descriptor or process limits.
@@ -125,6 +143,7 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
         "every child owns one readiness wait"
     );
     let outstanding = threads()?;
+    eprintln!("services armed: {:?}", service_counts()?);
     println!("{count} outstanding waits: {baseline} threads before, {outstanding} with all armed");
     assert!(
         outstanding <= baseline + 1,
