@@ -127,49 +127,40 @@ impl Conversation {
         );
         let inbox = self.send(&id, &prompt).await?;
         let completion = async {
-            loop {
-                match self.settle(&id, inbox, &mut events).await? {
-                    Settlement::Approval { .. } => {
-                        // External approvers use the same durable approval
-                        // files; wait on their event, never retry readiness.
-                        events.next().await?;
-                    }
-                    Settlement::Reply(Reply::Answered { entry, .. }) => {
-                        // A failed or cancelled turn cannot satisfy a goal.
-                        // Preserve its original committed cause rather than
-                        // replacing it with an active-goal protocol error.
-                        match &entry.outcome {
-                            crate::agent::TurnOutcome::Completed => {}
-                            crate::agent::TurnOutcome::Failed { message } => {
-                                return Err(Error::Refused(message.clone()));
-                            }
-                            crate::agent::TurnOutcome::Cancelled => {
-                                return Err(Error::Refused("goal run was cancelled".into()));
-                            }
-                            crate::agent::TurnOutcome::RestoreConflict => {
-                                return Err(Error::Refused(self.output_text(&entry).await?));
-                            }
+            match self.wait_reply(&id, inbox, &mut events).await? {
+                Settlement::Reply(Reply::Answered { entry, .. }) => {
+                    // A failed or cancelled turn cannot satisfy a goal.
+                    // Preserve its original committed cause rather than
+                    // replacing it with an active-goal protocol error.
+                    match &entry.outcome {
+                        crate::agent::TurnOutcome::Completed => {}
+                        crate::agent::TurnOutcome::Failed { message } => {
+                            return Err(Error::Refused(message.clone()));
                         }
-                        let files = self
-                            .files(FileRoot::Home {}, vec!["GOAL.md".into()], None)
-                            .await?;
-                        let file = files.files["GOAL.md"]
-                            .as_ref()
-                            .ok_or_else(|| Error::Conflict("run ended without GOAL.md".into()))?;
-                        let goal = GoalState::from_bytes(file.text.as_bytes(), u64::MAX)?;
-                        if goal.status == GoalStatus::Active {
-                            return Err(Error::Conflict(
-                                "goal continuation ended with an active goal".into(),
-                            ));
+                        crate::agent::TurnOutcome::Cancelled => {
+                            return Err(Error::Refused("goal run was cancelled".into()));
                         }
-                        return Ok(RunOutcome::Goal { goal });
+                        crate::agent::TurnOutcome::RestoreConflict => {
+                            return Err(Error::Refused(self.output_text(&entry).await?));
+                        }
                     }
-                    Settlement::Reply(Reply::Dropped) => {
-                        return Err(Error::Refused(self.dropped().await?));
+                    let files = self
+                        .files(FileRoot::Home {}, vec!["GOAL.md".into()], None)
+                        .await?;
+                    let file = files.files["GOAL.md"]
+                        .as_ref()
+                        .ok_or_else(|| Error::Conflict("run ended without GOAL.md".into()))?;
+                    let goal = GoalState::from_bytes(file.text.as_bytes(), u64::MAX)?;
+                    if goal.status == GoalStatus::Active {
+                        return Err(Error::Conflict(
+                            "goal continuation ended with an active goal".into(),
+                        ));
                     }
-                    Settlement::Reply(_) => return Err(unexpected()),
-                    Settlement::Ended(reason) => return Err(Error::Refused(reason)),
+                    Ok(RunOutcome::Goal { goal })
                 }
+                Settlement::Reply(Reply::Dropped) => Err(Error::Refused(self.dropped().await?)),
+                Settlement::Reply(_) | Settlement::Approval { .. } => Err(unexpected()),
+                Settlement::Ended(reason) => Err(Error::Refused(reason)),
             }
         };
         tokio::pin!(completion);
@@ -539,106 +530,119 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn unattended_capacity_decisions_are_enforced_by_shared_actor() -> Result<()> {
-        for action in [Action::Pause, Action::Stop] {
-            for priced in [false, true] {
-                for capacity in [0, 1] {
-                    let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(
-                        vec![
-                            ScriptedEvent::Event(crate::model::ModelEvent::Content {
-                                delta: "observed output".into(),
-                            }),
-                            ScriptedEvent::Event(crate::model::ModelEvent::Completed {
-                                metadata: serde_json::json!({"usage":{"prompt_tokens":1,"completion_tokens":1}}),
-                            }),
-                        ],
-                    )]));
-                    let directory = tempfile::tempdir().map_err(failed)?;
-                    let project = volume(directory.path()).await?;
-                    let harness = Arc::new(
-                        open_scripted(volume_config(directory.path(), project, provider.clone())?)
-                            .await?,
-                    );
-                    let conversation = Conversation::open(harness.connect().await?);
-                    let policy = Policy {
-                        reservation: crate::supervision::Reservation {
-                            tokens: (!priced).then_some(capacity),
-                            usd_micros: priced.then_some(capacity),
-                        },
-                        prices: if priced {
-                            [(
-                                "scripted".into(),
-                                [(
-                                    "test".into(),
-                                    crate::executor::ModelPriceRecord {
-                                        version: 1,
-                                        revision: "owner-price".into(),
-                                        provider: "scripted".into(),
-                                        model: "test".into(),
-                                        effective_at: 0,
-                                        currency: "USD".into(),
-                                        input_nano_units_per_million: Some(500_000_000),
-                                        output_nano_units_per_million: Some(500_000_000),
-                                        cached: crate::executor::TokenPrice::Included,
-                                        cache_write: crate::executor::TokenPrice::Included,
-                                        reasoning: crate::executor::TokenPrice::Included,
-                                    },
-                                )]
-                                .into(),
-                            )]
-                            .into()
-                        } else {
-                            Default::default()
-                        },
-                        actions: [(Kind::Spend, action)].into(),
-                        ..Default::default()
-                    };
-                    assert!(
-                        matches!(conversation.run_until_goal(crate::OperationId::new(), "Continue until completed.", &policy).await?,
-                RunOutcome::Terminal { action: observed, signal: Some(Kind::Spend) } if observed == action)
-                    );
-                    assert!(
-                        provider.request(1).is_none(),
-                        "another model request passed the original capacity decision"
-                    );
-                    assert_eq!(
-                        provider.request(0).is_some(),
-                        capacity > 0,
-                        "zero capacity dispatched a provider request"
-                    );
-                    let (agents, root) = harness.agents().await?;
-                    assert_eq!(
-                        agents.state(root).await.map_err(failed)?.closed,
-                        action == Action::Stop
-                    );
-                    let mut feed = conversation.connection.supervision_own().await?;
-                    let started = feed.next().await?;
-                    assert!(matches!(started.event, Lifecycle::Started { .. }));
-                    let signal = feed.next().await?;
-                    assert!(
-                        matches!(signal.event, Lifecycle::Signal { signal, action: observed } if signal.kind == Kind::Spend && observed == action)
-                    );
-                    let terminal = feed.next().await?;
-                    assert_eq!(terminal.run, started.run);
-                    assert_eq!(terminal.source, signal.source);
-                    assert!(matches!(
-                        (action, terminal.event),
-                        (
-                            Action::Pause,
-                            Lifecycle::Paused {
-                                signal: Some(Kind::Spend)
-                            }
-                        ) | (
-                            Action::Stop,
-                            Lifecycle::Stopped {
-                                signal: Some(Kind::Spend)
-                            }
-                        )
-                    ));
-                }
+    macro_rules! capacity_case {
+        ($name:ident, $action:expr, $priced:expr, $capacity:expr) => {
+            #[tokio::test]
+            async fn $name() -> Result<()> {
+                capacity_decision($action, $priced, $capacity).await
             }
-        }
+        };
+    }
+
+    capacity_case!(
+        unattended_capacity_pause_zero_tokens,
+        Action::Pause,
+        false,
+        0
+    );
+    capacity_case!(unattended_capacity_pause_one_token, Action::Pause, false, 1);
+    capacity_case!(unattended_capacity_pause_zero_cost, Action::Pause, true, 0);
+    capacity_case!(unattended_capacity_pause_one_cost, Action::Pause, true, 1);
+    capacity_case!(unattended_capacity_stop_zero_tokens, Action::Stop, false, 0);
+    capacity_case!(unattended_capacity_stop_one_token, Action::Stop, false, 1);
+    capacity_case!(unattended_capacity_stop_zero_cost, Action::Stop, true, 0);
+    capacity_case!(unattended_capacity_stop_one_cost, Action::Stop, true, 1);
+
+    async fn capacity_decision(action: Action, priced: bool, capacity: u64) -> Result<()> {
+        let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(crate::model::ModelEvent::Content {
+                delta: "observed output".into(),
+            }),
+            ScriptedEvent::Event(crate::model::ModelEvent::Completed {
+                metadata: serde_json::json!({"usage":{"prompt_tokens":1,"completion_tokens":1}}),
+            }),
+        ])]));
+        let directory = tempfile::tempdir().map_err(failed)?;
+        let project = volume(directory.path()).await?;
+        let harness = Arc::new(
+            open_scripted(volume_config(directory.path(), project, provider.clone())?).await?,
+        );
+        let conversation = Conversation::open(harness.connect().await?);
+        let policy = Policy {
+            reservation: crate::supervision::Reservation {
+                tokens: (!priced).then_some(capacity),
+                usd_micros: priced.then_some(capacity),
+            },
+            prices: if priced {
+                [(
+                    "scripted".into(),
+                    [(
+                        "test".into(),
+                        crate::executor::ModelPriceRecord {
+                            version: 1,
+                            revision: "owner-price".into(),
+                            provider: "scripted".into(),
+                            model: "test".into(),
+                            effective_at: 0,
+                            currency: "USD".into(),
+                            input_nano_units_per_million: Some(500_000_000),
+                            output_nano_units_per_million: Some(500_000_000),
+                            cached: crate::executor::TokenPrice::Included,
+                            cache_write: crate::executor::TokenPrice::Included,
+                            reasoning: crate::executor::TokenPrice::Included,
+                        },
+                    )]
+                    .into(),
+                )]
+                .into()
+            } else {
+                Default::default()
+            },
+            actions: [(Kind::Spend, action)].into(),
+            ..Default::default()
+        };
+        assert!(
+            matches!(conversation.run_until_goal(crate::OperationId::new(), "Continue until completed.", &policy).await?,
+    RunOutcome::Terminal { action: observed, signal: Some(Kind::Spend) } if observed == action)
+        );
+        assert!(
+            provider.request(1).is_none(),
+            "another model request passed the original capacity decision"
+        );
+        assert_eq!(
+            provider.request(0).is_some(),
+            capacity > 0,
+            "zero capacity dispatched a provider request"
+        );
+        let (agents, root) = harness.agents().await?;
+        assert_eq!(
+            agents.state(root).await.map_err(failed)?.closed,
+            action == Action::Stop
+        );
+        let mut feed = conversation.connection.supervision_own().await?;
+        let started = feed.next().await?;
+        assert!(matches!(started.event, Lifecycle::Started { .. }));
+        let signal = feed.next().await?;
+        assert!(
+            matches!(signal.event, Lifecycle::Signal { signal, action: observed } if signal.kind == Kind::Spend && observed == action)
+        );
+        let terminal = feed.next().await?;
+        assert_eq!(terminal.run, started.run);
+        assert_eq!(terminal.source, signal.source);
+        assert!(matches!(
+            (action, terminal.event),
+            (
+                Action::Pause,
+                Lifecycle::Paused {
+                    signal: Some(Kind::Spend)
+                }
+            ) | (
+                Action::Stop,
+                Lifecycle::Stopped {
+                    signal: Some(Kind::Spend)
+                }
+            )
+        ));
         Ok(())
     }
 

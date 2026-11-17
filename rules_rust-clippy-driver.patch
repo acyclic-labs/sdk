@@ -1,0 +1,117 @@
+diff --git a/rust/private/rust.bzl b/rust/private/rust.bzl
+index ed3c5d2..165cacd 100644
+--- a/rust/private/rust.bzl
++++ b/rust/private/rust.bzl
+@@ -693,6 +693,13 @@ RUSTC_ATTRS = {
+     "_always_enable_metadata_output_groups": attr.label(
+         default = Label("//rust/settings:always_enable_metadata_output_groups"),
+     ),
++    "_clippy_config": attr.label(
++        allow_single_file = True,
++        default = Label("//rust/settings:clippy.toml"),
++    ),
++    "_clippy_driver": attr.label(
++        default = Label("//rust/settings:clippy_driver"),
++    ),
+     "_error_format": attr.label(
+         default = Label("//rust/settings:error_format"),
+     ),
+@@ -746,6 +753,10 @@ _COMMON_ATTRS = {
+         """),
+         default = False,
+     ),
++    "clippy_config": attr.label(
++        allow_single_file = True,
++        doc = "The clippy.toml used for this crate's compile-time lints. Defaults to the toolchain-wide clippy.toml.",
++    ),
+     "compile_data": attr.label_list(
+         doc = dedent("""\
+             List of files used by this rule at compile time.
+diff --git a/rust/private/rustc.bzl b/rust/private/rustc.bzl
+index b57cf29..ff5b6f6 100644
+--- a/rust/private/rustc.bzl
++++ b/rust/private/rustc.bzl
+@@ -1809,6 +1809,11 @@ def rustc_compile_action(
+         **crate_info_dict
+     )
+ 
++    clippy_driver = getattr(ctx.attr, "_clippy_driver", None)
++    use_clippy = clippy_driver != None and clippy_driver[BuildSettingInfo].value
++    if use_clippy and not toolchain.clippy_driver:
++        fail("--@rules_rust//rust/settings:clippy_driver requires a toolchain with clippy-driver")
++
+     build_metadata = crate_info.metadata
+     rustc_output = crate_info.rustc_output
+     rustc_rmeta_output = crate_info.rustc_rmeta_output
+@@ -1851,6 +1856,9 @@ def rustc_compile_action(
+     if hasattr(ctx.attr, "lint_config") and ctx.attr.lint_config:
+         rust_flags = rust_flags + ctx.attr.lint_config[LintsInfo].rustc_lint_flags
+         lint_files = lint_files + ctx.attr.lint_config[LintsInfo].rustc_lint_files
++        if use_clippy:
++            rust_flags = rust_flags + ctx.attr.lint_config[LintsInfo].clippy_lint_flags
++            lint_files = lint_files + ctx.attr.lint_config[LintsInfo].clippy_lint_files
+ 
+     profiling_dir, profiling_flags = setup_zself_profile(ctx, crate_info)
+     rust_flags = rust_flags + profiling_flags
+@@ -1949,7 +1957,7 @@ def rustc_compile_action(
+         attr = attr,
+         file = ctx.file,
+         toolchain = toolchain,
+-        tool_file = toolchain.rustc,
++        tool_file = toolchain.clippy_driver if use_clippy else toolchain.rustc,
+         cc_toolchain = cc_toolchain,
+         emit = emit,
+         feature_configuration = feature_configuration,
+@@ -2006,6 +2014,12 @@ def rustc_compile_action(
+     # this is the final list of env vars
+     env.update(env_from_args)
+ 
++    if use_clippy:
++        clippy_config = getattr(ctx.file, "clippy_config", None) or getattr(ctx.file, "_clippy_config", None)
++        if clippy_config:
++            env["CLIPPY_CONF_DIR"] = clippy_config.dirname or "."
++            compile_inputs = depset([clippy_config], transitive = [compile_inputs])
++
+     if hasattr(attr, "version") and attr.version != "0.0.0":
+         formatted_version = " v{}".format(attr.version)
+     else:
+diff --git a/rust/settings/BUILD.bazel b/rust/settings/BUILD.bazel
+index d497a55..8bfde96 100644
+--- a/rust/settings/BUILD.bazel
++++ b/rust/settings/BUILD.bazel
+@@ -3,6 +3,7 @@ load(
+     ":settings.bzl",
+     "always_enable_metadata_output_groups",
+     "capture_clippy_output",
++    "clippy_driver",
+     "clippy_error_format",
+     "clippy_flag",
+     "clippy_flags",
+@@ -72,6 +73,8 @@ clippy_flags()
+ 
+ clippy_output_diagnostics()
+ 
++clippy_driver()
++
+ clippy_toml()
+ 
+ codegen_units()
+diff --git a/rust/settings/settings.bzl b/rust/settings/settings.bzl
+index 4365d29..e6032bb 100644
+--- a/rust/settings/settings.bzl
++++ b/rust/settings/settings.bzl
+@@ -298,6 +298,14 @@ def toolchain_linker_preference():
+         values = ["rust", "cc", "none"],
+     )
+ 
++# buildifier: disable=unnamed-macro
++def clippy_driver():
++    """When set, the Rust compile action runs through clippy-driver, so lints are part of compilation."""
++    bool_flag(
++        name = "clippy_driver",
++        build_setting_default = False,
++    )
++
+ # buildifier: disable=unnamed-macro
+ def clippy_toml():
+     """This setting is used by the clippy rules. See https://bazelbuild.github.io/rules_rust/rust_clippy.html

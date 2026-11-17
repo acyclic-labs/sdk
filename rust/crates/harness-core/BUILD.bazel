@@ -126,6 +126,7 @@ rust_library(
         "//rust/crates/harness:fixtures/v2/resource-revision.json",
         "//rust/crates/harness:fixtures/v2/task-outcome.json",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -281,6 +282,7 @@ rust_test(
         "//rust/crates/harness:fixtures/v2/resource-revision.json",
         "//rust/crates/harness:fixtures/v2/task-outcome.json",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -396,6 +398,7 @@ rust_test(
     compile_data = [
         "//rust/crates/harness-fuzz:corpus/agent_wait_selection/recorded-path.json",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -531,6 +534,7 @@ rust_test(
     srcs = [
         "tests/computed_ui_records.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -666,6 +670,7 @@ rust_binary(
         "examples/agent-record-corpus.rs",
         "tests/agent_model/corpus.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -773,6 +778,7 @@ rust_binary(
     srcs = [
         "examples/experiment-analysis.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -880,6 +886,7 @@ rust_binary(
     srcs = [
         "examples/history-codec-corpus.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -987,6 +994,7 @@ rust_binary(
     srcs = [
         "examples/config-types.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

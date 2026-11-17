@@ -1,6 +1,18 @@
 use super::*;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+#[test]
+fn demand_leaf_reentry_panics_before_locking() {
+    let meter = crate::demand::NativeDemandReadMeter::new(crate::demand::DemandWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    ));
+    let guard = meter.lock();
+    assert!(catch_unwind(AssertUnwindSafe(|| meter.lock())).is_err());
+    drop(guard);
+    drop(meter.lock());
+}
+
 std::thread_local! {
     static OMIT_RESTORE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

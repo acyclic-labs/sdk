@@ -122,6 +122,7 @@ filegroup(
         "//rust/crates/contract-derive:Cargo.toml",
         "//rust/crates/differential:Cargo.toml",
         "//rust/crates/filesystem-base:Cargo.toml",
+        "//rust/crates/filesystem-lock-order-tests:Cargo.toml",
         "//rust/crates/filesystem-napi:Cargo.toml",
         "//rust/crates/filesystem-native-core-tests:Cargo.toml",
         "//rust/crates/filesystem-wasm:Cargo.toml",

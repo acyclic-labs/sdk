@@ -26,6 +26,7 @@ node_test(
         "//:.gitattributes",
         "//:scripts/static-ci.mjs",
         "//:scripts/static-ci.test.mjs",
+        "//:scripts/check-incremental.mjs",
         "//:scripts/static-policy.mjs",
         "//:scripts/policy-core.mjs",
         "//:scripts/javascript-syntax.mjs",

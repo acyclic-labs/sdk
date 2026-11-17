@@ -5459,16 +5459,17 @@ async fn session_diff_queries_pin_endpoints_and_keep_client_lifetimes_independen
         .controls
         .diff_query(selected.root().clone(), page()?, DiffProjection::Summary)
         .await;
-    match refused {
-        Err(acyclic_harness_client::AgentExchangeError::Session(StreamError::AccessDenied)) => {}
-        Ok(mut query) => assert!(matches!(
-            query.next().await,
-            Err(acyclic_harness_client::AgentExchangeError::Session(
-                StreamError::AccessDenied
-            ))
-        )),
-        Err(error) => return Err(agent(error)),
-    }
+    let refusal = match refused {
+        Err(error) => error,
+        Ok(mut query) => query
+            .next()
+            .await
+            .expect_err("tree-only credential opened another session's diff"),
+    };
+    assert!(matches!(refusal,
+        acyclic_harness_client::AgentExchangeError::Session(error)
+        if error.category() == acyclic_stream::StreamCategory::AccessDenied
+    ));
     Ok(())
 }
 

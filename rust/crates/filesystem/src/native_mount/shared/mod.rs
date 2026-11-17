@@ -27,7 +27,7 @@
 //! [`outcome::CallbackFailure`].
 
 // FUSE sessions drain through their kernel connection instead.
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", windows))]
 pub(super) mod callback_gate;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) mod input;
