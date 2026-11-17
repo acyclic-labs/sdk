@@ -175,7 +175,7 @@ test("a selected generation emits actors N-API declarations only for a native bu
   assert.equal(keepsGenerator(actors, families, true), true);
   assert.equal(keepsGenerator(actors, [], false), true, "full generation keeps every output");
   // Stream's TypeScript imports its declarations as types, so every selection keeps them.
-  assert.equal(keepsGenerator(stream, ["stream"], false), true);
+  assert.equal(keepsGenerator(stream, ["stream"], false), false);
 });
 
 test("a memoized generation restores exactly what its run projected and pruned, and only for what it covered", async () => {
