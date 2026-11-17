@@ -226,7 +226,6 @@ cc_toolchain(
     visibility = ["//toolchains/windows:__pkg__"],
 )
 
-
 filegroup(
     name = "workspace_acyclic_labs_stream",
     srcs = glob(["typescript/packages/stream/**"], exclude = ["typescript/packages/stream/generated/wasm/**","typescript/packages/stream/generated/proto/**","typescript/packages/stream/src/token-operations.ts"], allow_empty = True) + [
