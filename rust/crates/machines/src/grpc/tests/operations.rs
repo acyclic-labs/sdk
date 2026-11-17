@@ -36,9 +36,7 @@ async fn create_binds_image_and_canonical_selected_volume_without_redispatch()
     service.recovered.result = Some(wire::recovered_admission::Result::Create(
         wire::MachineAdmission {
             machine: Some(encode_machine(machine)),
-            operation: Some(wire::OperationId {
-                value: operation.as_bytes().to_vec(),
-            }),
+            operation: Some(encode_operation(operation)),
             contract: Some(contract.clone()),
             provenance: None,
         },
@@ -194,9 +192,7 @@ async fn attach_settles_and_recovers_the_original_selected_volume_without_redisp
     service.recovered.result = Some(wire::recovered_admission::Result::AttachVolume(
         wire::MachineAdmission {
             machine: Some(encode_machine(machine)),
-            operation: Some(wire::OperationId {
-                value: operation.as_bytes().to_vec(),
-            }),
+            operation: Some(encode_operation(operation)),
             contract: Some(contract.clone()),
             provenance: None,
         },
@@ -269,13 +265,8 @@ async fn operation_for_rejects_a_substituted_nested_admission_operation()
     let substituted = OperationId::parse("00000000-0000-0000-0000-000000000003")?;
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000004")?;
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
         recovered: recovered_suspend(operation, substituted, machine),
-        inspected: operation_state(operation, wire::OperationStatus::Pending),
-        cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
-        watch: WatchReply::Items(Vec::new()),
+        ..OperationService::new(key, operation, machine)
     };
     let (machines, shutdown, server) = serve_operation_service(service).await?;
 
@@ -298,18 +289,14 @@ async fn operation_control_crosses_grpc_with_exact_identity_replay_and_terminal_
     let pending = operation_state(operation, wire::OperationStatus::Pending);
     let succeeded = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
         inspected: pending.clone(),
-        cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
         watch: WatchReply::Items(vec![
             WatchItem::State(pending.clone()),
             WatchItem::State(pending.clone()),
             WatchItem::State(succeeded),
             WatchItem::State(pending),
         ]),
+        ..OperationService::new(key, operation, machine)
     };
     let (machines, shutdown, server) = serve_operation_service(service).await?;
 
@@ -359,13 +346,9 @@ async fn rpcs_emit_spans_with_status_codes_and_no_credentials()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000033")?;
     let pending = operation_state(operation, wire::OperationStatus::Pending);
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
         inspected: pending.clone(),
         cancelled: pending,
-        watch: WatchReply::Items(Vec::new()),
+        ..OperationService::new(key, operation, machine)
     };
     let (machines, shutdown, server) = serve_operation_service(service).await?;
     let seen = Capture::default();
@@ -410,13 +393,10 @@ async fn all_operation_observation_paths_reject_substituted_identity()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000024")?;
     let substituted_state = operation_state(substituted, wire::OperationStatus::Pending);
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
         inspected: substituted_state.clone(),
         cancelled: substituted_state.clone(),
         watch: WatchReply::Items(vec![WatchItem::State(substituted_state)]),
+        ..OperationService::new(key, operation, machine)
     };
     let (machines, shutdown, server) = serve_operation_service(service).await?;
 
@@ -446,13 +426,8 @@ async fn operation_watch_distinguishes_pre_admission_rejection_from_post_admissi
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000032")?;
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000033")?;
     let base = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
-        inspected: operation_state(operation, wire::OperationStatus::Pending),
-        cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
         watch: WatchReply::Reject(Code::PermissionDenied),
+        ..OperationService::new(key, operation, machine)
     };
     let (machines, shutdown, server) = serve_operation_service(base.clone()).await?;
     assert!(matches!(
@@ -468,7 +443,6 @@ async fn operation_watch_distinguishes_pre_admission_rejection_from_post_admissi
 
     for code in [Code::Internal, Code::ResourceExhausted, Code::Unavailable] {
         let service = OperationService {
-            guest: None,
             watch: WatchReply::Items(vec![
                 WatchItem::State(operation_state(operation, wire::OperationStatus::Pending)),
                 WatchItem::Error(code),
@@ -498,7 +472,6 @@ async fn operation_watch_distinguishes_pre_admission_rejection_from_post_admissi
     }
 
     let service = OperationService {
-        guest: None,
         watch: WatchReply::Items(vec![WatchItem::State(operation_state(
             operation,
             wire::OperationStatus::Pending,

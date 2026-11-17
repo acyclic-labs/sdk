@@ -457,6 +457,18 @@ operation_service! {
 }
 
 impl OperationService {
+    fn new(key: IdempotencyKey, operation: OperationId, machine: MachineId) -> Self {
+        Self {
+            guest: None,
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: operation_state(operation, wire::OperationStatus::Pending),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Items(Vec::new()),
+        }
+    }
+
     fn require_operation(&self, request: &wire::OperationRequest) -> Result<(), Status> {
         if request
             .operation
@@ -492,13 +504,8 @@ fn scripted_operation_service(
     }));
     (
         OperationService {
-            guest: None,
-            expected_key: key,
-            expected_operation: operation,
-            recovered: recovered_suspend(operation, operation, machine),
-            inspected: operation_state(operation, wire::OperationStatus::Pending),
-            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
             watch: WatchReply::Script(script.clone()),
+            ..OperationService::new(key, operation, machine)
         },
         script,
         machine,
@@ -580,9 +587,7 @@ where
 
 fn operation_state(operation: OperationId, status: wire::OperationStatus) -> wire::OperationState {
     wire::OperationState {
-        operation: Some(wire::OperationId {
-            value: operation.as_bytes().to_vec(),
-        }),
+        operation: Some(encode_operation(operation)),
         status: status as i32,
         outcome: None,
     }
@@ -620,14 +625,10 @@ fn recovered_suspend(
     machine: MachineId,
 ) -> wire::RecoveredAdmission {
     wire::RecoveredAdmission {
-        operation: Some(wire::OperationId {
-            value: outer.as_bytes().to_vec(),
-        }),
+        operation: Some(encode_operation(outer)),
         result: Some(wire::recovered_admission::Result::Suspend(
             wire::MutationAdmission {
-                operation: Some(wire::OperationId {
-                    value: nested.as_bytes().to_vec(),
-                }),
+                operation: Some(encode_operation(nested)),
                 machine: Some(encode_machine(machine)),
                 checkpoint: None,
             },

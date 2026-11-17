@@ -56,9 +56,7 @@ async fn lifecycle_and_recovery_require_the_original_terminal_receipt()
         let key = service.expected_key;
         let operation = service.expected_operation;
         let admission = wire::MutationAdmission {
-            operation: Some(wire::OperationId {
-                value: operation.as_bytes().to_vec(),
-            }),
+            operation: Some(encode_operation(operation)),
             machine: Some(encode_machine(machine)),
             checkpoint: Some(encode_checkpoint(checkpoint)),
         };
@@ -83,9 +81,7 @@ async fn lifecycle_and_recovery_require_the_original_terminal_receipt()
             ),
             3 => (
                 Admission::SetSuspensionPolicy(wire::PolicyAdmission {
-                    operation: Some(wire::OperationId {
-                        value: operation.as_bytes().to_vec(),
-                    }),
+                    operation: Some(encode_operation(operation)),
                     machine: Some(encode_machine(machine)),
                     policy: Some(encode_suspension(policy)?),
                 }),
@@ -353,15 +349,7 @@ async fn servers_without_live_fork_report_unsupported()
     let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000041")?;
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000043")?;
-    let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
-        inspected: operation_state(operation, wire::OperationStatus::Pending),
-        cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
-        watch: WatchReply::Items(Vec::new()),
-    };
+    let service = OperationService::new(key, operation, machine);
     let (machines, shutdown, server) = serve_operation_service(service).await?;
     assert!(matches!(
         machines

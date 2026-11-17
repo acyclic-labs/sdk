@@ -8,13 +8,9 @@ async fn bearer_crosses_every_generated_rpc_and_client_clone()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
     let state = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
         inspected: state.clone(),
         cancelled: state,
-        watch: WatchReply::Items(Vec::new()),
+        ..OperationService::new(key, operation, machine)
     };
     let (machines, shutdown_tx, server) = serve_operation_service(service).await?;
     let client = machines.client().await?;
@@ -88,13 +84,9 @@ async fn remote_bearer_crosses_mtls_constructor_and_operation_clones()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
     let state = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
         inspected: state.clone(),
-        cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
         watch: WatchReply::Items(vec![WatchItem::State(state)]),
+        ..OperationService::new(key, operation, machine)
     };
     let observed = Arc::new(AtomicUsize::new(0));
     let received = observed.clone();
@@ -176,13 +168,9 @@ async fn local_bearer_crosses_owner_confined_socket_and_operation_clones()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
     let state = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
         inspected: state.clone(),
-        cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
         watch: WatchReply::Items(vec![WatchItem::State(state)]),
+        ..OperationService::new(key, operation, machine)
     };
     let directory = std::env::temp_dir().join(format!("machines-bearer-{}", Uuid::new_v4()));
     std::fs::create_dir(&directory)?;
@@ -322,13 +310,9 @@ async fn public_https_service_uses_fresh_bearer_without_client_certificates()
     let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
     let state = operation_state(operation, wire::OperationStatus::Succeeded);
     let service = OperationService {
-        guest: None,
-        expected_key: key,
-        expected_operation: operation,
-        recovered: recovered_suspend(operation, operation, machine),
         inspected: state.clone(),
         cancelled: state,
-        watch: WatchReply::Items(vec![]),
+        ..OperationService::new(key, operation, machine)
     };
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let uri = format!("https://localhost:{}", listener.local_addr()?.port());
