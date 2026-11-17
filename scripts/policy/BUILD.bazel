@@ -12,6 +12,7 @@ node_test(
         "//:scripts/workspace-model.mjs",
     ],
     entry = "scripts/bazel-build-files.test.mjs",
+    name_pattern = "a patched crate uses crate-universe spokes",
 )
 
 node_test(
