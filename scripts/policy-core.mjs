@@ -164,9 +164,10 @@ export function checkTypeScriptReferences(root, required = []) {
 
 // One cfg grammar, with unknown atoms retained for partial platform knowledge.
 export function evaluateCfg(gate, atom, positiveFeatures = false) {
-  const tokens = gate.match(/"[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z_0-9]*|[(),=]/g) ?? [];
-  let at = 0;
   const invalid = () => { throw new Error(`unsupported cfg gate: ${gate}`); };
+  const tokens = Array.from(gate.matchAll(/"[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z_0-9]*|[(),=]|(\S)/g),
+    ([token, unsupported]) => unsupported ? invalid() : token);
+  let at = 0;
   const parse = () => {
     const name = tokens[at++];
     if (!/^[A-Za-z_][A-Za-z_0-9]*$/.test(name ?? '')) invalid();
