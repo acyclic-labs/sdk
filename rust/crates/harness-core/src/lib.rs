@@ -53,6 +53,8 @@ pub mod filesystem;
 pub mod goal;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hooks;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod http_failure;
 #[doc(hidden)]
 pub mod identity;
 pub mod interaction;

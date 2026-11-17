@@ -7,6 +7,8 @@ FEATURES = [
         "test-support",
     ]
 
+WASM_FEATURES = []
+
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-harness-native-settings","CARGO_PKG_DESCRIPTION":"Native settings admission behind the acyclic-harness facade","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 extract_cargo_lints(
@@ -148,6 +150,29 @@ isolated_test(
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
     tags = ["manual","no-sandbox"],
+)
+
+rust_library(
+    name = "acyclic_harness_native_settings_wasm",
+    crate_name = "acyclic_harness_native_settings",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    clippy_config = "clippy.toml",
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"test-support\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    visibility = ["//visibility:public"],
 )
 
 filegroup(

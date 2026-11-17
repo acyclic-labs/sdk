@@ -18,11 +18,13 @@ bytes.workspace = true
 ed25519-dalek = { version = "3.0.0", features = ["zeroize"] }
 futures.workspace = true
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
-reqwest.workspace = true
 ring = { version = "=0.17.14", features = ["wasm32_unknown_unknown_js"] }
 http.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest.workspace = true
 
 [lints]
 workspace = true

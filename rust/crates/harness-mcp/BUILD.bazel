@@ -8,6 +8,10 @@ FEATURES = [
         "wasm",
     ]
 
+WASM_FEATURES = [
+        "wasm",
+    ]
+
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-harness-mcp","CARGO_PKG_DESCRIPTION":"MCP clients behind the acyclic-harness facade","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 extract_cargo_lints(
@@ -201,6 +205,54 @@ isolated_test(
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
     tags = ["manual","no-sandbox"],
+)
+
+rust_library(
+    name = "acyclic_harness_mcp_wasm",
+    crate_name = "acyclic_harness_mcp",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "//rust/codec-fuzz:corpus/harness_codecs/mcp-http-invalid-utf8-frontier",
+    ],
+    clippy_config = "clippy.toml",
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"test-support\", \"wasm\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        "//rust/crates/auth:acyclic_auth_wasm",
+        "//rust/crates/filesystem:acyclic_fs_wasm",
+        "//rust/crates/harness-core:acyclic_harness_core_wasm",
+        "//rust/crates/mcp:acyclic_mcp_wasm",
+        "//rust/crates/stream:acyclic_stream_wasm",
+        "@wasm_crates//base64_0_23_1-0.23.1",
+        "@wasm_crates//blake3-1.8.7",
+        "@wasm_crates//bytes-1.12.1",
+        "@wasm_crates//futures-0.3.34",
+        "@wasm_crates//http-1.5.0",
+        "@wasm_crates//pin-project-lite-0.2.17",
+        "@wasm_crates//rmcp-3.9.0",
+        "@wasm_crates//serde-1.0.229",
+        "@wasm_crates//serde_json-1.0.154",
+        "@wasm_crates//tokio-1.54.1",
+        "@wasm_crates//tokio-util-0.7.20",
+        "@wasm_crates//toml-1.1.6+spec-1.1.0",
+        "@wasm_crates//tsify-0.5.8",
+        "@wasm_crates//uuid-1.29.0",
+        "@wasm_crates//wasm-bindgen-0.2.117",
+        "@wasm_crates//zeroize-1.9.1",
+    ],
+    visibility = ["//visibility:public"],
 )
 
 filegroup(
