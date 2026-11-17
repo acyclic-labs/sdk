@@ -124,13 +124,14 @@ struct Replay {
 
 async fn trace(
     world_seed: u64,
+    directory_seed: u64,
     class: &'static str,
     erase_entropy: bool,
 ) -> std::result::Result<Replay, String> {
     let mut world = if erase_entropy {
-        World::without_entropy(world_seed, &FILES, service(plans(class)))
+        World::without_entropy_keyed(world_seed, directory_seed, &FILES, service(plans(class)))
     } else {
-        World::new(world_seed, &FILES, service(plans(class)))
+        World::new_keyed(world_seed, directory_seed, &FILES, service(plans(class)))
     }
     .map_err(failed)?;
     let prompts = [vec![(class, tag(class))]];
@@ -222,8 +223,8 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
     let world_seed = seed % WORLDS.len() as u64;
     oracle::simulate(seed, || {
         entry(async move {
-            let first = trace(world_seed, class, false).await?;
-            let second = trace(world_seed, class, false).await?;
+            let first = trace(world_seed, seed, class, false).await?;
+            let second = trace(world_seed, seed, class, false).await?;
             if first.digest != second.digest {
                 return Err(format!(
                     "X1 {class} seed {seed} diverged in-process at {}: {} != {}",
@@ -232,7 +233,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                     second.digest,
                 ));
             }
-            let erased = trace(world_seed, class, true).await?;
+            let erased = trace(world_seed, seed, class, true).await?;
             if first.digest == erased.digest {
                 return Err(format!(
                     "X1 {class} seed {seed} entropy erasure did not change the trace"
@@ -309,7 +310,7 @@ fn seed_1000_maps_to_a_world() -> std::result::Result<(), String> {
         entry(async move {
             // A single replay proves the mapping reaches a world without the
             // index panic; the default seeds own the in-process comparison.
-            trace(world_seed, class, false).await?;
+            trace(world_seed, 1000, class, false).await?;
             Ok(())
         })
     })

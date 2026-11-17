@@ -253,7 +253,11 @@ fn process_nonce() -> u64 {
 impl WorldDirectory {
     fn new(seed: u64) -> std::io::Result<Self> {
         let key = (
-            std::thread::current().name().unwrap_or("dst").to_owned(),
+            format!(
+                "{}:{:?}",
+                std::thread::current().name().unwrap_or("dst"),
+                std::thread::current().id()
+            ),
             seed,
         );
         let slot = WORLD_SLOTS.with(|slots| {
@@ -333,7 +337,18 @@ pub(super) struct World {
 
 impl World {
     pub fn new(seed: u64, files: &[(&str, &str)], service: ScriptedModelProvider) -> Result<Self> {
-        Self::with_entropy(seed, files, service, true)
+        Self::with_entropy(seed, seed, files, service, true)
+    }
+
+    /// A world whose scheduler seed and directory key differ, so two seeds
+    /// that map to the same class still own separate directories.
+    pub fn new_keyed(
+        seed: u64,
+        directory_seed: u64,
+        files: &[(&str, &str)],
+        service: ScriptedModelProvider,
+    ) -> Result<Self> {
+        Self::with_entropy(seed, directory_seed, files, service, true)
     }
 
     /// The same world with the scheduler's entropy source erased, so a trace
@@ -343,16 +358,27 @@ impl World {
         files: &[(&str, &str)],
         service: ScriptedModelProvider,
     ) -> Result<Self> {
-        Self::with_entropy(seed, files, service, false)
+        Self::with_entropy(seed, seed, files, service, false)
+    }
+
+    /// The entropy-erased world with a separate directory key.
+    pub fn without_entropy_keyed(
+        seed: u64,
+        directory_seed: u64,
+        files: &[(&str, &str)],
+        service: ScriptedModelProvider,
+    ) -> Result<Self> {
+        Self::with_entropy(seed, directory_seed, files, service, false)
     }
 
     fn with_entropy(
         seed: u64,
+        directory_seed: u64,
         files: &[(&str, &str)],
         service: ScriptedModelProvider,
         entropy: bool,
     ) -> Result<Self> {
-        let directory = WorldDirectory::new(seed).map_err(storage)?;
+        let directory = WorldDirectory::new(directory_seed).map_err(storage)?;
         let checkout = directory.path().join("checkout");
         std::fs::create_dir(&checkout).map_err(storage)?;
         for (path, body) in files {
