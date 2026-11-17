@@ -17,7 +17,7 @@ pub(super) fn cached_binding_matches<State, Binding: Copy, Lease, Error>(
 }
 
 mod decision;
-use decision::cached_binding_decision;
+pub(super) use decision::cached_binding_decision;
 
 // Keep the original mutex check beside the adapter; the pure decision has a
 // standalone solver target over the same production implementation.

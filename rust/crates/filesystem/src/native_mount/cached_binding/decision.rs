@@ -1,4 +1,4 @@
-pub(super) fn cached_binding_decision<Binding: Copy, Lease, Error>(
+pub(crate) fn cached_binding_decision<Binding: Copy, Lease, Error>(
     binding: Option<Binding>,
     lease: impl FnOnce() -> Result<Lease, Error>,
     current: impl FnOnce(Binding) -> bool,
