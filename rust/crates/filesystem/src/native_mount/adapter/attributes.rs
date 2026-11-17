@@ -173,7 +173,7 @@ where
                     .list_named_attributes_with_accounting(
                         &path,
                         cursor.as_ref(),
-                        maximum_entries,
+                        crate::facade::AttributePageSize::new(maximum_entries),
                         Some(AttributeClass::MacResourceFork),
                         &mut accounting,
                         cancellation,
