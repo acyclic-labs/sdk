@@ -335,7 +335,3 @@ async fn finish(
         ))),
     }
 }
-
-// Facade-only edit for the split negative control.
-
-// Facade-only edit for the split negative control, second run.
