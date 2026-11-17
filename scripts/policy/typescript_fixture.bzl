@@ -53,6 +53,6 @@ typescript_fixture = rule(
         "auth": attr.label(allow_single_file = True, mandatory = True),
         "machines": attr.label(allow_single_file = True, mandatory = True),
         "node": attr.label(default = "@nodejs//:node", executable = True, cfg = "exec"),
-        "bun": attr.label(default = "@bunjs//:bun", executable = True, cfg = "exec"),
+        "bun": attr.label(default = "@bunjs//:bun", executable = True, allow_files = True, cfg = "exec"),
     },
 )
