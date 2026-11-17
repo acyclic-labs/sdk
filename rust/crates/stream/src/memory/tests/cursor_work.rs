@@ -174,7 +174,7 @@ proptest! {
                 let mut cursor = HistoryCursor::at(start);
                 let mut old_cursor = BaselineCursor::at(start);
                 if old { baseline(&mut old_cursor, stream.history.as_ref(), stream.tail); }
-                else { cursor.sync(stream); }
+                else { cursor.sync(stream).expect("read-only cut"); }
                 let first: Vec<_> = std::iter::from_fn(|| read(old, &mut old_cursor, &mut cursor)).map(record_bytes).take(cut).collect();
                 drop(state);
                 let appended = provider.append(AppendRequest {
@@ -184,7 +184,7 @@ proptest! {
                 let state = provider.state.read().await;
                 let stream = state.paths.get(&path).unwrap();
                 if old { baseline(&mut old_cursor, stream.history.as_ref(), stream.tail); }
-                else { cursor.sync(stream); }
+                else { cursor.sync(stream).expect("read-only cut"); }
                 let rest: Vec<_> = std::iter::from_fn(|| read(old, &mut old_cursor, &mut cursor)).map(record_bytes).collect();
                 (appends, forks, appended, first, rest, if old { old_cursor.next } else { cursor.position() })
         });
@@ -210,7 +210,7 @@ fn pinned_cursor_open_is_constant_space_and_eager_control_grows() {
                 if old {
                     baseline(&mut old_cursor, stream.history.as_ref(), stream.tail);
                 } else {
-                    cursor.sync(stream);
+                    cursor.sync(stream).expect("read-only cut");
                 }
             }));
             counts.push(HISTORY_VISITS.with(std::cell::Cell::get));
@@ -271,7 +271,7 @@ fn appended_follow_updates_its_pin_without_history_work_or_allocations() {
             if old {
                 baseline(&mut old_cursor, stream.history.as_ref(), stream.tail);
             } else {
-                cursor.sync(stream);
+                cursor.sync(stream).expect("read-only cut");
             }
             while read(old, &mut old_cursor, &mut cursor).is_some() {}
         }
@@ -289,7 +289,7 @@ fn appended_follow_updates_its_pin_without_history_work_or_allocations() {
             if old {
                 baseline(&mut old_cursor, stream.history.as_ref(), stream.tail);
             } else {
-                cursor.sync(stream);
+                cursor.sync(stream).expect("read-only cut");
             }
         });
         measured.push((
@@ -461,7 +461,7 @@ fn follow_chain(depth: usize) -> (Vec<(u64, String)>, FollowCost) {
         counter.with(|count| count.set(0));
     }
     let allocations = acyclic_test_support::measure(|| {
-        cursor.sync(tip);
+        cursor.sync(tip).expect("read-only cut");
         while let Some(record) = futures::FutureExt::now_or_never(cursor.next_record())
             .expect("memory pages are immediately ready")
             .unwrap()
