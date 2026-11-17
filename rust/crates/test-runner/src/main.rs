@@ -14,7 +14,8 @@
 //!
 //! Each outcome is reported as nextest reports it, `STATUS [ seconds] <binary id> <case>`, so a
 //! case keeps one identity whichever runner ran it. Ignored cases are reported as skipped and
-//! not run, as under Cargo. Each case runs in an
+//! not run, as under Cargo, unless the arguments carry libtest's `--ignored`: then exactly the
+//! selected ignored cases run, as `cargo test -- --ignored` runs them. Each case runs in an
 //! owned process tree, so a case past its limit is stopped with every process it started.
 
 use std::env;
@@ -168,18 +169,30 @@ fn list(suite: &Suite, selection: &[OsString], ignored: bool) -> Result<Vec<Stri
 }
 
 /// Runs each case `selection` selects in its own process and reports every outcome to `out`.
-/// Ignored cases are reported as skipped. Returns how many cases did not pass.
+/// Ignored cases are reported as skipped; with `--ignored` in `selection` only they run. Returns
+/// how many cases did not pass.
 fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Result<usize, String> {
-    let ignored = list(suite, selection, true)?;
-    for name in &ignored {
+    let only_ignored = selection.iter().any(|argument| argument == "--ignored");
+    let filters: Vec<OsString> = selection
+        .iter()
+        .filter(|argument| *argument != "--ignored")
+        .cloned()
+        .collect();
+    let ignored = list(suite, &filters, true)?;
+    let (cases, skipped) = if only_ignored {
+        (ignored, Vec::new())
+    } else {
+        let cases = list(suite, &filters, false)?
+            .into_iter()
+            .filter(|name| !ignored.contains(name))
+            .collect();
+        (cases, ignored)
+    };
+    for name in &skipped {
         writeln!(out, "{:>12} [         ] {} {name}", "SKIP", suite.id)
             .map_err(|error| format!("report: {error}"))?;
     }
-    let cases: Vec<String> = list(suite, selection, false)?
-        .into_iter()
-        .filter(|name| !ignored.contains(name))
-        .collect();
-    if !selection.is_empty() && cases.is_empty() && ignored.is_empty() {
+    if !selection.is_empty() && cases.is_empty() && skipped.is_empty() {
         return Err(format!("{selection:?} selects no case of {}", suite.id));
     }
     // Every case tree is held in custody, so a timeout stops descendants that left its process
@@ -304,7 +317,15 @@ fn run_case(
         command.arg(&suite.binary);
     }
     command
-        .args([name, "--exact", "--nocapture", "--test-threads", "1"])
+        // Only selected cases reach here, so an ignored one runs because it was selected.
+        .args([
+            name,
+            "--exact",
+            "--include-ignored",
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
         .env("ACYCLIC_TEST_SOURCE_ROOT", &suite.source);
     for variable in ["TMPDIR", "TMP", "TEMP"] {
         command.env(variable, temporary);
@@ -359,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "the runner reports ignored cases as skipped without running them"]
+    #[ignore = "the runner runs an ignored case only when its arguments carry --ignored"]
     fn fixture_ignored() {
         assert!(!acting(), "ignored fixture ran");
     }
@@ -626,6 +647,35 @@ mod tests {
             ],
         );
         assert_eq!((failed, out.lines().count()), (0, 2), "{out}");
+    }
+
+    /// `--ignored` runs exactly the selected ignored cases, and no other, as
+    /// `cargo test -- --ignored` does; an ignored selection with no case is refused.
+    #[test]
+    fn ignored_argument_runs_only_ignored_cases() {
+        let (failed, out) = report(&suite("ignored"), &["tests::fixture_", "--ignored"]);
+        assert_eq!(failed, 1, "{out}");
+        assert!(
+            !out.contains("fixture_pass") && !out.contains("SKIP"),
+            "{out}"
+        );
+        assert!(
+            out.starts_with(&format!("{:>12}", "FAIL"))
+                && out.contains("acyclic-test-runner tests::fixture_ignored")
+                && out.contains("ignored fixture ran"),
+            "{out}"
+        );
+        let suite = suite("ignored-unmatched");
+        let refused = run_suite(
+            &suite,
+            &["fixture_pass".into(), "--ignored".into()],
+            &mut Vec::new(),
+        );
+        fs::remove_dir_all(&suite.package).unwrap();
+        assert_eq!(
+            refused,
+            Err(r#"["fixture_pass", "--ignored"] selects no case of acyclic-test-runner"#.into())
+        );
     }
 
     /// A selection that names no case fails the run instead of passing with nothing run.
