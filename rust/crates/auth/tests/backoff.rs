@@ -12,6 +12,7 @@ proptest! {
         let mut first = Backoff::new(base, maximum, seed);
         let mut replay = Backoff::new(base, maximum, seed);
         let mut spread = Backoff::new(base, maximum, seed.wrapping_add(1));
+        let mut scenario = Backoff::new(base, maximum, seed);
         let mut differs = false;
         for attempt in 0..512 {
             let wait = first.delay_ms();
@@ -20,6 +21,13 @@ proptest! {
             differs |= other != wait;
             prop_assert!(wait > 0);
             prop_assert!(wait <= maximum);
+            // An owner selecting the final jitter choice gets the public
+            // exponential ceiling, including saturation over long outages.
+            let ceiling = u64::from(base.min(maximum))
+                .checked_shl(attempt)
+                .unwrap_or(u64::MAX)
+                .min(u64::from(maximum));
+            prop_assert_eq!(scenario.delay_with(|choices| choices - 1).as_millis(), u128::from(ceiling));
             if attempt > 32 {
                 prop_assert!(wait >= maximum.div_ceil(2));
             }
@@ -27,5 +35,11 @@ proptest! {
         if maximum > 1 {
             prop_assert!(differs);
         }
+        first.reset();
+        replay.reset();
+        let reset = first.delay();
+        prop_assert_eq!(reset, replay.delay());
+        prop_assert!(reset.as_millis() <= u128::from(base.min(maximum)));
+        prop_assert!(reset.as_millis() >= u128::from(base.min(maximum).div_ceil(2)));
     }
 }

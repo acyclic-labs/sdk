@@ -548,7 +548,7 @@ impl Client {
             let backoff = backoff.get_or_insert_with(|| {
                 acyclic_auth::operation::Backoff::new(10, 1_000, uuid::Uuid::new_v4().as_fields().0)
             });
-            let wait = tokio::time::sleep(Duration::from_millis(u64::from(backoff.delay_ms())));
+            let wait = tokio::time::sleep(backoff.delay());
             crate::trace::observe_value(
                 &crate::trace::Request {
                     name: "stream.grpc.retry_backoff",

@@ -2,9 +2,10 @@
 
 /// Uncapped redelivery with exponential spacing and deterministic equal jitter.
 /// Seeds spread independent exchanges; they confer no authority or secrecy.
-/// Construct a fresh schedule after successful progress. Dropping the caller's
+/// Reset the schedule after successful progress. Dropping the caller's
 /// original wait still owns cancellation; this value never starts a timer.
 pub struct Backoff {
+    base_ms: u32,
     ceiling_ms: u32,
     maximum_ms: u32,
     sample: u32,
@@ -17,6 +18,7 @@ impl Backoff {
     #[must_use]
     pub fn new(base_delay_ms: u32, maximum_delay_ms: u32, seed: u32) -> Self {
         Self {
+            base_ms: base_delay_ms.min(maximum_delay_ms),
             ceiling_ms: base_delay_ms.min(maximum_delay_ms),
             maximum_ms: maximum_delay_ms,
             sample: seed,
@@ -26,15 +28,38 @@ impl Backoff {
     /// Advance after a positively classified replayable failure. The caller may
     /// replace this spacing with an explicit provider wait without shortening it.
     pub fn delay_ms(&mut self) -> u32 {
-        let ceiling = self.ceiling_ms;
-        self.ceiling_ms = ceiling.saturating_mul(2).min(self.maximum_ms);
         // A noncryptographic scheduling sampler, with one distinct state per wait.
         self.sample = self.sample.wrapping_add(0x9e37_79b9);
         let mut sample = self.sample;
         sample = (sample ^ (sample >> 16)).wrapping_mul(0x21f0_aaad);
         sample = (sample ^ (sample >> 15)).wrapping_mul(0x735a_2d97);
         sample ^= sample >> 15;
+        self.advance(|_| sample)
+    }
+
+    /// Restart spacing after successful progress, retaining the advancing
+    /// entropy source so successive recoveries do not repeat one jitter draw.
+    pub fn reset(&mut self) {
+        self.ceiling_ms = self.base_ms;
+    }
+
+    /// Native timer projection of the same schedule.
+    pub fn delay(&mut self) -> std::time::Duration {
+        std::time::Duration::from_millis(u64::from(self.delay_ms()))
+    }
+
+    /// Use the operation owner's entropy, including a simulation's original
+    /// seeded source. `draw` receives the number of jitter choices; any unsigned
+    /// sample is reduced into that range. This never starts a timer.
+    pub fn delay_with(&mut self, draw: impl FnOnce(u32) -> u32) -> std::time::Duration {
+        std::time::Duration::from_millis(u64::from(self.advance(draw)))
+    }
+
+    fn advance(&mut self, draw: impl FnOnce(u32) -> u32) -> u32 {
+        let ceiling = self.ceiling_ms;
+        self.ceiling_ms = ceiling.saturating_mul(2).min(self.maximum_ms);
         let lower = ceiling.div_ceil(2);
-        lower + sample % (ceiling - lower + 1)
+        let choices = ceiling - lower + 1;
+        lower + draw(choices) % choices
     }
 }
