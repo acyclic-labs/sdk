@@ -4,7 +4,7 @@ use acyclic_fs::Digest;
 use crate::core::{AggregateKind, Authority, AuthorityRoot};
 use crate::{
     AgentId, Capabilities,
-    conversation::{PrivateDirectoryEntry, PrivateDirectoryEntryKind, VolumeClass, VolumeOwner},
+    conversation::{DirectoryEntryKind, PrivateDirectoryEntry, VolumeClass, VolumeOwner},
 };
 
 #[tokio::test]
@@ -404,7 +404,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         portable_page.entries,
         vec![PrivateDirectoryEntry {
             name: "first.txt".into(),
-            kind: PrivateDirectoryEntryKind::File,
+            kind: DirectoryEntryKind::File,
         }]
     );
     let (portable_ref, portable_bytes, _portable_hold) = erased

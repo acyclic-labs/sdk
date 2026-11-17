@@ -9,8 +9,6 @@ pub(super) fn uses_native_execution(tools: &ToolRegistry) -> Result<bool> {
 
 struct Opening {
     config: LocalHarnessConfig,
-    /// The agents' defaults, from which their tools and turns are built.
-    preset: crate::preset::Preset,
     tools: ToolRegistry,
     /// The configured compaction choice, reselected when `agent.ts` changes
     /// the model.
@@ -249,7 +247,6 @@ impl Opening {
         if let Some((model, _)) = &config.model {
             model.validate()?;
         }
-        let preset = config.preset_value();
         let tools = configure_tools(&mut config)?;
         #[cfg(any(test, not(target_arch = "wasm32")))]
         // Coordination uses the existing checkout. Only our own native shell
@@ -258,7 +255,6 @@ impl Opening {
         let compaction_choice = config.compaction.take();
         Ok(Self {
             config,
-            preset,
             tools,
             compaction_choice,
             #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -772,7 +768,9 @@ impl Opening {
             seed,
             verifier,
             signed,
-            preset: self.preset,
+            preset: crate::preset::Preset {
+                approval_policy: self.config.approval_policy,
+            },
             question_plugin: self.config.question,
             feedback_plugin: self.config.feedback,
             agent_tools: self

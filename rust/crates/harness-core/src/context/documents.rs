@@ -2,8 +2,7 @@
 use crate::{
     Error, Result,
     conversation::{
-        ContentAccess, ContentResidencyVerifier, FileRef, Limits, PrivateDirectoryEntryKind,
-        VolumeRef,
+        ContentAccess, ContentResidencyVerifier, DirectoryEntryKind, FileRef, Limits, VolumeRef,
     },
     resources::GenerationRef,
 };
@@ -61,8 +60,8 @@ pub async fn capture_working_documents(
             for entry in page.entries {
                 let path = format!("{directory}/{}", entry.name);
                 match entry.kind {
-                    PrivateDirectoryEntryKind::Directory => directories.push(path),
-                    PrivateDirectoryEntryKind::File => capture.file(&path).await?,
+                    DirectoryEntryKind::Directory => directories.push(path),
+                    DirectoryEntryKind::File => capture.file(&path).await?,
                     _ => {
                         return Err(Error::Invalid(
                             "working document has an unsupported node kind".into(),

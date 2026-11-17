@@ -1,5 +1,5 @@
 use super::*;
-use crate::conversation::{PrivateDirectoryEntry, PrivateDirectoryEntryKind};
+use crate::conversation::{DirectoryEntryKind, PrivateDirectoryEntry};
 
 /// Filesystem-backed admission barrier for version-pinned conversation content.
 pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
@@ -999,7 +999,7 @@ impl PrivateDirectoryEntry {
         }
         #[cfg(target_arch = "wasm32")]
         let _ = allocation;
-        use PrivateDirectoryEntryKind as Kind;
+        use DirectoryEntryKind as Kind;
         use acyclic_fs::{LazyDirectoryNode, demand::SourceNodeKind, kernel::FileKind};
         let kind = match entry.node {
             LazyDirectoryNode::Authored { kind, .. } => match kind {

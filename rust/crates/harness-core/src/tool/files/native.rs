@@ -36,6 +36,7 @@ record!(
         n.checked_add(entry.name.capacity() as u64)
             .and_then(|n| n.checked_add(entry.path.capacity() as u64))
             .and_then(|n| n.checked_add(entry.version.capacity() as u64))
+            .and_then(|n| n.checked_add(entry.cursor.capacity() as u64))
             .ok_or_else(|| invalid("directory result ownership overflow"))
     })?
 );

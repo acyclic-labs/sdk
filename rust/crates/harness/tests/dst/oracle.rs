@@ -4,7 +4,7 @@
 //! cut followed by an independent reopen.
 use super::*;
 use acyclic_harness::{
-    conversation::{DirectoryTarget, PrivateDirectoryEntryKind},
+    conversation::{DirectoryEntryKind, DirectoryTarget},
     local::WorkspaceMounting,
     model::{ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall, ToolResultContent},
     test_support::{ScriptedEvent, model_visible_messages},
@@ -377,7 +377,7 @@ impl World {
                     return Err(Error::Invalid("findings directory reply".into()));
                 };
                 for entry in &page.entries {
-                    if entry.kind != PrivateDirectoryEntryKind::File {
+                    if entry.kind != DirectoryEntryKind::File {
                         continue;
                     }
                     let path = format!("findings/{}", entry.name);
