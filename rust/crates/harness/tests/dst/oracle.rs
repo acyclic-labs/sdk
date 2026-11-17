@@ -366,6 +366,26 @@ impl World {
         (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
     }
 
+    /// One seeded driver over this world's files, with native timestamps as
+    /// fixture inputs rather than host facts.
+    fn driver(&self, scheduler: u64, cut: Option<(usize, DurableFault)>) -> Driver {
+        let mut driver = if self.entropy {
+            Driver::world(scheduler, cut)
+        } else {
+            Driver::without_entropy(scheduler, cut)
+        };
+        driver.schedule.set_native_times_provider(|input| {
+            const TIME_NS: i64 = 1_700_000_000_000_000_000;
+            acyclic_native_runtime::testing::NativeTimes {
+                created_ns: input.times.created_ns.map(|_| TIME_NS),
+                modified_ns: input.times.modified_ns.map(|_| TIME_NS),
+                accessed_ns: input.times.accessed_ns.map(|_| TIME_NS),
+                changed_ns: input.times.changed_ns.map(|_| TIME_NS),
+            }
+        });
+        driver
+    }
+
     /// Opens a host on the world's files and sends each group of prompts,
     /// each as message `id`, together; a group waits for all of its answers
     /// before the next is sent. With a cut, the incarnation crashes at that
@@ -379,22 +399,7 @@ impl World {
             // Each incarnation is an independent scheduler over the same files.
             let scheduler = self.seed ^ self.incarnations.wrapping_mul(0x9e37_79b9_7f4a_7c15);
             self.incarnations += 1;
-            let mut driver = if self.entropy {
-                Driver::world(scheduler, cut)
-            } else {
-                Driver::without_entropy(scheduler, cut)
-            };
-            // Native timestamps are fixture inputs, not host facts: a world
-            // replayed from the same seed must not depend on when it ran.
-            driver.schedule.set_native_times_provider(|input| {
-                const TIME_NS: i64 = 1_700_000_000_000_000_000;
-                acyclic_native_runtime::testing::NativeTimes {
-                    created_ns: input.times.created_ns.map(|_| TIME_NS),
-                    modified_ns: input.times.modified_ns.map(|_| TIME_NS),
-                    accessed_ns: input.times.accessed_ns.map(|_| TIME_NS),
-                    changed_ns: input.times.changed_ns.map(|_| TIME_NS),
-                }
-            });
+            let mut driver = self.driver(scheduler, cut);
             let schedule = driver.schedule.clone();
             let counter = schedule.clone();
             let source_entropy = {
@@ -513,19 +518,31 @@ impl World {
     /// whole length.
     pub fn findings(&self, items: u32) -> EntryFuture<'_, Result<Vec<(String, Vec<u8>)>>> {
         entry(async move {
-            let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
-            let provider = Arc::new(self.service.reopened());
-            let config =
-                local_harness_config(self.directory.path().join("checkout"), (model, provider))?
+            let mut driver = self.driver(self.seed, None);
+            let schedule = driver.schedule.clone();
+            let source_entropy = {
+                let schedule = schedule.clone();
+                Arc::new(move || {
+                    let mut bytes = [0; 16];
+                    schedule.fill_entropy(&mut bytes);
+                    bytes
+                })
+            };
+            let identity = self.checkout_identity();
+            let directory = self.directory.path();
+            let run = entry(async move {
+                let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
+                let provider = Arc::new(self.service.reopened());
+                let config = local_harness_config(directory.join("checkout"), (model, provider))?
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
-                    .state_directory(self.directory.path().join("state"));
-            let identity = self.checkout_identity();
-            acyclic_harness::test_support::inject_checkout_identity(identity.0, identity.1);
-            let harness = Arc::new(entry(LocalHarness::open(config)).await?);
-            acyclic_harness::test_support::clear_checkout_identity();
-            let (_, root) = harness.agents().await?;
-            let connection = harness.connect().await?;
+                    .source_entropy(source_entropy)
+                    .state_directory(directory.join("state"));
+                acyclic_harness::test_support::inject_checkout_identity(identity.0, identity.1);
+                let harness = Arc::new(entry(LocalHarness::open(config)).await?);
+                acyclic_harness::test_support::clear_checkout_identity();
+                let (_, root) = harness.agents().await?;
+                let connection = harness.connect().await?;
             let mut findings = Vec::new();
             let mut cursor = None;
             let mut generation = None;
@@ -577,8 +594,20 @@ impl World {
                     None => break,
                 }
             }
-            findings.sort();
-            Ok(findings)
+                findings.sort();
+                drop(connection);
+                let harness = Arc::try_unwrap(harness).map_err(|_| {
+                    Error::Invalid("findings harness still has live connections".into())
+                })?;
+                harness.disconnect().await?;
+                Ok(findings)
+            });
+            match driver.run(run).await {
+                Outcome::Completed(result) => result,
+                Outcome::Crashed(cause) => Err(Error::Invalid(format!(
+                    "findings reopen crashed: {cause}"
+                ))),
+            }
         })
     }
 }
