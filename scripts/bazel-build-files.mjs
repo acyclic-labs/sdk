@@ -138,7 +138,7 @@ const wasmArtifacts = new Map(wasmSelections.map(selection => [selection.package
 const wasmRoots = new Set(wasmSelections.map(selection => base.packages.find(p => p.name === selection.packageName).id));
 // The wasm-only crates (a browser transport, say) are not in the host all-features metadata.
 const wasmMetadataFeatures = wasmSelections.flatMap(selection => selection.features.map(feature => `${selection.packageName}/${feature}`));
-const wasmMetadata = JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", WASM_TRIPLE,
+const wasmMetadata = wasmSelections.length === 0 ? { packages: [] } : JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", WASM_TRIPLE,
   "--no-default-features", ...(wasmMetadataFeatures.length ? ["--features", wasmMetadataFeatures.join(",")] : [])], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 }));
 for (const p of wasmMetadata.packages) {
   if (![...packages.values()].some(q => q.manifest_path === p.manifest_path)) packages.set(p.id, p);
