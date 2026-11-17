@@ -549,17 +549,21 @@ async fn a_read_charge_lives_exactly_as_long_as_its_bytes() -> Result<()> {
     Ok(())
 }
 
-/// The unmeasured constructor occurs exactly once inside each of the two
+/// The unmeasured constructor occurs exactly once inside each of the three
 /// private read entry points of the host reader, and nowhere else.
 fn unmeasured_sites_confined(
     sources: &[(String, String)],
     needle: &str,
 ) -> std::result::Result<(), String> {
     const HOST: &str = "filesystem/host/reads.rs";
-    const ENTRY_POINTS: [(&str, &str); 2] = [
+    const ENTRY_POINTS: [(&str, &str); 3] = [
         (
-            "pub async fn read_private_path<'io>",
+            "pub(in crate::filesystem) async fn read_private_cut_retained(",
+            "pub(in crate::filesystem) async fn read_pinned_private(",
+        ),
+        (
             "pub async fn read_private_path_indexed<'io>",
+            "async fn read_private_path_indexed_measured<'io>",
         ),
         (
             "pub(in crate::filesystem) async fn read_private_range<'io>",
