@@ -511,16 +511,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             .await
     }
 
-    /// Agent-owned files use the same root query as controls and status views.
-    pub async fn agent_files(
-        &self,
-        agent: &AgentPath,
-        paths: &[String],
-        after: Option<&crate::client_files::FileCut>,
-    ) -> Result<ClientFiles, Error> {
-        self.files(agent, FileRoot::Private {}, paths, after).await
-    }
-
     /// Publish an explicitly selected client session's files.
     pub async fn publish_client_files(
         &self,
@@ -536,17 +526,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             changes,
         )
         .await
-    }
-
-    /// Publish agent-owned files through the common conditional publisher.
-    pub async fn publish_agent_files(
-        &self,
-        agent: &AgentPath,
-        operation: OperationId,
-        changes: &[ClientFileChange],
-    ) -> Result<GenerationRef, Error> {
-        self.publish_files(agent, FileRoot::Private {}, operation, changes)
-            .await
     }
 
     /// Publishes one atomic conditional batch. Stable operation identity and

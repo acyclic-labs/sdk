@@ -107,7 +107,11 @@ async fn interactive_orchestrator_asks_directly_and_receives_a_generation_bound_
     );
     let snapshot = observed
         .conversation
-        .agent_files(vec!["ui/color.md".into()], None)
+        .files(
+            crate::client_files::FileRoot::Private {},
+            vec!["ui/color.md".into()],
+            None,
+        )
         .await?;
     let file = snapshot.files["ui/color.md"]
         .as_ref()
@@ -340,7 +344,11 @@ async fn question_tool_cannot_publish_workspace_files() -> Result<()> {
         ));
         let private = observed
             .conversation
-            .agent_files(vec!["ui/color.md".into()], None)
+            .files(
+                crate::client_files::FileRoot::Private {},
+                vec!["ui/color.md".into()],
+                None,
+            )
             .await?;
         assert!(private.files["ui/color.md"].is_none());
     }

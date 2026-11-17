@@ -373,8 +373,10 @@ pub async fn name(connection: &Connection, name: String, operation: &str) -> Res
 pub async fn rename(connection: &Connection, operation: OperationId, title: String) -> Result<()> {
     let agent = connection.root().clone();
     let AgentReply::ClientFiles { snapshot } = connection
-        .execute(&AgentCommand::AgentFiles {
+        .execute(&AgentCommand::ClientFiles {
             agent: agent.clone(),
+            root: crate::client_files::FileRoot::Private {},
+            publication: None,
             paths: vec![TITLE_FILE.into()],
             after: None,
         })
@@ -389,8 +391,9 @@ pub async fn rename(connection: &Connection, operation: OperationId, title: Stri
         text: Some(title),
     };
     let AgentReply::ClientFilesPublished { .. } = connection
-        .execute(&AgentCommand::PublishAgentFiles {
+        .execute(&AgentCommand::PublishClientFiles {
             agent,
+            root: crate::client_files::FileRoot::Private {},
             operation,
             changes: vec![change],
         })

@@ -284,17 +284,6 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
         changes: Vec<acyclic_harness_core::client_files::ClientFileChange>,
     },
-    /// Snapshot exactly the requested files in the agent's private volume.
-    AgentFiles {
-        /// Selected agent; no request supplies a volume grant.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        agent: AgentPath,
-        /// Explicit paths, such as ui/title.
-        paths: Vec<String>,
-        /// Wait on the original filesystem producer after this generation.
-        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
-        after: Option<acyclic_harness_core::client_files::FileCut>,
-    },
     /// Read bounded text prefixes at one live agent-file snapshot.
     AgentFilePreviews {
         /// Selected agent.
@@ -307,18 +296,6 @@ pub enum AgentCommand {
         after: Option<acyclic_harness_core::resources::GenerationRef>,
         /// Per-path display credit; aggregate bytes fit one read chunk.
         bytes: u64,
-    },
-    /// Conditionally publish authored files in the agent's private volume.
-    PublishAgentFiles {
-        /// Selected agent.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        agent: AgentPath,
-        /// Caller-owned publication identity.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        operation: acyclic_harness_core::OperationId,
-        /// Exact source preconditions and replacement contents.
-        #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
-        changes: Vec<acyclic_harness_core::client_files::ClientFileChange>,
     },
     /// Freeze an agent through its ordinary closing input and resource release.
     Archive {
@@ -718,14 +695,12 @@ impl AgentCommand {
             Self::NameSession { name, .. } | Self::ResolveSession { name } if name.is_empty() => {
                 Err(CommandError::Invalid)
             }
-            Self::ClientFiles { after, .. } | Self::AgentFiles { after, .. }
+            Self::ClientFiles { after, .. }
                 if after.as_ref().is_some_and(|cut| cut.version != 1) =>
             {
                 Err(CommandError::Invalid)
             }
-            Self::ClientFiles { paths, .. }
-            | Self::AgentFiles { paths, .. }
-            | Self::AgentFilePreviews { paths, .. } => {
+            Self::ClientFiles { paths, .. } | Self::AgentFilePreviews { paths, .. } => {
                 if let Self::AgentFilePreviews { bytes, .. } = self
                     && (*bytes == 0
                         || bytes
@@ -747,7 +722,7 @@ impl AgentCommand {
                 }
                 Ok(())
             }
-            Self::PublishClientFiles { changes, .. } | Self::PublishAgentFiles { changes, .. } => {
+            Self::PublishClientFiles { changes, .. } => {
                 if changes.is_empty() {
                     return Err(CommandError::Invalid);
                 }
@@ -897,8 +872,6 @@ impl AgentCommand {
             | Self::AgentFilePreviews { agent, .. }
             | Self::NameSession { agent, .. }
             | Self::SelectSession { agent, .. }
-            | Self::AgentFiles { agent, .. }
-            | Self::PublishAgentFiles { agent, .. }
             | Self::Archive { agent, .. }
             | Self::ClientFiles { agent, .. }
             | Self::PublishClientFiles { agent, .. }
@@ -925,8 +898,6 @@ impl AgentCommand {
             Self::NameSession { .. } => "name_session",
             Self::ResolveSession { .. } => "resolve_session",
             Self::SelectSession { .. } => "select_session",
-            Self::AgentFiles { .. } => "agent_files",
-            Self::PublishAgentFiles { .. } => "publish_agent_files",
             Self::Archive { .. } => "archive",
             Self::ClientFiles { .. } => "client_files",
             Self::PublishClientFiles { .. } => "publish_client_files",

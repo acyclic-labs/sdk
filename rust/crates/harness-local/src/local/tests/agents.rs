@@ -1300,7 +1300,13 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly_world() -> Result
         crate::local::agent_conversation::VisibleFiles::new(Arc::clone(&client), paths.clone());
     visible.retain([root.clone()], 128);
     futures::future::poll_fn(|cx| visible.poll_changed(cx)).await;
-    let snapshot = client.agent_files(paths.clone(), None).await?;
+    let snapshot = client
+        .files(
+            crate::client_files::FileRoot::Private {},
+            paths.clone(),
+            None,
+        )
+        .await?;
     assert_eq!(
         visible
             .snapshot(&root)
@@ -1317,7 +1323,11 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly_world() -> Result
             .text,
         "changed after selection"
     );
-    let waiting = client.agent_files(paths.clone(), Some(snapshot.cut.clone()));
+    let waiting = client.files(
+        crate::client_files::FileRoot::Private {},
+        paths.clone(),
+        Some(snapshot.cut.clone()),
+    );
     futures::pin_mut!(waiting);
     assert!(
         futures::poll!(waiting.as_mut()).is_pending(),
@@ -1351,8 +1361,10 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly_world() -> Result
     );
     assert!(
         connection
-            .execute(&AgentCommand::AgentFiles {
+            .execute(&AgentCommand::ClientFiles {
                 agent: AgentPath::root(&crate::agent::AgentId::from_bytes([91; 16])),
+                root: crate::client_files::FileRoot::Private {},
+                publication: None,
                 paths,
                 after: None,
             })

@@ -183,7 +183,13 @@ pub(super) async fn load(
                 .as_str()
                 .to_owned();
             let name = format!("ui/{path}");
-            let snapshot = conversation.agent_files(vec![name.clone()], None).await?;
+            let snapshot = conversation
+                .files(
+                    acyclic_harness::client_files::FileRoot::Private {},
+                    vec![name.clone()],
+                    None,
+                )
+                .await?;
             let file = snapshot
                 .files
                 .get(&name)

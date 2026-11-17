@@ -774,8 +774,10 @@ mod tests {
                 .find(|agent| *agent != connection.root())
                 .unwrap()
                 .clone();
-            let read = AgentCommand::AgentFiles {
+            let read = AgentCommand::ClientFiles {
                 agent: agent.clone(),
+                root: crate::client_files::FileRoot::Private {},
+                publication: None,
                 paths: vec!["ui/title".into()],
                 after: None,
             };
@@ -783,8 +785,9 @@ mod tests {
                 return Err(Error::Invalid("missing title snapshot".into()));
             };
             assert!(snapshot.files["ui/title"].is_none());
-            let create_title = AgentCommand::PublishAgentFiles {
+            let create_title = AgentCommand::PublishClientFiles {
                 agent: agent.clone(),
+                root: crate::client_files::FileRoot::Private {},
                 operation: crate::OperationId::new(),
                 changes: vec![crate::client_files::ClientFileChange {
                     path: "ui/title".into(),
@@ -914,8 +917,9 @@ mod tests {
                 after: Some(snapshot.cut.generation),
                 bytes: 18,
             };
-            let rename = AgentCommand::PublishAgentFiles {
+            let rename = AgentCommand::PublishClientFiles {
                 agent: agent.clone(),
+                root: crate::client_files::FileRoot::Private {},
                 operation: crate::OperationId::new(),
                 changes: vec![crate::client_files::ClientFileChange {
                     path: "ui/title".into(),
@@ -942,8 +946,9 @@ mod tests {
                 &agent,
                 "display title edits retain direct aliases"
             );
-            let stale = AgentCommand::PublishAgentFiles {
+            let stale = AgentCommand::PublishClientFiles {
                 agent: agent.clone(),
+                root: crate::client_files::FileRoot::Private {},
                 operation: crate::OperationId::new(),
                 changes: vec![crate::client_files::ClientFileChange {
                     path: "ui/title".into(),

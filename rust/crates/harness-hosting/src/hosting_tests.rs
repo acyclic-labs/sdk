@@ -760,8 +760,9 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             agent: root.clone(),
             page: AgentPageRequest::default(),
         },
-        AgentCommand::PublishAgentFiles {
+        AgentCommand::PublishClientFiles {
             agent: root.clone(),
+            root: crate::client_files::FileRoot::Private {},
             operation: OperationId::new(),
             changes: vec![crate::client_files::ClientFileChange {
                 path: "ui/title".into(),

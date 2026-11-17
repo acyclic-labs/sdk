@@ -175,26 +175,6 @@ impl Conversation {
             .await
     }
 
-    /// Authored agent files, observed at one committed generation.
-    pub async fn agent_files(
-        &self,
-        paths: Vec<String>,
-        after: Option<FileCut>,
-    ) -> Result<ClientFiles> {
-        match self
-            .connection
-            .execute(&AgentCommand::AgentFiles {
-                agent: self.agent().clone(),
-                paths,
-                after,
-            })
-            .await?
-        {
-            AgentReply::ClientFiles { snapshot } => Ok(snapshot),
-            _ => Err(unexpected()),
-        }
-    }
-
     /// The default client session of this selected conversation. Callers that
     /// need independent UI sessions supply their own stable session identity.
     #[must_use]

@@ -455,10 +455,7 @@ fn validate_reply(
     bytes: usize,
 ) -> Result<(), CommandError> {
     let page = match (reply, command) {
-        (
-            AgentReply::ClientFilesPublished { .. },
-            AgentCommand::PublishClientFiles { .. } | AgentCommand::PublishAgentFiles { .. },
-        ) => {
+        (AgentReply::ClientFilesPublished { .. }, AgentCommand::PublishClientFiles { .. }) => {
             return Ok(());
         }
         (
@@ -472,22 +469,6 @@ fn validate_reply(
             },
         ) => {
             return validate_files(snapshot, paths, after.as_ref(), *root, agent);
-        }
-        (
-            AgentReply::ClientFiles { snapshot },
-            AgentCommand::AgentFiles {
-                agent,
-                paths,
-                after,
-            },
-        ) => {
-            return validate_files(
-                snapshot,
-                paths,
-                after.as_ref(),
-                acyclic_harness_core::client_files::FileRoot::Private {},
-                agent,
-            );
         }
         (
             AgentReply::FilePreviews { snapshot },

@@ -955,8 +955,9 @@ async fn workspace_queries_keep_subdirectory_read_grants_without_widening_them()
     };
     let (mut bound, root) = binding().await?;
     let generation = bound
-        .publish_agent_files(
+        .publish_files(
             &root,
+            crate::client_files::FileRoot::Private {},
             OperationId::from_bytes([73; 16]),
             &[
                 ClientFileChange {
