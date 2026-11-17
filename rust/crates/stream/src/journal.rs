@@ -146,10 +146,6 @@ mod journal_command {
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(
-    clippy::indexing_slicing,
-    reason = "Malformed codec fixtures deliberately slice canonical bytes at every boundary"
-)]
 mod tests {
     use super::*;
     use crate::{AppendRequest, CommitEffect, CommitRequest, ForkRequest, StreamProviderExt};
