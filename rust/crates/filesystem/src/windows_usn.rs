@@ -16,7 +16,7 @@ use crate::native_host::HostRoot;
 use std::mem::size_of;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{ERROR_JOURNAL_NOT_ACTIVE, HANDLE};
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::{FSCTL_QUERY_USN_JOURNAL, USN_JOURNAL_DATA_V0};
 
