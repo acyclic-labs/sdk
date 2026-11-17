@@ -307,22 +307,15 @@ pub async fn page_scoped(
                 if scope == acyclic_harness_client::SessionsScope::Peers {
                     return Ok(session);
                 }
-                let AgentReply::FilePreviews { snapshot } = connection
-                    .execute(&AgentCommand::AgentFilePreviews {
-                        agent: session.agent.clone(),
-                        paths: vec![TITLE_FILE.into()],
-                        after: None,
-                        bytes: crate::client::MAX_READ_BYTES,
-                    })
-                    .await?
-                else {
-                    return Err(unexpected());
-                };
-                session.title = snapshot
-                    .files
-                    .get(TITLE_FILE)
-                    .and_then(Option::as_ref)
-                    .cloned();
+                let mut snapshot = connection
+                    .agent_file_previews(
+                        &session.agent,
+                        vec![TITLE_FILE.into()],
+                        None,
+                        crate::client::MAX_READ_BYTES,
+                    )
+                    .await?;
+                session.title = snapshot.files.remove(TITLE_FILE).flatten();
                 if session.title.is_none()
                     && session
                         .status

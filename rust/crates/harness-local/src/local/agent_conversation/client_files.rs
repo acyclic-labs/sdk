@@ -13,6 +13,29 @@ use std::{
 
 type Snapshot = LocalBoxFuture<'static, Result<(Arc<Conversation>, FilePreviews)>>;
 
+impl Connection {
+    pub(in crate::local) async fn agent_file_previews(
+        &self,
+        agent: &AgentPath,
+        paths: Vec<String>,
+        after: Option<GenerationRef>,
+        bytes: u64,
+    ) -> Result<FilePreviews> {
+        match self
+            .execute(&AgentCommand::AgentFilePreviews {
+                agent: agent.clone(),
+                paths,
+                after,
+                bytes,
+            })
+            .await?
+        {
+            AgentReply::FilePreviews { snapshot } => Ok(snapshot),
+            _ => Err(unexpected()),
+        }
+    }
+}
+
 struct VisibleFileQuery {
     snapshot: Option<Result<FilePreviews>>,
     pending: Option<Snapshot>,
@@ -147,19 +170,9 @@ impl Conversation {
         after: Option<GenerationRef>,
         bytes: u64,
     ) -> Result<crate::client_files::FilePreviews> {
-        match self
-            .connection
-            .execute(&AgentCommand::AgentFilePreviews {
-                agent: self.agent().clone(),
-                paths,
-                after,
-                bytes,
-            })
-            .await?
-        {
-            AgentReply::FilePreviews { snapshot } => Ok(snapshot),
-            _ => Err(unexpected()),
-        }
+        self.connection
+            .agent_file_previews(self.agent(), paths, after, bytes)
+            .await
     }
 
     /// Authored agent files, observed at one committed generation.
