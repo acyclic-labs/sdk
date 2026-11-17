@@ -87,6 +87,7 @@ fn local_turn<'a>(
     entry(async move {
         let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
         let config = local_harness_config(directory.join("checkout"), (model, provider))?
+            .feedback_plugin(false)
             .without_user_settings()
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
