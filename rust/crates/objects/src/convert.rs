@@ -57,6 +57,19 @@ pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {
     }
 }
 
+/// Lowers a manifest and records the digest and length its receipt must prove.
+pub(crate) fn put_manifest(
+    value: &Manifest,
+) -> Result<(wire::PutManifestRequest, (Digest, u64)), Error> {
+    let expected = (Digest::of(&value.encode()?), value.length()?);
+    Ok((
+        wire::PutManifestRequest {
+            manifest: Some(manifest(value)),
+        },
+        expected,
+    ))
+}
+
 pub(crate) fn from_manifest(manifest: Option<&wire::Manifest>) -> Result<Manifest, Error> {
     let manifest = manifest.ok_or_else(invalid)?;
     Ok(Manifest {

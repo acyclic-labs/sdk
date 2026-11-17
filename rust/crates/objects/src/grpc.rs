@@ -353,16 +353,8 @@ impl Blobs for GrpcObjects {
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let digest = Digest::of(&manifest.encode()?);
-            let length = manifest.length()?;
-            let reply = call!(
-                self,
-                put_manifest,
-                wire::PutManifestRequest {
-                    manifest: Some(convert::manifest(&manifest)),
-                },
-                None
-            )?;
+            let (request, (digest, length)) = convert::put_manifest(&manifest)?;
+            let reply = call!(self, put_manifest, request, None)?;
             Ok(convert::verified_put(&reply.0, digest, length)?.committed_at(reply.1))
         })
         .await
