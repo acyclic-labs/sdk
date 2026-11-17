@@ -1378,3 +1378,65 @@ async fn a_cancelled_review_keeps_its_page_for_the_next_step()
     );
     Ok(())
 }
+
+struct StalledReview;
+
+impl TurnDriver for StalledReview {
+    fn review<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: u64,
+        _: CancellationToken,
+    ) -> crate::agent::ReviewFuture<'a> {
+        Box::pin(std::future::pending())
+    }
+
+    fn step<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: u64,
+        _: Option<Queued>,
+        _: CancellationToken,
+    ) -> TurnFuture<'a> {
+        Box::pin(async { Err(Error::Record("unexpected worker step")) })
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_review_stops_a_driver_that_ignores_its_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let id = AgentId::from_bytes([78; 16]);
+    let path = AgentPath::root(&id);
+    let adopted = ForkAdopted {
+        agent: id,
+        parent: None,
+        profile: None,
+        forked_at: 0,
+        conversation_tail: 0,
+        checkpoint: None,
+        volumes: Vec::new(),
+        brief: None,
+        policy: None,
+    };
+    let mut state = AgentState::adopted(path.clone(), &adopted)?;
+    state.approval_control = Some(crate::agent::ApprovalControl {
+        range: 1..2,
+        selected: None,
+    });
+    let stop = CancellationToken::new();
+    stop.cancel();
+    let stepped = crate::agent::step(
+        &StalledReview,
+        &path,
+        Some(state),
+        (2, 0),
+        Wake::Alarm,
+        stop,
+    )
+    .await?;
+    assert!(
+        stepped.state.approval_control.is_some(),
+        "a cancelled review dropped its pending child asks"
+    );
+    Ok(())
+}
