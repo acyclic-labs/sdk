@@ -2,7 +2,7 @@
 // target //typescript/packages/harness-actor:bundle runs this after generating the
 // protobuf projections and the wasm packages it consumes.
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -96,7 +96,7 @@ if (import.meta.main) {
   const streamWasm = join(root, "node_modules/@acyclic/stream-wasm");
   mkdirSync(dirname(streamWasm), { recursive: true });
   rmSync(streamWasm, { recursive: true, force: true });
-  cpSync(join(root, "typescript/packages/@acyclic/stream-wasm"), streamWasm, { recursive: true });
+  symlinkSync(join(root, "typescript/packages/@acyclic/stream-wasm"), streamWasm, "dir");
   step("typescript", "bun", ["x", "tsc", "-b", "typescript/packages/harness-actor"]);
   await bundleHarnessActor(values.config, values.out);
 }
