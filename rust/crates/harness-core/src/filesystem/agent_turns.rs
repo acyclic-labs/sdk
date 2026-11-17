@@ -2478,6 +2478,7 @@ impl<'a> TurnContext<'a> {
                 announcements: announced,
                 input: content,
                 transcript,
+                replay_text,
                 notices,
                 ..
             },
@@ -2521,7 +2522,11 @@ impl<'a> TurnContext<'a> {
                 message_ids.push(message_id(settled, ModelRole::User));
             }
             if transcript.is_empty() {
-                return Err(Error::Invalid("settled transcript is not decoded".into()));
+                // A failed or cancelled turn contributes its input and the
+                // steps that completed, never a partial reply.
+                if replay_text {
+                    return Err(Error::Invalid("settled transcript is not decoded".into()));
+                }
             }
             for (part, message) in transcript.into_iter().enumerate() {
                 messages.push(message);

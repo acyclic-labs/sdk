@@ -302,8 +302,25 @@ async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(
-        requests[1].messages, requests[0].messages,
+        requests[1].messages[..requests[0].messages.len()],
+        requests[0].messages,
         "the interrupted turn must not add a partial item to the next request"
+    );
+    assert_eq!(
+        requests[1].messages[requests[0].messages.len()..],
+        [ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Part(ModelContentPart::Notices {
+                notices: vec![acyclic_harness_core::conversation::wire::Notice {
+                    source: "approval".into(),
+                    kind: "approval.resolved".into(),
+                    body: serde_json::json!({"id": "second"}),
+                    wake: true,
+                    coalesce_key: None,
+                }],
+            }),
+        }],
+        "only the next input follows the original request"
     );
     Ok(())
 }
