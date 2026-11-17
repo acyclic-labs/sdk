@@ -10695,7 +10695,9 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-][[package]]
+]
+
+[[package]]
 name = "zvariant"
 version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10707,4 +10709,3 @@ dependencies = [
  "static_assertions",
  "zvariant_derive",
 ]
-
