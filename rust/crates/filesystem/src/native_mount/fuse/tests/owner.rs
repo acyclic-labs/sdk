@@ -463,16 +463,21 @@ fn shared_host_survives_first_owner_tree_retirement()
     let host_exit = process_event(host, false)?;
     drop(session);
     wait_exit(&host_exit)?;
-    // Both mounts outlive their sessions. Detach the now-dead mounts so the
-    // temporary directory is not a live mount when the test runner removes it.
+    // Both mounts outlive their sessions. Unmount the now-dead mounts through
+    // the canonical helper so the temporary directory is not a live mount when
+    // the test runner removes it.
     for root in [child_root.path(), parent_root.path()] {
-        if let Ok(path) = std::ffi::CString::new({
+        for helper in super::super::lifecycle::FUSE_HELPERS {
             use std::os::unix::ffi::OsStrExt as _;
-            root.as_os_str().as_bytes()
-        }) {
-            // SAFETY: a NUL-terminated path and a detach flag.
-            let detached = unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
-            eprintln!("DETACH {} => {} {:?}", root.display(), detached, std::io::Error::last_os_error());
+            let program = std::ffi::OsStr::from_bytes(helper.to_bytes());
+            if std::process::Command::new(program)
+                .args(["-u", "-q", "-z", "--"])
+                .arg(root)
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                break;
+            }
         }
     }
     Ok(())
