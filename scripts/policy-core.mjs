@@ -123,6 +123,14 @@ export function reachable(roots, edges) {
   return reached;
 }
 
+export function growSets(step) {
+  let grew;
+  do {
+    grew = false;
+    step((set, value) => { if (!set.has(value)) { set.add(value); grew = true; } });
+  } while (grew);
+}
+
 export const isCratesIoPackage = item => item.source === null && (item.publish === null || item.publish.includes('crates-io'));
 
 export function featureClosure(features = {}, roots) {

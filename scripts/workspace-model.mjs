@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {dependencyEnabled, evaluateCfg, forwardedFeatures, manifestDependencies, reachable, toml, tomlFiles} from './policy-core.mjs';
+import {dependencyEnabled, evaluateCfg, forwardedFeatures, growSets, manifestDependencies, reachable, toml, tomlFiles} from './policy-core.mjs';
 
 const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
@@ -319,10 +319,7 @@ export function registryInputs(root) {
   for (const triple of ['x86_64-unknown-linux-gnu', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc']) {
     const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : [])]));
     const reachable = new Set(local.filter(p => p.workspace_member).map(p => p.id));
-    let changed = true;
-    while (changed) {
-      changed = false;
-      const add = (set, value) => { if (!set.has(value)) {set.add(value); changed = true;} };
+    growSets(add => {
       for (const p of local.filter(p => reachable.has(p.id))) {
         const features = enabled.get(p.id);
         for (const feature of features) for (const next of p.features[feature] ?? []) add(features, next);
@@ -346,7 +343,7 @@ export function registryInputs(root) {
           }
         }
       }
-    }
+    });
   }
   return {inputs: [...inputs], universe};
 }
@@ -408,10 +405,7 @@ export function workspaceBrowserGraph(root, selections) {
     return uniqueDependency(pkg, d, lockedCandidates(registry, d, lockedOwner(lock, pkg)));
   };
   const nodes = new Map();
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const add = (set, value) => {if (!set.has(value)) {set.add(value); changed = true;}};
+  growSets(add => {
     for (const pkg of packages.filter(p => reachable.has(p.id))) {
       const deps = new Map();
       const addEdge = (name, dep, kind, target = null) => {
@@ -457,7 +451,7 @@ export function workspaceBrowserGraph(root, selections) {
       nodes.set(pkg.id, {id:pkg.id, deps:[...deps.values()], features:pkg.source ? Object.keys(pkg.features).sort() :
         Object.keys(pkg.features).filter(feature => enabled.get(pkg.id).has(feature)).sort()});
     }
-  }
+  });
   return {packages:[...byId.values()].filter(p => !p.source || reachable.has(p.id)), workspace_members:local.filter(p => p.workspace_member).map(p => p.id),
     workspace_root:root, registry_inputs:registryInputs, resolve:{nodes:[...nodes.values()]}};
 }
@@ -477,10 +471,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
   const matches = cfg => allPlatforms || targetMatches(cfg, triple);
   const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : selectedEntries(universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features, universe, allPlatforms ? null : triple))]));
   const active = (p, d) => dependencyEnabled(enabled.get(p.id), d);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const add = (set, value) => {if (!set.has(value)) {set.add(value); changed = true;}};
+  growSets(add => {
     for (const p of local) {
       const features = enabled.get(p.id);
       for (const feature of features) for (const next of p.features[feature] ?? []) add(features, next);
@@ -492,7 +483,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
         for (const feature of forwardedFeatures(features, alias)) add(target, feature);
       }
     }
-  }
+  });
   const nodes = local.map(p => {
     const locked = lockedOwner(lock, p);
     const deps = new Map();
