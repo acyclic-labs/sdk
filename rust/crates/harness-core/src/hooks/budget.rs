@@ -5,7 +5,7 @@ use serde::Serialize;
 
 /// The fold never stops at overflow: its bounded exhausted state keeps guard
 /// decisions and policies, even after it has discarded optional context.
-pub(super) struct Budget {
+pub struct Budget {
     maximum: Option<u64>,
     state: State,
 }
@@ -58,11 +58,11 @@ struct DiagnosticRef<'a, M> {
 }
 
 impl Budget {
-    pub(super) fn new(maximum: impl Into<Option<u64>>) -> Result<Self> {
+    pub fn new(maximum: impl Into<Option<u64>>) -> Result<Self> {
         Self::existing(maximum, &HookOutput::default())
     }
 
-    pub(super) fn existing(maximum: impl Into<Option<u64>>, output: &HookOutput) -> Result<Self> {
+    pub fn existing(maximum: impl Into<Option<u64>>, output: &HookOutput) -> Result<Self> {
         let Some(maximum) = maximum.into() else {
             return Ok(Self {
                 maximum: None,
@@ -112,7 +112,7 @@ impl Budget {
         })
     }
 
-    pub(super) fn apply(
+    pub fn apply(
         &mut self,
         output: &mut HookOutput,
         event: HookEvent,
@@ -264,7 +264,7 @@ impl Budget {
         }
     }
 
-    pub(super) fn finish(self, output: &mut HookOutput) {
+    pub fn finish(self, output: &mut HookOutput) {
         if let State::Exhausted {
             denied,
             asks,

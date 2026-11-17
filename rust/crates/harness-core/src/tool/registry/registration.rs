@@ -24,7 +24,8 @@ impl ToolRegistry {
         self.register_checked(tool, custody, work, &|| Ok(()))
     }
 
-    pub(crate) fn register_checked(
+    /// Registers a tool after checking its definition.
+    pub fn register_checked(
         &mut self,
         tool: (Tool, acyclic_fs::NativeCustody),
         custody: &mut acyclic_fs::NativeCustody,

@@ -33,23 +33,21 @@ pub fn semantic_seeds(
 /// External captures must reach their recorded successful service or callback
 /// admission; chunk-equivalent refusal alone cannot qualify a positive seed.
 pub fn admit_external(codec: &str, method: &str, bytes: &[u8]) -> Result<(), String> {
-    use acyclic_harness_core::{
-        OperationId, contract,
-        mcp::{
-            callbacks::{McpCallbackPolicy, McpCallbackRequest},
-            services,
-        },
+    use acyclic_harness_core::{OperationId, contract};
+    use acyclic_harness_mcp::{
+        callbacks::{McpCallbackPolicy, McpCallbackRequest},
+        services,
     };
     let result = match codec {
         "stdio" => {
             if method != "tools/list" {
                 return Err("stdio capture is not discovery".into());
             }
-            return acyclic_harness_core::mcp::stdio::codec_fuzz::admit(bytes)
+            return acyclic_harness_mcp::stdio::codec_fuzz::admit(bytes)
                 .map(|_| ())
                 .map_err(|error| format!("captured stdio discovery refused: {error:?}"));
         }
-        "json" | "sse" => acyclic_harness_core::mcp::http::codec_fuzz::admit(
+        "json" | "sse" => acyclic_harness_mcp::http::codec_fuzz::admit(
             bytes,
             if codec == "json" {
                 "application/json"
@@ -139,8 +137,8 @@ pub fn harness_codecs(bytes: &[u8]) {
     acyclic_harness_core::filesystem::execution_codec_fuzz::check(bytes);
     harness_manifest::check(bytes);
     harness_resources::check(bytes);
-    acyclic_harness_core::mcp::http::codec_fuzz::check(bytes);
-    acyclic_harness_core::mcp::stdio::codec_fuzz::check(bytes);
+    acyclic_harness_mcp::http::codec_fuzz::check(bytes);
+    acyclic_harness_mcp::stdio::codec_fuzz::check(bytes);
     mcp::check(bytes);
 }
 

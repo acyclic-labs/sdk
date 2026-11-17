@@ -553,7 +553,8 @@ fn finish(
     })
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) const fn lexical_json_diagnostic_bytes() -> u64 {
+/// The lexical JSON diagnostic byte bound.
+pub const fn lexical_json_diagnostic_bytes() -> u64 {
     "JSON exceeds declared structural bound".len() as u64
 }
 

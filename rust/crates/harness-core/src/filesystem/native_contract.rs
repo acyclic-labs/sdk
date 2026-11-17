@@ -3,6 +3,7 @@
 use crate::{OperationId, Result, conversation::VolumeRef, resources::GenerationRef};
 use acyclic_fs::WorkBudget;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{collections::BTreeMap, path::PathBuf};
 
 /// Explicit finite bounds for a dynamically sized native volume view.
@@ -222,6 +223,26 @@ pub(super) fn validation_error(
 /// Versioned effect kind supported by the optional one-shot process provider.
 pub const NATIVE_PROCESS_EFFECT_KIND: &str = "harness/native-process/v1";
 
+/// Exact portable MCP stdio exchange descriptor included in native process approval.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct McpStdioRequest {
+    /// Initialization identity, distinct from the admitted operation.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub initialization: OperationId,
+    /// Exact admitted remote request identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub operation: OperationId,
+    /// Discovery or tool call, explicitly selected by the host.
+    pub method: String,
+    /// Exact object parameters included in approval and durable identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonValue"))]
+    pub params: Value,
+    /// Positive cumulative byte allowance per input/output direction.
+    pub maximum_bytes: u32,
+}
+
 /// Exact approved executable invocation. Host credentials are not request fields.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -244,7 +265,7 @@ pub struct NativeProcessRequest {
     pub maximum_result_bytes: u32,
     /// Optional exact MCP exchange; mutually exclusive with literal standard input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mcp_stdio: Option<crate::mcp::stdio::McpStdioRequest>,
+    pub mcp_stdio: Option<McpStdioRequest>,
     /// Exact literal bytes written to stdin, followed by EOF without terminating the process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standard_input: Option<Vec<u8>>,
@@ -316,17 +337,6 @@ impl NativeProcessRequest {
         drop(encoded);
         drop(guard);
         Ok(digest)
-    }
-
-    /// Decodes a pinned complete MCP process receipt, with no process or network I/O.
-    pub fn mcp_response(&self, result: &NativeProcessResult) -> Result<serde_json::Value> {
-        let exchange = self.mcp_stdio.as_ref().ok_or_else(|| {
-            crate::Error::Unsupported("native request has no MCP exchange".into())
-        })?;
-        if result.stop.is_some() {
-            return Err(crate::Error::Indeterminate(exchange.operation));
-        }
-        exchange.decode_response(&result.stdout)
     }
 }
 
@@ -425,7 +435,7 @@ mod native_result_decode_tests {
             control_timeout_ms: 1,
             maximum_output_bytes: 1,
             maximum_result_bytes: 1,
-            mcp_stdio: Some(crate::mcp::stdio::McpStdioRequest {
+            mcp_stdio: Some(McpStdioRequest {
                 initialization: OperationId::from_bytes([1; 16]),
                 operation: OperationId::from_bytes([2; 16]),
                 method: "tools/call".into(),

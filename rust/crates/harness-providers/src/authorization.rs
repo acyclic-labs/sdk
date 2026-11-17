@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
-pub use acyclic_harness_core::http::{
+pub use acyclic_harness_http::{
     AuthorizationScheme, CredentialBinding, CredentialResolver, CredentialSource,
 };
 

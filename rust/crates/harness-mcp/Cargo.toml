@@ -1,0 +1,63 @@
+[package]
+include = ["clippy.toml", "Cargo.toml", "src/**", "tests/**"]
+name = "acyclic-harness-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP clients behind the acyclic-harness facade"
+documentation = "https://docs.rs/acyclic-harness-mcp"
+
+[features]
+test-support = ["acyclic-harness-core/test-support", "acyclic-auth/test-support", "acyclic-fs/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-harness-native-settings/test-support", "dep:tempfile"]
+wasm = ["acyclic-harness-core/wasm", "dep:tsify"]
+
+[dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-mcp = { version = "=0.2.0", path = "../mcp" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+base64 = "=0.23.1"
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+http.workspace = true
+pin-project-lite = "0.2.17"
+rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
+tokio-util = { workspace = true, features = ["codec"] }
+toml.workspace = true
+tsify = { workspace = true, optional = true }
+uuid.workspace = true
+wasm-bindgen.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-harness-http = { version = "=0.2.0", path = "../harness-http" }
+acyclic-harness-native-settings = { version = "=0.2.0", path = "../harness-native-settings" }
+acyclic-harness-input-watch = { version = "=0.2.0", path = "../harness-input-watch" }
+acyclic-mcp = { version = "=0.2.0", path = "../mcp", features = ["stdio"] }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+reqwest.workspace = true
+rmcp = { workspace = true, features = ["auth", "reqwest-tls-no-provider"] }
+rustls.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["net", "process", "signal", "io-std"] }
+tempfile = { version = "3.27.0", optional = true }
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+proptest.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util", "process", "net", "io-util"] }
+
+[lints]
+workspace = true

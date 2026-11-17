@@ -18,6 +18,9 @@ fn record_os_error(slot: &mut Option<i32>, name: &str, value: impl TryInto<i32>)
 mod capture_retirement;
 #[cfg(not(target_arch = "wasm32"))]
 pub use capture_retirement::CaptureRetirement;
+#[cfg(feature = "test-support")]
+/// Shared tracing capture for span and field assertions.
+pub mod capture;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod durability;

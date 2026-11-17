@@ -1,0 +1,22 @@
+[package]
+include = ["clippy.toml", "Cargo.toml", "examples/**", "src/**"]
+name = "acyclic-harness-experiments"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Experiment planning and analysis behind the acyclic-harness facade"
+documentation = "https://docs.rs/acyclic-harness-experiments"
+
+[dependencies]
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+serde.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+
+[lints]
+workspace = true

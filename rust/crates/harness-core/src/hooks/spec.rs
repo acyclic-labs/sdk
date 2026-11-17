@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// choosing its site in [`HookEvent::site`] does not compile, and an event
 /// with a site runs wherever that site runs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum HookSite {
+pub enum HookSite {
     /// Model command preparation, before the first model request of a turn.
     Prompt,
     /// After a tool call is admitted and before it is dispatched.
@@ -24,7 +24,8 @@ pub(crate) enum HookSite {
 
 impl HookEvent {
     /// Every event, in declaration order.
-    pub(crate) const ALL: [Self; 7] = [
+    /// Every event, in declaration order.
+    pub const ALL: [Self; 7] = [
         Self::SessionStart,
         Self::UserPromptSubmit,
         Self::PreToolUse,
@@ -34,7 +35,8 @@ impl HookEvent {
         Self::StreamRecord,
     ];
 
-    pub(crate) const fn site(self) -> HookSite {
+    /// The site that fires this event.
+    pub const fn site(self) -> HookSite {
         match self {
             Self::SessionStart | Self::UserPromptSubmit => HookSite::Prompt,
             Self::PreToolUse => HookSite::BeforeTool,
@@ -46,14 +48,16 @@ impl HookEvent {
     }
 
     /// Events fired at `site`, in declaration order.
-    pub(crate) fn at(site: HookSite) -> impl Iterator<Item = Self> {
+    /// Events fired at `site`, in declaration order.
+    pub fn at(site: HookSite) -> impl Iterator<Item = Self> {
         Self::ALL
             .into_iter()
             .filter(move |event| event.site() == site)
     }
 
     /// The one event fired at a single-event site.
-    pub(crate) fn only(site: HookSite) -> Result<Self> {
+    /// The one event fired at a single-event site.
+    pub fn only(site: HookSite) -> Result<Self> {
         let mut events = Self::at(site);
         match (events.next(), events.next()) {
             (Some(event), None) => Ok(event),
@@ -207,7 +211,8 @@ impl HookSpec {
         }
     }
 
-    pub(super) fn validate(&self) -> Result<()> {
+    /// Validates the rule against the admitted hook contract.
+    pub fn validate(&self) -> Result<()> {
         let (command, arguments_valid) = match &self.run {
             HookRun::Executable { executable, argv } => (
                 executable,
