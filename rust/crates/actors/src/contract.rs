@@ -242,7 +242,7 @@ fn validate_subscription_control(
 pub fn validate_fork(request: &wire::ForkActorRequest) -> Result<(), ContractError> {
     let namespace = request.namespace.as_deref();
     if !valid_actor_scope(namespace, &request.actor_id)
-        || !valid_actor_scope(namespace, &request.child_actor_id)
+        || crate::addressing::validate_actor_id(request.child_actor_id.as_bytes()).is_err()
         || request.actor_id == request.child_actor_id
         || !valid_idempotency_key(&request.idempotency_key)
         || !request.subscriptions.iter().all(subscription)
