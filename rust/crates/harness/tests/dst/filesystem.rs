@@ -64,12 +64,14 @@ const RENDER_BYTES: u64 = 40_000;
 fn source(size: &str) -> String {
     let bytes = match size {
         "small" => 64,
-        "multi_chunk" => 1_024,
-        _ => 42_000,
+        "multi_chunk" => 40_000,
+        _ => acyclic_stream::MAX_RECORD_BYTES + 1,
     };
     let mut text = String::new();
-    for index in 0..2_000 {
+    let mut index = 0;
+    while text.len() < bytes {
         text.push_str(&format!("line {index:04} abcdefghij\n"));
+        index += 1;
     }
     text.truncate(bytes);
     text
@@ -138,7 +140,23 @@ fn text(value: &Value) -> std::result::Result<&str, String> {
         .ok_or_else(|| format!("read returned no text: {value}"))
 }
 
-fn check_page(label: &str, value: &Value) -> std::result::Result<(), String> {
+#[derive(Clone, Copy)]
+struct Page {
+    start: u64,
+    end: u64,
+    eof: bool,
+    next: Option<u64>,
+}
+
+/// Check one page against the source bytes and, when the request fixes it, the
+/// exact interval. A page that disagrees with the source is a failure even if
+/// its own fields are internally consistent.
+fn read_page(
+    label: &str,
+    value: &Value,
+    source: &str,
+    expected: Option<(u64, u64)>,
+) -> std::result::Result<Page, String> {
     let page = page(value)?;
     let start = page
         .get("start")
@@ -150,23 +168,58 @@ fn check_page(label: &str, value: &Value) -> std::result::Result<(), String> {
         .and_then(Value::as_u64)
         .ok_or("page total")?;
     let eof = page.get("eof").and_then(Value::as_bool).ok_or("page eof")?;
-    let next = page.get("next");
+    let next = page.get("next").and_then(Value::as_u64);
+    let source_len = source.len() as u64;
+    if total != source_len {
+        return Err(format!("{label}: total {total} != source {source_len}"));
+    }
     if start > end || end > total {
         return Err(format!("{label}: page interval {start}..{end} of {total}"));
     }
     if eof != (end == total) {
         return Err(format!("{label}: eof {eof} at {end} of {total}"));
     }
-    if next.is_some() == eof {
+    if eof != next.is_none() {
         return Err(format!("{label}: next {next:?} with eof {eof}"));
     }
+    if let Some((want_start, want_end)) = expected {
+        if (start, end) != (want_start, want_end) {
+            return Err(format!(
+                "{label}: page {start}..{end} != requested {want_start}..{want_end}"
+            ));
+        }
+    }
     let text = text(value)?;
+    let want = source
+        .get(
+            usize::try_from(start).unwrap_or(usize::MAX)
+                ..usize::try_from(end).unwrap_or(usize::MAX),
+        )
+        .ok_or_else(|| format!("{label}: page {start}..{end} outside the source"))?;
+    if text != want {
+        return Err(format!(
+            "{label}: text differs from source {start}..{end}: {text:?} != {want:?}"
+        ));
+    }
+    if !eof {
+        if end <= start {
+            return Err(format!("{label}: nonterminal page made no progress"));
+        }
+        if next != Some(end) {
+            return Err(format!("{label}: next {next:?} != end {end}"));
+        }
+    }
     if text.starts_with("{\"file\"") || text.contains("\"descriptor\"") {
         return Err(format!(
             "{label}: read text is a machine envelope: {text:.80}"
         ));
     }
-    Ok(())
+    Ok(Page {
+        start,
+        end,
+        eof,
+        next,
+    })
 }
 
 fn line_offsets(source: &str) -> Vec<u64> {
@@ -199,6 +252,43 @@ fn line_selection(position: &str, lines: usize) -> (u64, u64) {
     }
 }
 
+/// Follow the bare read's `next` cursor to EOF, checking every page against the
+/// source. The first request is the selector under test; continuations use the
+/// page cursor the model would use.
+async fn none_pages(
+    task: &Arc<acyclic_harness::runtime::TaskContext>,
+    path: &str,
+    source: &str,
+) -> std::result::Result<Vec<Page>, String> {
+    let total = source.len() as u64;
+    let first = execute(task, "read", json!({"path": path})).await?;
+    let first = read_page("none/start", &first, source, None)?;
+    if first.start != 0 {
+        return Err(format!("none/start: first page starts at {}", first.start));
+    }
+    let mut pages = vec![first];
+    let mut cursor = first.next;
+    while let Some(start) = cursor {
+        let value = execute(
+            task,
+            "read",
+            json!({"path": path, "range": {"start": start, "end": total}}),
+        )
+        .await?;
+        let page = read_page(&format!("none/{}", pages.len()), &value, source, None)?;
+        if page.start != start {
+            return Err(format!(
+                "none/{}: continuation starts at {} not {start}",
+                pages.len(),
+                page.start
+            ));
+        }
+        cursor = page.next;
+        pages.push(page);
+    }
+    Ok(pages)
+}
+
 fn read_world(seed: u64) -> std::result::Result<bool, String> {
     let size = size(seed);
     oracle::simulate(seed, move || {
@@ -207,10 +297,17 @@ fn read_world(seed: u64) -> std::result::Result<bool, String> {
                 .await
                 .map_err(oracle::failed)?;
             let source = source(size);
+            if size == "above_stream_frame" && source.len() <= acyclic_stream::MAX_RECORD_BYTES {
+                return Err(format!(
+                    "{size}: source {} does not exceed the stream frame {}",
+                    source.len(),
+                    acyclic_stream::MAX_RECORD_BYTES
+                ));
+            }
             storage
                 .stage(
                     OperationId::new(),
-                    "ui/source.txt",
+                    "ui/turns/source.txt",
                     source.as_bytes(),
                     "text/plain",
                     "source.txt",
@@ -220,37 +317,107 @@ fn read_world(seed: u64) -> std::result::Result<bool, String> {
             let task = task(&storage, RENDER_BYTES).await?;
             let total = source.len() as u64;
             let lines = line_offsets(&source);
-            let path = "volume:///private/ui/source.txt";
+            let path = "volume:///private/ui/turns/source.txt";
             for selector in SELECTORS {
                 for position in POSITIONS {
                     let label = format!("{size}/{selector}/{position}");
-                    let arguments = match selector {
+                    match selector {
                         "byte_range" => {
                             let (start, end) = byte_range(position, total);
-                            json!({"path": path, "range": {"start": start, "end": end}})
+                            let value = execute(
+                                &task,
+                                "read",
+                                json!({"path": path, "range": {"start": start, "end": end}}),
+                            )
+                            .await?;
+                            read_page(
+                                &label,
+                                &value,
+                                &source,
+                                Some((start.min(total), end.min(total))),
+                            )?;
                         }
                         "line_selection" => {
                             let (offset, limit) = line_selection(position, lines.len());
-                            json!({"path": path, "selection": {"kind": "lines", "offset": offset, "limit": limit}})
+                            let want_start = lines
+                                .get(usize::try_from(offset).unwrap_or(usize::MAX))
+                                .copied();
+                            let want_end = lines
+                                .get(usize::try_from(offset + limit).unwrap_or(usize::MAX))
+                                .copied();
+                            let value = execute(
+                                &task,
+                                "read",
+                                json!({"path": path, "selection": {"kind": "lines", "offset": offset, "limit": limit}}),
+                            )
+                            .await?;
+                            read_page(
+                                &label,
+                                &value,
+                                &source,
+                                Some((want_start.unwrap_or(total), want_end.unwrap_or(total))),
+                            )?;
                         }
-                        _ => json!({"path": path}),
-                    };
-                    let value = execute(&task, "read", arguments).await?;
-                    check_page(&label, &value)?;
-                    if selector == "byte_range" && position == "past_eof" {
-                        if !text(&value)?.is_empty() {
-                            return Err(format!("{label}: past-EOF byte range returned text"));
-                        }
-                    }
-                    if selector == "line_selection" && position == "past_eof" {
-                        if !text(&value)?.is_empty() {
-                            return Err(format!("{label}: past-EOF line selection returned text"));
-                        }
-                    }
-                    if selector == "none" && size == "above_stream_frame" && position == "start" {
-                        let page = page(&value)?;
-                        if page.get("next").is_none() {
-                            return Err(format!("{label}: a large source did not page"));
+                        _ => {
+                            let pages = none_pages(&task, path, &source).await?;
+                            let last = pages.last().ok_or_else(|| format!("{label}: no pages"))?;
+                            match position {
+                                "start" => {
+                                    if pages[0].start != 0 {
+                                        return Err(format!(
+                                            "{label}: first page starts at {}",
+                                            pages[0].start
+                                        ));
+                                    }
+                                    if size != "small" && pages.len() < 2 {
+                                        return Err(format!(
+                                            "{label}: a {size} source did not need a continuation page"
+                                        ));
+                                    }
+                                }
+                                "middle" => {
+                                    let middle = total / 2;
+                                    if !pages
+                                        .iter()
+                                        .any(|page| page.start <= middle && middle < page.end)
+                                    {
+                                        return Err(format!(
+                                            "{label}: no page covers the middle byte {middle}"
+                                        ));
+                                    }
+                                }
+                                "at_eof" => {
+                                    if !last.eof || last.end != total {
+                                        return Err(format!(
+                                            "{label}: last page {}..{} eof {} is not EOF",
+                                            last.start, last.end, last.eof
+                                        ));
+                                    }
+                                }
+                                "spanning_eof" => {
+                                    if !(last.start < last.end && last.end == total) {
+                                        return Err(format!(
+                                            "{label}: last page {}..{} does not span EOF",
+                                            last.start, last.end
+                                        ));
+                                    }
+                                }
+                                _ => {
+                                    let value = execute(
+                                        &task,
+                                        "read",
+                                        json!({"path": path, "range": {"start": total, "end": total + 1}}),
+                                    )
+                                    .await?;
+                                    let page =
+                                        read_page(&label, &value, &source, Some((total, total)))?;
+                                    if !page.eof || !text(&value)?.is_empty() {
+                                        return Err(format!(
+                                            "{label}: past-EOF continuation is not terminal"
+                                        ));
+                                    }
+                                }
+                            }
                         }
                     }
                 }

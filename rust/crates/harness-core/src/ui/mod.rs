@@ -28,15 +28,7 @@ pub(crate) fn is_view_path(path: &str) -> bool {
         return false;
     };
     let path = path.strip_prefix('/').unwrap_or(path);
-    if path.is_empty() {
-        return true;
-    }
-    let mut segments = path.split('/');
-    let root = segments.next().unwrap_or_default();
-    let remainder = segments.next();
-    project::ROOT_NODES
-        .iter()
-        .any(|(name, directory)| *name == root && (*directory || remainder.is_none()))
+    project::is_view_path(path)
 }
 
 /// Projection or untrusted document failure.
