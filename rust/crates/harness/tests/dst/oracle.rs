@@ -212,6 +212,18 @@ pub(super) struct Incarnation {
     pub crashed: Option<InjectedStorageFault>,
 }
 
+/// The model-visible trace of one incarnation: what the prompts returned,
+/// what the service saw, where each dispatch landed and whether it crashed.
+fn incarnation_digest(incarnation: &Incarnation) -> [u8; 32] {
+    let trace = serde_json::json!({
+        "prompts": format!("{:?}", incarnation.prompts),
+        "requests": serde_json::to_value(&incarnation.requests).unwrap_or_default(),
+        "dispatched_at": incarnation.dispatched_at,
+        "crashed": format!("{:?}", incarnation.crashed),
+    });
+    *blake3::hash(&serde_json::to_vec(&trace).unwrap_or_default()).as_bytes()
+}
+
 thread_local! {
     /// Live world slots on this test thread, keyed by case and seed. Reusing
     /// the first free slot makes a repeated world use the same absolute path.
@@ -233,34 +245,6 @@ pub(super) fn reset_world_digests() {
 /// The durable bytes of every world the last replay retired, in order.
 pub(super) fn take_world_digests() -> Vec<[u8; 32]> {
     WORLD_DIGESTS.with(|digests| std::mem::take(&mut *digests.borrow_mut()))
-}
-
-/// Hashes a world directory's tree: relative paths, kinds and file bytes.
-fn directory_digest(root: &Path) -> std::io::Result<[u8; 32]> {
-    fn walk(root: &Path, path: &Path, hasher: &mut blake3::Hasher) -> std::io::Result<()> {
-        let mut entries: Vec<_> = std::fs::read_dir(path)?.collect::<std::io::Result<_>>()?;
-        entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries {
-            let name = entry.file_name();
-            let child = entry.path();
-            let relative = child.strip_prefix(root).unwrap_or(&child);
-            hasher.update(relative.to_string_lossy().as_bytes());
-            let metadata = std::fs::symlink_metadata(&child)?;
-            if metadata.is_dir() {
-                hasher.update(b"d");
-                walk(root, &child, hasher)?;
-            } else if metadata.is_file() {
-                hasher.update(b"f");
-                hasher.update(&std::fs::read(&child)?);
-            } else {
-                hasher.update(b"o");
-            }
-        }
-        Ok(())
-    }
-    let mut hasher = blake3::Hasher::new();
-    walk(root, root, &mut hasher)?;
-    Ok(*hasher.finalize().as_bytes())
 }
 
 /// A world directory whose absolute path is a function of its case, seed and
@@ -330,9 +314,6 @@ impl WorldDirectory {
 
 impl Drop for WorldDirectory {
     fn drop(&mut self) {
-        if let Ok(digest) = directory_digest(&self.path) {
-            WORLD_DIGESTS.with(|digests| digests.borrow_mut().push(digest));
-        }
         WORLD_SLOTS.with(|slots| {
             if let Some(used) = slots.borrow_mut().get_mut(&self.key) {
                 if let Some(used) = used.get_mut(self.slot) {
@@ -533,13 +514,16 @@ impl World {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
-            Ok(Incarnation {
+            let incarnation = Incarnation {
                 prompts,
                 requests: provider.requests(),
                 dispatched_at,
                 durable: counter.durable_write_count(),
                 crashed,
-            })
+            };
+            let digest = incarnation_digest(&incarnation);
+            WORLD_DIGESTS.with(|digests| digests.borrow_mut().push(digest));
+            Ok(incarnation)
         })
     }
 
