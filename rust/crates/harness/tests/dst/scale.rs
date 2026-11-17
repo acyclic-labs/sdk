@@ -58,8 +58,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
         entry(async move {
             let provider = Arc::new(service(vec![plan()]));
             let executor = StockExecutor::new(
-                Model::new("fixture".into(), "scale".into(), "1".into())
-                    .map_err(oracle::failed)?,
+                Model::new("fixture".into(), "scale".into(), "1".into()).map_err(oracle::failed)?,
                 provider,
                 ContextPipeline::default(),
                 ToolRegistry::default(),
