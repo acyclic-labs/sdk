@@ -265,7 +265,7 @@ additional_controls = {
             b"selected workspace entries must retain their winning declaration",
         ),
         (
-            "rust/crates/harness-core/src/mcp/config.rs",
+            "rust/crates/harness-native-settings/src/mcp_config.rs",
             b"#[serde(default, deny_unknown_fields)]",
             b"#[serde(default)]",
             "unknown-server",
