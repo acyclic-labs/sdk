@@ -613,12 +613,8 @@ mod tests {
 
     /// A failed immediate drain is not a failed handback: the durable enqueue
     /// already owns the publication, and the parent's next command retries it.
-    #[test]
-    fn gc_wait_failed_immediate_handback_drain_keeps_the_durable_publication() -> Result<()> {
-        crate::local::tests::seeded(failed_immediate_handback_drain_world)
-    }
-
-    async fn failed_immediate_handback_drain_world() -> Result<()> {
+    #[tokio::test]
+    async fn gc_wait_failed_immediate_handback_drain_keeps_the_durable_publication() -> Result<()> {
         let (_directory, local) = fixture().await?;
         let workspace = local
             .workspace

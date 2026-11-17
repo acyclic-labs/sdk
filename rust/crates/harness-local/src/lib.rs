@@ -28,6 +28,12 @@ use acyclic_harness_core::*;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_harness_hosting as hosting;
 #[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness_input_watch as input_watch;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness_mcp as mcp;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness_native_settings as native_settings;
+#[cfg(not(target_arch = "wasm32"))]
 use acyclic_harness_search as search;
 
 #[cfg(not(target_arch = "wasm32"))]

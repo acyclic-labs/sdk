@@ -1,6 +1,5 @@
 //! Immutable component implementation identities.
 
-pub(crate) use crate::contract::validate_component_label;
 use serde::{Deserialize, Serialize};
 
 /// Immutable component implementation identity.

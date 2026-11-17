@@ -137,11 +137,10 @@ export function workspacePackages(root) {
 }
 
 function targetMatches(cfg, triple) {
-  const wasm = triple === 'wasm32-unknown-unknown';
   const platform = new Set([
-    wasm ? 'wasm' : triple.includes('windows') ? 'windows' : 'unix', `target_os=${JSON.stringify(wasm ? 'unknown' : triple.includes('windows') ? 'windows' : triple.includes('darwin') ? 'macos' : 'linux')}`,
-    `target_arch=${JSON.stringify(wasm ? 'wasm32' : triple.startsWith('aarch64') ? 'aarch64' : 'x86_64')}`, `target_pointer_width="${wasm ? '32' : '64'}"`, 'target_endian="little"',
-    `target_env=${JSON.stringify(wasm ? '' : triple.includes('msvc') ? 'msvc' : triple.includes('darwin') ? '' : 'gnu')}`, `target_family=${JSON.stringify(wasm ? 'wasm' : triple.includes('windows') ? 'windows' : 'unix')}`,
+    triple.includes('windows') ? 'windows' : 'unix', `target_os=${JSON.stringify(triple.includes('windows') ? 'windows' : triple.includes('darwin') ? 'macos' : 'linux')}`,
+    `target_arch=${JSON.stringify(triple.startsWith('aarch64') ? 'aarch64' : 'x86_64')}`, 'target_pointer_width="64"', 'target_endian="little"',
+    `target_env=${JSON.stringify(triple.includes('msvc') ? 'msvc' : triple.includes('darwin') ? '' : 'gnu')}`, `target_family=${JSON.stringify(triple.includes('windows') ? 'windows' : 'unix')}`,
     `target_vendor=${JSON.stringify(triple.includes('darwin') ? 'apple' : triple.includes('windows') ? 'pc' : 'unknown')}`,
   ]);
   const matches = cfg => {
@@ -232,104 +231,6 @@ export function assertRegistryPinsCurrent(root) {
     for (const feature of p.features) if (!features.has(feature))
       throw Error(`STEP_FAILED bazel-build-files: ${p.name} ${p.version} feature ${feature} missing from Bazel lock; repin: ${recovery}`);
   }
-}
-
-// Browser builds start from the published packages, rather than the native
-// all-workspace, all-features test graph. Registry edges and resolved features
-// come from the browser crate-universe lock; local features come from manifests.
-export function workspaceBrowserGraph(root, selections) {
-  root = path.resolve(root);
-  const triple = 'wasm32-unknown-unknown';
-  const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
-  const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-wasm-bazel-lock.json'), 'utf8'));
-  const registry = (lock.package ?? []).filter(p => p.source).map(p => {
-    const pinned = universe.crates[`${p.name} ${p.version}`];
-    const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
-    const target = lib?.Library ?? lib?.ProcMacro;
-    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
-      features: Object.fromEntries(selectedEntries(pinned?.common_attrs?.crate_features, universe, triple).map(f => [f, []])),
-      targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
-  });
-  const packages = [...local, ...registry], byId = new Map(packages.map(p => [p.id, p]));
-  const byPath = new Map(local.map(p => [path.dirname(p.manifest_path), p]));
-  const enabled = new Map(local.map(p => [p.id, new Set()]));
-  const reachable = new Set();
-  const registryInputs = new Map();
-  for (const args of selections) {
-    const name = args[args.indexOf('-p') + 1], matches = local.filter(p => p.name === name);
-    if (matches.length !== 1) throw Error(`browser package ${name}: expected one workspace package`);
-    const pkg = matches[0], features = enabled.get(pkg.id);
-    reachable.add(pkg.id);
-    if (!args.includes('--no-default-features') && Object.hasOwn(pkg.features, 'default')) features.add('default');
-    if (args.includes('--features')) for (const feature of args[args.indexOf('--features') + 1].split(',')) features.add(feature);
-  }
-  const localDependency = (pkg, d) => {
-    if (d.resolved_path) return byPath.get(d.resolved_path);
-    const locked = lock.package.find(p => p.name === pkg.name && p.version === pkg.version && !p.source);
-    if (!locked) throw Error(`Cargo.lock lacks local package ${pkg.name}@${pkg.version}`);
-    const candidates = registry.filter(p => p.name === d.name && versionMatches(p.version, d.req) &&
-      (locked.dependencies ?? []).some(key => key === p.name || key === `${p.name} ${p.version}` || key.startsWith(`${p.name} ${p.version} (`)));
-    if (candidates.length !== 1) throw Error(`${pkg.name}: ambiguous or missing locked dependency ${d.name}`);
-    return candidates[0];
-  };
-  const nodes = new Map();
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const add = (set, value) => {if (!set.has(value)) {set.add(value); changed = true;}};
-    for (const pkg of packages.filter(p => reachable.has(p.id))) {
-      const deps = new Map();
-      const addEdge = (name, dep, kind, target = null) => {
-        if (!dep) throw Error(`${pkg.name}: missing dependency ${name}`);
-        const key = `${name}:${dep.id}`;
-        if (!deps.has(key)) deps.set(key, {name, pkg:dep.id, dep_kinds:[]});
-        deps.get(key).dep_kinds.push({kind, target});
-      };
-      if (pkg.source) {
-        const pinned = universe.crates[`${pkg.name} ${pkg.version}`];
-        if (!pinned) throw Error(`browser Bazel lock lacks ${pkg.name}@${pkg.version}`);
-        for (const [attrs, kind] of [[pinned.common_attrs, null], [pinned.build_script_attrs, 'build']])
-          for (const entry of [...selectedEntries(attrs?.deps, universe, triple), ...selectedEntries(attrs?.proc_macro_deps, universe, triple)]) {
-            const matches = packages.filter(p => `${p.name} ${p.version}` === entry.id);
-            if (matches.length !== 1) throw Error(`${pkg.name}: missing or ambiguous browser lock edge ${entry.id}`);
-            const dep = matches[0];
-            addEdge(entry.alias ?? entry.target, dep, kind);
-            if (kind === null) add(reachable, dep.id);
-          }
-      } else {
-        const features = enabled.get(pkg.id);
-        for (const feature of features) for (const next of pkg.features[feature] ?? []) add(features, next);
-        for (const d of pkg.dependencies) {
-          const alias = d.rename ?? d.name;
-          if (d.kind === 'dev' || !targetMatches(d.target, triple) ||
-              (d.optional && !features.has(`dep:${alias}`) && ![...features].some(f => f.startsWith(`${alias}/`)))) continue;
-          const dep = localDependency(pkg, d);
-          addEdge(alias.replaceAll('-', '_'), dep, d.kind, d.target);
-          if (d.kind !== null) continue;
-          add(reachable, dep.id);
-          const requestedFeatures = [...d.features];
-          for (const feature of features) {
-            const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
-            if (match?.[1] === alias) requestedFeatures.push(match[2]);
-          }
-          if (dep.source) {
-            const input = registryInputs.get(dep.id) ?? {features:new Set(), defaultFeatures:false};
-            for (const feature of requestedFeatures) input.features.add(feature);
-            input.defaultFeatures ||= d.uses_default_features;
-            registryInputs.set(dep.id, input);
-          } else {
-            const requested = enabled.get(dep.id);
-            for (const feature of requestedFeatures) add(requested, feature);
-            if (d.uses_default_features && Object.hasOwn(dep.features, 'default')) add(requested, 'default');
-          }
-        }
-      }
-      nodes.set(pkg.id, {id:pkg.id, deps:[...deps.values()], features:pkg.source ? Object.keys(pkg.features).sort() :
-        Object.keys(pkg.features).filter(feature => enabled.get(pkg.id).has(feature)).sort()});
-    }
-  }
-  return {packages:[...byId.values()].filter(p => !p.source || reachable.has(p.id)), workspace_members:local.filter(p => p.workspace_member).map(p => p.id),
-    workspace_root:root, registry_inputs:registryInputs, resolve:{nodes:[...nodes.values()]}};
 }
 
 export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {

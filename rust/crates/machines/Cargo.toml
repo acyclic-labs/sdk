@@ -31,6 +31,7 @@ test-support = [
     "acyclic-actors/test-support",
     "acyclic-auth/test-support",
     "acyclic-native-runtime/test-support",
+    "acyclic-observability/test-support",
     "acyclic-stream/test-support"]
 http-codec = ["dep:acyclic-protobuf-json", "dep:prost-reflect"]
 

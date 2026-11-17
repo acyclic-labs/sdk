@@ -4,8 +4,8 @@ use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use acyclic_harness_core::http::owned_bytes;
-pub use acyclic_harness_core::http::{HttpRequest, HttpResponse, HttpTransport};
+pub(crate) use acyclic_harness_http::owned_bytes;
+pub use acyclic_harness_http::{HttpRequest, HttpResponse, HttpTransport};
 pub(crate) mod bounded;
 pub(crate) mod phase;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -89,7 +89,7 @@ impl ReqwestTransport {
             .await
             .map_err(|error| reqwest_failure(native, &error))?;
         let status = response.status().as_u16();
-        let retry_after = acyclic_harness_core::http::response_retry_after(
+        let retry_after = acyclic_harness_http::response_retry_after(
             response
                 .headers()
                 .iter()
@@ -136,7 +136,7 @@ impl ReqwestTransport {
 #[cfg(not(target_arch = "wasm32"))]
 fn reqwest_failure(native: bool, error: &reqwest::Error) -> acyclic_harness_core::Error {
     use acyclic_harness_core::ModelTransportFailure;
-    let (code, root) = acyclic_harness_core::http::transport_failure(error);
+    let (code, root) = acyclic_harness_http::transport_failure(error);
     let failure = if error.is_timeout() {
         ModelTransportFailure::Timeout
     } else if code == acyclic_harness_core::wire::ErrorCode::Unauthorized {

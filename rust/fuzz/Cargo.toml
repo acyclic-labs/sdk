@@ -25,7 +25,7 @@ grpc-codegen = ["dep:acyclic-grpc-observability", "dep:prettyplease", "dep:syn"]
 default = ["native"]
 agent = ["dep:acyclic-harness-core"]
 client-files = ["agent", "dep:acyclic-harness-client", "dep:serde_json"]
-experiments = ["agent", "dep:serde_json"]
+experiments = ["agent", "dep:serde_json", "dep:acyclic-harness-experiments"]
 observation = ["dep:acyclic-observability", "dep:serde_json"]
 native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json", "owner-record"]
 owner-record = ["dep:acyclic-native-runtime", "dep:serde_json"]
@@ -43,6 +43,7 @@ acyclic-observability = { path = "../crates/observability", features = ["researc
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
 acyclic-harness-client = { path = "../crates/harness-client", default-features = false, optional = true }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, optional = true }
+acyclic-harness-experiments = { path = "../crates/harness-experiments", default-features = false, optional = true }
 acyclic-harness = { path = "../crates/harness", default-features = false, optional = true }
 libfuzzer-sys = "0.4"
 prost = { workspace = true, optional = true }

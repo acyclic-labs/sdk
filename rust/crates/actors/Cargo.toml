@@ -23,6 +23,7 @@ test-support = [
     "acyclic-grpc-observability/test-support",
     "acyclic-native-runtime/test-support",
     "acyclic-objects/test-support",
+    "acyclic-observability/test-support",
     "acyclic-stream/test-support"]
 
 [dependencies]

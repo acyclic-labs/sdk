@@ -1,7 +1,7 @@
 //! Check workspace key equivalence through the production platform matchers.
 #![no_main]
 
-#[path = "../../../harness-core/src/native_settings/workspace.rs"]
+#[path = "../../../harness-native-settings/src/workspace.rs"]
 mod workspace;
 
 use libfuzzer_sys::fuzz_target;

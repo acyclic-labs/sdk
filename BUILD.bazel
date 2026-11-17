@@ -54,14 +54,6 @@ platform(
         "@platforms//cpu:aarch64",
     ],
 )
-platform(
-    name = "wasm32",
-    constraint_values = [
-        "@platforms//os:none",
-        "@platforms//cpu:wasm32",
-    ],
-    visibility = ["//visibility:public"],
-)
 
 config_setting(
     name = "linux-musl",
@@ -132,14 +124,22 @@ filegroup(
         "//rust/crates/harness-conformance:Cargo.toml",
         "//rust/crates/harness-control:Cargo.toml",
         "//rust/crates/harness-core:Cargo.toml",
+        "//rust/crates/harness-devices:Cargo.toml",
+        "//rust/crates/harness-experiments:Cargo.toml",
         "//rust/crates/harness-fuzz:Cargo.toml",
         "//rust/crates/harness-hosting:Cargo.toml",
+        "//rust/crates/harness-http:Cargo.toml",
+        "//rust/crates/harness-input-watch:Cargo.toml",
         "//rust/crates/harness-json:Cargo.toml",
         "//rust/crates/harness-layout:Cargo.toml",
         "//rust/crates/harness-local:Cargo.toml",
+        "//rust/crates/harness-mcp:Cargo.toml",
         "//rust/crates/harness-metrics:Cargo.toml",
         "//rust/crates/harness-mock-model:Cargo.toml",
         "//rust/crates/harness-modules:Cargo.toml",
+        "//rust/crates/harness-native-settings:Cargo.toml",
+        "//rust/crates/harness-objects:Cargo.toml",
+        "//rust/crates/harness-oidc:Cargo.toml",
         "//rust/crates/harness-providers:Cargo.toml",
         "//rust/crates/harness-providers/fuzz:Cargo.toml",
         "//rust/crates/harness-search:Cargo.toml",

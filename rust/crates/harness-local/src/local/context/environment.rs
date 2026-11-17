@@ -59,12 +59,8 @@ pub(super) fn gather(
 mod tests {
     use super::*;
 
-    #[test]
-    fn volume_environment_discovers_tools_from_its_admitted_directory() -> crate::Result<()> {
-        crate::local::tests::seeded(volume_environment_world)
-    }
-
-    async fn volume_environment_world() -> crate::Result<()> {
+    #[tokio::test]
+    async fn volume_environment_discovers_tools_from_its_admitted_directory() -> crate::Result<()> {
         let directory =
             tempfile::tempdir().map_err(|error| crate::Error::Storage(error.to_string()))?;
         let provider = std::sync::Arc::new(

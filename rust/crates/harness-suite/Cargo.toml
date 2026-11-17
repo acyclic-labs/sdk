@@ -16,6 +16,7 @@ acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = fa
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
+acyclic-harness-oidc = { version = "=0.2.0", path = "../harness-oidc" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "conformance", "test-support"] }
 async-trait.workspace = true

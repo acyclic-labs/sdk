@@ -58,7 +58,7 @@ async function fixture(body) {
   append('\n');
  };
  const tag = name => append(`reset refs/tags/${name}\nfrom :${mark}\n\n`);
- const check = async ({runtime = process.execPath, args = ['--experimental-vm-modules'], extraEnv = {}} = {}) => {
+ const check = async ({runtime = 'node', args = ['--experimental-vm-modules'], extraEnv = {}} = {}) => {
   await git(['init', '-q', '--initial-branch=fixture', '--template=']);
   await git(['fast-import', '--quiet'], Buffer.concat([...history, Buffer.from('done\n')]));
   await git(['read-tree', 'HEAD']);
@@ -100,7 +100,7 @@ process.env.STATIC_CI_TEST_DEPTH = String(depth + 1);
 `;
   writeFileSync(join(root, 'scripts/static-ci.mjs'), audit + fence + old);
   commit('captured original checker with test-only depth fence');
-  const negative = await check({runtime: process.env.BUN_BINARY ?? 'bun', args: [], extraEnv: {...extraEnv, STATIC_CI_TEST_DEPTH: '0'}});
+  const negative = await check({runtime: 'bun', args: [], extraEnv: {...extraEnv, STATIC_CI_TEST_DEPTH: '0'}});
   assert.notEqual(negative.status, 0);
   assert.match(negative.stderr, /BOUNDED_OLD_RECURSION/);
   assert.equal(new Set(processes()).size, 3, 'old checker launches at depths zero, one and the bounded fence');
@@ -109,7 +109,7 @@ process.env.STATIC_CI_TEST_DEPTH = String(depth + 1);
   writeFileSync(join(root, 'scripts/static-ci.mjs'), audit + current);
   // Existing fixture Git history remains valid; the corrected parser must
   // refuse before consulting Git or executing a checked file.
-  const refused = await check({runtime: process.env.BUN_BINARY ?? 'bun', args: [], extraEnv});
+  const refused = await check({runtime: 'bun', args: [], extraEnv});
   assert.notEqual(refused.status, 0);
   assert.match(refused.stderr, /step=javascript-syntax.*recovery command: node --experimental-vm-modules scripts\/static-ci.mjs/);
   assert.doesNotMatch(refused.stderr, /BOUNDED_OLD_RECURSION/);

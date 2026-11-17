@@ -197,16 +197,24 @@ fn every_stream_category_survives_the_authority_wrapper() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn every_objects_service_category_survives_logical_and_native_wrappers()
--> Result<(), Box<dyn std::error::Error>> {
+fn every_objects_service_category_survives_logical_and_native_wrappers() {
     use acyclic_objects::wire::ErrorCode as E;
-    let pool = prost_reflect::DescriptorPool::decode(acyclic_objects::FILE_DESCRIPTOR_SET)?;
-    let codes = pool
-        .get_enum_by_name("acyclic.objects.v1.ErrorCode")
-        .ok_or("Objects error enum is absent from its descriptor")?;
-    for variant in codes.values() {
-        let error = E::try_from(variant.number())?;
-        let expected = Code::from_i32(acyclic_objects::Error::from(error).status_parts().code);
+    for (error, expected) in [
+        (E::Unspecified, Code::Internal),
+        (E::InvalidArgument, Code::InvalidArgument),
+        (E::NotFound, Code::NotFound),
+        (E::DigestMismatch, Code::InvalidArgument),
+        (E::MissingReference, Code::FailedPrecondition),
+        (E::Conflict, Code::FailedPrecondition),
+        (E::QuotaExceeded, Code::ResourceExhausted),
+        (E::Unsupported, Code::Unimplemented),
+        (E::Unavailable, Code::Unavailable),
+        (E::AccessDenied, Code::PermissionDenied),
+        (E::RangeNotSatisfiable, Code::OutOfRange),
+        (E::Corrupt, Code::DataLoss),
+        (E::Suspended, Code::Unavailable),
+        (E::OutcomeUnknown, Code::Unavailable),
+    ] {
         assert_eq!(
             status(&object(ObjectStoreError::LogicalObjects(error.into()))).code(),
             expected
@@ -220,7 +228,6 @@ fn every_objects_service_category_survives_logical_and_native_wrappers()
             expected
         );
     }
-    Ok(())
 }
 
 #[test]

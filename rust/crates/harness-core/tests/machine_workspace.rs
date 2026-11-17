@@ -204,9 +204,6 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
     Ok(())
 }
 
-#[path = "machine_workspace_device.rs"]
-mod device_runner;
-
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn copied_workspace_round_trips_binary_edits_deletions_and_original_turn()

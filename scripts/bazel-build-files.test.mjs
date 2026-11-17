@@ -12,6 +12,7 @@ function fixture({ module = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "bazel-build-files-"));
   mkdirSync(join(root, "scripts"));
   writeFileSync(join(root, "scripts/bazel-build-files.mjs"), readFileSync("scripts/bazel-build-files.mjs"));
+  writeFileSync(join(root, "scripts/dev-dependency-cycles.mjs"), readFileSync("scripts/dev-dependency-cycles.mjs"));
   writeFileSync(join(root, "scripts/bazel-executables.mjs"), readFileSync("scripts/bazel-executables.mjs"));
   writeFileSync(join(root, "scripts/check-bazel-lockfile.mjs"), readFileSync("scripts/check-bazel-lockfile.mjs"));
   writeFileSync(join(root, "scripts/policy-core.mjs"), readFileSync("scripts/policy-core.mjs"));

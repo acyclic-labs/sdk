@@ -430,7 +430,8 @@ pub(crate) fn clone_model(model: &Model, io: Option<&PreparationIo>) -> Result<M
         revision: crate::executor::stock_string_copy(&model.revision, io)?,
     })
 }
-pub(crate) fn clone_tool_definition(
+/// Clones one tool definition under the supplied IO boundary.
+pub fn clone_tool_definition(
     tool: &crate::tool::ToolDefinition,
     io: Option<&PreparationIo>,
 ) -> Result<crate::tool::ToolDefinition> {

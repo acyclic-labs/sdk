@@ -132,7 +132,7 @@ pub(crate) fn events<'a>(
 }
 
 #[cfg(any(test, feature = "fuzzing"))]
-pub(crate) use acyclic_harness_core::http::retry_after_at;
+pub(crate) use acyclic_harness_http::retry_after_at;
 
 #[cfg(test)]
 mod tests {

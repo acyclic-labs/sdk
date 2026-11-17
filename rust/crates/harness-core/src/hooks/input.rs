@@ -60,7 +60,8 @@ impl<'a> HookInput<'a> {
 
     /// Its host's stdin envelope. `rewritten` replaces the tool input a
     /// rewrite earlier in the before-tool chain changed.
-    pub(super) fn encode(
+    /// Its host's stdin envelope.
+    pub fn encode(
         self,
         event: HookEvent,
         cwd: &Path,

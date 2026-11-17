@@ -6,7 +6,7 @@ import { repositoryRoot as root } from "./policy-core.mjs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { runCommand } from "./run-command.mjs";
-import { wasmPackages, wasmSelection } from "./wasm-packages.mjs";
+import { wasmPackages, wasmSelection } from "./build-wasm.mjs";
 
 const cargo = process.env.ACYCLIC_CARGO_BIN || "cargo";
 const target = "wasm32-unknown-unknown";

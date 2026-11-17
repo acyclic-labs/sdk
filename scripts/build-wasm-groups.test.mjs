@@ -4,7 +4,7 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { assertByteSnapshotBoundary as check, checkByteSnapshotBoundary } from "./wasm-source-policy.mjs";
 import { packageClosure, workspaceManifests } from "./package-closure.mjs";
-import { wasmPackages } from "./wasm-packages.mjs";
+import { wasmPackages } from "./build-wasm.mjs";
 
 const source = readFileSync("scripts/build-wasm-groups.mjs", "utf8").replace(/^import .*;\r?\n/, "");
 const build = readFileSync("scripts/build-wasm.mjs", "utf8");

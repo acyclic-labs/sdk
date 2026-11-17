@@ -30,7 +30,7 @@ name = "graphcoder"
 path = "src/graphcoder.rs"
 
 [features]
-test-support = ["acyclic-fs/test-support", "acyclic-harness/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
+test-support = ["acyclic-fs/test-support", "acyclic-harness/test-support", "acyclic-native-runtime/test-support", "acyclic-observability/test-support", "acyclic-stream/test-support"]
 
 [dependencies]
 acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.2.0", default-features = false }

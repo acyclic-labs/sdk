@@ -77,9 +77,7 @@ async function rustCrates(root, inputs, { label, roots: rootNames }) {
     const directory = pending.pop();
     if (seen.has(directory)) continue;
     seen.add(directory);
-    const pkg = local.get(directory);
-    if (!pkg) throw new Error(`STEP_FAILED generation-inputs: ${directory} is not a workspace member`);
-    for (const dep of pkg.dependencies) {
+    for (const dep of local.get(directory).dependencies) {
       if (rootDirs.includes(directory) || dep.kind !== "dev") pending.push(dep.directory);
     }
   }
@@ -104,6 +102,10 @@ export async function generationInputs(root, action = generation) {
   return [...(await inputDigests(root, action)).keys()].sort();
 }
 
+/** The key of one action over the toolchain and its input files. Generation and each WASM build are actions of this one
+ * mechanism: an action names its root crates (its Rust inputs are their workspace closure), any further input paths, and
+ * any further parts that select its outputs.
+ * @param {string} root @param {{label: string, roots: () => Promise<string[]>, paths?: string[], parts?: string[]}} [action] */
 // Every environment setting that selects a compiler or changes what it emits: the compiler Cargo runs, its flags, Cargo's
 // profile, build and per-target configuration. Directories (CARGO_TARGET_DIR, CARGO_BUILD_TARGET_DIR) place outputs that
 // are remapped away, parallelism (CARGO_BUILD_JOBS) only schedules work, and a linker or runner never runs for a
@@ -111,8 +113,6 @@ export async function generationInputs(root, action = generation) {
 const buildSetting = name => /^(?:ACYCLIC_CARGO_BIN|RUSTC|RUSTFLAGS|RUSTC_BOOTSTRAP|CARGO_ENCODED_RUSTFLAGS|CARGO_PROFILE_\w+|CARGO_BUILD_\w+|CARGO_TARGET_\w+)$/.test(name)
   && !name.endsWith("_DIR") && name !== "CARGO_BUILD_JOBS" && !/^CARGO_TARGET_\w+_(?:LINKER|RUNNER)$/.test(name);
 
-/** The key of one action over the toolchain and its input files. Generation and each WASM build share this mechanism.
- * @param {string} root @param {{label: string, roots: (root:string) => Promise<string[]>, paths?: string[], parts?: string[]}} [action] */
 export async function generationKey(root, action = generation) {
   const tools = [`sdk-generation-v1\0${process.version}\0${process.platform}-${process.arch}`,
     execFileSync(process.env.RUSTC || "rustc", ["-vV"], { cwd: root, encoding: "utf8" }),

@@ -1,7 +1,9 @@
 //! Local real-issuer qualification; no production account or credential discovery.
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
-use acyclic_harness_core::oidc;
-use acyclic_stream::{BoxProviderFuture, LocalStream, LocalStreamLimits, UnixMillisClock as _};
+use acyclic_harness::oidc;
+use acyclic_stream::{
+    BoxProviderFuture, LocalStream, LocalStreamLimits, StreamProvider, UnixMillisClock as _,
+};
 use std::{path::PathBuf, sync::Arc};
 
 struct Local;

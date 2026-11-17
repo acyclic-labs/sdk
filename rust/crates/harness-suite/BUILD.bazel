@@ -39,6 +39,7 @@ rust_library(
         "//rust/crates/harness-client:acyclic_harness_client",
         "//rust/crates/harness-core:acyclic_harness_core",
         "//rust/crates/harness-hosting:acyclic_harness_hosting",
+        "//rust/crates/harness-oidc:acyclic_harness_oidc",
         "//rust/crates/native-runtime:acyclic_native_runtime",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",

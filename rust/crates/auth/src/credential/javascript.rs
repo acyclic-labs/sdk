@@ -57,10 +57,7 @@ fn protected_text(value: &JsValue) -> Result<Zeroizing<String>, CredentialError>
     }
 }
 
-#[allow(
-    unsafe_code,
-    reason = "synchronous TextEncoder borrows fixed Wasm memory without reentry"
-)]
+#[allow(unsafe_code)] // Synchronous JavaScript FFI borrows this fixed backing.
 fn encode_protected(text: &JsString, bytes: &mut [u8]) -> Result<usize, CredentialError> {
     // SAFETY: the view is used only by the retained native TextEncoder method,
     // which cannot reenter Wasm or grow its memory. No Rust allocation, await or

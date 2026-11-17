@@ -5554,12 +5554,8 @@ async fn archive_reactivates_paused_roots_and_open_descendants_for_closing() -> 
 
 /// A file stop on a node closes exactly its subtree; the root's own stop must
 /// not leave an open child running after the stop is acknowledged.
-#[test]
-fn file_stop_closes_the_whole_subtree() -> Result<()> {
-    super::seeded(file_stop_closes_the_whole_subtree_world)
-}
-
-async fn file_stop_closes_the_whole_subtree_world() -> Result<()> {
+#[tokio::test]
+async fn file_stop_closes_the_whole_subtree() -> Result<()> {
     use crate::agent::{Delivered, InboxRecord, IntentId, Sender, SpawnOutcome, SpawnRequest};
     use crate::client_files::{ClientFileChange, FileRoot};
     use crate::supervision::Lifecycle;

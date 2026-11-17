@@ -1,10 +1,6 @@
 use super::cache as sync;
 use super::*;
 
-#[path = "../support/compiler.rs"]
-mod compiler;
-pub(super) use compiler::binary;
-
 thread_local! {
     static GIT: PathBuf = resolve_git();
     static COMPILER: sync::Arc<PathBuf> = sync::Arc::new(binary("CARGO"));
@@ -65,8 +61,13 @@ pub(super) fn git() -> PathBuf {
 
 pub(super) fn path() -> std::ffi::OsString {
     std::env::join_paths(
-        std::iter::once(git().parent().unwrap().to_owned())
-            .chain(std::env::split_paths(&compiler::path())),
+        [
+            cargo().parent().unwrap().to_owned(),
+            binary("rustup").parent().unwrap().to_owned(),
+            git().parent().unwrap().to_owned(),
+        ]
+        .into_iter()
+        .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap()
 }
@@ -99,7 +100,9 @@ pub(super) fn rustc() -> PathBuf {
 
 pub(super) fn configure(command: &mut Command) {
     // These controls inspect API/source identity and execute unoptimized code.
+    // Debug symbol files are unused fixtures; dev builds stay incremental.
     command
+        .env("CARGO_PROFILE_DEV_DEBUG", "0")
         // Private fixtures do not inherit this checkout's static-CRT flags.
         // Resolver/lock configuration is still discovered by the real Cargo.
         .env(
@@ -112,8 +115,19 @@ pub(super) fn configure(command: &mut Command) {
             } else {
                 ""
             },
+        )
+        .env("RUSTC", rustc())
+        .env(
+            "RUSTUP_HOME",
+            binary("rustup")
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("rustup"),
         );
-    compiler::configure(command);
     #[cfg(windows)]
     {
         command.env("TEMP", temp_dir()).env("TMP", temp_dir());
@@ -152,6 +166,24 @@ fn resolve_linker() -> (String, PathBuf) {
         ),
         linker.clone(),
     )
+}
+
+pub(super) fn binary(name: &str) -> PathBuf {
+    std::env::var_os(format!("CARGO_BIN_EXE_{name}"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+        })
+        // Declared executables may be runfiles aliases. Companion compiler data
+        // belongs to the executable''s actual repository, not its alias directory.
+        .canonicalize()
+        .unwrap()
 }
 
 struct Timing(std::time::Instant, String);

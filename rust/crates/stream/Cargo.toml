@@ -51,7 +51,7 @@ test = false
 [features]
 conformance = []
 model-checking = ["conformance", "dep:loom", "dep:tempfile"]
-test-support = ["conformance", "acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
+test-support = ["conformance", "acyclic-native-runtime/test-support", "acyclic-auth/test-support", "acyclic-observability/test-support"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
 # Admitted JavaScript byte ownership without a provider or transport.

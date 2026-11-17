@@ -15,29 +15,29 @@ function run(command, args, cwd = root) {
   if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} exited with ${result.status ?? "unknown"}`);
 }
 
-async function rustGenerate(output, routes, codegen) {
-  run(routes(), [output]);
-  await serviceGenerate("Actors", dirname(output), output, codegen);
-  writeChanged(join(dirname(output), "readonly.ts"), codegen(["readonly"]));
+async function rustGenerate(output) {
+  run(bazelExecutable(root, "//rust/crates/actors:actors-http-routes_example"), [output]);
+  await serviceGenerate("Actors", dirname(output), output);
+  writeChanged(join(dirname(output), "readonly.ts"), generate(["readonly"]));
 }
 
-export async function write(check = false, {routes = () => bazelExecutable(root, "//rust/crates/actors:actors-http-routes_example"), codegen = generate} = {}) {
+export async function write(check = false) {
   await generateFiles(packageGenerated, async output => {
-    await rustGenerate(join(output, "actors-service.ts"), routes, codegen);
+    await rustGenerate(join(output, "actors-service.ts"));
   }, ["semantic"], check);
 }
 
-export async function serviceGenerate(family, directory, output, codegen = generate) {
+export async function serviceGenerate(family, directory, output) {
   const lower = family.toLowerCase();
   const descriptor = join(directory, `${family}.service.bin`);
   const names = join(directory, `${family}.semantic-names.json`);
-  const generated = codegen(["service",
+  const generated = generate(["service",
     descriptor, names, `acyclic.${lower}.v1.${family}Service`, family,
     `../../generated/proto/${lower}/v1/${lower}_pb.js`, `./semantic/${lower}/index.js`, "../client.js"],
     { stdio: ["ignore", "pipe", "inherit"] });
   writeChanged(output, generated);
   const importer = family === "Actors" ? "../client.js" : "../binding.js";
-  const absence = codegen(["native-absence",
+  const absence = generate(["native-absence",
     "../generated/native/binding.cjs", importer, `@acyclic-labs/${lower}-`],
     { stdio: ["ignore", "pipe", "inherit"] });
   writeChanged(join(directory, "native-absence.ts"), absence);

@@ -4,7 +4,7 @@
     reason = "fixture failures abort the test directly"
 )]
 
-use acyclic_grpc_observability::tests::Capture;
+use acyclic_observability::capture::Capture;
 use acyclic_test_support::differential::oracle::{Observer, Oracle, Stop};
 use std::{
     future::Future,

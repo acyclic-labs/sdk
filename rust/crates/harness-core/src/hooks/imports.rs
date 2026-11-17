@@ -70,13 +70,15 @@ struct Group {
 }
 
 #[derive(Deserialize, crate::HeapLayout)]
-pub(crate) struct Document {
+pub struct Document {
     #[serde(default)]
-    pub(crate) hooks: BTreeMap<String, Value>,
+    /// Hook declarations keyed by event name.
+    pub hooks: BTreeMap<String, Value>,
 }
 
 impl Hooks {
-    pub(crate) fn add_document(&mut self, document: Document) -> Result<()> {
+    /// Adds one decoded hook document to this set.
+    pub fn add_document(&mut self, document: Document) -> Result<()> {
         let mut rules = Vec::new();
         for (name, groups) in document.hooks {
             let on = match name.as_str() {

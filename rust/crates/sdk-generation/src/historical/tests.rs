@@ -1,6 +1,3 @@
-#[path = "../../tests/support/compiler.rs"]
-mod compiler;
-
 // Controlled protocol bytes exercise the production reader; this is not a parser model.
 fn registry_owner_source_inner(
     repository: &Path,
@@ -754,7 +751,10 @@ impl Fixture {
     }
 }
 fn cargo() -> PathBuf {
-    compiler::binary("CARGO")
+    // The fixtures' debug information is never read; skipping it keeps a real Cargo build
+    // inside the per-case limit.
+    std::env::set_var("CARGO_PROFILE_DEV_DEBUG", "0");
+    PathBuf::from(acyclic_test_support::host_tool!("CARGO"))
 }
 #[test]
 fn dependency_archive_initial_import_uses_verified_registry_facts() {

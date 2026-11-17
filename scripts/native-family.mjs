@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { generate } from "./proto-codegen.mjs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,20 @@ export function generateNativeFamilies(packages = new Set(["actors", "stream"]),
     if (packages.has(family)) projectGenerated(resolve(sourceRoot, "compatibility/native-families", `${family}.json`),
       `${JSON.stringify(generateNativeFamily(family), null, 2)}\n`, check);
   }
+}
+
+function immutable(value) {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) immutable(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+/** Read the committed native provenance admission baseline; importing this module never runs Cargo. */
+export function nativeFamily(key) {
+  const value = JSON.parse(readFileSync(new URL(`../compatibility/native-families/${key}.json`, import.meta.url), "utf8"));
+  if (value.schema !== "acyclic.native-family.v1" || value.key !== key) throw new Error("Rust native family identity differs");
+  return immutable(value);
 }
 
 if (import.meta.main) {
