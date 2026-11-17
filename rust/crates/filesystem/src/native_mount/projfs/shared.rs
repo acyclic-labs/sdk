@@ -472,27 +472,31 @@ impl SharedProjFsView {
 
     /// Stops serving the view: once this returns, no callback and no
     /// projector pass reaches its runtime, and none holds a reference to it.
-    pub(super) fn quiesce(&mut self) {
+    pub(super) fn quiesce(&mut self) -> Result<(), NativeMountError> {
         if let (Some(id), Some(service)) = (self.service.take(), self.instance.service.as_ref()) {
             service.detach(id);
         }
-        if let Some((_, core)) = self
+        let retired = self
             .view
             .take()
-            .and_then(|mut view| view.retire_after(|| {}))
-        {
+            .map(|mut view| view.retire_after(|| {}))
+            .transpose()
+            .map_err(|error| NativeMountError::Driver(error.into()))?
+            .flatten();
+        if let Some((_, core)) = retired {
             self.vacated.extend(
                 core.vacated
                     .into_inner()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
         }
+        Ok(())
     }
 
     /// Retires the view and, unless `preserve`, clears its tombstones and
     /// deletes its directory. The caller has dropped the view's runtime.
     pub(super) fn finish(&mut self, preserve: bool) -> Result<(), NativeMountError> {
-        self.quiesce();
+        self.quiesce()?;
         if self.finished || preserve {
             self.finished = true;
             return Ok(());
@@ -533,7 +537,9 @@ impl SharedProjFsView {
 
 impl Drop for SharedProjFsView {
     fn drop(&mut self) {
-        self.quiesce();
+        if let Err(error) = self.quiesce() {
+            tracing::error!(%error, "shared view retirement failed during drop");
+        }
         if !self.finished {
             // Only a view whose start failed gets here: its directory
             // holds nothing yet.

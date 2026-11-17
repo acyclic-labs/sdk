@@ -206,7 +206,11 @@ impl ViewRouting {
 impl SharedView {
     /// Unlist before draining callbacks, then forget only this view's handles.
     pub(super) fn retire(&mut self) {
-        if let Some((_, context)) = self.entry.retire_after(|| {}) {
+        let retired = self.entry.retire_after(|| {});
+        if let Err(error) = &retired {
+            tracing::error!(error, "shared view retirement failed");
+        }
+        if let Ok(Some((_, context))) = retired {
             self.views.changed.fetch_add(1, Ordering::Release);
             let files = context.files.read().unwrap_or_else(PoisonError::into_inner);
             let mut handles = self

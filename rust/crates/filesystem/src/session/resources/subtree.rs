@@ -111,17 +111,20 @@ mod tests {
                     }),
                 });
             }
-            block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
-                grants: vec![Grant {
-                    kind: GrantKind::Resource(ResourceGrant {
-                        resource: ResourcePattern {
-                            name: resource.to_owned(),
-                            prefix: true,
-                        },
-                        actions: vec!["fs/list".into()],
-                    }),
-                }],
-            };
+            assert!(block.certificates.is_some(), "root certificate is present");
+            if let Some(certificates) = block.certificates.as_mut() {
+                certificates.keys[0].key.grants = GrantSet {
+                    grants: vec![Grant {
+                        kind: GrantKind::Resource(ResourceGrant {
+                            resource: ResourcePattern {
+                                name: resource.to_owned(),
+                                prefix: true,
+                            },
+                            actions: vec!["fs/list".into()],
+                        }),
+                    }],
+                };
+            }
         })
     }
 

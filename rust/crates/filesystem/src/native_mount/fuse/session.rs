@@ -62,7 +62,7 @@ impl FuseSessionState {
             // last view of an instance unmounts it.
             started(WriteOperations.delta(1))?;
             let mut view = self.shared.take().ok_or(NativeMountError::ControlPending)?;
-            view.retire();
+            view.retire()?;
             drop(view);
         }
         if self.mount.needs_unmount() {

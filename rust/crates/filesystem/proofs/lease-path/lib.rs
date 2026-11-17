@@ -24,7 +24,7 @@ pub fn check_formatter_input(data: &[u8; 41]) {
     );
     let mut text = [data[40]; encoding::MAX_ENCODED_BYTES];
     let length = encoding::length(expiry);
-    encoding::write(workspace, lease, expiry, length, &mut text);
+    assert!(encoding::write(workspace, lease, expiry, length, &mut text).is_ok());
     assert_eq!(length, expected.len());
     assert_eq!(&text[..length], expected.as_bytes());
     assert!(text[length..].iter().all(|&byte| byte == data[40]));
@@ -48,7 +48,7 @@ mod proofs {
     fn every_identity_has_canonical_hex_bytes() {
         let identity: [u8; 16] = kani::any();
         let mut text: [u8; 32] = kani::any();
-        encoding::write_identity(identity, &mut text, kani::any());
+        assert!(encoding::write_identity(identity, &mut text).is_ok());
         let byte: usize = kani::any();
         kani::assume(byte < identity.len());
         let alphabet = b"0123456789abcdef";
@@ -73,7 +73,7 @@ mod proofs {
         kani::assume(digits >= 1 && digits <= 20);
         let length = encoding::MAX_ENCODED_BYTES - 20 + usize::from(digits);
         let mut text = [0; encoding::MAX_ENCODED_BYTES];
-        encoding::write(workspace, lease, expiry, length, &mut text);
+        assert!(encoding::write(workspace, lease, expiry, length, &mut text).is_ok());
     }
 
     #[kani::proof]
@@ -82,12 +82,15 @@ mod proofs {
     #[kani::stub_verified(encoding::write_identity)]
     fn maximum_expiry_overflows_a_116_byte_buffer() {
         let mut text = [0; 116];
-        encoding::write_buffer(
-            [0; 16],
-            [0; 16],
-            u64::MAX,
-            encoding::length(u64::MAX),
-            &mut text,
+        assert!(
+            encoding::write_buffer(
+                [0; 16],
+                [0; 16],
+                u64::MAX,
+                encoding::length(u64::MAX),
+                &mut text,
+            )
+            .is_ok()
         );
     }
 }
