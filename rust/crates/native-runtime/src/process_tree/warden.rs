@@ -59,7 +59,8 @@ impl Hosts {
             return;
         };
         let last = self.count.saturating_sub(1);
-        if let (Some(slot), Some(tail)) = (self.pids.get_mut(index), self.pids.get(last).copied()) {
+        let tail = self.pids.get(last).copied();
+        if let (Some(slot), Some(tail)) = (self.pids.get_mut(index), tail) {
             *slot = tail;
         }
         self.count = last;
