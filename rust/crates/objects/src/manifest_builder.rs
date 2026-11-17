@@ -55,7 +55,7 @@ impl ManifestBuilder {
                     .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
                 self.levels.push(Vec::new());
             }
-            let entries = &mut self.levels[level];
+            let entries = self.levels.get_mut(level).ok_or(ErrorCode::Corrupt)?;
             entries
                 .try_reserve(1)
                 .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
@@ -87,7 +87,7 @@ impl ManifestBuilder {
         }
         let mut level = 0;
         loop {
-            let entries = std::mem::take(&mut self.levels[level]);
+            let entries = std::mem::take(self.levels.get_mut(level).ok_or(ErrorCode::Corrupt)?);
             if entries.is_empty() && level + 1 < self.levels.len() {
                 level += 1;
                 continue;
@@ -106,8 +106,10 @@ impl ManifestBuilder {
 }
 
 async fn publish<B: Blobs + ?Sized>(blobs: &B, parts: Vec<Part>) -> Result<Part, Error> {
-    let mut manifest = Manifest::default();
-    manifest.parts = parts;
+    let manifest = Manifest {
+        parts,
+        ..Manifest::default()
+    };
     let length = manifest.length()?;
     let digest = Digest::of(&manifest.encode()?);
     let put = blobs.put_manifest(manifest).await?;
@@ -171,7 +173,10 @@ mod tests {
         let selected = blobs
             .get(result.digest, ByteRange::new(250, 270), 20)
             .await?;
-        assert_eq!(selected.body().as_ref(), &expected[250..270]);
+        assert_eq!(
+            selected.body().as_ref(),
+            expected.get(250..270).ok_or("range")?
+        );
         let selected = blobs
             .get(result.digest, ByteRange::FULL, result.length)
             .await?;
