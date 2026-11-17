@@ -64,8 +64,8 @@ rust_shared_library(
     ] + [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/stream:acyclic_stream",
-        "//rust/vendor/napi-3.15.0:napi",
         "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//napi-3.15.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
@@ -101,8 +101,8 @@ rust_library(
     ] + [
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/stream:acyclic_stream",
-        "//rust/vendor/napi-3.15.0:napi",
         "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//napi-3.15.0",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",

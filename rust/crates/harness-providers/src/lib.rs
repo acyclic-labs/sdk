@@ -112,6 +112,7 @@ fn http_error(status: u16) -> Error {
 }
 
 /// Admission for a locally rendered status diagnostic. Remote text is never retained.
+#[cfg(not(target_arch = "wasm32"))]
 const EXCERPT_BYTES: usize = 256;
 
 fn unavailable(status: u16) -> Option<Error> {

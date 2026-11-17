@@ -61,7 +61,6 @@
   ],
   "scripts": {
     "build": "bun run generate && bun run build:wasm && tsc -b",
-    "build:wasm": "bun ../../../scripts/build-wasm.mjs objects",
     "test": "bun run generate && bun run build && bun test test",
     "generate": "bun ../../../scripts/generate.mjs objects",
     "prepack": "bun run generate"

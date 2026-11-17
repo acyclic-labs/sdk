@@ -89,6 +89,27 @@ isolated_test(
     tags = ["manual"],
 )
 
+rust_library(
+    name = "acyclic_protobuf_json_wasm",
+    crate_name = "acyclic_protobuf_json",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        "@crates_wasm//prost-0.14.4",
+        "@crates_wasm//prost-reflect-0.16.5",
+        "@crates_wasm//serde_json-1.0.154",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "rust_sources",
     srcs = glob(["**/*.rs"], allow_empty = True),

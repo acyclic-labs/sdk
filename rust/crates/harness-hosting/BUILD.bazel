@@ -106,6 +106,41 @@ isolated_test(
     tags = ["manual","no-sandbox"],
 )
 
+rust_library(
+    name = "acyclic_harness_hosting_wasm",
+    crate_name = "acyclic_harness_hosting",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        "//rust/crates/actors:acyclic_actors_wasm",
+        "//rust/crates/auth:acyclic_auth_wasm",
+        "//rust/crates/filesystem:acyclic_fs_wasm",
+        "//rust/crates/harness-client:acyclic_harness_client_wasm",
+        "//rust/crates/harness-core:acyclic_harness_core_wasm",
+        "//rust/crates/machines:acyclic_machines_wasm",
+        "//rust/crates/stream:acyclic_stream_wasm",
+        "@crates_wasm//async-stream-0.3.6",
+        "@crates_wasm//base64_0_23_1-0.23.1",
+        "@crates_wasm//blake3-1.8.7",
+        "@crates_wasm//bytes-1.12.1",
+        "@crates_wasm//futures-0.3.34",
+        "@crates_wasm//prost-0.14.4",
+        "@crates_wasm//serde-1.0.229",
+        "@crates_wasm//serde_json-1.0.154",
+        "@crates_wasm//tokio-1.54.1",
+        "@crates_wasm//tracing-0.1.44",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "rust_sources",
     srcs = glob(["**/*.rs"], allow_empty = True),

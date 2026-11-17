@@ -39,7 +39,6 @@
     "test:process-completion": "node --test --experimental-test-coverage test/process-completion.test.mjs",
     "pack:dry": "bun pm pack --dry-run",
     "generate": "bun ../../../scripts/generate.mjs sdk",
-    "build:wasm": "bun ../../../scripts/build-wasm.mjs sdk",
     "prepack": "bun run generate"
   },
   "dependencies": {

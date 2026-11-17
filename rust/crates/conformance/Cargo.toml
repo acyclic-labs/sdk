@@ -165,3 +165,6 @@ required-features = ["client-session"]
 [[test]]
 name = "hosted_actors"
 required-features = ["actors-hosting"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "signal"] }

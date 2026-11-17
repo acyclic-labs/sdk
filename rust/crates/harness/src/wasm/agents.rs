@@ -7,7 +7,7 @@ use super::{WasmAgentAuthority, from_js, js_error};
 use crate::{
     Error, OperationId, Result,
     agent::{
-        AGENTS, AgentHandler, AgentHost, AgentId, AgentPath, Control, Delivered, ExecutorDriver,
+        AGENTS, AgentHandler, AgentHost, AgentId, AgentPath, Delivered, ExecutorDriver,
         ForkAdopted, InboxRecord, IntentId, Message, Sender, WorkspaceEntry,
     },
     context::CompactionPolicy,

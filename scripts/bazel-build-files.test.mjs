@@ -16,6 +16,7 @@ function fixture({ module = false } = {}) {
   cpSync("scripts/check-bazel-lockfile.mjs", join(root, "scripts/check-bazel-lockfile.mjs"));
   cpSync("scripts/policy-core.mjs", join(root, "scripts/policy-core.mjs"));
   if (module) writeFileSync(join(root, "MODULE.bazel"), 'module(name = "fixture")\n');
+  cpSync("scripts/wasm-packages.mjs", join(root, "scripts/wasm-packages.mjs"));
   cpSync("rust-toolchain.toml", join(root, "rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));
   writeFileSync(join(root, ".cargo/config.toml"), '[target.x86_64-unknown-linux-gnu]\nlinker = "scripts/mold-linker.sh"\n\n[env]\n');

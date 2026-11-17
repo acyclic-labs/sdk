@@ -40,3 +40,6 @@ napi-build = "2.6.0"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "signal"] }

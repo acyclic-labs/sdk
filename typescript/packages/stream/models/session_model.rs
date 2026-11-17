@@ -320,7 +320,7 @@ fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result
                     "no delivery may cross the terminal boundary"
                 );
             }
-            if action == "reconnect" {
+            if action == "reconnect" && terminal.is_none() {
                 assert_eq!(
                     *field(&state, "connecting")?,
                     true,

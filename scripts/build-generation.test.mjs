@@ -152,7 +152,7 @@ test("native source roots cover the generators' transitive script imports", () =
     const { sourceRoots } = JSON.parse(readFileSync("compatibility/native-families/" + family + ".json", "utf8"));
     // Entry points describe execution; allowed roots describe attested inputs.
     // Widening an allowed root must never remove code from the import walk.
-    const generators = ["scripts/generate.mjs", "scripts/build-wasm.mjs", "scripts/check-baselines.mjs",
+    const generators = ["scripts/generate.mjs", "scripts/check-baselines.mjs",
       `scripts/build-${family}-native.mjs`, `scripts/assemble-${family}-native-package.mjs`,
       ...contractModules([...packageClosure(process.cwd(), family)]).map(name => "scripts/" + name)];
     check(sourceRoots, generators);

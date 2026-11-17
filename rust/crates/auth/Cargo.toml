@@ -52,7 +52,7 @@ rustls = { workspace = true, optional = true }
 rustls-platform-verifier = { workspace = true, optional = true }
 arc-swap = "=1.9.2"
 reqwest = { workspace = true, optional = true }
-
+tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "signal"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 js-sys = { workspace = true, optional = true }

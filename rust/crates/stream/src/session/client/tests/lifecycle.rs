@@ -12,6 +12,7 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
                 removed: Arc::new(signal::Signal::new()),
                 next_id: Arc::new(AtomicU64::new(1)),
                 active: Arc::new(AtomicU64::new(0)),
+                lifetime: Arc::new(Mutex::new(())),
                 admissions: Arc::new(Admissions::new()),
                 attempt_epoch: Arc::new(AtomicU64::new(0)),
                 abandoned: Arc::new(gate::Gate::new()),

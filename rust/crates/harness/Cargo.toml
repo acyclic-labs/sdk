@@ -121,8 +121,7 @@ tonic = { workspace = true, default-features = true, features = ["transport", "t
 tower.workspace = true
 x509-parser = { version = "0.18.1" }
 which = { version = "8.0.6" }
-tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "net", "process"] }
-
+tokio = { version = "1.48.0", default-features = false, features = ["fs", "io-std", "io-util", "net", "process", "rt-multi-thread", "signal"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { workspace = true, features = ["fs"] }
 
@@ -166,7 +165,7 @@ wasm-bindgen-futures.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
-wasm-bindgen-test = "=0.3.67"
+wasm-bindgen-test = "=0.3.71"
 
 [lints]
 workspace = true

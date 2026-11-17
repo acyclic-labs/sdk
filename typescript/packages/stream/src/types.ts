@@ -23,7 +23,7 @@ import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type { TokenOperation } from "./token-operations.js";
 import type { Refusal as StreamRefusal } from "@acyclic-labs/auth/refusal";
 export type { Refusal as StreamRefusal } from "@acyclic-labs/auth/refusal";
-import type { StreamErrorCode as RustStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
+import type { StreamErrorCode as RustStreamErrorCode } from "@acyclic/stream-wasm";
 export type { TokenOperation } from "./token-operations.js";
 export { TOKEN_AUTHORIZATION } from "./token-operations.js";
 
