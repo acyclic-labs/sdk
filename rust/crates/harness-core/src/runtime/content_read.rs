@@ -94,6 +94,7 @@ impl TaskContext {
         if let (Some(binding), Some(output), Some((journal, operation)), Some(io)) =
             (binding, &self.journal_output, &self.journal, io)
             && binding.volume == output.volume
+            && io.original_native_work().is_some()
         {
             let mut content = journal
                 .output_content(*operation, Some(io))?
