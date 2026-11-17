@@ -8,6 +8,7 @@ pub(crate) use admission::{
 };
 pub(crate) use job::DeferredPoll;
 pub(crate) use job::NativeJob;
+#[cfg(feature = "test-support")]
 use std::sync::atomic::AtomicUsize;
 
 mod admission;
