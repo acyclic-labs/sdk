@@ -1,22 +1,17 @@
 fn parse_string(value: &Value) -> Result<&str, StreamError> {
-    value.as_str().ok_or(StreamError::Unavailable)
+    http_validation::string(value).map_err(|_| StreamError::Unavailable)
 }
 fn parse_u64(value: &Value) -> Result<u64, StreamError> {
-    parse_string(value)?
-        .parse()
-        .map_err(|error| StreamError::Unavailable.with_source(error))
+    http_validation::u64_string(value).map_err(|_| StreamError::Unavailable)
 }
 fn parse_path(value: &Value) -> Result<StreamPath, StreamError> {
     StreamPath::new(parse_string(value)?)
         .map_err(|error| StreamError::Unavailable.with_source(error))
 }
 fn parse_bytes(value: &Value) -> Result<Bytes, StreamError> {
-    base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        parse_string(value)?,
-    )
-    .map(Bytes::from)
-    .map_err(|error| StreamError::Unavailable.with_source(error))
+    http_validation::bytes(value)
+        .map(Bytes::from)
+        .map_err(|_| StreamError::Unavailable)
 }
 fn parse_id(value: &Value) -> Result<CommitId, StreamError> {
     Ok(CommitId::from_bytes(
