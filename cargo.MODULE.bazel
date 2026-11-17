@@ -69,13 +69,6 @@ crate.annotation(
 )
 
 crate.annotation(
-    crate = "acyclic-syntect",
-    rustc_flags = [
-        "-Copt-level=3",
-    ],
-)
-
-crate.annotation(
     crate = "curve25519-dalek",
     rustc_flags = [
         "-Copt-level=3",

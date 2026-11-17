@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-// A one-member workspace with the repository's own toolchain and config inputs.
+// A one-member workspace with a local path crate and the repository's own toolchain and config inputs.
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "bazel-build-files-"));
   mkdirSync(join(root, "scripts"));
@@ -14,10 +14,13 @@ function fixture() {
   mkdirSync(join(root, ".cargo"));
   writeFileSync(join(root, ".cargo/config.toml"), '[target.x86_64-unknown-linux-gnu]\nlinker = "scripts/mold-linker.sh"\n\n[env]\n');
   writeFileSync(join(root, "scripts/mold-linker.sh"), "#!/bin/sh\n");
-  writeFileSync(join(root, "Cargo.toml"), '[workspace]\nmembers = ["member"]\nresolver = "3"\n\n[profile.dev]\nopt-level = 1\n');
+  writeFileSync(join(root, "Cargo.toml"), '[workspace]\nmembers = ["member"]\nexclude = ["local"]\nresolver = "3"\n\n[profile.dev]\nopt-level = 1\n\n[profile.dev.package.local]\nopt-level = 3\n');
   mkdirSync(join(root, "member/src"), { recursive: true });
-  writeFileSync(join(root, "member/Cargo.toml"), '[package]\nname = "member"\nversion = "0.1.0"\nedition = "2024"\n');
+  writeFileSync(join(root, "member/Cargo.toml"), '[package]\nname = "member"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\nlocal = { path = "../local" }\n');
   writeFileSync(join(root, "member/src/lib.rs"), "pub fn one() -> u8 {\n    1\n}\n\n#[test]\nfn reads_cargo_config() {\n    assert!(std::path::Path::new(\"member/../.cargo/config.toml\").is_file());\n}\n");
+  mkdirSync(join(root, "local/src"), { recursive: true });
+  writeFileSync(join(root, "local/Cargo.toml"), '[package]\nname = "local"\nversion = "0.1.0"\nedition = "2024"\n');
+  writeFileSync(join(root, "local/src/lib.rs"), "pub fn two() -> u8 {\n    2\n}\n");
   execFileSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, stdio: "ignore" });
   execFileSync("git", ["init", "-q"], { cwd: root });
   execFileSync("git", ["add", "-A"], { cwd: root });
@@ -42,6 +45,9 @@ test("check accepts the generated files and fails on a stale BUILD file", () => 
     const platformBlock = buildFile.slice(platformStart, buildFile.indexOf("\n)\n", platformStart) + 3);
     assert.match(platformBlock, /":libc_musl"/, "linux_musl platform carries libc_musl");
     const moduleFile = readFileSync(join(root, "cargo.MODULE.bazel"), "utf8");
+    const localBuild = readFileSync(join(root, "local/BUILD.bazel"), "utf8");
+    assert.match(localBuild, /"-Copt-level=3"/, "a local path crate carries its dev opt-level in its own BUILD");
+    assert.doesNotMatch(moduleFile, /crate = "local"/, "a local path crate is not a third-party annotation");
     const muslToolchain = moduleFile.indexOf("@rust_toolchains//:rust_linux_musl__x86_64-unknown-linux-musl__stable");
     const toolchainHub = moduleFile.indexOf("@rust_toolchains//:all");
     assert.notEqual(muslToolchain, -1, "musl toolchain is registered");

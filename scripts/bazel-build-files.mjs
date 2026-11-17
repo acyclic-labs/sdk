@@ -91,10 +91,10 @@ const workspace = new Set(runs.flatMap(run => run.workspace_members));
 const members = new Set(workspace);
 const nodes = runs.map(run => new Map(run.resolve.nodes.map(node => [node.id, node])));
 const dir = p => path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/");
-// Vendored path crates are first-party: their BUILD files are generated here, so the
+// Local path crates are first-party: their BUILD files are generated here, so the
 // crate universe must not carry them as local path dependencies. Cargo tests only the
-// workspace, so a vendored crate renders its library and build script alone.
-for (const p of base.packages) if (dir(p).startsWith("rust/vendor/")) members.add(p.id);
+// workspace, so a path crate renders its library and build script alone.
+for (const p of base.packages) if (p.source === null) members.add(p.id);
 const label = p => `//${dir(p)}`;
 const libOf = p => p.targets.find(t => t.kind.some(k => k === "lib" || k === "rlib" || k === "proc-macro"));
 const crateName = target => target.name.replaceAll("-", "_");
