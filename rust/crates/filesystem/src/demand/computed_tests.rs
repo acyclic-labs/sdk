@@ -164,7 +164,6 @@ fn metadata(bytes: Option<u64>) -> SourceNode {
             SourceNodeKind::Directory
         },
         file_identity: [u8::from(bytes.is_some()); 32],
-        physical_identity: [u8::from(bytes.is_some()); 32],
         link_count: Some(1),
         device: None,
         logical_bytes: bytes,

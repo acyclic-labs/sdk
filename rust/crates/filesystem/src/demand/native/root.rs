@@ -503,11 +503,19 @@ impl NativeDemandSource {
         metadata: &HostStat,
         context: &mut CallbackWork,
     ) -> Result<FixtureContent, DemandError> {
-        let (relative, allocation) = self.relative(path, context)?;
-        let result = self.fixture_content_at(&relative, metadata, context);
-        drop(relative);
-        context.release(allocation)?;
-        result
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = (path, metadata, context);
+            Ok(())
+        }
+        #[cfg(feature = "test-support")]
+        {
+            let (relative, allocation) = self.relative(path, context)?;
+            let result = self.fixture_content_at(&relative, metadata, context);
+            drop(relative);
+            context.release(allocation)?;
+            result
+        }
     }
 
     fn node(path: [u8; 32], content: FixtureContent, metadata: &HostStat) -> SourceNode {

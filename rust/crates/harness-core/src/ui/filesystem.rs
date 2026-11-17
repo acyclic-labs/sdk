@@ -84,7 +84,6 @@ impl<C: FilesystemCut> FilesystemView<C> {
             kind,
             logical_bytes: length,
             file_identity: identity,
-            physical_identity: identity,
             link_count: Some(1),
             device: None,
             version: SourceVersion([0; 32]),
