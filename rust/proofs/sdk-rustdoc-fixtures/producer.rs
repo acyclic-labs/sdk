@@ -4,6 +4,8 @@ fn main() {
     let mut args = env::args_os().skip(1);
     let output = PathBuf::from(args.next().unwrap());
     let rustup = fs::canonicalize(args.next().unwrap()).unwrap();
+    let fixture_root = args.next().unwrap().into_string().unwrap();
+    let package = args.next().unwrap().into_string().unwrap();
     let root = output.with_extension("work");
     let source = root.join("source");
     let target = root.join("target");
@@ -14,10 +16,7 @@ fn main() {
         }
         let input = PathBuf::from(argument);
         let text = input.to_string_lossy().replace('\\', "/");
-        let relative = text
-            .split_once("tests/fixtures/feature-profile/")
-            .unwrap()
-            .1;
+        let relative = text.strip_prefix(&fixture_root).unwrap();
         let destination = source.join(relative);
         fs::create_dir_all(destination.parent().unwrap()).unwrap();
         fs::copy(input, destination).unwrap();
@@ -58,7 +57,7 @@ fn main() {
         ])
         .arg("--manifest-path")
         .arg(source.join("Cargo.toml"))
-        .args(["--package", "demo", "--lib"])
+        .args(["--package", &package, "--lib"])
         .args(["--target", host])
         .args(args)
         .args(["--", "-Z", "unstable-options", "--output-format", "json"])
@@ -72,11 +71,27 @@ fn main() {
             bin.join(format!("rustdoc{}", env::consts::EXE_SUFFIX)),
         )
         .env("CARGO_HOME", root.join("cargo-home"))
+        .env("CARGO_PROFILE_DEV_DEBUG", "0")
+        .env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            if cfg!(windows) {
+                "-C\u{1f}prefer-dynamic"
+            } else {
+                ""
+            },
+        )
         .env("CARGO_TARGET_DIR", &target);
     assert!(
         command.status().unwrap().success(),
         "fixture Rustdoc failed"
     );
-    fs::copy(target.join(host).join("doc/demo.json"), output).unwrap();
+    fs::copy(
+        target
+            .join(host)
+            .join("doc")
+            .join(format!("{}.json", package.replace('-', "_"))),
+        output,
+    )
+    .unwrap();
     fs::remove_dir_all(root).unwrap();
 }
