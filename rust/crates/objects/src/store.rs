@@ -71,6 +71,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 mod read;
+mod terminal;
 
 const PAGE: usize = 1000;
 
@@ -768,6 +769,16 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 repaired.push(key);
             }
         }
+        let mut pages = self.pages(format!("{}f/", self.state.prefix));
+        while let Some(page) = pages.next().await? {
+            for (key, _) in page {
+                if !self.batch_survived(&key, &blobs).await? {
+                    self.medium.remove(&key).await.map_err(medium)?;
+                    repaired.push(key);
+                }
+            }
+        }
+        self.fenced_rooted().await?;
         Ok(repaired)
     }
 
@@ -786,11 +797,13 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             Err(error) if error.code == ErrorCode::Corrupt => return Ok(false),
             Err(error) => return Err(error),
         };
-        let (root, name) = key
-            .strip_prefix(&format!("{}r/", self.state.prefix))
+        let (kind, rest) = key
+            .strip_prefix(&self.state.prefix)
             .and_then(|rest| rest.split_once('/'))
+            .filter(|(kind, _)| matches!(*kind, "r" | "f"))
             .ok_or_else(corrupt)?;
-        let tag = format!("r{root}.{name}");
+        let (root, name) = rest.split_once('/').ok_or_else(corrupt)?;
+        let tag = format!("{kind}{root}.{name}");
         for member in &members {
             if !blobs.contains_key(member)
                 || self
@@ -951,6 +964,32 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         self.flush_blobs(Some(references), keys)
             .await
             .map_err(Commit::Unflushed)
+    }
+
+    /// Admit and publish one batch, retaining unknown outcomes for recovery.
+    async fn commit_retention(
+        &self,
+        references: &[Digest],
+        tag: &str,
+        key: &str,
+        batch: Vec<u8>,
+        extra_writes: u64,
+    ) -> Result<(), Error> {
+        let first = references.first().ok_or_else(invalid)?;
+        let held = (std::mem::size_of::<String>() + self.index_key(first, tag).len()) as u64
+            * references.len() as u64;
+        self.medium.allocate(held).map_err(medium)?;
+        self.medium
+            .reserve_writes(2 * references.len() as u64 + 2 + extra_writes)
+            .map_err(medium)?;
+        match self.commit_batch(references, tag, key, batch).await {
+            Ok(()) => Ok(()),
+            Err(Commit::Unknown(error) | Commit::Unflushed(error)) => Err(error),
+            Err(Commit::Failed(error)) => {
+                self.unreference(references, tag).await?;
+                Err(error)
+            }
+        }
     }
 
     /// Removes `tag`'s index keys, once its holder is gone.
@@ -1523,6 +1562,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 .map_err(suspended)?;
             references.extend(batch);
         }
+        references.extend(self.fenced_rooted().await.map_err(suspended)?);
         Ok(references)
     }
 
@@ -1597,28 +1637,9 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 // equal batch never removes them.
                 let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
                 let tag = Self::batch_tag(root, &name);
-                // The index-key vector is charged before any key is written, so a
-                // refused charge leaves nothing to clean up. Every key has one
-                // length: a fixed-width prefix and this tag.
-                let first = references.first().ok_or_else(invalid)?;
-                let key = self.index_key(first, &tag).len();
-                let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
-                self.medium.allocate(held).map_err(medium)?;
-                // Every write is withheld before the first key: n keys, then either
-                // their n removals or the batch and the one flush. A
-                // refused budget leaves nothing behind, and removing the keys of a
-                // retain that failed is never refused.
-                let n = references.len() as u64;
-                self.medium.reserve_writes(2 * n + 2).map_err(medium)?;
                 let key = format!("{}{name}", self.root_prefix(root));
-                match self.commit_batch(&references, &tag, &key, batch).await {
-                    Ok(()) => {}
-                    Err(Commit::Unknown(error) | Commit::Unflushed(error)) => return Err(error),
-                    Err(Commit::Failed(error)) => {
-                        self.unreference(&references, &tag).await?;
-                        return Err(error);
-                    }
-                }
+                self.commit_retention(&references, &tag, &key, batch, 0)
+                    .await?;
                 Ok(Retained {
                     references: references.len() as u64,
                     revision: Some(issued.commit()),
@@ -1888,6 +1909,19 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
         self.retain_inner(root, references).await
+    }
+
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        Account::retain_fenced(self, root, fence, references).await
+    }
+
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
+        Account::release_terminal(self, root, fence).await
     }
 
     async fn release(&self, root: &RootId) -> Result<Released, Error> {

@@ -358,8 +358,24 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     /// reference exists, durably. Repeating the same batch is a no-op.
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error>;
 
-    /// Drops every batch of `root`. Repeating it is a no-op.
+    /// Drops every ordinary batch of `root`. Repeating it is a no-op; an
+    /// overlapping or later ordinary retain may establish another batch.
     async fn release(&self, root: &RootId) -> Result<Released, Error>;
+
+    /// Retains a batch for one fenced intent. Once a terminal release through
+    /// this fence commits, this or a delayed retain at a lower fence fails
+    /// with [`wire::ErrorCode::TerminalFence`]. Higher fences may retain.
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error>;
+
+    /// Durably closes the fenced intent through `fence` and releases those
+    /// batches. Repeating a terminal release never reopens an older fence.
+    /// Ordinary roots and their non-terminal releases remain independent.
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error>;
 
     /// Marks from every retained root, then sweeps each other blob that the
     /// pass before the previous one already found unreferenced: a put has
@@ -593,6 +609,17 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     }
     async fn release(&self, root: &RootId) -> Result<Released, Error> {
         (**self).release(root).await
+    }
+    async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        (**self).retain_fenced(root, fence, references).await
+    }
+    async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
+        (**self).release_terminal(root, fence).await
     }
     async fn collect(&self) -> Result<Collection, Error> {
         (**self).collect().await
