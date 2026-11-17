@@ -8,6 +8,34 @@ mod tests {
     use proptest::prelude::*;
     use std::collections::VecDeque;
 
+    #[test]
+    fn broken_links_return_typed_errors() -> Result<(), ReadyLinkError> {
+        // Tail admission, head dequeue, then both retirement neighbours.
+        for (operation, damaged) in [(0, 2), (1, 0), (2, 0), (2, 2)] {
+            for missing_record in [false, true] {
+                let mut ready = ReadyViews::default();
+                for serial in 0..4 {
+                    ready.insert(serial, serial)?;
+                    if serial < 3 {
+                        ready.schedule(serial)?;
+                    }
+                }
+                if missing_record {
+                    ready.views.remove(&damaged);
+                } else if let Some(view) = ready.views.get_mut(&damaged) {
+                    view.ready = None;
+                }
+                let result = match operation {
+                    0 => ready.schedule(3).map(|_| ()),
+                    1 => ready.pop().map(|_| ()),
+                    _ => ready.remove(1).map(|_| ()),
+                };
+                assert_eq!(result, Err(ReadyLinkError::Unqueued(damaged)));
+            }
+        }
+        Ok(())
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig {
             rng_seed: proptest::test_runner::RngSeed::Fixed(0x7265_6164_792d_7631),
@@ -25,19 +53,21 @@ mod tests {
                     0 => {
                         if let std::collections::hash_map::Entry::Vacant(entry) = live.entry(serial) {
                             entry.insert(serial);
-                            actual.insert(serial, serial);
+                            prop_assert_eq!(actual.insert(serial, serial), Ok(()));
+                        } else {
+                            prop_assert_eq!(actual.insert(serial, serial), Err(ReadyLinkError::AlreadyInserted(serial)));
                         }
                     }
                     1 => {
                         let scheduled = live.contains_key(&serial) && !ready.contains(&serial);
-                        prop_assert_eq!(actual.schedule(serial), scheduled);
+                        prop_assert_eq!(actual.schedule(serial), Ok(scheduled));
                         if scheduled {
                             ready.push_back(serial);
                         }
                     }
                     2 => {
                         ready.retain(|queued| *queued != serial);
-                        prop_assert_eq!(actual.remove(serial), live.remove(&serial));
+                        prop_assert_eq!(actual.remove(serial), Ok(live.remove(&serial)));
                     }
                     3 => {
                         let expected = live.get_mut(&serial);
@@ -50,7 +80,7 @@ mod tests {
                     }
                     _ => {
                         let expected = ready.pop_front().map(|serial| (serial, live[&serial]));
-                        prop_assert_eq!(actual.pop().map(|(serial, value)| (serial, *value)), expected);
+                        prop_assert_eq!(actual.pop().map(|work| work.map(|(serial, value)| (serial, *value))), Ok(expected));
                     }
                 }
                 prop_assert_eq!(actual.views.len(), live.len(), "retired records cannot accumulate");
