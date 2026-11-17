@@ -163,10 +163,11 @@ export function evaluateCfg(gate, atom, positiveFeatures = false) {
     const feature = name === 'feature' || Boolean(children?.some(child => child.feature));
     if (positiveFeatures && name === 'not' && feature) throw new Error('negated feature gate cannot be represented by required-features; move this gate inside the test target');
     if (['all', 'any', 'not'].includes(name) && !children) invalid();
+    if (name === 'not' && children.length !== 1) invalid();
     const decisive = name === 'any';
     return {feature, enabled: ['all', 'any'].includes(name)
       ? children.some(child => child.enabled === decisive) ? decisive : children.some(child => child.enabled === undefined) ? undefined : !decisive
-      : name === 'not' ? positiveFeatures ? true : children[0]?.enabled === undefined ? undefined : !children[0].enabled : atom(name, value)};
+      : name === 'not' ? positiveFeatures ? true : children[0].enabled === undefined ? undefined : !children[0].enabled : atom(name, value, children)};
   };
   const result = parse();
   if (at !== tokens.length) invalid();

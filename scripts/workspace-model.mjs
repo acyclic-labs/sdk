@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {manifestDependencies, toml, tomlFiles} from './policy-core.mjs';
+import {evaluateCfg, manifestDependencies, toml, tomlFiles} from './policy-core.mjs';
 
 const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
@@ -284,29 +284,13 @@ function targetMatches(cfg, triple) {
     `target_env=${JSON.stringify(wasm ? '' : triple.includes('msvc') ? 'msvc' : triple.includes('darwin') ? '' : 'gnu')}`, `target_family=${JSON.stringify(wasm ? 'wasm' : triple.includes('windows') ? 'windows' : 'unix')}`,
     `target_vendor=${JSON.stringify(triple.includes('darwin') ? 'apple' : triple.includes('windows') ? 'pc' : 'unknown')}`,
   ]);
-  const matches = cfg => {
-    if (!cfg || cfg === triple) return true;
-    if (!cfg.startsWith('cfg(')) return false;
-    const tokens = cfg.slice(4, -1).match(/"[^"\\]*(?:\\.[^"\\]*)*"|\w+|[(),=]/g) ?? [];
-    let at = 0;
-    const parse = () => {
-      const name = tokens[at++];
-      if (tokens[at] === '=') {at++; return platform.has(`${name}=${tokens[at++]}`);}
-      if (tokens[at] !== '(') return platform.has(name);
-      at++;
-      const values = [];
-      while (tokens[at] !== ')' && at < tokens.length) {values.push(parse()); if (tokens[at] === ',') at++;}
-      if (tokens[at++] !== ')') throw Error(`invalid target condition ${cfg}`);
-      if (name === 'all') return values.every(Boolean);
-      if (name === 'any') return values.some(Boolean);
-      if (name === 'not' && values.length === 1) return !values[0];
-      throw Error(`unknown target condition ${cfg}`);
-    };
-    const result = parse();
-    if (at !== tokens.length) throw Error(`invalid target condition ${cfg}`);
-    return result;
-  };
-  return matches(cfg);
+  if (!cfg || cfg === triple) return true;
+  if (!cfg.startsWith('cfg(')) return false;
+  if (!cfg.endsWith(')')) throw Error(`invalid target condition ${cfg}`);
+  return evaluateCfg(cfg.slice(4, -1), (name, value, children) => {
+    if (children) throw Error(`unknown target condition ${cfg}`);
+    return platform.has(value === undefined ? name : `${name}="${value}"`);
+  });
 }
 
 // Inputs to crate_universe come from the current Cargo lock and declarations.
