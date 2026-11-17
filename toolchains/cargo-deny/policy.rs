@@ -65,7 +65,11 @@ impl<'a> Expression<'a> {
 }
 
 fn license_allowed(expression: &str, allowed: &BTreeSet<String>) -> Result<bool, String> {
-    let padded = expression.replace('(', " ( ").replace(')', " ) ");
+    // Older Cargo manifests used a slash for dual licensing; Cargo interprets it as OR.
+    let padded = expression
+        .replace('/', " OR ")
+        .replace('(', " ( ")
+        .replace(')', " ) ");
     let mut parser = Expression {
         tokens: padded.split_whitespace().collect(),
         position: 0,
@@ -118,6 +122,14 @@ pub fn check(entry: &Value, registry: &Value, policy: &toml::Value) -> Result<Ve
     if url != expected_url {
         return Err(format!("{name} {version}: unapproved registry URL {url}"));
     }
+    if policy
+        .get("advisories")
+        .and_then(|v| v.get("yanked"))
+        .and_then(toml::Value::as_str)
+        != Some("deny")
+    {
+        return Err("unsupported yanked policy".into());
+    }
     let record = registry["crates"]
         .get(name)
         .and_then(|v| v.get(version.to_string()))
@@ -157,7 +169,9 @@ pub fn check(entry: &Value, registry: &Value, policy: &toml::Value) -> Result<Ve
     let license = entry["license"]
         .as_str()
         .ok_or_else(|| format!("{name} {version}: no license expression"))?;
-    if !license_allowed(license, &allowed)? {
+    if !license_allowed(license, &allowed)
+        .map_err(|error| format!("{name} {version}: {license}: {error}"))?
+    {
         failures.push(format!("{name} {version}: disallowed license {license}"));
     }
     let bans = policy.get("bans").ok_or("missing bans policy")?;
@@ -236,6 +250,7 @@ fn license_expressions_enforce_and_or_and_exceptions() {
         .map(str::to_owned)
         .collect();
     assert!(license_allowed("MIT OR GPL-3.0-only", &allowed).unwrap());
+    assert!(license_allowed("GPL-3.0-only / MIT", &allowed).unwrap());
     assert!(!license_allowed("MIT AND GPL-3.0-only", &allowed).unwrap());
     assert!(license_allowed("Apache-2.0 WITH LLVM-exception", &allowed).unwrap());
     assert!(license_allowed("MIT OR (GPL-3.0-only AND MIT)", &allowed).unwrap());
