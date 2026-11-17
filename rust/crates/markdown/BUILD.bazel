@@ -214,6 +214,7 @@ isolated_test(
 )
 
 rust_library(
+    name = "acyclic_markdown_wasm",
     crate_name = "acyclic_markdown",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [

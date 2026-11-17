@@ -797,7 +797,7 @@ function buildFile(p) {
     ["visibility", q(["//visibility:public"])],
   ];
   if (lib && !lib.kind.includes("proc-macro")) {
-    rules.push(["rust_library", [["name", q(wasmLibraryNames.get(p.id))], ...wasmAttrs(lib)]]);
+    rules.push(["rust_library", [["name", q(wasmLibraryNames.get(p.id) ?? `${crateName(lib)}_wasm`)], ...wasmAttrs(lib)]]);
   }
   if (shared) {
     rules.push(["rust_shared_library", [["name", q(`${crateName(shared)}_wasm_cdylib`)], ...wasmAttrs(shared)]]);

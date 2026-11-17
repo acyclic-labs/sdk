@@ -76,6 +76,7 @@ isolated_test(
 )
 
 rust_library(
+    name = "acyclic_fs_base_wasm",
     crate_name = "acyclic_fs_base",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),

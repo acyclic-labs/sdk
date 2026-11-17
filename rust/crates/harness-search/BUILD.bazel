@@ -107,6 +107,7 @@ isolated_test(
 )
 
 rust_library(
+    name = "acyclic_harness_search_wasm",
     crate_name = "acyclic_harness_search",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),

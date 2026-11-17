@@ -141,6 +141,7 @@ isolated_test(
 )
 
 rust_library(
+    name = "acyclic_observability_wasm",
     crate_name = "acyclic_observability",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),

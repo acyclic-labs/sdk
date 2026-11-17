@@ -160,6 +160,7 @@ isolated_test(
 )
 
 rust_library(
+    name = "acyclic_machines_daytona_wasm",
     crate_name = "acyclic_machines_daytona",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),

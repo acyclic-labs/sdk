@@ -83,6 +83,7 @@ isolated_test(
 )
 
 rust_library(
+    name = "acyclic_model_render_wasm",
     crate_name = "acyclic_model_render",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
