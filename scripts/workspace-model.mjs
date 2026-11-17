@@ -8,7 +8,7 @@ const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
 const requirement = value => value === undefined ? '*' : /^\d/.test(value) ? `^${value}` : value;
 export function compareVersions(a, b) {
-  const parts = value => value.split(/[.+-]/).map(x => /^\d+$/.test(x) ? Number(x) : x);
+  const parts = value => value.split('+')[0].split(/[.-]/).map(x => /^\d+$/.test(x) ? Number(x) : x);
   const aa = parts(a), bb = parts(b);
   for (let n = 0; n < Math.max(aa.length, bb.length); n++) {
     if (aa[n] === bb[n]) continue;
@@ -84,7 +84,7 @@ export function workspacePackages(root) {
           dependencies.push({name: declaration.package ?? alias, rename: declaration.package ? alias : null,
             req: requirement(declaration.version), kind, target, optional: declaration.optional ?? false,
             uses_default_features: declaration['default-features'] ?? true, features: declaration.features ?? [],
-            source: local ? null : 'registry+https://github.com/rust-lang/crates.io-index', ...(local ? {path: local} : {})});
+            source: declaration.path ? null : 'registry+https://github.com/rust-lang/crates.io-index', ...(local ? {resolved_path: local} : {}), ...(declaration.path ? {path: local} : {})});
         }
     };
     declarations(manifest);
@@ -134,13 +134,12 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
   root = path.resolve(root);
   const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
   const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-bazel-lock.json'), 'utf8'));
-  const registry = (lock.package ?? []).filter(p => p.source && universe.crates[`${p.name} ${p.version}`]).map(p => {
+  const registry = (lock.package ?? []).filter(p => p.source && (allPlatforms || universe.crates[`${p.name} ${p.version}`])).map(p => {
     const pinned = universe.crates[`${p.name} ${p.version}`];
-    if (!pinned) throw Error(`Bazel crate lock lacks ${p.name} ${p.version}`);
-    const lib = pinned.targets.find(t => t.Library || t.ProcMacro);
+    const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
     const target = lib?.Library ?? lib?.ProcMacro;
     return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
-      features: Object.fromEntries((pinned.common_attrs?.crate_features ?? []).map(f => [f, []])),
+      features: Object.fromEntries((pinned?.common_attrs?.crate_features ?? []).map(f => [f, []])),
       targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
   });
   const packages = [...local, ...registry], byName = name => packages.filter(p => p.name === name);
@@ -177,7 +176,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
     const deps = new Map();
     for (const d of p.dependencies.filter(d => matches(d.target))) {
-      const candidates = d.path ? local.filter(x => path.dirname(x.manifest_path) === d.path) : byName(d.name).filter(x => versionMatches(x.version, d.req) &&
+      const candidates = d.resolved_path ? local.filter(x => path.dirname(x.manifest_path) === d.resolved_path) : byName(d.name).filter(x => versionMatches(x.version, d.req) &&
         (locked.dependencies ?? []).some(key => key === x.name || key === `${x.name} ${x.version}` || key.startsWith(`${x.name} ${x.version} (`)));
       if (candidates.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
       const dependency = candidates[0], name = (d.rename ?? d.name).replaceAll('-', '_');
