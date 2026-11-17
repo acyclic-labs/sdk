@@ -84,15 +84,19 @@ const [base] = runs;
 const workspaceMetadata = (() => {
   const members = new Set(base.workspace_members);
   const relative = p => path.relative(base.workspace_root, p).replaceAll("\\", "/");
+  // Cargo's package id embeds the absolute checkout path; the tests only compare ids, so keep
+  // them stable across worktrees.
+  const stableId = id => id.replaceAll(base.workspace_root, ".");
   return JSON.stringify({
     packages: base.packages.filter(p => members.has(p.id)).map(p => ({
       ...p,
+      id: stableId(p.id),
       manifest_path: relative(p.manifest_path),
       dependencies: [],
       targets: [],
     })),
-    workspace_members: base.workspace_members,
-    workspace_default_members: base.workspace_default_members,
+    workspace_members: base.workspace_members.map(stableId),
+    workspace_default_members: Array.isArray(base.workspace_default_members) ? base.workspace_default_members.map(stableId) : base.workspace_default_members,
     resolve: null,
     target_directory: "target",
     version: base.version,
