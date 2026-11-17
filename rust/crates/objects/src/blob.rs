@@ -67,6 +67,7 @@ impl ContentDigests {
 #[cfg(test)]
 mod content_digest_tests {
     use super::{ContentHasher, Digest, Manifest, Part};
+    use sha2::{Digest as _, Sha256};
 
     #[test]
     fn logical_checksums_are_independent_of_input_frames() {
@@ -95,6 +96,24 @@ mod content_digest_tests {
             };
             let encoded = manifest.encode().unwrap();
             assert_eq!(Manifest::decode(&encoded).unwrap(), manifest);
+        }
+    }
+
+    #[test]
+    fn logical_checksums_cross_chunk_and_frame_boundaries() {
+        let bytes: Vec<_> = (0..(3 * 65536 + 19))
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let expected_sha256: [u8; 32] = Sha256::digest(&bytes).into();
+        let expected_blake3 = Digest::of(&bytes);
+        for boundary in [1, 65535, 65536, 65537, 131073] {
+            let mut hasher = ContentHasher::default();
+            hasher.update(&bytes[..boundary]).unwrap();
+            hasher.update(&bytes[boundary..]).unwrap();
+            let result = hasher.finish();
+            assert_eq!(result.blake3(), expected_blake3);
+            assert_eq!(*result.sha256(), expected_sha256);
+            assert_eq!(result.length(), bytes.len() as u64);
         }
     }
 }
