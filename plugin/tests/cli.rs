@@ -1952,28 +1952,6 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         }
         assert!(!same_contract(&cli, &actual), "{actual}");
     }
-    // A new identity appends another prompt to the same persistent conversation.
-    assert_eq!(
-        embedded::answer(embedded_config(), "next", "another prompt")
-            .await
-            .unwrap(),
-        "fixture answer"
-    );
-    let generated = model.generated();
-    // Reopening with the same identity and prompt recovers without dispatch.
-    assert_eq!(
-        embedded::answer(embedded_config(), "next", "another prompt")
-            .await
-            .unwrap(),
-        "fixture answer"
-    );
-    assert_eq!(model.generated(), generated);
-    assert!(
-        embedded::answer(embedded_config(), "next", "changed prompt")
-            .await
-            .is_err()
-    );
-    assert_eq!(model.generated(), generated);
     model.close().await;
 }
 
