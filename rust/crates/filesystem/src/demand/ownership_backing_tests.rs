@@ -49,6 +49,7 @@ fn exact_backing_mode(mode: u8) {
             bytes_total: bytes,
             bytes_current: bytes as i64,
             bytes_max: bytes,
+            output: (),
         }
     );
     assert_eq!(

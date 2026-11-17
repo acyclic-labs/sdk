@@ -175,24 +175,54 @@ fn scopes_restore_after_unwind_and_isolate_threads() {
     assert_eq!(FIRST_ALLOCATION.get(), None);
 }
 
-#[test]
-fn nested_scopes_accumulate_and_restore_the_parent() {
-    use std::hint::black_box;
-    let mut child = AllocationInfo::default();
-    let parent = measure(|| {
-        drop(black_box(Box::new([0u8; 7])));
-        child = measure(|| drop(black_box(Box::new([0u8; 11]))));
-        drop(black_box(Box::new([0u8; 13])));
-    });
-    assert_eq!(child.count_total, 1);
-    assert_eq!(child.bytes_total, 11);
-    assert_eq!(parent.count_total, 3);
-    assert_eq!(parent.bytes_total, 31);
-    assert_eq!(parent.count_current, 0);
-    assert_eq!(parent.bytes_current, 0);
-    assert_eq!(parent.count_max, 1);
-    assert_eq!(parent.bytes_max, 13);
-    assert_eq!(COUNTER.get(), None);
+struct ReturnedStorage<'a> {
+    bytes: Box<[u8]>,
+    drops: &'a Cell<usize>,
+}
+
+impl Drop for ReturnedStorage<'_> {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+    }
+}
+
+proptest! {
+    #[test]
+    fn returned_storage_lifetimes_follow_the_active_scope(size in 1usize..257) {
+        let drops = Cell::new(0);
+        let child = measure(|| ReturnedStorage {
+            bytes: std::hint::black_box(vec![0x5a; size].into_boxed_slice()),
+            drops: &drops,
+        });
+        prop_assert_eq!(drops.get(), 0);
+        prop_assert!(child.output.bytes.iter().all(|byte| *byte == 0x5a));
+        prop_assert_eq!((child.count_total, child.count_current, child.count_max), (1, 1, 1));
+        prop_assert_eq!((child.bytes_total, child.bytes_current, child.bytes_max), (size as u64, size as i64, size as u64));
+        prop_assert_eq!(current_allocations(), None);
+        let later = measure(|| drop(child.output));
+        prop_assert_eq!(drops.get(), 1);
+        prop_assert_eq!((later.count_total, later.count_current, later.bytes_current), (0, -1, -(size as i64)));
+        prop_assert_eq!((child.count_current, child.bytes_current), (1, size as i64));
+
+        let parent = measure(|| {
+            let child = measure(|| ReturnedStorage {
+                bytes: std::hint::black_box(vec![0x5a; size].into_boxed_slice()),
+                drops: &drops,
+            });
+            assert_eq!(drops.get(), 1);
+            assert_eq!(child.output.bytes.len(), size);
+            let before = current_allocations().unwrap();
+            assert_eq!((before.count_current, before.bytes_current), (1, size as i64));
+            drop(child.output);
+            assert_eq!(drops.get(), 2);
+            let after = current_allocations().unwrap();
+            assert_eq!((after.count_current, after.bytes_current), (0, 0));
+            assert_eq!((child.count_current, child.bytes_current), (1, size as i64));
+        });
+        prop_assert_eq!((parent.count_total, parent.count_current, parent.count_max), (1, 0, 1));
+        prop_assert_eq!((parent.bytes_total, parent.bytes_current, parent.bytes_max), (size as u64, 0, size as u64));
+        prop_assert_eq!(current_allocations(), None);
+    }
 }
 
 #[test]

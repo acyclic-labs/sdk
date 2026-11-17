@@ -70,13 +70,15 @@ use std::{
 };
 /// Successful allocations and net live storage within a measurement scope.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AllocationInfo {
+pub struct AllocationInfo<T = ()> {
     pub count_total: u64,
     pub count_current: i64,
     pub count_max: u64,
     pub bytes_total: u64,
     pub bytes_current: i64,
     pub bytes_max: u64,
+    /// Callback output, retained until its caller consumes or drops it.
+    pub output: T,
 }
 impl std::ops::AddAssign for AllocationInfo {
     fn add_assign(&mut self, other: Self) {
@@ -134,21 +136,30 @@ impl Drop for Scope {
     }
 }
 /// Measure this thread, including nested scopes; restore on unwind without allocating.
+/// The callback output is retained after the scope; its later destruction is not measured.
 ///
 /// # Panics
 ///
 /// If this binary does not install [`CountingAllocator`], which would report
 /// every closure as allocation-free.
-pub fn measure(run: impl FnOnce()) -> AllocationInfo {
+pub fn measure<T>(run: impl FnOnce() -> T) -> AllocationInfo<T> {
     assert!(
         INSTALLED.load(Ordering::Relaxed),
         "acyclic_test_support::measure needs `acyclic_test_support::counting_allocator!();` at this binary's crate root"
     );
     let scope = Scope(COUNTER.replace(Some(AllocationInfo::default())));
-    run();
+    let output = run();
     let result = COUNTER.get().unwrap_or_default();
     drop(scope);
-    result
+    AllocationInfo {
+        count_total: result.count_total,
+        count_current: result.count_current,
+        count_max: result.count_max,
+        bytes_total: result.bytes_total,
+        bytes_current: result.bytes_current,
+        bytes_max: result.bytes_max,
+        output,
+    }
 }
 /// Observe completed allocator operations in this thread's active measurement.
 /// This does not allocate or start another scope.

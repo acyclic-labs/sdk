@@ -39,7 +39,7 @@ rust_library(
     ],
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "@sdk_crates//serde-1.0.229",
-        "@sdk_crates//windows_sys_0_61_2-0.61.2",
+        "@sdk_crates//windows-sys-0.61.2",
     ],
     }),
     visibility = ["//visibility:public"],

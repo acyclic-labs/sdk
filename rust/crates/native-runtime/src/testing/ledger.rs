@@ -387,11 +387,11 @@ mod tests {
     #[test]
     fn work_spawned_by_an_operation_counts_after_the_operation_returns() {
         let ((), ledger) = world(async {
-            let task = operation("detached", async {
-                spawn(async {
+            let (task,) = operation("detached", async {
+                (spawn(async {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                     crate::cost::charge(Cost::Fsync);
-                })
+                }),)
             })
             .await;
             task.await.ok();

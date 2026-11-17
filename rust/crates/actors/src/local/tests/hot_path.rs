@@ -80,29 +80,22 @@ async fn call_hold_publication() -> TestResult {
         }),
         Err(Error::Invalid("discard original hold"))
     ));
-    let mut held = None;
     let before = provider.requests();
     let work = acyclic_test_support::measure(|| {
-        held = Some(
-            binding
-                .transaction(|state| {
-                    assert_eq!(state.escrow()?.remaining(), Some(5));
-                    state.hold_escrow(Some(2))
-                })
-                .unwrap(),
-        );
+        binding.transaction(|state| {
+            assert_eq!(state.escrow()?.remaining(), Some(5));
+            state.hold_escrow(Some(2))
+        })
     });
     assert_eq!((work.count_total, work.bytes_total), (0, 0));
+    let held = work.output?;
     let mut prepared = binding.prepare_publish(
         &record(0),
         None,
         transition(7, AlarmChange::Keep),
         key("hold/request")?,
     )?;
-    let request = call.request(
-        acyclic_stream::OwnedBytes::from("run"),
-        held.ok_or("missing original hold")?,
-    )?;
+    let request = call.request(acyclic_stream::OwnedBytes::from("run"), held)?;
     prepared.join(request.into())?;
     let snapshot = store
         .submit_retained(prepared)
@@ -135,7 +128,8 @@ async fn call_hold_publication() -> TestResult {
     let hold = journal.hold().ok_or("missing durable hold")?;
     assert_eq!(hold.remaining(), Some(2));
     assert_eq!(
-        remaining.unwrap() + hold.remaining().unwrap(),
+        remaining.ok_or("missing remaining balance")?
+            + hold.remaining().ok_or("missing held balance")?,
         5,
         "request created or refunded funding"
     );
@@ -302,11 +296,12 @@ async fn publication_and_reopen() -> TestResult {
         });
         // Negative control reconstructs the same path as the former append
         // preparation did, including its temporary formatting buffer.
-        let duplicated = acyclic_test_support::measure(|| {
-            std::hint::black_box(
-                StreamPath::new(format!("{}/journal", prepared.own.as_ref().unwrap())).unwrap(),
-            );
+        let own = prepared.own.as_ref().ok_or("missing journal owner")?;
+        let duplicated = acyclic_test_support::measure(|| -> TestResult {
+            std::hint::black_box(StreamPath::new(format!("{own}/journal"))?);
+            Ok(())
         });
+        duplicated.output?;
         assert_eq!(shared.count_total, 0);
         assert_eq!(shared.bytes_total, 0);
         assert!(duplicated.count_total >= 2);
@@ -482,8 +477,8 @@ fn escrow_debit_histories() -> TestResult {
                     assert_eq!(hold.remaining(), units);
                     if let Some(initial) = initial {
                         assert_eq!(
-                            u128::from(candidate.remaining().unwrap())
-                                + u128::from(hold.remaining().unwrap()),
+                            u128::from(candidate.remaining().ok_or("missing finite balance")?)
+                                + u128::from(hold.remaining().ok_or("missing finite hold")?),
                             u128::from(initial)
                         );
                     } else {
@@ -560,27 +555,34 @@ async fn observation_work() -> TestResult {
         let before = provider.requests();
         // With no competing work, MemoryStream completes in one poll. Both
         // paths pay the same real head observation; only the control decodes.
-        let head = acyclic_test_support::measure(|| {
+        let head = acyclic_test_support::measure(|| -> TestResult {
             provider
                 .head(snapshot.path().clone())
                 .now_or_never()
-                .unwrap()
-                .unwrap();
+                .ok_or("head did not complete in one poll")??;
+            Ok(())
         });
-        let observed = acyclic_test_support::measure(|| {
+        head.output?;
+        let observed = acyclic_test_support::measure(|| -> TestResult {
             assert!(
                 store
                     .observe(&snapshot)
                     .now_or_never()
-                    .unwrap()
-                    .unwrap()
+                    .ok_or("observation did not complete in one poll")??
                     .is_none()
             );
+            Ok(())
         });
+        observed.output?;
         // Negative control executes the old unconditional Actor state decode.
-        let loaded = acyclic_test_support::measure(|| {
-            store.load(&address).now_or_never().unwrap().unwrap();
+        let loaded = acyclic_test_support::measure(|| -> TestResult {
+            store
+                .load(&address)
+                .now_or_never()
+                .ok_or("load did not complete in one poll")??;
+            Ok(())
         });
+        loaded.output?;
         assert_eq!(observed.count_total, head.count_total);
         assert!(loaded.count_total >= observed.count_total + u64::try_from(population)?);
         assert_eq!(provider.requests().since(before).control(), 3);
@@ -716,7 +718,7 @@ async fn accepted_call_recovery_survives_physical_loss() -> TestResult {
             })
             .await?;
         while let Some(record) = records.try_next().await? {
-            crate::call::codec_fuzz::check_record(&record, &journal);
+            crate::call::codec_fuzz::check_record(&record, &journal)?;
             journal.apply(&record)?;
         }
         assert_eq!(journal.next(), u64::from(tail));
@@ -875,38 +877,37 @@ async fn resident_work() -> TestResult {
         // a large resident map is not evidence that one state record fits.
         // Negative control copies all metadata as the former transaction did.
         let cloned = acyclic_test_support::measure(|| {
-            binding
-                .transaction(|state| {
-                    std::hint::black_box(
-                        state
-                            .entries()
-                            .map(|(key, value)| (key.to_owned(), value.clone()))
-                            .collect::<std::collections::BTreeMap<_, _>>(),
-                    );
-                    Ok(())
-                })
-                .unwrap();
+            binding.transaction(|state| {
+                std::hint::black_box(
+                    state
+                        .entries()
+                        .map(|(key, value)| (key.to_owned(), value.clone()))
+                        .collect::<std::collections::BTreeMap<_, _>>(),
+                );
+                Ok(())
+            })
         });
+        cloned.output?;
         assert!(cloned.count_total >= u64::try_from(population)?);
         let before = provider.requests();
-        let reads = acyclic_test_support::measure(|| {
+        let reads = acyclic_test_support::measure(|| -> TestResult {
             for _ in 0..128 {
                 assert_eq!(
-                    binding.get("key-000000").unwrap().map(Bytes::as_ref),
+                    binding.get("key-000000")?.map(Bytes::as_ref),
                     Some(b"untouched".as_slice())
                 );
-                binding
-                    .transaction(|state| {
-                        assert_eq!(
-                            state.get("key-000000").map(Bytes::as_ref),
-                            Some(b"untouched".as_slice())
-                        );
-                        assert_eq!(state.escrow()?.remaining(), Some(2));
-                        Ok(())
-                    })
-                    .unwrap();
+                binding.transaction(|state| {
+                    assert_eq!(
+                        state.get("key-000000").map(Bytes::as_ref),
+                        Some(b"untouched".as_slice())
+                    );
+                    assert_eq!(state.escrow()?.remaining(), Some(2));
+                    Ok(())
+                })?;
             }
+            Ok(())
         });
+        reads.output?;
         assert_eq!(reads.count_total, 0, "reads must borrow the resident cut");
         assert_eq!(provider.requests().since(before).data(), 0);
         assert_eq!(provider.requests().since(before).control(), 0);
@@ -919,26 +920,26 @@ async fn resident_work() -> TestResult {
         for _ in 0..2 {
             let put_key = "key-000000".to_owned();
             let put = acyclic_test_support::measure(|| {
-                binding
-                    .transaction(|state| {
-                        state.put(put_key, Bytes::from_static(b"accepted"));
-                        Ok(())
-                    })
-                    .unwrap();
+                binding.transaction(|state| {
+                    state.put(put_key, Bytes::from_static(b"accepted"));
+                    Ok(())
+                })
             });
+            put.output?;
             assert_eq!(
                 put.count_total, 1,
                 "an existing key needs only undo storage, never a key clone"
             );
-            let debit = acyclic_test_support::measure(|| {
+            let debit = acyclic_test_support::measure(|| -> TestResult {
                 assert_eq!(
                     binding
-                        .transaction(|state| state.hold_escrow(Some(1)))
-                        .unwrap()
+                        .transaction(|state| state.hold_escrow(Some(1)))?
                         .remaining(),
                     Some(1)
                 );
+                Ok(())
             });
+            debit.output?;
             assert_eq!(
                 debit.count_total, 0,
                 "holding funding must change only the fixed field"
@@ -1013,10 +1014,11 @@ fn projected_positions<P: StreamProvider>(
             },
         };
         let refused = acyclic_test_support::measure(|| match binding.apply(packet) {
-            Err(Error::Conflict) if conflict => {}
-            Err(Error::Invalid("alarm deadline is zero")) if !conflict => {}
-            outcome => panic!("wrong state admission refusal: {outcome:?}"),
+            Err(Error::Conflict) if conflict => Ok(()),
+            Err(Error::Invalid("alarm deadline is zero")) if !conflict => Ok(()),
+            outcome => Err(format!("wrong state admission refusal: {outcome:?}")),
         });
+        refused.output?;
         assert_eq!(refused.count_total, 0);
         assert_eq!(refused.bytes_total, 0);
     }
@@ -1039,7 +1041,8 @@ fn projected_positions<P: StreamProvider>(
                 deadline: deadline.into(),
             },
         };
-        let accepted = acyclic_test_support::measure(|| binding.apply(packet).unwrap());
+        let accepted = acyclic_test_support::measure(|| binding.apply(packet));
+        accepted.output?;
         assert_eq!(accepted.count_total, 0);
         assert_eq!(accepted.bytes_total, 0);
     }
@@ -1126,7 +1129,7 @@ fn rollback<P: StreamProvider>(
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _: Result<(), Error> = binding.transaction(|state| {
             mutate(state)?;
-            panic!("rollback on unwind")
+            std::panic::resume_unwind(Box::new(()))
         });
     }));
     assert!(panicked.is_err());

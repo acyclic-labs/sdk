@@ -112,14 +112,7 @@ pub(super) fn execute<T>(operation: impl FnOnce() -> T) -> T {
     if ACTIVE.get() {
         return operation();
     }
-    sdk_docs::with_command_executor(
-        |command| {
-            runtime::tool_output(command)
-                .map(Ok)
-                .unwrap_or_else(|| command.output())
-        },
-        operation,
-    )
+    sdk_docs::with_command_executor(|command| command.output(), operation)
 }
 
 impl Queries {
@@ -134,9 +127,6 @@ impl Queries {
         let state = Rc::clone(&self.0);
         sdk_docs::with_command_executor(
             move |command| {
-                if let Some(output) = runtime::tool_output(command) {
-                    return Ok(output);
-                }
                 let Some(key) = query(command) else {
                     return command.output();
                 };

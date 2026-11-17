@@ -115,7 +115,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "identities" => identities(bytes),
         "actor_codecs" => actor_codecs(bytes),
         "call_record" => {
-            acyclic_actors::call::codec_fuzz::check(bytes);
+            assert!(acyclic_actors::call::codec_fuzz::check(bytes).is_ok());
             futures::executor::block_on(acyclic_actors::call::model::check(bytes))?;
         }
         "filesystem_codecs" => filesystem_codecs(bytes),
@@ -302,7 +302,7 @@ pub fn stream_persistence(bytes: &[u8]) {
 }
 
 pub fn ids(bytes: &[u8]) {
-    acyclic_machines::identity_codec_fuzz::check(bytes);
+    assert!(acyclic_machines::identity_codec_fuzz::check(bytes).is_ok());
     match acyclic_fs::ObjectId::from_prefix(bytes) {
         Ok((id, tail)) => {
             let encoded = id.to_bytes();

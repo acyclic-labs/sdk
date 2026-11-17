@@ -233,7 +233,9 @@ async fn machines_call_remote_pages_keep_original_cut_credit_and_observations()
         {
             let bytes = codec_fuzz::capture_machine(&observation)?;
             for end in 0..=bytes.len() {
-                codec_fuzz::check("acyclic.machines.v1.MachineState", &bytes[..end]);
+                assert!(
+                    codec_fuzz::check("acyclic.machines.v1.MachineState", &bytes[..end]).is_ok()
+                );
             }
         }
         assert_eq!(remote.inspect_machine(child).await?, observation);
@@ -265,14 +267,19 @@ async fn machines_call_remote_pages_keep_original_cut_credit_and_observations()
             use prost::Message as _;
             let bytes = codec_fuzz::capture_machine_page(&page, after, credit.get())?;
             for end in 0..=bytes.len() {
-                codec_fuzz::check("acyclic.machines.v1.MachinePage", &bytes[..end]);
+                assert!(
+                    codec_fuzz::check("acyclic.machines.v1.MachinePage", &bytes[..end]).is_ok()
+                );
             }
             let mut changed = wire::MachinePage::decode(bytes.as_slice())?;
             changed.next = changed
                 .machines
                 .first()
                 .and_then(|machine| machine.machine.clone());
-            codec_fuzz::check("acyclic.machines.v1.MachinePage", &changed.encode_to_vec());
+            assert!(
+                codec_fuzz::check("acyclic.machines.v1.MachinePage", &changed.encode_to_vec())
+                    .is_ok()
+            );
         }
         after = page.next;
     }
@@ -311,7 +318,10 @@ async fn machines_call_remote_pages_keep_original_cut_credit_and_observations()
     #[cfg(feature = "test-support")]
     {
         use prost::Message as _;
-        crate::grpc::codec_fuzz::check("acyclic.machines.v1.ResultPage", &page.encode_to_vec());
+        assert!(
+            crate::grpc::codec_fuzz::check("acyclic.machines.v1.ResultPage", &page.encode_to_vec())
+                .is_ok()
+        );
     }
     assert!(
         decode_result_page(page.clone(), end, NonZeroU32::MIN)?

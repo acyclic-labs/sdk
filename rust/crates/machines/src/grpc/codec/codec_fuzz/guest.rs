@@ -1,7 +1,7 @@
 use super::*;
 use crate::grpc::{files, recovery};
 
-pub(super) fn check(name: &str, bytes: &[u8]) {
+pub(super) fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let machine = MachineId::from_digest([1; 32]);
     let foreign = MachineId::from_digest([9; 32]);
     match name {
@@ -14,14 +14,14 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                         assert_eq!(exited, terminal, "refusal cannot consume terminal state");
                     }
                     result.map(|output| (output, exited))
-                });
+                })?;
                 if let Some((output, exited)) = original {
                     assert!(!terminal);
                     assert_eq!(
                         exited,
                         matches!(output, ExecOutput::ExitCode(_) | ExecOutput::Stopped(_))
                     );
-                    let value = wire::ExecOutput::decode(bytes).unwrap();
+                    let value = wire::ExecOutput::decode(bytes)?;
                     let mut foreign_terminal = false;
                     assert!(
                         decode_exec_output(value.clone(), foreign, &mut foreign_terminal).is_err()
@@ -40,7 +40,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                 for limit in [1, MAX_OUTPUT_READ_BYTES] {
                     if let Some(output) = project::<wire::MachineOutput, _>(bytes, |value| {
                         decode_machine_output(value, machine, offset, limit)
-                    }) {
+                    })? {
                         assert!(output.offset >= offset);
                         assert!(
                             output
@@ -50,7 +50,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                         );
                         assert!(
                             decode_machine_output(
-                                wire::MachineOutput::decode(bytes).unwrap(),
+                                wire::MachineOutput::decode(bytes)?,
                                 foreign,
                                 offset,
                                 limit
@@ -66,8 +66,8 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                 for limit in [1, MAX_OUTPUT_READ_BYTES] {
                     if let Some(result) = project::<wire::ReadFileResponse, _>(bytes, |value| {
                         files::decode_read_response(value, machine, offset, limit)
-                    }) {
-                        let value = wire::ReadFileResponse::decode(bytes).unwrap();
+                    })? {
+                        let value = wire::ReadFileResponse::decode(bytes)?;
                         assert!(
                             files::decode_read_response(value.clone(), foreign, offset, limit)
                                 .is_err()
@@ -78,7 +78,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                         );
                         if let FileRead::Data(data) = result {
                             if data.len() > 1 {
-                                let short = u32::try_from(data.len() - 1).unwrap();
+                                let short = u32::try_from(data.len() - 1)?;
                                 assert!(
                                     files::decode_read_response(value, machine, offset, short)
                                         .is_err()
@@ -94,8 +94,8 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                 for length in [0, 1, MAX_OUTPUT_READ_BYTES as usize] {
                     if let Some(result) = project::<wire::WriteFileResponse, _>(bytes, |value| {
                         files::decode_write_response(value, machine, offset, length)
-                    }) {
-                        let value = wire::WriteFileResponse::decode(bytes).unwrap();
+                    })? {
+                        let value = wire::WriteFileResponse::decode(bytes)?;
                         assert_eq!(
                             files::decode_write_response(value.clone(), foreign, offset, length),
                             Err(ProviderError::FileIndeterminate(foreign))
@@ -129,8 +129,8 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
         "acyclic.machines.v1.RecoveredAdmission" => {
             if let Some(operation) = project::<wire::RecoveredAdmission, _>(bytes, |value| {
                 recovery::validate_recovered_admission(&value)
-            }) {
-                let mut value = wire::RecoveredAdmission::decode(bytes).unwrap();
+            })? {
+                let mut value = wire::RecoveredAdmission::decode(bytes)?;
                 let foreign = if operation == OperationId::from_digest([9; 32]) {
                     OperationId::from_digest([8; 32])
                 } else {
@@ -144,17 +144,17 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             if project::<wire::MachineAdmissions, _>(bytes, |value| {
                 recovery::decode_fork_admissions(&value)
                     .map(|value| (value.operation, value.provenance, value.count))
-            })
+            })?
             .is_some()
             {
-                let mut value = wire::MachineAdmissions::decode(bytes).unwrap();
+                let mut value = wire::MachineAdmissions::decode(bytes)?;
                 value.operation = None;
                 assert!(recovery::decode_fork_admissions(&value).is_err());
             }
         }
         "acyclic.machines.v1.ResultCut" => {
             if let Some(cut) =
-                project::<wire::ResultCut, _>(bytes, |value| decode_result_cut(Some(&value)))
+                project::<wire::ResultCut, _>(bytes, |value| decode_result_cut(Some(&value)))?
             {
                 assert_eq!(decode_result_cut(Some(&cut.into())), Ok(cut));
                 let mut value = wire::ResultCut::from(cut);
@@ -164,7 +164,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
         }
         "acyclic.machines.v1.ResultCursor" => {
             if let Some(cursor) =
-                project::<wire::ResultCursor, _>(bytes, |value| decode_result_cursor(Some(&value)))
+                project::<wire::ResultCursor, _>(bytes, |value| decode_result_cursor(Some(&value)))?
             {
                 assert_eq!(decode_result_cursor(Some(&cursor.into())), Ok(cursor));
                 let mut value = wire::ResultCursor::from(cursor);
@@ -174,15 +174,15 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
         }
         "acyclic.machines.v1.ResultPage" => {
             let Ok(wire) = wire::ResultPage::decode(bytes) else {
-                return;
+                return Ok(());
             };
             let Ok(cursor) = decode_result_cursor(wire.cursor.as_ref()) else {
-                return;
+                return Ok(());
             };
             for credit in [NonZeroU32::MIN, NonZeroU32::MAX] {
                 if let Some(page) = project::<wire::ResultPage, _>(bytes, |value| {
                     decode_result_page(value, cursor, credit)
-                }) {
+                })? {
                     assert_eq!(page.cursor, cursor);
                     assert!(page.machines.len() as u64 <= u64::from(credit.get()));
                     let mut foreign = cursor;
@@ -197,7 +197,8 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                     substituted.next = Some(cursor.into());
                     assert!(decode_result_page(substituted, cursor, credit).is_err());
                     if page.machines.len() > 1 {
-                        let short = NonZeroU32::new(page.machines.len() as u32 - 1).unwrap();
+                        let short = NonZeroU32::new(u32::try_from(page.machines.len() - 1)?)
+                            .ok_or("short page credit is zero")?;
                         assert!(decode_result_page(wire.clone(), cursor, short).is_err());
                     }
                 }
@@ -205,4 +206,5 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
         }
         _ => {}
     }
+    Ok(())
 }

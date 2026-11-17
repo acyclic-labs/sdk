@@ -31,6 +31,7 @@ function fixture({ module = false } = {}) {
   cpSync("scripts/jsonc.mjs", join(root, "scripts/jsonc.mjs"));
   cpSync("scripts/protobuf-bindings.mjs", join(root, "scripts/protobuf-bindings.mjs"));
   cpSync("scripts/generate-stream-token-operations.mjs", join(root, "scripts/generate-stream-token-operations.mjs"));
+  cpSync("scripts/workspace-model.mjs", join(root, "scripts/workspace-model.mjs"));
   if (module) writeFileSync(join(root, "MODULE.bazel"), 'module(name = "fixture")\n');
   cpSync("rust-toolchain.toml", join(root, "rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));
@@ -43,7 +44,9 @@ function fixture({ module = false } = {}) {
   mkdirSync(join(root, "local/src"), { recursive: true });
   writeFileSync(join(root, "local/Cargo.toml"), '[package]\nname = "local"\nversion = "0.1.0"\nedition = "2024"\n');
   writeFileSync(join(root, "local/src/lib.rs"), "pub fn two() -> u8 {\n    2\n}\n");
-  execFileSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, stdio: "ignore" });
+  writeFileSync(join(root, "Cargo.lock"), 'version = 4\n\n[[package]]\nname = "local"\nversion = "0.1.0"\n\n[[package]]\nname = "member"\nversion = "0.1.0"\ndependencies = ["local"]\n');
+  writeFileSync(join(root, "cargo-bazel.Cargo.lock"), 'version = 4\n\n[[package]]\nname = "direct-cargo-bazel-deps"\nversion = "0.0.1"\n');
+  writeFileSync(join(root, "cargo-bazel-lock.json"), '{"crates":{},"conditions":{}}');
   execFileSync("git", ["init", "-q"], { cwd: root });
   execFileSync("git", ["add", "-A"], { cwd: root });
   const run = (mode, env = {}) => spawnSync(process.execPath, ["scripts/bazel-build-files.mjs", mode], { cwd: root, encoding: "utf8", env: { ...process.env, ...env } });
@@ -84,6 +87,27 @@ test("check accepts the generated files and fails on a stale BUILD file", () => 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a patched crate uses crate-universe spokes for its transitive registry dependencies", () => {
+  const {root, run} = fixture();
+  try {
+    writeFileSync(join(root, 'Cargo.toml'), '[workspace]\nmembers=["member"]\n[patch.crates-io]\npatched={path="patched"}\n');
+    writeFileSync(join(root, 'member/Cargo.toml'), '[package]\nname="member"\nversion="0.1.0"\n[dependencies]\ntop="1"\n');
+    mkdirSync(join(root, 'patched/src'), {recursive:true});
+    writeFileSync(join(root, 'patched/Cargo.toml'), '[package]\nname="patched"\nversion="0.1.0"\n[dependencies]\ntransitive="1"\n');
+    writeFileSync(join(root, 'patched/src/lib.rs'), '');
+    writeFileSync(join(root, 'Cargo.lock'), 'version=4\n[[package]]\nname="member"\nversion="0.1.0"\ndependencies=["top"]\n[[package]]\nname="patched"\nversion="0.1.0"\ndependencies=["transitive"]\n[[package]]\nname="top"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\ndependencies=["patched"]\n[[package]]\nname="transitive"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
+    writeFileSync(join(root, 'cargo-bazel-lock.json'), JSON.stringify({conditions: {}, crates: {
+      'top 1.0.0': {targets:[{Library:{crate_name:'top'}}], common_attrs:{deps:[{id:'patched 0.1.0',target:'patched'}]}},
+      'transitive 1.0.0': {targets:[{Library:{crate_name:'transitive'}}], common_attrs:{}},
+    }}));
+    execFileSync('git', ['add', '-A'], {cwd: root});
+    const result = run('write');
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(readFileSync(join(root, 'patched/BUILD.bazel'), 'utf8'), /@sdk_crates__transitive-1\.0\.0\/\/:transitive/);
+    assert.match(readFileSync(join(root, 'cargo.MODULE.bazel'), 'utf8'), /"sdk_crates__transitive-1\.0\.0"/);
+  } finally { rmSync(root, {recursive: true, force: true}); }
 });
 
 test("only a package that declares test-env-inherit gives its tests those host variables", () => {

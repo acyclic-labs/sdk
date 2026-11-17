@@ -394,6 +394,7 @@ fn physical_bound(length: usize, broken: bool) -> Result<(), &'static str> {
         bytes_total: bytes,
         bytes_current: bytes as i64,
         bytes_max: bytes,
+        output: (),
     };
     if heap != expected {
         return Err("physical allocation bound");
