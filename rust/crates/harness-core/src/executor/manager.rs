@@ -292,6 +292,11 @@ impl StockExecution<'_> {
         if rewrite.version != 1 || selected == 0 || selected > supplied {
             return Err(invalid("context manager selected an invalid source range"));
         }
+        // `manager_material` inserts the previous summary after the leading
+        // system header, so the final request is prefix + summary + groups.
+        // `leading` counts the replaced header messages and the summary is
+        // the first source message after that header; there is no extra
+        // summary offset to subtract.
         let selected = selected
             .checked_sub(prefix.len())
             .and_then(|selected| selected.checked_add(leading))
