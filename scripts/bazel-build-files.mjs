@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
+import { parseJsonc } from "./jsonc.mjs";
 
 // The workspace this generator describes. It defaults to the repository that holds this
 // script, and --root points the same generator at another Cargo workspace (Cloud).
@@ -117,6 +118,9 @@ const wasmMetadata = JSON.parse(execFileSync("cargo", ["metadata", "--format-ver
 for (const p of wasmMetadata.packages) {
   if (![...packages.values()].some(q => q.manifest_path === p.manifest_path)) packages.set(p.id, p);
 }
+// Path crates belong to this repository before either graph is partitioned.
+// A crate universe must never generate a second BUILD file in their source tree.
+for (const p of packages.values()) if (p.source === null) members.add(p.id);
 // Cargo resolves each wasm artifact separately; `cargo tree` reports the exact feature set and
 // dependency edges of that selection, so neither another member's defaults nor a host-only
 // target can enter the wasm graph.
@@ -155,10 +159,6 @@ const wasmWorkspaceFeatures = new Map(), wasmPinned = new Map();
 for (const [id, features] of wasmTreeFeatures) (members.has(id) ? wasmWorkspaceFeatures : wasmPinned).set(id, features);
 const dir = p => path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/");
 tomlFiles(root, [...new Set(["Cargo.toml", "rust-toolchain.toml", ...base.packages.filter(p => p.source === null).map(p => path.relative(root, p.manifest_path))])]);
-// Local path crates are first-party: their BUILD files are generated here, so the
-// crate universe must not carry them as local path dependencies. Cargo tests only the
-// workspace, so a path crate renders its library and build script alone.
-for (const p of base.packages) if (p.source === null) members.add(p.id);
 const label = p => `//${dir(p)}`;
 const libOf = p => p.targets.find(t => t.kind.some(k => k === "lib" || k === "rlib" || k === "proc-macro"));
 const crateName = target => target.name.replaceAll("-", "_");
@@ -174,7 +174,6 @@ const wasmGenerated = wasmSelections.map(selection => {
     entry: wasmArtifacts.get(selection.packageName),
   };
 });
-const wasmGeneratedTarget = name => `//:wasm_${name}_generated`;
 const wasmNodeModulesTarget = name => `//:wasm_${name}_node_modules`;
 const workspaceTargetName = name => `workspace_${name.replaceAll("@", "").replaceAll("/", "_").replaceAll("-", "_")}`;
 const starlarkDict = entries => `{\n${entries.map(([key, value]) => `        ${q(key)}: ${q(value)},\n`).join("")}    }`;
@@ -184,14 +183,37 @@ for (const file of execFileSync("git", ["ls-files", "typescript/packages/*/packa
   const pkg = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
   if (pkg.name) workspacePackages.set(pkg.name, path.dirname(file).replaceAll("\\", "/"));
 }
-// The workspace packages a wasm package's TypeScript package depends on.
+// Assemble the complete locked runtime closure, including the consumer itself.
+// Its sources and generated artifacts then share one physical package directory.
+const npmLock = wasmSelections.some(selection => selection.wasmPackage)
+  ? parseJsonc(fs.readFileSync(path.join(root, "bun.lock"), "utf8")) : undefined;
+const npmRepositories = new Map();
 const wasmNodeModules = new Map();
 for (const selection of wasmSelections) {
   if (!selection.wasmPackage) continue;
-  const manifest = path.join(root, `typescript/packages/${selection.outputPackage ?? selection.name}`, "package.json");
-  if (!fs.existsSync(manifest)) continue;
-  const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"));
-  wasmNodeModules.set(selection.name, Object.keys(pkg.dependencies ?? {}).filter(name => workspacePackages.has(name)).map(name => ({ name, dir: workspacePackages.get(name) })));
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, `typescript/packages/${selection.outputPackage ?? selection.name}/package.json`), "utf8"));
+  const closure = new Map();
+  const visit = name => {
+    if (closure.has(name)) return;
+    const dir = workspacePackages.get(name);
+    let dependencies;
+    if (dir) {
+      closure.set(name, { name, dir });
+      dependencies = JSON.parse(fs.readFileSync(path.join(root, dir, "package.json"), "utf8"));
+    } else {
+      const locked = npmLock.packages[name];
+      if (!locked || !locked[3]?.startsWith("sha512-")) throw new Error(`No locked registry archive for ${name}`);
+      const resolved = locked[0], at = resolved.lastIndexOf("@");
+      const packageName = resolved.slice(0, at), version = resolved.slice(at + 1);
+      const repository = `npm_${workspaceTargetName(name)}`;
+      npmRepositories.set(repository, { name: packageName, version, integrity: locked[3], patch: npmLock.patchedDependencies?.[resolved] });
+      closure.set(name, { name, repository });
+      dependencies = locked[2];
+    }
+    for (const dependency of Object.keys({ ...dependencies.dependencies, ...dependencies.peerDependencies })) visit(dependency);
+  };
+  visit(pkg.name);
+  wasmNodeModules.set(selection.name, [...closure.values()]);
 }
 
 // Every tracked file belongs to the innermost member directory, or to the root package, as in Bazel.
@@ -724,7 +746,7 @@ function buildFile(p) {
       : {};
     const reads = runtimeData(target);
     const consumer = wasmTestConsumers[p.name];
-    if (consumer) reads.push(wasmGeneratedTarget(consumer), wasmNodeModulesTarget(consumer));
+    if (consumer) reads.push(wasmNodeModulesTarget(consumer));
     test(target.name, separate(target), reads, binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`);
   }
   for (const example of executables.filter(t => t.kind.includes("example") && !t.test)) {
@@ -832,25 +854,17 @@ function universeSpecs() {
 `);
 }
 
-// The wasm universe's pins, from the one wasm resolution. A pin names its universe (a spec of
-// one extension otherwise splices into every universe), and only a registry crate is pinned: a
-// path or patch source keeps its lockfile resolution.
+// A pin names its universe; first-party path crates use this repository's targets.
 function wasmSpecs() {
-  const registry = [...wasmPinned].filter(([id]) => packages.get(id).source?.startsWith("registry+"));
-  const paths = [...wasmPinned].filter(([id]) => !packages.get(id).source?.startsWith("registry+"));
-  const spec = (id, features, extra) => `${rule("crate_wasm.spec", [
+  return [...wasmPinned].sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => `${rule("crate_wasm.spec", [
     ["package", q(packages.get(id).name)],
-    ...extra,
+    ["version", q(`=${packages.get(id).version}`)],
     ["repositories", list([WASM_HUB])],
     ["package_alias", wasmSpliceKey.has(id) ? q(wasmSpliceKey.get(id)) : undefined],
     ["default_features", "False"],
     ["features", list([...features].sort())],
   ])}
-`;
-  return [
-    ...registry.sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => spec(id, features, [["version", q(`=${packages.get(id).version}`)]])),
-    ...paths.sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => spec(id, features, [["path", q(path.relative(root, path.dirname(packages.get(id).manifest_path)).replaceAll("\\", "/"))]])),
-  ].join("");
+`).join("");
 }
 
 // Workspace members that a third-party crate depends on (a [patch]). The wasm universe names
@@ -979,6 +993,16 @@ function moduleFile() {
     ![...members].some(id => packages.get(id).name === name) && packageOpt(name) !== undefined ? [[name, packageOpt(name)]] : []);
   return [
     HEADER,
+    npmRepositories.size ? `npm_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")\n` : "",
+    ...[...npmRepositories].sort().map(([repository, pkg]) => rule("npm_archive", [
+      ["name", q(repository)],
+      ["urls", list([`https://registry.npmjs.org/${pkg.name}/-/${pkg.name.split("/").at(-1)}-${pkg.version}.tgz`])],
+      ["integrity", q(pkg.integrity)],
+      ["strip_prefix", q("package")],
+      ["patches", pkg.patch ? list([fileLabel(pkg.patch)]) : undefined],
+      ["patch_args", pkg.patch ? list(["-p1"]) : undefined],
+      ["build_file_content", q('filegroup(name = "files", srcs = glob(["**"], exclude = ["BUILD.bazel"]), visibility = ["//visibility:public"])\n')],
+    ])),
     `rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")\n`,
     rule("rust.toolchain", [
       ["versions", list([channel])],
@@ -1105,12 +1129,16 @@ const wasmGeneratedRules = wasmGenerated.map(g => rule("wasm_package", [
 ])).join("\n");
 const wasmNodeModulesRules = wasmSelections.filter(selection => selection.wasmPackage).map(selection => {
   const deps = wasmNodeModules.get(selection.name) ?? [];
-  const filegroups = deps.map(dep => rule("filegroup", [
+  const filegroups = deps.filter(dep => dep.dir).map(dep => rule("filegroup", [
     ["name", q(workspaceTargetName(dep.name))],
-    ["srcs", `glob(${q([`${dep.dir}/**`])})`],
+    ["srcs", glob([`${dep.dir}/**`], [`${dep.dir}/generated/wasm/**`])],
     ["visibility", q(["//visibility:public"])],
   ])).join("\n");
-  const packages = deps.map(dep => [`:${workspaceTargetName(dep.name)}`, `${dep.name}=${dep.dir}`]);
+  const packages = deps.map(dep => [dep.dir ? `:${workspaceTargetName(dep.name)}` : `@${dep.repository}//:files`, `${dep.name}=${dep.dir ?? ""}`]);
+  for (const dep of deps.filter(dep => dep.dir)) {
+    const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
+    if (generated) packages.push([`:${generated.name}`, `${dep.name}/generated/wasm=`]);
+  }
   return `${filegroups}\n${rule("node_modules", [
     ["name", q(`wasm_${selection.name}_node_modules`)],
     ["packages", starlarkDict(packages)],

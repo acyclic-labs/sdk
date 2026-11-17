@@ -9,9 +9,6 @@ use std::{
 /// Process-wide step budget of one model process (test/model-driver.ts `MODEL_STEPS`).
 pub const MODEL_STEPS: u64 = 4096;
 
-/// The preload that points the model's relative wasm imports at the runfiles copy.
-const WASM_RUNFILES_PLUGIN: &str = "typescript/packages/stream/test/wasm-runfiles-plugin.mjs";
-
 /// A process initialization result retained by its original serialized owner.
 pub type Shared = OnceLock<io::Result<Mutex<Driver>>>;
 
@@ -52,24 +49,14 @@ impl Driver {
     /// Start a process with an explicit budget for tests at the exact boundary.
     pub fn budgeted(root: &Path, scenario: &str, fault: &str, steps: u64) -> io::Result<Self> {
         let mut child = Command::new("bun")
-            // Workspace packages live in the runfiles node_modules; NODE_PATH reaches them even
-            // when Bazel's source symlinks resolve to the checkout's real path.
-            .env("NODE_PATH", root.join("node_modules"))
-            // The generated wasm is a declared runfiles tree, not a checkout file.
-            .env(
-                "ACYCLIC_STREAM_WASM_DIR",
-                root.join("typescript/packages/stream/generated/wasm"),
-            )
-            .arg("--preload")
-            .arg(root.join(WASM_RUNFILES_PLUGIN))
             .arg(if scenario.starts_with("deadline") {
-                "typescript/packages/stream/test/session-deadline-model-driver.ts"
+                "node_modules/@acyclic-labs/stream/test/session-deadline-model-driver.ts"
             } else if scenario == "queue-work" {
-                "typescript/packages/stream/test/session-queue-work-driver.ts"
+                "node_modules/@acyclic-labs/stream/test/session-queue-work-driver.ts"
             } else if scenario == "queue" {
-                "typescript/packages/stream/test/session-queue-model-driver.ts"
+                "node_modules/@acyclic-labs/stream/test/session-queue-model-driver.ts"
             } else {
-                "typescript/packages/stream/test/session-model-driver.ts"
+                "node_modules/@acyclic-labs/stream/test/session-model-driver.ts"
             })
             .current_dir(root)
             .env("STREAM_SESSION_SCENARIO", scenario)

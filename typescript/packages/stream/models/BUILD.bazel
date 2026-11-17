@@ -44,12 +44,6 @@ rust_test(
         "@sdk_crates//serde_json-1.0.154",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
-        "//:typescript/packages/stream/test/session-deadline-model-driver.ts",
-        "//:typescript/packages/stream/test/session-model-driver.ts",
-        "//:typescript/packages/stream/test/session-queue-model-driver.ts",
-        "//:typescript/packages/stream/test/session-queue-work-driver.ts",
-        "//:typescript/packages/stream/test/wasm-runfiles-plugin.mjs",
-        "//:wasm_stream_generated",
         "//:wasm_stream_node_modules",
     ],
     tags = ["manual"],
