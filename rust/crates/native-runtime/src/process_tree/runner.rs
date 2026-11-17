@@ -915,7 +915,8 @@ fn host_frame(status: &mut File) -> io::Result<Option<(u8, i32)>> {
     let mut frame = [0_u8; 5];
     let mut filled = 0;
     while filled < frame.len() {
-        match status.read(&mut frame[filled..]) {
+        let tail = frame.get_mut(filled..).ok_or(io::ErrorKind::InvalidData)?;
+        match status.read(tail) {
             Ok(0) if filled == 0 => return Ok(None),
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
             Ok(length) => filled += length,
