@@ -22,14 +22,11 @@ mounted qualification separately.
 
 The portable [AgentHost suite](agent-host/README.md) drives the public host API against disposable backend storage, including exact uncertain retry, admission, spawn cuts, guest codec/cancellation and crash/reopen vectors. It is also an independent workspace crate for browser wasm builds and is re-exported as `acyclic_conformance::agent_host`.
 
-The `graphcoder-backends` vector runs the shipping binary against local, served
-and injected-seam backends. Its human policy uses the shared local human
-approver identity; an endpoint credential does not select that approval stage.
-The retained `mutations/backend_human_approval_identity.patch` restores the
-endpoint-principal policy and must fail with
-`principal is not the active approval stage`. Build `graphcoder` with
-`acyclic-native-runtime/test-support`, then run
-`cargo test -p acyclic-conformance --features graphcoder-backends --test graphcoder_backends graphcoder_runs_one_scenario_identically_on_every_backend -- --exact`.
+The `graphcoder-backends` vector runs the shipping `acyclic` binary against its
+self-hosted endpoint: an external client delivers attributed peer input to a
+live session, and selected discovery survives a serving process restart. Build
+`acyclic` with `acyclic-native-runtime/test-support`, then run
+`cargo test -p acyclic-conformance --features graphcoder-backends --test graphcoder_backends`.
 
 The `inference` feature supplies real-capture adapters for the eight `ModelProvider` vectors published at `acyclic_harness_core::model::conformance`: streaming, cancellation, paired tools/results, exact usage, typed refusals and deterministic replay. The public module exposes `Backend`, `verify`, `bench`, `suite!` and the shared `Counted` dispatch wrapper through `counted(provider)`. `inference-qualify` validates complete response families and their provenance; see [composition and qualification](../../../docs/backends/inference.md). This model seam is separate from the customer Inference context/run client. The host suite also includes cached OIDC identity admission and zero-read refusal vectors, with [local Dex qualification](../../../docs/backends/oidc.md).
 
