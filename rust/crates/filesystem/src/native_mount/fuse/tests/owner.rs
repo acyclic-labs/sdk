@@ -457,7 +457,12 @@ fn shared_host_survives_first_owner_tree_retirement()
     tree.terminate(None)?;
     std::fs::write(parent_root.path().join("parent"), b"after")?;
     assert_eq!(std::fs::read(parent_root.path().join("parent"))?, b"after");
-    assert!(session.stop()?);
+    // The host belongs to the last attached session. Dropping this one is the
+    // detach event that lets the host exit by itself.
+    let host = transport(&session).host_id().ok_or("shared host id absent")?;
+    let host_exit = process_event(host, false)?;
+    drop(session);
+    wait_exit(&host_exit)?;
     Ok(())
 }
 
