@@ -1511,7 +1511,7 @@ async fn a_terminal_release_fences_a_delayed_retain() -> Result<(), Box<dyn std:
 }
 
 #[tokio::test]
-async fn collection_cleans_a_stale_batch_from_an_interrupted_retain()
+async fn terminal_fence_collection_cleans_an_interrupted_retain()
 -> Result<(), Box<dyn std::error::Error>> {
     let medium = Shared::default();
     let retaining = Store::new(medium.clone()).account(b"terminal-recovery")?;
