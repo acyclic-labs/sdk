@@ -186,6 +186,7 @@ pub(crate) fn file_identity(path: &[u8], content: FixtureContent, metadata: &Hos
         if let Some(content) = content {
             let mut hash = blake3::Hasher::new();
             hash.update(b"acyclic-fs-native-file-fixture-content-v1\0");
+            hash.update(&identity);
             hash.update(&content);
             return *hash.finalize().as_bytes();
         }
@@ -216,6 +217,7 @@ pub(crate) fn file_identity(path: &[u8], content: FixtureContent, metadata: &Hos
         if let Some(content) = content {
             let mut hash = blake3::Hasher::new();
             hash.update(b"acyclic-fs-native-file-fixture-content-v1\0");
+            hash.update(&identity);
             hash.update(&content);
             return *hash.finalize().as_bytes();
         }
