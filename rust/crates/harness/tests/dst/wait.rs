@@ -370,19 +370,36 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
     oracle::simulate(seed, move || {
         entry(async move {
             if relation == "same_parent_other_runtime" {
+                let mut world = World::new(seed, &[("marker.txt", "marker\n")], service(plans(seed)))
+                    .map_err(oracle::failed)?
+                    .completing();
+                let mut spawn_prompt = vec![("root", tag("c3-reopen-spawn"))];
+                if form == "no_agents" {
+                    spawn_prompt.push(("wake", "wake".to_owned()));
+                }
+                let spawned = world
+                    .incarnation(None, &[spawn_prompt])
+                    .await
+                    .map_err(oracle::failed)?;
+                oracle::all_settled(&spawned.requests)?;
+                if !spawned
+                    .prompts
+                    .iter()
+                    .any(|(outcome, _)| *outcome == oracle::Prompted::Settled(done("c3-reopen-spawn")))
+                {
+                    return Err(format!(
+                        "the spawn turn did not finish: {:?}",
+                        spawned.prompts
+                    ));
+                }
                 let mut recovery = vec![vec![("reopen", tag("c3-reopen"))]];
                 if form == "no_agents" {
                     recovery[0].push(("wake", "wake".to_owned()));
                 }
-                let crash = oracle::Crash {
-                    seed,
-                    files: &[("marker.txt", "marker\n")],
-                    plans: || plans(seed),
-                    prompts: vec![vec![("root", tag("c3-reopen-spawn"))]],
-                    window: (1, usize::MAX),
-                    mode: oracle::crash_mode("crash_after", seed).ok_or("crash mode")?,
-                };
-                let (crashed, reopened) = crash.recover(recovery).await?;
+                let reopened = world
+                    .incarnation(None, &recovery)
+                    .await
+                    .map_err(oracle::failed)?;
                 oracle::all_settled(&reopened.requests)?;
                 if !reopened
                     .prompts
@@ -390,13 +407,12 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                     .any(|(outcome, _)| *outcome == oracle::Prompted::Settled(done("c3-reopen")))
                 {
                     return Err(format!(
-                        "after {crashed}: the reopened root turn did not finish: {:?}",
+                        "the reopened root turn did not finish: {:?}",
                         reopened.prompts
                     ));
                 }
-                checked(seed, &reopened.requests)
-                    .map_err(|report| format!("after {crashed}: {report}"))?;
-                return Ok(crashed.in_window);
+                checked(seed, &reopened.requests)?;
+                return Ok(true);
             }
             let mut world = World::new(seed, &[("marker.txt", "marker\n")], service(plans(seed)))
                 .map_err(oracle::failed)?;

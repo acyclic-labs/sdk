@@ -343,6 +343,7 @@ pub(super) struct World {
     pub seed: u64,
     incarnations: u64,
     entropy: bool,
+    complete: bool,
 }
 
 impl World {
@@ -404,7 +405,16 @@ impl World {
             seed,
             incarnations: 0,
             entropy,
+            complete: false,
         })
+    }
+
+    /// Completes each incarnation's runtime before it returns, so the next
+    /// incarnation opens a cleanly closed host on the same state.
+    #[must_use]
+    pub fn completing(mut self) -> Self {
+        self.complete = true;
+        self
     }
 
     /// Opens a host on the world's files and sends each group of prompts,
@@ -462,6 +472,7 @@ impl World {
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
             let directory = self.directory.path();
+            let complete = self.complete;
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
@@ -507,6 +518,10 @@ impl World {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
+                    }
+                    if complete {
+                        let (agents, _) = harness.agents().await?;
+                        entry(agents.runtime().complete()).await.map_err(storage)?;
                     }
                     // Retire every native mount and worker before the next
                     // replay can reuse this world's deterministic path.
