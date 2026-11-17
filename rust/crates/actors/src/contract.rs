@@ -92,7 +92,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
             }
             (None, Some(limits)) => {
                 crate::addressing::validate_dns_label(request.name.as_bytes()).is_ok()
-                    && domain::WorkerLimits::try_from(*limits).is_ok()
+                    && domain::WorkerLimits::try_from(limits.clone()).is_ok()
                     && request.subscriptions.is_empty()
                     && request.jurisdiction.is_empty()
             }
