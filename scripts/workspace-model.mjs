@@ -134,23 +134,7 @@ export function workspacePackages(root) {
   return packages.sort((a, b) => a.name.localeCompare(b.name, 'en'));
 }
 
-export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
-  const allPlatforms = triple === null;
-  triple ??= 'x86_64-unknown-linux-gnu';
-  root = path.resolve(root);
-  const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
-  const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-bazel-lock.json'), 'utf8'));
-  const spliced = toml(root, 'cargo-bazel.Cargo.lock').package.find(p => p.name === 'direct-cargo-bazel-deps');
-  const direct = new Set(spliced?.dependencies ?? []);
-  const registry = (lock.package ?? []).filter(p => p.source && (allPlatforms || direct.has(p.name) || direct.has(`${p.name} ${p.version}`))).map(p => {
-    const pinned = universe.crates[`${p.name} ${p.version}`];
-    const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
-    const target = lib?.Library ?? lib?.ProcMacro;
-    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
-      features: Object.fromEntries((pinned?.common_attrs?.crate_features ?? []).map(f => [f, []])),
-      targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
-  });
-  const packages = [...local, ...registry], byName = name => packages.filter(p => p.name === name);
+function targetMatches(cfg, triple) {
   const platform = new Set([
     triple.includes('windows') ? 'windows' : 'unix', `target_os=${JSON.stringify(triple.includes('windows') ? 'windows' : triple.includes('darwin') ? 'macos' : 'linux')}`,
     `target_arch=${JSON.stringify(triple.startsWith('aarch64') ? 'aarch64' : 'x86_64')}`, 'target_pointer_width="64"', 'target_endian="little"',
@@ -158,7 +142,6 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     `target_vendor=${JSON.stringify(triple.includes('darwin') ? 'apple' : triple.includes('windows') ? 'pc' : 'unknown')}`,
   ]);
   const matches = cfg => {
-    if (allPlatforms) return true;
     if (!cfg || cfg === triple) return true;
     if (!cfg.startsWith('cfg(')) return false;
     const tokens = cfg.slice(4, -1).match(/"[^"\\]*(?:\\.[^"\\]*)*"|\w+|[(),=]/g) ?? [];
@@ -180,6 +163,69 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     if (at !== tokens.length) throw Error(`invalid target condition ${cfg}`);
     return result;
   };
+  return matches(cfg);
+}
+
+// Inputs to crate_universe come from the current Cargo lock and declarations.
+// The resolved features themselves remain crate_universe's responsibility.
+export function registryInputs(root) {
+  const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
+  const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-bazel-lock.json'), 'utf8'));
+  const candidates = (lock.package ?? []).filter(p => p.source?.startsWith('registry+')).map(p => ({
+    ...p, features: new Set(), defaultFeatures: false,
+  }));
+  const inputs = new Set();
+  for (const p of local) {
+    const locked = (lock.package ?? []).find(x => x.name === p.name && x.version === p.version && !x.source);
+    if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
+    for (const d of p.dependencies.filter(d => !d.resolved_path && (!d.optional || Object.values(p.features).flat().some(f => f === `dep:${d.rename ?? d.name}` || f.startsWith(`${d.rename ?? d.name}/`))) &&
+      (!d.target || ['x86_64-unknown-linux-gnu', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc'].some(triple => targetMatches(d.target, triple))))) {
+      const matches = candidates.filter(x => x.name === d.name && versionMatches(x.version, d.req) &&
+        (locked.dependencies ?? []).some(key => key === x.name || key === `${x.name} ${x.version}` || key.startsWith(`${x.name} ${x.version} (`)));
+      if (matches.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
+      const input = matches[0], alias = d.rename ?? d.name;
+      inputs.add(input);
+      for (const feature of d.features) input.features.add(feature);
+      for (const feature of Object.values(p.features).flat()) {
+        const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
+        if (match?.[1] === alias) input.features.add(match[2]);
+      }
+      input.defaultFeatures ||= d.uses_default_features;
+    }
+  }
+  return {inputs: [...inputs], universe};
+}
+
+export function assertRegistryPinsCurrent(root) {
+  const {inputs, universe} = registryInputs(root);
+  const recovery = 'node scripts/repin-bazel.mjs';
+  for (const p of inputs) {
+    const pinned = universe.crates[`${p.name} ${p.version}`];
+    if (!pinned) throw Error(`STEP_FAILED bazel-build-files: registry package ${p.name} ${p.version} missing from Bazel lock; repin: ${recovery}`);
+    const features = new Set(pinned.common_attrs?.crate_features ?? []);
+    for (const feature of p.features) if (!features.has(feature))
+      throw Error(`STEP_FAILED bazel-build-files: ${p.name} ${p.version} feature ${feature} missing from Bazel lock; repin: ${recovery}`);
+  }
+}
+
+export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
+  const allPlatforms = triple === null;
+  triple ??= 'x86_64-unknown-linux-gnu';
+  root = path.resolve(root);
+  const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
+  const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-bazel-lock.json'), 'utf8'));
+  const spliced = toml(root, 'cargo-bazel.Cargo.lock').package.find(p => p.name === 'direct-cargo-bazel-deps');
+  const direct = new Set(spliced?.dependencies ?? []);
+  const registry = (lock.package ?? []).filter(p => p.source && (allPlatforms || direct.has(p.name) || direct.has(`${p.name} ${p.version}`))).map(p => {
+    const pinned = universe.crates[`${p.name} ${p.version}`];
+    const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
+    const target = lib?.Library ?? lib?.ProcMacro;
+    return {...p, id: `${p.source}#${p.name}@${p.version}`, manifest_path: '', dependencies: [], metadata: null,
+      features: Object.fromEntries((pinned?.common_attrs?.crate_features ?? []).map(f => [f, []])),
+      targets: target ? [{kind: [lib.ProcMacro ? 'proc-macro' : 'lib'], name: target.crate_name}] : []};
+  });
+  const packages = [...local, ...registry], byName = name => packages.filter(p => p.name === name);
+  const matches = cfg => allPlatforms || targetMatches(cfg, triple);
   const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features ?? [])]));
   const active = (p, d) => !d.optional || [...enabled.get(p.id)].some(f => f === `dep:${d.rename ?? d.name}` || f.startsWith(`${d.rename ?? d.name}/`));
   let changed = true;

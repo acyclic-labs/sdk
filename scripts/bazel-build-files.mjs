@@ -8,7 +8,7 @@
 // whenever the selection changed).
 // Every workspace member builds with Bazel, and every target `cargo test --all-features` builds
 // is rendered: a target with `test = false` is the only one left out of testing.
-import { workspaceGraph } from "./workspace-model.mjs";
+import { assertRegistryPinsCurrent, registryInputs, workspaceGraph } from "./workspace-model.mjs";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -28,6 +28,7 @@ const mode = args[0];
 if (args.length !== 1 || (mode !== "write" && mode !== "check")) {
   throw new Error("STEP_FAILED bazel-build-files: expected [--root DIR] [--test-runner LABEL] write|check; recovery: node scripts/bazel-build-files.mjs write");
 }
+assertRegistryPinsCurrent(root);
 
 // Bazel builds each crate for these targets. A dependency or feature that differs between
 // them becomes a select() on the rules_rust platform setting.
@@ -502,17 +503,11 @@ function perTriple(values, render) {
 
 // Every registry crate's --all-features feature set, pinned by a crate.spec: crate_universe resolves
 // third-party features its own way. Path and patch sources keep their lockfile resolution.
-const pinned = new Map();
-for (const run of runs) {
-  for (const node of run.resolve.nodes) {
-    if (members.has(node.id) || node.features.length === 0 || !packages.get(node.id).source?.startsWith("registry+")) continue;
-    if (!pinned.has(node.id)) pinned.set(node.id, new Set());
-    for (const feature of node.features) pinned.get(node.id).add(feature);
-  }
-}
+const currentRegistry = registryInputs(root).inputs;
+const pinned = new Map(currentRegistry.map(p => [`${p.source}#${p.name}@${p.version}`, p.features]));
 // The crate universe: every registry crate any target platform resolves. Vendored path crates
 // are first-party targets, never universe crates.
-const universe = [...packages.values()].filter(p => p.source?.startsWith("registry+") && !members.has(p.id))
+const universe = currentRegistry.map(p => ({...p, id: `${p.source}#${p.name}@${p.version}`}))
   .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : a.version < b.version ? -1 : 1);
 // Two versions of one package need distinct splicing dependency keys. A key is a Cargo
 // package name, so the version is spelled with XID characters only.
@@ -772,7 +767,7 @@ function universeSpecs() {
     ["package", q(p.name)],
     ["version", q(`=${p.version}`)],
     ["package_alias", spliceKey.has(p.id) ? q(spliceKey.get(p.id)) : undefined],
-    ["default_features", "False"],
+    ["default_features", p.defaultFeatures ? "True" : "False"],
     ["features", list([...(pinned.get(p.id) ?? [])].sort())],
   ])}
 `);

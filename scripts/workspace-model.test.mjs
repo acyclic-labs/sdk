@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {workspaceGraph, workspacePackages, versionMatches} from './workspace-model.mjs';
+import {assertRegistryPinsCurrent, workspaceGraph, workspacePackages, versionMatches} from './workspace-model.mjs';
 
 test('manifest and Bazel lock projection preserves aliases, target edges and local feature forwarding', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-model-'));
@@ -48,9 +48,7 @@ test('registry features follow the current dependency declaration', t => {
   write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["serde_json"]\n[[package]]\nname="serde_json"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
   write('cargo-bazel.Cargo.lock', 'version=4\n[[package]]\nname="direct-cargo-bazel-deps"\nversion="0.0.1"\ndependencies=["serde_json"]\n');
   write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {'serde_json 1.0.0': {targets: [{Library: {crate_name: 'serde_json'}}], common_attrs: {crate_features: ['default']}}}}));
-  const graph = workspaceGraph(root);
-  const registry = graph.packages.find(p => p.name === 'serde_json');
-  assert.ok(graph.resolve.nodes.find(n => n.id === registry.id).features.includes('preserve_order'));
+  assert.throws(() => assertRegistryPinsCurrent(root), /serde_json.*preserve_order.*repin/i);
 });
 
 test('registry dependencies are selected from the current Cargo lock', t => {
@@ -62,9 +60,16 @@ test('registry dependencies are selected from the current Cargo lock', t => {
   write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["new_crate"]\n[[package]]\nname="new_crate"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
   write('cargo-bazel.Cargo.lock', 'version=4\n[[package]]\nname="direct-cargo-bazel-deps"\nversion="0.0.1"\n');
   write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {}}));
-  const graph = workspaceGraph(root);
-  const app = graph.packages.find(p => p.name === 'app');
-  const registry = graph.packages.find(p => p.name === 'new_crate');
-  assert.ok(registry);
-  assert.equal(graph.resolve.nodes.find(n => n.id === app.id).deps[0].pkg, registry.id);
+  assert.throws(() => assertRegistryPinsCurrent(root), /new_crate.*1\.0\.0.*repin/i);
+});
+
+test('unselected platforms and disabled optional dependencies do not require registry pins', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-inactive-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  write('Cargo.toml', '[workspace]\nmembers=["app"]\n');
+  write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[target.\'cfg(target_arch = "wasm32")\'.dependencies]\nwasm="1"\n');
+  write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["wasm"]\n[[package]]\nname="wasm"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n[[package]]\nname="unused"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
+  write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {}}));
+  assert.doesNotThrow(() => assertRegistryPinsCurrent(root));
 });
