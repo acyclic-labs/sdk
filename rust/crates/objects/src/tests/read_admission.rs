@@ -665,7 +665,7 @@ async fn native_manifest_growth_releases_replaced_backing() -> Result<(), Box<dy
         .verified()
         .ok_or("leaf publication is known")?
         .digest;
-    let count = 256;
+    let count = 160;
     let digest = blobs
         .put_manifest(crate::Manifest {
             parts: vec![
@@ -681,9 +681,10 @@ async fn native_manifest_growth_releases_replaced_backing() -> Result<(), Box<dy
         .verified()
         .ok_or("manifest publication is known")?
         .digest;
-    // 128 bytes per part covers decoded metadata and the overlapping old/new
-    // work-stack backings. Accumulating retired backings exceeds this budget.
-    let budget = Arc::new(Budget::new(128 * count as u64));
+    // 160 siblings grow the stack through 256 slots. The original 32 KiB
+    // budget covers the request frame, metadata and overlapping backings;
+    // accumulating retired backings exceeds it.
+    let budget = Arc::new(Budget::new(32 * 1024));
     let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
     let request =
         crate::ObjectsNativeRequest::new((digest, ByteRange::FULL, count as u64), (), &meter)?;
