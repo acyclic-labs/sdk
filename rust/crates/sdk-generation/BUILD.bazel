@@ -22,6 +22,7 @@ rust_library(
         "//rust/crates/sdk-generation/fuzz:git_layout.rs",
         "//rust/crates/sdk-generation/fuzz:identity_record.rs",
         "//rust/crates/sdk-generation/fuzz:source_identities.rs",
+        "tests/support/archive.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//:rust-toolchain.toml",
@@ -216,6 +217,7 @@ rust_test(
         "tests/cli_regressions/runtime.rs",
         "tests/main.rs",
         "tests/profile_planner.rs",
+        "tests/support/archive.rs",
     ],
     edition = "2021",
     version = "0.1.0",

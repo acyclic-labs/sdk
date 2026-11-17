@@ -166,15 +166,7 @@ fn separate_producer_resolution_retains_original_lock_and_rejects_config_invento
     let (mut release, archive) = fixture.archive(&"a".repeat(40), "");
     let imported_lock = fixture.path().join(directory).join("Cargo.lock");
     fs::write(&imported_lock, &original).unwrap();
-    command_output(
-        Command::new("tar")
-            .arg("-cf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(fixture.path())
-            .arg(directory),
-    )
-    .unwrap();
+    fixture_archive::pack(&fixture.path().join(directory), &archive);
     release.checksum = crate::sha256_file(&archive)
         .unwrap()
         .trim_start_matches("sha256:")
@@ -346,15 +338,7 @@ fn archive_rejects_missing_target_source_and_changed_original_manifest() {
     let revision = "a".repeat(40);
     let (mut release, archive) = fixture.archive(&revision, "");
     fs::remove_file(fixture.path().join("historical-fixture-0.1.0/src/lib.rs")).unwrap();
-    command_output(
-        Command::new("tar")
-            .arg("-cf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(fixture.path())
-            .arg("historical-fixture-0.1.0"),
-    )
-    .unwrap();
+    fixture_archive::pack(&fixture.path().join("historical-fixture-0.1.0"), &archive);
     release.checksum = crate::sha256_file(&archive)
         .unwrap()
         .trim_start_matches("sha256:")
@@ -572,15 +556,7 @@ fn archive_checks_embedded_binary_json_proto_and_build_configuration() {
         let archived = fixture.path().join("historical-fixture-0.1.0").join(name);
         fs::create_dir_all(archived.parent().unwrap()).unwrap();
         fs::copy(&path, &archived).unwrap();
-        command_output(
-            Command::new("tar")
-                .arg("-cf")
-                .arg(&archive)
-                .arg("-C")
-                .arg(fixture.path())
-                .arg("historical-fixture-0.1.0"),
-        )
-        .unwrap();
+        fixture_archive::pack(&fixture.path().join("historical-fixture-0.1.0"), &archive);
         release.checksum = crate::sha256_file(&archive)
             .unwrap()
             .trim_start_matches("sha256:")
