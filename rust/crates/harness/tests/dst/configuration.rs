@@ -35,6 +35,8 @@ const ADVISOR_MARKER: &str = "G1-ADVISOR-DIRECTIVE";
 const REVIEWER_MARKER: &str = "G1-REVIEWER-DIRECTIVE";
 const DELEGATION: &str = "decide in order: atomic";
 const NONE_FOUND: &str = "report that negative result";
+const PATH_FILE: &str = "g1-path.txt";
+const PATH_MARKER: &str = "G1-PATH-";
 const PARENT_AUTHORITY: &str = "Instruction from your parent";
 const PEER_AUTHORITY: &str = "Peer input only";
 
@@ -98,14 +100,44 @@ fn steering(plan: &Plan, node: &str) -> Vec<(&'static str, Value)> {
     calls
 }
 
+/// The forked child's spawn chain leaves no room for another model turn
+/// inside the per-case limit, so its path variant stays uncovered.
+fn exercises_paths(node: &str) -> bool {
+    node != "forked_child"
+}
+
+fn path_steps(node: &str) -> Vec<Step> {
+    let content = format!("{PATH_MARKER}{node}");
+    vec![Step::Calls(vec![
+        (
+            "write",
+            json!({
+                "path": format!("volume:///home/{PATH_FILE}"),
+                "content": content,
+                "ifVersion": "absent",
+            }),
+        ),
+        (
+            "read",
+            json!({"path": "volume:///home/templates/worker/AGENT.md"}),
+        ),
+        ("read", json!({"path": "volume:///effective/AGENT.md"})),
+    ])]
+}
+
 fn steps(plan: &Plan, node: &str) -> Vec<Step> {
+    let mut steps = if node == plan.focus && exercises_paths(node) {
+        path_steps(node)
+    } else {
+        Vec::new()
+    };
     if node != "root" {
-        return vec![Step::Text(format!("ready {node}"))];
+        steps.push(Step::Text(format!("ready {node}")));
+        return steps;
     }
-    vec![
-        Step::Calls(steering(plan, node)),
-        Step::Text(format!("done {node}")),
-    ]
+    steps.push(Step::Calls(steering(plan, node)));
+    steps.push(Step::Text(format!("done {node}")));
+    steps
 }
 
 fn named(text: &str) -> Option<String> {
@@ -296,7 +328,7 @@ fn expected_tools(node: &str) -> BTreeSet<String> {
                 .collect();
         }
         "worker" | "forked_child" => &["read", "write", "send", "spawn"],
-        "advisor" | "reviewer" => &["read", "send", "spawn"],
+        "advisor" | "reviewer" => &["read", "write", "send", "spawn"],
         _ => unreachable!("known node"),
     };
     allowed.iter().map(|name| (*name).to_owned()).collect()
@@ -345,6 +377,11 @@ fn check_request(
         return Err(format!(
             "{node} request lacks the declared none-found outcome"
         ));
+    }
+    for path in ["volume:///home", "volume:///effective/"] {
+        if !system.contains(path) {
+            return Err(format!("{node} prompt does not name {path}"));
+        }
     }
     let names: BTreeSet<String> = request.tools.iter().map(|tool| tool.name.clone()).collect();
     let expected = expected_tools(node);
@@ -399,12 +436,109 @@ fn check_request(
     Ok(())
 }
 
+fn path_result<'a>(
+    request: &'a ModelRequest,
+    name: &str,
+    path: &str,
+) -> Option<&'a ToolResultContent> {
+    let mut calls = BTreeMap::new();
+    for message in &request.messages {
+        for part in message.content.parts() {
+            if let ModelContentPart::ToolCall(call) = part {
+                calls.insert(call.call_id.as_str(), call);
+            }
+        }
+    }
+    for message in &request.messages {
+        for part in message.content.parts() {
+            if let ModelContentPart::ToolResult {
+                call_id, content, ..
+            } = part
+                && let Some(call) = calls.get(call_id.as_str())
+                && call.name == name
+                && call.arguments.get("path").and_then(Value::as_str) == Some(path)
+            {
+                return Some(content);
+            }
+        }
+    }
+    None
+}
+
+fn check_paths(node: &str, requests: &[ModelRequest]) -> std::result::Result<(), String> {
+    let home = format!("volume:///home/{PATH_FILE}");
+    let mut wrote = false;
+    let mut read_home = false;
+    let mut read_effective = false;
+    for request in requests {
+        if let Some(result) = path_result(request, "write", &home) {
+            if let ToolResultContent::Error { message } = result {
+                return Err(format!("{node} could not write {home}: {message}"));
+            }
+            wrote = true;
+        }
+        if let Some(result) =
+            path_result(request, "read", "volume:///home/templates/worker/AGENT.md")
+        {
+            match result {
+                ToolResultContent::Json { value }
+                    if value["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(WORKER_MARKER)) =>
+                {
+                    read_home = true;
+                }
+                ToolResultContent::Error { message } => {
+                    return Err(format!(
+                        "{node} could not read volume:///home/templates/worker/AGENT.md: {message}"
+                    ));
+                }
+                other => {
+                    return Err(format!(
+                        "{node} read volume:///home/templates/worker/AGENT.md as {other:?}"
+                    ));
+                }
+            }
+        }
+        if let Some(result) = path_result(request, "read", "volume:///effective/AGENT.md") {
+            match result {
+                ToolResultContent::Json { value }
+                    if value["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("volume:///home")) =>
+                {
+                    read_effective = true;
+                }
+                ToolResultContent::Error { message } => {
+                    return Err(format!(
+                        "{node} could not read volume:///effective/AGENT.md: {message}"
+                    ));
+                }
+                other => {
+                    return Err(format!(
+                        "{node} read volume:///effective/AGENT.md as {other:?}"
+                    ));
+                }
+            }
+        }
+    }
+    if !wrote || !read_home || !read_effective {
+        return Err(format!(
+            "{node} did not exercise its declared paths: write={wrote}, home={read_home}, effective={read_effective}"
+        ));
+    }
+    Ok(())
+}
+
 fn check_node(node: &str, requests: &[ModelRequest]) -> std::result::Result<(), String> {
     let first = requests
         .first()
         .ok_or_else(|| format!("{node} made no model request"))?;
     for request in requests {
         check_request(node, first, request)?;
+    }
+    if exercises_paths(node) {
+        check_paths(node, requests)?;
     }
     let mut parent_seen = false;
     let mut peer_seen = false;
@@ -594,9 +728,9 @@ async fn open(
         OwnedBytes::from(template(
             "fresh",
             "worker",
-            "read, send, spawn",
+            "read, write, send, spawn",
             &format!(
-                "{ADVISOR_MARKER} Use read, send and spawn. Run `$ git status` before advising."
+                "{ADVISOR_MARKER} Use read, write, send and spawn. Run `$ git status` before advising."
             ),
         )),
     )
@@ -605,9 +739,9 @@ async fn open(
         OwnedBytes::from(template(
             "fresh",
             "worker",
-            "read, send, spawn",
+            "read, write, send, spawn",
             &format!(
-                "{REVIEWER_MARKER} Use read, send and spawn. Run `$ git status` before reviewing."
+                "{REVIEWER_MARKER} Use read, write, send and spawn. Run `$ git status` before reviewing."
             ),
         )),
     );
@@ -733,6 +867,7 @@ pub(super) fn variants(seed: u64) -> Vec<family::Variant> {
     let agent = focus(seed);
     ITEMS
         .iter()
+        .filter(|item| !(**item == "path_or_volume" && !exercises_paths(agent)))
         .map(|item| family::Variant::from([("item", *item), ("agent", agent)]))
         .collect()
 }
