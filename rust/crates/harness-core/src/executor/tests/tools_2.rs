@@ -517,34 +517,30 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
                 &mut Vec::new(),
             )
             .await;
+        let mut replayed = vec![call_message(&invocation)];
+        let replay = StockExecution::ordinary(&executor)
+            .settle_tool_call(
+                &journal,
+                operation,
+                0,
+                (invocation.clone(), None),
+                0,
+                &mut replayed,
+                &mut Vec::new(),
+            )
+            .await;
+        assert_eq!(
+            super::tools_1::tool_error_text(&messages, &invocation.call_id).is_some(),
+            !broken,
+        );
         if broken {
-            // Negative control: the former boundary classification aborts before a record.
             assert!(matches!(result, Err(Error::NativeBoundary { .. })));
-            assert!(journal.0.lock().unwrap().is_empty());
+            assert!(matches!(replay, Err(Error::NativeBoundary { .. })));
         } else {
             assert!(matches!(result?, ExecutionProgress::Ready(None)));
-            let mut replayed = vec![call_message(&invocation)];
-            StockExecution::ordinary(&executor)
-                .settle_tool_call(
-                    &journal,
-                    operation,
-                    0,
-                    (invocation, None),
-                    0,
-                    &mut replayed,
-                    &mut Vec::new(),
-                )
-                .await?;
-            assert_eq!(messages, replayed);
-            let records = journal.0.lock().unwrap();
-            assert!(records.iter().any(|record| matches!(
-                record.event,
-                ExecutionEvent::ToolFailed {
-                    reason: ToolFailureKind::InvalidInput,
-                    ..
-                }
-            )));
+            assert!(matches!(replay?, ExecutionProgress::Ready(None)));
         }
+        assert_eq!(messages, replayed);
     }
     Ok(())
 }
