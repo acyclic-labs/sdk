@@ -1,4 +1,4 @@
-fn path_key(path: &NamespacePath) -> Vec<u8> {
+pub(crate) fn path_key(path: &NamespacePath) -> Vec<u8> {
     let mut key = Vec::new();
     for name in path.components() {
         key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
@@ -75,7 +75,15 @@ fn version(path: &[u8], metadata: &HostStat) -> SourceVersion {
 /// with neither handles nor birth times (a few) cannot tell reuse apart by
 /// identity alone.
 #[cfg(unix)]
-pub(crate) fn file_identity(metadata: &HostStat) -> [u8; 32] {
+pub(crate) fn file_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
+    #[cfg(feature = "test-support")]
+    if fixture_times(metadata).is_some() {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic-fs-native-source-file-fixture-v1\0");
+        hash.update(path);
+        hash.update(&metadata.len().to_le_bytes());
+        return *hash.finalize().as_bytes();
+    }
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-file-v1\0");
     hash.update(&(metadata.raw.st_dev as u64).to_le_bytes());
@@ -93,7 +101,15 @@ pub(crate) fn file_identity(metadata: &HostStat) -> [u8; 32] {
 }
 
 #[cfg(windows)]
-pub(crate) fn file_identity(metadata: &HostStat) -> [u8; 32] {
+pub(crate) fn file_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
+    #[cfg(feature = "test-support")]
+    if fixture_times(metadata).is_some() {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic-fs-native-source-file-fixture-v1\0");
+        hash.update(path);
+        hash.update(&metadata.len().to_le_bytes());
+        return *hash.finalize().as_bytes();
+    }
     windows_file_identity(
         u64::from(metadata.volume_serial_number),
         metadata.raw.FileId.cast_unsigned(),
