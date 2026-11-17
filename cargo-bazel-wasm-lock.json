@@ -1,5 +1,5 @@
 {
-  "checksum": "71964fa5cdee2016e58e158ace0051e203fd2cedaf506a2840cbff1ba8ed095b",
+  "checksum": "63222b82e4ee52ebb75c675b3450fc6d946cac129e100434b6852d8241c2baaa",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -442,7 +442,7 @@
       "build_script_attrs": {
         "deps": [
           {
-            "id": "cc 1.11.2",
+            "id": "cc 1.10.0",
             "target": "cc"
           }
         ]
@@ -614,7 +614,7 @@
       ],
       "version": "1.12.1"
     },
-    "cc 1.11.2": {
+    "cc 1.10.0": {
       "common_attrs": {
         "deps": [
           {
@@ -639,8 +639,8 @@
       "package_url": "https://github.com/rust-lang/cc-rs",
       "repository": {
         "Http": {
-          "sha256": "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45",
-          "url": "https://static.crates.io/crates/cc/1.11.2/download"
+          "sha256": "86e055fa6e3e40ad6187ba25b6855eeb635d5271f8e0f0e1e9a5826b8d75bea0",
+          "url": "https://static.crates.io/crates/cc/1.10.0/download"
         }
       },
       "targets": [
@@ -651,7 +651,7 @@
           }
         }
       ],
-      "version": "1.11.2"
+      "version": "1.10.0"
     },
     "cfg-if 1.0.5": {
       "common_attrs": {
