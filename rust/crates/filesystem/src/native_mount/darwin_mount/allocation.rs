@@ -115,27 +115,7 @@ pub(super) fn retained_file(
     work: &Work,
     (file, bytes): (Arc<dyn MountOpenFile>, u64),
 ) -> Result<RetainedFile, NativeMountError> {
-    if bytes == 0 {
-        return Ok((file, None));
-    }
-    let retained = (|| {
-        let custody = NativeMountAllocationCustody::new(&mut work.clone())?;
-        work.with_original_leaf(|original| {
-            original.check()?;
-            custody.retain(bytes, original)?;
-            Ok::<_, crate::demand::DemandError>(())
-        })?;
-        Ok::<_, NativeMountError>(custody)
-    })();
-    match retained {
-        Ok(custody) => Ok((file, Some(custody))),
-        Err(cause) => {
-            drop(file);
-            let retired = work.state.lock().release(bytes);
-            retired?;
-            Err(cause)
-        }
-    }
+    NativeMountAllocationCustody::adopt(file, bytes, work).map_err(Into::into)
 }
 
 pub(super) fn source_bytes(
