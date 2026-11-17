@@ -768,37 +768,21 @@ where
                                     )
                                     .await?
                             }
-                            _ => match self.platform.session_source() {
-                                Some(source) => {
-                                    self.bound
-                                        .prepare_isolated_session(
-                                            id,
-                                            root,
-                                            &source,
-                                            match command {
-                                                AgentCommand::NewSession { questions, .. } => {
-                                                    *questions
-                                                }
-                                                _ => None,
-                                            },
-                                        )
-                                        .await?
+                            AgentCommand::NewSession { questions, .. } => {
+                                match self.platform.session_source() {
+                                    Some(source) => {
+                                        self.bound
+                                            .prepare_isolated_session(id, root, &source, *questions)
+                                            .await?
+                                    }
+                                    None => {
+                                        self.bound
+                                            .prepare_session_root(id, root, *questions)
+                                            .await?
+                                    }
                                 }
-                                None => {
-                                    self.bound
-                                        .prepare_session_root(
-                                            id,
-                                            root,
-                                            match command {
-                                                AgentCommand::NewSession { questions, .. } => {
-                                                    *questions
-                                                }
-                                                _ => None,
-                                            },
-                                        )
-                                        .await?
-                                }
-                            },
+                            }
+                            _ => return Err(Error::Record("expected a session creation command")),
                         }
                     }
                 };
