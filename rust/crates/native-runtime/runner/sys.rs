@@ -488,6 +488,11 @@ impl PollFd {
     pub const fn ready(&self) -> bool {
         self.revents != 0
     }
+
+    pub fn disable(&mut self) {
+        self.fd = -1;
+        self.revents = 0;
+    }
 }
 
 /// Waits without a timeout until one of `fds` is ready.
@@ -579,6 +584,20 @@ pub fn stdio_metadata(fd: Fd) -> Result<(u32, u64), i32> {
     }
     .map_err(|Errno(error)| error)?;
     Ok((metadata.mode, metadata.device))
+}
+
+/// The kernel identity of an open file: its device and inode.
+pub fn file_identity(file: Fd) -> Result<(u64, u64), Errno> {
+    // SAFETY: Metadata contains only integers; zero is valid for each field.
+    let mut metadata: Metadata = unsafe { core::mem::zeroed() };
+    // SAFETY: the exact native UAPI output layout for this image's ABI.
+    unsafe {
+        call(
+            number::FSTAT,
+            [arg(file), (&raw mut metadata).addr(), 0, 0, 0, 0],
+        )
+    }?;
+    Ok((metadata.object[0], metadata.object[1]))
 }
 
 pub fn clear_ambient_capabilities() -> Result<(), i32> {

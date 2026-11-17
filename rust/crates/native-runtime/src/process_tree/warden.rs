@@ -17,7 +17,7 @@ use core::ffi::CStr;
 /// they serve every owner in the namespace, so tree retirement must not kill
 /// them. The program registers each host's PID over a pipe before it exits.
 #[cfg(target_os = "linux")]
-const HOST_PIDS: Fd = 198;
+const HOST_PIDS: Fd = 3;
 #[cfg(target_os = "linux")]
 const MAXIMUM_HOSTS: usize = 8;
 
@@ -25,6 +25,89 @@ const MAXIMUM_HOSTS: usize = 8;
 struct Hosts {
     pids: [Pid; MAXIMUM_HOSTS],
     count: usize,
+}
+
+/// A host is a direct child of this warden whose executable is this same
+/// runner image. A program cannot make an arbitrary descendant satisfy both:
+/// its descendants have another parent until the program dies, and only the
+/// runner image is the host. This is the trusted path that grants the
+/// retirement exemption.
+#[cfg(target_os = "linux")]
+fn host_is_owned(pid: Pid) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    let mut name = [0; 24];
+    let Some(pid) = record::name(pid, &mut name).map(CStr::to_bytes) else {
+        return false;
+    };
+    let mut path = [0; 64];
+    let Some(status) = host_path(pid, b"/status\0", &mut path) else {
+        return false;
+    };
+    let Ok(file) = sys::open(status, sys::O_RDONLY | sys::O_CLOEXEC) else {
+        return false;
+    };
+    let mut buffer = [0_u8; 1024];
+    let mut parent = None;
+    let mut read = 0;
+    while read < buffer.len() {
+        let Ok(count) = sys::read(file, &mut buffer[read..]) else {
+            break;
+        };
+        if count == 0 {
+            break;
+        }
+        read += count;
+    }
+    sys::close(file);
+    let bytes = buffer.get(..read).unwrap_or_default();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes.get(index..index + 5) == Some(b"PPid:") {
+            let mut value: Pid = 0;
+            let mut digits = 0;
+            for byte in bytes.get(index + 5..).unwrap_or_default() {
+                if byte.is_ascii_digit() {
+                    value = value.saturating_mul(10).saturating_add(Pid::from(byte - b'0'));
+                    digits += 1;
+                } else if digits > 0 {
+                    break;
+                }
+            }
+            parent = Some(value);
+            break;
+        }
+        index += 1;
+    }
+    if parent != Some(sys::getpid()) {
+        return false;
+    }
+    let Some(exe) = host_path(pid, b"/exe\0", &mut path) else {
+        return false;
+    };
+    let Ok(host_exe) = sys::open(exe, sys::O_RDONLY | sys::O_CLOEXEC) else {
+        return false;
+    };
+    let host_identity = sys::file_identity(host_exe);
+    sys::close(host_exe);
+    let Ok(self_exe) = sys::open(c"/proc/self/exe", sys::O_RDONLY | sys::O_CLOEXEC) else {
+        return false;
+    };
+    let self_identity = sys::file_identity(self_exe);
+    sys::close(self_exe);
+    host_identity.is_ok() && host_identity == self_identity
+}
+
+#[cfg(target_os = "linux")]
+fn host_path<'a>(pid: &[u8], suffix: &[u8], buffer: &'a mut [u8; 64]) -> Option<&'a CStr> {
+    let parts: [&[u8]; 4] = [b"/proc/", pid, suffix, b""];
+    let mut length = 0;
+    for byte in parts.iter().flat_map(|part| part.iter()) {
+        *buffer.get_mut(length)? = *byte;
+        length += 1;
+    }
+    CStr::from_bytes_with_nul(buffer.get(..length)?).ok()
 }
 
 #[cfg(target_os = "linux")]
@@ -42,6 +125,7 @@ impl Hosts {
 
     fn add(&mut self, pid: Pid) {
         if pid > 0
+            && host_is_owned(pid)
             && !self.contains(pid)
             && let Some(slot) = self.pids.get_mut(self.count)
         {
@@ -477,14 +561,21 @@ fn await_exit(
         // whose registration is already in the pipe.
         if ready[3].ready() {
             let mut buffer = [0_u8; 4 * MAXIMUM_HOSTS];
-            match sys::read(host_pids, &mut buffer) {
+            let closed = match sys::read(host_pids, &mut buffer) {
+                Ok(0) => true,
                 Ok(read) => {
                     for chunk in buffer.get(..read).unwrap_or_default().as_chunks::<4>().0 {
                         hosts.add(Pid::from_ne_bytes(*chunk));
                     }
+                    false
                 }
                 Err(Errno(sys::EINTR)) => continue,
-                Err(_) => {}
+                Err(_) => true,
+            };
+            if closed {
+                // The program closed the registration pipe. Stop polling a
+                // hung-up descriptor on every wake.
+                ready[3].disable();
             }
             // The intermediate clone exits at once; reap it here rather than
             // leaving one zombie per host launch until the tree retires.

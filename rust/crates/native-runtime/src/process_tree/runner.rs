@@ -60,7 +60,7 @@ const ON_RELEASE: u8 = 16;
 const LIMITS: u32 = 16;
 
 /// The warden's host-registration pipe, inherited by the program.
-const HOST_PIDS: RawFd = 198;
+const HOST_PIDS: RawFd = 3;
 
 /// Appends current launch settings restored after the static runner's exec.
 /// Kernel security restrictions are inherited by a fresh runner on every
@@ -805,6 +805,47 @@ extern "C" fn host_exec(argument: *mut libc::c_void) -> libc::c_int {
     }
 }
 
+/// A warded program inherits the warden's registration pipe at fd 3.
+fn has_warden() -> bool {
+    use std::os::unix::fs::FileTypeExt as _;
+    std::fs::metadata("/proc/self/fd/3").is_ok_and(|metadata| metadata.file_type().is_fifo())
+}
+
+/// A top-level owner has no warden to register with and no tree custody to
+/// escape. Keep the host its child and reap it here, so neither the host nor
+/// an intermediate clone becomes a zombie.
+fn start_top_level_host(
+    listener: OwnedFd,
+    admission: File,
+    events: OwnedFd,
+) -> io::Result<()> {
+    let executable = image()?;
+    let (started, child) = std::sync::mpsc::sync_channel::<std::process::Child>(1);
+    std::thread::Builder::new()
+        .name("acyclic-mount-host-reaper".into())
+        .spawn(move || {
+            if let Ok(mut child) = child.recv() {
+                let _ = child.wait();
+            }
+        })?;
+    let mut child = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()))
+        .env_clear()
+        .stdin(listener)
+        .stdout(admission)
+        .stderr(events)
+        .process_group(0)
+        .spawn()?;
+    if let Err(error) = started.send(child) {
+        child = error.0;
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io::Error::other(
+            "packet device host reaper exited during admission",
+        ));
+    }
+    Ok(())
+}
+
 /// Start the same sealed image in packet-device-host mode. The listening
 /// socket itself selects the role; no owner address space is forked.
 ///
@@ -817,6 +858,9 @@ pub(super) fn start_packet_device_host(
     admission: File,
     events: OwnedFd,
 ) -> io::Result<()> {
+    if !has_warden() {
+        return start_top_level_host(listener, admission, events);
+    }
     let executable = image()?;
     let (status_read, status_write) = pipe()?;
     let mut spawn = HostSpawn {
