@@ -6,6 +6,12 @@ pub(super) fn valid_idempotency_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256
 }
 
+pub(super) fn validate_idempotency_key(value: &str) -> Result<(), ContractError> {
+    valid_idempotency_key(value)
+        .then_some(())
+        .ok_or(ContractError::InvalidArgument)
+}
+
 fn valid_actor_scope(namespace: Option<&str>, id: &str) -> bool {
     crate::addressing::NamespaceId::validate(
         namespace
@@ -184,12 +190,10 @@ fn validate_configuration(
 
 /// Validates a Actor storage deletion, leaving the address reusable. Identity and idempotency rules match
 pub fn validate_delete(request: &wire::DeleteAllRequest) -> Result<(), ContractError> {
-    if !valid_actor_scope(request.namespace.as_deref(), &request.actor_id)
-        || !valid_idempotency_key(&request.idempotency_key)
-    {
+    if !valid_actor_scope(request.namespace.as_deref(), &request.actor_id) {
         return Err(ContractError::InvalidArgument);
     }
-    Ok(())
+    validate_idempotency_key(&request.idempotency_key)
 }
 
 /// Validates a newly authored subscription; its cursor may not later be rewound.

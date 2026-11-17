@@ -16,10 +16,7 @@ impl DeleteWorkerRequest {
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         crate::addressing::validate_dns_label(self.worker_name.as_str().as_bytes())
             .map_err(|_| DomainError::InvalidBinding)?;
-        if !crate::contract::valid_idempotency_key(&self.idempotency_key) {
-            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
-        }
-        Ok(())
+        crate::contract::validate_idempotency_key(&self.idempotency_key).map_err(Into::into)
     }
     /// Select the exact deployment under the authenticated account.
     pub fn new(worker_name: ActorNamespace, idempotency_key: String) -> Result<Self, DomainError> {

@@ -641,18 +641,17 @@ pub struct DeleteAllRequest {
 impl DeleteAllRequest {
     /// Builds and validates a deletion request through the canonical admission path.
     pub fn new(actor_id: ActorId, idempotency_key: String) -> Result<Self, DomainError> {
-        Self::try_from(wire::DeleteAllRequest {
+        crate::contract::validate_idempotency_key(&idempotency_key)?;
+        Ok(Self {
             namespace: None,
             account_id: Vec::new(),
-            actor_id: actor_id.as_str().to_owned(),
+            actor_id,
             idempotency_key,
         })
     }
 
-    /// Re-runs the canonical request validator without recursively invoking
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        let wire: wire::DeleteAllRequest = self.clone().into();
-        crate::validate_delete(&wire).map_err(DomainError::Contract)
+        crate::contract::validate_idempotency_key(&self.idempotency_key).map_err(Into::into)
     }
 
     /// Returns the Actor identity.
