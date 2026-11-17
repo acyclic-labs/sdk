@@ -88,15 +88,9 @@ tokio::task_local! { static BLOCKING_CONTEXT: Option<Context>; }
 /// time, so spawning the host's full CPU count would only add contention.
 #[cfg(feature = "test-support")]
 pub(crate) fn seeded_parallelism() -> Option<usize> {
-    CURRENT
-        .try_with(|current| {
-            current
-                .as_ref()
-                .is_some_and(|context| context.schedule.0.entropy.is_some())
-                .then_some(1)
-        })
-        .ok()
-        .flatten()
+    Context::simulation()
+        .is_some_and(|context| context.schedule.0.entropy.is_some())
+        .then_some(1)
 }
 
 /// Builds the single-threaded runtime for an independently replayable world.
