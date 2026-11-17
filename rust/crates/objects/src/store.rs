@@ -53,7 +53,7 @@
 //! child; it never refuses wrongly in the unsafe direction.
 use crate::blob::{
     DecodeAllocation, Envelope, corrupt, decode_batch_admitted, decode_incarnation, encode_batch,
-    invalid,
+    invalid, reserve_admitted,
 };
 use crate::identity::fresh as version;
 use crate::{

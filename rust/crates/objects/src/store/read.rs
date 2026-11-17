@@ -21,7 +21,7 @@ impl Selection {
         })
     }
 
-    fn push(&mut self, bytes: OwnedBytes, physical: &impl Medium) -> Result<(), Error> {
+    fn push(&mut self, bytes: OwnedBytes, allocation: &impl DecodeAllocation) -> Result<(), Error> {
         let current = match &self.body {
             Selected::Empty => 0,
             Selected::One(first) => first.len(),
@@ -36,11 +36,8 @@ impl Selection {
         match &mut self.body {
             Selected::Empty => self.body = Selected::One(bytes),
             Selected::One(first) => {
-                physical.allocate(self.length as u64).map_err(medium)?;
                 let mut joined = Vec::new();
-                joined
-                    .try_reserve_exact(self.length)
-                    .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
+                reserve_admitted(&mut joined, self.length, allocation)?;
                 joined.extend_from_slice(first);
                 joined.extend_from_slice(&bytes);
                 self.body = Selected::Joined(joined);
@@ -82,7 +79,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 out.push(
                     self.read_payload(&digest, envelope, (!whole).then_some(range))
                         .await?,
-                    &*self.medium,
+                    self,
                 )?;
             }
             Kind::Manifest => {
