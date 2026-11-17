@@ -898,9 +898,13 @@ pub(super) fn start_packet_device_host(
     if tag != HOST_STARTED {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    register_host(value);
+    // The status pipe's write end is close-on-exec: end of file is the proof
+    // that `execveat` succeeded and `/proc/<pid>/exe` names the host image.
     match host_frame(&mut status_read)? {
-        None => Ok(()),
+        None => {
+            register_host(value);
+            Ok(())
+        }
         Some((HOST_FAILED, error)) => Err(io::Error::from_raw_os_error(error)),
         Some(_) => Err(io::ErrorKind::InvalidData.into()),
     }

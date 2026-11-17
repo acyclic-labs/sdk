@@ -774,6 +774,7 @@ fn kill_children(path: &CStr, hosts: &Hosts) -> bool {
                 );
             } else if let Some(child) = current.take()
                 && !hosts.contains(child)
+                && !host_is_owned(child)
             {
                 let _ = sys::kill(child, sys::SIGKILL);
             }
@@ -784,6 +785,7 @@ fn kill_children(path: &CStr, hosts: &Hosts) -> bool {
     }
     if let Some(child) = current
         && !hosts.contains(child)
+        && !host_is_owned(child)
     {
         let _ = sys::kill(child, sys::SIGKILL);
     }
@@ -810,7 +812,7 @@ fn only_hosts(path: &CStr, hosts: &Hosts) -> bool {
                         .saturating_add(Pid::from(byte - b'0')),
                 );
             } else if let Some(child) = current.take() {
-                only &= hosts.contains(child);
+                only &= hosts.contains(child) || host_is_owned(child);
             }
         }
         if read < buffer.len() {
@@ -818,7 +820,7 @@ fn only_hosts(path: &CStr, hosts: &Hosts) -> bool {
         }
     }
     if let Some(child) = current {
-        only &= hosts.contains(child);
+        only &= hosts.contains(child) || host_is_owned(child);
     }
     sys::close(file);
     only
