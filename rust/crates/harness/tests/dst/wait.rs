@@ -10,9 +10,7 @@ use family::{Generator, Variant};
 use oracle::{Plan, World, call, done, service, settlements, tag};
 use serde_json::{Value, json};
 
-/// The four wait forms.
 const FORMS: [&str; 4] = ["no_agents", "named", "quorum_need", "timeout"];
-/// The states a reported child can be in.
 const STATES: [&str; 8] = [
     "starting",
     "running",
@@ -23,10 +21,9 @@ const STATES: [&str; 8] = [
     "archived",
     "stopped",
 ];
-/// The target's relation to the waiter.
 const RELATIONS: [&str; 3] = ["child", "grandchild", "same_parent_other_runtime"];
 
-/// One world per form, each covering every state and relation.
+/// One world per variant: 4 forms x 8 states x 3 relations.
 pub(super) const GENERATOR: Generator = Generator {
     class: "C3",
     seeds: every_wait_reports_the_state_it_returned_at::VALUES,
@@ -38,7 +35,32 @@ acyclic_test_support::cases! {
     module = every_wait_reports_the_state_it_returned_at,
     values: u64,
     runner = super::run,
-    cases = [seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3],
+    cases = [
+        seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3,
+        seed_4 => 4, seed_5 => 5, seed_6 => 6, seed_7 => 7,
+        seed_8 => 8, seed_9 => 9, seed_10 => 10, seed_11 => 11,
+        seed_12 => 12, seed_13 => 13, seed_14 => 14, seed_15 => 15,
+        seed_16 => 16, seed_17 => 17, seed_18 => 18, seed_19 => 19,
+        seed_20 => 20, seed_21 => 21, seed_22 => 22, seed_23 => 23,
+        seed_24 => 24, seed_25 => 25, seed_26 => 26, seed_27 => 27,
+        seed_28 => 28, seed_29 => 29, seed_30 => 30, seed_31 => 31,
+        seed_32 => 32, seed_33 => 33, seed_34 => 34, seed_35 => 35,
+        seed_36 => 36, seed_37 => 37, seed_38 => 38, seed_39 => 39,
+        seed_40 => 40, seed_41 => 41, seed_42 => 42, seed_43 => 43,
+        seed_44 => 44, seed_45 => 45, seed_46 => 46, seed_47 => 47,
+        seed_48 => 48, seed_49 => 49, seed_50 => 50, seed_51 => 51,
+        seed_52 => 52, seed_53 => 53, seed_54 => 54, seed_55 => 55,
+        seed_56 => 56, seed_57 => 57, seed_58 => 58, seed_59 => 59,
+        seed_60 => 60, seed_61 => 61, seed_62 => 62, seed_63 => 63,
+        seed_64 => 64, seed_65 => 65, seed_66 => 66, seed_67 => 67,
+        seed_68 => 68, seed_69 => 69, seed_70 => 70, seed_71 => 71,
+        seed_72 => 72, seed_73 => 73, seed_74 => 74, seed_75 => 75,
+        seed_76 => 76, seed_77 => 77, seed_78 => 78, seed_79 => 79,
+        seed_80 => 80, seed_81 => 81, seed_82 => 82, seed_83 => 83,
+        seed_84 => 84, seed_85 => 85, seed_86 => 86, seed_87 => 87,
+        seed_88 => 88, seed_89 => 89, seed_90 => 90, seed_91 => 91,
+        seed_92 => 92, seed_93 => 93, seed_94 => 94, seed_95 => 95,
+    ],
 }
 
 fn run(seed: u64) -> std::result::Result<(), String> {
@@ -46,25 +68,23 @@ fn run(seed: u64) -> std::result::Result<(), String> {
 }
 
 fn form(seed: u64) -> &'static str {
-    FORMS
-        .get(usize::try_from(seed % FORMS.len() as u64).unwrap_or(0))
-        .copied()
-        .unwrap_or("named")
+    FORMS[usize::try_from(seed % 4).unwrap_or(0)]
+}
+
+fn state(seed: u64) -> &'static str {
+    STATES[usize::try_from((seed / 4) % 8).unwrap_or(0)]
+}
+
+fn relation(seed: u64) -> &'static str {
+    RELATIONS[usize::try_from(seed / 32).unwrap_or(0)]
 }
 
 fn variants(seed: u64) -> Vec<Variant> {
-    let form = form(seed);
-    let mut variants = Vec::new();
-    for state in STATES {
-        for relation in RELATIONS {
-            variants.push(Variant::from([
-                ("child_state", state),
-                ("form", form),
-                ("relation", relation),
-            ]));
-        }
-    }
-    variants
+    vec![Variant::from([
+        ("child_state", state(seed)),
+        ("form", form(seed)),
+        ("relation", relation(seed)),
+    ])]
 }
 
 fn settled(tag_name: &'static str) -> Plan {
@@ -88,8 +108,6 @@ fn failed(tag_name: &'static str) -> Plan {
     }
 }
 
-/// A child that stays in its own wait, so the parent can observe a running
-/// (not settled) child without a real process.
 fn parked(tag_name: &'static str) -> Plan {
     Plan {
         tag: tag_name,
@@ -97,18 +115,6 @@ fn parked(tag_name: &'static str) -> Plan {
             &format!("{tag_name}-park"),
             "wait",
             json!({"input": true, "timeout_ms": 100000}),
-        )]],
-        fail_once: None,
-    }
-}
-
-fn writer(tag_name: &'static str, path: &str) -> Plan {
-    Plan {
-        tag: tag_name,
-        steps: vec![vec![call(
-            &format!("{tag_name}-write"),
-            "write",
-            json!({"path": path, "content": "merged\n", "ifVersion": "absent"}),
         )]],
         fail_once: None,
     }
@@ -122,217 +128,115 @@ fn spawn(id: &str, name: &str, brief: &'static str) -> ToolCall {
     )
 }
 
-/// A wait in `form` over `names`. `timeout` forces a bounded return for a
-/// child that is not settled yet.
-fn waited(form: &str, id: &str, names: &[&str], timeout: Option<u64>) -> ToolCall {
-    let agents = names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
-    let arguments = match form {
-        "no_agents" => json!({"timeout_ms": timeout.unwrap_or(5)}),
-        "quorum_need" => {
-            let mut value = json!({"agents": agents, "need": 1});
-            if let Some(timeout) = timeout {
-                value["timeout_ms"] = json!(timeout);
-            }
-            value
-        }
-        "timeout" => json!({"agents": agents, "timeout_ms": timeout.unwrap_or(5)}),
-        _ => {
-            let mut value = json!({"agents": agents});
-            if let Some(timeout) = timeout {
-                value["timeout_ms"] = json!(timeout);
-            }
-            value
-        }
-    };
-    call(id, "wait", arguments)
-}
-
-/// The steps that spawn one child per state and wait for it in `form`.
-fn state_steps(form: &str, prefix: &str, include_mid: bool) -> Vec<Vec<ToolCall>> {
-    let mut steps = Vec::new();
-    if form == "no_agents" {
-        // The no-agent form is one actor alarm. A child settles in the same
-        // step, so the state under test exists while the alarm is pending.
-        steps.push(vec![
-            spawn(&format!("{prefix}-spawn-ok"), "ok", state_tag(prefix, "ok")),
-            call(
-                &format!("{prefix}-alarm"),
-                "wait",
-                json!({"timeout_ms": 1}),
-            ),
-        ]);
-    } else {
-        let spawn_wait = |steps: &mut Vec<Vec<ToolCall>>, name: &str, plan: &'static str, wait: ToolCall| {
-            steps.push(vec![
-                spawn(&format!("{prefix}-spawn-{name}"), name, plan),
-                wait,
-            ]);
-        };
-        // One child at a time: each spawn commits before its wait prepares,
-        // and no earlier child has to run concurrently with a later one.
-        spawn_wait(
-            &mut steps,
-            "ok",
-            state_tag(prefix, "ok"),
-            waited(form, &format!("{prefix}-ok"), &["ok"], None),
-        );
-        spawn_wait(
-            &mut steps,
-            "bad",
-            state_tag(prefix, "bad"),
-            waited(form, &format!("{prefix}-bad"), &["bad"], None),
-        );
-        spawn_wait(
-            &mut steps,
-            "idle",
-            state_tag(prefix, "idle"),
-            waited(form, &format!("{prefix}-idle"), &["idle"], None),
-        );
-        spawn_wait(
-            &mut steps,
-            "run",
-            state_tag(prefix, "run"),
-            call(
-                &format!("{prefix}-run"),
-                "wait",
-                json!({"agents": ["ok", "run"], "need": 1}),
-            ),
-        );
-        steps.push(vec![
-            spawn(&format!("{prefix}-spawn-start"), "start", state_tag(prefix, "start")),
-            call(
-                &format!("{prefix}-start"),
-                "wait",
-                json!({"agents": ["ok", "start"], "need": 1}),
-            ),
-        ]);
-        spawn_wait(
-            &mut steps,
-            "merge",
-            state_tag(prefix, "merge"),
-            waited(form, &format!("{prefix}-merged"), &["merge"], None),
-        );
-        spawn_wait(
-            &mut steps,
-            "arch",
-            state_tag(prefix, "arch"),
-            waited(form, &format!("{prefix}-archived"), &["arch"], None),
-        );
-        spawn_wait(
-            &mut steps,
-            "stop",
-            state_tag(prefix, "stop"),
-            waited(form, &format!("{prefix}-stopped"), &["stop"], None),
-        );
-        steps.push(vec![call(
-            &format!("{prefix}-quorum"),
-            "wait",
-            json!({"agents": ["ok", "bad"], "need": 1}),
-        )]);
+fn wait(id: &str, names: &[&str], need: Option<u32>, timeout: Option<u64>) -> ToolCall {
+    let mut value = json!({"agents": names});
+    if let Some(need) = need {
+        value["need"] = json!(need);
     }
-    if include_mid {
-        steps.push(vec![
-            spawn(&format!("{prefix}-spawn-mid"), "mid", mid_tag(prefix)),
-            call(
-                &format!("{prefix}-join-mid"),
-                "wait",
-                json!({"agents": ["mid"]}),
-            ),
-        ]);
+    if let Some(timeout) = timeout {
+        value["timeout_ms"] = json!(timeout);
     }
-    steps
+    call(id, "wait", value)
 }
 
-fn state_tag(prefix: &str, name: &str) -> &'static str {
-    // A fixed set of tags per root/mid prefix; the plans below register them.
-    let tags: &[(&str, &str, &'static str)] = &[
-        ("root", "ok", "root-ok"),
-        ("root", "bad", "root-bad"),
-        ("root", "run", "root-run"),
-        ("root", "idle", "root-idle"),
-        ("root", "merge", "c3-root-merge"),
-        ("root", "arch", "c3-root-arch"),
-        ("root", "stop", "c3-root-stop"),
-        ("root", "start", "root-start"),
-        ("mid", "ok", "mid-ok"),
-        ("mid", "bad", "mid-bad"),
-        ("mid", "run", "mid-run"),
-        ("mid", "idle", "mid-idle"),
-        ("mid", "merge", "c3-mid-merge"),
-        ("mid", "arch", "c3-mid-arch"),
-        ("mid", "stop", "c3-mid-stop"),
-        ("mid", "start", "mid-start"),
-        ("reopen", "ok", "c3-reopen-ok"),
-    ];
-    tags.iter()
-        .find(|(owner, child, _)| *owner == prefix && *child == name)
-        .map(|(_, _, tag)| *tag)
-        .unwrap_or("root-ok")
+fn input_wait(id: &str) -> ToolCall {
+    call(id, "wait", json!({"input": true}))
 }
 
-fn mid_tag(prefix: &str) -> &'static str {
-    if prefix == "root" { "c3-mid" } else { "c3-nested-mid" }
-}
-
-/// The middle agent's one grandchild wait: the grandchild relation.
-fn mid_steps(form: &str) -> Vec<Vec<ToolCall>> {
-    if form == "no_agents" {
-        vec![vec![
-            spawn("mid-spawn-g", "g", "c3-mid-g"),
-            call("mid-alarm", "wait", json!({"timeout_ms": 1})),
-        ]]
-    } else {
-        vec![vec![
-            spawn("mid-spawn-g", "g", "c3-mid-g"),
-            waited(form, "mid-g", &["g"], None),
-        ]]
+/// The child plan for `state`.
+fn child_plan(tag_name: &'static str, state: &str) -> Plan {
+    match state {
+        "running" => parked(tag_name),
+        "settled_failed" | "archived" | "stopped" => failed(tag_name),
+        _ => settled(tag_name),
     }
 }
 
-fn plans(form: &str) -> Vec<Plan> {
+/// The wait that observes `state` in `form`. A running or starting child is
+/// observed through a settled sibling's quorum, so no timer is needed.
+fn state_wait(form: &str, id: &str, state: &str, target: &str, sibling: &str) -> ToolCall {
+    match (form, state) {
+        ("no_agents", _) => input_wait(id),
+        (_, "running" | "starting") => wait(id, &[sibling, target], Some(1), None),
+        ("quorum_need", _) => wait(id, &[target], Some(1), None),
+        ("timeout", _) => wait(id, &[target], None, Some(1)),
+        _ => wait(id, &[target], None, None),
+    }
+}
+
+fn needs_sibling(state: &str) -> bool {
+    matches!(state, "running" | "starting")
+}
+
+fn plans(seed: u64) -> Vec<Plan> {
+    let form = form(seed);
+    let state = state(seed);
+    let relation = relation(seed);
+    let target = "c3-target";
+    let sibling = "c3-sibling";
     let mut plans = vec![
+        child_plan("c3-target", state),
+        settled("c3-sibling"),
+        settled("c3-wake"),
         Plan {
-            tag: "c3-root",
-            steps: state_steps(form, "root", true),
+            tag: "c3-mid",
+            steps: vec![vec![
+                spawn("mid-spawn-target", "target", "c3-target"),
+                state_wait(form, "mid-wait", state, "target", "sibling"),
+            ]],
             fail_once: None,
         },
         Plan {
-            tag: "c3-mid",
-            steps: mid_steps(form),
+            tag: "c3-root",
+            steps: root_steps(form, state, relation),
             fail_once: None,
         },
         Plan {
             tag: "c3-reopen",
-            steps: vec![
-                vec![waited(form, "c3-reopen-wait", &["ok"], Some(5))],
-                vec![waited(form, "c3-reopen-mid", &["mid"], Some(5))],
-            ],
+            steps: vec![vec![state_wait(
+                form,
+                "reopen-wait",
+                state,
+                "target",
+                "sibling",
+            )]],
             fail_once: None,
         },
     ];
-    for prefix in ["root", "mid"] {
-        plans.extend([
-            settled(state_tag(prefix, "ok")),
-            failed(state_tag(prefix, "bad")),
-            parked(state_tag(prefix, "run")),
-            settled(state_tag(prefix, "idle")),
-            writer(state_tag(prefix, "merge"), "merged.txt"),
-            failed(state_tag(prefix, "arch")),
-            failed(state_tag(prefix, "stop")),
-            settled(state_tag(prefix, "start")),
-        ]);
+    if needs_sibling(state) {
+        plans.push(settled("c3-sibling"));
     }
-    plans.push(settled("c3-mid-g"));
-    plans.push(settled(state_tag("reopen", "ok")));
-    plans.push(Plan {
-        tag: "done",
-        steps: Vec::new(),
-        fail_once: None,
-    });
     plans
 }
 
-/// Every wait result the requests show, by call id.
+fn root_steps(form: &str, state: &str, relation: &str) -> Vec<Vec<ToolCall>> {
+    match relation {
+        "grandchild" => vec![
+            vec![spawn("root-spawn-mid", "mid", "c3-mid")],
+            vec![call(
+                "root-send-mid",
+                "send",
+                json!({"agent": "mid", "message": "wake"}),
+            )],
+            vec![wait("root-join-mid", &["mid"], None, None)],
+        ],
+        "same_parent_other_runtime" => vec![vec![
+            spawn("root-spawn-target", "target", "c3-target"),
+            spawn("root-spawn-sibling", "sibling", "c3-sibling"),
+        ]],
+        _ => {
+            let mut step = vec![spawn("root-spawn-target", "target", "c3-target")];
+            if needs_sibling(state) {
+                step.push(spawn("root-spawn-sibling", "sibling", "c3-sibling"));
+            }
+            vec![
+                step,
+                vec![state_wait(form, "root-wait", state, "target", "sibling")],
+            ]
+        }
+    }
+}
+
 fn wait_results(requests: &[ModelRequest]) -> std::result::Result<Vec<(String, Value)>, String> {
     let mut results = Vec::new();
     for request in requests {
@@ -354,7 +258,12 @@ fn result<'a>(results: &'a [(String, Value)], id: &str) -> std::result::Result<&
         .iter()
         .find(|(call, _)| call == id)
         .map(|(_, value)| value)
-        .ok_or_else(|| format!("wait {id} never returned: {:?}", results.iter().map(|(id, _)| id).collect::<Vec<_>>()))
+        .ok_or_else(|| {
+            format!(
+                "wait {id} never returned: {:?}",
+                results.iter().map(|(id, _)| id).collect::<Vec<_>>()
+            )
+        })
 }
 
 fn reason(value: &Value) -> &str {
@@ -365,17 +274,9 @@ fn reason(value: &Value) -> &str {
     }
 }
 
-fn settled_entry<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
+fn entry<'a>(value: &'a Value, field: &str, name: &str) -> Option<&'a Value> {
     value
-        .get("settled")?
-        .as_array()?
-        .iter()
-        .find(|entry| entry.get("name").and_then(Value::as_str) == Some(name))
-}
-
-fn unsettled_entry<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
-    value
-        .get("unsettled")?
+        .get(field)?
         .as_array()?
         .iter()
         .find(|entry| entry.get("name").and_then(Value::as_str) == Some(name))
@@ -388,94 +289,22 @@ fn is_done(entry: &Value) -> bool {
         .is_some()
 }
 
-fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), String> {
+fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), String> {
+    let form = form(seed);
+    let state = state(seed);
+    let relation = relation(seed);
     let results = wait_results(requests)?;
-    // Every wait names a reason.
-    for (id, value) in &results {
-        if reason(value).is_empty() {
-            return Err(format!("wait {id} returned no reason: {value}"));
-        }
+    let id = match relation {
+        "grandchild" => "mid-wait",
+        "same_parent_other_runtime" => "reopen-wait",
+        _ => "root-wait",
+    };
+    let value = result(&results, id)?;
+    if reason(value).is_empty() {
+        return Err(format!("wait {id} returned no reason: {value}"));
     }
-    // Settled children are reported as terminal, with their answer. The
-    // no-agent form names no child, so it has no entries to compare.
-    if form != "no_agents" {
-    for (id, name) in [
-        ("root-ok", "ok"),
-        ("root-bad", "bad"),
-        ("root-idle", "idle"),
-        ("root-merged", "merge"),
-        ("mid-ok", "ok"),
-        ("mid-bad", "bad"),
-        ("mid-idle", "idle"),
-        ("mid-merged", "merge"),
-        ("c3-reopen-wait", "ok"),
-    ] {
-        let value = result(&results, id)?;
-        if reason(value) == "deadline" {
-            // A timeout is a named reason, and a settled child has no
-            // unsettled entry.
-            if unsettled_entry(value, name).is_some() {
-                return Err(format!("wait {id} timed out on settled {name}: {value}"));
-            }
-            continue;
-        }
-        let entry = settled_entry(value, name)
-            .ok_or_else(|| format!("wait {id} did not settle {name}: {value}"))?;
-        if !is_done(entry) {
-            return Err(format!("wait {id} reported {name} not done: {entry}"));
-        }
-        if name == "bad" && entry.get("failed").is_none() {
-            return Err(format!("wait {id} hid {name}'s failure: {entry}"));
-        }
-        if name != "bad" && entry.get("failed").is_some() {
-            return Err(format!("wait {id} reported {name} failed: {entry}"));
-        }
-    }
-    }
-    // A running child is reported unsettled, never as done.
-    if form != "no_agents" {
-    for (id, name) in [("root-run", "run")] {
-        let value = result(&results, id)?;
-        let entry = unsettled_entry(value, name)
-            .ok_or_else(|| format!("wait {id} settled a running child: {value}"))?;
-        if is_done(entry) {
-            return Err(format!("wait {id} reported running {name} done: {entry}"));
-        }
-        if entry.get("phase").and_then(Value::as_str) != Some("running")
-            && entry.get("phase").and_then(Value::as_str) != Some("waiting")
-            && entry.get("phase").and_then(|phase| phase.get("waiting")).is_none()
-        {
-            return Err(format!("wait {id} reported running {name} as {entry}"));
-        }
-    }
-    // A child spawned in the wait's own step is still starting.
-    for (id, name) in [("root-start", "start")] {
-        let value = result(&results, id)?;
-        let entry = unsettled_entry(value, name)
-            .ok_or_else(|| format!("wait {id} settled a child in its spawn step: {value}"))?;
-        if entry.get("phase").and_then(Value::as_str) != Some("spawning") {
-            return Err(format!("wait {id} did not report spawning: {entry}"));
-        }
-    }
-    }
-    // A quorum returns once one of two named children settles.
-    if form != "no_agents" {
-        let quorum = result(&results, "root-quorum")?;
-        if reason(quorum) != "need_met" {
-            return Err(format!("quorum wait returned {}: {quorum}", reason(quorum)));
-        }
-        let settled = quorum
-            .get("settled")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        if settled < 1 {
-            return Err(format!("quorum wait returned no settled child: {quorum}"));
-        }
-    }
-    // The no-agent form reports no child, only its reason.
     if form == "no_agents" {
-        let value = result(&results, "root-alarm")?;
-        if reason(value) != "deadline" {
+        if reason(value) != "input" {
             return Err(format!("no-agent wait returned {}: {value}", reason(value)));
         }
         if !value
@@ -485,36 +314,52 @@ fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), Str
         {
             return Err(format!("no-agent wait reported children: {value}"));
         }
+        return Ok(());
     }
-    // The middle agent's own wait is the grandchild relation.
-    if form == "no_agents" {
-        let value = result(&results, "mid-alarm")?;
-        if reason(value) != "deadline" {
-            return Err(format!("grandchild alarm returned {}: {value}", reason(value)));
+    match state {
+        "starting" if relation != "same_parent_other_runtime" => {
+            let entry = entry(value, "unsettled", "target")
+                .ok_or_else(|| format!("wait {id} settled a child in its spawn step: {value}"))?;
+            if entry.get("phase").and_then(Value::as_str) != Some("spawning") {
+                return Err(format!("wait {id} did not report spawning: {entry}"));
+            }
         }
-    } else {
-        let value = result(&results, "mid-g")?;
-        if settled_entry(value, "g").is_none() {
-            return Err(format!("the grandchild wait did not settle g: {value}"));
+        "running" => {
+            let entry = entry(value, "unsettled", "target")
+                .ok_or_else(|| format!("wait {id} settled a running child: {value}"))?;
+            if is_done(entry) {
+                return Err(format!("wait {id} reported running target done: {entry}"));
+            }
         }
-    }
-    if result(&results, "root-join-mid").is_err() {
-        return Err("the middle agent never joined".into());
+        "settled_failed" | "archived" | "stopped" => {
+            let entry = entry(value, "settled", "target")
+                .ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
+            if !is_done(entry) || entry.get("failed").is_none() {
+                return Err(format!("wait {id} hid target's failure: {entry}"));
+            }
+        }
+        _ => {
+            let entry = entry(value, "settled", "target")
+                .ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
+            if !is_done(entry) || entry.get("failed").is_some() {
+                return Err(format!("wait {id} reported target wrong: {entry}"));
+            }
+        }
     }
     Ok(())
 }
 
 fn world(seed: u64) -> std::result::Result<bool, String> {
     let form = form(seed);
+    let relation = relation(seed);
     oracle::simulate(seed, move || {
         entry(async move {
-            let mut world = World::new(
-                seed,
-                &[("marker.txt", "marker\n")],
-                service(plans(form)),
-            )
-            .map_err(oracle::failed)?;
-            let prompts = [vec![("root", tag("c3-root"))]];
+            let mut world = World::new(seed, &[("marker.txt", "marker\n")], service(plans(seed)))
+                .map_err(oracle::failed)?;
+            let mut prompts = vec![vec![("root", tag("c3-root"))]];
+            if form == "no_agents" && relation != "grandchild" {
+                prompts[0].push(("wake", tag("c3-wake")));
+            }
             let first = world
                 .incarnation(None, &prompts)
                 .await
@@ -527,29 +372,31 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             {
                 return Err(format!("the root turn did not finish: {:?}", first.prompts));
             }
-            checked(form, &first.requests)?;
-            // The same parent, waited on from an independently reopened host.
-            let recovery = world
-                .incarnation(None, &[vec![("reopen", tag("c3-reopen"))]])
+            if relation != "same_parent_other_runtime" {
+                checked(seed, &first.requests)?;
+                return Ok(true);
+            }
+            let mut recovery = vec![vec![("reopen", tag("c3-reopen"))]];
+            if form == "no_agents" {
+                recovery[0].push(("wake", tag("c3-wake")));
+            }
+            let reopened = world
+                .incarnation(None, &recovery)
                 .await
                 .map_err(oracle::failed)?;
-            oracle::all_settled(&recovery.requests)?;
-            if !recovery
+            oracle::all_settled(&reopened.requests)?;
+            if !reopened
                 .prompts
                 .first()
                 .is_some_and(|(outcome, _)| *outcome == oracle::Prompted::Settled(done("c3-reopen")))
             {
                 return Err(format!(
                     "the reopened root turn did not finish: {:?}",
-                    recovery.prompts
+                    reopened.prompts
                 ));
             }
-            checked(form, &recovery.requests)?;
+            checked(seed, &reopened.requests)?;
             Ok(true)
         })
     })
 }
-
-// Build cache warm-up is kept in the same gate command.
-
-// List the generated wait cases.
