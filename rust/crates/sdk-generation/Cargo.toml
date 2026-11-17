@@ -19,9 +19,6 @@ rustc = "//:rustc"
 CARGO = "//:toolchain_cargo"
 rustc = "//:rustc"
 
-[package.metadata.bazel.test-data.main]
-workspace-metadata = "//rust/crates/sdk-docs:tests/fixtures/workspace-metadata.json"
-
 [dependencies]
 sdk-docs = { path = "../sdk-docs" }
 sdk-file-identity = { path = "../sdk-docs/file-identity" }
