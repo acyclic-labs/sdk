@@ -374,6 +374,12 @@ function registryPackages(lock, universe, triple) {
   });
 }
 
+function* pinnedEdges(pinned, universe, triple) {
+  for (const [attributes, kind] of [[pinned?.common_attrs, null], [pinned?.build_script_attrs, 'build']])
+    for (const entry of [...selectedEntries(attributes?.deps, universe, triple), ...selectedEntries(attributes?.proc_macro_deps, universe, triple)])
+      yield {entry, kind};
+}
+
 // Browser builds start from the published packages, rather than the native
 // all-workspace, all-features test graph. Registry edges and resolved features
 // come from the browser crate-universe lock; local features come from manifests.
@@ -384,6 +390,7 @@ export function workspaceBrowserGraph(root, selections) {
   const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-wasm-bazel-lock.json'), 'utf8'));
   const registry = registryPackages(lock, universe, triple);
   const packages = [...local, ...registry], byId = new Map(packages.map(p => [p.id, p]));
+  const byPin = Map.groupBy(packages, p => `${p.name} ${p.version}`);
   const byPath = new Map(local.map(p => [path.dirname(p.manifest_path), p]));
   const enabled = new Map(local.map(p => [p.id, new Set()]));
   const reachable = new Set();
@@ -416,14 +423,13 @@ export function workspaceBrowserGraph(root, selections) {
       if (pkg.source) {
         const pinned = universe.crates[`${pkg.name} ${pkg.version}`];
         if (!pinned) throw Error(`browser Bazel lock lacks ${pkg.name}@${pkg.version}`);
-        for (const [attrs, kind] of [[pinned.common_attrs, null], [pinned.build_script_attrs, 'build']])
-          for (const entry of [...selectedEntries(attrs?.deps, universe, triple), ...selectedEntries(attrs?.proc_macro_deps, universe, triple)]) {
-            const matches = packages.filter(p => `${p.name} ${p.version}` === entry.id);
-            if (matches.length !== 1) throw Error(`${pkg.name}: missing or ambiguous browser lock edge ${entry.id}`);
-            const dep = matches[0];
-            addEdge(entry.alias ?? entry.target, dep, kind);
-            if (kind === null) add(reachable, dep.id);
-          }
+        for (const {entry, kind} of pinnedEdges(pinned, universe, triple)) {
+          const matches = byPin.get(entry.id) ?? [];
+          if (matches.length !== 1) throw Error(`${pkg.name}: missing or ambiguous browser lock edge ${entry.id}`);
+          const dep = matches[0];
+          addEdge(entry.alias ?? entry.target, dep, kind);
+          if (kind === null) add(reachable, dep.id);
+        }
       } else {
         const features = enabled.get(pkg.id);
         for (const feature of features) for (const next of pkg.features[feature] ?? []) add(features, next);
@@ -467,6 +473,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
   const universe = JSON.parse(fs.readFileSync(universePath, 'utf8'));
   const registry = registryPackages(lock, universe, allPlatforms ? null : triple);
   const packages = [...local, ...registry];
+  const byPin = Map.groupBy(packages, p => `${p.name} ${p.version}`);
   const matches = cfg => allPlatforms || targetMatches(cfg, triple);
   const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : selectedEntries(universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features, universe, allPlatforms ? null : triple))]));
   const active = (p, d) => dependencyEnabled(enabled.get(p.id), d);
@@ -499,18 +506,15 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
     }
     return {id: p.id, deps: [...deps.values()], features: Object.keys(p.features).filter(f => enabled.get(p.id).has(f)).sort()};
   });
-  const selected = value => selectedEntries(value, universe, allPlatforms ? null : triple);
   nodes.push(...registry.map(p => {
     const pinned = universe.crates[`${p.name} ${p.version}`];
     const deps = [];
     let incomplete = !pinned;
-    for (const [attributes, kind] of [[pinned?.common_attrs, null], [pinned?.build_script_attrs, 'build']])
-      for (const entry of [...selected(attributes?.deps), ...selected(attributes?.proc_macro_deps)]) {
-        const candidates = packages.filter(x => `${x.name} ${x.version}` === entry.id);
-        if (candidates.length !== 1) {incomplete = true; continue;}
-        const dependency = candidates[0];
-        deps.push({name: entry.alias ?? entry.target, pkg: dependency.id, dep_kinds: [{kind, target: null}]});
-      }
+    for (const {entry, kind} of pinnedEdges(pinned, universe, allPlatforms ? null : triple)) {
+      const candidates = byPin.get(entry.id) ?? [];
+      if (candidates.length !== 1) {incomplete = true; continue;}
+      deps.push({name: entry.alias ?? entry.target, pkg: candidates[0].id, dep_kinds: [{kind, target: null}]});
+    }
     return {id: p.id, deps, features: Object.keys(p.features), incomplete};
   }));
   return {packages, workspace_members: local.filter(p => p.workspace_member).map(p => p.id), workspace_root: root,
