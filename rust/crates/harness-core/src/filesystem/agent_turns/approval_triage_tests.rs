@@ -1091,9 +1091,25 @@ async fn ended_parent_refuses(archived: bool) -> TestResult {
             TestResult::Ok(())
         }
     };
+    // The parent completes first, so it refuses without a model. The archived
+    // case then closes it while the child's ask is in flight, exercising the
+    // closing cascade over a child that is already waiting for the answer.
+    message("finish", "finish", parent.clone()).await?;
+    bound.agents().drain(&parent).await?;
+    assert!(
+        matches!(
+            bound.agents().state(&parent).await?.phase,
+            Phase::Done { .. }
+        ),
+        "the parent did not complete"
+    );
+    message("work", "write the result file", child.path.clone()).await?;
+    bound.agents().drain(&child.path).await?;
+    let paused = bound.agents().state(&child.path).await?;
+    let Phase::WaitingApproval { id, .. } = &paused.phase else {
+        return Err(format!("the child did not ask its parent: {:?}", paused.phase).into());
+    };
     if archived {
-        // Only the parent's inbox closes; its child stays open until the
-        // parent's own closing step archives it, so the child can still ask.
         let id = IntentId::try_from("close")?;
         let crate::agent::Submitted::Committed(_) = crate::agent::submit(
             &*turns.stream,
@@ -1103,36 +1119,13 @@ async fn ended_parent_refuses(archived: bool) -> TestResult {
         else {
             return Err("the parent's archive did not commit".into());
         };
-    } else {
-        message("finish", "finish", parent.clone()).await?;
-        bound.agents().drain(&parent).await?;
-        assert!(
-            matches!(
-                bound.agents().state(&parent).await?.phase,
-                Phase::Done { .. }
-            ),
-            "the parent did not complete"
-        );
     }
-    message("work", "write the result file", child.path.clone()).await?;
-    bound.agents().drain(&child.path).await?;
-    let paused = bound.agents().state(&child.path).await?;
-    let Phase::WaitingApproval { id, .. } = &paused.phase else {
-        return Err("the child did not ask its parent".into());
-    };
     let asked = model.request_count();
     bound.agents().drain(&parent).await?;
     assert_eq!(
         model.request_count(),
         asked,
         "an ended parent dispatched a review"
-    );
-    assert!(
-        turns
-            .decided_approval(&paused, id, &format!("parent:{}", parent.id()))
-            .await?
-            .is_some(),
-        "the ended parent left its child's ask unanswered"
     );
     bound.agents().drain(&child.path).await?;
     let settled = bound.agents().state(&child.path).await?;
@@ -1147,6 +1140,13 @@ async fn ended_parent_refuses(archived: bool) -> TestResult {
         // turn ends by that archive, never by an unanswered wait.
         assert!(settled.closed);
     } else {
+        assert!(
+            turns
+                .decided_approval(&paused, id, &format!("parent:{}", parent.id()))
+                .await?
+                .is_some(),
+            "the ended parent left its child's ask unanswered"
+        );
         // Refusal is a tool failure: the waiting call fails as denied and the
         // model continues the same turn to its settled answer.
         assert!(matches!(settled.phase, Phase::Idle));

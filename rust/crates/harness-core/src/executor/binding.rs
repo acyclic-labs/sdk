@@ -261,4 +261,32 @@ impl StockExecution<'_> {
         }
         Ok(())
     }
+
+    /// Starts a host-only journal before its first tool observation. A journal
+    /// already started by a turn keeps its original request binding. A host
+    /// call has no model request or summary destination, so it binds its own
+    /// invocation identity instead of a turn input.
+    pub(super) async fn ensure_host_started(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        invocation: &ToolInvocation,
+    ) -> Result<()> {
+        if !journal.replay(operation, 0, 1, self.io)?.await?.is_empty() {
+            return Ok(());
+        }
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.host-invocation-start.v1");
+        hasher.update(&operation.into_bytes());
+        hasher.update(invocation.call_id.as_bytes());
+        hasher.update(invocation.name.as_bytes());
+        let request_digest = *hasher.finalize().as_bytes();
+        journal
+            .append(
+                operation,
+                "execution:started",
+                &ExecutionEvent::Started { request_digest },
+                self.io,
+            )?
+            .await
+    }
 }

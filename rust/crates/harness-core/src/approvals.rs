@@ -8,6 +8,10 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Reason an agent that can no longer run records when it refuses a child's ask.
+/// A refusal with this reason is a policy denial, not a participant decline.
+pub(crate) const PARENT_ENDED: &str = "approval parent has ended";
+
 mod chain;
 mod grants;
 pub use chain::{

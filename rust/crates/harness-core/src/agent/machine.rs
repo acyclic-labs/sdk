@@ -1682,15 +1682,17 @@ async fn run<T: TurnDriver + ?Sized>(
         Pick::Review => {
             let review = driver.review(state, cursor, cancellation.clone()).await;
             let review = match review {
+                // A cancelled review is terminal: the ask is refused and must
+                // never re-enter because its own write was refused.
                 Err(Error::Turn(error))
-                    if cancellation.is_cancelled()
-                        && matches!(
-                            *error,
-                            crate::Error::InteractionRejected(
-                                crate::InteractionRejection::Cancelled
-                            )
-                        ) =>
+                    if matches!(
+                        *error,
+                        crate::Error::InteractionRejected(
+                            crate::InteractionRejection::Cancelled
+                        )
+                    ) =>
                 {
+                    state.approval_control = None;
                     return Ok(());
                 }
                 result => result?,

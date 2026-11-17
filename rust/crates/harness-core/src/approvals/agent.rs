@@ -415,6 +415,10 @@ impl AgentApprovals {
             self.wait(None)?;
             return Ok(Some(if decision.approved() {
                 InteractionOutcome::Approved {}
+            } else if decision.reason.as_deref() == Some(super::PARENT_ENDED) {
+                // An ended parent cannot participate; its refusal is the
+                // policy's denial, not a participant's decline.
+                InteractionOutcome::Denied {}
             } else {
                 InteractionOutcome::Declined {}
             }));
