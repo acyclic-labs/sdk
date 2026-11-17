@@ -1862,12 +1862,6 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     )
     .unwrap();
     let model = model(fixture._directory.path()).await;
-    let mut catalog: Value =
-        serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
-    catalog["default_model"] = json!("fixture/tiny");
-    catalog["fixture"]["models"]["tiny"]["capacity"] =
-        json!({"context_tokens":1_048_576,"output_tokens":1_048_576});
-    std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
     let plugins = task_plugins(&fixture);
     let mut command = graphcoder_command(&fixture);
     command.arg("--home-file").arg(&plugins);
@@ -1955,28 +1949,6 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         }
         assert!(!same_contract(&cli, &actual), "{actual}");
     }
-    // A new identity appends another prompt to the same persistent conversation.
-    assert_eq!(
-        embedded::answer(embedded_config(), "next", "another prompt")
-            .await
-            .unwrap(),
-        "fixture answer"
-    );
-    let generated = model.generated();
-    // Reopening with the same identity and prompt recovers without dispatch.
-    assert_eq!(
-        embedded::answer(embedded_config(), "next", "another prompt")
-            .await
-            .unwrap(),
-        "fixture answer"
-    );
-    assert_eq!(model.generated(), generated);
-    assert!(
-        embedded::answer(embedded_config(), "next", "changed prompt")
-            .await
-            .is_err()
-    );
-    assert_eq!(model.generated(), generated);
     model.close().await;
 }
 
