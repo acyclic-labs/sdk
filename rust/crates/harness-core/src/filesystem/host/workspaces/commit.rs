@@ -109,7 +109,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             acyclic_fs::StagedContent,
         )>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
-        let now = self.access_now()?;
+        let clock = self.clock();
         crate::conversation::BoundedContentFuture::new(Some(io), || {
             let operation = async move {
                 let operation = operation()?;
@@ -145,7 +145,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if let Some(fence) = publication.fence() {
                     io.sdk(
                         transaction
-                            .observe_policy_fence(fence, now, io, io.cancellation())
+                            .observe_policy_fence(
+                                fence,
+                                crate::filesystem::access::clock_now(clock)?,
+                                io,
+                                io.cancellation(),
+                            )
                             .await,
                     )?;
                 }
@@ -197,7 +202,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let context = evidence
                     .map(|(evidence, _)| publication_context(evidence, io))
                     .transpose()?;
-                Self::commit_contextual_publication(transaction, io, publication, context, now)?
+                Self::commit_contextual_publication(transaction, io, publication, context, clock)?
                     .await
             };
             match root_cut {
@@ -259,7 +264,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             acyclic_stream::OwnedBytes,
             acyclic_fs::PublicationPermit,
         )>,
-        now: u64,
+        clock: &dyn acyclic_stream::UnixMillisClock,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let commit = loop {
@@ -298,6 +303,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 let authority = authority.clone();
                                 async move {
                                     let check = || -> Result<()> {
+                                        let now = crate::filesystem::access::clock_now(clock)?;
                                         require_publication_fence(fence, "volume", now)?;
                                         require_publication_fence(root_fence, "root", now)?;
                                         if let Some(authority) = &authority {
@@ -330,8 +336,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 io.remaining()?,
                                 io.cancellation(),
                                 &mut |_| async move {
-                                    require_publication_time(publication, Some(io), now)
-                                        .map_err(acyclic_fs::OperationFailure::before_work)?;
+                                    require_publication_time(
+                                        publication,
+                                        Some(io),
+                                        crate::filesystem::access::clock_now(clock)?,
+                                    )
+                                    .map_err(acyclic_fs::OperationFailure::before_work)?;
                                     Ok(acyclic_fs::OperationReceipt {
                                         value: (),
                                         work: acyclic_fs::WorkCounters::default(),

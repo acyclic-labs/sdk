@@ -254,7 +254,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         publication: FilePublication<'a>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         // Construction returns before polling this concrete publication graph.
-        let now = self.access_now()?;
+        let clock = self.clock();
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::WorkBudget::UNBOUNDED;
@@ -281,7 +281,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map_err(map_error)?,
             };
             if let Some(fence) = publication.fence() {
-                let now = self.access_now()?;
+                let now = crate::filesystem::access::clock_now(clock)?;
                 unmeasured_workspace_operation(|| {
                     transaction.observe_policy_fence(fence, now, budget, &cancellation)
                 })?
@@ -304,8 +304,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         budget,
                         &cancellation,
                         |_| async {
-                            require_publication_time(publication, None, now)
-                                .map_err(acyclic_fs::OperationFailure::before_work)?;
+                            require_publication_time(
+                                publication,
+                                None,
+                                crate::filesystem::access::clock_now(clock)?,
+                            )
+                            .map_err(acyclic_fs::OperationFailure::before_work)?;
                             Ok::<_, acyclic_fs::OperationFailure<Error>>(
                                 acyclic_fs::OperationReceipt {
                                     value: (),

@@ -117,7 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     evidence,
                     acyclic_fs::PublicationPermit::Unrestricted,
                 )),
-                self.access_now()?,
+                self.clock(),
             )?
             .await?;
             bounded_io::retain(&binding, Some(io)).await?;

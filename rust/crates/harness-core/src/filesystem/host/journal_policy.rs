@@ -155,7 +155,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 io,
                 FilePublication::Authorized(fence, &grant, None),
                 None,
-                self.access_now()?,
+                self.clock(),
             )?
             .await?;
             Ok(())
