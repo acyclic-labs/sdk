@@ -109,11 +109,25 @@ macro_rules! stream_conformance_suite {
 pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
     let provider = backend.provider();
     let namespace = StreamPath::new("wave1")?;
+    // These checks compare the exact current provider revision with their last
+    // mutation receipt. Even disjoint writers advance that global revision.
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "selected_child_tails",
+        super::views::selected_child_tails(provider).await,
+    );
+    record(&mut failures, "views", super::views::verify(provider).await);
+    record(
+        &mut failures,
+        "selected",
+        super::selected::verify(provider).await,
+    );
     // Histories own disjoint subtrees and keys. Overlap their I/O so a local
     // provider can group durability, and remote providers overlap transport.
     // The checks sharing `conformance/*` remain ordered below; request-budget
     // accounting runs after every history has completed.
-    let (mut failures, independent, histories) = futures::join!(
+    let (contract, independent, histories) = futures::join!(
         contract_history(provider),
         async {
             macro_rules! checks {
@@ -126,9 +140,6 @@ pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
             }
             checks!(
                 absence => super::absence::verify(provider),
-                selected_child_tails => super::views::selected_child_tails(provider),
-                views => super::views::verify(provider),
-                selected => super::selected::verify(provider),
                 key_seek => super::key_seek::verify(provider),
                 soft => super::soft::verify(provider),
                 selectors => super::selectors::verify(provider),
@@ -145,6 +156,7 @@ pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
             }
         })),
     );
+    failures.extend(contract);
     failures.extend(independent);
     for (name, result) in histories {
         record(&mut failures, name, result);
