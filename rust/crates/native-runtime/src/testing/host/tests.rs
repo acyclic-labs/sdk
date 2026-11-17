@@ -510,13 +510,14 @@ fn queued_workers_leave_the_executor_available_to_reply() {
     {
         return;
     }
-    let count = crate::workers(&crate::BLOCKING_WORKERS, false)
-        .unwrap()
-        .exclusive_threads();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
     let (schedule, mut events) = Schedule::seeded(17);
+    let count = schedule
+        .simulation_blocking_workers()
+        .unwrap()
+        .exclusive_threads();
     let mut completed = runtime.block_on(async {
         let mut root = Box::pin(schedule.scope(async {
             let (send, mut receive) = mpsc::unbounded_channel();
@@ -685,13 +686,14 @@ fn saturated_native_submission_leaves_the_simulated_driver_available() {
     {
         return;
     }
-    let count = crate::workers(&crate::BLOCKING_WORKERS, false)
-        .unwrap()
-        .exclusive_threads();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
     let (schedule, mut events) = Schedule::seeded(23);
+    let count = schedule
+        .simulation_blocking_workers()
+        .unwrap()
+        .exclusive_threads();
     runtime.block_on(async {
         let mut root = Box::pin(schedule.scope(async {
             let (send, mut receive) = mpsc::unbounded_channel();
