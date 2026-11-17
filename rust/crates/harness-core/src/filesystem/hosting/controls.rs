@@ -319,8 +319,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     )
                     .await?;
                 added.retain(|change| match change {
-                    SubscriptionChange::Add { id, .. } => !delivery.subscriptions.contains_key(id),
-                    SubscriptionChange::Remove { .. } => true,
+                    SubscriptionChange::Add { id, .. } => delivery.subscriptions.get(id).is_none(),
+                    SubscriptionChange::Remove { .. }
+                    | SubscriptionChange::Pause { .. }
+                    | SubscriptionChange::Resume { .. } => true,
                 });
             }
             let remaining = delivery
@@ -743,7 +745,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         };
                         if !already_closed {
                             let child_intent =
-                                IntentId::try_from(format!("{intent}:{}", child.id()))?;
+                                IntentId::try_from(format!("{}:{}", intent.as_str(), child.id()))?;
                             let activation = self
                                 .store
                                 .activation(&actor)
