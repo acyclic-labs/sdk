@@ -78,7 +78,7 @@ fn standard_config_then_quiet_cancel_or_unexpected_eof_keeps_actual_outcome()
         stopped?;
         assert!(retired.take_callback_failure().is_none());
         assert_eq!(
-            retired.completed_callback_work(),
+            retired.completed_callback_work().unwrap(),
             crate::WorkCounters::UNCHARGED
         );
         let refusal = retired

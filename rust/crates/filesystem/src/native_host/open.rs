@@ -563,7 +563,7 @@ fn check_prepared_ascii_leaf_inner<const N: usize>(
     )
     .map_err(|(error, _)| error)?;
     let before = work.receipt()?;
-    let live = work.live_allocation_bytes().unwrap();
+    let live = work.live_allocation_bytes()?;
     let result = prepare_ascii_leaf(bytes, &work);
     let prefix = bytes.split_last().and_then(|(&last, prefix)| {
         (last == 0 && !prefix.is_empty() && !matches!(prefix, b"." | b"..")).then_some(prefix)
@@ -590,7 +590,7 @@ fn check_prepared_ascii_leaf_inner<const N: usize>(
     assert_eq!(after.bytes_encoded - before.bytes_encoded, examined * 2);
     assert_eq!(after.allocation_operations, before.allocation_operations);
     assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
-    assert_eq!(work.live_allocation_bytes().unwrap(), live);
+    assert_eq!(work.live_allocation_bytes()?, live);
     Ok(())
 }
 
@@ -615,7 +615,7 @@ fn check_native_root_name_prefix_inner(name: &str) -> Result<(), NativeTreeMater
         &crate::CancellationToken::new(),
     )
     .map_err(|(error, _)| error)?;
-    let live = work.live_allocation_bytes().unwrap();
+    let live = work.live_allocation_bytes()?;
     let before = work.receipt()?;
     assert!(matches!(
         work.root_identity(Path::new(name)),
@@ -628,7 +628,7 @@ fn check_native_root_name_prefix_inner(name: &str) -> Result<(), NativeTreeMater
         after.backend_read_operations,
         before.backend_read_operations
     );
-    assert_eq!(work.live_allocation_bytes().unwrap(), live);
+    assert_eq!(work.live_allocation_bytes()?, live);
     // The demand adapter must keep the same original ledger and exact prefix.
     let mut original = work.clone();
     assert!(matches!(
@@ -642,7 +642,7 @@ fn check_native_root_name_prefix_inner(name: &str) -> Result<(), NativeTreeMater
         after_demand.backend_read_operations,
         after.backend_read_operations
     );
-    assert_eq!(work.live_allocation_bytes().unwrap(), live);
+    assert_eq!(work.live_allocation_bytes()?, live);
     let denied = NativeMaterializationWork::new(
         crate::WorkBudget {
             items_examined: 0,

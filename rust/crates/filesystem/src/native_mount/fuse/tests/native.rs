@@ -268,9 +268,9 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
         retained.0,
         crate::NativeMountError::CallbackDenied { .. }
     ));
-    assert_eq!(retained.1, first_prefix);
+    assert_eq!(retained.1.unwrap(), first_prefix);
     assert_eq!(
-        core.completed_callback_work(),
+        core.completed_callback_work().unwrap(),
         crate::WorkCounters::UNCHARGED
     );
     Ok(())
@@ -323,7 +323,7 @@ fn failed_completion_keeps_its_fuse_failure_and_work_prefix()
         ))
     });
     let prefix = failure.as_ref().expect_err("failed completion").1;
-    assert_ne!(prefix, crate::WorkCounters::UNCHARGED);
+    assert_ne!(prefix.unwrap(), crate::WorkCounters::UNCHARGED);
     assert_eq!(core.finish(failure), Err(libc::ENOENT));
     let retained = core
         .take_handler_failure()
@@ -378,7 +378,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
                 .is_some()
         );
         assert_eq!(
-            core.completed_callback_work(),
+            core.completed_callback_work().unwrap(),
             crate::WorkCounters::UNCHARGED
         );
     }
@@ -406,7 +406,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
     let Err(failure) = result else {
         return Err("post-effect cancellation was reported as success".into());
     };
-    assert_ne!(failure.1, crate::WorkCounters::UNCHARGED);
+    assert_ne!(failure.1.unwrap(), crate::WorkCounters::UNCHARGED);
     let prefix = failure.1;
     assert_eq!(
         core.finish::<Option<MountLookup>>(Err(failure)),
@@ -419,8 +419,8 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
     assert!(core.handler_failed.load(Ordering::Acquire));
     assert_eq!(retained.1, prefix);
     assert_eq!(
-        core.completed_callback_work(),
-        missing_prefix.unwrap().checked_add(prefix)?
+        core.completed_callback_work().unwrap(),
+        missing_prefix.unwrap().checked_add(prefix.unwrap())?
     );
     assert!(
         around.lookup(&path)?.is_none(),

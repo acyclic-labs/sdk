@@ -2072,7 +2072,7 @@ impl MergePreviewFixture {
                         .file_path(file_id, side)
                         .await
                         .map_err(|failure| failure.error)?;
-                    assert!(path.work.items_examined > before.unwrap().items_examined);
+                    assert!(path.work.items_examined > before.items_examined);
                     assert_eq!(path.value.is_some(), record.is_some());
                     if let Some(path) = path.value {
                         if matches!(row.value(), crate::MergeConflict::Binding { .. })

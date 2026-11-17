@@ -19,16 +19,16 @@ proptest! {
             NameEncoding::Utf8, name.into_bytes(),
         ).unwrap()).collect();
         let path = NamespacePath::new(names, limits).unwrap();
-        let baseline = original.live_allocation_bytes();
+        let baseline = original.live_allocation_bytes().unwrap();
         let available = volume.remaining().unwrap().peak_allocation_bytes;
         let mut receipt = GenerationReceipt::from_work(&volume).unwrap();
         let copied = clone_namespace(&path, append.then(|| path.components().first().unwrap()), limits, &mut receipt).unwrap();
         let bytes = receipt.custody.bytes();
         prop_assert!(bytes > 0);
-        prop_assert_eq!(original.live_allocation_bytes(), baseline + bytes);
+        prop_assert_eq!(original.live_allocation_bytes().unwrap(), baseline + bytes);
         prop_assert_eq!(volume.remaining().unwrap().peak_allocation_bytes, available - bytes);
         drop((copied, receipt));
-        prop_assert_eq!(original.live_allocation_bytes(), baseline);
+        prop_assert_eq!(original.live_allocation_bytes().unwrap(), baseline);
         prop_assert_eq!(volume.remaining().unwrap().peak_allocation_bytes, available);
         // Admission must fail before creating an unfunded path in a child.
         let denied = volume.native_volume_work(crate::WorkBudget { peak_allocation_bytes: 0, ..budget }).unwrap();

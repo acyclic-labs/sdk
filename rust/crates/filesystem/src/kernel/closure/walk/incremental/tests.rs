@@ -270,7 +270,7 @@ fn batched_namespace_indexes_fund_and_meter_siblings_and_shared_ancestry() -> Te
             );
             budget = crate::performance::work_budget(64 * count as u64, 1_000_000);
             budget.peak_allocation_bytes =
-                crate::kernel::closure::memory::proof_standalone_control_bytes();
+                crate::kernel::closure::memory::proof_standalone_control_bytes().unwrap();
             assert!(
                 validate(&diff, budget).is_err(),
                 "the parent index needs funded storage"

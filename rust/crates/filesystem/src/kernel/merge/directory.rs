@@ -29,7 +29,7 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<OperationReceipt<DirectoryMergeResult>, OperationFailure<MergeGenerationError>> {
+) -> Result<OperationReceipt<DirectoryMergeResult>, crate::OperationFailure<MergeGenerationError>> {
     let maximum_changes = maximum_changes.into();
     let maximum_conflicts = maximum_conflicts.into();
 

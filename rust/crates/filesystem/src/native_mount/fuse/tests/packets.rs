@@ -129,7 +129,7 @@ fn terminal_view_refuses_later_kernel_packets_without_readmitting_source()
         &core,
         (
             NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled),
-            before,
+            Ok(before),
         ),
     );
     assert_eq!(

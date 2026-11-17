@@ -148,7 +148,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
     }))?;
     assert_eq!(stopped.spent().unwrap().items_examined, 3);
     assert!(matches!(
-        stopped.accept::<(), _>(Err(OperationFailure::new(
+        stopped.accept::<(), _>(Err(crate::OperationFailure::new(
             AuthorityStoreError::Cancelled,
             WorkCounters {
                 items_examined: 3,

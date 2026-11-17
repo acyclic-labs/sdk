@@ -435,7 +435,7 @@ mod tests {
             "a refused retirement must retain original custody"
         );
         assert!(
-            work.live_allocation_bytes() >= held_bytes,
+            work.live_allocation_bytes().unwrap() >= held_bytes,
             "missing receipt must retain the original external storage credit"
         );
         Ok(())

@@ -277,7 +277,7 @@ proptest! {
         let slot_bytes = admitted.work().unwrap().peak_allocation_bytes - baseline;
         let available = slot_bytes.saturating_sub(shortfall);
         let mut budget = WorkBudget::UNBOUNDED;
-        budget.peak_allocation_bytes = proof_standalone_control_bytes() + available;
+        budget.peak_allocation_bytes = proof_standalone_control_bytes().unwrap() + available;
         let meter = ProofMeter::standalone(budget, &cancellation)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
         denied(&meter);

@@ -233,7 +233,7 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(
         failure.work.as_deref().unwrap().backend_read_operations,
-        spent.unwrap().backend_read_operations
+        spent.backend_read_operations
     );
     drop(reader);
     assert!(!namespace_path_text(&first.value().path)?.is_empty());
