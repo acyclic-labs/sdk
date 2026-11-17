@@ -108,33 +108,17 @@ pub(in super::super) fn decode_result_page(
     cursor: ResultCursor,
     credit: NonZeroU32,
 ) -> Result<ResultPage, ProviderError> {
-    if decode_result_cursor(value.cursor.as_ref())? != cursor {
-        return Err(invalid("result page cursor was substituted"));
-    }
-    let (range, _) = cursor.interval(cursor.cut, credit)?;
-    let returned = u64::try_from(value.machines.len())
-        .map_err(|_| invalid("result page extent exceeds address space"))?;
-    if returned > range.end - range.start || returned == 0 && cursor.from < cursor.cut.count {
-        return Err(invalid(
-            "result page violates its original extent or credit",
-        ));
-    }
-    let end = cursor.from + returned;
-    let next = (end < cursor.cut.count).then_some(ResultCursor {
-        from: end,
-        ..cursor
-    });
-    if value
+    let next = value
         .next
         .as_ref()
         .map(|cursor| decode_result_cursor(Some(cursor)))
-        .transpose()?
-        != next
-    {
-        return Err(invalid(
-            "result page extent or continuation was substituted",
-        ));
-    }
+        .transpose()?;
+    decode_result_cursor(value.cursor.as_ref())?.validate_page(
+        cursor,
+        credit,
+        value.machines.len(),
+        next,
+    )?;
     let machines = value
         .machines
         .into_iter()
