@@ -1343,12 +1343,7 @@ mod isolation_tests {
             let store = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
                 .await
                 .unwrap();
-            assert!(
-                store
-                    .create("values/a", OwnedBytes::from(b"before".to_vec()))
-                    .await
-                    .unwrap()
-            );
+            assert!(store.create("values/a", bytes(b"before")).await.unwrap());
             assert_eq!(
                 store
                     .read("values/a", None)
@@ -1361,10 +1356,7 @@ mod isolation_tests {
             let stale = observation(&store, "values/a").await;
             assert!(
                 store
-                    .replace(
-                        observation(&store, "values/a").await,
-                        OwnedBytes::from(b"after".to_vec())
-                    )
+                    .replace(observation(&store, "values/a").await, bytes(b"after"))
                     .await
                     .unwrap()
                     .is_some()
@@ -1380,7 +1372,7 @@ mod isolation_tests {
             );
             assert!(
                 store
-                    .replace(stale, OwnedBytes::from(b"wrong".to_vec()))
+                    .replace(stale, bytes(b"wrong"))
                     .await
                     .unwrap()
                     .is_none()
