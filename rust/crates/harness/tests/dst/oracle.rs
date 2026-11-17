@@ -375,13 +375,16 @@ impl World {
             };
             // The checkout's root identity is a host file handle. A replay
             // supplies its own fixture identity so the owner record and every
-            // later capture are a function of the seed alone.
+            // later capture are a function of the seed alone. It is the world's
+            // identity, not the incarnation's: a reopen must find the owner
+            // record the crashed incarnation published.
             let checkout_identity = {
                 let mut object = [0; 16];
                 object.copy_from_slice(
-                    &blake3::hash(format!("dst-object:{scheduler}").as_bytes()).as_bytes()[..16],
+                    &blake3::hash(format!("dst-object:{}", self.seed).as_bytes()).as_bytes()[..16],
                 );
-                let handle = *blake3::hash(format!("dst-handle:{scheduler}").as_bytes()).as_bytes();
+                let handle =
+                    *blake3::hash(format!("dst-handle:{}", self.seed).as_bytes()).as_bytes();
                 (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
             };
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));
