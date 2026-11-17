@@ -371,7 +371,8 @@ mod equivalence {
     fn retain(
         checkpoint: &FoldCheckpoint<Vec<u8>>,
         ctx: &mut KernelAccounting<'_>,
-    ) -> Result<Retained<FoldCheckpoint<Vec<u8>>>, proptest::test_runner::TestCaseError> {
+    ) -> std::result::Result<Retained<FoldCheckpoint<Vec<u8>>>, proptest::test_runner::TestCaseError>
+    {
         let bytes = serde_json::to_vec(checkpoint)?;
         Ok(ctx.decode_json(&bytes)?)
     }
