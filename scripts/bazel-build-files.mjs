@@ -89,6 +89,9 @@ const packages = new Map(runs.flatMap(run => run.packages.map(p => [p.id, p])));
 const workspace = new Set(runs.flatMap(run => run.workspace_members));
 const members = new Set(workspace);
 const nodes = runs.map(run => new Map(run.resolve.nodes.map(node => [node.id, node])));
+// The host universe is exactly the packages the host resolutions name; the wasm metadata below
+// adds wasm-only crates to `packages`, and they must not enter the host hub.
+const hostPackageIds = new Set(runs.flatMap(run => run.packages.map(p => p.id)));
 // The WASM acceptance artifacts build with the selections scripts/wasm-packages.mjs names, not
 // with every feature: a host-only feature such as tokio/net must never enter a wasm32 graph.
 // One resolution carries the union of those selections, so every workspace dependency has a
@@ -454,7 +457,7 @@ for (const run of runs) {
 }
 // The crate universe: every registry crate any target platform resolves. Vendored path crates
 // are first-party targets, never universe crates.
-const universe = [...packages.values()].filter(p => p.source?.startsWith("registry+") && !members.has(p.id))
+const universe = [...packages.values()].filter(p => hostPackageIds.has(p.id) && p.source?.startsWith("registry+") && !members.has(p.id))
   .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : a.version < b.version ? -1 : 1);
 // Two versions of one package need distinct splicing dependency keys. A key is a Cargo
 // package name, so the version is spelled with XID characters only.

@@ -87,12 +87,6 @@ crate.annotation(
 )
 
 crate.spec(
-    package = "accessory",
-    version = "=2.1.1",
-    default_features = False,
-)
-
-crate.spec(
     package = "adler2",
     version = "=2.0.1",
     default_features = False,
@@ -738,12 +732,6 @@ crate.spec(
 )
 
 crate.spec(
-    package = "cast",
-    version = "=0.3.0",
-    default_features = False,
-)
-
-crate.spec(
     package = "castaway",
     version = "=0.2.4",
     default_features = False,
@@ -1330,12 +1318,6 @@ crate.spec(
 )
 
 crate.spec(
-    package = "delegate-display",
-    version = "=3.0.1",
-    default_features = False,
-)
-
-crate.spec(
     package = "der",
     version = "=0.8.3",
     default_features = False,
@@ -1711,12 +1693,6 @@ crate.spec(
         "unicode",
         "variable-lookbehinds",
     ],
-)
-
-crate.spec(
-    package = "fancy_constructor",
-    version = "=2.1.1",
-    default_features = False,
 )
 
 crate.spec(
@@ -2444,24 +2420,6 @@ crate.spec(
 )
 
 crate.spec(
-    package = "impartial-ord",
-    version = "=2.0.0",
-    default_features = False,
-)
-
-crate.spec(
-    package = "indexed_db_futures",
-    version = "=0.6.4",
-    default_features = False,
-)
-
-crate.spec(
-    package = "indexed_db_futures_macros_internal",
-    version = "=1.0.0",
-    default_features = False,
-)
-
-crate.spec(
     package = "indexmap",
     version = "=2.14.2",
     default_features = False,
@@ -2905,62 +2863,6 @@ crate.spec(
 crate.spec(
     package = "lru-slab",
     version = "=0.1.3",
-    default_features = False,
-)
-
-crate.spec(
-    package = "macroific",
-    version = "=2.0.0",
-    package_alias = "macroific-2_0_0",
-    default_features = False,
-)
-
-crate.spec(
-    package = "macroific",
-    version = "=3.1.0",
-    package_alias = "macroific-3_1_0",
-    default_features = False,
-)
-
-crate.spec(
-    package = "macroific_attr_parse",
-    version = "=2.0.0",
-    package_alias = "macroific_attr_parse-2_0_0",
-    default_features = False,
-)
-
-crate.spec(
-    package = "macroific_attr_parse",
-    version = "=3.1.0",
-    package_alias = "macroific_attr_parse-3_1_0",
-    default_features = False,
-)
-
-crate.spec(
-    package = "macroific_core",
-    version = "=2.0.0",
-    package_alias = "macroific_core-2_0_0",
-    default_features = False,
-)
-
-crate.spec(
-    package = "macroific_core",
-    version = "=3.1.0",
-    package_alias = "macroific_core-3_1_0",
-    default_features = False,
-)
-
-crate.spec(
-    package = "macroific_macro",
-    version = "=2.0.0",
-    package_alias = "macroific_macro-2_0_0",
-    default_features = False,
-)
-
-crate.spec(
-    package = "macroific_macro",
-    version = "=3.1.0",
-    package_alias = "macroific_macro-3_1_0",
     default_features = False,
 )
 
@@ -3488,12 +3390,6 @@ crate.spec(
     features = [
         "default",
     ],
-)
-
-crate.spec(
-    package = "oorandom",
-    version = "=11.1.5",
-    default_features = False,
 )
 
 crate.spec(
@@ -4965,20 +4861,6 @@ crate.spec(
 crate.spec(
     package = "scopeguard",
     version = "=1.2.0",
-    default_features = False,
-)
-
-crate.spec(
-    package = "sealed",
-    version = "=0.6.0",
-    package_alias = "sealed-0_6_0",
-    default_features = False,
-)
-
-crate.spec(
-    package = "sealed",
-    version = "=0.7.0",
-    package_alias = "sealed-0_7_0",
     default_features = False,
 )
 
@@ -6475,45 +6357,6 @@ crate.spec(
 crate.spec(
     package = "wasm-bindgen-shared",
     version = "=0.2.117",
-    default_features = False,
-)
-
-crate.spec(
-    package = "wasm-bindgen-test",
-    version = "=0.3.67",
-    default_features = False,
-)
-
-crate.spec(
-    package = "wasm-bindgen-test-macro",
-    version = "=0.3.67",
-    default_features = False,
-)
-
-crate.spec(
-    package = "wasm-bindgen-test-shared",
-    version = "=0.2.117",
-    default_features = False,
-)
-
-crate.spec(
-    package = "wasm-streams",
-    version = "=0.4.2",
-    package_alias = "wasm-streams-0_4_2",
-    default_features = False,
-)
-
-crate.spec(
-    package = "wasm-streams",
-    version = "=0.5.0",
-    package_alias = "wasm-streams-0_5_0",
-    default_features = False,
-)
-
-crate.spec(
-    package = "wasm-streams",
-    version = "=0.7.0",
-    package_alias = "wasm-streams-0_7_0",
     default_features = False,
 )
 
