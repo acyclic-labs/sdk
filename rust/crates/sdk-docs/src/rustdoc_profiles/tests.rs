@@ -244,6 +244,9 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
         return;
     }
     crate::with_rustdoc_cache(|| {
+        // The fixture's debug information is never read; skipping it keeps a real Cargo build
+        // inside the per-case limit.
+        std::env::set_var("CARGO_PROFILE_DEV_DEBUG", "0");
         let lookups_before = super::execution::rustup_lookup_count();
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path();
