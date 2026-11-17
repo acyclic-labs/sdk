@@ -42,7 +42,9 @@ test('real Cargo targets retain feature closure, alternatives, platform independ
   for (const [path, bytes] of [['tests/case.rs', Buffer.from([0xff])], ['Cargo.toml', Buffer.concat([
     Buffer.from('[package]\nname="example"\nversion="0.0.0"\ndescription="'), Buffer.from([0xff]), Buffer.from('"\n'),
   ])]]) {
-    assert.equal(testFeatureFindings(fixture(t, '', '', {[path]: bytes})).length, 1);
+    const root = fixture(t, '', '', {[path]: bytes}), errors = testFeatureFindings(root);
+    assert.equal(errors.length, 1);
+    assert.ok(errors[0].includes(join(root, path)));
   }
 });
 

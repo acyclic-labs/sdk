@@ -8,7 +8,11 @@ export const isMain = url => Boolean(process.argv[1]) && resolve(process.argv[1]
 export const repositoryRoot = resolve(import.meta.dirname, '..');
 
 const utf8 = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
-export const readUtf8 = file => utf8.decode(readFileSync(file));
+export function readUtf8(file) {
+  const bytes = readFileSync(file);
+  try { return utf8.decode(bytes); }
+  catch (cause) { throw new Error(`${file}: invalid UTF-8`, {cause}); }
+}
 
 // Git paths are NUL-delimited, including names with newlines or quoting characters.
 // Each policy owns its pathspecs; discovery never silently drops missing files.
