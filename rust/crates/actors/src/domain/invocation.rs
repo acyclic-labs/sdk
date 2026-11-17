@@ -122,7 +122,7 @@ impl InvokeActorRequest {
 }
 
 /// Typed invocation response with byte-preserving body and headers.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = InvokeActorResponse::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = InvokeActorResponse::validate_envelope)]
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorResponse.ts")]
 #[ts(rename_all = "camelCase")]
@@ -397,11 +397,5 @@ impl InvokeWorkerRequest {
             return Err(DomainError::InvalidBinding);
         }
         Ok(())
-    }
-}
-
-impl InvokeActorResponse {
-    fn validate_from_proto(&self) -> Result<(), DomainError> {
-        self.validate_envelope()
     }
 }

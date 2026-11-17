@@ -14,20 +14,22 @@ pub struct DeleteWorkerRequest {
 }
 impl DeleteWorkerRequest {
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        Self::new(self.worker_name.clone(), self.idempotency_key.clone()).map(|_| ())
+        crate::addressing::validate_dns_label(self.worker_name.as_str().as_bytes())
+            .map_err(|_| DomainError::InvalidBinding)?;
+        if self.idempotency_key.is_empty() || self.idempotency_key.len() > 256 {
+            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
+        }
+        Ok(())
     }
     /// Select the exact deployment under the authenticated account.
     pub fn new(worker_name: ActorNamespace, idempotency_key: String) -> Result<Self, DomainError> {
-        crate::addressing::validate_dns_label(worker_name.as_str().as_bytes())
-            .map_err(|_| DomainError::InvalidBinding)?;
-        if idempotency_key.is_empty() || idempotency_key.len() > 256 {
-            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
-        }
-        Ok(Self {
+        let request = Self {
             worker_name,
             idempotency_key,
             account_id: Vec::new(),
-        })
+        };
+        request.validate_from_proto()?;
+        Ok(request)
     }
 }
 /// Successful named Worker deployment deletion.
