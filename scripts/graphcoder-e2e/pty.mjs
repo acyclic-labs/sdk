@@ -65,7 +65,8 @@ export async function pty(processes, binary, fixture, input, capture) {
     }
     function fail(error) {
       failure ??= error;
-      running?.killExecutable();
+      // Cancellation owns the single executable kill. Aborting here wakes the
+      // completion wait without racing a second kill on Windows.
       interrupted.abort(error);
     }
     function frame(settled = false) {
@@ -168,9 +169,12 @@ export async function pty(processes, binary, fixture, input, capture) {
     // Exercise input arriving with the first terminal bytes, before the first
     // rendered frame or terminal-query replies have been admitted.
     if (input.text !== undefined) running.child.stdout.once("data", () => running.child.stdin.write(input.text));
+    const frameWrites = new Set();
     running.child.stdout.on("data", bytes => {
       raw.write(bytes);
-      frames.write(bytes);
+      const writing = frames.write(bytes);
+      frameWrites.add(writing);
+      writing.then(() => frameWrites.delete(writing), () => frameWrites.delete(writing));
     });
     let result;
     // Successful interactions stop on native failure. Declared refusal cases
@@ -180,11 +184,12 @@ export async function pty(processes, binary, fixture, input, capture) {
     const signal = AbortSignal.any([AbortSignal.timeout(120_000), interrupted.signal,
       ...((input.exit ?? 0) === 0 && running.failure ? [running.failure] : []), ...(fixture.signal ? [fixture.signal] : [])]);
     // The child's exit is the event that no further interaction can arrive.
-    // Join the original completion after that event, or report the action
-    // whose expected interaction never happened.
-    const completion = running.exited.then(() => {
-      if (index < input.actions.length) throw missingAction();
-      return running.closed;
+    // Join the original completion and every queued screen write before
+    // deciding which interaction, if any, never happened.
+    const completion = running.exited.then(async () => {
+      const result = await running.closed;
+      await Promise.allSettled([...frameWrites]);
+      return result;
     });
     try { result = await withCancellation(running, signal, completion); }
     catch (error) {
@@ -195,6 +200,7 @@ export async function pty(processes, binary, fixture, input, capture) {
       catch (retirement) { errors.push(retirement); }
       try { result = await running.closed; }
       catch (error) { errors.push(error); }
+      await Promise.allSettled([...frameWrites]);
     }
     finally {
       unsubscribeSignals?.();
@@ -204,6 +210,7 @@ export async function pty(processes, binary, fixture, input, capture) {
       await new Promise(resolve => screen.write("", () => resolve(undefined)));
       frame(true);
     }
+    if (!failure && !errors && index < input.actions.length) errors = [missingAction()];
     const visible = screenText(screen);
     if (result) {
       try { capture({ ...result, snapshots, deltas, first_paint_ms: firstPaint, visible, actions: index }); }

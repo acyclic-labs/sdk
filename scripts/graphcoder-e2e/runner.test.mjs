@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { Spool, SpoolEnded, OutputWatch, Processes } from "./process.mjs";
+import { Spool, SpoolEnded, OutputWatch, Processes, withCancellation } from "./process.mjs";
 import { matches, pty, SHOW_CURSOR, HIDE_CURSOR } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames } from "./frames.mjs";
@@ -210,6 +210,48 @@ test("a missing terminal interaction names its action and retires the tree on ch
     });
     assert.equal(processes.children.size, 0, "the driver-owned tree must be gone when the case returns");
   } finally { await processes.close(); rmSync(root, { recursive: true }); }
+});
+
+test("a final observation painted as the child exits is not a missing interaction", {
+  timeout: 5000,
+}, async () => {
+  class TerminalProcess extends Processes {
+    startTerminal(binary, args, options) {
+      const running = this.start(binary, args, options);
+      running.child.once("exit", release);
+      return running;
+    }
+  }
+  const write = TerminalFrames.prototype.write, root = mkdtempSync(join(tmpdir(), "terminal-final-observation-"));
+  const processes = new TerminalProcess();
+  let release;
+  const exited = new Promise(resolve => { release = resolve; });
+  TerminalFrames.prototype.write = function (bytes) {
+    // Hold the final screen write until the exit event, as an owner can do.
+    return bytes.includes("FINAL_OBSERVATION") ? exited.then(() => write.call(this, bytes)) : write.call(this, bytes);
+  };
+  try {
+    const result = await pty(processes, process.execPath, {
+      id: "final-terminal-observation", workspace: root,
+      args: ["-e", "process.stdout.write('ready');process.stdin.once('data',()=>process.stdout.write('FINAL_OBSERVATION',()=>process.exit(0)));process.stdin.resume()"],
+      onRequest() { return () => {}; },
+    }, { actions: [{ when: { contains: ["ready"] }, send: "go\n" },
+      { when: { contains: ["FINAL_OBSERVATION"] } }] }, () => {});
+    assert.equal(result.code, 0);
+    assert.equal(processes.children.size, 0, "the driver-owned tree must be gone when the case returns");
+  } finally {
+    release();
+    TerminalFrames.prototype.write = write;
+    await processes.close();
+    rmSync(root, { recursive: true });
+  }
+});
+
+test("cancellation keeps its original reason when the executable kill promise rejects", async () => {
+  const reason = new Error("original cancellation");
+  const running = { closed: Promise.resolve({ code: null, signal: "SIGKILL" }),
+    killExecutable: () => Promise.reject(new Error("ESRCH")) };
+  await assert.rejects(withCancellation(running, AbortSignal.abort(reason)), error => error === reason);
 });
 
 test("shipping terminal refusals survive coalesced and fragmented redraws", async () => {
