@@ -709,7 +709,6 @@ function buildFile(p) {
       ...common(bin),
       ...deps([null], [...ownLib, ...ownDeps], ownMacro),
       ["visibility", q(["//visibility:public"])],
-      ...generatorVisibility(label(p), bin.name),
     ]]);
     // A binary's own #[cfg(test)] cases, as `cargo test` runs them.
     const binCrate = bin.name.replaceAll("-", "_");

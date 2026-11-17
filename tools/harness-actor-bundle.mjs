@@ -84,9 +84,10 @@ if (import.meta.main) {
   };
   // The bundle target declares every generator as a tool, so generation runs those executables
   // directly rather than starting a second Bazel from inside the run environment.
-  const generators = values.generators
-    ? Object.fromEntries(Object.entries(JSON.parse(readFileSync(resolve(values.generators), "utf8")))
-      .map(([label, path]) => [label, resolve(process.cwd(), path)]))
+  const generatorDirectory = values.generators ? resolve(values.generators) : undefined;
+  const generators = generatorDirectory
+    ? Object.fromEntries(Object.entries(JSON.parse(readFileSync(join(generatorDirectory, "executables.json"), "utf8")))
+      .map(([label, name]) => [label, join(generatorDirectory, name)]))
     : undefined;
   step("generate", "bun", ["scripts/generate.mjs", "harness-actor"], generators ? { ACYCLIC_BAZEL_EXECUTABLES: JSON.stringify(generators) } : {});
   const place = (source, destination) => {

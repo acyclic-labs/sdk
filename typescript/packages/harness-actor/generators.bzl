@@ -30,14 +30,26 @@ GENERATOR_LABELS = [
 ]
 
 def _generator_executables_impl(ctx):
-    output = ctx.actions.declare_file(ctx.label.name + ".json")
+    output = ctx.actions.declare_directory(ctx.label.name)
+    manifest = ctx.actions.declare_file(ctx.label.name + ".json")
     executables = [target[DefaultInfo].files_to_run.executable for target in ctx.attr.targets]
     entries = {
-        "//%s:%s" % (target.label.package, target.label.name): executable.path
+        "//%s:%s" % (target.label.package, target.label.name): executable.basename
         for target, executable in zip(ctx.attr.targets, executables)
     }
-    ctx.actions.write(output, json.encode(entries) + "\n")
-    return [DefaultInfo(files = depset([output]), runfiles = ctx.runfiles(files = executables))]
+    ctx.actions.write(manifest, json.encode(entries) + "\n")
+    arguments = [output.path, manifest.path] + [executable.path for executable in executables]
+    commands = ["mkdir -p \"$1\"", "cp \"$2\" \"$1/executables.json\""]
+    commands.extend("cp \"$%d\" \"$1/%s\"" % (index + 3, executable.basename)
+                    for index, executable in enumerate(executables))
+    ctx.actions.run_shell(
+        inputs = [manifest] + executables,
+        outputs = [output],
+        arguments = arguments,
+        command = " && ".join(commands),
+        mnemonic = "GeneratorExecutables",
+    )
+    return [DefaultInfo(files = depset([output]), runfiles = ctx.runfiles(files = [output]))]
 
 generator_executables = rule(
     implementation = _generator_executables_impl,
