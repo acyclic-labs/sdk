@@ -47,4 +47,3 @@ impl HeapLayout for WireItem {
         ),
     ]);
 }
-
