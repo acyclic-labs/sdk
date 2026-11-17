@@ -39,7 +39,7 @@ jobs:
         run: node scripts/check-cargo-callers.mjs
       # Vendored crates keep their upstream bytes.
       - name: Check that the whole tree has no whitespace errors
-        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents' ':!rust/vendor'
+        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents'
       # Formatting differs between rustfmt releases (macro bodies among
       # them), so it is checked with the pinned toolchain the gate uses.
       - name: Install the pinned rustfmt

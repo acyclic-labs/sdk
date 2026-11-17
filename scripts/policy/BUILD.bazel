@@ -1,6 +1,21 @@
 load(":node_test.bzl", "node_test")
 
 node_test(
+    name = "static_ci_test",
+    srcs = [
+        "//:.gitattributes",
+        "//:scripts/static-ci.mjs",
+        "//:scripts/static-ci.test.mjs",
+        "//:scripts/static-policy.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/javascript-syntax.mjs",
+        "//:scripts/vendor/yaml.cjs",
+        "//:scripts/fixtures/static-ci-b7333953cb.mjs.txt",
+    ],
+    entry = "scripts/static-ci.test.mjs",
+)
+
+node_test(
     name = "core_test",
     srcs = ["core.test.mjs", "//:scripts/policy-core.mjs"],
     entry = "scripts/policy/core.test.mjs",

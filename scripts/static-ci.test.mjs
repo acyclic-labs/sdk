@@ -147,6 +147,7 @@ process.env.STATIC_CI_TEST_DEPTH = String(depth + 1);
  test('release whitespace preserves byte-exact transport artifacts and generated declarations', () => fixture(async ({root, tag, commit, check}) => {
   tag('acyclic-v0.1.0');
   const artifacts = {
+   'rust/vendor/upstream/source.rs': '// upstream original \n\n',
    'patches/example.patch': '@@ -1 +1 @@\n \n',
    'typescript/packages/actors/src/generated/ErrorMetadata.ts': 'export type ErrorMetadata = { \ncode: string, \n};\n',
    'typescript/packages/actors/src/generated/semantic/actors/ActorId.ts': 'export type ActorId = { \nvalue: string, \n};\n',
