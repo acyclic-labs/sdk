@@ -121,7 +121,7 @@ export function workspacePackages(root) {
     }
     if (own.build !== false) target('custom-build', {}, typeof own.build === 'string' ? own.build : 'build.rs', 'build-script-build');
     const rank = t => t.kind.includes('custom-build') ? 5 : t.kind.includes('bench') ? 4 : t.kind.includes('test') ? 3 : t.kind.includes('example') ? 2 : t.kind.includes('bin') ? 1 : 0;
-    targets.sort((a, b) => rank(a) - rank(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    targets.sort((a, b) => rank(a) - rank(b) || (a.kind.includes('test') && own.autotests === false || a.kind.includes('bin') && own.autobins === false ? 0 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     const p = {name: own.name, version: own.version, id: `path+file://${slash(directory)}#${own.name}@${own.version}`,
       source: null, dependencies, targets, features, manifest_path: path.join(directory, 'Cargo.toml'), workspace_member: members.has(file),
       publish: own.publish === false ? [] : own.publish === true ? null : own.publish ?? null, metadata: own.metadata ?? null, authors: own.authors ?? [], categories: own.categories ?? [], keywords: own.keywords ?? []};
@@ -139,7 +139,9 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
   root = path.resolve(root);
   const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
   const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-bazel-lock.json'), 'utf8'));
-  const registry = (lock.package ?? []).filter(p => p.source && (allPlatforms || universe.crates[`${p.name} ${p.version}`])).map(p => {
+  const spliced = toml(root, 'cargo-bazel.Cargo.lock').package.find(p => p.name === 'direct-cargo-bazel-deps');
+  const direct = new Set(spliced?.dependencies ?? []);
+  const registry = (lock.package ?? []).filter(p => p.source && (allPlatforms || direct.has(p.name) || direct.has(`${p.name} ${p.version}`))).map(p => {
     const pinned = universe.crates[`${p.name} ${p.version}`];
     const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
     const target = lib?.Library ?? lib?.ProcMacro;
@@ -152,6 +154,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     triple.includes('windows') ? 'windows' : 'unix', `target_os=${JSON.stringify(triple.includes('windows') ? 'windows' : triple.includes('darwin') ? 'macos' : 'linux')}`,
     `target_arch=${JSON.stringify(triple.startsWith('aarch64') ? 'aarch64' : 'x86_64')}`, 'target_pointer_width="64"', 'target_endian="little"',
     `target_env=${JSON.stringify(triple.includes('msvc') ? 'msvc' : triple.includes('darwin') ? '' : 'gnu')}`, `target_family=${JSON.stringify(triple.includes('windows') ? 'windows' : 'unix')}`,
+    `target_vendor=${JSON.stringify(triple.includes('darwin') ? 'apple' : triple.includes('windows') ? 'pc' : 'unknown')}`,
   ]);
   const matches = cfg => {
     if (allPlatforms) return true;
@@ -224,7 +227,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
       }
     return {id: p.id, deps, features: Object.keys(p.features)};
   }));
-  const reached = new Set(local.map(p => p.id)), pending = [...reached];
+  const reached = new Set(packages.map(p => p.id)), pending = [...reached];
   const byId = new Map(nodes.map(node => [node.id, node]));
   while (pending.length) for (const dep of byId.get(pending.pop())?.deps ?? [])
     if (!reached.has(dep.pkg)) {reached.add(dep.pkg); pending.push(dep.pkg);}
