@@ -1,0 +1,49 @@
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# This build script enables the production model-checking configuration even
+# when the surrounding Bazel invocation has no ACYCLIC_LOOM environment.
+cargo_build_script(
+    name = "loom_config",
+    crate_root = "//rust/verification/sdk-fixtures:build.rs",
+    srcs = ["//rust/verification/sdk-fixtures:build.rs"],
+    pkg_name = "sdk-fixture-verification",
+    edition = "2021",
+    version = "0.0.0",
+    crate_features = ["model-checking"],
+    build_script_env = {"ACYCLIC_LOOM": "1"},
+)
+
+rust_library(
+    name = "sdk_fixture_verification",
+    crate_root = "//rust/crates/sdk-generation:tests/cli_regressions/cache.rs",
+    srcs = ["//rust/crates/sdk-generation:tests/cli_regressions/cache.rs"],
+    edition = "2021",
+    rustc_flags = ["--check-cfg=cfg(loom)"],
+    deps = [":loom_config", "@sdk_crates//loom-0.7.3"],
+)
+
+rust_test(
+    name = "owner_queue",
+    args = ["--exact", "queued_owners_are_visited_once_in_order_and_drained_after_panic"],
+    crate_root = "//rust/verification/sdk-fixtures:model.rs",
+    srcs = [
+        "//rust/verification/sdk-fixtures:model.rs",
+        "//rust/crates/sdk-generation:src/parallel.rs",
+        "//rust/crates/sdk-generation:src/shared_cache.rs",
+        "//rust/crates/sdk-docs:src/concrete_versions.rs",
+        "//rust/crates/sdk-docs:src/concrete_versions/tests.rs",
+        "//rust/crates/sdk-docs:src/projection.rs",
+        "//rust/crates/sdk-docs:src/publication.rs",
+        "//rust/crates/sdk-docs:src/tests.rs",
+        "//rust/crates/sdk-docs:src/tests/identity.rs",
+        "//rust/crates/sdk-docs:src/tests/projection.rs",
+        "//rust/crates/sdk-docs:src/tests/publication.rs",
+        "//rust/crates/sdk-docs:src/tests/rustdoc_adapter.rs",
+        "//rust/crates/sdk-docs:src/tests/scratch.rs",
+    ],
+    compile_data = ["//rust/crates/sdk-docs/fuzz:corpus/rustdoc_adapter/valid.json"],
+    edition = "2021",
+    rustc_flags = ["--check-cfg=cfg(loom)"],
+    deps = [":loom_config", ":sdk_fixture_verification", "@sdk_crates//loom-0.7.3"],
+)
