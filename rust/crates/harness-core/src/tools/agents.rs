@@ -1315,6 +1315,7 @@ mod tests {
                     )),
                     maximum_bytes: None,
                     templates: None,
+                    saturation: None,
                     volumes: Vec::new(),
                     released: None,
                 }),
@@ -1357,6 +1358,66 @@ mod tests {
                 .await?;
             assert!(rejected.value["error"].is_string());
         }
+        Ok(())
+    }
+
+    struct Saturated;
+
+    impl crate::model::ModelProvider for Saturated {
+        fn provider_saturation(&self) -> Option<std::time::Duration> {
+            Some(std::time::Duration::from_secs(7))
+        }
+
+        fn generate<'a>(
+            &'a self,
+            _: &'a crate::model::PreparedModelRequest,
+            _: crate::model::ModelDispatch,
+        ) -> crate::model::ModelStream<'a> {
+            crate::model::ModelStream::new(Box::pin(futures::stream::empty()))
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_refuses_while_the_selected_provider_is_saturated() -> Result<()> {
+        let parent = AgentPath::root(&crate::agent::AgentId::from_bytes([74; 16]));
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
+        let mut children = crate::agent::Children::new();
+        children.bind(stream);
+        let tool = AgentTool {
+            name: "spawn",
+            turn: Arc::new(Turn {
+                spawned_children: 0,
+                spawning: futures::lock::Mutex::new(()),
+                agent: parent.clone(),
+                parent: None,
+                children,
+                effects: Arc::new(Effects(std::sync::atomic::AtomicUsize::new(0), false)),
+                observer: None,
+                writer: Arc::new(crate::runtime::test_context::PrivateVolume(
+                    crate::runtime::test_context::private_volume(74)?,
+                )),
+                maximum_bytes: None,
+                templates: None,
+                saturation: Some(Arc::new(Saturated)),
+                volumes: Vec::new(),
+                released: None,
+            }),
+        };
+        let result = tool
+            .execute(
+                ToolInvocation {
+                    operation_id: crate::OperationId::from_bytes([75; 16]),
+                    call_id: "spawn".into(),
+                    name: "spawn".into(),
+                    arguments: json!({"name": "w", "task": "work"}),
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(
+            result.value["error"],
+            "provider admission is closed for 7000 ms; recovery: wait for the provider's cooldown before spawning more work"
+        );
         Ok(())
     }
 

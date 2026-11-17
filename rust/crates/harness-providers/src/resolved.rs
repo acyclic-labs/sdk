@@ -323,9 +323,7 @@ impl ResolvedModel {
 
 impl ModelProvider for ResolvedModel {
     fn provider_saturation(&self) -> Option<std::time::Duration> {
-        self.admission
-            .gate(self)
-            .saturation(self.transport.now())
+        self.admission.gate(self).saturation(self.transport.now())
     }
 
     fn bind_conversation(

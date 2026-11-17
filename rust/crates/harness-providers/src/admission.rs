@@ -188,10 +188,13 @@ impl State {
                 .filter(|(_, waiter)| !waiter.admitted)
                 .count();
             if pending > 1 {
-                let interval = self.window.unwrap_or_default()
-                    / u32::try_from(pending).unwrap_or(u32::MAX);
+                let interval =
+                    self.window.unwrap_or_default() / u32::try_from(pending).unwrap_or(u32::MAX);
                 if !interval.is_zero() {
-                    self.pace = Some(Pace { next: now, interval });
+                    self.pace = Some(Pace {
+                        next: now,
+                        interval,
+                    });
                 }
             }
         }
@@ -199,10 +202,7 @@ impl State {
             if now < pace.next {
                 return Some(pace.next);
             }
-            if let Some((_, waiter)) = self
-                .waiters
-                .iter_mut()
-                .find(|(_, waiter)| !waiter.admitted)
+            if let Some((_, waiter)) = self.waiters.iter_mut().find(|(_, waiter)| !waiter.admitted)
             {
                 waiter.admitted = true;
                 if let Some(waker) = waiter.waker.take() {

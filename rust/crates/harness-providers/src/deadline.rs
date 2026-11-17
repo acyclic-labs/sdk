@@ -115,8 +115,9 @@ impl HttpTransport for Bounded {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             let input_bytes = request.body.len() as u64;
-            let (mut response, deadline) =
-                self.exchange(|| Ok(self.inner.send(request)), None, input_bytes).await?;
+            let (mut response, deadline) = self
+                .exchange(|| Ok(self.inner.send(request)), None, input_bytes)
+                .await?;
             if let Some(deadline) = deadline {
                 response.body = Box::pin(Guarded::new(response.body, deadline));
             }
