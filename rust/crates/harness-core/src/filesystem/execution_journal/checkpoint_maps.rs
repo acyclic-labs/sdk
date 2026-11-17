@@ -293,10 +293,10 @@ where
                 let call = crate::model::hash_bytes(call_id.as_bytes(), io)?;
                 if !summary.tools.contains_key(&(*step, call), io)?
                     && let Some(state) =
-                        step_index::tool_state(&reader, roots[4], recovery.state.tail, *step, call)
+                        step_index::tool_entry(&reader, roots[4], recovery.state.tail, *step, call)
                             .await?
                 {
-                    summary.tools.insert((*step, call), state, io)?;
+                    summary.tools.insert((*step, call), state.settled, io)?;
                 }
             }
             ExecutionEvent::ModelOutput { step, .. } => {

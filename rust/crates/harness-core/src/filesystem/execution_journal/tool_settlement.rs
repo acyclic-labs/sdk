@@ -1,7 +1,5 @@
 use super::*;
-use crate::executor::{
-    ToolSettlement, ToolSettlementQuery, ToolTerminalOutcome, tool_settlement_key,
-};
+use crate::executor::{ToolSettlement, ToolSettlementQuery, ToolTerminalOutcome};
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
@@ -29,36 +27,25 @@ where
             io,
             cache: None,
         };
-        let key_hold;
-        let key = tool_settlement_key(query.step, query.call_id, io)?;
-        key_hold = io
-            .map(|io| io.guard_owned(key.capacity() as u64))
-            .transpose()?;
-        let digest = content::operation_digest(query.turn, &key, io)?;
-        if let Some(io) = io {
-            io.charge(acyclic_fs::WorkCounters {
-                bytes_copied: 64,
-                ..Default::default()
-            })?;
+        let call = crate::model::hash_bytes(query.call_id.as_bytes(), io)?;
+        let Some(entry) =
+            step_index::tool_entry(&reader, state.roots[4], state.tail, query.step, call).await?
+        else {
+            return Ok(None);
+        };
+        if !entry.settled {
+            return Ok(None);
         }
-        let retry = digest.to_hex();
-        let retry_key = crate::model::hash_bytes(retry.as_bytes(), io)?;
-        let entry = checkpoint_maps::retry_entry(&reader, state, retry_key).await?;
-        if let Some((sequence, digest)) = entry {
-            let outcome = self
-                .verify_terminal_record(query, sequence, digest, retry.as_str(), io)
-                .await?;
-            // One call-scoped retry key admits one terminal outcome. The
-            // signed checkpoint authenticates that outcome on every replay.
-            return Ok(Some(ToolSettlement {
-                cut: state.tail,
-                sequence,
-                outcome,
-            }));
-        }
-        drop(key);
-        drop(key_hold);
-        Ok(None)
+        let outcome = self
+            .verify_terminal_record(query, entry.sequence, entry.digest, entry.retry, io)
+            .await?;
+        // The call's one step-index chain admits one terminal outcome. The
+        // signed checkpoint authenticates that outcome on every replay.
+        Ok(Some(ToolSettlement {
+            cut: state.tail,
+            sequence: entry.sequence,
+            outcome,
+        }))
     }
 
     async fn verify_terminal_record(
@@ -66,7 +53,7 @@ where
         query: ToolSettlementQuery<'_>,
         sequence: u64,
         digest: [u8; 32],
-        retry: &str,
+        retry: [u8; 32],
         io: Option<&PreparationIo>,
     ) -> Result<ToolTerminalOutcome> {
         let path_hold;
@@ -114,10 +101,11 @@ where
                 work,
             )
         })?;
+        let observed_retry = crate::model::hash_bytes(observation.retry_digest.as_bytes(), io)?;
         if record.sequence != sequence - 1
             || observation.operation_id != query.turn
             || observation.turn_operation != self.turn_operation(query.turn)
-            || observation.retry_digest != retry
+            || observed_retry != retry
             || digest != actual_digest
         {
             return Err(invalid(io));
