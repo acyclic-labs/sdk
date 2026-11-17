@@ -665,6 +665,15 @@ mod tests {
                 assert_eq!(temporary.canonicalize().unwrap(), temporary, "unresolved");
             }
             assert_eq!(fs::read_dir(&temporary).unwrap().count(), 0, "not empty");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let permissions = fs::metadata(temporary.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(permissions & 0o077, 0, "another user can open the runner");
+            }
         }
     }
 
