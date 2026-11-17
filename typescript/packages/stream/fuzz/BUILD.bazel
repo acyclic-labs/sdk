@@ -35,7 +35,7 @@ rust_binary(
     deps = [
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
-        "//rust/vendor/tonic-web-wasm-client-0.9.2:tonic_web_wasm_client",
+        "@sdk_crates//acyclic-tonic-web-wasm-client-0.2.0",
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//prost-0.14.4",
@@ -65,7 +65,7 @@ rust_binary(
     deps = [
         "//rust/crates/stream:acyclic_stream",
         "//rust/crates/test-support:acyclic_test_support",
-        "//rust/vendor/tonic-web-wasm-client-0.9.2:tonic_web_wasm_client",
+        "@sdk_crates//acyclic-tonic-web-wasm-client-0.2.0",
         "@sdk_crates//bytes-1.12.1",
         "@sdk_crates//libfuzzer-sys-0.4.13",
         "@sdk_crates//prost-0.14.4",

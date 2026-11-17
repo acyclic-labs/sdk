@@ -42,7 +42,6 @@
   "scripts": {
     "check:types": "tsc -p tsconfig.type-tests.json --pretty false",
     "build": "bun run generate && bun run generate:client && bun run build:wasm && tsc -b",
-    "build:wasm": "bun ../../../scripts/build-wasm.mjs actors",
     "generate:client": "node ../../../scripts/generate-actors.mjs write",
     "build:native": "node ../../../scripts/build-actors-native.mjs build",
     "stage:native": "node ../../../scripts/build-actors-native.mjs stage",

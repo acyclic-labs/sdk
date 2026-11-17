@@ -42,6 +42,7 @@ rust_library(
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//time-0.3.55",
+        "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//url-2.5.8",
     ],
     proc_macro_deps = [
@@ -111,6 +112,38 @@ isolated_test(
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
     tags = ["manual","no-sandbox"],
+)
+
+rust_library(
+    name = "acyclic_machines_daytona_wasm",
+    crate_name = "acyclic_machines_daytona",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        "//rust/crates/auth:acyclic_auth_wasm",
+        "//rust/crates/harness-core:acyclic_harness_core_wasm",
+        "//rust/crates/machines:acyclic_machines_wasm",
+        "//rust/crates/stream:acyclic_stream_wasm",
+        "@crates_wasm//bytes-1.12.1",
+        "@crates_wasm//futures-0.3.34",
+        "@crates_wasm//http-1.5.0",
+        "@crates_wasm//serde-1.0.229",
+        "@crates_wasm//serde_json-1.0.154",
+        "@crates_wasm//time-0.3.55",
+        "@crates_wasm//url-2.5.8",
+    ],
+    proc_macro_deps = [
+        "@sdk_crates//async-trait-0.1.92",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
 )
 
 filegroup(

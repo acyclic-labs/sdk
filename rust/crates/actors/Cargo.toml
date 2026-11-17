@@ -55,7 +55,7 @@ tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
 # Actor sockets are channels of the in-process session protocol.
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
-tokio = { version = "1.48.0", default-features = false, features = ["time"] }
+tokio = { version = "1.48.0", default-features = false, features = ["fs", "net", "rt-multi-thread", "signal", "time"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
 reqwest.workspace = true
@@ -70,7 +70,7 @@ url = "=2.5.8"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "wasm", "conformance"] }
-wasm-bindgen-test = "=0.3.67"
+wasm-bindgen-test = "=0.3.71"
 
 [dev-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }

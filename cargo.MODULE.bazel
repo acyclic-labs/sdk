@@ -6,6 +6,7 @@ rust.toolchain(
     ],
     extra_target_triples = [
         "x86_64-pc-windows-msvc",
+        "wasm32-unknown-unknown",
     ],
     edition = "2024",
     opt_level = {"dbg":"0","fastbuild":"1","opt":"3"},
@@ -77,13 +78,14 @@ crate.annotation(
 )
 
 crate.annotation(
-    crate = "rquickjs-core",
-    override_target_lib = "//rust/vendor/rquickjs-core-0.14.0:rquickjs_core",
-)
-
-crate.annotation(
     crate = "ts-rs-macros",
     override_target_proc_macro = "//rust/vendor/ts-rs-macros-12.0.1:ts_rs_macros",
+)
+
+crate.spec(
+    package = "accessory",
+    version = "=2.1.1",
+    default_features = False,
 )
 
 crate.spec(
@@ -732,6 +734,12 @@ crate.spec(
 )
 
 crate.spec(
+    package = "cast",
+    version = "=0.3.0",
+    default_features = False,
+)
+
+crate.spec(
     package = "castaway",
     version = "=0.2.4",
     default_features = False,
@@ -1318,6 +1326,12 @@ crate.spec(
 )
 
 crate.spec(
+    package = "delegate-display",
+    version = "=3.0.1",
+    default_features = False,
+)
+
+crate.spec(
     package = "der",
     version = "=0.8.3",
     default_features = False,
@@ -1693,6 +1707,12 @@ crate.spec(
         "unicode",
         "variable-lookbehinds",
     ],
+)
+
+crate.spec(
+    package = "fancy_constructor",
+    version = "=2.1.1",
+    default_features = False,
 )
 
 crate.spec(
@@ -2420,6 +2440,24 @@ crate.spec(
 )
 
 crate.spec(
+    package = "impartial-ord",
+    version = "=2.0.0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "indexed_db_futures",
+    version = "=0.6.4",
+    default_features = False,
+)
+
+crate.spec(
+    package = "indexed_db_futures_macros_internal",
+    version = "=1.0.0",
+    default_features = False,
+)
+
+crate.spec(
     package = "indexmap",
     version = "=2.14.2",
     default_features = False,
@@ -2611,11 +2649,10 @@ crate.spec(
 
 crate.spec(
     package = "js-sys",
-    version = "=0.3.94",
+    version = "=0.3.98",
     default_features = False,
     features = [
         "default",
-        "futures",
         "std",
         "unsafe-eval",
     ],
@@ -2863,6 +2900,62 @@ crate.spec(
 crate.spec(
     package = "lru-slab",
     version = "=0.1.3",
+    default_features = False,
+)
+
+crate.spec(
+    package = "macroific",
+    version = "=2.0.0",
+    package_alias = "macroific-2_0_0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "macroific",
+    version = "=3.1.0",
+    package_alias = "macroific-3_1_0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "macroific_attr_parse",
+    version = "=2.0.0",
+    package_alias = "macroific_attr_parse-2_0_0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "macroific_attr_parse",
+    version = "=3.1.0",
+    package_alias = "macroific_attr_parse-3_1_0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "macroific_core",
+    version = "=2.0.0",
+    package_alias = "macroific_core-2_0_0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "macroific_core",
+    version = "=3.1.0",
+    package_alias = "macroific_core-3_1_0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "macroific_macro",
+    version = "=2.0.0",
+    package_alias = "macroific_macro-2_0_0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "macroific_macro",
+    version = "=3.1.0",
+    package_alias = "macroific_macro-3_1_0",
     default_features = False,
 )
 
@@ -3390,6 +3483,12 @@ crate.spec(
     features = [
         "default",
     ],
+)
+
+crate.spec(
+    package = "oorandom",
+    version = "=11.1.5",
+    default_features = False,
 )
 
 crate.spec(
@@ -4865,6 +4964,20 @@ crate.spec(
 )
 
 crate.spec(
+    package = "sealed",
+    version = "=0.6.0",
+    package_alias = "sealed-0_6_0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "sealed",
+    version = "=0.7.0",
+    package_alias = "sealed-0_7_0",
+    default_features = False,
+)
+
+crate.spec(
     package = "sec1",
     version = "=0.8.1",
     default_features = False,
@@ -6312,7 +6425,7 @@ crate.spec(
 
 crate.spec(
     package = "wasm-bindgen",
-    version = "=0.2.117",
+    version = "=0.2.121",
     default_features = False,
     features = [
         "default",
@@ -6322,7 +6435,7 @@ crate.spec(
 
 crate.spec(
     package = "wasm-bindgen-futures",
-    version = "=0.4.67",
+    version = "=0.4.71",
     default_features = False,
     features = [
         "default",
@@ -6332,25 +6445,64 @@ crate.spec(
 
 crate.spec(
     package = "wasm-bindgen-macro",
-    version = "=0.2.117",
+    version = "=0.2.121",
     default_features = False,
 )
 
 crate.spec(
     package = "wasm-bindgen-macro-support",
-    version = "=0.2.117",
+    version = "=0.2.121",
     default_features = False,
 )
 
 crate.spec(
     package = "wasm-bindgen-shared",
-    version = "=0.2.117",
+    version = "=0.2.121",
+    default_features = False,
+)
+
+crate.spec(
+    package = "wasm-bindgen-test",
+    version = "=0.3.71",
+    default_features = False,
+)
+
+crate.spec(
+    package = "wasm-bindgen-test-macro",
+    version = "=0.3.71",
+    default_features = False,
+)
+
+crate.spec(
+    package = "wasm-bindgen-test-shared",
+    version = "=0.2.121",
+    default_features = False,
+)
+
+crate.spec(
+    package = "wasm-streams",
+    version = "=0.4.2",
+    package_alias = "wasm-streams-0_4_2",
+    default_features = False,
+)
+
+crate.spec(
+    package = "wasm-streams",
+    version = "=0.5.0",
+    package_alias = "wasm-streams-0_5_0",
+    default_features = False,
+)
+
+crate.spec(
+    package = "wasm-streams",
+    version = "=0.7.0",
+    package_alias = "wasm-streams-0_7_0",
     default_features = False,
 )
 
 crate.spec(
     package = "web-sys",
-    version = "=0.3.94",
+    version = "=0.3.98",
     default_features = False,
     features = [
         "AbortController",
@@ -7032,3 +7184,3697 @@ crate.annotation(
 )
 
 use_repo(crate, "sdk_crates", "sdk_crates__protoc-bin-vendored-linux-x86_64-3.3.0", "sdk_crates__protoc-bin-vendored-macos-aarch_64-3.3.0", "sdk_crates__protoc-bin-vendored-win32-3.3.0")
+crate_wasm = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate", isolate = True)
+
+crate_wasm.spec(
+    package = "accessory",
+    version = "=2.1.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "adler2",
+    version = "=2.0.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "aead",
+    version = "=0.6.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+    ],
+)
+
+crate_wasm.spec(
+    package = "ahash",
+    version = "=0.8.12",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "getrandom",
+        "runtime-rng",
+        "serde",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "aho-corasick",
+    version = "=1.1.5",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "perf-literal",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "allocator-api2",
+    version = "=0.2.21",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+    ],
+)
+
+crate_wasm.spec(
+    package = "annotate-snippets",
+    version = "=0.12.16",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "anstyle",
+    version = "=1.0.14",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "anyhow",
+    version = "=1.0.104",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "arraydeque",
+    version = "=0.5.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "arrayvec",
+    version = "=0.7.8",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "async-stream-impl",
+    version = "=0.3.6",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "async-stream",
+    version = "=0.3.6",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "async-trait",
+    version = "=0.1.92",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "base16ct",
+    version = "=1.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "base64",
+    version = "=0.22.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "base64-0_22_1",
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "base64",
+    version = "=0.23.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "base64-0_23_1",
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "simd-unsafe",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "bit-set",
+    version = "=0.8.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "bit-vec",
+    version = "=0.8.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "bitflags",
+    version = "=2.13.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "blake3",
+    version = "=1.8.7",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "block-buffer",
+    version = "=0.12.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "borrow-or-share",
+    version = "=0.2.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+    ],
+)
+
+crate_wasm.spec(
+    package = "bumpalo",
+    version = "=3.20.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "bytecount",
+    version = "=0.6.9",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "runtime-dispatch-simd",
+    ],
+)
+
+crate_wasm.spec(
+    package = "bytes",
+    version = "=1.12.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "serde",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "caseless",
+    version = "=0.2.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "cfg-if",
+    version = "=1.0.5",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "chacha20",
+    version = "=0.10.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "cipher",
+        "xchacha",
+    ],
+)
+
+crate_wasm.spec(
+    package = "chacha20poly1305",
+    version = "=0.11.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+    ],
+)
+
+crate_wasm.spec(
+    package = "chrono",
+    version = "=0.4.45",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "clock",
+        "iana-time-zone",
+        "now",
+        "oldtime",
+        "serde",
+        "std",
+        "winapi",
+        "windows-link",
+    ],
+)
+
+crate_wasm.spec(
+    package = "cipher",
+    version = "=0.5.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "block-buffer",
+        "stream-wrapper",
+    ],
+)
+
+crate_wasm.spec(
+    package = "cmov",
+    version = "=0.5.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "const-oid",
+    version = "=0.10.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "constant_time_eq",
+    version = "=0.4.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "cpubits",
+    version = "=0.1.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "crc-fast",
+    version = "=1.10.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "digest",
+        "ffi",
+        "panic-handler",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "crc32fast",
+    version = "=1.5.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "crypto-bigint",
+    version = "=0.7.10",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "hybrid-array",
+        "rand_core",
+        "subtle",
+        "zeroize",
+    ],
+)
+
+crate_wasm.spec(
+    package = "crypto-common",
+    version = "=0.1.7",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "crypto-common-0_1_7",
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "crypto-common",
+    version = "=0.2.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "crypto-common-0_2_2",
+    default_features = False,
+    features = [
+        "rand_core",
+    ],
+)
+
+crate_wasm.spec(
+    package = "ctutils",
+    version = "=0.4.8",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "subtle",
+    ],
+)
+
+crate_wasm.spec(
+    package = "curve25519-dalek",
+    version = "=5.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "digest",
+        "precomputed-tables",
+        "zeroize",
+    ],
+)
+
+crate_wasm.spec(
+    package = "data-encoding",
+    version = "=2.11.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "delegate-display",
+    version = "=3.0.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "der",
+    version = "=0.8.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "oid",
+        "zeroize",
+    ],
+)
+
+crate_wasm.spec(
+    package = "deranged",
+    version = "=0.5.8",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "derive_more-impl",
+    version = "=2.1.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "as_ref",
+        "debug",
+        "default",
+        "deref",
+        "deref_mut",
+        "from",
+        "into",
+    ],
+)
+
+crate_wasm.spec(
+    package = "derive_more",
+    version = "=2.1.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "as_ref",
+        "debug",
+        "deref",
+        "deref_mut",
+        "from",
+        "into",
+    ],
+)
+
+crate_wasm.spec(
+    package = "digest",
+    version = "=0.10.7",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "digest-0_10_7",
+    default_features = False,
+    features = [
+        "alloc",
+    ],
+)
+
+crate_wasm.spec(
+    package = "digest",
+    version = "=0.11.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "digest-0_11_3",
+    default_features = False,
+    features = [
+        "alloc",
+        "block-api",
+        "default",
+        "mac",
+        "oid",
+    ],
+)
+
+crate_wasm.spec(
+    package = "displaydoc",
+    version = "=0.2.7",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "dyn-clone",
+    version = "=1.0.20",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "ecdsa",
+    version = "=0.17.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "algorithm",
+        "der",
+        "digest",
+    ],
+)
+
+crate_wasm.spec(
+    package = "ed25519-dalek",
+    version = "=3.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "fast",
+        "zeroize",
+    ],
+)
+
+crate_wasm.spec(
+    package = "ed25519",
+    version = "=3.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "either",
+    version = "=1.19.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "std",
+        "use_std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "elliptic-curve",
+    version = "=0.14.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "arithmetic",
+        "digest",
+        "ff",
+        "group",
+        "sec1",
+    ],
+)
+
+crate_wasm.spec(
+    package = "email_address",
+    version = "=0.2.9",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "serde",
+        "serde_support",
+    ],
+)
+
+crate_wasm.spec(
+    package = "encoding_rs",
+    version = "=0.8.42",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "encoding_rs_io",
+    version = "=0.1.8",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "equivalent",
+    version = "=1.0.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "fancy-regex",
+    version = "=0.20.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "perf",
+        "std",
+        "unicode",
+        "variable-lookbehinds",
+    ],
+)
+
+crate_wasm.spec(
+    package = "fancy_constructor",
+    version = "=2.1.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "ff",
+    version = "=0.14.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "filetime",
+    version = "=0.2.29",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "flate2",
+    version = "=1.1.10",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "any_impl",
+        "default",
+        "miniz_oxide",
+        "runtime_detection",
+        "rust_backend",
+    ],
+)
+
+crate_wasm.spec(
+    package = "fluent-uri",
+    version = "=0.4.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "impl-error",
+        "serde",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "fnv",
+    version = "=1.0.7",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "foldhash",
+    version = "=0.2.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "form_urlencoded",
+    version = "=1.2.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "fraction",
+    version = "=0.17.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "num-bigint",
+        "with-bigint",
+    ],
+)
+
+crate_wasm.spec(
+    package = "futures-channel",
+    version = "=0.3.34",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "futures-sink",
+        "sink",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "futures-core",
+    version = "=0.3.34",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "futures-executor",
+    version = "=0.3.34",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "futures-io",
+    version = "=0.3.34",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "futures-macro",
+    version = "=0.3.34",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "futures-sink",
+    version = "=0.3.34",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "futures-task",
+    version = "=0.3.34",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "futures-util",
+    version = "=0.3.34",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "async-await",
+        "async-await-macro",
+        "channel",
+        "default",
+        "futures-channel",
+        "futures-io",
+        "futures-macro",
+        "futures-sink",
+        "io",
+        "memchr",
+        "sink",
+        "slab",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "futures",
+    version = "=0.3.34",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "async-await",
+        "default",
+        "executor",
+        "futures-executor",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "generic-array",
+    version = "=0.14.7",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "more_lengths",
+    ],
+)
+
+crate_wasm.spec(
+    package = "getrandom",
+    version = "=0.2.17",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "getrandom-0_2_17",
+    default_features = False,
+    features = [
+        "js",
+        "js-sys",
+        "wasm-bindgen",
+    ],
+)
+
+crate_wasm.spec(
+    package = "getrandom",
+    version = "=0.3.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "getrandom-0_3_4",
+    default_features = False,
+    features = [
+        "wasm_js",
+    ],
+)
+
+crate_wasm.spec(
+    package = "getrandom",
+    version = "=0.4.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "getrandom-0_4_3",
+    default_features = False,
+    features = [
+        "wasm_js",
+    ],
+)
+
+crate_wasm.spec(
+    package = "gloo-utils",
+    version = "=0.2.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "serde",
+    ],
+)
+
+crate_wasm.spec(
+    package = "granit-parser",
+    version = "=2.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "error_messages",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "group",
+    version = "=0.14.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "hashbrown",
+    version = "=0.17.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "allocator-api2",
+        "default",
+        "default-hasher",
+        "equivalent",
+        "inline-more",
+        "raw-entry",
+    ],
+)
+
+crate_wasm.spec(
+    package = "heck",
+    version = "=0.5.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "hex",
+    version = "=0.4.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "hmac",
+    version = "=0.13.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "http-body-util",
+    version = "=0.1.5",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "http-body",
+    version = "=1.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "http",
+    version = "=1.5.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "httparse",
+    version = "=1.10.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "httpdate",
+    version = "=1.0.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "humantime",
+    version = "=2.4.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "hybrid-array",
+    version = "=0.4.15",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "subtle",
+        "zeroize",
+    ],
+)
+
+crate_wasm.spec(
+    package = "icu_casemap",
+    version = "=2.3.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "compiled_data",
+    ],
+)
+
+crate_wasm.spec(
+    package = "icu_casemap_data",
+    version = "=2.3.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "icu_collections",
+    version = "=2.3.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+    ],
+)
+
+crate_wasm.spec(
+    package = "icu_locale_core",
+    version = "=2.3.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "zerovec",
+    ],
+)
+
+crate_wasm.spec(
+    package = "icu_normalizer",
+    version = "=2.3.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "compiled_data",
+    ],
+)
+
+crate_wasm.spec(
+    package = "icu_normalizer_data",
+    version = "=2.3.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "icu_properties",
+    version = "=2.3.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "compiled_data",
+    ],
+)
+
+crate_wasm.spec(
+    package = "icu_properties_data",
+    version = "=2.3.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "icu_provider",
+    version = "=2.3.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "baked",
+    ],
+)
+
+crate_wasm.spec(
+    package = "idna",
+    version = "=1.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "compiled_data",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "idna_adapter",
+    version = "=1.2.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "compiled_data",
+    ],
+)
+
+crate_wasm.spec(
+    package = "impartial-ord",
+    version = "=2.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "indexed_db_futures",
+    version = "=0.6.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "typed-arrays",
+    ],
+)
+
+crate_wasm.spec(
+    package = "indexed_db_futures_macros_internal",
+    version = "=1.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "indexmap",
+    version = "=2.14.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "serde",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "inout",
+    version = "=0.2.6",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "itertools",
+    version = "=0.14.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "use_alloc",
+        "use_std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "itoa",
+    version = "=1.0.18",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "js-sys",
+    version = "=0.3.98",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+        "unsafe-eval",
+    ],
+)
+
+crate_wasm.spec(
+    package = "jsonschema-regex",
+    version = "=0.61.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "jsonschema-value",
+    version = "=0.61.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "serde_json",
+    ],
+)
+
+crate_wasm.spec(
+    package = "jsonschema",
+    version = "=0.61.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "lazy_static",
+    version = "=1.5.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "libc",
+    version = "=0.2.191",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "litemap",
+    version = "=0.8.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+    ],
+)
+
+crate_wasm.spec(
+    package = "lock_api",
+    version = "=0.4.14",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "lock_api-0_4_14",
+    default_features = False,
+    features = [
+        "atomic_usize",
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "lock_api",
+    version = "=0.5.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "lock_api-0_5_0",
+    default_features = False,
+    features = [
+        "atomic_usize",
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "log",
+    version = "=0.4.34",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "macroific",
+    version = "=2.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "macroific-2_0_0",
+    default_features = False,
+    features = [
+        "attr_parse",
+        "attributed",
+        "generic-impl",
+        "module-prefix",
+    ],
+)
+
+crate_wasm.spec(
+    package = "macroific",
+    version = "=3.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "macroific-3_1_0",
+    default_features = False,
+    features = [
+        "attr_parse",
+        "full",
+        "generic-impl",
+        "module-prefix",
+    ],
+)
+
+crate_wasm.spec(
+    package = "macroific_attr_parse",
+    version = "=2.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "macroific_attr_parse-2_0_0",
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "macroific_attr_parse",
+    version = "=3.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "macroific_attr_parse-3_1_0",
+    default_features = False,
+    features = [
+        "full",
+    ],
+)
+
+crate_wasm.spec(
+    package = "macroific_core",
+    version = "=2.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "macroific_core-2_0_0",
+    default_features = False,
+    features = [
+        "attributed",
+        "generic-impl",
+        "module-prefix",
+    ],
+)
+
+crate_wasm.spec(
+    package = "macroific_core",
+    version = "=3.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "macroific_core-3_1_0",
+    default_features = False,
+    features = [
+        "generic-impl",
+        "module-prefix",
+    ],
+)
+
+crate_wasm.spec(
+    package = "macroific_macro",
+    version = "=2.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "macroific_macro-2_0_0",
+    default_features = False,
+    features = [
+        "attr_parse",
+    ],
+)
+
+crate_wasm.spec(
+    package = "macroific_macro",
+    version = "=3.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "macroific_macro-3_1_0",
+    default_features = False,
+    features = [
+        "attr_parse",
+    ],
+)
+
+crate_wasm.spec(
+    package = "memchr",
+    version = "=2.8.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "micromap",
+    version = "=0.3.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "miniz_oxide",
+    version = "=0.9.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "simd",
+        "simd-adler32",
+        "with-alloc",
+    ],
+)
+
+crate_wasm.spec(
+    package = "multiversion_no_op",
+    version = "=1.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "notify-types",
+    version = "=2.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "notify",
+    version = "=8.2.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "kqueue",
+        "macos_kqueue",
+        "mio",
+    ],
+)
+
+crate_wasm.spec(
+    package = "num-bigint",
+    version = "=0.4.8",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "num-cmp",
+    version = "=0.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "num-complex",
+    version = "=0.4.6",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "num-conv",
+    version = "=0.2.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "num-integer",
+    version = "=0.1.47",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "i128",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "num-iter",
+    version = "=0.1.46",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "i128",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "num-rational",
+    version = "=0.4.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "num-bigint",
+        "num-bigint-std",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "num-traits",
+    version = "=0.2.19",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "i128",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "num",
+    version = "=0.4.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "num-bigint",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "once_cell",
+    version = "=1.21.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "race",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "ordered-float",
+    version = "=2.10.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "outref",
+    version = "=0.5.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "p256",
+    version = "=0.14.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "arithmetic",
+        "digest",
+        "ecdsa",
+        "ecdsa-core",
+        "sha2",
+        "sha256",
+    ],
+)
+
+crate_wasm.spec(
+    package = "parking_lot",
+    version = "=0.12.5",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "parking_lot-0_12_5",
+    default_features = False,
+    features = [
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "parking_lot",
+    version = "=0.13.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "parking_lot-0_13_0",
+    default_features = False,
+    features = [
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "parking_lot_core",
+    version = "=0.10.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "parking_lot_core-0_10_0",
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "parking_lot_core",
+    version = "=0.9.12",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "parking_lot_core-0_9_12",
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "percent-encoding",
+    version = "=2.3.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "pin-project-internal",
+    version = "=1.1.13",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "pin-project-lite",
+    version = "=0.2.17",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "pin-project",
+    version = "=1.1.13",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "poly1305",
+    version = "=0.9.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "potential_utf",
+    version = "=0.1.6",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "writeable",
+        "zerovec",
+    ],
+)
+
+crate_wasm.spec(
+    package = "powerfmt",
+    version = "=0.2.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "primefield",
+    version = "=0.14.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "primeorder",
+    version = "=0.14.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "proc-macro2",
+    version = "=1.0.107",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "proc-macro",
+    ],
+)
+
+crate_wasm.spec(
+    package = "prost-derive",
+    version = "=0.14.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "prost-reflect",
+    version = "=0.16.5",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "serde",
+    ],
+)
+
+crate_wasm.spec(
+    package = "prost-types",
+    version = "=0.14.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "prost",
+    version = "=0.14.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "derive",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "pulldown-cmark",
+    version = "=0.13.6",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "quote",
+    version = "=1.0.47",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "proc-macro",
+    ],
+)
+
+crate_wasm.spec(
+    package = "rand_core",
+    version = "=0.10.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "ref-cast-impl",
+    version = "=1.0.27",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "ref-cast",
+    version = "=1.0.27",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "referencing",
+    version = "=0.61.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "regex-automata",
+    version = "=0.4.18",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "dfa-onepass",
+        "dfa-search",
+        "hybrid",
+        "meta",
+        "nfa",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+        "unicode-word-boundary",
+    ],
+)
+
+crate_wasm.spec(
+    package = "regex-lite",
+    version = "=0.1.9",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+        "string",
+    ],
+)
+
+crate_wasm.spec(
+    package = "regex-syntax",
+    version = "=0.8.11",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+    ],
+)
+
+crate_wasm.spec(
+    package = "regex",
+    version = "=1.13.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "perf",
+        "perf-backtrack",
+        "perf-cache",
+        "perf-dfa",
+        "perf-inline",
+        "perf-literal",
+        "perf-onepass",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+    ],
+)
+
+crate_wasm.spec(
+    package = "rfc6979",
+    version = "=0.6.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "ring",
+    version = "=0.17.14",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "dev_urandom_fallback",
+        "wasm32_unknown_unknown_js",
+    ],
+)
+
+crate_wasm.spec(
+    package = "rmcp",
+    version = "=3.9.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "client",
+        "transport-async-rw",
+    ],
+)
+
+crate_wasm.spec(
+    package = "rmp-serde",
+    version = "=1.3.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "rmp",
+    version = "=0.8.15",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "ruzstd",
+    version = "=0.9.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "hash",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "same-file",
+    version = "=1.0.6",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "schemars",
+    version = "=1.2.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "derive",
+        "schemars_derive",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "schemars_derive",
+    version = "=1.2.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "scopeguard",
+    version = "=1.2.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "sealed",
+    version = "=0.6.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "sealed-0_6_0",
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "sealed",
+    version = "=0.7.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "sealed-0_7_0",
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "sec1",
+    version = "=0.8.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "ctutils",
+        "default",
+        "der",
+        "point",
+        "subtle",
+        "zeroize",
+    ],
+)
+
+crate_wasm.spec(
+    package = "serde-saphyr",
+    version = "=2.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "deserialize",
+    ],
+)
+
+crate_wasm.spec(
+    package = "serde-value",
+    version = "=0.7.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "serde-wasm-bindgen",
+    version = "=0.6.5",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "serde",
+    version = "=1.0.229",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "serde_bytes",
+    version = "=0.11.19",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "serde_core",
+    version = "=1.0.229",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "rc",
+        "result",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "serde_derive",
+    version = "=1.0.229",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "serde_derive_internals",
+    version = "=0.29.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "serde_derive_internals-0_29_1",
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "serde_derive_internals",
+    version = "=0.30.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "serde_derive_internals-0_30_0",
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "serde_json",
+    version = "=1.0.154",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "float_roundtrip",
+        "raw_value",
+        "std",
+        "unbounded_depth",
+    ],
+)
+
+crate_wasm.spec(
+    package = "serde_spanned",
+    version = "=1.1.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "serde",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "sha2",
+    version = "=0.11.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "oid",
+    ],
+)
+
+crate_wasm.spec(
+    package = "sharded-slab",
+    version = "=0.1.7",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "shell-words",
+    version = "=1.1.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "signature",
+    version = "=3.0.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "digest",
+        "rand_core",
+    ],
+)
+
+crate_wasm.spec(
+    package = "simd-adler32",
+    version = "=0.3.10",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "slab",
+    version = "=0.4.12",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "smallvec",
+    version = "=1.16.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "const_generics",
+    ],
+)
+
+crate_wasm.spec(
+    package = "stable_deref_trait",
+    version = "=1.2.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+    ],
+)
+
+crate_wasm.spec(
+    package = "strum",
+    version = "=0.28.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "derive",
+        "std",
+        "strum_macros",
+    ],
+)
+
+crate_wasm.spec(
+    package = "strum_macros",
+    version = "=0.28.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "subtle",
+    version = "=2.6.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "const-generics",
+        "default",
+        "i128",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "syn",
+    version = "=2.0.119",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "syn-2_0_119",
+    default_features = False,
+    features = [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut",
+    ],
+)
+
+crate_wasm.spec(
+    package = "syn",
+    version = "=3.0.9",
+    repositories = [
+        "crates_wasm",
+    ],
+    package_alias = "syn-3_0_9",
+    default_features = False,
+    features = [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "fold",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut",
+    ],
+)
+
+crate_wasm.spec(
+    package = "sync_wrapper",
+    version = "=1.0.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "synstructure",
+    version = "=0.14.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "proc-macro",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tar",
+    version = "=0.4.46",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "termcolor",
+    version = "=1.4.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "thiserror-impl",
+    version = "=2.0.21",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "thiserror",
+    version = "=2.0.21",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "thread_local",
+    version = "=1.1.10",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "time-core",
+    version = "=0.1.9",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "time",
+    version = "=0.3.55",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+        "parsing",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tinystr",
+    version = "=0.8.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "zerovec",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tinyvec",
+    version = "=1.13.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tokio-macros",
+    version = "=2.7.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "tokio-stream",
+    version = "=0.1.19",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "time",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tokio-util",
+    version = "=0.7.20",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "codec",
+        "default",
+        "futures-util",
+        "libc",
+        "rt",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tokio",
+    version = "=1.54.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "bytes",
+        "default",
+        "io-util",
+        "macros",
+        "rt",
+        "sync",
+        "time",
+        "tokio-macros",
+    ],
+)
+
+crate_wasm.spec(
+    package = "toml",
+    version = "=1.1.6+spec-1.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "display",
+        "parse",
+        "serde",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "toml_datetime",
+    version = "=1.1.1+spec-1.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "serde",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "toml_parser",
+    version = "=1.1.3+spec-1.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "toml_writer",
+    version = "=1.1.2+spec-1.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tonic-prost",
+    version = "=0.14.6",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "tonic",
+    version = "=0.14.9",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "codegen",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tower-layer",
+    version = "=0.3.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "tower-service",
+    version = "=0.3.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "tracing-attributes",
+    version = "=0.1.31",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "tracing-core",
+    version = "=0.1.36",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "once_cell",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tracing-subscriber",
+    version = "=0.3.23",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "registry",
+        "sharded-slab",
+        "std",
+        "thread_local",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tracing",
+    version = "=0.1.44",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "attributes",
+        "default",
+        "std",
+        "tracing-attributes",
+    ],
+)
+
+crate_wasm.spec(
+    package = "ts-rs",
+    version = "=12.0.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "serde-compat",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tsify-macros",
+    version = "=0.5.8",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "js",
+        "json",
+        "wasm-bindgen",
+    ],
+)
+
+crate_wasm.spec(
+    package = "tsify",
+    version = "=0.5.8",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "js",
+        "json",
+        "wasm-bindgen",
+    ],
+)
+
+crate_wasm.spec(
+    package = "twox-hash",
+    version = "=2.1.5",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "xxhash64",
+    ],
+)
+
+crate_wasm.spec(
+    package = "typenum",
+    version = "=1.20.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "const-generics",
+    ],
+)
+
+crate_wasm.spec(
+    package = "unicase",
+    version = "=2.10.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "unicode-general-category",
+    version = "=1.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "unicode-ident",
+    version = "=1.0.26",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "unicode-normalization",
+    version = "=0.1.26",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "unicode-segmentation",
+    version = "=1.13.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "unicode-width",
+    version = "=0.2.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "cjk",
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "unicode-xid",
+    version = "=0.2.6",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "universal-hash",
+    version = "=0.6.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "untrusted",
+    version = "=0.9.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "url",
+    version = "=2.5.8",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "utf8_iter",
+    version = "=1.0.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "uuid-simd",
+    version = "=0.8.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "detect",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "uuid",
+    version = "=1.29.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "js",
+        "rng",
+        "serde",
+        "std",
+        "v4",
+        "v7",
+    ],
+)
+
+crate_wasm.spec(
+    package = "vsimd",
+    version = "=0.8.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "detect",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "vte",
+    version = "=0.15.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "walkdir",
+    version = "=2.5.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "wasm-bindgen-futures",
+    version = "=0.4.71",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "wasm-bindgen-macro-support",
+    version = "=0.2.121",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "wasm-bindgen-macro",
+    version = "=0.2.121",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "wasm-bindgen-shared",
+    version = "=0.2.121",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "wasm-bindgen-test",
+    version = "=0.3.71",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "wasm-bindgen",
+    version = "=0.2.121",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "wasm-streams",
+    version = "=0.7.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "web-sys",
+    version = "=0.3.98",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "AbortController",
+        "AbortSignal",
+        "BinaryType",
+        "Blob",
+        "BlobPropertyBag",
+        "BroadcastChannel",
+        "CloseEvent",
+        "Document",
+        "DomException",
+        "DomStringList",
+        "Element",
+        "Event",
+        "EventTarget",
+        "File",
+        "FileSystemDirectoryHandle",
+        "FileSystemFileHandle",
+        "FileSystemGetDirectoryOptions",
+        "FileSystemGetFileOptions",
+        "FileSystemHandle",
+        "FileSystemWritableFileStream",
+        "Headers",
+        "History",
+        "HtmlElement",
+        "HtmlHeadElement",
+        "IdbDatabase",
+        "IdbFactory",
+        "IdbKeyRange",
+        "IdbObjectStore",
+        "IdbObjectStoreParameters",
+        "IdbOpenDbRequest",
+        "IdbRequest",
+        "IdbRequestReadyState",
+        "IdbTransaction",
+        "IdbTransactionMode",
+        "IdbVersionChangeEvent",
+        "Location",
+        "MessageChannel",
+        "MessageEvent",
+        "MessagePort",
+        "Navigator",
+        "Node",
+        "QueuingStrategy",
+        "ReadableByteStreamController",
+        "ReadableStream",
+        "ReadableStreamByobReader",
+        "ReadableStreamByobRequest",
+        "ReadableStreamDefaultController",
+        "ReadableStreamDefaultReader",
+        "ReadableStreamGetReaderOptions",
+        "ReadableStreamReadResult",
+        "ReadableStreamReaderMode",
+        "ReadableStreamType",
+        "ReadableWritablePair",
+        "ReferrerPolicy",
+        "Request",
+        "RequestCache",
+        "RequestCredentials",
+        "RequestInit",
+        "RequestMode",
+        "RequestRedirect",
+        "Response",
+        "ServiceWorkerGlobalScope",
+        "StorageManager",
+        "StreamPipeOptions",
+        "TransformStream",
+        "TransformStreamDefaultController",
+        "Transformer",
+        "UnderlyingSink",
+        "UnderlyingSource",
+        "Url",
+        "WebSocket",
+        "Window",
+        "WorkerGlobalScope",
+        "WritableStream",
+        "WritableStreamDefaultController",
+        "WritableStreamDefaultWriter",
+        "console",
+        "default",
+        "std",
+    ],
+)
+
+crate_wasm.spec(
+    package = "web-time",
+    version = "=1.1.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "winnow",
+    version = "=1.0.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "wnaf",
+    version = "=0.14.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "writeable",
+    version = "=0.6.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "yoke-derive",
+    version = "=0.8.4",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "yoke",
+    version = "=0.8.3",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "derive",
+        "zerofrom",
+    ],
+)
+
+crate_wasm.spec(
+    package = "zerocopy",
+    version = "=0.8.60",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "simd",
+    ],
+)
+
+crate_wasm.spec(
+    package = "zerofrom-derive",
+    version = "=0.1.8",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "zerofrom",
+    version = "=0.1.8",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "derive",
+    ],
+)
+
+crate_wasm.spec(
+    package = "zeroize",
+    version = "=1.9.1",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "default",
+    ],
+)
+
+crate_wasm.spec(
+    package = "zerotrie",
+    version = "=0.2.5",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "yoke",
+        "zerofrom",
+    ],
+)
+
+crate_wasm.spec(
+    package = "zerovec-derive",
+    version = "=0.11.6",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "zerovec",
+    version = "=0.11.8",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "alloc",
+        "derive",
+        "yoke",
+    ],
+)
+
+crate_wasm.spec(
+    package = "zmij",
+    version = "=1.0.23",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.spec(
+    package = "acyclic-syntect",
+    path = "rust/vendor/syntect-5.3.0",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+    features = [
+        "default-syntaxes",
+        "dump-create",
+        "dump-load",
+        "fancy-regex",
+        "flate2",
+        "fnv",
+        "parsing",
+        "regex-fancy",
+        "regex-syntax",
+    ],
+)
+
+crate_wasm.spec(
+    package = "acyclic-tonic-web-wasm-client",
+    path = "rust/vendor/tonic-web-wasm-client-0.9.2",
+    repositories = [
+        "crates_wasm",
+    ],
+    default_features = False,
+)
+
+crate_wasm.annotation(
+    crate = "blake3",
+    repositories = [
+        "crates_wasm",
+    ],
+    rustc_flags = [
+        "-Copt-level=3",
+    ],
+)
+
+crate_wasm.annotation(
+    crate = "curve25519-dalek",
+    repositories = [
+        "crates_wasm",
+    ],
+    rustc_flags = [
+        "-Copt-level=3",
+    ],
+)
+
+crate_wasm.annotation(
+    crate = "ring",
+    version = "=0.17.14",
+    repositories = [
+        "crates_wasm",
+    ],
+    build_script_env = {"CC_wasm32_unknown_unknown": "$(execpath @@//:wasm_clang)", "AR_wasm32_unknown_unknown": "$(execpath @@//:wasm_ar)"},
+    build_script_data = [
+        "@@//:wasm_ar",
+        "@@//:wasm_clang",
+    ],
+)
+
+crate_wasm.annotation(
+    crate = "sha2",
+    repositories = [
+        "crates_wasm",
+    ],
+    rustc_flags = [
+        "-Copt-level=3",
+    ],
+)
+
+crate_wasm.from_specs(
+    name = "crates_wasm",
+    supported_platform_triples = [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "wasm32-unknown-unknown",
+    ],
+)
+use_repo(crate_wasm, "crates_wasm")

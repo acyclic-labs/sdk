@@ -85,6 +85,31 @@ isolated_test(
     tags = ["manual","no-sandbox"],
 )
 
+rust_library(
+    name = "acyclic_harness_layout_wasm",
+    crate_name = "acyclic_harness_layout",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        "//rust/crates/filesystem:acyclic_fs_wasm",
+        "//rust/crates/model-render:acyclic_model_render_wasm",
+        "//rust/crates/stream:acyclic_stream_wasm",
+        "@crates_wasm//rmcp-3.9.0",
+        "@crates_wasm//serde-1.0.229",
+        "@crates_wasm//serde_json-1.0.154",
+        "@crates_wasm//uuid-1.29.0",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "rust_sources",
     srcs = glob(["**/*.rs"], allow_empty = True),

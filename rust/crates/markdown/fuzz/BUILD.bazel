@@ -29,7 +29,7 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/markdown:acyclic_markdown",
-        "//rust/vendor/syntect-5.3.0:syntect",
+        "@sdk_crates//acyclic-syntect-0.2.0",
         "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
@@ -51,7 +51,7 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/markdown:acyclic_markdown",
-        "//rust/vendor/syntect-5.3.0:syntect",
+        "@sdk_crates//acyclic-syntect-0.2.0",
         "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],
@@ -73,7 +73,7 @@ rust_binary(
     lint_config = ":lints",
     deps = [
         "//rust/crates/markdown:acyclic_markdown",
-        "//rust/vendor/syntect-5.3.0:syntect",
+        "@sdk_crates//acyclic-syntect-0.2.0",
         "@sdk_crates//libfuzzer-sys-0.4.13",
     ],
     visibility = ["//visibility:public"],

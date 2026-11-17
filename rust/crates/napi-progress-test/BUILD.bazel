@@ -61,8 +61,8 @@ rust_shared_library(
     deps = [
         ":build_script",
     ] + [
-        "//rust/vendor/napi-3.15.0:napi",
         "@sdk_crates//futures-0.3.34",
+        "@sdk_crates//napi-3.15.0",
     ],
     proc_macro_deps = [
         "@sdk_crates//napi-derive-3.6.13",

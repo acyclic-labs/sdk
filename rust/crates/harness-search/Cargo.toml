@@ -27,7 +27,7 @@ serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.48.0", default-features = false, features = ["net", "io-util"] }
+tokio = { version = "1.48.0", default-features = false, features = ["fs", "io-util", "net", "rt-multi-thread", "signal"] }
 reqwest = { workspace = true }
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http1"] }
 hyper-util = { workspace = true }

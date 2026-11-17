@@ -5,7 +5,7 @@ import { SessionClosedSchema } from "../generated/proto/stream/v1/session_pb.js"
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import fc from "fast-check";
 import { AppendRecordSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
-import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
+import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "@acyclic/stream-wasm";
 import { ensureStreamWasm } from "../src/contract.js";
 import { DefaultStreamProvider } from "../src/default.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, compareStreamPaths, idempotencyKey, jsonCodec, type Record as StreamRecord } from "../src/index.js";

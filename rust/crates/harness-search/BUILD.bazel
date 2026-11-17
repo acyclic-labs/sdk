@@ -109,6 +109,38 @@ isolated_test(
     tags = ["manual","no-sandbox"],
 )
 
+rust_library(
+    name = "acyclic_harness_search_wasm",
+    crate_name = "acyclic_harness_search",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        "//rust/crates/filesystem:acyclic_fs_wasm",
+        "//rust/crates/harness-core:acyclic_harness_core_wasm",
+        "//rust/crates/harness-layout:acyclic_harness_layout_wasm",
+        "//rust/crates/stream:acyclic_stream_wasm",
+        "@crates_wasm//bytes-1.12.1",
+        "@crates_wasm//futures-0.3.34",
+        "@crates_wasm//http-1.5.0",
+        "@crates_wasm//schemars-1.2.3",
+        "@crates_wasm//serde-1.0.229",
+        "@crates_wasm//serde_json-1.0.154",
+        "@crates_wasm//tokio-1.54.1",
+    ],
+    proc_macro_deps = [
+        "@sdk_crates//async-trait-0.1.92",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "rust_sources",
     srcs = glob(["**/*.rs"], allow_empty = True),

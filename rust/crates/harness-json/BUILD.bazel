@@ -38,6 +38,27 @@ rust_library(
     visibility = ["//visibility:public"],
 )
 
+rust_library(
+    name = "acyclic_harness_json_wasm",
+    crate_name = "acyclic_harness_json",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        "@crates_wasm//serde-1.0.229",
+        "@crates_wasm//serde_json-1.0.154",
+        "@crates_wasm//thiserror-2.0.21",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "rust_sources",
     srcs = glob(["**/*.rs"], allow_empty = True),

@@ -22,12 +22,16 @@
         "typescript-parser": "npm:typescript@6.0.3",
       },
     },
+    "typescript/packages/@acyclic/stream-wasm": {
+      "name": "@acyclic/stream-wasm",
+      "version": "0.2.0",
+    },
     "typescript/packages/actors": {
       "name": "@acyclic-labs/actors",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/core": "0.2.0",
         "@acyclic-labs/auth": "0.2.0",
+        "@acyclic-labs/core": "0.2.0",
         "@bufbuild/protobuf": "2.17.0",
         "@connectrpc/connect": "2.3.0",
       },
@@ -65,8 +69,8 @@
       "name": "@acyclic-labs/fs",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/core": "0.2.0",
         "@acyclic-labs/auth": "0.2.0",
+        "@acyclic-labs/core": "0.2.0",
         "@bufbuild/protobuf": "2.17.0",
         "@connectrpc/connect": "2.3.0",
         "@connectrpc/connect-node": "2.3.0",
@@ -81,8 +85,8 @@
       "name": "@acyclic-labs/harness",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/core": "0.2.0",
         "@acyclic-labs/auth": "0.2.0",
+        "@acyclic-labs/core": "0.2.0",
         "@acyclic-labs/machines": "0.2.0",
         "@acyclic-labs/objects": "0.2.0",
       },
@@ -124,8 +128,8 @@
       "name": "@acyclic-labs/inference",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/core": "0.2.0",
         "@acyclic-labs/auth": "0.2.0",
+        "@acyclic-labs/core": "0.2.0",
         "@bufbuild/protobuf": "2.17.0",
       },
       "devDependencies": {
@@ -138,8 +142,8 @@
       "name": "@acyclic-labs/machines",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/core": "0.2.0",
         "@acyclic-labs/auth": "0.2.0",
+        "@acyclic-labs/core": "0.2.0",
         "@bufbuild/protobuf": "2.17.0",
         "@connectrpc/connect": "2.3.0",
         "@connectrpc/connect-node": "2.3.0",
@@ -153,8 +157,8 @@
       "name": "@acyclic-labs/objects",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/core": "0.2.0",
         "@acyclic-labs/auth": "0.2.0",
+        "@acyclic-labs/core": "0.2.0",
         "@bufbuild/protobuf": "2.17.0",
         "@connectrpc/connect": "2.3.0",
         "@connectrpc/connect-node": "2.3.0",
@@ -188,8 +192,8 @@
       "name": "@acyclic-labs/stream",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/core": "0.2.0",
         "@acyclic-labs/auth": "0.2.0",
+        "@acyclic-labs/core": "0.2.0",
         "@bufbuild/protobuf": "2.17.0",
         "@connectrpc/connect": "2.3.0",
         "@connectrpc/connect-node": "2.3.0",
@@ -242,6 +246,8 @@
     "@acyclic-labs/stream": ["@acyclic-labs/stream@workspace:typescript/packages/stream"],
 
     "@acyclic-labs/workers": ["@acyclic-labs/workers@workspace:typescript/packages/workers"],
+
+    "@acyclic/stream-wasm": ["@acyclic/stream-wasm@workspace:typescript/packages/@acyclic/stream-wasm"],
 
     "@bufbuild/buf": ["@bufbuild/buf@1.75.0", "", { "optionalDependencies": { "@bufbuild/buf-darwin-arm64": "1.75.0", "@bufbuild/buf-darwin-x64": "1.75.0", "@bufbuild/buf-linux-aarch64": "1.75.0", "@bufbuild/buf-linux-armv7": "1.75.0", "@bufbuild/buf-linux-x64": "1.75.0", "@bufbuild/buf-win32-arm64": "1.75.0", "@bufbuild/buf-win32-x64": "1.75.0" }, "bin": { "buf": "bin/buf", "protoc-gen-buf-lint": "bin/protoc-gen-buf-lint", "protoc-gen-buf-breaking": "bin/protoc-gen-buf-breaking" } }, "sha512-uMuBCULLDax9/3d5Lo9mea38vuPDv4mrRVE4XfSq3qPcD5UUxlg0RJ9hm84lYCzI3A3lIvLeChxrw9c1RUiD2w=="],
 

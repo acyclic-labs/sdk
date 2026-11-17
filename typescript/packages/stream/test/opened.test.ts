@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { FollowRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
-import { WasmOpened, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
+import { WasmOpened, WasmStream } from "@acyclic/stream-wasm";
 import { ensureStreamWasm, wireAppendRequest } from "../src/contract.js";
 import { MemoryStreamProvider } from "../src/memory.js";
 import { idempotencyKey } from "../src/types.js";

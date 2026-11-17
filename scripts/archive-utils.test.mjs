@@ -41,7 +41,7 @@ test("artifact inventory matches real file writes and refuses aliases before rep
       const selected = present ? source : join(temporary, "absent");
       const original = present ? wasmArtifactInventory(wasmArtifactFiles(selected)) : [];
       for (const outcome of ["built", "refused", "no-output"]) {
-        const custody = preserveWasmArtifacts(selected, "node scripts/build-wasm.mjs harness");
+        const custody = preserveWasmArtifacts(selected, "node scripts/bazel-build-files.mjs harness");
         let candidate;
         try {
           if (outcome === "no-output") throw new Error("qualification refused");
@@ -52,7 +52,7 @@ test("artifact inventory matches real file writes and refuses aliases before rep
           }
           mkdirSync(join(selected, "snippets", "candidate"), { recursive: true });
           // Derived source bytes exercise real directory custody, not a compiler fixture.
-          writeFileSync(join(selected, "module.js"), readFileSync(new URL("./build-wasm.mjs", import.meta.url)));
+          writeFileSync(join(selected, "module.js"), readFileSync(new URL("./bazel-build-files.mjs", import.meta.url)));
           writeFileSync(join(selected, "snippets", "candidate", "inline.js"), readFileSync(import.meta.filename));
           candidate = wasmArtifactInventory(wasmArtifactFiles(selected));
           if (outcome === "refused") throw new Error("qualification refused");
@@ -63,7 +63,7 @@ test("artifact inventory matches real file writes and refuses aliases before rep
           "temporary build was not retained separately");
         else assert.equal(existsSync(custody.archive), false, "absent temporary build was fabricated");
         if (candidate) assert.deepEqual(readFileSync(custody.retained(join(selected, "module.js"))),
-          readFileSync(new URL("./build-wasm.mjs", import.meta.url)), "receipt names replaced output bytes");
+          readFileSync(new URL("./bazel-build-files.mjs", import.meta.url)), "receipt names replaced output bytes");
         const outside = join(temporary, "outside", "module.js");
         assert.equal(custody.source(outside), outside);
         assert.equal(custody.retained(outside), outside);
@@ -122,7 +122,7 @@ test("a build never removes or rewrites source-owned package metadata beside its
   const temporary = mkdtempSync(join(tmpdir(), "wasm-artifact-metadata-"));
   const source = join(temporary, "source"), output = join(temporary, "output");
   const tracked = { "package.json": readFileSync(new URL("../package.json", import.meta.url)),
-    ".npmignore": readFileSync(new URL("./build-wasm.mjs", import.meta.url)) };
+    ".npmignore": readFileSync(new URL("./bazel-build-files.mjs", import.meta.url)) };
   try {
     mkdirSync(join(source, "snippets"), { recursive: true });
     mkdirSync(output);

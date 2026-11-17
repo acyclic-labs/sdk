@@ -72,3 +72,6 @@ path = "tests/cli.rs"
 [[example]]
 name = "embedded"
 path = "examples/embedded.rs"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "signal"] }

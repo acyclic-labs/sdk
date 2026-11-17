@@ -27,12 +27,12 @@ hex.workspace = true
 acyclic-fs = { path = "../../filesystem", default-features = false }
 tempfile = { version = "3.27.0", optional = true }
 acyclic-native-runtime = { path = "../../native-runtime" }
-
+tokio = { workspace = true, features = ["fs", "net", "rt-multi-thread", "signal"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "=0.3.67"
+wasm-bindgen-test = "=0.3.71"
 uuid.workspace = true
 
 [lints]

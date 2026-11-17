@@ -157,16 +157,21 @@ async function command(action: string): Promise<unknown> {
     case "reconnect":
       peer.beforeConnect = async () => {
         connecting = true;
+        for (const notify of peer.changed) notify();
         await new Promise<void>(resolve => { releaseReconnect = resolve; });
       };
       peer.disconnect();
+      // The physical interruption travels through the real WASM session before
+      // it asks for the next transport; the model observes that actual attempt.
+      await peer.until(() => connecting);
       break;
     case "releaseReconnect": peer.beforeConnect = undefined; releaseReconnect?.(); break;
     case "cleanup": cleanup = true; stoppedAt ??= seen; cancel.abort(); break;
     case "finish":
       peer.beforeConnect = undefined;
       releaseReconnect?.();
-      await checkpoint();
+      // A reconnect for the surviving sibling must establish before its record.
+      await peer.until(() => peer.active > 0);
       peer.append("healthy");
       await checkpoint();
       break;

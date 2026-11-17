@@ -74,6 +74,22 @@ isolated_test(
     tags = ["manual"],
 )
 
+rust_library(
+    name = "acyclic_markdown_work_wasm",
+    crate_name = "acyclic_markdown_work",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "rust_sources",
     srcs = glob(["**/*.rs"], allow_empty = True),

@@ -1,5 +1,5 @@
 {
-  "checksum": "e7e93c47783c1db31dea68f0c7b28eaa7c37081ddf49e393cc8941415eac75fc",
+  "checksum": "4e2bba2f3b77c0c038c0e05d1034ea0f752ab6f02f1624a7a5eabd52790471e9",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -43,6 +43,7 @@
     "cfg(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\")))": [],
     "cfg(all(target_arch = \"wasm32\", target_os = \"unknown\"))": [],
     "cfg(all(target_arch = \"wasm32\", target_os = \"wasi\", target_env = \"p2\"))": [],
+    "cfg(all(target_arch = \"wasm32\", wasm_bindgen_unstable_test_coverage))": [],
     "cfg(all(target_arch = \"x86\", target_env = \"gnu\", not(target_abi = \"llvm\"), not(windows_raw_dylib)))": [],
     "cfg(all(target_arch = \"x86\", target_env = \"msvc\", not(windows_raw_dylib)))": [],
     "cfg(all(target_arch = \"x86_64\", target_env = \"gnu\", not(target_abi = \"llvm\"), not(windows_raw_dylib)))": [
@@ -211,6 +212,52 @@
     ]
   },
   "crates": {
+    "accessory 2.1.1": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "macroific 3.1.0",
+            "target": "macroific"
+          },
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 3.0.9",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "accessory",
+      "license": "MIT OR Apache-2.0",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "accessory",
+      "package_url": "https://github.com/Alorel/accessory-rs",
+      "repository": {
+        "Http": {
+          "sha256": "cc86a613208ca7d144ca24f6ec49c5cdfa5c05a46f2f7ab5880ff99371f165de",
+          "url": "https://static.crates.io/crates/accessory/2.1.1/download"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "accessory",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "2.1.1"
+    },
     "adler2 2.0.1": {
       "common_attrs": {
         "edition": "2021"
@@ -4105,6 +4152,35 @@
       ],
       "version": "0.2.2"
     },
+    "cast 0.3.0": {
+      "common_attrs": {
+        "edition": "2018"
+      },
+      "library_target_name": "cast",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "cast",
+      "package_url": "https://github.com/japaric/cast.rs",
+      "repository": {
+        "Http": {
+          "sha256": "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5",
+          "url": "https://static.crates.io/crates/cast/0.3.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "cast",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.3.0"
+    },
     "castaway 0.2.4": {
       "common_attrs": {
         "crate_features": [
@@ -7277,6 +7353,61 @@
       ],
       "version": "1.0.0"
     },
+    "delegate-display 3.0.1": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "itoa 1.0.18",
+            "target": "itoa"
+          },
+          {
+            "id": "macroific 3.1.0",
+            "target": "macroific"
+          },
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 3.0.9",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021",
+        "proc_macro_deps": [
+          {
+            "id": "impartial-ord 2.0.0",
+            "target": "impartial_ord"
+          }
+        ]
+      },
+      "library_target_name": "delegate_display",
+      "license": "MIT",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "delegate-display",
+      "package_url": "https://github.com/Alorel/delegate-display-rs",
+      "repository": {
+        "Http": {
+          "sha256": "54e3a499943fd5180aeffcb708164ffb22125ceeccb05491b5297981d37d6249",
+          "url": "https://static.crates.io/crates/delegate-display/3.0.1/download"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "delegate_display",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "3.0.1"
+    },
     "der 0.8.3": {
       "common_attrs": {
         "crate_features": [
@@ -7958,6 +8089,10 @@
           {
             "id": "caseless 0.2.2",
             "target": "caseless"
+          },
+          {
+            "id": "cast 0.3.0",
+            "target": "cast"
           },
           {
             "id": "castaway 0.2.4",
@@ -8674,6 +8809,10 @@
             "target": "image"
           },
           {
+            "id": "indexed_db_futures 0.6.4",
+            "target": "indexed_db_futures"
+          },
+          {
             "id": "indexmap 2.14.2",
             "target": "indexmap"
           },
@@ -8756,7 +8895,7 @@
             "target": "jobserver"
           },
           {
-            "id": "js-sys 0.3.94",
+            "id": "js-sys 0.3.98",
             "target": "js_sys"
           },
           {
@@ -8860,6 +8999,36 @@
           {
             "id": "lru-slab 0.1.3",
             "target": "lru_slab"
+          },
+          {
+            "alias": "macroific_2_0_0",
+            "id": "macroific 2.0.0",
+            "target": "macroific"
+          },
+          {
+            "alias": "macroific_3_1_0",
+            "id": "macroific 3.1.0",
+            "target": "macroific"
+          },
+          {
+            "alias": "macroific_attr_parse_2_0_0",
+            "id": "macroific_attr_parse 2.0.0",
+            "target": "macroific_attr_parse"
+          },
+          {
+            "alias": "macroific_attr_parse_3_1_0",
+            "id": "macroific_attr_parse 3.1.0",
+            "target": "macroific_attr_parse"
+          },
+          {
+            "alias": "macroific_core_2_0_0",
+            "id": "macroific_core 2.0.0",
+            "target": "macroific_core"
+          },
+          {
+            "alias": "macroific_core_3_1_0",
+            "id": "macroific_core 3.1.0",
+            "target": "macroific_core"
           },
           {
             "id": "matchers 0.2.0",
@@ -9055,6 +9224,10 @@
           {
             "id": "once_cell_polyfill 1.70.2",
             "target": "once_cell_polyfill"
+          },
+          {
+            "id": "oorandom 11.1.5",
+            "target": "oorandom"
           },
           {
             "id": "openssl 0.10.81",
@@ -10262,23 +10435,46 @@
             "target": "want"
           },
           {
-            "id": "wasm-bindgen 0.2.117",
+            "id": "wasm-bindgen 0.2.121",
             "target": "wasm_bindgen"
           },
           {
-            "id": "wasm-bindgen-futures 0.4.67",
+            "id": "wasm-bindgen-futures 0.4.71",
             "target": "wasm_bindgen_futures"
           },
           {
-            "id": "wasm-bindgen-macro-support 0.2.117",
+            "id": "wasm-bindgen-macro-support 0.2.121",
             "target": "wasm_bindgen_macro_support"
           },
           {
-            "id": "wasm-bindgen-shared 0.2.117",
+            "id": "wasm-bindgen-shared 0.2.121",
             "target": "wasm_bindgen_shared"
           },
           {
-            "id": "web-sys 0.3.94",
+            "id": "wasm-bindgen-test 0.3.71",
+            "target": "wasm_bindgen_test"
+          },
+          {
+            "id": "wasm-bindgen-test-shared 0.2.121",
+            "target": "wasm_bindgen_test_shared"
+          },
+          {
+            "alias": "wasm_streams_0_4_2",
+            "id": "wasm-streams 0.4.2",
+            "target": "wasm_streams"
+          },
+          {
+            "alias": "wasm_streams_0_5_0",
+            "id": "wasm-streams 0.5.0",
+            "target": "wasm_streams"
+          },
+          {
+            "alias": "wasm_streams_0_7_0",
+            "id": "wasm-streams 0.7.0",
+            "target": "wasm_streams"
+          },
+          {
+            "id": "web-sys 0.3.98",
             "target": "web_sys"
           },
           {
@@ -10476,6 +10672,10 @@
         "edition": "2018",
         "proc_macro_deps": [
           {
+            "id": "accessory 2.1.1",
+            "target": "accessory"
+          },
+          {
             "id": "asn1-rs-derive 0.6.0",
             "target": "asn1_rs_derive"
           },
@@ -10516,6 +10716,10 @@
             "target": "defmt_macros"
           },
           {
+            "id": "delegate-display 3.0.1",
+            "target": "delegate_display"
+          },
+          {
             "id": "derive_more-impl 2.1.1",
             "target": "derive_more_impl"
           },
@@ -10536,8 +10740,20 @@
             "target": "enumflags2_derive"
           },
           {
+            "id": "fancy_constructor 2.1.1",
+            "target": "fancy_constructor"
+          },
+          {
             "id": "futures-macro 0.3.34",
             "target": "futures_macro"
+          },
+          {
+            "id": "impartial-ord 2.0.0",
+            "target": "impartial_ord"
+          },
+          {
+            "id": "indexed_db_futures_macros_internal 1.0.0",
+            "target": "indexed_db_futures_macros_internal"
           },
           {
             "id": "indoc 2.0.8",
@@ -10550,6 +10766,16 @@
           {
             "id": "jiff-static 0.2.37",
             "target": "jiff_static"
+          },
+          {
+            "alias": "macroific_macro_2_0_0",
+            "id": "macroific_macro 2.0.0",
+            "target": "macroific_macro"
+          },
+          {
+            "alias": "macroific_macro_3_1_0",
+            "id": "macroific_macro 3.1.0",
+            "target": "macroific_macro"
           },
           {
             "id": "multiversion_no_op 1.0.0",
@@ -10604,6 +10830,16 @@
             "target": "schemars_derive"
           },
           {
+            "alias": "sealed_0_6_0",
+            "id": "sealed 0.6.0",
+            "target": "sealed"
+          },
+          {
+            "alias": "sealed_0_7_0",
+            "id": "sealed 0.7.0",
+            "target": "sealed"
+          },
+          {
             "id": "seq-macro 0.3.6",
             "target": "seq_macro"
           },
@@ -10646,8 +10882,12 @@
             "target": "tsify_macros"
           },
           {
-            "id": "wasm-bindgen-macro 0.2.117",
+            "id": "wasm-bindgen-macro 0.2.121",
             "target": "wasm_bindgen_macro"
+          },
+          {
+            "id": "wasm-bindgen-test-macro 0.3.71",
+            "target": "wasm_bindgen_test_macro"
           },
           {
             "id": "windows-implement 0.60.2",
@@ -12023,6 +12263,52 @@
         }
       ],
       "version": "0.20.2"
+    },
+    "fancy_constructor 2.1.1": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "macroific 3.1.0",
+            "target": "macroific"
+          },
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 3.0.9",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "fancy_constructor",
+      "license": "MIT OR Apache-2.0",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "fancy_constructor",
+      "package_url": "https://github.com/Alorel/fancy_constructor-rs.git",
+      "repository": {
+        "Http": {
+          "sha256": "4a8211ab12c36b63c269e17873331dc1da196a3edb7a5c79015677ef972da34a",
+          "url": "https://static.crates.io/crates/fancy_constructor/2.1.1/download"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "fancy_constructor",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "2.1.1"
     },
     "fastrand 2.5.0": {
       "common_attrs": {
@@ -13728,7 +14014,7 @@
         ],
         "deps": [
           {
-            "id": "js-sys 0.3.94",
+            "id": "js-sys 0.3.98",
             "target": "js_sys"
           },
           {
@@ -13740,11 +14026,11 @@
             "target": "serde_json"
           },
           {
-            "id": "wasm-bindgen 0.2.117",
+            "id": "wasm-bindgen 0.2.121",
             "target": "wasm_bindgen"
           },
           {
-            "id": "web-sys 0.3.94",
+            "id": "web-sys 0.3.98",
             "target": "web_sys"
           }
         ],
@@ -15121,7 +15407,7 @@
           "selects": {
             "cfg(all(target_arch = \"wasm32\", target_os = \"unknown\"))": [
               {
-                "id": "js-sys 0.3.94",
+                "id": "js-sys 0.3.98",
                 "target": "js_sys"
               },
               {
@@ -15129,7 +15415,7 @@
                 "target": "log"
               },
               {
-                "id": "wasm-bindgen 0.2.117",
+                "id": "wasm-bindgen 0.2.121",
                 "target": "wasm_bindgen"
               }
             ],
@@ -16084,6 +16370,180 @@
         }
       ],
       "version": "0.25.10"
+    },
+    "impartial-ord 2.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 3.0.9",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "impartial_ord",
+      "license": "MIT",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "impartial-ord",
+      "package_url": "https://github.com/Alorel/impartial-ord-rs",
+      "repository": {
+        "Http": {
+          "sha256": "bc680e03d1a08bdc1c01b60e0c39723430ced63d8cabd93cee0449b6ba916a25",
+          "url": "https://static.crates.io/crates/impartial-ord/2.0.0/download"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "impartial_ord",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "2.0.0"
+    },
+    "indexed_db_futures 0.6.4": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "cfg-if 1.0.5",
+            "target": "cfg_if"
+          },
+          {
+            "id": "derive_more 2.1.1",
+            "target": "derive_more"
+          },
+          {
+            "id": "js-sys 0.3.98",
+            "target": "js_sys"
+          },
+          {
+            "id": "smallvec 1.16.2",
+            "target": "smallvec"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          },
+          {
+            "id": "wasm-bindgen 0.2.121",
+            "target": "wasm_bindgen"
+          },
+          {
+            "id": "wasm-bindgen-futures 0.4.71",
+            "target": "wasm_bindgen_futures"
+          },
+          {
+            "id": "web-sys 0.3.98",
+            "target": "web_sys"
+          }
+        ],
+        "edition": "2021",
+        "proc_macro_deps": [
+          {
+            "id": "accessory 2.1.1",
+            "target": "accessory"
+          },
+          {
+            "id": "delegate-display 3.0.1",
+            "target": "delegate_display"
+          },
+          {
+            "id": "fancy_constructor 2.1.1",
+            "target": "fancy_constructor"
+          },
+          {
+            "alias": "internal_macros",
+            "id": "indexed_db_futures_macros_internal 1.0.0",
+            "target": "indexed_db_futures_macros_internal"
+          },
+          {
+            "id": "sealed 0.6.0",
+            "target": "sealed"
+          }
+        ]
+      },
+      "library_target_name": "indexed_db_futures",
+      "license": "MIT",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "indexed_db_futures",
+      "package_url": "https://github.com/Alorel/rust-indexed-db",
+      "repository": {
+        "Http": {
+          "sha256": "69ff41758cbd104e91033bb53bc449bec7eea65652960c81eddf3fc146ecea19",
+          "url": "https://static.crates.io/crates/indexed_db_futures/0.6.4/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "indexed_db_futures",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.6.4"
+    },
+    "indexed_db_futures_macros_internal 1.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "macroific 2.0.0",
+            "target": "macroific"
+          },
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 2.0.119",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "indexed_db_futures_macros_internal",
+      "license": "MIT",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "indexed_db_futures_macros_internal",
+      "package_url": "https://github.com/Alorel/rust-indexed-db",
+      "repository": {
+        "Http": {
+          "sha256": "caeba94923b68f254abef921cea7e7698bf4675fdd89d7c58bf1ed885b49a27d",
+          "url": "https://static.crates.io/crates/indexed_db_futures_macros_internal/1.0.0/download"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "indexed_db_futures_macros_internal",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "1.0.0"
     },
     "indexmap 2.14.2": {
       "common_attrs": {
@@ -17245,11 +17705,10 @@
       ],
       "version": "0.1.35"
     },
-    "js-sys 0.3.94": {
+    "js-sys 0.3.98": {
       "common_attrs": {
         "crate_features": [
           "default",
-          "futures",
           "std",
           "unsafe-eval"
         ],
@@ -17267,7 +17726,7 @@
             "target": "once_cell"
           },
           {
-            "id": "wasm-bindgen 0.2.117",
+            "id": "wasm-bindgen 0.2.121",
             "target": "wasm_bindgen"
           }
         ],
@@ -17284,8 +17743,8 @@
       "package_url": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys",
       "repository": {
         "Http": {
-          "sha256": "2e04e2ef80ce82e13552136fabeef8a5ed1f985a96805761cbb9a2c34e7664d9",
-          "url": "https://static.crates.io/crates/js-sys/0.3.94/download"
+          "sha256": "67df7112613f8bfd9150013a0314e196f4800d3201ae742489d999db2f979f08",
+          "url": "https://static.crates.io/crates/js-sys/0.3.98/download"
         }
       },
       "targets": [
@@ -17296,7 +17755,7 @@
           }
         }
       ],
-      "version": "0.3.94"
+      "version": "0.3.98"
     },
     "jsonschema 0.61.2": {
       "common_attrs": {
@@ -18523,6 +18982,408 @@
       ],
       "version": "0.1.3"
     },
+    "macroific 2.0.0": {
+      "common_attrs": {
+        "crate_features": [
+          "attr_parse",
+          "attributed",
+          "generic-impl",
+          "module-prefix"
+        ],
+        "deps": [
+          {
+            "id": "macroific_attr_parse 2.0.0",
+            "target": "macroific_attr_parse"
+          },
+          {
+            "id": "macroific_core 2.0.0",
+            "target": "macroific_core"
+          }
+        ],
+        "edition": "2021",
+        "proc_macro_deps": [
+          {
+            "id": "macroific_macro 2.0.0",
+            "target": "macroific_macro"
+          }
+        ]
+      },
+      "library_target_name": "macroific",
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "name": "macroific",
+      "package_url": "https://github.com/Alorel/macroific-rs",
+      "repository": {
+        "Http": {
+          "sha256": "89f276537b4b8f981bf1c13d79470980f71134b7bdcc5e6e911e910e556b0285",
+          "url": "https://static.crates.io/crates/macroific/2.0.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "macroific",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "2.0.0"
+    },
+    "macroific 3.1.0": {
+      "common_attrs": {
+        "crate_features": [
+          "attr_parse",
+          "full",
+          "generic-impl",
+          "module-prefix"
+        ],
+        "deps": [
+          {
+            "id": "macroific_attr_parse 3.1.0",
+            "target": "macroific_attr_parse"
+          },
+          {
+            "id": "macroific_core 3.1.0",
+            "target": "macroific_core"
+          }
+        ],
+        "edition": "2021",
+        "proc_macro_deps": [
+          {
+            "id": "macroific_macro 3.1.0",
+            "target": "macroific_macro"
+          }
+        ]
+      },
+      "library_target_name": "macroific",
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "name": "macroific",
+      "package_url": "https://github.com/Alorel/macroific-rs",
+      "repository": {
+        "Http": {
+          "sha256": "cc8ab95c98294764c0f1eacebdb5b027849201b71fbc383871fe991a1de7eb83",
+          "url": "https://static.crates.io/crates/macroific/3.1.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "macroific",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "3.1.0"
+    },
+    "macroific_attr_parse 2.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 2.0.119",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021",
+        "proc_macro_deps": [
+          {
+            "id": "sealed 0.6.0",
+            "target": "sealed"
+          }
+        ]
+      },
+      "library_target_name": "macroific_attr_parse",
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "name": "macroific_attr_parse",
+      "package_url": "https://github.com/Alorel/macroific-rs",
+      "repository": {
+        "Http": {
+          "sha256": "ad4023761b45fcd36abed8fb7ae6a80456b0a38102d55e89a57d9a594a236be9",
+          "url": "https://static.crates.io/crates/macroific_attr_parse/2.0.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "macroific_attr_parse",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "2.0.0"
+    },
+    "macroific_attr_parse 3.1.0": {
+      "common_attrs": {
+        "crate_features": [
+          "full"
+        ],
+        "deps": [
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 3.0.9",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021",
+        "proc_macro_deps": [
+          {
+            "id": "sealed 0.7.0",
+            "target": "sealed"
+          }
+        ]
+      },
+      "library_target_name": "macroific_attr_parse",
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "name": "macroific_attr_parse",
+      "package_url": "https://github.com/Alorel/macroific-rs",
+      "repository": {
+        "Http": {
+          "sha256": "bf9b7bdb92825e6a507392b12f0570ade17480be20f4ca951b9071b40deba1d1",
+          "url": "https://static.crates.io/crates/macroific_attr_parse/3.1.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "macroific_attr_parse",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "3.1.0"
+    },
+    "macroific_core 2.0.0": {
+      "common_attrs": {
+        "crate_features": [
+          "attributed",
+          "generic-impl",
+          "module-prefix"
+        ],
+        "deps": [
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 2.0.119",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021",
+        "proc_macro_deps": [
+          {
+            "id": "sealed 0.6.0",
+            "target": "sealed"
+          }
+        ]
+      },
+      "library_target_name": "macroific_core",
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "name": "macroific_core",
+      "package_url": "https://github.com/Alorel/macroific-rs",
+      "repository": {
+        "Http": {
+          "sha256": "d0a7594d3c14916fa55bef7e9d18c5daa9ed410dd37504251e4b75bbdeec33e3",
+          "url": "https://static.crates.io/crates/macroific_core/2.0.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "macroific_core",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "2.0.0"
+    },
+    "macroific_core 3.1.0": {
+      "common_attrs": {
+        "crate_features": [
+          "generic-impl",
+          "module-prefix"
+        ],
+        "deps": [
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 3.0.9",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021",
+        "proc_macro_deps": [
+          {
+            "id": "sealed 0.7.0",
+            "target": "sealed"
+          }
+        ]
+      },
+      "library_target_name": "macroific_core",
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "name": "macroific_core",
+      "package_url": "https://github.com/Alorel/macroific-rs",
+      "repository": {
+        "Http": {
+          "sha256": "edc880da2bc00d6d87f748805e242d670e248d1b9b6fcef3190503210b6cf056",
+          "url": "https://static.crates.io/crates/macroific_core/3.1.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "macroific_core",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "3.1.0"
+    },
+    "macroific_macro 2.0.0": {
+      "common_attrs": {
+        "crate_features": [
+          "attr_parse"
+        ],
+        "deps": [
+          {
+            "id": "macroific_attr_parse 2.0.0",
+            "target": "macroific_attr_parse"
+          },
+          {
+            "id": "macroific_core 2.0.0",
+            "target": "macroific_core"
+          },
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 2.0.119",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "macroific_macro",
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "name": "macroific_macro",
+      "package_url": "https://github.com/Alorel/macroific-rs",
+      "repository": {
+        "Http": {
+          "sha256": "4da6f2ed796261b0a74e2b52b42c693bb6dee1effba3a482c49592659f824b3b",
+          "url": "https://static.crates.io/crates/macroific_macro/2.0.0/download"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "macroific_macro",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "2.0.0"
+    },
+    "macroific_macro 3.1.0": {
+      "common_attrs": {
+        "crate_features": [
+          "attr_parse"
+        ],
+        "deps": [
+          {
+            "id": "macroific_attr_parse 3.1.0",
+            "target": "macroific_attr_parse"
+          },
+          {
+            "id": "macroific_core 3.1.0",
+            "target": "macroific_core"
+          },
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 3.0.9",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "macroific_macro",
+      "license": "Apache-2.0",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "name": "macroific_macro",
+      "package_url": "https://github.com/Alorel/macroific-rs",
+      "repository": {
+        "Http": {
+          "sha256": "201faf668c264432727fb64e44407bcfcf1f5f8153bf4ec248eb6bbe4a39b144",
+          "url": "https://static.crates.io/crates/macroific_macro/3.1.0/download"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "macroific_macro",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "3.1.0"
+    },
     "matchers 0.2.0": {
       "common_attrs": {
         "deps": [
@@ -18803,6 +19664,56 @@
         }
       ],
       "version": "0.3.17"
+    },
+    "minicov 0.3.9": {
+      "build_script_attrs": {
+        "deps": [
+          {
+            "id": "cc 1.10.0",
+            "target": "cc"
+          },
+          {
+            "id": "walkdir 2.5.0",
+            "target": "walkdir"
+          }
+        ]
+      },
+      "common_attrs": {
+        "edition": "2018",
+        "extra_deps": [
+          ":build_script_build"
+        ]
+      },
+      "library_target_name": "minicov",
+      "license": "Apache-2.0/MIT",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "minicov",
+      "package_url": "https://github.com/Amanieu/minicov",
+      "repository": {
+        "Http": {
+          "sha256": "c3aa3aa12b448ac225b3102217d1ac5cc717908f02722926524b0599c933c7a0",
+          "url": "https://static.crates.io/crates/minicov/0.3.9/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "minicov",
+            "crate_root": "src/lib.rs"
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs"
+          }
+        }
+      ],
+      "version": "0.3.9"
     },
     "minimal-lexical 0.2.1": {
       "common_attrs": {
@@ -20690,7 +21601,7 @@
                 "target": "futures_channel"
               },
               {
-                "id": "wasm-bindgen-futures 0.4.67",
+                "id": "wasm-bindgen-futures 0.4.71",
                 "target": "wasm_bindgen_futures"
               },
               {
@@ -20857,6 +21768,34 @@
         }
       ],
       "version": "1.70.2"
+    },
+    "oorandom 11.1.5": {
+      "common_attrs": {
+        "edition": "2018"
+      },
+      "library_target_name": "oorandom",
+      "license": "MIT",
+      "license_file": "LICENSE-MIT",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "oorandom",
+      "package_url": "https://hg.sr.ht/~icefox/oorandom",
+      "repository": {
+        "Http": {
+          "sha256": "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e",
+          "url": "https://static.crates.io/crates/oorandom/11.1.5/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "oorandom",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "11.1.5"
     },
     "openssl 0.10.81": {
       "build_script_attrs": {
@@ -21313,7 +22252,7 @@
             ],
             "cfg(target_arch = \"wasm32\")": [
               {
-                "id": "js-sys 0.3.94",
+                "id": "js-sys 0.3.98",
                 "target": "js_sys"
               }
             ]
@@ -27402,19 +28341,19 @@
             ],
             "cfg(target_arch = \"wasm32\")": [
               {
-                "id": "js-sys 0.3.94",
+                "id": "js-sys 0.3.98",
                 "target": "js_sys"
               },
               {
-                "id": "wasm-bindgen 0.2.117",
+                "id": "wasm-bindgen 0.2.121",
                 "target": "wasm_bindgen"
               },
               {
-                "id": "wasm-bindgen-futures 0.4.67",
+                "id": "wasm-bindgen-futures 0.4.71",
                 "target": "wasm_bindgen_futures"
               },
               {
-                "id": "web-sys 0.3.94",
+                "id": "web-sys 0.3.98",
                 "target": "web_sys"
               }
             ]
@@ -27527,19 +28466,19 @@
           "selects": {
             "cfg(all(target_arch = \"wasm32\", any(target_os = \"unknown\", target_os = \"none\")))": [
               {
-                "id": "js-sys 0.3.94",
+                "id": "js-sys 0.3.98",
                 "target": "js_sys"
               },
               {
-                "id": "wasm-bindgen 0.2.117",
+                "id": "wasm-bindgen 0.2.121",
                 "target": "wasm_bindgen"
               },
               {
-                "id": "wasm-bindgen-futures 0.4.67",
+                "id": "wasm-bindgen-futures 0.4.71",
                 "target": "wasm_bindgen_futures"
               },
               {
-                "id": "web-sys 0.3.94",
+                "id": "web-sys 0.3.98",
                 "target": "web_sys"
               }
             ],
@@ -28067,9 +29006,6 @@
         "MIT"
       ],
       "name": "rquickjs-core",
-      "override_targets": {
-        "lib": "@@//rust/vendor/rquickjs-core-0.14.0:rquickjs_core"
-      },
       "package_url": "https://github.com/DelSkayn/rquickjs.git",
       "repository": {
         "Http": {
@@ -29853,6 +30789,92 @@
       ],
       "version": "1.2.0"
     },
+    "sealed 0.6.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 2.0.119",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "sealed",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "sealed",
+      "package_url": "https://github.com/jmg-duarte/sealed-rs",
+      "repository": {
+        "Http": {
+          "sha256": "22f968c5ea23d555e670b449c1c5e7b2fc399fdaec1d304a17cd48e288abc107",
+          "url": "https://static.crates.io/crates/sealed/0.6.0/download"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "sealed",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.6.0"
+    },
+    "sealed 0.7.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 3.0.9",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "sealed",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "sealed",
+      "package_url": "https://github.com/jmg-duarte/sealed-rs",
+      "repository": {
+        "Http": {
+          "sha256": "9b68e2ea526d9fb32f23ca8894fb5da9e743f34c2f41701f0501dc8a25c4b343",
+          "url": "https://static.crates.io/crates/sealed/0.7.0/download"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "sealed",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.7.0"
+    },
     "sec1 0.8.1": {
       "common_attrs": {
         "crate_features": [
@@ -30421,7 +31443,7 @@
       "common_attrs": {
         "deps": [
           {
-            "id": "js-sys 0.3.94",
+            "id": "js-sys 0.3.98",
             "target": "js_sys"
           },
           {
@@ -30429,7 +31451,7 @@
             "target": "serde"
           },
           {
-            "id": "wasm-bindgen 0.2.117",
+            "id": "wasm-bindgen 0.2.121",
             "target": "wasm_bindgen"
           }
         ],
@@ -32268,7 +33290,7 @@
       "common_attrs": {
         "deps": [
           {
-            "id": "js-sys 0.3.94",
+            "id": "js-sys 0.3.98",
             "target": "js_sys"
           },
           {
@@ -32276,7 +33298,7 @@
             "target": "rsqlite_vfs"
           },
           {
-            "id": "wasm-bindgen 0.2.117",
+            "id": "wasm-bindgen 0.2.121",
             "target": "wasm_bindgen"
           }
         ],
@@ -35516,7 +36538,7 @@
             "target": "serde_json"
           },
           {
-            "id": "wasm-bindgen 0.2.117",
+            "id": "wasm-bindgen 0.2.121",
             "target": "wasm_bindgen"
           }
         ],
@@ -37187,11 +38209,11 @@
       ],
       "version": "1.0.2"
     },
-    "wasm-bindgen 0.2.117": {
+    "wasm-bindgen 0.2.121": {
       "build_script_attrs": {
         "link_deps": [
           {
-            "id": "wasm-bindgen-shared 0.2.117",
+            "id": "wasm-bindgen-shared 0.2.121",
             "target": "wasm_bindgen_shared"
           }
         ],
@@ -37218,7 +38240,7 @@
             "target": "once_cell"
           },
           {
-            "id": "wasm-bindgen-shared 0.2.117",
+            "id": "wasm-bindgen-shared 0.2.121",
             "target": "wasm_bindgen_shared"
           }
         ],
@@ -37228,7 +38250,7 @@
         ],
         "proc_macro_deps": [
           {
-            "id": "wasm-bindgen-macro 0.2.117",
+            "id": "wasm-bindgen-macro 0.2.121",
             "target": "wasm_bindgen_macro"
           }
         ]
@@ -37244,8 +38266,8 @@
       "package_url": "https://github.com/wasm-bindgen/wasm-bindgen",
       "repository": {
         "Http": {
-          "sha256": "0551fc1bb415591e3372d0bc4780db7e587d84e2a7e79da121051c5c4b89d0b0",
-          "url": "https://static.crates.io/crates/wasm-bindgen/0.2.117/download"
+          "sha256": "49ace1d07c165b0864824eee619580c4689389afa9dc9ed3a4c75040d82e6790",
+          "url": "https://static.crates.io/crates/wasm-bindgen/0.2.121/download"
         }
       },
       "targets": [
@@ -37262,9 +38284,9 @@
           }
         }
       ],
-      "version": "0.2.117"
+      "version": "0.2.121"
     },
-    "wasm-bindgen-futures 0.4.67": {
+    "wasm-bindgen-futures 0.4.71": {
       "common_attrs": {
         "crate_features": [
           "default",
@@ -37272,11 +38294,11 @@
         ],
         "deps": [
           {
-            "id": "js-sys 0.3.94",
+            "id": "js-sys 0.3.98",
             "target": "js_sys"
           },
           {
-            "id": "wasm-bindgen 0.2.117",
+            "id": "wasm-bindgen 0.2.121",
             "target": "wasm_bindgen"
           }
         ],
@@ -37293,8 +38315,8 @@
       "package_url": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures",
       "repository": {
         "Http": {
-          "sha256": "03623de6905b7206edd0a75f69f747f134b7f0a2323392d664448bf2d3c5d87e",
-          "url": "https://static.crates.io/crates/wasm-bindgen-futures/0.4.67/download"
+          "sha256": "96492d0d3ffba25305a7dc88720d250b1401d7edca02cc3bcd50633b424673b8",
+          "url": "https://static.crates.io/crates/wasm-bindgen-futures/0.4.71/download"
         }
       },
       "targets": [
@@ -37305,9 +38327,9 @@
           }
         }
       ],
-      "version": "0.4.67"
+      "version": "0.4.71"
     },
-    "wasm-bindgen-macro 0.2.117": {
+    "wasm-bindgen-macro 0.2.121": {
       "common_attrs": {
         "deps": [
           {
@@ -37315,7 +38337,7 @@
             "target": "quote"
           },
           {
-            "id": "wasm-bindgen-macro-support 0.2.117",
+            "id": "wasm-bindgen-macro-support 0.2.121",
             "target": "wasm_bindgen_macro_support"
           }
         ],
@@ -37332,8 +38354,8 @@
       "package_url": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro",
       "repository": {
         "Http": {
-          "sha256": "7fbdf9a35adf44786aecd5ff89b4563a90325f9da0923236f6104e603c7e86be",
-          "url": "https://static.crates.io/crates/wasm-bindgen-macro/0.2.117/download"
+          "sha256": "8e68e6f4afd367a562002c05637acb8578ff2dea1943df76afb9e83d177c8578",
+          "url": "https://static.crates.io/crates/wasm-bindgen-macro/0.2.121/download"
         }
       },
       "targets": [
@@ -37344,9 +38366,9 @@
           }
         }
       ],
-      "version": "0.2.117"
+      "version": "0.2.121"
     },
-    "wasm-bindgen-macro-support 0.2.117": {
+    "wasm-bindgen-macro-support 0.2.121": {
       "common_attrs": {
         "deps": [
           {
@@ -37366,7 +38388,7 @@
             "target": "syn"
           },
           {
-            "id": "wasm-bindgen-shared 0.2.117",
+            "id": "wasm-bindgen-shared 0.2.121",
             "target": "wasm_bindgen_shared"
           }
         ],
@@ -37383,8 +38405,8 @@
       "package_url": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro-support",
       "repository": {
         "Http": {
-          "sha256": "dca9693ef2bab6d4e6707234500350d8dad079eb508dca05530c85dc3a529ff2",
-          "url": "https://static.crates.io/crates/wasm-bindgen-macro-support/0.2.117/download"
+          "sha256": "d95a9ec35c64b2a7cb35d3fead40c4238d0940c86d107136999567a4703259f2",
+          "url": "https://static.crates.io/crates/wasm-bindgen-macro-support/0.2.121/download"
         }
       },
       "targets": [
@@ -37395,9 +38417,9 @@
           }
         }
       ],
-      "version": "0.2.117"
+      "version": "0.2.121"
     },
-    "wasm-bindgen-shared 0.2.117": {
+    "wasm-bindgen-shared 0.2.121": {
       "build_script_attrs": {
         "links": "wasm_bindgen"
       },
@@ -37424,8 +38446,8 @@
       "package_url": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared",
       "repository": {
         "Http": {
-          "sha256": "39129a682a6d2d841b6c429d0c51e5cb0ed1a03829d8b3d1e69a011e62cb3d3b",
-          "url": "https://static.crates.io/crates/wasm-bindgen-shared/0.2.117/download"
+          "sha256": "c4e0100b01e9f0d03189a92b96772a1fb998639d981193d7dbab487302513441",
+          "url": "https://static.crates.io/crates/wasm-bindgen-shared/0.2.121/download"
         }
       },
       "targets": [
@@ -37442,7 +38464,174 @@
           }
         }
       ],
-      "version": "0.2.117"
+      "version": "0.2.121"
+    },
+    "wasm-bindgen-test 0.3.71": {
+      "common_attrs": {
+        "deps": {
+          "common": [
+            {
+              "id": "cast 0.3.0",
+              "target": "cast"
+            },
+            {
+              "id": "js-sys 0.3.98",
+              "target": "js_sys"
+            },
+            {
+              "id": "libm 0.2.16",
+              "target": "libm"
+            },
+            {
+              "id": "nu-ansi-term 0.50.3",
+              "target": "nu_ansi_term"
+            },
+            {
+              "id": "num-traits 0.2.19",
+              "target": "num_traits"
+            },
+            {
+              "id": "oorandom 11.1.5",
+              "target": "oorandom"
+            },
+            {
+              "id": "serde 1.0.229",
+              "target": "serde"
+            },
+            {
+              "id": "serde_json 1.0.154",
+              "target": "serde_json"
+            },
+            {
+              "id": "wasm-bindgen 0.2.121",
+              "target": "wasm_bindgen"
+            },
+            {
+              "id": "wasm-bindgen-futures 0.4.71",
+              "target": "wasm_bindgen_futures"
+            },
+            {
+              "id": "wasm-bindgen-test-shared 0.2.121",
+              "target": "wasm_bindgen_test_shared"
+            }
+          ],
+          "selects": {
+            "cfg(all(target_arch = \"wasm32\", wasm_bindgen_unstable_test_coverage))": [
+              {
+                "id": "minicov 0.3.9",
+                "target": "minicov"
+              }
+            ]
+          }
+        },
+        "edition": "2021",
+        "proc_macro_deps": [
+          {
+            "id": "async-trait 0.1.92",
+            "target": "async_trait"
+          },
+          {
+            "id": "wasm-bindgen-test-macro 0.3.71",
+            "target": "wasm_bindgen_test_macro"
+          }
+        ]
+      },
+      "library_target_name": "wasm_bindgen_test",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "wasm-bindgen-test",
+      "package_url": "https://github.com/wasm-bindgen/wasm-bindgen",
+      "repository": {
+        "Http": {
+          "sha256": "af5ec93229ad9ccd0a545a516dec76dc276613f278f6a91aa6b463d5b33d42d0",
+          "url": "https://static.crates.io/crates/wasm-bindgen-test/0.3.71/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "wasm_bindgen_test",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.3.71"
+    },
+    "wasm-bindgen-test-macro 0.3.71": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 2.0.119",
+            "target": "syn"
+          }
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "wasm_bindgen_test_macro",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "wasm-bindgen-test-macro",
+      "package_url": "https://github.com/wasm-bindgen/wasm-bindgen",
+      "repository": {
+        "Http": {
+          "sha256": "3c81b9fef827e575e0e54431736d1baa0d700315d8c62cfef1f61fa3aad0cbeb",
+          "url": "https://static.crates.io/crates/wasm-bindgen-test-macro/0.3.71/download"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "wasm_bindgen_test_macro",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.3.71"
+    },
+    "wasm-bindgen-test-shared 0.2.121": {
+      "common_attrs": {
+        "edition": "2021"
+      },
+      "library_target_name": "wasm_bindgen_test_shared",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "wasm-bindgen-test-shared",
+      "package_url": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/test-shared",
+      "repository": {
+        "Http": {
+          "sha256": "4f4d8ae7ad5440360e9799dfd42857d126454a88441ddf72d288ef83fa47f527",
+          "url": "https://static.crates.io/crates/wasm-bindgen-test-shared/0.2.121/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "wasm_bindgen_test_shared",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.2.121"
     },
     "wasm-streams 0.4.2": {
       "common_attrs": {
@@ -37452,19 +38641,19 @@
             "target": "futures_util"
           },
           {
-            "id": "js-sys 0.3.94",
+            "id": "js-sys 0.3.98",
             "target": "js_sys"
           },
           {
-            "id": "wasm-bindgen 0.2.117",
+            "id": "wasm-bindgen 0.2.121",
             "target": "wasm_bindgen"
           },
           {
-            "id": "wasm-bindgen-futures 0.4.67",
+            "id": "wasm-bindgen-futures 0.4.71",
             "target": "wasm_bindgen_futures"
           },
           {
-            "id": "web-sys 0.3.94",
+            "id": "web-sys 0.3.98",
             "target": "web_sys"
           }
         ],
@@ -37503,19 +38692,19 @@
             "target": "futures_util"
           },
           {
-            "id": "js-sys 0.3.94",
+            "id": "js-sys 0.3.98",
             "target": "js_sys"
           },
           {
-            "id": "wasm-bindgen 0.2.117",
+            "id": "wasm-bindgen 0.2.121",
             "target": "wasm_bindgen"
           },
           {
-            "id": "wasm-bindgen-futures 0.4.67",
+            "id": "wasm-bindgen-futures 0.4.71",
             "target": "wasm_bindgen_futures"
           },
           {
-            "id": "web-sys 0.3.94",
+            "id": "web-sys 0.3.98",
             "target": "web_sys"
           }
         ],
@@ -37546,7 +38735,58 @@
       ],
       "version": "0.5.0"
     },
-    "web-sys 0.3.94": {
+    "wasm-streams 0.7.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "futures-util 0.3.34",
+            "target": "futures_util"
+          },
+          {
+            "id": "js-sys 0.3.98",
+            "target": "js_sys"
+          },
+          {
+            "id": "wasm-bindgen 0.2.121",
+            "target": "wasm_bindgen"
+          },
+          {
+            "id": "wasm-bindgen-futures 0.4.71",
+            "target": "wasm_bindgen_futures"
+          },
+          {
+            "id": "web-sys 0.3.98",
+            "target": "web_sys"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "wasm_streams",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "wasm-streams",
+      "package_url": "https://github.com/MattiasBuelens/wasm-streams/",
+      "repository": {
+        "Http": {
+          "sha256": "94ce9bdac782bbca70d6ac48a3ba18b873c848a706d6dc3bd9a03c1b96f04693",
+          "url": "https://static.crates.io/crates/wasm-streams/0.7.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "wasm_streams",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.7.0"
+    },
+    "web-sys 0.3.98": {
       "common_attrs": {
         "crate_features": [
           "AbortController",
@@ -37633,11 +38873,11 @@
         ],
         "deps": [
           {
-            "id": "js-sys 0.3.94",
+            "id": "js-sys 0.3.98",
             "target": "js_sys"
           },
           {
-            "id": "wasm-bindgen 0.2.117",
+            "id": "wasm-bindgen 0.2.121",
             "target": "wasm_bindgen"
           }
         ],
@@ -37654,8 +38894,8 @@
       "package_url": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys",
       "repository": {
         "Http": {
-          "sha256": "cd70027e39b12f0849461e08ffc50b9cd7688d942c1c8e3c7b22273236b4dd0a",
-          "url": "https://static.crates.io/crates/web-sys/0.3.94/download"
+          "sha256": "4b572dff8bcf38bad0fa19729c89bb5748b2b9b1d8be70cf90df697e3a8f32aa",
+          "url": "https://static.crates.io/crates/web-sys/0.3.98/download"
         }
       },
       "targets": [
@@ -37666,7 +38906,7 @@
           }
         }
       ],
-      "version": "0.3.94"
+      "version": "0.3.98"
     },
     "web-time 1.1.0": {
       "common_attrs": {
@@ -37675,11 +38915,11 @@
           "selects": {
             "cfg(all(target_family = \"wasm\", target_os = \"unknown\"))": [
               {
-                "id": "js-sys 0.3.94",
+                "id": "js-sys 0.3.98",
                 "target": "js_sys"
               },
               {
-                "id": "wasm-bindgen 0.2.117",
+                "id": "wasm-bindgen 0.2.121",
                 "target": "wasm_bindgen"
               }
             ]
@@ -41092,6 +42332,7 @@
     }
   },
   "direct_deps": [
+    "accessory 2.1.1",
     "adler2 2.0.1",
     "aead 0.6.1",
     "aes 0.8.4",
@@ -41167,6 +42408,7 @@
     "cargo-platform 0.3.3",
     "cargo_metadata 0.23.1",
     "caseless 0.2.2",
+    "cast 0.3.0",
     "castaway 0.2.4",
     "cbc 0.1.2",
     "cc 1.10.0",
@@ -41232,6 +42474,7 @@
     "defmt 1.1.1",
     "defmt-macros 1.1.1",
     "defmt-parser 1.0.0",
+    "delegate-display 3.0.1",
     "der 0.8.3",
     "der-parser 10.0.0",
     "deranged 0.5.8",
@@ -41270,6 +42513,7 @@
     "fallible-iterator 0.3.0",
     "fallible-streaming-iterator 0.1.9",
     "fancy-regex 0.20.2",
+    "fancy_constructor 2.1.1",
     "fastrand 2.5.0",
     "ff 0.14.0",
     "filetime 0.2.29",
@@ -41350,6 +42594,9 @@
     "idna 1.1.0",
     "idna_adapter 1.2.2",
     "image 0.25.10",
+    "impartial-ord 2.0.0",
+    "indexed_db_futures 0.6.4",
+    "indexed_db_futures_macros_internal 1.0.0",
     "indexmap 2.14.2",
     "indoc 2.0.8",
     "inotify 0.11.5",
@@ -41372,7 +42619,7 @@
     "jiff-tzdb 0.1.8",
     "jiff-tzdb-platform 0.1.3",
     "jobserver 0.1.35",
-    "js-sys 0.3.94",
+    "js-sys 0.3.98",
     "jsonschema 0.61.2",
     "jsonschema-regex 0.61.2",
     "jsonschema-value 0.61.2",
@@ -41398,6 +42645,14 @@
     "loom 0.7.3",
     "lru 0.18.5",
     "lru-slab 0.1.3",
+    "macroific 2.0.0",
+    "macroific 3.1.0",
+    "macroific_attr_parse 2.0.0",
+    "macroific_attr_parse 3.1.0",
+    "macroific_core 2.0.0",
+    "macroific_core 3.1.0",
+    "macroific_macro 2.0.0",
+    "macroific_macro 3.1.0",
     "matchers 0.2.0",
     "matchit 0.8.4",
     "maybe-owned 0.3.4",
@@ -41448,6 +42703,7 @@
     "oid-registry 0.8.1",
     "once_cell 1.21.4",
     "once_cell_polyfill 1.70.2",
+    "oorandom 11.1.5",
     "openssl 0.10.81",
     "openssl-macros 0.1.1",
     "openssl-probe 0.2.1",
@@ -41610,6 +42866,8 @@
     "schemars_derive 1.2.3",
     "scoped-tls 1.0.1",
     "scopeguard 1.2.0",
+    "sealed 0.6.0",
+    "sealed 0.7.0",
     "sec1 0.8.1",
     "secret-service 4.0.0",
     "security-framework 3.7.0",
@@ -41758,12 +43016,18 @@
     "wait-timeout 0.2.1",
     "walkdir 2.5.0",
     "want 0.3.2",
-    "wasm-bindgen 0.2.117",
-    "wasm-bindgen-futures 0.4.67",
-    "wasm-bindgen-macro 0.2.117",
-    "wasm-bindgen-macro-support 0.2.117",
-    "wasm-bindgen-shared 0.2.117",
-    "web-sys 0.3.94",
+    "wasm-bindgen 0.2.121",
+    "wasm-bindgen-futures 0.4.71",
+    "wasm-bindgen-macro 0.2.121",
+    "wasm-bindgen-macro-support 0.2.121",
+    "wasm-bindgen-shared 0.2.121",
+    "wasm-bindgen-test 0.3.71",
+    "wasm-bindgen-test-macro 0.3.71",
+    "wasm-bindgen-test-shared 0.2.121",
+    "wasm-streams 0.4.2",
+    "wasm-streams 0.5.0",
+    "wasm-streams 0.7.0",
+    "web-sys 0.3.98",
     "web-time 1.1.0",
     "webpki-roots 1.0.10",
     "which 8.0.6",

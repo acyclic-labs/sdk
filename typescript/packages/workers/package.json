@@ -39,7 +39,6 @@
     "pack:dry": "bun pm pack --dry-run",
     "test:cloud": "bun run generate && bun run build:wasm && tsc -b && tsc -p tsconfig.type-tests.json --pretty false && node --test test/entry-publication.test.mjs",
     "check:types": "tsc -p tsconfig.type-tests.json --pretty false",
-    "build:wasm": "bun ../../../scripts/build-wasm.mjs manifest",
     "test:manifest": "bun run build:wasm && node --test test/manifest-wasm.test.mjs",
     "generate": "bun ../../../scripts/generate.mjs workers",
     "prepack": "bun run generate"

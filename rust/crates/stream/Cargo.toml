@@ -140,7 +140,7 @@ tracing-subscriber.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
-wasm-bindgen-test = "=0.3.67"
+wasm-bindgen-test = "=0.3.71"
 getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
 web-sys = { workspace = true, features = ["Performance"] }
 
