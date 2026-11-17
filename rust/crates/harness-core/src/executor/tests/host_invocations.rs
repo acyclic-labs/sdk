@@ -283,11 +283,15 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
                     .await
                     .is_err()
             );
+            // The executor judges the canonical capability, not the alias's
+            // public declaration, so the request identity must use the same
+            // adapted invocation and capability definition.
+            let canonical = binding.executor.canonical(&call, None)?;
             let ((approval, _), _hold) = tool_approval_request(
                 TaskId::from_bytes(parent.into_bytes()),
                 &policy.identity(),
-                &binding.definition,
-                &call,
+                &capability.definition,
+                canonical.as_deref().unwrap_or(&call),
                 ("approve this write".into(), None),
                 None,
                 (crate::interaction::ApprovalRoute::Policy, None),
