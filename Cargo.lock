@@ -1265,6 +1265,7 @@ dependencies = [
  "acyclic-fs-work",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-harness-oidc",
  "acyclic-harness-hosting",
  "acyclic-native-runtime",
  "acyclic-objects",

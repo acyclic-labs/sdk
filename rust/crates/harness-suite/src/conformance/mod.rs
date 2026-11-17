@@ -180,7 +180,7 @@ async fn verify_vectors(backend: &dyn Backend) -> Result {
 /// by the trusted test configuration, independently of verification output.
 pub async fn verify_oidc(
     backend: &dyn Backend,
-    verifier: &crate::oidc::Verifier,
+    verifier: &acyclic_harness_oidc::Verifier,
     token: &str,
     expected_subject: &str,
     now_unix_seconds: u64,
