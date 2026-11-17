@@ -1,6 +1,6 @@
 // Shared agent control model, `include!`d by `agent_control.rs` (production
 // kernel, must verify) and `agent_control_negative.rs` (mutated kernels, must
-// fail). The includer declares `mod production` for `src/agent/kernel.rs`.
+// fail). The includer declares `mod production` for the lower agent kernel.
 
 use production::{Admit, Admitted, CONTINUE_NOW, Cascade, Control, MAX_FANOUT, Mode, Pick, Wait};
 

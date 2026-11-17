@@ -1,7 +1,7 @@
-//! Dependency-free control kernel of one agent step.
+//! Dependency-free decisions for one event-driven agent step.
 //!
-//! Every control decision of [`super::step`] is made here, over a `Copy` summary
-//! of the agent, so the solver harness in `tests/formal/agent_control.rs` checks
+//! Every control decision of the agent step is made here, over a `Copy` summary
+//! of the agent, so the runtime's `tests/formal/agent_control.rs` solver checks
 //! the production code exhaustively: exactly one `ChildDone`, no turn after
 //! completion or archive, no lost wake-up (including a condition wait whose
 //! arrivals queue without a turn step, released by its condition or its

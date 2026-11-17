@@ -15,8 +15,8 @@ rust_library(
     name = "model_epoch_proofs",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/harness-core:src/conversation/epochs/kernel.rs",
-        "//rust/crates/harness-core:src/conversation/epochs/protocol.rs",
+        "//rust/crates/harness-control:src/epochs/kernel.rs",
+        "//rust/crates/harness-control:src/epochs/protocol.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",

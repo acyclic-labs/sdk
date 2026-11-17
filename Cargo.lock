@@ -690,6 +690,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-harness-control"
+version = "0.2.0"
+
+[[package]]
 name = "acyclic-harness-core"
 version = "0.2.0"
 dependencies = [
@@ -699,6 +703,7 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
+ "acyclic-harness-control",
  "acyclic-harness-json",
  "acyclic-harness-layout",
  "acyclic-harness-modules",

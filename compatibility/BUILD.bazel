@@ -130,6 +130,7 @@ rust_test(
         "//rust/crates/grpc-observability:tree",
         "//rust/crates/harness-client:tree",
         "//rust/crates/harness-conformance:tree",
+        "//rust/crates/harness-control:tree",
         "//rust/crates/harness-core:tree",
         "//rust/crates/harness-fuzz:tree",
         "//rust/crates/harness-hosting:tree",

@@ -122,6 +122,7 @@ filegroup(
         "//rust/crates/grpc-observability:Cargo.toml",
         "//rust/crates/harness-client:Cargo.toml",
         "//rust/crates/harness-conformance:Cargo.toml",
+        "//rust/crates/harness-control:Cargo.toml",
         "//rust/crates/harness-core:Cargo.toml",
         "//rust/crates/harness-fuzz:Cargo.toml",
         "//rust/crates/harness-hosting:Cargo.toml",
