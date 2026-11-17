@@ -19,11 +19,11 @@ export async function bundleHarnessActor(configFile, outputDirectory) {
   const { deployment, ...config } = JSON.parse(readFileSync(resolve(configFile), "utf8"));
   const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 
-  const closure = wasmAssetClosure(`bun scripts/build-harness-actor.mjs --config ${JSON.stringify(configFile)} --out ${JSON.stringify(outputDirectory)}`);
+  const closure = wasmAssetClosure(`bazel run //typescript/packages/harness-actor:bundle --config ${JSON.stringify(configFile)} --out ${JSON.stringify(outputDirectory)}`);
   const built = await Bun.build({ entrypoints: [join(packages, "harness-actor/dist/harness-actor.js")], target: "browser", format: "esm",
     plugins: [closure.plugin] });
   const output = built.success && built.outputs.find(artifact => artifact.kind === "entry-point");
-  if (!output) throw new AggregateError(built.logs, "STEP bundle failed; recovery: bun scripts/build-harness-actor.mjs");
+  if (!output) throw new AggregateError(built.logs, "STEP bundle failed; recovery: bazel run //typescript/packages/harness-actor:bundle");
   const bundle = closure.rewrite(await output.text());
   const { files, assets } = closure;
   // The owner's configuration precedes the bundle, so the entry digest commits to it and every asset.
@@ -49,7 +49,7 @@ export async function bundleHarnessActor(configFile, outputDirectory) {
     const guest = await loadHostedArtifact(join(staged, HARNESS_MODULE.file), [...assets.values()], files);
     if (typeof guest.manifest !== "function" || typeof guest.onRecord !== "function"
       || typeof guest.acceptsInterrupt !== "function" || "actor" in guest) {
-      throw new Error("STEP conformance failed: strict-wire guest exports required; recovery: bun scripts/build-harness-actor.mjs");
+      throw new Error("STEP conformance failed: strict-wire guest exports required; recovery: bazel run //typescript/packages/harness-actor:bundle");
     }
     // The loader installs admitted bindings once at readiness, never an actor identity.
     const env = Object.fromEntries(Object.values(HARNESS_BINDINGS).filter(name => name !== HARNESS_BINDINGS.authority)
@@ -58,7 +58,7 @@ export async function bundleHarnessActor(configFile, outputDirectory) {
     // An absent binding is the typed guest failure the host commits as
     // DependencyUnavailable, naming the binding (#4096).
     if (refused?.type !== "dependencyUnavailable" || refused.detail?.dependency !== HARNESS_BINDINGS.authority) {
-      throw new Error(`STEP conformance failed: ${refused?.stack ?? "manifest admitted an unbound environment"}; recovery: bun scripts/build-harness-actor.mjs`);
+      throw new Error(`STEP conformance failed: ${refused?.stack ?? "manifest admitted an unbound environment"}; recovery: bazel run //typescript/packages/harness-actor:bundle`);
     }
   } finally {
     rmSync(staged, { recursive: true, force: true });

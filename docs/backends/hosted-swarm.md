@@ -165,7 +165,7 @@ The guest Session controls run against the shipping WASM host:
 
 ```sh
 bun install --frozen-lockfile
-bun scripts/generate-proto.mjs
+bazel run //typescript/packages/harness-actor:proto
 bun scripts/build-wasm.mjs harness
 bun test typescript/packages/harness/test/host-liveness.test.ts typescript/packages/harness/test/host-session.test.ts
 ```
@@ -210,7 +210,7 @@ Actor application. Build it from an owner configuration with `options`,
 `ledger_limits`, `model` and `deployment`:
 
 ```sh
-bun scripts/build-harness-actor.mjs --config owner.json --out artifact
+bazel run //typescript/packages/harness-actor:bundle -- --config owner.json --out artifact
 ```
 
 `artifact/` then holds `harness-actor.mjs`, which exports `actor`, every
