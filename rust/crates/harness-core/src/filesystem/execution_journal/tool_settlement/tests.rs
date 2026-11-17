@@ -1,17 +1,111 @@
 use super::*;
-use crate::executor::{ToolErrorClass, ToolFailureCause, ToolFailureKind};
+use crate::executor::{ToolErrorClass, ToolFailureCause, ToolFailureKind, tool_settlement_key};
 use acyclic_stream::StreamProviderExt as _;
 
-fn refusal(step: u32) -> ExecutionEvent {
+fn refusal(step: u32, call_id: &str) -> ExecutionEvent {
     ExecutionEvent::ToolFailed {
         step,
-        call_id: "call".into(),
+        call_id: call_id.into(),
         reason: ToolFailureKind::Unavailable,
         cause: ToolFailureCause {
             class: ToolErrorClass::Invalid,
             message: "unavailable".into(),
         },
     }
+}
+
+fn legacy_tool_settlement_key(
+    step: u32,
+    call_id: &str,
+    outcome: ToolTerminalOutcome,
+) -> Result<String> {
+    let kind = match outcome {
+        ToolTerminalOutcome::Completed => "completed",
+        ToolTerminalOutcome::Failed => "failed",
+    };
+    crate::executor::with_history_io(None, |work| {
+        crate::executor::preparation_format(format_args!("tool:{step}:{call_id}:{kind}"), work)
+    })
+}
+
+#[tokio::test]
+async fn terminal_lookup_reads_settlements_written_before_the_shared_identity() -> Result<()> {
+    let (journal, _issuer) = test_support::journal().await?;
+    let turn = OperationId::new();
+    journal
+        .append(
+            turn,
+            "start",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    let key = legacy_tool_settlement_key(0, "call", ToolTerminalOutcome::Failed)?;
+    journal
+        .append(turn, &key, &refusal(0, "call"), None)?
+        .await?;
+    let query = ToolSettlementQuery {
+        turn,
+        step: 0,
+        call_id: "call",
+        effect: crate::tool::ToolInvocation::model_call_operation(turn, 0, "call", None)?,
+    };
+    assert_eq!(
+        journal.tool_settlement(query, None)?.await?,
+        Some(ToolSettlement {
+            cut: 2,
+            sequence: 2,
+            outcome: ToolTerminalOutcome::Failed,
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_colon_in_a_call_id_cannot_collide_with_a_legacy_settlement() -> Result<()> {
+    let (journal, _issuer) = test_support::journal().await?;
+    let turn = OperationId::new();
+    journal
+        .append(
+            turn,
+            "start",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    // Before the shared identity, `call` failed under the outcome-suffixed key.
+    let legacy = legacy_tool_settlement_key(0, "call", ToolTerminalOutcome::Failed)?;
+    journal
+        .append(turn, &legacy, &refusal(0, "call"), None)?
+        .await?;
+    // A pending call whose ID is that key's suffix must not reuse the key.
+    let pending = "call:failed";
+    let key = tool_settlement_key(0, pending, None)?;
+    assert_ne!(key, legacy);
+    journal
+        .append(turn, &key, &refusal(0, pending), None)?
+        .await?;
+    for (call_id, sequence) in [("call", 2), (pending, 3)] {
+        let query = ToolSettlementQuery {
+            turn,
+            step: 0,
+            call_id,
+            effect: crate::tool::ToolInvocation::model_call_operation(turn, 0, call_id, None)?,
+        };
+        assert_eq!(
+            journal.tool_settlement(query, None)?.await?,
+            Some(ToolSettlement {
+                cut: 3,
+                sequence,
+                outcome: ToolTerminalOutcome::Failed,
+            })
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -46,8 +140,8 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
             effect: crate::tool::ToolInvocation::model_call_operation(turn, 0, "call", None)?,
         };
         // Dropping the producer never creates a settlement or a pending wait.
-        let event = refusal(0);
-        let key = tool_settlement_key(0, "call", ToolTerminalOutcome::Failed, None)?;
+        let event = refusal(0, "call");
+        let key = tool_settlement_key(0, "call", None)?;
         drop(journal.append(turn, &key, &event, None)?);
         assert_eq!(journal.tool_settlement(query, Some(&io))?.await?, None);
         let before = io.receipt();
@@ -65,8 +159,10 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
             before.authority_records_read
         );
         for step in 0..64 {
-            let key = tool_settlement_key(step, "call", ToolTerminalOutcome::Failed, None)?;
-            journal.append(turn, &key, &refusal(step), None)?.await?;
+            let key = tool_settlement_key(step, "call", None)?;
+            journal
+                .append(turn, &key, &refusal(step, "call"), None)?
+                .await?;
             if ![0, 63].contains(&step) {
                 continue;
             }
@@ -127,7 +223,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
                 None,
             )?
             .await?;
-        let key = tool_settlement_key(64, "call", ToolTerminalOutcome::Completed, None)?;
+        let key = tool_settlement_key(64, "call", None)?;
         journal
             .append(
                 turn,
@@ -147,10 +243,9 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
             effect: crate::tool::ToolInvocation::model_call_operation(turn, 64, "call", None)?,
             ..query
         };
-        let failed_key = tool_settlement_key(64, "call", ToolTerminalOutcome::Failed, None)?;
         assert!(
             journal
-                .append(turn, &failed_key, &refusal(64), None)?
+                .append(turn, &key, &refusal(64, "call"), None)?
                 .await
                 .is_err(),
             "a second settlement entered the authenticated prefix"
@@ -220,7 +315,7 @@ async fn raw_terminal_observation_cannot_authorize_request_retirement() -> Resul
             None,
         )?
         .await?;
-    let key = tool_settlement_key(0, "call", ToolTerminalOutcome::Failed, None)?;
+    let key = tool_settlement_key(0, "call", None)?;
     let retry = content::operation_digest(turn, &key, None)?
         .to_hex()
         .to_string();
@@ -229,7 +324,7 @@ async fn raw_terminal_observation_cannot_authorize_request_retirement() -> Resul
         operation_id: turn,
         turn_operation: turn,
         retry_digest: retry,
-        event: refusal(0),
+        event: refusal(0, "call"),
     })
     .map_err(|error| Error::Invalid(error.to_string()))?;
     journal

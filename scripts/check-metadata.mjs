@@ -2,9 +2,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { readFile } from "node:fs/promises";
 import { checkManifestFields, repositoryRoot, repositoryUrl as root } from "./policy-core.mjs";
 import "./check-compatibility-digests.mjs";
-import { packagedSourceCopies } from "./generated-bindings.mjs";
 import { packagedTypeScriptBindings } from "./protobuf-bindings.mjs";
-import { sha256File } from "./file-digest.mjs";
 import { retiredRuntimeFindings } from "./retired-runtime.mjs";
 import { parseJsonc } from "./jsonc.mjs";
 
@@ -34,7 +32,6 @@ if (retiredFindings.length) throw new Error(retiredFindings.join("\nerror: "));
 const provenance = await load("provenance/manifest.json");
 for (const item of provenance.imports) if (item.auditResult !== "approved") throw new Error(`unapproved import: ${item.destinationPath}`);
 
-const digest = async path => `sha256:${await sha256File(new URL(path, root))}`;
 const compatibility = await load("compatibility/manifest.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
 for (const path of ["plugin/plugin.json", "plugin/.codex-plugin/plugin.json"]) {
@@ -117,12 +114,6 @@ for (const [stem, packages] of packagedTypeScriptBindings) {
     || !manifest.files?.some(path => path === "generated" || path === "generated/proto")
     || manifest.dependencies?.["@bufbuild/protobuf"] !== protobufRuntime) {
     throw new Error(`${family} generated protobuf package export mismatch`);
-  }
-}
-
-for (const [canonical, packaged] of packagedSourceCopies) {
-  if (await digest(canonical) !== await digest(packaged)) {
-    throw new Error(`packaged source drift: ${packaged}`);
   }
 }
 

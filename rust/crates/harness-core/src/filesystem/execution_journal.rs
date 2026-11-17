@@ -125,6 +125,10 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
+    /// Signs this journal's execution checkpoints under its current custody.
+    execution_checkpoint_verifier: AuthorityVerifier,
+    /// The other custody identity the same journal may have signed under.
+    execution_checkpoint_alternate: Option<AuthorityVerifier>,
     scope: Scope,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     /// The one model context an agent turn may dispatch, built by its turn host
@@ -148,6 +152,13 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     history_read_limits: Option<crate::store::HistoryReadLimits>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
+}
+
+#[cfg(test)]
+impl<P: ?Sized, A: 'static, O: 'static> FilesystemExecutionJournal<P, A, O> {
+    pub(crate) fn execution_checkpoint_authority(&self) -> &AuthorityVerifier {
+        &self.execution_checkpoint_verifier
+    }
 }
 
 fn canonical_boundary(

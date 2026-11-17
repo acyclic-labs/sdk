@@ -4,7 +4,7 @@ import {copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {checkManifestFields, toml, trackedFiles} from '../policy-core.mjs';
+import {checkFileCopies, checkManifestFields, toml, trackedFiles} from '../policy-core.mjs';
 import {fuzz as licenseGraph} from '../check-js-licenses.fuzz.mjs';
 
 test('shared license graph conformance: aliases, cycles and canonical physical reads', () =>
@@ -46,7 +46,7 @@ test('policy entrypoints reject violations through symlinks and stay inert on im
   assert.equal(imported.status, 0, imported.stderr);
 });
 
-test('manifest policy checks the declared table and every dependency identity', t => {
+test('manifest policy checks declared identities and exact packaged source bytes', t => {
   const root = mkdtempSync(join(tmpdir(), 'policy-manifests-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   writeFileSync(join(root, 'Cargo.toml'), '[package]\nversion = "1.0.0"\n[package.metadata]\nreleased = 2026-11-17\n[workspace.package]\nversion = "2.0.0"\n');
@@ -58,4 +58,8 @@ test('manifest policy checks the declared table and every dependency identity', 
     assert.throws(() => checkManifestFields(root, [[file, keys, '2.0.0']]), /must be/);
     assert.throws(() => checkManifestFields(root, [[file, [...keys, 'missing'], '1.0.0']]), /found undefined/);
   }
+  for (const file of ['canonical.bin', 'packaged.bin']) writeFileSync(join(root, file), Uint8Array.of(0, 0x80));
+  checkFileCopies(root, [['canonical.bin', 'packaged.bin']]);
+  writeFileSync(join(root, 'packaged.bin'), Uint8Array.of(0, 0x81));
+  assert.throws(() => checkFileCopies(root, [['canonical.bin', 'packaged.bin']]), /packaged source drift/);
 });

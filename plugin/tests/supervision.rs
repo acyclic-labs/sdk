@@ -452,10 +452,12 @@ async fn run_goal(fixture: &Fixture, model: &Model, policy: &Policy) -> Output {
     std::fs::write(&goal, "Finish this task\n").unwrap();
     std::fs::write(&configuration, serde_json::to_vec(policy).unwrap()).unwrap();
     let plugins = task_plugins(fixture);
+    // This finite task script exercises supervision, not context-review turns.
     graphcoder(
         fixture,
         &model.catalog,
         vec![
+            "--no-compaction",
             "--home-file",
             plugins.as_str(),
             "run",
@@ -975,6 +977,7 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
     command
         .env(&root_environment, ROOT_KEY)
         .env("ALTERNATE_API_KEY", WORKER_KEY)
+        .arg("--no-compaction")
         .arg("--settings-root")
         .arg(&fixture.settings)
         .arg("--catalog")

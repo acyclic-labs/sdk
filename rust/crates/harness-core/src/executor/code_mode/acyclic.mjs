@@ -103,17 +103,17 @@ export function list(path, after) {
     if (path.endsWith('.jsonl')) throw new DeniedError('Log iteration requires its admitted log reader');
     let cursor = after ?? '';
     const iterator = (async function* () {
-        let more = true;
-        while (more) {
-            const page = await bind('read', {path, selection: {kind: 'directory', after: cursor || null, limit: 16}});
-            if (page.hasMore && page.entries.length === 0) throw new Error('Directory read did not advance');
-            more = page.hasMore;
+        let next = after ?? null;
+        do {
+            const page = await bind('read', {path, selection: {kind: 'directory', after: next, limit: 16}});
+            if (page.next != null && page.next === next) throw new Error('Directory read did not advance');
+            next = page.next;
             for (const entry of page.entries) {
                 if (entry.version === cursor) throw new Error('Directory cursor did not advance');
                 cursor = entry.version;
                 yield Object.freeze(entry);
             }
-        }
+        } while (next != null);
     })();
     return Object.freeze({get cursor() { return cursor; }, [Symbol.asyncIterator]() { return iterator; }});
 }

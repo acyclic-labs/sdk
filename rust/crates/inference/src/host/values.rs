@@ -3,21 +3,6 @@ fn authorization(api_key: &str) -> Result<MetadataValue<Ascii>, Error> {
         .map_err(|_| Error::Invalid("invalid API key"))
 }
 
-fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), Error> {
-    if *value == [0; N] {
-        return Err(Error::Invalid("zero identity"));
-    }
-    Ok(())
-}
-
-fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
-    let bytes = value
-        .try_into()
-        .map_err(|_| Error::Invalid("identity length differs"))?;
-    nonzero(&bytes)?;
-    Ok(bytes)
-}
-
 fn bounded<M: prost::Message>(message: &M) -> Result<(), Error> {
     if message.encoded_len() > MAXIMUM_MESSAGE_BYTES {
         return Err(Error::Invalid("message exceeds transport ceiling"));
@@ -71,50 +56,9 @@ impl RunEvents {
             self.state.finish().map_err(Error::Invalid)?;
             return Ok(None);
         };
-        contract::watch_run_event(&mut self.state, &event).map_err(contract_error)?;
+        contract::watch_run_event(&mut self.state, &event)?;
         Ok(Some(event))
     }
-}
-
-fn contract_error(error: contract::Error) -> Error {
-    Error::Invalid(error.message())
-}
-
-fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<(), Error> {
-    contract::validate_evaluation_spec(spec).map_err(contract_error)
-}
-
-fn validate_evaluation_admission(
-    view: &wire::EvaluationView,
-    expected: [u8; 16],
-    spec: &wire::EvaluationSpec,
-) -> Result<(), Error> {
-    contract::validate_evaluation_admission(view, expected, spec).map_err(contract_error)
-}
-
-fn validate_evaluation_view(view: &wire::EvaluationView, expected: [u8; 16]) -> Result<(), Error> {
-    contract::validate_evaluation_view(view, expected).map_err(contract_error)
-}
-
-fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Result<(), Error> {
-    contract::validate_run_view(view, expected).map_err(contract_error)
-}
-
-fn validate_context_view(view: &wire::ContextView, expected: [u8; 32]) -> Result<(), Error> {
-    contract::validate_context_view(view, expected).map_err(contract_error)
-}
-
-fn validate_warm_view(
-    view: &wire::WarmView,
-    expected_context: Option<[u8; 32]>,
-    expected_commitment: Option<[u8; 32]>,
-) -> Result<(), Error> {
-    contract::validate_warm_view(view, expected_context, expected_commitment)
-        .map_err(contract_error)
-}
-
-fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), Error> {
-    contract::validate_receipt(receipt).map_err(contract_error)
 }
 
 /// Allocates a fresh item identity before its exact text bytes are dispatched.

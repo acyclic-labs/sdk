@@ -869,6 +869,7 @@ dependencies = [
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-harness-hosting",
+ "acyclic-harness-layout",
  "acyclic-harness-search",
  "acyclic-host-platform",
  "acyclic-machines",
@@ -1045,6 +1046,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness-core",
+ "acyclic-harness-layout",
  "acyclic-stream",
  "async-trait",
  "bytes",

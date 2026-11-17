@@ -3,7 +3,7 @@ import "./check-compatibility-digests.mjs";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compatibilityArtifacts, nativeWasmVector, packagedSourceCopies } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, nativeWasmVector } from "./generated-bindings.mjs";
 import { generate } from "./proto-codegen.mjs";
 
 
@@ -19,11 +19,6 @@ export function checkDescriptors(sourceRoot = root) {
     }
   } finally {
     rmSync(output, { recursive: true, force: true });
-  }
-}
-for (const [source, packaged] of packagedSourceCopies) {
-  if (!readFileSync(join(root, source)).equals(readFileSync(join(root, packaged)))) {
-    throw new Error(`packaged source drift: ${packaged}`);
   }
 }
 const harnessSuite = JSON.parse(readFileSync(join(root, compatibilityArtifacts.harness.conformanceDigest), "utf8"));

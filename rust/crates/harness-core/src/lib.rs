@@ -21,9 +21,6 @@
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 
-// The `HeapLayout` derive names this crate by its package path.
-extern crate self as acyclic_harness_core;
-
 /// Heap layouts that bound every typed JSON decode before it allocates.
 #[doc(hidden)]
 pub mod heap_layout {

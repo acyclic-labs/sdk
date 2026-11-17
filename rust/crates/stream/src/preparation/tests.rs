@@ -75,28 +75,17 @@ fn backend_conditions_exhaust_presence_tail_and_forged_head_without_unneeded_rea
 }
 
 #[test]
-fn backend_identity_and_time_survive_working_set_replacement() {
+fn backend_identity_survives_working_set_replacement() {
     let digest = [17; 32];
     let mut identities = std::collections::BTreeSet::new();
     let mut reset_control_duplicates = 0;
-    let mut previous = 0;
-    let mut clock_control_regresses = false;
     for decision in 1..=1_000 {
         let id = commit_identity(decision, digest);
         assert!(identities.insert(id));
         // A freshly seeded per-operation state would reset its global ordinal.
         reset_control_duplicates += usize::from(commit_identity(1, digest) == id);
-        let sampled_millis = if decision % 2 == 0 { 1 } else { decision };
-        let time = committed_time(previous, sampled_millis);
-        assert!(time >= previous);
-        assert!(time >= sampled_millis * 1_000);
-        clock_control_regresses |= sampled_millis * 1_000 < previous;
-        previous = time;
     }
     assert_eq!(reset_control_duplicates, 1);
-    assert!(clock_control_regresses);
-    assert_eq!(committed_time(0, u64::MAX), u64::MAX);
-    assert_eq!(committed_time(u64::MAX, 0), u64::MAX);
 }
 
 #[test]

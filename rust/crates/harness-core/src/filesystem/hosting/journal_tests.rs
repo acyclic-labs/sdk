@@ -1846,7 +1846,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"raw");
     journal.verify_input_file(&staged, None)?.await?;
     let content = journal
-        .output_content(operation)?
+        .output_content(operation, None)?
         .ok_or("journal content absent")?;
     let (publication, _) = content
         .writer

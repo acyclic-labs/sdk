@@ -550,7 +550,7 @@ mod tests {
                                 delta: "observed output".into(),
                             }),
                             ScriptedEvent::Event(crate::model::ModelEvent::Completed {
-                                metadata: serde_json::json!({"usage":{"input_tokens":1,"output_tokens":1}}),
+                                metadata: serde_json::json!({"usage":{"prompt_tokens":1,"completion_tokens":1}}),
                             }),
                         ],
                     )]));
@@ -892,7 +892,7 @@ mod tests {
             ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(crate::model::ModelEvent::Content { delta: text.into() }),
                 ScriptedEvent::Event(crate::model::ModelEvent::Completed {
-                    metadata: serde_json::json!({"usage":{"input_tokens":1,"output_tokens":1}}),
+                    metadata: serde_json::json!({"usage":{"prompt_tokens":1,"completion_tokens":1}}),
                 }),
             ])
         }

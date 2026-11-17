@@ -371,7 +371,7 @@ impl LocalHarness {
                 if !super::open::uses_native_execution(&self.tools)? {
                     None
                 } else if self.checkout_context {
-                    let (selected, _) = workspace.selected_view().await?;
+                    let (selected, _) = Box::pin(workspace.selected_view()).await?;
                     // A selected branch can use a separate physical mount. Reuse
                     // that admitted handle; never report the base mount for it.
                     let selected_mount = if let Some(view) = &selected
