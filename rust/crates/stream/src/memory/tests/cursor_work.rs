@@ -238,11 +238,7 @@ fn pinned_cursor_open_is_constant_space_and_eager_control_grows() {
         };
         assert_eq!(old_records, new_records);
         assert_eq!(*new_count, 0, "opening walked the pinned backlog");
-        assert_eq!(new_heap.count_total, 1, "opening allocated its shared cut");
-        assert!(
-            new_heap.bytes_total <= 64,
-            "opening's shared cut stays bounded"
-        );
+        assert_eq!(new_heap.count_total, 0, "opening must not allocate");
         assert!(*old_count >= batches, "eager control hid its history walk");
         assert!(old_heap.count_total > 0 && old_heap.bytes_total > new_heap.bytes_total);
         let [eager_first, lazy_first] = first_output.as_slice() else {
@@ -321,11 +317,7 @@ fn appended_follow_updates_its_pin_without_history_work_or_allocations() {
         (2, 1, (4 * std::mem::size_of::<HistoryWindow>()) as u64)
     );
     assert_eq!(after.0, 0);
-    assert_eq!(after.1, 1, "append refresh allocated its shared cut");
-    assert!(
-        after.2 > 0 && after.2 <= 64,
-        "append refresh's shared cut stays bounded"
-    );
+    assert_eq!(after.1, 0, "append refresh must not allocate");
     assert_ne!(
         before, after,
         "old scratch allocation escaped exact work assertions"
@@ -358,7 +350,7 @@ fn singleton_reads_retain_the_window_inline_without_allocating() {
             if old {
                 old_cursor = BaselineCursor::new(stream, stream.tail, 0);
             } else {
-                cursor = HistoryCursor::new(stream, stream.tail, 0, None).expect("read-only cut");
+                cursor = HistoryCursor::new(stream, stream.tail, 0);
             }
         });
         measurements.push((allocation.count_total, allocation.bytes_total));
@@ -406,7 +398,7 @@ proptest! {
             let mut baseline_cursor = BaselineCursor::at(start);
             baseline(&mut baseline_cursor, snapshot.history.as_ref(), snapshot.tail);
             let expected: Vec<_> = std::iter::from_fn(|| baseline_cursor.next_record()).map(record_bytes).collect();
-            let mut pinned = PinnedHistory::new(&snapshot, snapshot.tail, &mut ReadOnlyWork).expect("read-only cut");
+            let mut pinned = PinnedHistory::new(&snapshot, snapshot.tail);
             let mut after = start;
             let mut actual = Vec::new();
             while let Some(window) = crate::pages::PageSource::next_page(&mut pinned, after, budget).await.unwrap() {

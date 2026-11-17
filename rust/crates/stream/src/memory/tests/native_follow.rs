@@ -84,9 +84,7 @@ async fn refused_record_accounting_preserves_the_cursor_position()
             limit: 1,
             at_least: Default::default(),
         },
-        &mut ReadOnlyWork,
-    )
-    .expect("read-only cut");
+    );
     assert!(
         cursor
             .peek(|_| Ok::<_, StreamError>(()), || StreamError::Unavailable)?
