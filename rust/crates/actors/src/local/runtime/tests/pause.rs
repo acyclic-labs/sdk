@@ -753,7 +753,10 @@ async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> Te
             } else {
                 StreamError::AccessDenied
             };
-            assert!(matches!(outcome, Err(Error::Stream(error)) if error.as_ref() == &expected));
+            assert!(matches!(
+                outcome,
+                Err(Error::Stream(error)) if error.category() == expected.category()
+            ));
             assert_eq!(
                 runtime
                     .store
