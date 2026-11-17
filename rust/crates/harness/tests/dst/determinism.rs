@@ -142,15 +142,19 @@ async fn trace(
             incarnation.prompts
         ));
     }
-    let settled = incarnation
-        .requests
-        .iter()
-        .rev()
-        .find_map(|request| settlements(request).ok().filter(|calls| !calls.is_empty()))
-        .ok_or_else(|| format!("X1 {class} seed {world_seed} made no settled model request"))?;
-    if settled.len() != 2 || !settled.iter().all(|call| call.succeeded()) {
+    let settled = incarnation.requests.iter().find_map(|request| {
+        settlements(request)
+            .ok()
+            .filter(|calls| calls.len() == 2 && calls.iter().all(|call| call.succeeded()))
+    });
+    if settled.is_none() {
+        let observed = incarnation
+            .requests
+            .iter()
+            .map(|request| settlements(request).map(|calls| calls.len()))
+            .collect::<Vec<_>>();
         return Err(format!(
-            "X1 {class} seed {world_seed} did not settle both tool calls: {settled:?}"
+            "X1 {class} seed {world_seed} did not settle both tool calls: {observed:?}"
         ));
     }
     // Every replayed input stays in the digest. The explicit record tree only
