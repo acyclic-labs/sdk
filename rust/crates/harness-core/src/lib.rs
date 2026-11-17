@@ -63,7 +63,6 @@ pub mod input_watch;
 pub mod interaction;
 #[cfg(not(target_arch = "wasm32"))]
 mod javascript_allocator;
-mod json_literal;
 pub mod layers;
 pub mod live;
 pub mod machines;
@@ -188,6 +187,7 @@ pub use crate::executor::json::{
     json_value_bounded, json_value_decode_owned_bytes, preparation_serde_diagnostic_label_bytes,
     sdk_json_diagnostic_bytes,
 };
+pub use acyclic_harness_json::deserialize_literal as deserialize_json_value;
 pub use contract::{
     Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, COMPONENT_LABEL_FORBIDDEN_EXACT,
     COMPONENT_LABEL_FORBIDDEN_SEPARATORS, COMPONENT_LABEL_MAX_BYTES, Capabilities, CommandFailure,
@@ -200,7 +200,6 @@ pub use contract::{
 pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionRegistry, ExtensionRuntime, NativeExtension,
 };
-pub use json_literal::deserialize as deserialize_json_value;
 mod process_error;
 pub use process_error::ProcessError;
 

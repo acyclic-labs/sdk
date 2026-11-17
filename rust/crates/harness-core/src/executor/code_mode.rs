@@ -131,7 +131,7 @@ impl ProgramLogs {
             let (value, hold) = io.decode_seed(
                 std::marker::PhantomData::<T>,
                 source.as_bytes(),
-                crate::executor::json::JsonValueSchema::None,
+                crate::executor::json::JsonValueSchema::NONE,
                 0,
                 crate::wire::ErrorCode::Invalid,
             )?;

@@ -121,7 +121,7 @@ fn check_first_cause(source: &[u8], bounds: JsonBounds) {
         source,
         bounds,
         None,
-        Some(JsonValueSchema::Root),
+        Some(JsonValueSchema::ROOT),
         &mut |event| {
             account_scratch(&mut scratch, event);
             match event {

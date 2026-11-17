@@ -47,6 +47,7 @@ browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-stream/wasm", "dep:tsify"]
 
 [dependencies]
+acyclic-harness-json = { version = "=0.2.0", path = "../harness-json" }
 acyclic-harness-layout = { version = "=0.2.0", path = "../harness-layout" }
 memchr = "=2.8.3"
 pulldown-cmark.workspace = true

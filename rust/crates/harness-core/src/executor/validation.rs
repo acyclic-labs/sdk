@@ -123,7 +123,7 @@ fn admit_schema_value(value: &serde_json::Value, scope: &mut CodecQuota<'_, '_>)
             maximum_items: None,
             maximum_depth: 256,
         },
-        JsonValueSchema::None,
+        JsonValueSchema::NONE,
         <serde_json::Value as crate::HeapLayout>::LAYOUT,
         None,
         &mut |charge| scope.observer()?.codec_charge(charge),

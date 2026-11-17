@@ -51,7 +51,7 @@ fn check_arguments(input: &[u8]) -> Option<serde_json::Value> {
             maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
         },
         Some(ErrorCode::Invalid),
-        Some(&JsonValueSchema::Root),
+        Some(&JsonValueSchema::ROOT),
         &mut |_| Ok(()),
     );
     let work = native_work(false);

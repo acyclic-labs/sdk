@@ -122,7 +122,7 @@ impl EngineAllocator {
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             Some(crate::wire::ErrorCode::Invalid),
-            Some(&crate::executor::json::JsonValueSchema::Root),
+            Some(&crate::executor::json::JsonValueSchema::ROOT),
             &mut |_| Ok(()),
         )
         .map(|value| EngineResult {

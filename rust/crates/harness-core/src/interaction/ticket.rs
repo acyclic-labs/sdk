@@ -56,7 +56,7 @@ impl InteractionTicket {
         self.request.descriptor().verify(bytes, work)?;
         let mut decoded = decode_interaction_json::<Interaction>(
             bytes,
-            crate::executor::json::JsonValueSchema::Interaction,
+            crate::executor::json::JsonValueSchema::INTERACTION,
             work,
         )?;
         let mut retained = 0;

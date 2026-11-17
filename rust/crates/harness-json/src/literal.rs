@@ -13,7 +13,7 @@ struct Literal(u32);
 impl<'de> DeserializeSeed<'de> for Literal {
     type Value = Value;
     fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Value, D::Error> {
-        if self.0 > crate::executor::json::RECORD_MAXIMUM_DEPTH {
+        if self.0 > crate::RECORD_MAXIMUM_DEPTH {
             return Err(de::Error::custom("opaque JSON exceeds record depth"));
         }
         decoder.deserialize_any(self)

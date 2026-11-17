@@ -1,4 +1,5 @@
 //! Bounded JSON at the executor's existing IO boundary.
+//! Record schemas and literal decoding describe the same admitted document.
 use crate::{Error, Result};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -56,15 +57,6 @@ pub use identity::{
     canonical_json_digest, json_byte_length, json_byte_length_at_depth, serialized_json_digest,
 };
 
-/// The existing producer depth contract, also used by saved-record readers
-/// and literal model payloads.
-pub const RECORD_MAXIMUM_DEPTH: u32 = 256;
-/// How much deeper a selected model context nests a recorded tool call's
-/// members than the saved record does. The record nests metadata one level
-/// down; the context, its messages, the message and its tool-call part nest it
-/// four. Admission subtracts this from [`RECORD_MAXIMUM_DEPTH`], so every
-/// admitted record also projects and replays within the decoder's depth.
-pub const PROJECTION_NESTING_DEPTH: u32 = 3;
 mod diagnostics;
 pub(crate) use diagnostics::audited_serde_diagnostic_bytes;
 pub(crate) use diagnostics::json_typed_diagnostic_source_owned_bytes;
@@ -77,9 +69,9 @@ pub(crate) use serialization::json_bytes_match;
 pub(crate) use serialization::json_bytes_match_bounded;
 mod copy;
 mod decode;
+pub(crate) use acyclic_harness_json::schema;
 pub(crate) use acyclic_harness_layout as layout;
 pub(crate) use layout::LayoutCost;
-mod schema;
 mod shape;
 pub use shape::encoded_json_shape;
 mod serialization;
@@ -98,23 +90,6 @@ pub use serialization::{
     canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded, json_value_copy_bounded,
 };
 
-/// Fixed JSON input failures, distinct from exhausted work allowances.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum JsonInputError {
-    /// A closing container has no matching opener.
-    #[error("invalid JSON nesting")]
-    Nesting,
-    /// The source ends inside a string or container.
-    #[error("incomplete JSON document")]
-    Incomplete,
-    /// A value exceeds the fixed nesting limit.
-    #[error("JSON nesting limit exceeded")]
-    Depth,
-    /// The document has a shape its typed decode rejects.
-    #[error("JSON shape is outside its typed layout")]
-    Shape,
-}
-
 fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(code) = code {
@@ -124,18 +99,9 @@ fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Er
     Error::Invalid(kind.to_string())
 }
 
-/// Optional byte and node policies with nesting admission for one document.
-#[derive(Clone, Copy, Debug)]
-pub struct JsonBounds {
-    /// Optional UTF-8 input/output byte policy; `None` adds no byte ceiling.
-    pub maximum_bytes: Option<u64>,
-    /// Optional values and keys ceiling, including replaced duplicate entries.
-    pub maximum_items: Option<u64>,
-    /// Zero-based nesting depth.
-    pub maximum_depth: u32,
-}
-
-pub use schema::JsonValueSchema;
+pub use acyclic_harness_json::{
+    JsonBounds, JsonInputError, JsonValueSchema, PROJECTION_NESTING_DEPTH, RECORD_MAXIMUM_DEPTH,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Origin {

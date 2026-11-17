@@ -3,7 +3,7 @@ use crate::{executor::stock_boundary, wire::ErrorCode};
 
 impl crate::filesystem::PreparationRecord for ContextManifest {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::ContextManifest
+        crate::executor::json::JsonValueSchema::CONTEXT_MANIFEST
     }
 }
 

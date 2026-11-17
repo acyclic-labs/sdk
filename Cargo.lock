@@ -692,6 +692,7 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
+ "acyclic-harness-json",
  "acyclic-harness-layout",
  "acyclic-harness-modules",
  "acyclic-host-platform",
@@ -833,6 +834,15 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "acyclic-harness-json"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

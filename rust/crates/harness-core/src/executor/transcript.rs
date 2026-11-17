@@ -328,12 +328,12 @@ impl PreparationRecord for RequestManifest {
 }
 impl PreparationRecord for RequestHeader {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::ModelRequest
+        crate::executor::json::JsonValueSchema::MODEL_REQUEST
     }
 }
 impl PreparationRecord for MessageSegment {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
-        crate::executor::json::JsonValueSchema::MessageSegment
+        crate::executor::json::JsonValueSchema::MESSAGE_SEGMENT
     }
 
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
