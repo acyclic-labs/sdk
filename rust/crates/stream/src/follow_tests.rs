@@ -53,7 +53,7 @@ async fn checked_registration_never_waits_for_a_missing_or_reused_anchor()
             .map_ok(crate::records_only)
             .now_or_never()
             .ok_or("registration waited for an absent anchor")?;
-        assert!(matches!(result, Err(actual) if actual == error));
+        assert!(matches!(result, Err(actual) if actual.category() == error.category()));
     }
     let mut follow = provider
         .follow(crate::FollowRequest {

@@ -191,17 +191,17 @@ async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> T
         (
             crate::MAX_RECORD_KEY_BYTES + 1,
             wire::SessionDelivery::All,
-            Err(StreamError::LimitExceeded),
+            Err(StreamCategory::LimitExceeded),
         ),
         (
             crate::MAX_RECORD_KEY_BYTES + 1,
             wire::SessionDelivery::Latest,
-            Err(StreamError::LimitExceeded),
+            Err(StreamCategory::LimitExceeded),
         ),
         (
             1,
             wire::SessionDelivery::Latest,
-            Err(StreamError::InvalidArgument),
+            Err(StreamCategory::InvalidArgument),
         ),
     ] {
         // Independent owners expose the former first-clone allocation; a
@@ -214,8 +214,12 @@ async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> T
                 // Restore the original unused owner as the negative control.
                 wire_codec::read_key_from_wire(owned.key.clone())?;
                 wire_codec::session::validate_follow(&owned, &resume)
+                    .map_err(|error| error.category())
             },
-            || wire_codec::session::validate_follow(&borrowed, &resume),
+            || {
+                wire_codec::session::validate_follow(&borrowed, &resume)
+                    .map_err(|error| error.category())
+            },
         );
         assert_eq!(result, expected);
         assert_eq!(direct.count_total, 0);

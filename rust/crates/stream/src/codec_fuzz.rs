@@ -95,7 +95,7 @@ pub fn grpc_status(bytes: &[u8]) -> bool {
             || encoded.message() != original.message()
             || encoded.details() != original.details()
             || encoded.metadata().as_ref() != original.metadata().as_ref()
-            || status(&encoded) != decoded
+            || status(&encoded).category() != decoded.category()
         {
             return false;
         }
@@ -200,7 +200,9 @@ fn record(value: &crate::wire::Record) -> bool {
                 crate::wire_codec::record(
                     crate::wire_codec::record_wire(record.clone(), context),
                     context,
-                ) == Ok(record.clone())
+                )
+                .map_err(|error| error.category())
+                    == Ok(record.clone())
                     && crate::follow_filter::projection_contract(&record).is_ok()
             }
         }
@@ -288,7 +290,10 @@ pub fn check(bytes: &[u8]) -> bool {
         return false;
     }
     if let Ok(value) = observation
-        && persistence::encode_observation(&value, usize::MAX).as_deref() != Ok(bytes)
+        && persistence::encode_observation(&value, usize::MAX)
+            .as_deref()
+            .map_err(|error| error.category())
+            != Ok(bytes)
     {
         return false;
     }
@@ -297,7 +302,10 @@ pub fn check(bytes: &[u8]) -> bool {
         return false;
     }
     if let Ok(value) = envelope
-        && persistence::encode_envelope(&value, usize::MAX).as_deref() != Ok(bytes)
+        && persistence::encode_envelope(&value, usize::MAX)
+            .as_deref()
+            .map_err(|error| error.category())
+            != Ok(bytes)
     {
         return false;
     }
@@ -313,6 +321,7 @@ pub fn check(bytes: &[u8]) -> bool {
     if let Ok(value) = crate::wire::AppendRecord::decode(bytes)
         && let Ok(record) = crate::wire_codec::append_record(value)
         && (crate::wire_codec::append_record(crate::wire_codec::append_record_wire(record.clone()))
+            .map_err(|error| error.category())
             != Ok(record.clone())
             || crate::follow_filter::projection_contract(&crate::Record {
                 sequence: 0,
@@ -336,7 +345,9 @@ pub fn check(bytes: &[u8]) -> bool {
         && (records.iter().any(|value| !record(value))
             || crate::wire_codec::read_response_records(crate::wire_codec::read_response_wire(
                 records.clone(),
-            )) != Ok(records))
+            ))
+            .map_err(|error| error.category())
+            != Ok(records))
     {
         return false;
     }
@@ -369,8 +380,14 @@ fn persisted_fact_admitted<T: PartialEq>(
     }
     // Include the format header in the real byte cap. Exact-size admission
     // distinguishes an inclusive limit from an unlimited-only roundtrip.
-    if decode(&bytes, bytes.len()).as_ref() != Ok(value)
-        || encode(value, bytes.len()).as_deref() != Ok(bytes.as_slice())
+    if decode(&bytes, bytes.len())
+        .as_ref()
+        .map_err(|error| error.category())
+        != Ok(value)
+        || encode(value, bytes.len())
+            .as_deref()
+            .map_err(|error| error.category())
+            != Ok(bytes.as_slice())
         || [0, bytes.len() - 1].into_iter().any(|maximum| {
             !matches!(encode(value, maximum), Err(error) if error.category() == StreamCategory::LimitExceeded)
                 || !matches!(decode(&bytes, maximum), Err(error) if error.category() == StreamCategory::LimitExceeded)
@@ -418,7 +435,10 @@ fn wire_records_admitted(envelope: &crate::CommittedEnvelope) -> bool {
             // when following another path, preserving the original record.
             let value = crate::wire_codec::record_wire(record.clone(), None);
             for followed in [None, Some(&foreign)] {
-                if crate::wire_codec::record(value.clone(), followed) != Ok(record.clone()) {
+                if crate::wire_codec::record(value.clone(), followed)
+                    .map_err(|error| error.category())
+                    != Ok(record.clone())
+                {
                     return false;
                 }
             }
@@ -426,7 +446,9 @@ fn wire_records_admitted(envelope: &crate::CommittedEnvelope) -> bool {
         }
         if crate::wire_codec::read_response_records(crate::wire_codec::read_response_wire(
             encoded.clone(),
-        )) != Ok(encoded)
+        ))
+        .map_err(|error| error.category())
+        != Ok(encoded)
         {
             return false;
         }

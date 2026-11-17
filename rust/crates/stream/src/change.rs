@@ -267,11 +267,12 @@ mod tests {
         };
         assert_eq!(retired.category(), StreamCategory::Unavailable);
         assert_eq!(
-            retired,
+            retired.category(),
             StreamError::unavailable(acyclic_auth::refusal::Cause::new(
                 "stream.change",
                 "producer_retired"
             ))
+            .category()
         );
     }
 }

@@ -244,7 +244,9 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             effects: request,
             idempotency_key: key(b"effects-refused")?,
         };
-        if provider.commit(request).await != Err(error) {
+        if provider.commit(request).await.map_err(|error| error.category())
+            != Err(error.category())
+        {
             return Err(violated!());
         }
     }

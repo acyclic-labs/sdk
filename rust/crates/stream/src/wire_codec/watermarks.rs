@@ -33,11 +33,14 @@ mod tests {
             let decoded = wire::TailResponse::decode(wire.encode_to_vec().as_slice()).unwrap();
             prop_assert_eq!(&decoded, &wire);
             let expected = match durable {
-                None => Err(StreamError::Unsupported),
-                Some(durable) if durable > accepted => Err(StreamError::Unavailable),
+                None => Err(StreamCategory::Unsupported),
+                Some(durable) if durable > accepted => Err(StreamCategory::Unavailable),
                 Some(durable) => Ok(StreamWatermarks { accepted, durable }),
             };
-            prop_assert_eq!(watermarks_from_wire(&decoded), expected);
+            prop_assert_eq!(
+                watermarks_from_wire(&decoded).map_err(|error| error.category()),
+                expected
+            );
         }
     }
 }

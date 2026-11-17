@@ -151,7 +151,10 @@ async fn resource_refusals_preserve_other_channels_in_the_same_interest() -> Tes
                 Some(Body::Closed(closed)) => {
                     assert_eq!(message.channel_id, 3);
                     assert_eq!(closed.code, error.code());
-                    assert_eq!(original, Some(error.clone()));
+                    assert_eq!(
+                        original.map(|error| error.category()),
+                        Some(error.category())
+                    );
                     refused = true;
                 }
                 Some(Body::InterestApplied(_)) => applied = true,

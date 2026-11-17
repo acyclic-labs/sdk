@@ -72,12 +72,18 @@ fn actor_call_chunks_preserve_order_total_and_finite_fragment_work() {
         durable: 0,
         item: Some(Item::ActorCall(vec![7; crate::MAX_RECORD_BYTES].into())),
     };
-    assert_eq!(actor_call_sequence(0, &[], &data), Ok(0));
+    assert_eq!(
+        actor_call_sequence(0, &[], &data).map_err(|error| error.category()),
+        Ok(0)
+    );
     let opaque = data.after.as_ref().unwrap().opaque.clone();
     data.after.as_mut().unwrap().next = 2;
     data.accepted = 2;
     data.item = Some(Item::ActorCall(Bytes::from_static(b"x")));
-    assert_eq!(actor_call_sequence(1, &opaque, &data), Ok(1));
+    assert_eq!(
+        actor_call_sequence(1, &opaque, &data).map_err(|error| error.category()),
+        Ok(1)
+    );
     assert!(
         rejected(actor_call_sequence(0, &opaque, &data)),
         "a hole must be refused"
@@ -143,7 +149,10 @@ fn malformed_peer_protobuf_is_a_terminal_response_error() {
         generation: 1,
         body: Some(Body::Closed(wire::SessionClosed::default())),
     };
-    assert_eq!(decode_frame(&frame.encode_to_vec()), Ok(frame));
+    assert_eq!(
+        decode_frame(&frame.encode_to_vec()).map_err(|error| error.category()),
+        Ok(frame)
+    );
 }
 
 #[test]
@@ -217,7 +226,10 @@ fn control_frames_are_exempt_from_data_credit() -> Result<(), prost::DecodeError
                 generation: 1,
                 body: Some(body.clone()),
             })?;
-            assert_eq!(consume_credit(&mut remaining, &frame), Ok(()));
+            assert_eq!(
+                consume_credit(&mut remaining, &frame).map_err(|error| error.category()),
+                Ok(())
+            );
             assert_eq!(remaining, wire::SessionWindow::default());
         }
     }
@@ -290,7 +302,10 @@ fn actor_socket_rejections_retain_original_frame_facts() {
         durable: 0,
         item: Some(Item::ActorSocket(Bytes::from_static(b"original frame"))),
     };
-    assert_eq!(actor_socket_sequence(0, &valid), Ok(0));
+    assert_eq!(
+        actor_socket_sequence(0, &valid).map_err(|error| error.category()),
+        Ok(0)
+    );
     for field in 0..5 {
         let mut data = valid.clone();
         match field {

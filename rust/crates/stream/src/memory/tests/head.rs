@@ -447,8 +447,9 @@ fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::E
                             excluded.as_str(),
                             "/a".repeat(4096)
                         ))?)
-                        .await,
-                    Err(StreamError::NotFound)
+                        .await
+                        .map_err(|error| error.category()),
+                    Err(StreamCategory::NotFound)
                 );
                 let (latest, previous) = {
                     let state = provider.state.read().await;

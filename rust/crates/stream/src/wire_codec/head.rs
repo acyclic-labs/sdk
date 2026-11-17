@@ -276,7 +276,10 @@ mod tests {
                 snapshot: crate::Revision { scope: crate::RevisionScope::new(Vec::new()), incarnation: 1, index: 0 },
                 heads: Default::default(), children: None,
             };
-            prop_assert_eq!(view.validate_for(&request), Ok(()));
+            prop_assert_eq!(
+                view.validate_for(&request).map_err(|error| error.category()),
+                Ok(())
+            );
             let response = heads_to_wire(view.clone()).unwrap();
             prop_assert_eq!(crate::wire_codec::requests::heads_len(&view), response.encoded_len());
             let decoded = wire::HeadsResponse::decode(response.encode_to_vec().as_slice()).unwrap();

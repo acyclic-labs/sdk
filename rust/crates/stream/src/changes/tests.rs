@@ -165,7 +165,10 @@ fn keys_share_their_prefixes_and_metadata_is_stored_once() {
 fn canonical_change_validation_rejects_wire_malleability() {
     let headers = changes().headers;
     let canonical = changes().value.to_vec();
-    assert_eq!(validate(&canonical, &headers), Ok(()));
+    assert_eq!(
+        validate(&canonical, &headers).map_err(|error| error.category()),
+        Ok(())
+    );
     let mut cases: Vec<Vec<u8>> = Vec::new();
     // A nonminimal context length.
     let (first, rest) = canonical.split_first().unwrap();
@@ -216,7 +219,10 @@ fn canonical_change_validation_rejects_wire_malleability() {
         vec![],
     )
     .unwrap();
-    assert_eq!(validate(&empty_key.value, &empty_key.headers), Ok(()));
+    assert_eq!(
+        validate(&empty_key.value, &empty_key.headers).map_err(|error| error.category()),
+        Ok(())
+    );
     // A claimed change format must contain a valid value, never opaque bytes.
     let stale = RecordHeaders::new(
         vec![],

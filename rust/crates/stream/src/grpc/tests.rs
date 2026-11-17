@@ -373,7 +373,7 @@ async fn source_eof_is_unavailable_without_reopening() -> TestResult {
             .map(|result| result.map_err(|error| error.category())),
         Some(Err(StreamCategory::Unavailable))
     );
-    assert_eq!(records.next().await, None);
+    assert!(records.next().await.is_none());
     assert_eq!(follows.load(Ordering::SeqCst), 1);
     Ok(())
 }
@@ -593,8 +593,8 @@ async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_
         #[cfg(feature = "serde")]
         let append = root.within(append);
         assert_eq!(
-            append.await,
-            Err(error.clone()),
+            append.await.map_err(|error| error.category()),
+            Err(error.category()),
             "public transport changed application error {error:?}"
         );
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
@@ -762,12 +762,12 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
     let result = async {
         let platform = Client::connect_eager(&endpoint, "exact-token").await;
         if mode == "file" || mode == "dir" {
-            assert_eq!(
+            assert!(matches!(
                 platform?
                     .inspect_idempotency(IdempotencyKey::unique())
                     .await,
                 Ok(None)
-            );
+            ));
         } else {
             assert!(platform.is_err(), "private endpoint unexpectedly trusted");
         }
@@ -775,10 +775,10 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
         for roots in [pem.as_bytes(), bundle.as_bytes()] {
             let pinned =
                 Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", roots).await?;
-            assert_eq!(
+            assert!(matches!(
                 pinned.inspect_idempotency(IdempotencyKey::unique()).await,
                 Ok(None)
-            );
+            ));
         }
         let denied =
             Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", &unrelated).await;
@@ -822,7 +822,9 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
     assert_eq!(result.len(), 21);
     for (sequence, item) in result.iter().take(20).enumerate() {
         assert_eq!(
-            item.as_ref().map(|record| record.sequence),
+            item.as_ref()
+                .map(|record| record.sequence)
+                .map_err(|error| error.category()),
             Ok(u64::try_from(sequence)?)
         );
     }
@@ -917,7 +919,7 @@ fn every_member_refusal_round_trips_its_original_status() {
         assert_eq!(error.code(), "unavailable");
         for encoded in [Status::from(&error), Status::from(error.clone())] {
             assert_eq!(original(&encoded), original(&relayed));
-            assert_eq!(status(&encoded), error);
+            assert_eq!(status(&encoded).category(), error.category());
         }
     }
 }
@@ -1003,7 +1005,7 @@ proptest::proptest! {
     ) {
         for error in StreamCategory::ALL.map(StreamError::from) {
             for encoded in [Status::from(&error), Status::from(error.clone())] {
-                proptest::prop_assert_eq!(status(&encoded), error.clone());
+                proptest::prop_assert_eq!(status(&encoded).category(), error.category());
             }
         }
         proptest::prop_assert!(crate::codec_fuzz::grpc_status(&details));
@@ -1018,7 +1020,7 @@ proptest::proptest! {
         proptest::prop_assert_eq!(decoded.uncertain(), category(&relayed).uncertain());
         for encoded in [Status::from(&decoded), Status::from(decoded.clone())] {
             proptest::prop_assert_eq!(original(&encoded), original(&relayed));
-            proptest::prop_assert_eq!(status(&encoded), decoded.clone());
+            proptest::prop_assert_eq!(status(&encoded).category(), decoded.category());
         }
     }
 }

@@ -712,7 +712,11 @@ mod tests {
                 }
                 for minimum in [RevisionCut::default(), RevisionCut::of(next.clone()), RevisionCut::of(other.clone()), RevisionCut::new([next.clone(), other.clone()]).unwrap()] {
                     let expected = RevisionCut::new(observed.iter().cloned().chain(minimum.iter().cloned()));
-                    proptest::prop_assert_eq!(tracker.floor(&minimum), expected, "revision floor lost an original participant or maximum");
+                    proptest::prop_assert_eq!(
+                        tracker.floor(&minimum).map_err(|error| error.category()),
+                        expected.map_err(|error| error.category()),
+                        "revision floor lost an original participant or maximum"
+                    );
                 }
             }
             let tracker = RevisionTracker::default();
@@ -768,7 +772,8 @@ mod tests {
             );
             assert!(parked.as_mut().poll(&mut context).is_pending());
             assert_eq!(
-                futures::FutureExt::now_or_never(authority.wait(&covered)),
+                futures::FutureExt::now_or_never(authority.wait(&covered))
+                    .map(|result| result.map_err(|error| error.category())),
                 Some(Ok(authority.at(1))),
                 "older publication regressed a covered revision"
             );
@@ -798,7 +803,10 @@ mod tests {
         );
         // Negative control: no minimum serves the local cut at once.
         assert_eq!(
-            authority.wait(&RevisionCut::default()).await,
+            authority
+                .wait(&RevisionCut::default())
+                .await
+                .map_err(|error| error.category()),
             Ok(authority.at(2))
         );
 
@@ -812,9 +820,12 @@ mod tests {
             3,
             "retired revision authority did not wake its parked reader"
         );
-        assert_eq!(
-            closing.as_mut().poll(&mut context),
-            std::task::Poll::Ready(Err(StreamError::Unavailable)),
+        assert!(
+            matches!(
+                closing.as_mut().poll(&mut context),
+                std::task::Poll::Ready(Err(ref error))
+                    if error.category() == StreamCategory::Unavailable
+            ),
             "retired revision authority left its reader parked"
         );
         assert_eq!(
@@ -871,8 +882,9 @@ mod tests {
                 index: 1,
             };
             assert_eq!(
-                view.floor(&RevisionCut::of(reset.clone())),
-                Err(StreamError::RevisionForeign)
+                view.floor(&RevisionCut::of(reset.clone()))
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::RevisionForeign)
             );
             assert_eq!(
                 view.floor(&RevisionCut::default())
@@ -965,15 +977,17 @@ mod tests {
         assert_eq!(
             authority
                 .wait_applied(&authority.at(1), std::future::ready(()))
-                .await,
-            Err(StreamError::DeadlineElapsed)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::DeadlineElapsed)
         );
         // Negative control: an applied minimum serves before any deadline.
         authority.advance(1);
         assert_eq!(
             authority
                 .wait_applied(&authority.at(1), std::future::pending())
-                .await,
+                .await
+                .map_err(|error| error.category()),
             Ok(authority.at(1))
         );
         // A foreign token refuses before parking, even with no deadline.

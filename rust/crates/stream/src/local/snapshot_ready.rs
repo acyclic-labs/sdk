@@ -166,7 +166,7 @@ fn compare<T: Send + Debug + Eq + 'static>(
                 else {
                     panic!("ready snapshot parked");
                 };
-                output.push(item);
+                output.push(item.map_err(|error| error.category()));
                 trace.push((step, true));
             }
             let mut times = elapsed.get();

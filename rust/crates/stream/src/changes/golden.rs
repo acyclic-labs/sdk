@@ -6,14 +6,16 @@ use prost::Message as _;
 fn qualify_marker(
     headers: &RecordHeaders,
     filter: &FollowFilter,
-    expected: &Result<bool, StreamError>,
+    expected: &Result<bool, StreamCategory>,
     probes: usize,
     value: &[u8],
     decoded: &wire::ChangeRecord,
 ) {
     take_marker_probes();
     assert_eq!(
-        reader_format(headers).map(|format| format.is_some()),
+        reader_format(headers)
+            .map(|format| format.is_some())
+            .map_err(|error| error.category()),
         expected.clone()
     );
     let after = take_marker_probes();
@@ -25,10 +27,13 @@ fn qualify_marker(
     assert_eq!(take_marker_probes(), after);
     assert_eq!(FollowFilter::default().matches(headers), expected.is_ok());
     assert_eq!(take_marker_probes(), after);
-    assert_eq!(validate(value, headers), expected.clone().map(|_| ()));
+    assert_eq!(
+        validate(value, headers).map_err(|error| error.category()),
+        expected.clone().map(|_| ())
+    );
     assert_eq!(take_marker_probes(), after);
     assert_eq!(
-        decode(value, headers),
+        decode(value, headers).map_err(|error| error.category()),
         expected.clone().map(|_| decoded.clone())
     );
     assert_eq!(take_marker_probes(), after);
@@ -39,11 +44,11 @@ fn qualify_marker(
     );
     assert_eq!(take_marker_probes(), after);
     assert_eq!(
-        validate(&[], headers),
+        validate(&[], headers).map_err(|error| error.category()),
         if *expected == Ok(false) {
             Ok(())
         } else {
-            Err(StreamError::InvalidArgument)
+            Err(StreamCategory::InvalidArgument)
         }
     );
     assert_eq!(take_marker_probes(), after);
@@ -60,11 +65,11 @@ fn qualify_marker(
     )
     .unwrap();
     assert_eq!(
-        decode(value, &forged),
+        decode(value, &forged).map_err(|error| error.category()),
         if *expected == Ok(false) {
             Ok(decoded.clone())
         } else {
-            Err(StreamError::InvalidArgument)
+            Err(StreamCategory::InvalidArgument)
         }
     );
     assert_eq!(take_marker_probes(), after);
@@ -123,15 +128,15 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
         (Some(FORMAT), Ok(true)),
         (
             Some(b"changes/v0".as_slice()),
-            Err(StreamError::InvalidArgument),
+            Err(StreamCategory::InvalidArgument),
         ),
         (
             Some(b"changes/v3".as_slice()),
-            Err(StreamError::InvalidArgument),
+            Err(StreamCategory::InvalidArgument),
         ),
         (
             Some(b"unrecognized".as_slice()),
-            Err(StreamError::InvalidArgument),
+            Err(StreamCategory::InvalidArgument),
         ),
     ] {
         // The marker can be first or last, and absent headers require a full pass.

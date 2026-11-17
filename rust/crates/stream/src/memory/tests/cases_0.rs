@@ -420,7 +420,10 @@ async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
     };
     let committed = provider.append(request.clone()).await?;
     assert_eq!(
-        provider.append(request.clone()).await,
+        provider
+            .append(request.clone())
+            .await
+            .map_err(|error| error.category()),
         Ok(committed.clone())
     );
     let observation = provider
@@ -435,8 +438,9 @@ async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
                 records: vec![(Bytes::from_static(b"two")).into()],
                 ..request
             })
-            .await,
-        Err(StreamError::IdempotencyMismatch)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::IdempotencyMismatch)
     );
     Ok(())
 }
