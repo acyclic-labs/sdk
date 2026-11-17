@@ -65,6 +65,7 @@ test("nested fork records retain their original paths through read, follow and c
   }
   const head = await provider.head("origin/b");
   expect(head.last?.origin).toBe("origin/a");
+  expect(typeof head.changedAt).toBe("bigint");
   const page = await provider.childrenPage({ parent: "origin", tailStream: "status", limit: 4 });
   expect(page.children.map(child => child.tailRecord?.origin)).toEqual(Array(4).fill("origin/root/status"));
   if (!accepted.ok) throw new Error("original append refused");
@@ -102,6 +103,7 @@ test("nested fork records retain their original paths through read, follow and c
   expect(() => project(original, "origin/root")).toThrow();
   expect(() => project({ ...original, origin: "invalid//path" }, "origin/c")).toThrow();
   expect((decodeHttpResponse("head", json(head)) as typeof head).last?.origin).toBe("origin/a");
+  expect((decodeHttpResponse("head", json(head)) as typeof head).changedAt).toBe(head.changedAt);
   if (head.last === undefined) throw new Error("original head record missing");
   expect(() => decodeHttpResponse("head", json({ ...head, last: elideOrigin(head.last) }))).toThrow();
   expect(() => decodeHttpResponse("children/page", json({ ...page,

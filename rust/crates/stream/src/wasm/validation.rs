@@ -672,6 +672,7 @@ mod http {
     fn head_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
         let result = Object::new();
+        set(&result, "changedAt", &bigint_js(field(item, "changedAt")?)?)?;
         if let Some(through) = item.get("retainedThrough").filter(|value| !value.is_null()) {
             set(&result, "retainedThrough", &bigint_js(through)?)?;
         }
