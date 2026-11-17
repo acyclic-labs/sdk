@@ -141,6 +141,9 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
     let Some(manifest_path) = value("--manifest-path").map(Path::new) else {
         return Ok(None);
     };
+    let Some(manifest) = manifest_path.to_str() else {
+        return Ok(None);
+    };
     let Some(package) = value("--package").and_then(|arg| arg.to_str()) else {
         return Ok(None);
     };
@@ -213,23 +216,6 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         {
             continue;
         }
-        let declared = metadata["cargo_flags"].as_array().unwrap();
-        let mut flags = Vec::new();
-        if args.iter().any(|arg| *arg == "--no-default-features") {
-            flags.push("--no-default-features");
-        }
-        if let Some(feature) = value("--features").and_then(|arg| arg.to_str()) {
-            flags.extend(["--features", feature]);
-        }
-        if declared
-            .iter()
-            .filter_map(Value::as_str)
-            .collect::<Vec<_>>()
-            != flags
-        {
-            continue;
-        }
-        let manifest = value("--manifest-path").unwrap().to_str().unwrap();
         let mut expected_args = vec![
             "rustdoc",
             "--locked",
@@ -241,7 +227,13 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             "--target",
             target,
         ];
-        expected_args.extend(flags);
+        expected_args.extend(
+            metadata["cargo_flags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|flag| flag.as_str().unwrap()),
+        );
         let selected_lock = metadata["selected_lock"].as_str().unwrap();
         let config = if selected_lock.is_empty() {
             None
