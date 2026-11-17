@@ -410,7 +410,7 @@ pub fn seeds() -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, ProviderErr
         request
             .operation
             .as_ref()
-            .ok_or("seed operation is absent")?
+            .ok_or_else(|| ProviderError::Invalid("seed operation is absent".into()))?
     );
     seed!("OperationRequest", "canonical", request);
     for (name, image) in [
