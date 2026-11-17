@@ -303,8 +303,20 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 // Reading it now also covers a child that spawned after the
                 // stop's snapshot: a reported child cannot spawn again.
                 let open = self.descendant_children(&delivery.actor, &child).await?;
+                let by = Sender::Host {
+                    host: "harness".into(),
+                };
+                let intent = IntentId::try_from(format!("file-stop-{sequence}"))?;
                 added = self
-                    .descendant_status(&delivery.actor, &state.agent, &child, &open, &mut effects)
+                    .descendant_status(
+                        &delivery.actor,
+                        &state.agent,
+                        &by,
+                        &intent,
+                        &child,
+                        &open,
+                        &mut effects,
+                    )
                     .await?;
                 added.retain(|change| match change {
                     SubscriptionChange::Add { id, .. } => !delivery.subscriptions.contains_key(id),
