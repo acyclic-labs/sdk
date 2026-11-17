@@ -2780,14 +2780,9 @@ mod reader_tests {
             assert!(denied_reads.poll(0).is_empty());
             denied_reads.acknowledge_issue(&denied);
             assert_eq!(denied_reads.issues().count(), heads.len() - 1);
-            assert!(
-                heads.keys().filter(|path| *path != &denied).all(|path| {
-                    matches!(
-                        denied_reads.issues.get(path),
-                        Some(ReadIssue::AccessDenied)
-                    )
-                })
-            );
+            assert!(heads.keys().filter(|path| *path != &denied).all(|path| {
+                matches!(denied_reads.issues.get(path), Some(ReadIssue::AccessDenied))
+            }));
 
             // Mutate only the tail of the actual captured provider fact.
             // Invalid bytes retain the same explicit acknowledgment boundary.

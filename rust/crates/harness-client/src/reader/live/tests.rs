@@ -332,7 +332,10 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         drop(page);
         assert!(source.page(&reader, 2, count).unwrap().next().is_none());
         assert!(matches!(source.page(&reader, 3, count), Err(Error::Range)));
-        assert!(matches!(source.want_page(u64::MAX, count), Err(Error::Range)));
+        assert!(matches!(
+            source.want_page(u64::MAX, count),
+            Err(Error::Range)
+        ));
 
         // An ordinary listing supplies fork origin, but no child tail. Its
         // finite nonempty read must make the requested page immediately usable
