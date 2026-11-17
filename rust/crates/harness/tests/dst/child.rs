@@ -177,6 +177,19 @@ fn plans(seed: u64) -> Vec<Plan> {
             fail_once: None,
         },
         Plan {
+            tag: "c4-spawn",
+            steps: {
+                let mut steps = root_steps(topology);
+                steps.push(vec![call(
+                    "c4-spawn-read",
+                    "read",
+                    json!({"path": "marker.txt"}),
+                )]);
+                steps
+            },
+            fail_once: None,
+        },
+        Plan {
             tag: "c4-mid",
             steps: vec![
                 vec![spawn("c4-spawn-g-start", "g-start", "c4-g-start")],
@@ -275,8 +288,8 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                     seed,
                     files: &files,
                     plans: || plans(seed),
-                    prompts: vec![vec![("root", tag("c4-root"))]],
-                    window: (1, usize::MAX),
+                    prompts: vec![vec![("root", tag("c4-spawn"))]],
+                    window: (3, usize::MAX),
                     mode: oracle::crash_mode("crash_after", seed).ok_or("crash mode")?,
                 };
                 let (crashed, recovered) = crash
