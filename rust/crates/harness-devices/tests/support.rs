@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! The public local provider and the same admitted workspace shell binding.
 use acyclic_harness_core::{Error, Result, machines::MachinesHost, resources::ProviderRef};
 use acyclic_machines::{Image, MachineId, MachineObservation};
