@@ -199,7 +199,7 @@ fn x1_cross_process_child() {
         .copied()
         .expect("child class is a world");
     let digest = replay_generator(seed, class).expect("child replay");
-    println!("DST_X1_CHILD_DIGEST={digest}");
+    println!("DST_X1_CHILD_DIGEST={}", hex(digest));
 }
 
 fn hex(digest: [u8; 32]) -> String {
