@@ -1098,7 +1098,7 @@ const wasmNodeModulesRules = wasmSelections.filter(selection => selection.wasmPa
   const deps = wasmNodeModules.get(selection.name) ?? [];
   const filegroups = deps.map(dep => rule("filegroup", [
     ["name", q(workspaceTargetName(dep.name))],
-    ["srcs", `glob(${q([`${dep.dir}/**`])})`],
+    ["srcs", glob([`${dep.dir}/**`], [`${dep.dir}/generated/wasm/**`])],
     ["visibility", q(["//visibility:public"])],
   ])).join("\n");
   const packages = deps.map(dep => [`:${workspaceTargetName(dep.name)}`, `${dep.name}=${dep.dir}`]);

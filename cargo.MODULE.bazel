@@ -8936,15 +8936,6 @@ crate_wasm.spec(
     default_features = False,
 )
 
-crate_wasm.spec(
-    package = "acyclic-tonic-web-wasm-client",
-    path = "rust/vendor/tonic-web-wasm-client-0.9.2",
-    repositories = [
-        "sdk_crates_wasm",
-    ],
-    default_features = False,
-)
-
 crate_wasm.annotation(
     crate = "sha2",
     repositories = [
