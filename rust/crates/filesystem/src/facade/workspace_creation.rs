@@ -72,7 +72,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         .create_volume_operation(
                             id.volume_id(),
                             initialization,
-                            Some(requested.clone()),
+                            Some(&requested),
                             &mut accounting,
                             cancellation,
                             guard,
@@ -245,6 +245,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
             let (name, id) = self.workspace_name(name.as_ref(), &mut accounting)?;
+            let creation = operation_id.map(crate::CreationOperation::from);
             let (volume, _) = self
                 .create_volume_operation::<FsError, ()>(
                     id.volume_id(),
@@ -252,7 +253,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         config,
                         access_policy: None,
                     },
-                    operation_id.map(crate::CreationOperation::from),
+                    creation.as_ref(),
                     &mut accounting,
                     cancellation,
                     None::<&mut ()>,

@@ -212,7 +212,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         volume_id: VolumeId,
         initialization: VolumeInitialization<'_>,
-        creation: Option<CreationOperation<'_>>,
+        creation: Option<&CreationOperation<'_>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
         guard: Option<&mut G>,
@@ -418,7 +418,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         volume_id: VolumeId,
         initialization: VolumeInitialization<'_>,
-        creation: Option<CreationOperation<'_>>,
+        creation: Option<&CreationOperation<'_>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
@@ -476,108 +476,163 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<bool, FsError> {
-        let volume = Volume {
-            fs: self.clone(),
-            id: volume_id,
-            config,
-        };
-        let mut checkout = volume
-            .unpublished_checkout(generation_root, accounting, cancellation)
-            .await?;
-        // Repeated paths are never one creation's files: the commit would
-        // refuse the second, so a retry naming one twice is rejected here.
-        let mut paths =
-            crate::kernel::Owned::<Vec<NamespacePath>>::allocate(files.len(), accounting)?;
-        for (name, bytes) in files {
-            let (path, mut allocation) = NamespacePath::parse_in_profile(
-                name,
-                config.profile,
-                config.limits,
-                accounting,
-                cancellation,
-            )?;
-            paths.allocation.absorb(&mut allocation)?;
-            paths.bytes = paths
-                .bytes
-                .checked_add(path.retained_bytes())
-                .ok_or(WorkError::Overflow)?;
-            let record = match checkout
-                .lookup_content_record(&path, accounting, cancellation)
-                .await
-            {
-                Ok(record) => record,
-                Err(FsError::NotFound) => return Ok(false),
-                Err(error) => return Err(error),
+        let groups = group_creation_attributes(files, attributes, accounting)?;
+        let result = async {
+            let volume = Volume {
+                fs: self.clone(),
+                id: volume_id,
+                config,
             };
-            // Each file is a regular child of the root holding its bytes,
-            // read in chunks the volume allows.
-            let expected: &[u8] = bytes.as_ref();
-            let logical_bytes = match record.payload {
-                _ if path.depth() != 1 || record.kind != FileKind::Regular => return Ok(false),
-                FilePayload::InlineRegular(data) if data.as_bytes() == expected => 0,
-                FilePayload::Regular { logical_bytes, .. }
-                    if logical_bytes == expected.len() as u64 =>
+            let mut checkout = volume
+                .unpublished_checkout(generation_root, accounting, cancellation)
+                .await?;
+            // Repeated paths are never one creation's files: the commit would
+            // refuse the second, so a retry naming one twice is rejected here.
+            let mut paths =
+                crate::kernel::Owned::<Vec<NamespacePath>>::allocate(files.len(), accounting)?;
+            for (ordinal, (name, bytes)) in files.iter().enumerate() {
+                let (path, mut allocation) = NamespacePath::parse_in_profile(
+                    name,
+                    config.profile,
+                    config.limits,
+                    accounting,
+                    cancellation,
+                )?;
+                paths.allocation.absorb(&mut allocation)?;
+                paths.bytes = paths
+                    .bytes
+                    .checked_add(path.retained_bytes())
+                    .ok_or(WorkError::Overflow)?;
+                let record = match checkout
+                    .lookup_content_record(&path, accounting, cancellation)
+                    .await
                 {
-                    logical_bytes
+                    Ok(record) => record,
+                    Err(FsError::NotFound) => return Ok(false),
+                    Err(error) => return Err(error),
+                };
+                // Each file is a regular child of the root holding its bytes,
+                // read in chunks the volume allows.
+                let expected: &[u8] = bytes.as_ref();
+                let logical_bytes = match record.payload {
+                    _ if path.depth() != 1 || record.kind != FileKind::Regular => return Ok(false),
+                    FilePayload::InlineRegular(data) if data.as_bytes() == expected => 0,
+                    FilePayload::Regular { logical_bytes, .. }
+                        if logical_bytes == expected.len() as u64 =>
+                    {
+                        logical_bytes
+                    }
+                    _ => return Ok(false),
+                };
+                let step = crate::kernel::CONTENT_READ_CHUNK_BYTES;
+                let mut offset = 0;
+                while offset < logical_bytes {
+                    let length = step.min(logical_bytes - offset);
+                    let range = ByteRange { offset, length };
+                    let read = checkout
+                        .read_record_range_with_accounting(
+                            record,
+                            range,
+                            range,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                    let start = usize::try_from(offset).map_err(|_| WorkError::Overflow)?;
+                    let end = usize::try_from(offset + length).map_err(|_| WorkError::Overflow)?;
+                    if expected.get(start..end) != Some(read.bytes.as_ref()) {
+                        return Ok(false);
+                    }
+                    offset += length;
                 }
-                _ => return Ok(false),
-            };
-            let step = crate::kernel::CONTENT_READ_CHUNK_BYTES;
-            let mut offset = 0;
-            while offset < logical_bytes {
-                let length = step.min(logical_bytes - offset);
-                let range = ByteRange { offset, length };
-                let read = checkout
-                    .read_record_range_with_accounting(
-                        record,
-                        range,
-                        range,
-                        accounting,
-                        cancellation,
-                    )
-                    .await?;
-                let start = usize::try_from(offset).map_err(|_| WorkError::Overflow)?;
-                let end = usize::try_from(offset + length).map_err(|_| WorkError::Overflow)?;
-                if expected.get(start..end) != Some(read.bytes.as_ref()) {
-                    return Ok(false);
-                }
-                offset += length;
-            }
-            for attribute in attributes
-                .iter()
-                .filter(|attribute| attribute.path == *name)
-            {
-                let actual = checkout
-                    .read_named_attribute_with_accounting(
+                let requested = match groups.by_file.value.get(ordinal).copied().flatten() {
+                    Some(group) => {
+                        let (_, range) = groups
+                            .groups
+                            .value
+                            .get(group)
+                            .ok_or(FsError::InvalidDiff)?;
+                        groups
+                            .ordered
+                            .value
+                            .get(range.clone())
+                            .ok_or(FsError::InvalidDiff)?
+                    }
+                    None => &[],
+                };
+                let (listing, allocation) = checkout
+                    .list_named_attributes_with_accounting(
                         &path,
-                        &attribute.name,
+                        None,
+                        u32::MAX,
                         None,
                         accounting,
                         cancellation,
                     )
                     .await?;
-                if actual.map(|chunk| chunk.bytes).as_deref() != Some(attribute.value.as_ref()) {
+                let listing_bytes = crate::foundation::usize_to_u64(
+                    listing
+                        .entries
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<crate::kernel::AttributeEntry>())
+                        .ok_or(WorkError::Overflow)?,
+                );
+                let listing = crate::kernel::Owned::new(listing, allocation, listing_bytes);
+                if listing.value.entries.len() != requested.len() {
+                    listing.retire(accounting)?;
                     return Ok(false);
                 }
+                for (entry, key) in listing.value.entries.iter().zip(requested) {
+                    if &entry.name != key.name {
+                        listing.retire(accounting)?;
+                        return Ok(false);
+                    }
+                }
+                for key in requested {
+                    let attribute = attributes
+                        .get(key.ordinal)
+                        .ok_or(FsError::InvalidDiff)?;
+                    let actual = checkout
+                        .read_named_attribute_with_accounting(
+                            &path,
+                            &attribute.name,
+                            None,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                    if actual.map(|chunk| chunk.bytes).as_deref()
+                        != Some(attribute.value.as_ref())
+                    {
+                        listing.retire(accounting)?;
+                        return Ok(false);
+                    }
+                }
+                listing.retire(accounting)?;
+                accounting.charge(WorkCounters {
+                    bytes_copied: std::mem::size_of::<NamespacePath>() as u64,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                paths.value.push(path);
             }
-            accounting.charge(WorkCounters {
-                bytes_copied: std::mem::size_of::<NamespacePath>() as u64,
-                ..WorkCounters::UNCHARGED
-            })?;
-            paths.value.push(path);
+            if !initial_paths_are_distinct(&paths.value, accounting)? {
+                return Ok(false);
+            }
+            paths.retire(accounting)?;
+            initial_root_has_file_count(
+                &mut checkout,
+                files.len(),
+                config.limits,
+                accounting,
+                cancellation,
+            )
+            .await
         }
-        if !initial_paths_are_distinct(&paths.value, accounting)? {
-            return Ok(false);
-        }
-        paths.retire(accounting)?;
-        initial_root_has_file_count(
-            &mut checkout,
-            files.len(),
-            config.limits,
-            accounting,
-            cancellation,
-        )
-        .await
+        .await;
+        let retired = groups.retire(accounting);
+        let result = result?;
+        retired?;
+        Ok(result)
     }
 
     async fn populate_initial_generation(
@@ -585,80 +640,93 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         volume_id: VolumeId,
         config: VolumeConfig,
         empty: ObjectId,
-        creation: CreationOperation<'_>,
+        creation: &CreationOperation<'_>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
-        let CreationOperation {
-            operation_id,
-            files,
-            attributes,
-        } = creation;
-        let volume = Volume {
-            fs: self.clone(),
-            id: volume_id,
-            config,
-        };
-        for attribute in &attributes {
-            if !files.iter().any(|(path, _)| *path == attribute.path) {
-                return Err(FsError::CreationRejected);
-            }
-        }
-        let mut checkout = volume
-            .unpublished_checkout(empty, accounting, cancellation)
-            .await?;
-        checkout.bind_authored_operation(operation_id);
-        let mut operations =
-            crate::kernel::Owned::<Vec<AuthoredMutation>>::allocate(files.len(), accounting)?;
-        let moved = WorkCounters {
-            bytes_copied: std::mem::size_of::<AuthoredMutation>() as u64,
-            ..WorkCounters::UNCHARGED
-        };
-        for (name, bytes) in files {
-            let (path, mut allocation) = NamespacePath::parse_in_profile(
-                name,
-                config.profile,
-                config.limits,
-                accounting,
-                cancellation,
-            )?;
-            let mut metadata = FileMetadata::default();
-            for attribute in attributes
-                .iter()
-                .filter(|attribute| attribute.path == *name)
-            {
-                metadata = super::attributes::change_attribute(
-                    &volume,
-                    metadata,
-                    &attribute.name,
-                    Some((attribute.value.as_ref(), NamedAttributeWriteMode::Create)),
+        let operation_id = creation.operation_id;
+        let files = creation.files;
+        let attributes = creation.attributes.as_slice();
+        let groups = group_creation_attributes(files, attributes, accounting)?;
+        let result = async {
+            let volume = Volume {
+                fs: self.clone(),
+                id: volume_id,
+                config,
+            };
+            let mut checkout = volume
+                .unpublished_checkout(empty, accounting, cancellation)
+                .await?;
+            checkout.bind_authored_operation(operation_id);
+            let mut operations =
+                crate::kernel::Owned::<Vec<AuthoredMutation>>::allocate(files.len(), accounting)?;
+            let moved = WorkCounters {
+                bytes_copied: std::mem::size_of::<AuthoredMutation>() as u64,
+                ..WorkCounters::UNCHARGED
+            };
+            for (ordinal, (name, bytes)) in files.iter().enumerate() {
+                let (path, mut allocation) = NamespacePath::parse_in_profile(
+                    name,
+                    config.profile,
+                    config.limits,
                     accounting,
                     cancellation,
-                )
-                .await?;
+                )?;
+                let mut metadata = FileMetadata::default();
+                if let Some(group) = groups.by_file.value.get(ordinal).copied().flatten() {
+                    let (_, range) = groups
+                        .groups
+                        .value
+                        .get(group)
+                        .ok_or(FsError::InvalidDiff)?;
+                    let entries = groups
+                        .ordered
+                        .value
+                        .get(range.clone())
+                        .ok_or(FsError::InvalidDiff)?;
+                    for key in entries {
+                        let attribute = attributes
+                            .get(key.ordinal)
+                            .ok_or(FsError::InvalidDiff)?;
+                        metadata = super::attributes::change_attribute(
+                            &volume,
+                            metadata,
+                            &attribute.name,
+                            Some((attribute.value.as_ref(), NamedAttributeWriteMode::Create)),
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                    }
+                }
+                let retained = path.retained_bytes();
+                accounting.admit(moved)?;
+                operations.allocation.absorb(&mut allocation)?;
+                operations.bytes = operations
+                    .bytes
+                    .checked_add(retained)
+                    .ok_or(WorkError::Overflow)?;
+                operations.value.push(AuthoredMutation::CreateFile {
+                    file_id: None,
+                    path,
+                    bytes: bytes.clone(),
+                    metadata,
+                });
+                accounting.record_completed(moved)?;
             }
-            let retained = path.retained_bytes();
-            accounting.admit(moved)?;
-            operations.allocation.absorb(&mut allocation)?;
-            operations.bytes = operations
-                .bytes
-                .checked_add(retained)
-                .ok_or(WorkError::Overflow)?;
-            operations.value.push(AuthoredMutation::CreateFile {
-                file_id: None,
-                path,
-                bytes: bytes.clone(),
-                metadata,
-            });
-            accounting.record_completed(moved)?;
+            checkout
+                .apply_authored_transaction_with_accounting(operations, accounting, cancellation)
+                .await?
+                .retire(accounting)?;
+            checkout
+                .checkpoint_root_with_accounting(accounting, cancellation)
+                .await
         }
-        checkout
-            .apply_authored_transaction_with_accounting(operations, accounting, cancellation)
-            .await?
-            .retire(accounting)?;
-        checkout
-            .checkpoint_root_with_accounting(accounting, cancellation)
-            .await
+        .await;
+        let retired = groups.retire(accounting);
+        let result = result?;
+        retired?;
+        Ok(result)
     }
 
     pub(super) async fn build_empty_generation(
@@ -746,6 +814,139 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await?;
         Ok([metadata, tree, file_table, generation_root])
     }
+}
+
+struct CreationAttributeKey<'a> {
+    ordinal: usize,
+    path: &'a str,
+    name: &'a AttributeName,
+}
+
+struct CreationAttributeGroups<'a> {
+    ordered: crate::kernel::Owned<Vec<CreationAttributeKey<'a>>>,
+    groups: crate::kernel::Owned<Vec<(&'a str, std::ops::Range<usize>)>>,
+    by_file: crate::kernel::Owned<Vec<Option<usize>>>,
+}
+
+impl CreationAttributeGroups<'_> {
+    fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        let Self {
+            ordered,
+            groups,
+            by_file,
+        } = self;
+        ordered.retire(accounting)?;
+        groups.retire(accounting)?;
+        by_file.retire(accounting)
+    }
+}
+
+/// Groups a creation's attributes by their exact file path once, rejecting
+/// attributes on unknown paths and repeated names exactly as fresh creation
+/// does. The grouping is the only attribute search creation and recovery use.
+fn group_creation_attributes<'a>(
+    files: &[(&str, acyclic_stream::OwnedBytes)],
+    attributes: &'a [CreationAttribute],
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<CreationAttributeGroups<'a>, FsError> {
+    let mut ordered =
+        crate::kernel::Owned::<Vec<CreationAttributeKey<'a>>>::allocate(
+            attributes.len(),
+            accounting,
+        )?;
+    for (ordinal, attribute) in attributes.iter().enumerate() {
+        accounting.charge(WorkCounters {
+            bytes_copied: std::mem::size_of::<CreationAttributeKey<'_>>() as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        ordered.value.push(CreationAttributeKey {
+            ordinal,
+            path: attribute.path.as_str(),
+            name: &attribute.name,
+        });
+    }
+    crate::kernel::sort_by_with_accounting(&mut ordered.value, accounting, |left, right| {
+        left.path
+            .cmp(right.path)
+            .then_with(|| left.name.cmp(right.name))
+    })?;
+    let mut groups =
+        crate::kernel::Owned::<Vec<(&'a str, std::ops::Range<usize>)>>::allocate(
+            attributes.len(),
+            accounting,
+        )?;
+    let mut start = 0;
+    while let Some(first) = ordered.value.get(start) {
+        let path = first.path;
+        let mut end = start + 1;
+        while let Some(current) = ordered.value.get(end) {
+            accounting.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            if current.path != path {
+                break;
+            }
+            let previous = ordered.value.get(end - 1).ok_or(FsError::InvalidDiff)?;
+            if current.name == previous.name {
+                return Err(FsError::CreationRejected);
+            }
+            end += 1;
+        }
+        accounting.charge(WorkCounters {
+            bytes_copied: std::mem::size_of::<(&str, std::ops::Range<usize>)>() as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        groups.value.push((path, start..end));
+        start = end;
+    }
+    let mut by_file =
+        crate::kernel::Owned::<Vec<Option<usize>>>::allocate(files.len(), accounting)?;
+    let mut matched =
+        crate::kernel::Owned::<Vec<bool>>::allocate(groups.value.len(), accounting)?;
+    for _ in 0..groups.value.len() {
+        accounting.charge(WorkCounters {
+            bytes_copied: std::mem::size_of::<bool>() as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        matched.value.push(false);
+    }
+    for (name, _) in files {
+        let found = match crate::kernel::binary_search_with_accounting(
+            &groups.value,
+            accounting,
+            |group| group.0.cmp(*name),
+        )? {
+            Ok(index) => Some(index),
+            Err(_) => None,
+        };
+        if let Some(index) = found {
+            let slot = matched.value.get_mut(index).ok_or(FsError::InvalidDiff)?;
+            *slot = true;
+        }
+        accounting.charge(WorkCounters {
+            bytes_copied: std::mem::size_of::<Option<usize>>() as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        by_file.value.push(found);
+    }
+    let mut all_matched = true;
+    for matched in &matched.value {
+        accounting.charge(WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        all_matched &= *matched;
+    }
+    matched.retire(accounting)?;
+    if !all_matched {
+        return Err(FsError::CreationRejected);
+    }
+    Ok(CreationAttributeGroups {
+        ordered,
+        groups,
+        by_file,
+    })
 }
 
 pub(super) fn derived_digest(domain: &[u8], volume_id: VolumeId) -> Digest {
