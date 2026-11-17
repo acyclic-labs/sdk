@@ -16,7 +16,7 @@ import { bazelCommand } from "./bazel-executables.mjs";
 import { pathToFileURL } from "node:url";
 import { repositoryRoot, toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
 import { parseJsonc } from "./jsonc.mjs";
-import { packagedTypeScriptBindings } from "./protobuf-bindings.mjs";
+import { selectTypeScriptBindings } from "./protobuf-bindings.mjs";
 import { runtimeOutputs as streamTokenOutputs } from "./generate-stream-token-operations.mjs";
 
 // The workspace this generator describes. It defaults to the repository that holds this
@@ -1187,7 +1187,7 @@ const runtimeSelections = wasmSelections.filter(selection => selection.runtime);
 const workspaceRuntimeDeps = new Map([...wasmNodeModules.values()].flat().filter(dep => dep.dir).map(dep => [dep.name, dep]));
 const runtimeFilegroups = [...workspaceRuntimeDeps.values()].map(dep => {
     const contractOutputs = streamTokenOutputs.filter(file => file.startsWith(`${dep.dir}/`));
-    const bindings = packagedTypeScriptBindings.filter(([, names]) => names.includes(dep.dir.split("/").at(-1)));
+    const bindings = selectTypeScriptBindings(new Set([dep.dir.split("/").at(-1)]));
     return rule("filegroup", [
     ["name", q(workspaceTargetName(dep.name))],
     ["srcs", glob([`${dep.dir}/**`], [`${dep.dir}/generated/wasm/**`, `${dep.dir}/generated/proto/**`, ...contractOutputs]) + " + " + list(
@@ -1208,7 +1208,7 @@ const runtimeBuild = runtimePackageNames.length ? `\n${rule("typescript_packages
   ["name", q("sdk_typescript_packages")],
   ["packages", list(runtimePackageNames)],
   ["srcs", glob(["scripts/*.mjs", "scripts/vendor/**", "typescript/packages/*/package.json"], []) + " + " + list(["//:package.json", "//:tsconfig.base.json", ...[...builtRuntimeDeps.values()].map(dep => `:${workspaceTargetName(dep.name)}`)])],
-  ["protos", starlarkDict([...builtRuntimeDeps.values()].filter(dep => packagedTypeScriptBindings.some(([, names]) => names.includes(dep.dir.split("/").at(-1))))
+  ["protos", starlarkDict([...builtRuntimeDeps.values()].filter(dep => selectTypeScriptBindings(new Set([dep.dir.split("/").at(-1)])).length)
     .map(dep => [`:${workspaceTargetName(dep.name)}_proto`, dep.dir.split("/").at(-1)]))],
   ["wasms", starlarkDict([...builtRuntimeDeps.values()].flatMap(dep => {
     const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
@@ -1224,7 +1224,7 @@ const wasmNodeModulesRules = runtimeFilegroups + (runtimeSelections.length ? "\n
   const deps = wasmNodeModules.get(selection.name) ?? [];
   const packages = deps.map(dep => [dep.dir ? (builtRuntimeDeps.has(dep.name) ? `:sdk_typescript_${dep.dir.split("/").at(-1)}` : `:${workspaceTargetName(dep.name)}`) : `@${dep.repository}//:files`, `${dep.name}=${dep.dir && !builtRuntimeDeps.has(dep.name) ? dep.dir : ""}`]);
   for (const dep of deps.filter(dep => dep.dir)) {
-    if (!builtRuntimeDeps.has(dep.name) && packagedTypeScriptBindings.some(([, names]) => names.includes(dep.dir.split("/").at(-1)))) {
+    if (!builtRuntimeDeps.has(dep.name) && selectTypeScriptBindings(new Set([dep.dir.split("/").at(-1)])).length) {
       packages.push([`:${workspaceTargetName(dep.name)}_proto`, `${dep.name}/generated/proto=`]);
     }
     const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
