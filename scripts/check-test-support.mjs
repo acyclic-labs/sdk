@@ -242,7 +242,7 @@ export function checkTestSupportExports(sources) {
 
 if (import.meta.main) {
   // Resolve every optional and target-specific edge, including registry crates.
-  const metadata = workspaceGraph(process.cwd());
+  const metadata = workspaceGraph(process.cwd(), null);
   console.log(`test-support forwarding: ${checkTestSupport(metadata)} dependency declarations checked`);
   const files = trackedFiles(process.cwd(), ['*.rs']);
   const sources = files.map(file => [file, readFileSync(file, 'utf8')]);

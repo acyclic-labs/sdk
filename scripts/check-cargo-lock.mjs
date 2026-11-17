@@ -1,19 +1,17 @@
-import {readFileSync} from 'node:fs';
 import {toml} from './policy-core.mjs';
-import {workspacePackages} from './workspace-model.mjs';
+import {workspacePackages, compareVersions} from './workspace-model.mjs';
 
 export function checkLock(root) {
   const lock = toml(root, 'Cargo.lock');
   if (lock.version !== 4 || !Array.isArray(lock.package)) throw Error('expected a version 4 package lock');
   const identities = new Set();
-  let previous = '';
+  let previous;
   for (const pkg of lock.package) {
     const identity = `${pkg.name} ${pkg.version} ${pkg.source ?? ''}`;
     if (identities.has(identity)) throw Error(`duplicate locked package ${identity}`);
     identities.add(identity);
-    const key = `${pkg.name}\0${pkg.version}\0${pkg.source ?? ''}`;
-    if (key < previous) throw Error(`package ordering at ${pkg.name}`);
-    previous = key;
+    if (previous && (pkg.name < previous.name || pkg.name === previous.name && compareVersions(pkg.version, previous.version) < 0)) throw Error(`package ordering at ${pkg.name}`);
+    previous = pkg;
     if (pkg.source?.startsWith('registry+') && !/^[0-9a-f]{64}$/.test(pkg.checksum ?? '')) throw Error(`invalid checksum for ${identity}`);
     const dependencies = pkg.dependencies ?? [];
     if (new Set(dependencies).size !== dependencies.length || dependencies.some((d, n) => n && d < dependencies[n - 1]))

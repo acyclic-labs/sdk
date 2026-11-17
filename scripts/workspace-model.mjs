@@ -7,6 +7,39 @@ import {toml, tomlFiles} from './policy-core.mjs';
 const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
 const requirement = value => value === undefined ? '*' : /^\d/.test(value) ? `^${value}` : value;
+export function compareVersions(a, b) {
+  const parts = value => value.split(/[.+-]/).map(x => /^\d+$/.test(x) ? Number(x) : x);
+  const aa = parts(a), bb = parts(b);
+  for (let n = 0; n < Math.max(aa.length, bb.length); n++) {
+    if (aa[n] === bb[n]) continue;
+    if (aa[n] === undefined) return n >= 3 ? 1 : -1;
+    if (bb[n] === undefined) return n >= 3 ? -1 : 1;
+    return aa[n] < bb[n] ? -1 : 1;
+  }
+  return 0;
+}
+export function versionMatches(version, requirement) {
+  return requirement.split(',').every(part => {
+    const match = /^\s*(\^|~|=|>=|<=|>|<)?\s*(\d+|\*)(?:\.(\d+|\*))?(?:\.(\d+|\*))?\s*$/.exec(part);
+    if (!match) throw Error(`unsupported locked version requirement ${requirement}`);
+    const [, operator = '^', ...fields] = match;
+    const count = fields.findIndex(x => x === undefined || x === '*');
+    const length = count < 0 ? 3 : count;
+    if (!length) return true;
+    const lower = fields.map(x => x === undefined || x === '*' ? 0 : Number(x));
+    const comparison = compareVersions(version, lower.join('.'));
+    if (operator === '>=') return comparison >= 0;
+    if (operator === '<=') return comparison <= 0;
+    if (operator === '>') return comparison > 0;
+    if (operator === '<') return comparison < 0;
+    if (operator === '=' && length === 3) return comparison === 0;
+    const upper = [...lower];
+    const bump = operator === '~' ? Math.min(length - 1, 1) : fields.includes('*') || operator === '=' ? length - 1 : Math.min(lower.findIndex(x => x !== 0) < 0 ? length - 1 : lower.findIndex(x => x !== 0), length - 1);
+    upper[bump]++;
+    for (let n = bump + 1; n < 3; n++) upper[n] = 0;
+    return comparison >= 0 && compareVersions(version, upper.join('.')) < 0;
+  });
+}
 
 export function workspacePackages(root) {
   root = path.resolve(root);
@@ -86,7 +119,7 @@ export function workspacePackages(root) {
     if (own.build !== false) target('custom-build', {}, typeof own.build === 'string' ? own.build : 'build.rs', 'build-script-build');
     const p = {name: own.name, version: own.version, id: `path+file://${slash(directory)}#${own.name}@${own.version}`,
       source: null, dependencies, targets, features, manifest_path: path.join(directory, 'Cargo.toml'), workspace_member: members.has(file),
-      publish: own.publish === false ? [] : own.publish ?? null, metadata: own.metadata ?? null, authors: own.authors ?? [], categories: own.categories ?? [], keywords: own.keywords ?? []};
+      publish: own.publish === false ? [] : own.publish === true ? null : own.publish ?? null, metadata: own.metadata ?? null, authors: own.authors ?? [], categories: own.categories ?? [], keywords: own.keywords ?? []};
     for (const key of ['license', 'license-file', 'description', 'repository', 'homepage', 'documentation', 'links', 'default-run', 'rust-version']) p[key.replaceAll('-', '_')] = own[key] ?? null;
     p.edition = own.edition ?? '2015';
     p.readme = own.readme === false ? null : own.readme ?? ['README.md', 'README.txt', 'README'].find(name => exists(path.join(directory, name))) ?? null;
@@ -96,6 +129,8 @@ export function workspacePackages(root) {
 }
 
 export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
+  const allPlatforms = triple === null;
+  triple ??= 'x86_64-unknown-linux-gnu';
   root = path.resolve(root);
   const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
   const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-bazel-lock.json'), 'utf8'));
@@ -115,6 +150,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     `target_env=${JSON.stringify(triple.includes('msvc') ? 'msvc' : triple.includes('darwin') ? '' : 'gnu')}`, `target_family=${JSON.stringify(triple.includes('windows') ? 'windows' : 'unix')}`,
   ]);
   const matches = cfg => {
+    if (allPlatforms) return true;
     if (!cfg || cfg === triple) return true;
     if (!cfg.startsWith('cfg(')) return false;
     const tokens = cfg.slice(4, -1).match(/"[^"\\]*(?:\\.[^"\\]*)*"|\w+|[(),=]/g) ?? [];
@@ -141,8 +177,8 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
     const deps = new Map();
     for (const d of p.dependencies.filter(d => matches(d.target))) {
-      const candidates = d.path ? local.filter(x => path.dirname(x.manifest_path) === d.path) : byName(d.name).filter(x =>
-        (locked.dependencies ?? []).some(key => key === x.name || key.startsWith(`${x.name} ${x.version}`)));
+      const candidates = d.path ? local.filter(x => path.dirname(x.manifest_path) === d.path) : byName(d.name).filter(x => versionMatches(x.version, d.req) &&
+        (locked.dependencies ?? []).some(key => key === x.name || key === `${x.name} ${x.version}` || key.startsWith(`${x.name} ${x.version} (`)));
       if (candidates.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
       const dependency = candidates[0], name = (d.rename ?? d.name).replaceAll('-', '_');
       const key = `${name}:${dependency.id}`;
