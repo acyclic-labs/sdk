@@ -2,6 +2,7 @@
 
 load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain", "use_cpp_toolchain")
 load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "ACTION_NAMES")
+load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 
 def _repository_path(path):
     return path.split("/", 2)[2] if path.startswith("../") else path
