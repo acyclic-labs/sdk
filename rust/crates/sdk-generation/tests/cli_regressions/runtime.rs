@@ -180,6 +180,10 @@ pub(super) fn binary(name: &str) -> PathBuf {
                 .unwrap()
                 .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
         })
+        // Declared executables may be runfiles aliases. Companion compiler data
+        // belongs to the executable''s actual repository, not its alias directory.
+        .canonicalize()
+        .unwrap()
 }
 
 struct Timing(std::time::Instant, String);
