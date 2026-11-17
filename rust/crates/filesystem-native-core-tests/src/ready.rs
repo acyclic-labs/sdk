@@ -1,5 +1,5 @@
 //! The shared ready-list production core against its independent lifecycle model.
-#![cfg(all(test, not(loom)))]
+#![cfg(not(loom))]
 
 include!("../../filesystem/src/native_mount/shared/ready.rs");
 
