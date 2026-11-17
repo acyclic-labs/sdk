@@ -519,7 +519,11 @@ function buildFile(p) {
     while (names.has(name) || names.has(`${name}_cases`) || profiles.some(({ profile }) => names.has(`${name}_${profile}`))) name += "_test";
     names.add(name).add(`${name}_cases`);
     for (const { profile } of profiles) names.add(`${name}_${profile}`);
+    // Each case's temporary directory is RAM-backed on Linux. A package whose tests need a real
+    // disk's semantics (O_DIRECT, a block device behind statfs) declares [package.metadata.bazel]
+    // requires-disk-tmp = true, and its tests are tagged requires-disk-tmp.
     const tags = reachesMount(p.id, [null, "dev"]) ? ["no-sandbox"] : [];
+    if (p.metadata?.bazel?.["requires-disk-tmp"] === true) tags.push("requires-disk-tmp");
     // Host variables a package's tests read, from [package.metadata.bazel] test-env-inherit =
     // ["NAME"]: only those tests inherit them, so one test's host fact never keys every other test.
     const envInherit = p.metadata?.bazel?.["test-env-inherit"] ?? [];
