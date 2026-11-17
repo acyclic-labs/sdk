@@ -40,7 +40,13 @@ cargo_build_script(
 rust_test(
     name = "publication_cases",
     crate_root = "publication.rs",
-    srcs = glob(["**/*.rs"], allow_empty = True) + [
+    srcs = [
+        "change.rs",
+        "cursor.rs",
+        "interest.rs",
+        "probe.rs",
+        "publication.rs",
+        "shared.rs",
         "//rust/crates/stream:src/change.rs",
         "//rust/crates/stream:src/change/sync.rs",
         "//rust/crates/stream:src/http/shared.rs",
@@ -54,7 +60,6 @@ rust_test(
         "//rust/crates/stream:src/query_sync/parity.rs",
         "//rust/crates/stream:src/query_sync/watch.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,

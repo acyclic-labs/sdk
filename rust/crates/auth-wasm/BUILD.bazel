@@ -120,12 +120,12 @@ isolated_test(
 rust_test(
     name = "snapshot_cases",
     crate_root = "tests/snapshot.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
+        "tests/snapshot.rs",
         "//rust/crates/auth:tests/common/mod.rs",
         "//rust/crates/auth:tests/common/signed.rs",
         "//rust/crates/auth:tests/common/trust.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

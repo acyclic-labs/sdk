@@ -306,7 +306,7 @@ isolated_test(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/harness-core:src/sync/owned.rs",
         "src/accounting.rs",
         "src/cancellation.rs",
@@ -315,6 +315,22 @@ rust_test(
         "src/sync.rs",
         "src/sync/loom.rs",
         "src/usage_snapshot.rs",
+        "tests/benchmark_catalog.rs",
+        "tests/integration/mcp_identity.rs",
+        "tests/integration/prefix_cache.rs",
+        "tests/integration/prefix_cache/binding_facts.rs",
+        "tests/integration/prefix_cache/feature_guards.rs",
+        "tests/integration/prefix_cache/mixed_catalog.rs",
+        "tests/integration/prefix_cache/optional_sources.rs",
+        "tests/integration/prefix_cache/role_models.rs",
+        "tests/integration/provider_case.rs",
+        "tests/integration/provider_http.rs",
+        "tests/integration/providers.rs",
+        "tests/main.rs",
+        "tests/models/cancellation.rs",
+        "tests/models/credential_snapshot.rs",
+        "tests/models/refresh.rs",
+        "tests/verification_models.rs",
         "//rust/crates/harness:tests/e2e/local_workspace.rs",
         "//rust/crates/harness:tests/e2e/stall.rs",
         "//rust/crates/harness:tests/support/expected_outcome.rs",
@@ -325,7 +341,6 @@ rust_test(
         "//rust/crates/harness:tests/support/scenario_data.rs",
         "//rust/crates/harness:tests/support/scenario_matchers.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -408,8 +423,9 @@ isolated_test(
 rust_test(
     name = "live-cache_cases",
     crate_root = "tests/live_cache.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/live_cache.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -489,8 +505,9 @@ isolated_test(
 rust_binary(
     name = "credential-fixture_example",
     crate_root = "examples/credential-fixture.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/credential-fixture.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

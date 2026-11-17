@@ -16,14 +16,14 @@ extract_cargo_lints(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "//typescript/packages/stream/fuzz:driver.rs",
         "latency.rs",
         "queue.rs",
         "schedules.rs",
         "session_model.rs",
+        "tests/main.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,

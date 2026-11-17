@@ -1115,8 +1115,10 @@ rust_binary(
 rust_binary(
     name = "capture_example",
     crate_root = "examples/capture.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    srcs = [
+        "examples/capture.rs",
+    ],
+    compile_data = [
         "corpus/SOURCES.tsv",
         "corpus/auth/signed-capability",
     ],
@@ -1170,8 +1172,9 @@ rust_binary(
 rust_binary(
     name = "object_schedules_example",
     crate_root = "examples/object_schedules.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/object_schedules.rs",
+    ],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -1222,8 +1225,9 @@ rust_binary(
 rust_binary(
     name = "replay_example",
     crate_root = "examples/replay.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/replay.rs",
+    ],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,

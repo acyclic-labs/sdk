@@ -1030,8 +1030,9 @@ rust_binary(
 rust_test(
     name = "graphcoder_backends_cases",
     crate_root = "tests/graphcoder_backends.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/graphcoder_backends.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -1116,8 +1117,9 @@ isolated_test(
 rust_test(
     name = "hosted_actors_cases",
     crate_root = "tests/hosted_actors.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/hosted_actors.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -1202,11 +1204,16 @@ isolated_test(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "benches/local_hotpath/durability.rs",
         "src/bin/qualify/tools/benchmark_access.rs",
+        "tests/inference.rs",
+        "tests/main.rs",
+        "tests/restore_gen.rs",
+        "tests/runner_cli.rs",
+        "tests/support/inference_manifest.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    compile_data = [
         "fixtures/inference/llamacpp/manifest.json",
     ],
     edition = "2024",
