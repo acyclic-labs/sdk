@@ -579,13 +579,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             cancellation,
                         )
                         .await?;
-                    let listing_bytes = crate::foundation::usize_to_u64(
-                        listing
-                            .entries
-                            .capacity()
-                            .checked_mul(std::mem::size_of::<crate::kernel::AttributeEntry>())
-                            .ok_or(WorkError::Overflow)?,
-                    );
+                    let listing_bytes = listing.retained_bytes()?;
                     let listing = crate::kernel::Owned::new(listing, allocation, listing_bytes);
                     for entry in &listing.value.entries {
                         accounting.charge(WorkCounters {
