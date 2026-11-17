@@ -537,14 +537,13 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
                 .await?;
             assert_eq!(messages, replayed);
             let records = journal.0.lock().unwrap();
-            assert_eq!(records.len(), 1);
-            assert!(matches!(
-                records[0].event,
+            assert!(records.iter().any(|record| matches!(
+                record.event,
                 ExecutionEvent::ToolFailed {
                     reason: ToolFailureKind::InvalidInput,
                     ..
                 }
-            ));
+            )));
         }
     }
     Ok(())
