@@ -96,13 +96,12 @@ fn answer(
                 Body::from(json.to_string())
             };
             response(status, "json", body)
-        } else if let Some(events) = bound.as_ref().ok().and_then(|bound| {
-            host.engine
-                .reply_events(namespace, endpoint, &body, bound, tokens.unwrap_or(0))
-        }) {
+        } else if let Ok(bound) = &bound
+            && let Some(events) =
+                host.engine
+                    .reply_events(namespace, endpoint, &body, bound, tokens.unwrap_or(0))
+        {
             let mut gates = bound
-                .as_ref()
-                .expect("bound SSE reply")
                 .pause_after
                 .iter()
                 .map(|marker| {
@@ -118,8 +117,11 @@ fn answer(
                     let marker = gates
                         .keys()
                         .find(|marker| {
-                            let encoded = serde_json::to_string(marker).expect("string encoding");
-                            text.contains(&encoded[1..encoded.len() - 1])
+                            let encoded = Value::from(marker.as_str()).to_string();
+                            encoded
+                                .strip_prefix('"')
+                                .and_then(|inner| inner.strip_suffix('"'))
+                                .is_some_and(|inner| text.contains(inner))
                         })
                         .cloned();
                     let gate = marker.and_then(|marker| gates.remove(&marker));
@@ -137,7 +139,7 @@ fn answer(
                     })
                 },
             );
-            let hold = bound.as_ref().is_ok_and(|step| step.hold);
+            let hold = bound.hold;
             let tail = stream::once(async move {
                 if hold {
                     std::future::pending::<()>().await;
