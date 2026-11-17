@@ -476,59 +476,60 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
     fn reply<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
         decode(bytes).map_err(|_| wire::ErrorCode::Unavailable.into())
     }
-    let checked =
-        match ObjectsMethod::from_http_route(route).ok_or(wire::ErrorCode::InvalidArgument)? {
-            ObjectsMethod::PutBlob => {
-                let request: wire::PutBlobRequest = decode(input)?;
-                let digest = convert::digest(request.digest.as_ref())?;
-                convert::verified_put(&reply(output)?, digest, request.body.len() as u64).map(drop)
-            }
-            ObjectsMethod::PutBlobs => {
-                let request: wire::PutBlobsRequest = decode(input)?;
-                let expected = request
-                    .puts
-                    .iter()
-                    .map(|put| Ok((convert::digest(put.digest.as_ref())?, put.body.len() as u64)))
-                    .collect::<Result<Vec<_>, Error>>()?;
-                convert::verified_puts(reply(output)?, &expected, None).map(drop)
-            }
-            ObjectsMethod::PutManifest => {
-                let request: wire::PutManifestRequest = decode(input)?;
-                let manifest = convert::from_manifest(request.manifest.as_ref())?;
-                let (digest, length) = (Digest::of(&manifest.encode()?), manifest.length()?);
-                convert::verified_put(&reply(output)?, digest, length).map(drop)
-            }
-            ObjectsMethod::GetBlob => {
-                let request: wire::GetBlobRequest = decode(input)?;
-                let digest = convert::digest(request.digest.as_ref())?;
-                let range = convert::from_range(request.range.as_ref());
-                convert::object(reply(output)?, digest, range, request.maximum_bytes).map(drop)
-            }
-            ObjectsMethod::HeadBlob => {
-                let request: wire::HeadBlobRequest = decode(input)?;
-                let digest = convert::digest(request.digest.as_ref())?;
-                convert::headed(&reply(output)?, digest).map(drop)
-            }
-            ObjectsMethod::DeleteBlob => convert::delete(&reply(output)?).map(drop),
-            ObjectsMethod::ListBlobs => {
-                let request: wire::ListBlobsRequest = decode(input)?;
-                let after = request
-                    .after
-                    .as_ref()
-                    .map(|after| convert::digest(Some(after)))
-                    .transpose()?;
-                convert::listed(&reply(output)?, after, request.limit).map(drop)
-            }
-            ObjectsMethod::Retain | ObjectsMethod::RetainFenced => {
-                reply::<wire::RetainResponse>(output).map(drop)
-            }
-            ObjectsMethod::Release | ObjectsMethod::ReleaseTerminal => {
-                reply::<wire::ReleaseResponse>(output).map(drop)
-            }
-            ObjectsMethod::Collect => reply::<wire::CollectResponse>(output).map(drop),
-            ObjectsMethod::Usage => reply::<wire::UsageResponse>(output).map(drop),
-            ObjectsMethod::Availability => return Err(wire::ErrorCode::InvalidArgument.into()),
-        };
+    let checked = match ObjectsMethod::from_http_route(route)
+        .ok_or(wire::ErrorCode::InvalidArgument)?
+    {
+        ObjectsMethod::PutBlob => {
+            let request: wire::PutBlobRequest = decode(input)?;
+            let digest = convert::digest(request.digest.as_ref())?;
+            convert::verified_put(&reply(output)?, digest, request.body.len() as u64).map(drop)
+        }
+        ObjectsMethod::PutBlobs => {
+            let request: wire::PutBlobsRequest = decode(input)?;
+            let expected = request
+                .puts
+                .iter()
+                .map(|put| Ok((convert::digest(put.digest.as_ref())?, put.body.len() as u64)))
+                .collect::<Result<Vec<_>, Error>>()?;
+            convert::verified_puts(reply(output)?, &expected, None).map(drop)
+        }
+        ObjectsMethod::PutManifest => {
+            let request: wire::PutManifestRequest = decode(input)?;
+            let manifest = convert::from_manifest(request.manifest.as_ref())?;
+            let (digest, length) = (Digest::of(&manifest.encode()?), manifest.length()?);
+            convert::verified_put(&reply(output)?, digest, length).map(drop)
+        }
+        ObjectsMethod::GetBlob => {
+            let request: wire::GetBlobRequest = decode(input)?;
+            let digest = convert::digest(request.digest.as_ref())?;
+            let range = convert::from_range(request.range.as_ref());
+            convert::object(reply(output)?, digest, range, request.maximum_bytes, None).map(drop)
+        }
+        ObjectsMethod::HeadBlob => {
+            let request: wire::HeadBlobRequest = decode(input)?;
+            let digest = convert::digest(request.digest.as_ref())?;
+            convert::headed(&reply(output)?, digest, None).map(drop)
+        }
+        ObjectsMethod::DeleteBlob => convert::delete(&reply(output)?, None).map(drop),
+        ObjectsMethod::ListBlobs => {
+            let request: wire::ListBlobsRequest = decode(input)?;
+            let after = request
+                .after
+                .as_ref()
+                .map(|after| convert::digest(Some(after)))
+                .transpose()?;
+            convert::listed(&reply(output)?, after, request.limit, None).map(drop)
+        }
+        ObjectsMethod::Retain | ObjectsMethod::RetainFenced => {
+            reply::<wire::RetainResponse>(output).map(drop)
+        }
+        ObjectsMethod::Release | ObjectsMethod::ReleaseTerminal => {
+            reply::<wire::ReleaseResponse>(output).map(drop)
+        }
+        ObjectsMethod::Collect => reply::<wire::CollectResponse>(output).map(drop),
+        ObjectsMethod::Usage => reply::<wire::UsageResponse>(output).map(drop),
+        ObjectsMethod::Availability => return Err(wire::ErrorCode::InvalidArgument.into()),
+    };
     checked.map_err(|_| wire::ErrorCode::Unavailable.into())
 }
 

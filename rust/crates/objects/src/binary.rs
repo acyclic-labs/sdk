@@ -138,9 +138,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 convert::get_request(digest, range, maximum_bytes),
             )
             .await?;
-        Ok(convert::object(reply, digest, range, maximum_bytes)
-            .map_err(|_| unavailable())?
-            .served_at(revision))
+        convert::object(reply, digest, range, maximum_bytes, revision).map_err(|_| unavailable())
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
@@ -152,9 +150,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 },
             )
             .await?;
-        let mut head = convert::headed(&reply, digest).map_err(|_| unavailable())?;
-        head.revision = revision;
-        Ok(head)
+        convert::headed(&reply, digest, revision).map_err(|_| unavailable())
     }
 
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
@@ -166,18 +162,14 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 },
             )
             .await?;
-        let mut deletion = convert::delete(&reply).map_err(|_| unavailable())?;
-        deletion.revision = revision;
-        Ok(deletion)
+        convert::delete(&reply, revision).map_err(|_| unavailable())
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
         let (reply, revision) = self
             .call("blobs/list", convert::list_request(after, limit))
             .await?;
-        let mut page = convert::listed(&reply, after, limit).map_err(|_| unavailable())?;
-        page.revision = revision;
-        Ok(page)
+        convert::listed(&reply, after, limit, revision).map_err(|_| unavailable())
     }
 
     async fn flush(&self, _only: Option<&[Digest]>) -> Result<(), Error> {

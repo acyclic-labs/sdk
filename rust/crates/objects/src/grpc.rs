@@ -374,7 +374,7 @@ impl Blobs for GrpcObjects {
                 self.transfer_timeout,
                 read
             )?;
-            Ok(convert::object(reply.0, digest, range, maximum_bytes)?.served_at(reply.1))
+            convert::object(reply.0, digest, range, maximum_bytes, reply.1)
         })
         .await
     }
@@ -390,9 +390,7 @@ impl Blobs for GrpcObjects {
                 None,
                 read
             )?;
-            let mut head = convert::headed(&reply.0, digest)?;
-            head.revision = reply.1;
-            Ok(head)
+            convert::headed(&reply.0, digest, reply.1)
         })
         .await
     }
@@ -407,9 +405,7 @@ impl Blobs for GrpcObjects {
                 },
                 None
             )?;
-            let mut deletion = convert::delete(&reply.0)?;
-            deletion.revision = reply.1;
-            Ok(deletion)
+            convert::delete(&reply.0, reply.1)
         })
         .await
     }
@@ -423,9 +419,7 @@ impl Blobs for GrpcObjects {
                 None,
                 read
             )?;
-            let mut page = convert::listed(&reply.0, after, limit)?;
-            page.revision = reply.1;
-            Ok(page)
+            convert::listed(&reply.0, after, limit, reply.1)
         })
         .await
     }

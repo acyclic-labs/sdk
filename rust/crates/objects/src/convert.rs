@@ -155,7 +155,10 @@ pub(crate) fn wire_put(value: &Put) -> wire::PutResponse {
     }
 }
 
-pub(crate) fn head(value: &wire::BlobInfo) -> Result<Head, Error> {
+pub(crate) fn head(
+    value: &wire::BlobInfo,
+    revision: Option<acyclic_stream::Revision>,
+) -> Result<Head, Error> {
     if value.kind == wire::Kind::Blob as i32 && value.sha256.is_some() {
         return Err(invalid());
     }
@@ -173,7 +176,7 @@ pub(crate) fn head(value: &wire::BlobInfo) -> Result<Head, Error> {
             .as_ref()
             .map(|digest| digest.as_slice().try_into().map_err(|_| invalid()))
             .transpose()?,
-        revision: None,
+        revision,
     })
 }
 
@@ -190,7 +193,10 @@ pub(crate) fn wire_head(value: &Head) -> wire::BlobInfo {
     }
 }
 
-pub(crate) fn delete(value: &wire::DeleteBlobResponse) -> Result<crate::Deletion, Error> {
+pub(crate) fn delete(
+    value: &wire::DeleteBlobResponse,
+    revision: Option<acyclic_stream::Revision>,
+) -> Result<crate::Deletion, Error> {
     let outcome = match wire::DeleteStatus::try_from(value.status).map_err(|_| invalid())? {
         wire::DeleteStatus::Deleted => Delete::Deleted,
         wire::DeleteStatus::Absent => Delete::Absent,
@@ -203,7 +209,7 @@ pub(crate) fn delete(value: &wire::DeleteBlobResponse) -> Result<crate::Deletion
     Ok(crate::Deletion {
         outcome,
         references: digests(&value.references)?,
-        revision: None,
+        revision,
     })
 }
 
@@ -218,7 +224,10 @@ pub(crate) fn wire_delete(value: crate::Deletion) -> wire::DeleteBlobResponse {
     }
 }
 
-pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
+pub(crate) fn page(
+    value: &wire::ListBlobsResponse,
+    revision: Option<acyclic_stream::Revision>,
+) -> Result<Page, Error> {
     let page = Page {
         digests: digests(&value.digests)?,
         next: value
@@ -226,7 +235,7 @@ pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
             .as_ref()
             .map(|next| digest(Some(next)))
             .transpose()?,
-        revision: None,
+        revision,
     };
     if page
         .digests
@@ -293,8 +302,9 @@ pub(crate) fn object(
     requested: Digest,
     selection: ByteRange,
     maximum: u64,
+    revision: Option<acyclic_stream::Revision>,
 ) -> Result<crate::Object, Error> {
-    let head = head(value.info.as_ref().ok_or_else(invalid)?)?;
+    let head = head(value.info.as_ref().ok_or_else(invalid)?, revision)?;
     let selected = selection.resolve(head.length)?;
     if head.digest != requested
         || value.start != selected.start
@@ -383,8 +393,12 @@ pub(crate) fn verified_puts(
 }
 
 /// Checks an envelope against the digest it was read for.
-pub(crate) fn headed(value: &wire::BlobInfo, requested: Digest) -> Result<Head, Error> {
-    let head = head(value)?;
+pub(crate) fn headed(
+    value: &wire::BlobInfo,
+    requested: Digest,
+    revision: Option<acyclic_stream::Revision>,
+) -> Result<Head, Error> {
+    let head = head(value, revision)?;
     if head.digest != requested {
         return Err(wire::ErrorCode::Unavailable.into());
     }
@@ -396,8 +410,9 @@ pub(crate) fn listed(
     value: &wire::ListBlobsResponse,
     after: Option<Digest>,
     limit: u32,
+    revision: Option<acyclic_stream::Revision>,
 ) -> Result<Page, Error> {
-    let page = page(value)?;
+    let page = page(value, revision)?;
     if page.digests.len() > limit as usize
         || after.is_some_and(|after| {
             page.digests.first().is_some_and(|first| *first <= after)
