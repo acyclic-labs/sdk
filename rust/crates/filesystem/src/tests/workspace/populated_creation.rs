@@ -277,6 +277,51 @@ async fn creation_attributes_are_published_and_recovery_requires_them() -> Resul
 }
 
 #[tokio::test]
+async fn empty_creation_with_attributes_is_rejected() -> Result<(), Box<dyn Error>> {
+    let config = crate::VolumeInitialization {
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
+        access_policy: Some(crate::access::INITIAL_POLICY),
+    };
+    let operation = IdempotencyKey::from_bytes([0xe6; 16]).operation_id();
+    let cancellation = CancellationToken::new();
+    let name = crate::kernel::AttributeName::new(
+        crate::kernel::AttributeClass::PosixXattr,
+        b"user.creation".to_vec(),
+    )?;
+    let attributes = vec![crate::CreationAttribute {
+        path: "/report.json".into(),
+        name,
+        value: OwnedBytes::from_static(b"metadata"),
+    }];
+    let fs = Fs::memory();
+    // An empty creation publishes no file, so it has nowhere to put an
+    // attribute. It must be rejected, not published with the attributes lost.
+    let failure = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "journal",
+            config,
+            crate::CreationOperation::populated_with_attributes(operation, &[], attributes),
+            budget()?,
+            &cancellation,
+            None,
+        )
+        .await
+        .err()
+        .ok_or("an empty creation with attributes was published")?;
+    assert!(
+        matches!(
+            failure.error,
+            WorkspaceError::Filesystem(FsError::CreationRejected)
+        ),
+        "{:?}",
+        failure.error
+    );
+    // The rejected creation published nothing.
+    assert!(unbounded!(fs, open_workspace("journal")).is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn recovery_pages_a_root_larger_than_one_directory_page() -> Result<(), Box<dyn Error>> {
     let mut volume = VolumeConfig::portable(Lifecycle::Ephemeral);
     volume.limits.maximum_directory_page_entries = 2;
