@@ -187,6 +187,27 @@ fn rejects_missing_coverage_hidden_tail_work_memory_growth_and_forged_reports() 
 }
 
 #[test]
+fn per_agent_cost_that_grows_with_population_is_refused() {
+    let operations = [Operation::ObjectHead];
+    let mut report = observed(&[vec![1; 4], vec![1; 4], vec![1; 4]], 0, operations[0]);
+    report
+        .qualify(&operations, RECOVERY)
+        .expect("flat per-agent cost");
+    for point in &mut report.points {
+        let counter = &mut point.samples[0].work[0];
+        counter.total = u128::from(point.agents);
+        counter.maximum = point.agents;
+    }
+    assert!(
+        report
+            .findings(&operations, RECOVERY)
+            .iter()
+            .any(|finding| finding.step == "constant work"),
+        "per-agent work that grows with the population escaped qualification",
+    );
+}
+
+#[test]
 fn fixed_sample_counts_use_observations_instead_of_population_as_denominator() {
     // Time and work share a fixed sample count at each resident population.
     // Dividing these counts by population would conceal the larger sample cost.
