@@ -1,6 +1,6 @@
 import {execFileSync} from 'node:child_process';
-import {readFileSync} from 'node:fs';
-import {resolve} from 'node:path';
+import {existsSync, readFileSync, readdirSync} from 'node:fs';
+import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 export const isMain = url => Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(url);
@@ -61,4 +61,84 @@ export function checkManifestFields(root, expectations) {
     const actual = keys.reduce((value, key) => value?.[key], parsed[file]);
     if (actual !== expected) throw new Error(`${file}: ${keys.join('.')} must be ${JSON.stringify(expected)}; found ${JSON.stringify(actual)}`);
   }
+}
+
+// Evaluate the positive cfg formula directly, without expanding its Cartesian
+// product of alternatives. A negated feature cannot be expressed by Cargo's
+// positive required-features list, even inside a currently satisfied branch.
+export function testGateEnabled(gate, enabled) {
+  const tokens = gate.match(/"[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z_0-9]*|[(),=]/g) ?? [];
+  let at = 0;
+  const invalid = () => { throw new Error(`unsupported cfg gate: ${gate}`); };
+  const parse = () => {
+    const name = tokens[at++];
+    if (!/^[A-Za-z_][A-Za-z_0-9]*$/.test(name ?? '')) invalid();
+    let value, children;
+    if (tokens[at] === '=') {
+      at++;
+      if (!tokens[at]?.startsWith('"')) invalid();
+      value = tokens[at++].slice(1, -1);
+    } else if (tokens[at] === '(') {
+      at++;
+      children = [];
+      while (tokens[at] !== ')') {
+        children.push(parse());
+        if (tokens[at] === ',') at++;
+        else if (tokens[at] !== ')') invalid();
+      }
+      at++;
+    }
+    const feature = name === 'feature' || Boolean(children?.some(child => child.feature));
+    if (name === 'not' && feature) throw new Error('negated feature gate cannot be represented by required-features; move this gate inside the test target');
+    if (['all', 'any', 'not'].includes(name) && !children) invalid();
+    return {feature, enabled: name === 'feature' ? enabled.has(value)
+      : ['loom', 'kani'].includes(name) ? enabled.has('model-checking')
+      : name === 'all' ? children.every(child => child.enabled)
+      : name === 'any' ? children.some(child => child.enabled) : true};
+  };
+  const result = parse();
+  if (at !== tokens.length) invalid();
+  return result.enabled;
+}
+
+export function testFeatureFindings(root) {
+  const errors = [];
+  const files = trackedFiles(root, ['*Cargo.toml', ':(exclude)scripts/tests/fixtures/**', ':(exclude)rust/vendor/**'])
+    .filter(file => existsSync(resolve(root, file)));
+  let documents;
+  try { documents = tomlFiles(root, files); }
+  catch (error) { return [error.message]; }
+  for (const manifest of files) {
+    try {
+      const data = documents[manifest], directory = dirname(resolve(root, manifest));
+      if (data.package === undefined) continue;
+      if (!data.package || typeof data.package !== 'object' || Array.isArray(data.package)) throw new Error('invalid package table');
+      const targets = new Map((data.test ?? []).map(target => {
+        if (!target || typeof target.name !== 'string') throw new Error('invalid test target');
+        return [target.path ?? `tests/${target.name}.rs`, target];
+      }));
+      if (data.package.autotests !== false && existsSync(join(directory, 'tests'))) {
+        for (const name of readdirSync(join(directory, 'tests'))) {
+          const path = `tests/${name}`;
+          if (name.endsWith('.rs') && !targets.has(path)) targets.set(path, {});
+          if (existsSync(join(directory, path, 'main.rs')) && !targets.has(`${path}/main.rs`)) targets.set(`${path}/main.rs`, {});
+        }
+      }
+      for (const [path, target] of targets) {
+        const source = join(directory, path), text = readFileSync(source, 'utf8');
+        const enabled = new Set(target['required-features'] ?? []), pending = [...enabled];
+        while (pending.length) {
+          for (const feature of data.features?.[pending.pop()] ?? []) {
+            if (!enabled.has(feature)) { enabled.add(feature); pending.push(feature); }
+          }
+        }
+        for (const [, gate] of text.matchAll(/#!\[cfg\((.*?)\)\]/gs)) {
+          try {
+            if (!testGateEnabled(gate, enabled)) errors.push(`${source}: add required-features satisfying (${gate}) to its [[test]] in ${manifest}`);
+          } catch (error) { errors.push(`${source}: ${error.message}`); }
+        }
+      }
+    } catch (error) { errors.push(`${manifest}: ${error.message}`); }
+  }
+  return errors;
 }

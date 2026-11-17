@@ -1,6 +1,16 @@
 load(":node_test.bzl", "node_test")
 
 node_test(
+    name = "test_features_test",
+    srcs = [
+        "//:scripts/policy-core.mjs",
+        "//:scripts/check-test-features.mjs",
+        "//:scripts/check-test-features.test.mjs",
+    ],
+    entry = "scripts/check-test-features.test.mjs",
+)
+
+node_test(
     name = "static_ci_test",
     srcs = [
         "//:.gitattributes",
