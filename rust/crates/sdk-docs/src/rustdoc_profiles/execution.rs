@@ -464,6 +464,7 @@ pub fn execute_profile(
     Ok(observation)
 }
 
+#[cfg(unix)]
 #[test]
 fn prepared_rustdoc_producer_is_reused_for_any_profile_order() {
     crate::with_fixture_compiler(prepared_rustdoc_producer_world);
