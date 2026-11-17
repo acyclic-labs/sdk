@@ -759,7 +759,7 @@ impl Fixture {
     }
 }
 fn cargo() -> PathBuf {
-    PathBuf::from(acyclic_test_support::host_tool!("cargo"))
+    PathBuf::from(acyclic_test_support::host_tool!("CARGO"))
 }
 #[test]
 fn dependency_archive_initial_import_uses_verified_registry_facts() {

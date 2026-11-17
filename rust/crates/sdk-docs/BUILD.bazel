@@ -108,7 +108,7 @@ rust_test(
 isolated_test(
     name = "sdk_docs_test",
     binary = ":sdk_docs_test_cases",
-    binaries = {"//:cargo":"cargo","//:rustc":"rustc"},
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
     id = "sdk-docs",
     exclude = ["::full_cloud::"],
     workers = 1,
@@ -118,7 +118,7 @@ isolated_test(
 isolated_test(
     name = "sdk_docs_test_full-cloud",
     binary = ":sdk_docs_test_cases",
-    binaries = {"//:cargo":"cargo","//:rustc":"rustc"},
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
     id = "sdk-docs",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

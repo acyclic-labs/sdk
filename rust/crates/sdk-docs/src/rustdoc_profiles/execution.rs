@@ -105,19 +105,20 @@ pub fn load_metadata(
 /// Reads the workspace metadata the build generator writes, rebasing its relative manifest
 /// paths onto `root`. The generator records the workspace members only, so no Cargo runs.
 pub fn load_workspace_metadata(root: &Path, path: &Path) -> Result<Metadata, ProfileError> {
-    let mut metadata: Metadata = serde_json::from_slice(
-        &fs::read(path)
-            .map_err(|error| ProfileError::InvalidRustdoc(format!("workspace metadata: {error}")))?,
-    )
-    .map_err(|error| ProfileError::InvalidRustdoc(format!("workspace metadata: {error}")))?;
+    let mut metadata: Metadata =
+        serde_json::from_slice(&fs::read(path).map_err(|error| {
+            ProfileError::InvalidRustdoc(format!("workspace metadata: {error}"))
+        })?)
+        .map_err(|error| ProfileError::InvalidRustdoc(format!("workspace metadata: {error}")))?;
     for package in &mut metadata.packages {
         package.manifest_path = cargo_metadata::camino::Utf8PathBuf::from_path_buf(
             root.join(package.manifest_path.as_std_path()),
         )
         .map_err(|_| ProfileError::InvalidRustdoc("workspace metadata path is not UTF-8".into()))?;
     }
-    metadata.workspace_root = cargo_metadata::camino::Utf8PathBuf::from_path_buf(root.to_owned())
-        .map_err(|_| ProfileError::InvalidRustdoc("workspace root is not UTF-8".into()))?;
+    metadata.workspace_root =
+        cargo_metadata::camino::Utf8PathBuf::from_path_buf(root.to_owned())
+            .map_err(|_| ProfileError::InvalidRustdoc("workspace root is not UTF-8".into()))?;
     Ok(metadata)
 }
 

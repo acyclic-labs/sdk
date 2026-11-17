@@ -273,7 +273,7 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
             "#[cfg(feature=\"native\")] pub struct Witness;\n",
         )
         .unwrap();
-        let cargo = PathBuf::from(acyclic_test_support::host_tool!("cargo"));
+        let cargo = PathBuf::from(acyclic_test_support::host_tool!("CARGO"));
         assert!(Command::new(&cargo)
             .args(["generate-lockfile", "--offline", "--manifest-path"])
             .arg(root.join("Cargo.toml"))

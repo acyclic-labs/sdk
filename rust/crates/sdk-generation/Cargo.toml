@@ -12,11 +12,11 @@ default-run = "sdk-generation"
 test-workers = 1
 
 [package.metadata.bazel.test-tools.sdk_generation_test]
-cargo = "//:cargo"
+CARGO = "//:toolchain_cargo"
 rustc = "//:rustc"
 
 [package.metadata.bazel.test-tools.main]
-cargo = "//:cargo"
+CARGO = "//:toolchain_cargo"
 rustc = "//:rustc"
 
 [package.metadata.bazel.test-data.main]

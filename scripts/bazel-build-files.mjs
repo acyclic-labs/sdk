@@ -856,7 +856,7 @@ const toolchainFilegroups = (() => {
   })})`;
   return ["cargo", "rustc"].map(tool => `
 ${rule("filegroup", [
-    ["name", q(tool)],
+    ["name", q(tool === "cargo" ? "toolchain_cargo" : tool)],
     ["srcs", select(tool)],
     ["visibility", q(["//visibility:public"])],
   ])}`).join("");

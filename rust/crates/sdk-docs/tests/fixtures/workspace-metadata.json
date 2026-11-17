@@ -3031,7 +3031,7 @@
           "test-workers": 1,
           "test-tools": {
             "sdk_docs_test": {
-              "cargo": "//:cargo",
+              "CARGO": "//:toolchain_cargo",
               "rustc": "//:rustc"
             }
           },
@@ -3158,11 +3158,11 @@
           "test-workers": 1,
           "test-tools": {
             "sdk_generation_test": {
-              "cargo": "//:cargo",
+              "CARGO": "//:toolchain_cargo",
               "rustc": "//:rustc"
             },
             "main": {
-              "cargo": "//:cargo",
+              "CARGO": "//:toolchain_cargo",
               "rustc": "//:rustc"
             }
           },

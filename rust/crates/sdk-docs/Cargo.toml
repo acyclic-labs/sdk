@@ -11,7 +11,7 @@ description = "Deterministic Rust-owned versioned SDK documentation data"
 test-workers = 1
 
 [package.metadata.bazel.test-tools.sdk_docs_test]
-cargo = "//:cargo"
+CARGO = "//:toolchain_cargo"
 rustc = "//:rustc"
 
 [package.metadata.bazel.test-data.sdk_docs_test]
