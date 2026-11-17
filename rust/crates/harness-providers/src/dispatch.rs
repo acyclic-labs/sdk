@@ -368,8 +368,16 @@ impl GenerationAttempt {
                 work,
             );
             let mut recovery = core::pin::pin!(recovery);
+            let mut retried = false;
             while let Some(event) = recovery.next().await {
+                retried = true;
                 yield Exchange::Observation(event?);
+            }
+            if retried {
+                // The next send is a new transport attempt. The restart event
+                // is the one place usage counts an attempt the completed send
+                // abandoned, including a pre-acceptance 429 retry.
+                yield Exchange::Observation(ModelEvent::Restarted);
             }
             }
             #[cfg(not(target_arch = "wasm32"))]
