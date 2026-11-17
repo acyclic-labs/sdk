@@ -22,7 +22,7 @@ export function wasmSelection(name) {
   return wasmPackages[name];
 }
 
-/** The wasm roots whose cargo test path ran under wasm-bindgen-test. */
+/** The wasm roots whose test path ran under wasm-bindgen-test. */
 export const wasmTestPackages = new Set(["acyclic-fs-wasm"]);
 
 /** Cargo packages whose Bazel tests run TypeScript that imports a wasm package's generated output. */

@@ -61,7 +61,6 @@
   "scripts/check-test-support.mjs",
   "scripts/check-test-support.test.mjs",
   "scripts/check-typescript-tarballs.mjs",
-  "scripts/check-wasm.mjs",
   "scripts/clippy-feature-sets.mjs",
   "scripts/filesystem-napi-types.mjs",
   "scripts/full-cloud-qualification.test.mjs",
