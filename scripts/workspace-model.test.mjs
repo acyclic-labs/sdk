@@ -119,9 +119,11 @@ test('retained lock reaches transitive patches without making patches workspace 
   write('Cargo.toml', '[workspace]\nmembers=["app"]\n[patch.crates-io]\ndirect={path="direct"}\ntransitive={path="transitive"}\nunused={path="unused"}\n');
   write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nbridge="1"\ndirect="1"\n');
   for (const name of ['direct', 'transitive', 'unused']) {
-    write(`${name}/Cargo.toml`, `[package]\nname="${name}"\nversion="1.0.0"\n[features]\nextra=[]\n[dev-dependencies]\nghost="1"\n`);
+    write(`${name}/Cargo.toml`, `[package]\nname="${name}"\nversion="1.0.0"\n[features]\nextra=[]\n[dev-dependencies]\nghost={path="../ghost"}\n`);
     write(`${name}/src/lib.rs`, '');
   }
+  write('ghost/Cargo.toml', '[package]\nname="ghost"\nversion="1.0.0"\n');
+  write('ghost/src/lib.rs', '');
   write('app/src/lib.rs', '');
   write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["bridge", "direct"]\n[[package]]\nname="bridge"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\ndependencies=["transitive"]\n[[package]]\nname="direct"\nversion="1.0.0"\n[[package]]\nname="transitive"\nversion="1.0.0"\n');
   write('cargo-bazel-lock.json', JSON.stringify({conditions:{}, crates:{'bridge 1.0.0': {targets:[{Library:{crate_name:'bridge'}}], common_attrs:{deps:[{id:'transitive 1.0.0', target:'transitive'}]}}}}));
