@@ -6,4 +6,3 @@ use acyclic_harness_client as client;
 use acyclic_harness_hosting as hosting;
 
 pub mod conformance;
-pub use conformance::*;

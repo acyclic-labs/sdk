@@ -16,13 +16,16 @@ acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = fa
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "conformance", "test-support"] }
+async-trait.workspace = true
 base64 = "=0.23.1"
 bytes.workspace = true
 ed25519-dalek = { version = "3.0.0" }
 futures.workspace = true
 prost.workspace = true
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
 
 [dev-dependencies]
 acyclic-test-support = { path = "../test-support" }

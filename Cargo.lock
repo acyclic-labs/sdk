@@ -1043,14 +1043,17 @@ dependencies = [
  "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-harness-hosting",
+ "acyclic-objects",
  "acyclic-stream",
  "acyclic-test-support",
+ "async-trait",
  "base64 0.23.1",
  "bytes",
  "ed25519-dalek",
  "futures",
  "prost",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
