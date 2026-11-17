@@ -347,10 +347,7 @@ function grpcStatus(error: ConnectError): Error {
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
   if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
-  const failure = streamError(grpcStatus(error), operation);
-  return failure instanceof StreamError && failure.code === "capacity"
-    ? new StreamError("capacity_exhausted", failure.message, failure.status, failure.refusal)
-    : failure;
+  return streamError(grpcStatus(error), operation);
 }
 
 const peerRefusal = Symbol("original peer refusal");
