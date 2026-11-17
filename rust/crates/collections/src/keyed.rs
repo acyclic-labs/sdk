@@ -258,10 +258,10 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
         work: &mut W,
     ) -> Result<Self, W::Error> {
         let entries = match self.keys.exact_position(key, work)? {
-            Some(entry) => entry.value_before.map_or_else(
-                || entry.value.clone(),
-                |before| entry.value.prefix(before.to_be_bytes()),
-            ),
+            Some(entry) => match entry.value_before {
+                Some(before) => entry.value.prefix(before.to_be_bytes(), work)?,
+                None => entry.value.clone(),
+            },
             _ => PersistentIndex::default(),
         };
         let entries = entries.insert(&sequence.to_be_bytes(), value, work)?;

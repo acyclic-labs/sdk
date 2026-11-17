@@ -270,7 +270,7 @@ impl MemoryStream {
         let mut keys = original.map_or_else(KeyTree::default, |path| path.keys.clone());
         let tail = original.map_or(0, |path| path.tail);
         let target = crate::request::fact_path(fact);
-        let (mut index, extends) = lineage.base(target, tail);
+        let (mut index, extends) = lineage.base(target, tail, &mut HistoryIndexWork(self))?;
         let mut changed = false;
         if let Some(History::Batch { records, .. }) =
             original.and_then(|path| path.history.as_deref())
@@ -286,14 +286,17 @@ impl MemoryStream {
         let ranges = match before {
             // A fork's index is cut after insertion, so the sealed batch keeps
             // the fork's exclusive bound; it never extends the source lineage.
-            Some(before) if changed => lineage.publish(
-                target,
-                before,
-                false,
-                true,
-                index.prefix(before.to_be_bytes()),
-                &mut HistoryIndexWork(self),
-            )?,
+            Some(before) if changed => {
+                let index = index.prefix(before.to_be_bytes(), &mut HistoryIndexWork(self))?;
+                lineage.publish(
+                    target,
+                    before,
+                    false,
+                    true,
+                    index,
+                    &mut HistoryIndexWork(self),
+                )?
+            }
             Some(before) => lineage.cap(before),
             None => lineage.publish(
                 target,
@@ -820,7 +823,7 @@ impl MemoryStream {
             .tail
             .checked_sub(1)
             .ok_or(StreamError::InvalidArgument)?;
-        let mut history = PinnedHistory::new(path, path.tail);
+        let mut history = PinnedHistory::new(path, path.tail, &mut HistoryIndexWork(self))?;
         let window = history.page(sequence, 1, |items| {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = &self.work {

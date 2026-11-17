@@ -68,7 +68,7 @@ impl MemoryStream {
         if let Some(anchor) = anchor {
             cursor.check_anchor(path, anchor).await?;
         }
-        cursor.sync(path);
+        cursor.sync(path)?;
         Ok(true)
     }
 

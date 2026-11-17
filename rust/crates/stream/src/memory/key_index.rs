@@ -4,8 +4,12 @@ const RECORD_KEY_WIDTH: usize = crate::MAX_RECORD_KEY_BYTES + 8;
 type RecordKeys = acyclic_collections::KeyedIndex<(), Allocation, RECORD_KEY_WIDTH>;
 
 impl LineageIndex for RecordKeys {
-    fn cut(&self, before: u64) -> Self {
-        self.cap(before)
+    fn cut(
+        &self,
+        before: u64,
+        _work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
+    ) -> Result<Self, StreamError> {
+        Ok(self.cap(before))
     }
 }
 
@@ -20,11 +24,15 @@ struct KeyPin {
 }
 
 impl KeyTree {
-    fn key_pin(&self, tail: u64) -> KeyPin {
-        KeyPin {
-            index: self.pin(tail),
+    fn key_pin(
+        &self,
+        tail: u64,
+        work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
+    ) -> Result<KeyPin, StreamError> {
+        Ok(KeyPin {
+            index: self.pin(tail, work)?,
             before: self.before.map_or(tail, |before| before.min(tail)),
-        }
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -55,7 +63,7 @@ impl KeyTree {
         records: &Arc<RecordBatch>,
         work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
     ) -> Result<Self, StreamError> {
-        let (mut tree, extends) = self.base(&records.origin, records.start);
+        let (mut tree, extends) = self.base(&records.origin, records.start, work)?;
         let mut changed = false;
         for (index, record) in records.values.iter().enumerate() {
             for key in record.headers.keys() {
@@ -72,14 +80,15 @@ impl KeyTree {
     }
 
     #[cfg(test)]
-    fn seek<E>(
+    fn seek(
         &self,
         read: &crate::ReadKeySeek,
         from: u64,
         before: u64,
-        examine: &mut impl FnMut(u64) -> Result<(), E>,
-    ) -> Result<Option<u64>, E> {
-        self.key_pin(before).seek(read, from, before, examine)
+        examine: &mut impl FnMut(u64) -> Result<(), StreamError>,
+    ) -> Result<Option<u64>, StreamError> {
+        self.key_pin(before, &mut ReadOnlyWork)?
+            .seek(read, from, before, examine)
     }
 }
 

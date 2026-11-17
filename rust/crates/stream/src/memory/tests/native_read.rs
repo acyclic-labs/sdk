@@ -232,7 +232,9 @@ async fn lazy_finite_reads_refuse_a_noncontiguous_page() -> MemoryResult<()> {
         FiniteRead::new(
             state.paths.get(&path("native/read")?).unwrap(),
             read_request()?,
+            &mut ReadOnlyWork,
         )
+        .expect("read-only cut")
     };
     cursor.next = 1;
     cursor.window = Some(HistoryWindow {
