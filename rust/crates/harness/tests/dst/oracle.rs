@@ -211,6 +211,8 @@ pub(super) struct Incarnation {
     pub durable: usize,
     /// Fresh source identities this incarnation drew from the schedule.
     pub entropy: Vec<[u8; 16]>,
+    /// Whether the scheduler still had its seeded entropy source.
+    pub entropy_source: bool,
     pub crashed: Option<InjectedStorageFault>,
 }
 
@@ -254,6 +256,7 @@ fn record_incarnation(incarnation: &Incarnation, directory: &Path) {
             "requests": serde_json::to_value(&incarnation.requests)
                 .unwrap_or(serde_json::Value::Null),
             "entropy": incarnation.entropy,
+            "entropy_source": incarnation.entropy_source,
             "crashed": format!("{:?}", incarnation.crashed),
         });
         normalize_paths(&mut value, directory.to_string_lossy().as_ref(), "<world>");
@@ -307,7 +310,9 @@ struct WorldDirectory {
 impl WorldDirectory {
     fn new(seed: u64) -> std::io::Result<Self> {
         let key = (
-            std::thread::current().name().unwrap_or("dst").to_owned(),
+            std::env::var("DST_X1_THREAD")
+                .ok()
+                .unwrap_or_else(|| std::thread::current().name().unwrap_or("dst").to_owned()),
             seed,
         );
         let slot = WORLD_SLOTS.with(|slots| {
@@ -581,6 +586,7 @@ impl World {
                 dispatched_at,
                 durable: counter.durable_write_count(),
                 entropy,
+                entropy_source: schedule.has_entropy(),
                 crashed,
             };
             record_incarnation(&incarnation, self.directory.path());

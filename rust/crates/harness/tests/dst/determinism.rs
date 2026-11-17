@@ -169,6 +169,10 @@ fn child_digest(seed: u64) -> std::result::Result<blake3::Hash, String> {
         ])
         .env("DST_X1_CHILD", "1")
         .env("DST_X1_SEED", seed.to_string())
+        .env(
+            "DST_X1_THREAD",
+            std::thread::current().name().unwrap_or("dst"),
+        )
         .output()
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
