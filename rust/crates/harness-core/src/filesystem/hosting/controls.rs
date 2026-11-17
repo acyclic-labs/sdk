@@ -507,6 +507,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                             .descendant_status(
                                 &delivery.actor,
                                 &state.agent,
+                                &by,
+                                &intent,
                                 &state.agent,
                                 &root_state.open_children,
                                 &mut effects,
@@ -660,6 +662,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         &self,
         within: &ActorReference,
         root: &AgentPath,
+        by: &Sender,
+        intent: &IntentId,
         parent: &AgentPath,
         children: &crate::agent::Children,
         effects: &mut Vec<CommitEffect>,
@@ -708,6 +712,17 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 let reported = state.as_ref().is_some_and(|state| state.reported);
                 if !archived {
                     if actor_state.paused() {
+                        // Close the paused child's inbox before resuming it:
+                        // the root's cascade arrives in a later commit, and a
+                        // resumed child must not start work in between.
+                        let child_intent = IntentId::try_from(format!("{intent}:{}", child.id()))?;
+                        let activation = self
+                            .store
+                            .activation(&actor)
+                            .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
+                        effects.extend(
+                            crate::agent::archive(&child, by, &child_intent, activation)?.effects,
+                        );
                         let key = crate::agent::intent_key(
                             "file-controls",
                             &[root.as_str(), child.as_str(), "stop"],
