@@ -4,7 +4,7 @@ import {copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {testFeatureFindings, testGateEnabled} from './policy-core.mjs';
+import {evaluateCfg, testFeatureFindings, testGateEnabled} from './policy-core.mjs';
 
 function fixture(t, manifest, source = '#![cfg(feature = "local")]\n', extra = {}) {
   const root = mkdtempSync(join(tmpdir(), 'test-features-'));
@@ -66,6 +66,12 @@ test('bounded cfg model: direct evaluation agrees with the former independent DN
   for (const gate of ['', 'all(', 'any(feature="local") trailing', 'not(feature="local")', 'any(target_os="linux",not(feature="local"))']) {
     assert.throws(() => testGateEnabled(gate, new Set(['local'])));
   }
+  for (const [gate, expected] of [['all(test,unknown)', undefined], ['all(feature="test-support",unknown)', false],
+    ['any(test,unknown)', true], ['any(feature="test-support",unknown)', undefined], ['not(unknown)', undefined],
+    ['not(test)', false], ['not(feature="test-support")', true]]) {
+    assert.equal(evaluateCfg(gate, name => name === 'test' ? true : name === 'feature' ? false : undefined), expected);
+  }
+  for (const enabled of [new Set(), new Set(['model-checking'])]) assert.equal(testGateEnabled('not(loom)', enabled), true);
 });
 
 test('the actual policy CLI refuses a tracked ungated target and accepts explicit opt-in', t => {
