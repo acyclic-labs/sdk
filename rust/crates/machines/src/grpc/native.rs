@@ -216,10 +216,12 @@ impl Provider<NativeEndpoint> {
 impl NativeEndpoint {
     async fn authenticated_client(&self) -> Result<Client, ProviderError> {
         let credential = match &self.credential {
-            Some(provider) => Some(provider.resolve().await.map_err(|cause| {
-                ProviderError::Rejected("Machines credential renewal failed".into())
-                    .with_cause(cause)
-            })?),
+            Some(provider) => Some(
+                provider
+                    .resolve()
+                    .await
+                    .map_err(|cause| read_error(cause.into()))?,
+            ),
             None => None,
         };
         Ok(Client {

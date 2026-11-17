@@ -41,13 +41,15 @@ pub enum ConnectError {
     Transport(#[from] tonic::transport::Error),
 }
 
-fn credential_error(error: CredentialError) -> Status {
-    let mut status = match error.denial_cause() {
-        Some(cause) => cause.into(),
-        None => Status::unavailable("credential source unavailable or changed"),
-    };
-    status.set_source(Arc::new(error));
-    status
+impl From<CredentialError> for Status {
+    fn from(error: CredentialError) -> Self {
+        let mut status = match error.denial_cause() {
+            Some(cause) => cause.into(),
+            None => Self::unavailable("credential source unavailable or changed"),
+        };
+        status.set_source(Arc::new(error));
+        status
+    }
 }
 
 fn stopped_status(reason: crate::operation::Stopped) -> Status {
@@ -141,7 +143,7 @@ impl Future for CredentialDispatch {
                             }
                         }
                         (Err(error), _) => {
-                            Dispatch::Refused(std::future::ready(Err(credential_error(error))))
+                            Dispatch::Refused(std::future::ready(Err(Status::from(error))))
                         }
                         (Ok(()), other) => other,
                     };
@@ -178,7 +180,7 @@ impl Service<http::Request<Body>> for CredentialChannel {
                 CredentialAction::Ready(result) => {
                     if let Err(error) = result.into_inner() {
                         return CredentialDispatch(Dispatch::Refused(std::future::ready(Err(
-                            credential_error(error),
+                            Status::from(error),
                         ))));
                     }
                 }
@@ -320,7 +322,7 @@ where
     let deadline = budget.deadline();
     budget
         .run(async {
-            let lease = credential.resolve().await.map_err(credential_error)?;
+            let lease = credential.resolve().await.map_err(Status::from)?;
             if let Budget::Operation { context, .. } = budget {
                 context.check().map_err(stopped_status)?;
             }
@@ -348,10 +350,10 @@ pub async fn admit_response<T>(
     if response.as_ref().is_err_and(|error| {
         error.code() == tonic::Code::Unauthenticated && std::error::Error::source(error).is_none()
     }) {
-        lease.reject().await.map_err(credential_error)?;
+        lease.reject().await.map_err(Status::from)?;
     }
     if response.is_ok() {
-        lease.check().await.map_err(credential_error)?;
+        lease.check().await.map_err(Status::from)?;
     }
     response
 }
@@ -393,8 +395,7 @@ pub fn retain_credential<T>(
     request: &mut Request<T>,
     lease: &ResolvedCredential,
 ) -> Result<(), Status> {
-    let authorization =
-        crate::credential::bearer_metadata(lease.as_str()).map_err(credential_error)?;
+    let authorization = crate::credential::bearer_metadata(lease.as_str()).map_err(Status::from)?;
     request
         .metadata_mut()
         .insert("authorization", authorization);
