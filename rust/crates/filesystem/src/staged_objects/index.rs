@@ -410,6 +410,7 @@ fn invalid_spill_ranges_leave_the_index_unchanged() {
     ];
     index.admit_resident(first.clone()).unwrap();
     index.admit_resident(second.clone()).unwrap();
+    index.order.clear();
     index.mark_spilled(&victims, 0, 128).unwrap();
     index.remove(first.object_id());
     index.admit_resident(pending.clone()).unwrap();
