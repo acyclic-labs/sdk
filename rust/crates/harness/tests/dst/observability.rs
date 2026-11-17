@@ -38,7 +38,9 @@ pub(super) fn world(seed: u64) -> std::result::Result<bool, String> {
                 )]],
                 fail_once: None,
             }];
-            let mut world = World::new(seed, &[], oracle::service(plans)).map_err(failed)?;
+            let mut world = World::new(seed, &[], oracle::service(plans))
+                .map_err(failed)?
+                .with_records();
             let incarnation = world
                 .incarnation(None, &[vec![("observe", oracle::tag("observe"))]])
                 .await

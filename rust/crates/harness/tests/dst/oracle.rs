@@ -339,6 +339,8 @@ pub(super) struct World {
     pub seed: u64,
     incarnations: u64,
     entropy: bool,
+    /// Whether each incarnation reads back the root's execution records.
+    records: bool,
 }
 
 impl World {
@@ -400,7 +402,16 @@ impl World {
             seed,
             incarnations: 0,
             entropy,
+            records: false,
         })
+    }
+
+    /// Reads the root's committed execution records after each incarnation.
+    /// Off by default: paging every record costs more than most worlds need.
+    #[must_use]
+    pub fn with_records(mut self) -> Self {
+        self.records = true;
+        self
     }
 
     /// Opens a host on the world's files and sends each group of prompts,
@@ -458,6 +469,7 @@ impl World {
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
             let records = Arc::new(Mutex::new(Vec::new()));
+            let collect_records = self.records;
             let directory = self.directory.path();
             let run = {
                 let provider = Arc::clone(&provider);
@@ -507,12 +519,13 @@ impl World {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
                     }
-                    let conversation = Conversation::open(Box::pin(harness.connect()).await?);
-                    records
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .extend(conversation.execution_records().await?);
-                    drop(conversation);
+                    if collect_records {
+                        let conversation = Conversation::open(Box::pin(harness.connect()).await?);
+                        records
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .extend(conversation.execution_records().await?);
+                    }
                     // Retire every native mount and worker before the next
                     // replay can reuse this world's deterministic path.
                     let harness = Arc::try_unwrap(harness).map_err(|_| {
