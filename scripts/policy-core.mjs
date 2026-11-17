@@ -18,4 +18,3 @@ export function toml(root, file) {
     "import json, sys, tomllib; json.dump(tomllib.load(open(sys.argv[1], 'rb')), sys.stdout)", key], {encoding: 'utf8'})));
   return manifests.get(key);
 }
-
