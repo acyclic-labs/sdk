@@ -892,15 +892,20 @@ fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer
         }
         .boxed()
         .shared();
-        let operation = async {
-            completion.as_mut().await??;
-            Ok(())
-        };
         // Retain an additional live primitive so the real acknowledgement
         // exceeds the channel credit. Reading its prefix leaves it blocked.
         let (_sender, receiver) = tokio::sync::oneshot::channel::<()>();
-        let _held =
+        let held =
             acyclic_native_runtime::obs::waiting("channel-close", "k".repeat(1024), receiver);
+        let operation = async {
+            tokio::select! {
+                result = completion.as_mut() => {
+                    result??;
+                    Ok(())
+                },
+                _ = held => panic!("the retained channel producer must keep the wait pending"),
+            }
+        };
         let host = async {
             let mut owner = BufReader::new(owner);
             let mut line = String::new();
