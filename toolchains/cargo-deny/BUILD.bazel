@@ -5,6 +5,8 @@ advisory_index(name = "advisory_db")
 
 rust_test(
     name = "offline_test",
+    edition = "2024",
+    crate_root = "audit.rs",
     srcs = ["audit.rs"],
     data = [":advisory_db", "//:cargo-bazel-lock.json"],
     env = {
