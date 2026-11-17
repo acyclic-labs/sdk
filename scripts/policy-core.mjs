@@ -15,14 +15,26 @@ export function trackedFiles(root = process.cwd(), paths = [], options = {}) {
 const manifests = new Map();
 export function parseToml(texts) {
   return JSON.parse(execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-I', '-c', `
-import json, sys, tomllib
+import datetime, json, math, sys, tomllib
+def encode(value):
+    if isinstance(value, dict):
+        return {key: encode(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [encode(item) for item in value]
+    if isinstance(value, (datetime.date, datetime.time)):
+        return {"toml_type": type(value).__name__, "value": value.isoformat()}
+    if isinstance(value, float) and not math.isfinite(value):
+        return {"toml_type": "float", "value": str(value)}
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > 9007199254740991:
+        return {"toml_type": "integer", "value": str(value)}
+    return value
 documents = {}
 for path, text in json.load(sys.stdin).items():
     try:
         documents[path] = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         sys.exit(f"{path}: {error}")
-json.dump(documents, sys.stdout)
+json.dump(encode(documents), sys.stdout, allow_nan=False)
 `], {input: JSON.stringify(texts), encoding: 'utf8', maxBuffer: Infinity}));
 }
 
