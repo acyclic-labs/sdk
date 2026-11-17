@@ -214,14 +214,37 @@ pub(super) struct Incarnation {
 
 /// The model-visible trace of one incarnation: what the prompts returned,
 /// what the service saw, where each dispatch landed and whether it crashed.
-fn incarnation_digest(incarnation: &Incarnation) -> [u8; 32] {
+fn incarnation_digest(
+    incarnation: &Incarnation,
+    durable: Option<&std::collections::BTreeMap<String, (bool, Vec<u8>)>>,
+) -> [u8; 32] {
     let trace = serde_json::json!({
         "prompts": format!("{:?}", incarnation.prompts),
         "requests": serde_json::to_value(&incarnation.requests).unwrap_or_default(),
         "dispatched_at": incarnation.dispatched_at,
+        "durable": incarnation.durable,
         "crashed": format!("{:?}", incarnation.crashed),
+        "files": durable.map(|files| serde_json::to_value(files).unwrap_or_default()),
     });
     *blake3::hash(&serde_json::to_vec(&trace).unwrap_or_default()).as_bytes()
+}
+
+thread_local! {
+    /// Whether the next world erases the scheduler's entropy source. The X1
+    /// control replays the same class generator with it set.
+    static ERASE_ENTROPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `body` with every world's scheduler entropy source erased.
+pub(super) fn erase_entropy<T>(body: impl FnOnce() -> T) -> T {
+    ERASE_ENTROPY.with(|erase| erase.set(true));
+    let result = body();
+    ERASE_ENTROPY.with(|erase| erase.set(false));
+    result
+}
+
+fn erasing_entropy() -> bool {
+    ERASE_ENTROPY.with(std::cell::Cell::get)
 }
 
 thread_local! {
@@ -356,6 +379,7 @@ impl World {
         service: ScriptedModelProvider,
         entropy: bool,
     ) -> Result<Self> {
+        let entropy = entropy && !erasing_entropy();
         let directory = WorldDirectory::new(seed).map_err(storage)?;
         let checkout = directory.path().join("checkout");
         std::fs::create_dir(&checkout).map_err(storage)?;
@@ -440,10 +464,12 @@ impl World {
                 Box::pin(async { Ok(()) })
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
+            let durable = Arc::new(Mutex::new(None));
             let directory = self.directory.path();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
+                let durable = Arc::clone(&durable);
                 entry(async move {
                     let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
                     acyclic_harness::test_support::inject_checkout_identity(
@@ -487,6 +513,15 @@ impl World {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
                     }
+                    // The saved files and records are part of the replay, not
+                    // just the model-visible requests. Capture them before the
+                    // harness retires its mounts.
+                    *durable
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+                        super::durable_bytes(directory)
+                            .map_err(|error| Error::Invalid(format!("durable bytes: {error}")))?,
+                    );
                     // Retire every native mount and worker before the next
                     // replay can reuse this world's deterministic path.
                     let harness = Arc::try_unwrap(harness).map_err(|_| {
@@ -521,7 +556,11 @@ impl World {
                 durable: counter.durable_write_count(),
                 crashed,
             };
-            let digest = incarnation_digest(&incarnation);
+            let durable = durable
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            let digest = incarnation_digest(&incarnation, durable.as_ref());
             WORLD_DIGESTS.with(|digests| digests.borrow_mut().push(digest));
             Ok(incarnation)
         })

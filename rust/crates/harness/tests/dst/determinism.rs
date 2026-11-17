@@ -2,13 +2,10 @@
 //! and erasing the scheduler's entropy source changes that trace.
 use super::*;
 use family::{Generator, Variant};
-use oracle::{Plan, World, call, failed, service, tag};
-use serde_json::json;
+use oracle::failed;
 
 /// The X1 world dimension, in `classes.json` order.
 const WORLDS: [&str; 5] = ["A1", "E2", "F1", "I1", "R1"];
-
-const FILES: [(&str, &str); 1] = [("base.txt", "base\n")];
 
 /// One seed per class world. A world runs the same production turn twice and
 /// the entropy-erased control once, then reports all three X1 run variants.
@@ -42,58 +39,6 @@ fn variants(seed: u64) -> Vec<Variant> {
         .into_iter()
         .map(|run| Variant::from([("run", run), ("world", class)]))
         .collect()
-}
-
-fn plans(class: &'static str) -> Vec<Plan> {
-    let content = format!("{class}\n");
-    vec![Plan {
-        tag: class,
-        steps: vec![vec![
-            call(
-                "x1-write",
-                "write",
-                json!({
-                    "path": "out.txt",
-                    "content": content,
-                    "ifVersion": "absent",
-                }),
-            ),
-            call(
-                "x1-read",
-                "read",
-                json!({
-                    "path": "out.txt",
-                }),
-            ),
-        ]],
-        fail_once: None,
-    }]
-}
-
-async fn trace(
-    seed: u64,
-    class: &'static str,
-    erase_entropy: bool,
-) -> std::result::Result<blake3::Hash, String> {
-    let mut world = if erase_entropy {
-        World::without_entropy(seed, &FILES, service(plans(class)))
-    } else {
-        World::new(seed, &FILES, service(plans(class)))
-    }
-    .map_err(failed)?;
-    let prompts = [vec![(class, tag(class))]];
-    let incarnation = world.incarnation(None, &prompts).await.map_err(failed)?;
-    // Every replayed input stays in the digest, including the exact durable
-    // count at each dispatch. The count after the last dispatch is not a replay
-    // input: independent host stores finish their own writes after the model
-    // has settled, and their interleaving is not the seed's to reproduce.
-    let trace = serde_json::json!({
-        "prompts": format!("{:?}", incarnation.prompts),
-        "requests": serde_json::to_value(&incarnation.requests).map_err(failed)?,
-        "dispatched_at": incarnation.dispatched_at,
-        "crashed": format!("{:?}", incarnation.crashed),
-    });
-    Ok(blake3::hash(&serde_json::to_vec(&trace).map_err(failed)?))
 }
 
 /// Replays the class's own generator world and hashes every durable byte it
@@ -156,13 +101,13 @@ fn x1_cross_process_child() {
     else {
         return;
     };
-    let class = std::env::var("DST_X1_CHILD_CLASS").expect("child class");
-    let class = WORLDS
-        .iter()
-        .find(|world| **world == class)
-        .copied()
-        .expect("child class is a world");
-    let digest = replay_generator(seed, class).expect("child replay");
+    let Ok(class) = std::env::var("DST_X1_CHILD_CLASS") else {
+        return;
+    };
+    let Some(class) = WORLDS.iter().find(|world| **world == class).copied() else {
+        panic!("child class {class} is not a world");
+    };
+    let digest = replay_generator(seed, class).unwrap_or_else(|error| panic!("{error}"));
     println!("DST_X1_CHILD_DIGEST={}", hex(digest));
 }
 
@@ -191,21 +136,15 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             hex(child)
         ));
     }
-    // The entropy-erased control replays the same production turn with the
-    // scheduler's source erased; a trace that still matches proves the seed
+    // The entropy-erased control replays the same class generator with the
+    // scheduler's source erased; a digest that still matches proves the seed
     // never reached it.
-    oracle::simulate(seed, || {
-        entry(async move {
-            let on = trace(seed, class, false).await?;
-            let off = trace(seed, class, true).await?;
-            if on == off {
-                return Err(format!(
-                    "X1 {class} seed {seed} entropy erasure did not change the trace"
-                ));
-            }
-            Ok(())
-        })
-    })?;
+    let erased = oracle::erase_entropy(|| replay_generator(seed, class))?;
+    if first == erased {
+        return Err(format!(
+            "X1 {class} seed {seed} entropy erasure did not change the trace"
+        ));
+    }
     println!("DST_X1_DIGEST={class} {}", hex(first));
     Ok(true)
 }
