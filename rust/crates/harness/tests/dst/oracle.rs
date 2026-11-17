@@ -132,6 +132,11 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
     let failed = Mutex::new(Vec::<&'static str>::new());
     let needles: Vec<_> = plans.iter().map(|plan| appears(&tag(plan.tag))).collect();
     let answer = move |request: &ModelRequest| {
+        if request.summary {
+            return ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":1,"summary":"retained older history"}"#.into(),
+            );
+        }
         let messages: Vec<_> = model_visible_messages(&request.messages).collect();
         let found = messages
             .iter()
@@ -219,6 +224,7 @@ pub(super) struct World {
     pub service: ScriptedModelProvider,
     pub seed: u64,
     incarnations: u64,
+    compaction: Option<acyclic_harness::context::CompactionPolicy>,
 }
 
 impl World {
@@ -241,7 +247,14 @@ impl World {
             service,
             seed,
             incarnations: 0,
+            compaction: None,
         })
+    }
+
+    /// Selects this world's compaction policy.
+    pub fn compaction(mut self, policy: acyclic_harness::context::CompactionPolicy) -> Self {
+        self.compaction = Some(policy);
+        self
     }
 
     /// Opens a host on the world's files and sends each group of prompts,
@@ -271,18 +284,22 @@ impl World {
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
             let directory = self.directory.path();
+            let compaction = self.compaction.clone();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
                 entry(async move {
                     let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
-                    let config = local_harness_config(
+                    let mut config = local_harness_config(
                         directory.join("checkout"),
                         (model, provider.clone()),
                     )?
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
                     .state_directory(directory.join("state"));
+                    if let Some(policy) = &compaction {
+                        config = config.compaction(policy.clone());
+                    }
                     let harness = Arc::new(entry(LocalHarness::open(config)).await?);
                     for group in prompts {
                         let outcomes =
@@ -436,6 +453,8 @@ pub(super) struct Crashed {
     pub cause: InjectedStorageFault,
     /// Whether the cut fell inside the selected window.
     pub in_window: bool,
+    /// Requests the crashed incarnation sent before its cut.
+    pub requests: Vec<ModelRequest>,
 }
 
 impl std::fmt::Display for Crashed {
@@ -489,8 +508,16 @@ impl<'a, P: Fn() -> Vec<Plan>> Crash<'a, P> {
                 (Some(open), close) => open <= cause.ordinal && cause.ordinal < close,
                 (None, _) => false,
             };
+            let requests = crashed.requests;
             let recovered = world.incarnation(None, &recovery).await.map_err(failed)?;
-            Ok((Crashed { cause, in_window }, recovered))
+            Ok((
+                Crashed {
+                    cause,
+                    in_window,
+                    requests,
+                },
+                recovered,
+            ))
         })
     }
 }
