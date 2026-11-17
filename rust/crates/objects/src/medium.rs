@@ -29,7 +29,8 @@ pub enum MediumKey {
 }
 
 impl MediumKey {
-    /// Parses a complete account-relative key, refusing malformed paths.
+    /// Classifies an account-relative key. Control-record suffixes are opaque;
+    /// blob shards, digests, payload generations and terminal identities are validated.
     ///
     /// # Errors
     /// Returns `InvalidArgument` when the key is outside the engine format.
