@@ -436,7 +436,7 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
     for _ in 0..threads {
         receive.recv().unwrap();
     }
-    let host = Host::for_workers(workers);
+    let host = Host::for_workers(workers, Progress::new());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)
