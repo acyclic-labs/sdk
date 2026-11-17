@@ -1,0 +1,22 @@
+[package]
+name = "acyclic-fs-lock-order-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Production-source qualification of filesystem ranked locks"
+
+[[test]]
+name = "lock_order"
+path = "src/lock_order.rs"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+
+[lints]
+workspace = true
