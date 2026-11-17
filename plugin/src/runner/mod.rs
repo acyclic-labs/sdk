@@ -243,13 +243,15 @@ fn topology(
             args.topology.as_deref().unwrap_or("swarm"),
         )?,
     };
+    let preset_children = topology.max_children();
+    let preset_depth = topology.max_depth();
     if args.topology_file.is_some()
         && let Some(mode) = &args.topology
     {
         topology.mode = acyclic_harness::topology::Topology::select(mode)?.mode;
     }
-    let max_children = args.max_children.or(topology.max_children());
-    let max_depth = args.max_depth.or(topology.max_depth());
+    let max_children = args.max_children.or(preset_children);
+    let max_depth = args.max_depth.or(preset_depth);
     topology = topology.with_limits(max_children, max_depth);
     topology.validate()?;
     Ok(topology)
@@ -621,7 +623,7 @@ fn owner_arguments(args: &Args) -> Vec<OwnerArgument> {
         arguments.push(OwnerArgument {
             flag: "--topology-file",
             value: Some(path.clone().into_os_string()),
-            reusable: false,
+            reusable: true,
         });
     }
     arguments.push(OwnerArgument {
@@ -772,6 +774,43 @@ mod owner_arguments_tests {
             )
             .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn topology_file_keeps_caps_and_reattaches() -> Result<(), Box<dyn std::error::Error>> {
+        let file = tempfile::NamedTempFile::new()?;
+        std::fs::write(
+            file.path(),
+            br#"{"version":1,"mode":"single","max_children":2,"max_depth":1}"#,
+        )?;
+        let path = file.path().to_str().ok_or("non-UTF-8 preset path")?;
+        let mut args = Args::try_parse_from([
+            "graphcoder",
+            "--topology-file",
+            path,
+            "--topology",
+            "swarm",
+            "exec",
+            "task",
+        ])?;
+        let selected = topology(&args)?;
+        assert!(matches!(
+            selected.mode,
+            acyclic_harness::topology::Mode::Swarm { .. }
+        ));
+        assert_eq!(
+            (selected.max_children(), selected.max_depth()),
+            (Some(2), Some(1))
+        );
+        args.max_children = Some(3);
+        args.max_depth = Some(0);
+        let selected = topology(&args)?;
+        assert_eq!(
+            (selected.max_children(), selected.max_depth()),
+            (Some(3), Some(0))
+        );
+        require_owner_arguments(&args, &Default::default())?;
         Ok(())
     }
 
