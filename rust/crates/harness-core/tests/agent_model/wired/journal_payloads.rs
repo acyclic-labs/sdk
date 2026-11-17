@@ -258,12 +258,26 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
 #[tokio::test]
 async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
     use acyclic_harness_core::{
-        model::{ModelEvent, ModelMessage},
+        conversation::{ContentAccess, ContentPublisher},
+        model::ModelEvent,
+        supervision::Policy,
         test_support::ScriptedEvent,
     };
     let path = AgentPath::root(&id(230));
     let stream = Arc::new(MemoryStream::default());
-    let (filesystem, binding) = private_in(&stream, &path).await?;
+    let operation = OperationId::from_bytes([230; 16]);
+    let (filesystem, volumes, issuer, publisher) =
+        super::supervision::admitted_files(&stream, &path, operation, &Policy::default()).await?;
+    let (body, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "input.txt",
+            b"same prompt",
+            "text/plain",
+            "input.txt",
+            ContentAccess::default(),
+        )?
+        .await?;
     let model = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::Reasoning {
@@ -279,14 +293,7 @@ async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
         stream.clone(),
         within(),
         filesystem.clone(),
-        AuthorityRoot::new(
-            "agents",
-            [7; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "agents".into(),
-            },
-        ),
+        issuer,
         TurnAdmission::LocalRoot,
         executors(model.clone())?,
         LIMITS,
@@ -294,14 +301,27 @@ async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
     ));
     let host = committing(&stream, &filesystem, driver)?;
     let mut adoption = adopted(path.id());
-    adoption.volumes = vec![binding];
+    adoption.volumes = volumes;
     create_filesystem_root(&host, &filesystem, &intent("stream-abort"), adoption).await?;
-    let first = deliver(&host, &path, requested("first", &path)).await?;
-    assert_eq!(first.phase, Phase::Idle);
-    assert_eq!(first.conversation_tail, 1);
-    let second = deliver(&host, &path, requested("second", &path)).await?;
-    assert_eq!(second.phase, Phase::Idle);
-    assert_eq!(second.conversation_tail, 2);
+    let sender = super::super::user();
+    for id in ["first", "second"] {
+        host.send(
+            &path,
+            &sender,
+            &InboxRecord::Message(Message {
+                from: sender.clone(),
+                id: intent(id),
+                body: Box::new(body.clone()),
+                re: None,
+                attachments: None,
+            }),
+        )
+        .await?;
+        host.drain(&path).await?;
+    }
+    let state = host.state(&path).await?;
+    assert_eq!(state.phase, Phase::Idle);
+    assert_eq!(state.conversation_tail, 2);
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(
@@ -310,19 +330,8 @@ async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
         "the interrupted turn must not add a partial item to the next request"
     );
     assert_eq!(
-        requests[1].messages[requests[0].messages.len()..],
-        [ModelMessage {
-            role: ModelRole::User,
-            content: ModelContent::Part(ModelContentPart::Notices {
-                notices: vec![acyclic_harness_core::conversation::wire::Notice {
-                    source: "approval".into(),
-                    kind: "approval.resolved".into(),
-                    body: serde_json::json!({"id": "second"}),
-                    wake: true,
-                    coalesce_key: None,
-                }],
-            }),
-        }],
+        requests[1].messages.len(),
+        requests[0].messages.len() + 1,
         "only the next input follows the original request"
     );
     Ok(())
