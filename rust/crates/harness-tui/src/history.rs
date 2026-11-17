@@ -1,4 +1,4 @@
-use crate::buffer::{Buffer, normalize, slice};
+use crate::buffer::{Buffer, slice};
 use std::{collections::BTreeSet, ops::Range};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8,7 +8,7 @@ pub(crate) struct Selection {
 }
 
 impl Selection {
-    fn of(buffer: &Buffer) -> Self {
+    pub(crate) fn of(buffer: &Buffer) -> Self {
         Self {
             cursor: buffer.cursor,
             anchor: buffer.anchor,
@@ -156,138 +156,5 @@ impl Edit {
     pub fn heap_bytes(&self) -> usize {
         self.changes.capacity() * size_of::<Delta>()
             + self.changes.iter().map(Delta::heap_bytes).sum::<usize>()
-    }
-}
-
-/// Submitted prompts, with a saved in-progress draft and reverse search.
-#[derive(Clone, Debug, Default)]
-pub struct PromptHistory {
-    entries: Vec<String>,
-    generation: u64,
-    pub(crate) navigation: Navigation,
-}
-
-// Search cancellation snapshots navigation without copying the shared entries.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Navigation {
-    // Only the native prompt editor restores saved navigation.
-    /// The projection this session navigated; restoring onto another resets.
-    #[cfg(not(target_arch = "wasm32"))]
-    generation: u64,
-    index: Option<usize>,
-    draft: String,
-    search_before: Option<usize>,
-}
-
-impl PromptHistory {
-    /// A loaded projection of submitted prompts, oldest first, each recorded
-    /// as [`Self::push`] records it. A live query over the sessions' sent
-    /// prompts folds each snapshot into one and passes it to [`Self::replace`];
-    /// no separate history file exists.
-    #[must_use]
-    pub fn snapshot(prompts: impl IntoIterator<Item = String>) -> Self {
-        let mut history = Self::default();
-        for prompt in prompts {
-            history.push(prompt);
-        }
-        let mut loaded = Self::default();
-        loaded.replace(history);
-        loaded
-    }
-
-    /// Replace the projection and invalidate saved navigation.
-    pub fn replace(&mut self, snapshot: Self) {
-        self.entries = snapshot.entries;
-        self.generation = self.generation.wrapping_add(1);
-        self.reset();
-    }
-
-    /// Revision of the loaded history projection, independent of its contents.
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn restore_navigation(&mut self, saved: Navigation) {
-        if saved.generation == self.generation {
-            self.navigation = saved;
-        } else {
-            self.reset();
-        }
-    }
-
-    /// Record a nonblank prompt, suppressing adjacent duplicates.
-    pub fn push(&mut self, text: String) {
-        // Only carriage returns need rewriting; keep the caller's allocation otherwise.
-        let text = if text.contains('\r') {
-            normalize(&text)
-        } else {
-            text
-        };
-        if !text.trim().is_empty() && self.entries.last() != Some(&text) {
-            self.entries.push(text);
-        }
-        self.reset();
-    }
-
-    /// Return the submitted prompts in chronological order.
-    pub fn entries(&self) -> &[String] {
-        &self.entries
-    }
-
-    /// Begin a new history navigation session.
-    pub fn reset(&mut self) {
-        self.navigation = Navigation {
-            #[cfg(not(target_arch = "wasm32"))]
-            generation: self.generation,
-            ..Navigation::default()
-        };
-    }
-
-    /// Go backwards, saving the live draft on the first invocation.
-    pub fn previous(&mut self, draft: &str) -> Option<String> {
-        if self.entries.is_empty() {
-            return None;
-        }
-        if self.navigation.index.is_none() {
-            self.navigation.draft = normalize(draft);
-        }
-        let index = self
-            .navigation
-            .index
-            .unwrap_or(self.entries.len())
-            .saturating_sub(1);
-        self.navigation.index = Some(index);
-        self.entries.get(index).cloned()
-    }
-
-    /// Go forwards, restoring the draft after the newest entry.
-    pub fn next_entry(&mut self) -> Option<String> {
-        let index = self.navigation.index? + 1;
-        if index >= self.entries.len() {
-            self.navigation.index = None;
-            Some(self.navigation.draft.clone())
-        } else {
-            self.navigation.index = Some(index);
-            self.entries.get(index).cloned()
-        }
-    }
-
-    /// Find the previous substring match; reset navigation to restart a query.
-    pub fn reverse_search(&mut self, query: &str) -> Option<String> {
-        let end = self.navigation.search_before.unwrap_or(self.entries.len());
-        let found = self
-            .entries
-            .iter()
-            .take(end)
-            .enumerate()
-            .rev()
-            .find(|(_, entry)| entry.contains(query));
-        if let Some((index, entry)) = found {
-            self.navigation.search_before = Some(index);
-            Some(entry.clone())
-        } else {
-            None
-        }
     }
 }

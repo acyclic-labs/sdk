@@ -8,6 +8,19 @@ fn press(input: &mut PromptInput, code: KeyCode, mods: M, at: u64) -> Vec<InputE
     input.key(KeyEvent::new(code, mods), at, 80)
 }
 
+fn reply(input: &mut PromptInput, effects: &[InputEffect], text: &str, at: u64) {
+    let [
+        InputEffect::History {
+            request, previous, ..
+        },
+    ] = effects
+    else {
+        panic!("history request missing");
+    };
+    let expected = input.editor.text().to_owned();
+    assert!(input.resolve_history(*request, &expected, Some(text), *previous, at));
+}
+
 #[test]
 fn copy_interrupt_and_double_quit_do_not_consume_other_shortcuts() {
     let mut input = PromptInput::new(Editor::new("draft"));
@@ -124,22 +137,23 @@ fn configured_chords_defer_and_replay_the_prefix_action() -> Result<(), Box<dyn 
 #[test]
 fn reverse_search_is_a_reversible_preview_not_a_series_of_edits() {
     let mut input = PromptInput::new(Editor::new("draft"));
-    let mut history = acyclic_harness_tui::PromptHistory::default();
-    for text in ["first foo", "bar", "second foo"] {
-        history.push(text.into());
-    }
-    input.replace_history(history);
     press(&mut input, KeyCode::Char('r'), M::CONTROL, 0);
-    input.committed_text("foo", 1);
+    let effects = input.committed_text("foo", 1);
+    reply(&mut input, &effects, "second foo", 1);
     assert_eq!(input.editor.text(), "second foo");
-    press(&mut input, KeyCode::Char('r'), M::CONTROL, 2);
+    let effects = press(&mut input, KeyCode::Char('r'), M::CONTROL, 2);
+    reply(&mut input, &effects, "first foo", 2);
     assert_eq!(input.editor.text(), "first foo");
     press(&mut input, KeyCode::Esc, M::NONE, 3);
     assert_eq!(input.editor.text(), "draft");
     press(&mut input, KeyCode::Char('r'), M::CONTROL, 4);
-    input.committed_text("bar", 5);
+    let effects = input.committed_text("bar", 5);
+    reply(&mut input, &effects, "bar", 5);
     assert_eq!(input.editor.text(), "bar");
-    assert!(press(&mut input, KeyCode::Enter, M::NONE, 6).is_empty());
+    assert_eq!(
+        press(&mut input, KeyCode::Enter, M::NONE, 6),
+        [InputEffect::HistorySearchFinished { accepted: true }]
+    );
     assert_eq!(input.editor.text(), "bar");
     input.editor.undo();
     assert_eq!(input.editor.text(), "draft");
@@ -320,14 +334,8 @@ fn shift_click_extends_selection_and_release_survives_a_zero_size_area() {
 #[test]
 fn edited_submissions_append_to_the_shared_history_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness_tui::PromptHistory;
     let mut input = PromptInput::new(Editor::new("working draft"));
-    input.replace_history(PromptHistory::snapshot(["first"].map(String::from)));
     input.edit_message("old-message".into(), "original");
-    // A live-query snapshot changes history while the prior message is edited.
-    input.replace_history(PromptHistory::snapshot(
-        ["first", "external"].map(String::from),
-    ));
     input.external_result(Some("edited\r\nmessage"), 0);
     assert_eq!(
         press(&mut input, KeyCode::Enter, M::NONE, 1),
@@ -338,21 +346,16 @@ fn edited_submissions_append_to_the_shared_history_snapshot()
         }]
     );
     assert_eq!(input.editor.text(), "working draft");
-    let saved = input.history().entries().to_vec();
-    input.replace_history(PromptHistory::snapshot(saved.clone()));
-    assert_eq!(
-        input.history().entries(),
-        &["first", "external", "edited\nmessage"]
-    );
     press(&mut input, KeyCode::Home, M::NONE, 2);
-    press(&mut input, KeyCode::Up, M::NONE, 3);
+    let effects = press(&mut input, KeyCode::Up, M::NONE, 3);
+    reply(&mut input, &effects, "edited\nmessage", 3);
     assert_eq!(input.editor.text(), "edited\nmessage");
     input.edit_message("other".into(), "cancelled");
     press(&mut input, KeyCode::Esc, M::NONE, 4);
     press(&mut input, KeyCode::End, M::CONTROL, 5);
-    press(&mut input, KeyCode::Down, M::NONE, 6);
+    let effects = press(&mut input, KeyCode::Down, M::NONE, 6);
+    reply(&mut input, &effects, "working draft", 6);
     assert_eq!(input.editor.text(), "working draft");
-    assert_eq!(saved, input.history().entries());
     Ok(())
 }
 
@@ -391,7 +394,6 @@ fn wheel_notches_scroll_the_view_and_never_the_editor() {
 #[test]
 fn query_history_replies_preserve_edits_and_cancelled_searches() {
     let mut input = PromptInput::new(Editor::new("draft"));
-    input.use_history_query();
     input.editor.set_cursor(0, false);
     let first = press(&mut input, KeyCode::Up, M::NONE, 0);
     let [InputEffect::History { request: first, .. }] = first.as_slice() else {
@@ -436,10 +438,6 @@ fn query_history_replies_preserve_edits_and_cancelled_searches() {
     let [InputEffect::History { restart: false, .. }] = repeated.as_slice() else {
         panic!("repeated search restarted instead of advancing")
     };
-    assert!(
-        input.history().entries().is_empty(),
-        "query recall copied a second history authority"
-    );
     press(&mut input, KeyCode::Esc, M::NONE, 12);
     press(&mut input, KeyCode::Home, M::NONE, 13);
     let navigation = press(&mut input, KeyCode::Up, M::NONE, 14);
@@ -456,7 +454,6 @@ fn query_history_replies_preserve_edits_and_cancelled_searches() {
         [InputEffect::History { restart: true, .. }]
     ));
     let mut moved = PromptInput::new(Editor::new("draft"));
-    moved.use_history_query();
     press(&mut moved, KeyCode::Home, M::NONE, 0);
     let requested = press(&mut moved, KeyCode::Up, M::NONE, 1);
     let [InputEffect::History { request, .. }] = requested.as_slice() else {
@@ -489,7 +486,6 @@ fn query_history_replies_preserve_edits_and_cancelled_searches() {
 fn a_changed_history_query_accepts_only_its_own_completed_match() {
     for completed in [false, true] {
         let mut input = PromptInput::new(Editor::new("draft"));
-        input.use_history_query();
         let original = press(&mut input, KeyCode::Char('r'), M::CONTROL, 0);
         let [InputEffect::History { request, .. }] = original.as_slice() else {
             panic!("missing original search")

@@ -1,7 +1,6 @@
 use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use acyclic_harness_tui::{
-    CompletionMenu, Editor, InputEffect, InputKeymap, PromptHistory, PromptInput,
-    completion_request,
+    CompletionMenu, Editor, InputEffect, InputKeymap, PromptInput, completion_request,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -235,8 +234,6 @@ fn semantic_prelude(data: &[u8], broken: bool) -> Result<Editor, std::io::Error>
     let mut input = PromptInput::default();
     input.keymap = InputKeymap::parse(r#"{"bindings":{"Ctrl+j":"submit"}}"#)
         .map_err(|errors| std::io::Error::other(format!("{errors:?}")))?;
-    let history = PromptHistory::snapshot(["older\rprompt", "newer\r\nhistory"].map(String::from));
-    input.replace_history(history);
     input.committed_text("@dr", 0);
     let suffix: String = String::from_utf8_lossy(data)
         .chars()
@@ -291,15 +288,12 @@ fn semantic_prelude(data: &[u8], broken: bool) -> Result<Editor, std::io::Error>
             edit: None
         }]
     );
-    // The same live editor retains populated, normalized history during fuzzing.
-    input.replace_history(PromptHistory::snapshot(
-        ["newest\r\nhistory"].map(String::from),
-    ));
-    assert!(
-        input
-            .key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 4, 80)
-            .is_empty()
-    );
+    // A host query supplies history without giving the editor a second copy.
+    let effects = input.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), 4, 80);
+    let [InputEffect::History { request, .. }] = effects.as_slice() else {
+        return Err(std::io::Error::other("history request missing"));
+    };
+    assert!(input.resolve_history(*request, "", Some("newest\r\nhistory"), true, 4));
     assert_eq!(
         (input.editor.text(), input.editor.cursor()),
         ("newest\nhistory", 0)

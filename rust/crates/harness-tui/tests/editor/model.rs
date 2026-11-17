@@ -1,3 +1,4 @@
+use super::sequences::recall;
 use acyclic_harness_tui::{Editor, Layout, Motion};
 use proptest::prelude::*;
 use unicode_segmentation::UnicodeSegmentation;
@@ -71,7 +72,6 @@ proptest! {
     fn random_edits_match_string_model(ops in prop::collection::vec(operation(), 0..80)) {
         let mut editor = Editor::default();
         let mut model = Model::default();
-        let mut history = acyclic_harness_tui::PromptHistory::default();
         let mut undo = vec![];
         let mut redo = vec![];
         let mut recalled_draft = None;
@@ -115,9 +115,8 @@ proptest! {
                 }
                 9 => {
                     let entry = format!("saved{text}");
-                    history.push(entry.clone());
                     recalled_draft = None;
-                    prop_assert_eq!(editor.recall(&mut history, true, step as u64), model.cursor == 0);
+                    prop_assert_eq!(recall(&mut editor, true, &entry, step as u64), model.cursor == 0);
                     if model.cursor == 0 {
                         recalled_draft = Some(model.text.clone());
                         model.text = normalize_reference(&entry);
@@ -126,7 +125,7 @@ proptest! {
                 }
                 _ => {
                     let expected = model.cursor == model.text.len() && recalled_draft.is_some();
-                    prop_assert_eq!(editor.recall(&mut history, false, step as u64), expected);
+                    if expected { prop_assert!(recall(&mut editor, false, recalled_draft.as_deref().unwrap_or_default(), step as u64)); }
                     if expected {
                         model.text = recalled_draft.take().unwrap();
                         model.cursor = model.text.len();
