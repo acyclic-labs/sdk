@@ -18,7 +18,9 @@ const GLOBAL_INPUTS = [
   /(?:^|\/)BUILD\.bazel$/,
   /\.bzl$/,
   /^toolchains\//,
-  /^scripts\/bazel-build-files\.mjs$/,
+  /^patches\//,
+  /^cargo-bazel(?:-lock\.json|\.Cargo\.lock)$/,
+  /^scripts\/bazel-build-files\.mjs$/,,
   /^rust\/vendor\//,
 ];
 
