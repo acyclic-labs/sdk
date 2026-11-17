@@ -1,6 +1,6 @@
 //! Authenticated gRPC adapter for the canonical Stream provider contract.
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 pub use acyclic_auth::credential::{CredentialError, CredentialProvider};
 use async_trait::async_trait;
