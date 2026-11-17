@@ -366,8 +366,14 @@ fn failed(action: &str, path: &Path, error: io::Error) -> String {
 
 impl RunnerDirectory {
     fn claim(root: &Path) -> Result<Self, String> {
+        // Abandoned directories go before this runner needs a new one: they may hold the very
+        // space or inodes its creation needs.
         #[cfg(unix)]
-        let root_lock = lock_root(root)?;
+        let root_lock = {
+            let lock = lock_root(root)?;
+            reclaim(root, acyclic_native_runtime::private_file::effective_user())?;
+            lock
+        };
         let mut attempt = 0_u64;
         let path = loop {
             let name = std::collections::hash_map::RandomState::new()
@@ -384,15 +390,8 @@ impl RunnerDirectory {
         };
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt as _;
             let lock = File::open(&path).map_err(|error| failed("open", &path, error))?;
             lock.lock().map_err(|error| failed("lock", &path, error))?;
-            // The directory this runner just created names its own user.
-            let user = lock
-                .metadata()
-                .map_err(|error| failed("inspect", &path, error))?
-                .uid();
-            reclaim(root, &path, user)?;
             drop(root_lock);
             Ok(Self {
                 root: root.to_path_buf(),
@@ -420,14 +419,14 @@ fn lock_root(root: &Path) -> Result<File, String> {
     Ok(lock)
 }
 
-/// Removes every runner directory of `user` under `root`, other than `own`, whose lock is free.
+/// Removes every runner directory of `user` under `root` whose lock is free.
 #[cfg(unix)]
-fn reclaim(root: &Path, own: &Path, user: u32) -> Result<(), String> {
+fn reclaim(root: &Path, user: u32) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt as _;
     for entry in fs::read_dir(root).map_err(|error| failed("list", root, error))? {
         let entry = entry.map_err(|error| failed("list", root, error))?;
         let path = entry.path();
-        if path == own || !entry.file_name().to_str().is_some_and(is_runner_name) {
+        if !entry.file_name().to_str().is_some_and(is_runner_name) {
             continue;
         }
         let metadata = entry
