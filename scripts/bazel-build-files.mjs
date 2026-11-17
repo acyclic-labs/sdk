@@ -197,9 +197,9 @@ function cfgHasTest(expr) {
 }
 // The end of the string literal that starts at `at`: its closing quote, raw or not.
 function stringEnd(text, at) {
-  const raw = /^r(#*)"/.exec(text.slice(at));
+  const raw = /^(?:b?r(#*))?"/.exec(text.slice(at));
   if (raw) {
-    const close = `"${raw[1]}`, end = text.indexOf(close, at + raw[0].length);
+    const close = `"${raw[1] ?? ""}`, end = text.indexOf(close, at + raw[0].length);
     return end < 0 ? text.length : end + close.length;
   }
   let i = at + 1;
@@ -210,7 +210,10 @@ function stringEnd(text, at) {
 // { path: "tokio::test", args: "" }. Comments and literals are skipped, so a `#[test]` a doc
 // comment spells is not a test of this crate.
 function* attributes(text) {
-  const string = at => text[at] === '"' || (text[at] === "r" && /^r#*"/.test(text.slice(at)) && !/\w/.test(text[at - 1] ?? ""));
+  const raw = at => /^(?:b?r#*")/.test(text.slice(at)) && !/\w/.test(text[at - 1] ?? "");
+  const string = at => text[at] === '"' || raw(at);
+  // A char literal, not a lifetime: `'a'`, `'\n'`, `b'"'`.
+  const character = at => (text[at] === "'" && (text[at + 1] === "\\" || text[at + 2] === "'")) || (text[at] === "b" && text[at + 1] === "'");
   for (let i = 0; i < text.length;) {
     if (text.startsWith("//", i)) {
       const end = text.indexOf("\n", i);
@@ -223,7 +226,11 @@ function* attributes(text) {
         else i++;
       }
     } else if (string(i)) i = stringEnd(text, i);
-    else if (text[i] === "#" && text[i + 1] === "[") {
+    else if (character(i)) {
+      i += text[i] === "b" ? 2 : 1;
+      while (i < text.length && text[i] !== "'") i += text[i] === "\\" ? 2 : 1;
+      i++;
+    } else if (text[i] === "#" && text[i + 1] === "[") {
       let depth = 1, j = i + 2;
       while (j < text.length && depth) {
         if (string(j)) j = stringEnd(text, j);
