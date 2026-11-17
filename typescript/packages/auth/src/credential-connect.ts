@@ -1,6 +1,11 @@
 import { Code, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { credentialStream, resolveCredential, watchCredential, type CredentialProvider, type CredentialRequest } from "./credential.js";
 
+/** Credential admission failed before the transport acquired the request. */
+export class RequestCredentialError extends ConnectError {
+  constructor() { super("credential source unavailable", Code.Unavailable); }
+}
+
 /** Local credential refusal after the transport acquired the request. */
 export class ResponseCredentialError extends ConnectError {
   constructor(message: string) { super(message, Code.PermissionDenied); }
@@ -17,13 +22,19 @@ export function credentialInterceptor(credential: CredentialProvider): Intercept
   return next => async request => {
     // Register before resolution so changes cannot fall between lease admission
     // and the transport acquiring its original request/response body owners.
-    const watch = watchCredential(credential, request.signal,
-      () => new ConnectError("credential source changed or unavailable", Code.PermissionDenied));
+    let watch;
+    try {
+      watch = watchCredential(credential, request.signal,
+        () => new ConnectError("credential source changed or unavailable", Code.PermissionDenied));
+    } catch (error) {
+      throw request.signal.aborted ? error : new RequestCredentialError();
+    }
     const signal = watch?.signal ?? request.signal;
     const cleanup = () => watch?.close();
     const rejected = (error: unknown) => error instanceof ConnectError && error.code === Code.Unauthenticated;
     let dispatched = false;
     const failure = (error: unknown) => {
+      if (!dispatched && !request.signal.aborted) return new RequestCredentialError();
       if (rejected(error)) return error;
       const changed = watch?.changed.aborted && !request.signal.aborted;
       if (!changed && !(error instanceof CredentialAdmissionError)) return error;
@@ -57,7 +68,7 @@ export function credentialInterceptor(credential: CredentialProvider): Intercept
       return { ...response, message: message() };
     }
     catch (error) {
-      if (rejected(error)) lease?.reject();
+      if (dispatched && rejected(error)) lease?.reject();
       throw failure(error);
     }
     finally { if (!retained) cleanup(); }
