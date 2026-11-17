@@ -461,6 +461,10 @@ impl MemoryStream {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .upgrade();
+        // A custody-funded write owns its growth chain. Sharing it would let
+        // another writer install buffers still charged to the first writer's
+        // custody, with no transfer to the store.
+        let pending = pending.filter(|_| self.custody.is_none());
         if let Some(pending) = pending.as_ref().filter(|pending| pending.segment >= top) {
             return Ok(Some(Arc::clone(pending)));
         }
