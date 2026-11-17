@@ -1,5 +1,8 @@
 """Cache real Rustdoc JSON as declared, independently keyed fixture actions."""
 
+def _repository_path(path):
+    return path.split("/", 2)[2] if path.startswith("../") else path
+
 def _rustdoc_fixture_impl(ctx):
     output = ctx.actions.declare_file(ctx.label.name + ".json")
     metadata = ctx.actions.declare_file(ctx.label.name + ".fixture.json")
@@ -7,15 +10,19 @@ def _rustdoc_fixture_impl(ctx):
         "fixture_root": ctx.attr.fixture_root,
         "package": ctx.attr.package,
         "cargo_flags": ctx.attr.cargo_flags,
-        "sources": [file.short_path for file in ctx.files.srcs],
-        "output": output.short_path,
+        "sources": [_repository_path(file.short_path) for file in ctx.files.srcs],
+        "output": _repository_path(output.short_path),
     }))
     args = ctx.actions.args()
     args.add(output)
     args.add(ctx.file._rustup)
-    args.add(ctx.attr.fixture_root)
     args.add(ctx.attr.package)
-    args.add_all(ctx.files.srcs)
+    for file in ctx.files.srcs:
+        path = _repository_path(file.short_path)
+        if not path.startswith(ctx.attr.fixture_root):
+            fail("fixture input is outside its declared root: " + path)
+        args.add(file)
+        args.add(path[len(ctx.attr.fixture_root):])
     args.add("--")
     args.add_all(ctx.attr.cargo_flags)
     compiler = ctx.attr._rustup[DefaultInfo]
