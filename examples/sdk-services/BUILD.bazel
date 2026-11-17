@@ -91,8 +91,9 @@ isolated_test(
 rust_binary(
     name = "actors_example",
     crate_root = "examples/actors.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/actors.rs",
+    ],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -123,8 +124,9 @@ rust_binary(
 rust_binary(
     name = "fs_example",
     crate_root = "examples/fs.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/fs.rs",
+    ],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -155,8 +157,9 @@ rust_binary(
 rust_binary(
     name = "objects_example",
     crate_root = "examples/objects.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/objects.rs",
+    ],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -187,8 +190,9 @@ rust_binary(
 rust_binary(
     name = "streams_example",
     crate_root = "examples/streams.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/streams.rs",
+    ],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -219,8 +223,9 @@ rust_binary(
 rust_binary(
     name = "workers_example",
     crate_root = "examples/workers.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/workers.rs",
+    ],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,

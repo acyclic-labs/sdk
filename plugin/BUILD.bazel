@@ -475,8 +475,15 @@ isolated_test(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/execution.rs",
+        "tests/identity.rs",
+        "tests/identity_contract.rs",
+        "tests/main.rs",
+        "tests/native_input.rs",
+        "tests/support/binary.rs",
+        "tests/support/native_os.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -595,10 +602,12 @@ isolated_test(
 rust_test(
     name = "cli_cases",
     crate_root = "tests/cli.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "examples/embedded.rs",
+        "tests/cli.rs",
+        "tests/supervision.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    compile_data = [
         "//rust/crates/conformance:fixtures/inference/llamacpp/auth.body",
     ],
     edition = "2024",
@@ -716,8 +725,9 @@ isolated_test(
 rust_binary(
     name = "embedded_example",
     crate_root = "examples/embedded.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/embedded.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -809,8 +819,9 @@ rust_binary(
 rust_binary(
     name = "workspace-probe_example",
     crate_root = "examples/workspace-probe.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/workspace-probe.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

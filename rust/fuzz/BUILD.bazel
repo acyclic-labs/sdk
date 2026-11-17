@@ -914,11 +914,11 @@ rust_binary(
 rust_binary(
     name = "capture_native_claim_example",
     crate_root = "examples/capture_native_claim.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/native-runtime:src/claim/record.rs",
         "//rust/crates/native-runtime:tests/claim_codec/oracle.rs",
+        "examples/capture_native_claim.rs",
     ],
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -960,8 +960,9 @@ rust_binary(
 rust_binary(
     name = "capture_native_hooks_example",
     crate_root = "examples/capture_native_hooks.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/capture_native_hooks.rs",
+    ],
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,

@@ -368,8 +368,12 @@ isolated_test(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    srcs = [
+        "tests/http.rs",
+        "tests/main.rs",
+        "tests/script.rs",
+    ],
+    compile_data = [
         "//plugin:tests/hosts/fixtures/native-pi-fixture-request.json",
         "//:scripts/graphcoder-e2e/cases/installed-pi-recursive.json",
     ],
