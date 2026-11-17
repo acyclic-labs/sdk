@@ -120,9 +120,16 @@ fn settled(tag_name: &'static str) -> Plan {
 fn failed(tag_name: &'static str) -> Plan {
     Plan {
         tag: tag_name,
-        steps: Vec::new(),
+        steps: vec![
+            vec![call(
+                &format!("{tag_name}-read"),
+                "read",
+                json!({"path": "marker.txt"}),
+            )],
+            Vec::new(),
+        ],
         fail_once: Some((
-            usize::MAX,
+            1,
             ScriptedEvent::Fatal {
                 error: "child turn failed".into(),
             },
