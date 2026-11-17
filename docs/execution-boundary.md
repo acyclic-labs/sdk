@@ -36,17 +36,17 @@ typed refusals on unsupported platforms. On Linux, macOS and supported Windows, 
 workspace-write confinement, independently of the approval policy (including
 GraphCoder's accept-all default). An explicitly authenticated execution grant
 continues to select its own boundary. Tool arguments cannot remove confinement.
-Windows requires the native Process Security Environment 1.1 API from
-`processmodel.dll`. Missing API or schema support refuses before launching the
+Windows requires the native Process Security Environment 1.0 or later API
+from `processmodel.dll`. Missing API or schema support refuses before launching the
 command; there is no unconfined fallback. The adapter translates the same grant
 into Microsoft's PSEC specification and attaches it to the existing suspended
 process launch. The original Job owner retains policy lifetime and descendant
 custody. It changes no host ACLs and scans no directories. Workspace defaults
 read the Windows runtime directory and set `TEMP` and `TMP` to the writable view as well
 as `TMPDIR`. Windows native execution tests require a host exposing this API.
-The named qualification requirement is `windows-psec-1.1`: the actual Windows
+The named qualification requirement is `windows-psec-1.0`: the actual Windows
 execution host must expose the native API and report support for major version
-1, minor version 1 or later. The outside-write test fails with that requirement
+1, minor version 0 or later. The outside-write test fails with that requirement
 name when native compilation is unavailable; it is never silently skipped.
 The Windows qualification leg must use a host satisfying this requirement.
 A Windows build number or the DLL's presence alone does not prove enforcement;
@@ -447,7 +447,7 @@ exercises an actual non-CLOEXEC outside-file descriptor as an escape control.
 Read-only attenuation removes mutation rules for every writable root together.
 Networking translates to no rules, all networking, or outbound TCP port rules.
 The macOS default uses explicit runtime reads and the primary workspace as TMPDIR.
-Windows compiles filesystem grants into a native PSEC 1.1 environment and
+Windows compiles filesystem grants into a native PSEC 1.0 or later environment and
 attaches it to the existing suspended launch, retaining its lifetime with the
 original Job owner. Bound handles fence root identity and reparse traversal;
 inherited standard streams must be pipes or the null device. Stock workspace
