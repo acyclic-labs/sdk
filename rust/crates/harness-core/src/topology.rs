@@ -22,24 +22,45 @@ pub struct Topology {
 #[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Mode {
     /// One agent; delegation is absent from its declarations.
-    Single,
+    Single {
+        /// Maximum open children per agent; absent means unbounded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_children: Option<u64>,
+        /// Maximum agent depth, counting the root as zero; absent means unbounded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_depth: Option<u64>,
+    },
     /// Root with a lifetime reservation for exactly this many worker slots.
     Team {
         /// Lifetime worker admissions selected by the caller.
         workers: u64,
+        /// Maximum open children per agent; absent means unbounded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_children: Option<u64>,
+        /// Maximum agent depth, counting the root as zero; absent means unbounded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_depth: Option<u64>,
     },
     /// Unbounded delegation tree.
-    Swarm,
+    Swarm {
+        /// Maximum open children per agent; absent means unbounded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_children: Option<u64>,
+        /// Maximum agent depth, counting the root as zero; absent means unbounded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_depth: Option<u64>,
+    },
 }
 
 impl Topology {
-    /// Whether this run exposes an agent coordination tool to this agent.
+    /// Whether this run exposes an agent coordination tool to an agent at
+    /// `depth` (the root is depth zero).
     #[must_use]
-    pub fn offers_tool(&self, name: &str, root: bool) -> bool {
-        if matches!(self.mode, Mode::Single) && crate::tools::AGENT_TOOLS.contains(&name) {
+    pub fn offers_tool(&self, name: &str, depth: usize) -> bool {
+        if matches!(self.mode, Mode::Single { .. }) && crate::tools::AGENT_TOOLS.contains(&name) {
             false
         } else {
-            name != "spawn" || self.offers_spawn(root)
+            name != "spawn" || self.offers_spawn(depth)
         }
     }
 
@@ -56,8 +77,14 @@ impl Topology {
     /// Parses the thin CLI selector; execution remains a harness concern.
     pub fn select(mode: &str) -> Result<Self> {
         let mode = match mode {
-            "single" => Mode::Single,
-            "swarm" => Mode::Swarm,
+            "single" => Mode::Single {
+                max_children: None,
+                max_depth: None,
+            },
+            "swarm" => Mode::Swarm {
+                max_children: None,
+                max_depth: None,
+            },
             mode if mode.starts_with("team:") => Mode::Team {
                 workers: mode
                     .strip_prefix("team:")
@@ -66,6 +93,8 @@ impl Topology {
                     .map_err(|_| {
                         Error::Invalid("team requires a nonnegative worker count: team:N".into())
                     })?,
+                max_children: None,
+                max_depth: None,
             },
             _ => {
                 return Err(Error::Invalid(
@@ -78,22 +107,72 @@ impl Topology {
         Ok(topology)
     }
 
-    /// Run-start delegation capability; never changes as slots fill.
+    /// Maximum open children per agent; absent means unbounded.
     #[must_use]
-    pub fn offers_spawn(&self, root: bool) -> bool {
-        match self.mode {
-            Mode::Swarm => true,
-            Mode::Team { .. } => root,
-            Mode::Single => false,
+    pub fn max_children(&self) -> Option<u64> {
+        match &self.mode {
+            Mode::Single { max_children, .. }
+            | Mode::Team { max_children, .. }
+            | Mode::Swarm { max_children, .. } => *max_children,
         }
+    }
+
+    /// Maximum agent depth, counting the root as zero; absent means unbounded.
+    #[must_use]
+    pub fn max_depth(&self) -> Option<u64> {
+        match &self.mode {
+            Mode::Single { max_depth, .. }
+            | Mode::Team { max_depth, .. }
+            | Mode::Swarm { max_depth, .. } => *max_depth,
+        }
+    }
+
+    /// Selects the unbounded-or-explicit child and depth caps.
+    #[must_use]
+    pub fn with_limits(mut self, max_children: Option<u64>, max_depth: Option<u64>) -> Self {
+        match &mut self.mode {
+            Mode::Single {
+                max_children: children,
+                max_depth: depth,
+            }
+            | Mode::Team {
+                max_children: children,
+                max_depth: depth,
+                ..
+            }
+            | Mode::Swarm {
+                max_children: children,
+                max_depth: depth,
+            } => {
+                *children = max_children;
+                *depth = max_depth;
+            }
+        }
+        self
+    }
+
+    /// Whether an agent at `depth` may spawn: false when the run's mode or
+    /// depth cap puts its children out of bounds. The caller must omit the
+    /// spawn tool, rather than refusing the call at run time.
+    #[must_use]
+    pub fn offers_spawn(&self, depth: usize) -> bool {
+        let within_depth = self
+            .max_depth()
+            .is_none_or(|max| u64::try_from(depth).is_ok_and(|depth| depth < max));
+        within_depth
+            && match self.mode {
+                Mode::Swarm { .. } => true,
+                Mode::Team { .. } => depth == 0,
+                Mode::Single { .. } => false,
+            }
     }
 
     /// Lifetime child reservation, distinct from concurrency backpressure.
     #[must_use]
     pub fn spawn_limit(&self, root: bool) -> Option<u64> {
         match self.mode {
-            Mode::Swarm => None,
-            Mode::Team { workers } if root => Some(workers),
+            Mode::Swarm { .. } => None,
+            Mode::Team { workers, .. } if root => Some(workers),
             _ => Some(0),
         }
     }
@@ -120,7 +199,7 @@ impl SpawnTemplates for Templates {
     ) -> BoxProviderFuture<'a, Result<CreationConfig>> {
         Box::pin(async move {
             if let Some(topology) = &parent.topology
-                && !topology.offers_spawn(path.parent().is_none())
+                && !topology.offers_spawn(path.depth())
             {
                 return Err(Error::Invalid(
                     "the selected spawn capability does not admit children for this agent".into(),
@@ -175,6 +254,54 @@ mod tests {
                 "unsupported topology reached committed adoption"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn depth_cap_removes_spawn_at_and_below_the_cap()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let capped = Topology::select("swarm")?.with_limits(None, Some(2));
+        assert!(capped.offers_spawn(0));
+        assert!(capped.offers_spawn(1));
+        assert!(!capped.offers_spawn(2));
+        assert!(capped.offers_tool("spawn", 1));
+        assert!(!capped.offers_tool("spawn", 2));
+        assert!(capped.offers_tool("send", 2));
+        let single = Topology::select("single")?;
+        assert!(!single.offers_spawn(0));
+        assert!(!single.offers_tool("spawn", 0));
+        assert!(!single.offers_tool("wait", 0));
+        let unbounded = Topology::select("swarm")?;
+        assert!(unbounded.offers_spawn(usize::MAX));
+        Ok(())
+    }
+
+    #[test]
+    fn limits_default_to_unbounded_and_round_trip_as_top_level_fields()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let default: Topology = serde_json::from_value(serde_json::json!({
+            "version": 1, "mode": "swarm"
+        }))?;
+        assert_eq!((default.max_children(), default.max_depth()), (None, None));
+        let capped: Topology = serde_json::from_value(serde_json::json!({
+            "version": 1, "mode": "swarm", "max_children": 2, "max_depth": 3
+        }))?;
+        assert_eq!(
+            (capped.max_children(), capped.max_depth()),
+            (Some(2), Some(3))
+        );
+        assert_eq!(
+            serde_json::to_value(&capped)?,
+            serde_json::json!({
+                "version": 1, "mode": "swarm", "max_children": 2, "max_depth": 3
+            })
+        );
+        assert!(
+            serde_json::from_value::<Topology>(serde_json::json!({
+                "version": 1, "mode": "swarm", "unknown": 1
+            }))
+            .is_err()
+        );
         Ok(())
     }
 }

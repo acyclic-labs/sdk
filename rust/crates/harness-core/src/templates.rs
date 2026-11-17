@@ -92,7 +92,7 @@ const ROOT: &str = include_str!("seed/templates/orchestrator/AGENT.md");
 const SINGLE: &str = include_str!("seed/templates/single/AGENT.md");
 
 fn root_source(topology: Option<&crate::topology::Topology>) -> &'static [u8] {
-    if topology.is_some_and(|policy| matches!(policy.mode, crate::topology::Mode::Single)) {
+    if topology.is_some_and(|policy| matches!(policy.mode, crate::topology::Mode::Single { .. })) {
         SINGLE.as_bytes()
     } else {
         ROOT.as_bytes()
@@ -317,7 +317,7 @@ pub(crate) async fn directive(
         && creation
             .topology
             .as_ref()
-            .is_none_or(|policy| policy.offers_spawn(true))
+            .is_none_or(|policy| policy.offers_spawn(0))
     {
         format!("{text}\n\n{}", include_str!("seed/delegation.md").trim())
     } else {

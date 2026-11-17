@@ -58,6 +58,7 @@
         "topology-hierarchy",
         "topology-single",
         "topology-team",
+        "topology-depth",
         "topology-owner-policy",
         "pty-tree-sidebar",
         "nested-orchestrators",

@@ -116,7 +116,7 @@ mod tests {
                 let actual = crate::templates::directive(&configured, reader.as_ref()).await?;
                 // The delegation policy belongs to the root; a role template
                 // renders only its own directive.
-                let can_spawn = creation.template.is_none() && topology.offers_spawn(true);
+                let can_spawn = creation.template.is_none() && topology.offers_spawn(0);
                 for message in &actual.context.messages {
                     let crate::model::ModelContent::Text(text) = &message.content else {
                         panic!("role directive must be text");
