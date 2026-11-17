@@ -210,6 +210,9 @@ export async function pty(processes, binary, fixture, input, capture) {
       await new Promise(resolve => screen.write("", () => resolve(undefined)));
       frame(true);
     }
+    // The final frame can admit the last action after the child exits. Only
+    // after that frame and every queued screen write is the missing-action
+    // decision final.
     if (!failure && !errors && index < input.actions.length) errors = [missingAction()];
     const visible = screenText(screen);
     if (result) {
