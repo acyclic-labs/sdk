@@ -27,7 +27,7 @@ test = false
 javascript = ["acyclic-auth/javascript", "acyclic-stream/js-bytes", "dep:wasm-bindgen"]
 # Request accounting over `acyclic_stream::testing::Counted`.
 conformance = ["acyclic-stream/conformance"]
-test-support = ["acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
+test-support = ["acyclic-observability/test-support", "acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 
 [dependencies]
 acyclic-observability = { version = "=0.2.0", path = "../observability" }

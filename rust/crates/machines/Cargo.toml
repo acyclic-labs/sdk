@@ -27,7 +27,7 @@ consumer-features = [{ features = [], target = "wasm32-unknown-unknown" }]
 
 [features]
 conformance = ["acyclic-stream/conformance", "tokio/time"]
-test-support = [
+test-support = ["acyclic-observability/test-support", 
     "acyclic-actors/test-support",
     "acyclic-auth/test-support",
     "acyclic-native-runtime/test-support",
