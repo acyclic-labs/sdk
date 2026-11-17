@@ -457,17 +457,59 @@ impl NativeDemandSource {
         }
     }
 
-    fn node(path: &[u8], metadata: &HostStat) -> SourceNode {
+    fn fixture_content_at(
+        &self,
+        host: &DemandPath,
+        metadata: &HostStat,
+        context: &mut CallbackWork,
+    ) -> Result<FixtureContent, DemandError> {
+        #[cfg(feature = "test-support")]
+        {
+            if metadata.file_type() != SourceNodeKind::RegularFile
+                || fixture_times(metadata).is_none()
+            {
+                return Ok(None);
+            }
+            let mut file = self
+                .inner
+                .root
+                .held(context)
+                .and_then(|root| root.open_file(host, context))?;
+            let mut hasher = blake3::Hasher::new();
+            std::io::copy(&mut file, &mut hasher).map_err(DemandError::Io)?;
+            Ok(Some(*hasher.finalize().as_bytes()))
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            let _ = (host, metadata, context);
+            Ok(())
+        }
+    }
+
+    fn fixture_content(
+        &self,
+        path: &NamespacePath,
+        metadata: &HostStat,
+        context: &mut CallbackWork,
+    ) -> Result<FixtureContent, DemandError> {
+        let (relative, allocation) = self.relative(path, context)?;
+        let result = self.fixture_content_at(&relative, metadata, context);
+        drop(relative);
+        context.release(allocation)?;
+        result
+    }
+
+    fn node(path: [u8; 32], content: FixtureContent, metadata: &HostStat) -> SourceNode {
         let kind = metadata.file_type();
         SourceNode {
             kind,
-            file_identity: file_identity(path, metadata),
+            file_identity: file_identity(&path, metadata),
             link_count: Some(metadata.nlink()),
             device: metadata.device(),
             logical_bytes: (kind == SourceNodeKind::RegularFile
                 || cfg!(unix) && kind == SourceNodeKind::SymbolicLink)
                 .then_some(metadata.len()),
-            version: version(path, metadata),
+            version: version(&path, content, metadata),
             metadata: source_metadata(metadata),
         }
     }

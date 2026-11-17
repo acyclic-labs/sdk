@@ -21,7 +21,7 @@ fn child_path_key(parent: &NamespacePath, name: &crate::kernel::LogicalName) -> 
 }
 
 #[cfg(feature = "test-support")]
-fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing::NativeTimes> {
+pub(crate) fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing::NativeTimes> {
     use acyclic_native_runtime::testing::{NativeMetadataInput, NativeTimes, capture_native_times};
     let identity = metadata.identity();
     let nanos = |time: Option<i128>| time.and_then(|time| i64::try_from(time).ok());
@@ -51,8 +51,6 @@ struct FixtureObject {
 #[derive(Default)]
 struct FixtureVersions {
     identities: std::collections::HashMap<FixtureObject, [u8; 32]>,
-    ordinals: std::collections::HashMap<([u8; 32], SourceVersion), u64>,
-    next: std::collections::HashMap<[u8; 32], u64>,
 }
 
 #[cfg(feature = "test-support")]
@@ -62,9 +60,9 @@ fn fixture_versions() -> &'static std::sync::Mutex<FixtureVersions> {
     VERSIONS.get_or_init(|| std::sync::Mutex::new(FixtureVersions::default()))
 }
 
-/// Starts a new replay's fixture identity and version sequence. A world owns
-/// one physical directory, so its first observation of each object is the
-/// same ordinal in every replay.
+/// Starts a new replay's fixture identity sequence. A world owns one physical
+/// directory, so its first observation of each object is the same in every
+/// replay.
 #[cfg(feature = "test-support")]
 pub fn reset_fixture_versions() {
     *fixture_versions()
@@ -98,43 +96,51 @@ fn fixture_identity(path: &[u8], metadata: &HostStat) -> Option<[u8; 32]> {
     }))
 }
 
-/// A fixture version is the object's identity plus the ordinal of its physical
-/// state in this replay. The ordinal is assigned on first observation, so a
-/// recreated world sees the same sequence, while an in-place edit or a
-/// replacement advances it. The host's actual timestamps only select the
-/// state; they never enter the value.
 #[cfg(feature = "test-support")]
-fn fixture_version(path: &[u8], metadata: &HostStat) -> Option<SourceVersion> {
-    let identity = fixture_identity(path, metadata)?;
-    let state = physical_version(metadata);
-    let mut versions = fixture_versions()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let key = (identity, state);
-    let ordinal = match versions.ordinals.get(&key).copied() {
-        Some(ordinal) => ordinal,
-        None => {
-            let next = versions.next.entry(identity).or_default();
-            let ordinal = *next;
-            *next = next.saturating_add(1);
-            versions.ordinals.insert(key, ordinal);
-            ordinal
-        }
-    };
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic-fs-native-source-version-fixture-v2\0");
-    hash.update(&identity);
-    hash.update(&ordinal.to_le_bytes());
-    Some(SourceVersion(*hash.finalize().as_bytes()))
+pub(crate) type FixtureContent = Option<[u8; 32]>;
+#[cfg(not(feature = "test-support"))]
+pub(crate) type FixtureContent = ();
+
+/// Hashes a regular file's bytes for its fixture version. The closure is not
+/// called outside a fixture world, so production never reads content here.
+#[cfg(feature = "test-support")]
+pub(crate) fn fixture_content(
+    metadata: &HostStat,
+    read: impl FnOnce(&mut blake3::Hasher) -> std::io::Result<()>,
+) -> FixtureContent {
+    if metadata.file_type() != SourceNodeKind::RegularFile || fixture_times(metadata).is_none() {
+        return None;
+    }
+    let mut hasher = blake3::Hasher::new();
+    read(&mut hasher).ok()?;
+    Some(*hasher.finalize().as_bytes())
 }
 
-fn version(path: &[u8], metadata: &HostStat) -> SourceVersion {
+#[cfg(not(feature = "test-support"))]
+pub(crate) fn fixture_content(
+    _: &HostStat,
+    _: impl FnOnce(&mut blake3::Hasher) -> std::io::Result<()>,
+) -> FixtureContent {
+}
+
+fn version(path: &[u8], content: FixtureContent, metadata: &HostStat) -> SourceVersion {
     #[cfg(feature = "test-support")]
-    if let Some(version) = fixture_version(path, metadata) {
-        return version;
+    if let Some(identity) = fixture_identity(path, metadata) {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic-fs-native-source-version-fixture-v2\0");
+        hash.update(&identity);
+        if let Some(content) = content {
+            hash.update(b"content\0");
+            hash.update(&content);
+        } else {
+            hash.update(b"path\0");
+            hash.update(path);
+            hash.update(&metadata.len().to_le_bytes());
+        }
+        return SourceVersion(*hash.finalize().as_bytes());
     }
     #[cfg(not(feature = "test-support"))]
-    let _ = path;
+    let _ = (path, content);
     physical_version(metadata)
 }
 

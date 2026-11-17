@@ -61,7 +61,8 @@ impl NativeDemandFile {
             return Err(DemandError::NotRegularFile);
         }
         let path_key = path_key(path);
-        if version(&path_key, &opened) != expected {
+        let content = provider.fixture_content(path, &opened, context)?;
+        if version(&path_key, content, &opened) != expected {
             return Err(DemandError::StaleVersion);
         }
         let physical = physical_version(&opened);
