@@ -47,7 +47,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
         };
         // Dropping the producer never creates a settlement or a pending wait.
         let event = refusal(0);
-        let key = tool_settlement_key(0, "call", ToolTerminalOutcome::Failed, None)?;
+        let key = tool_settlement_key(0, "call", None)?;
         drop(journal.append(turn, &key, &event, None)?);
         assert_eq!(journal.tool_settlement(query, Some(&io))?.await?, None);
         let before = io.receipt();
@@ -65,7 +65,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
             before.authority_records_read
         );
         for step in 0..64 {
-            let key = tool_settlement_key(step, "call", ToolTerminalOutcome::Failed, None)?;
+            let key = tool_settlement_key(step, "call", None)?;
             journal.append(turn, &key, &refusal(step), None)?.await?;
             if ![0, 63].contains(&step) {
                 continue;
@@ -127,7 +127,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
                 None,
             )?
             .await?;
-        let key = tool_settlement_key(64, "call", ToolTerminalOutcome::Completed, None)?;
+        let key = tool_settlement_key(64, "call", None)?;
         journal
             .append(
                 turn,
@@ -147,10 +147,9 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
             effect: crate::tool::ToolInvocation::model_call_operation(turn, 64, "call", None)?,
             ..query
         };
-        let failed_key = tool_settlement_key(64, "call", ToolTerminalOutcome::Failed, None)?;
         assert!(
             journal
-                .append(turn, &failed_key, &refusal(64), None)?
+                .append(turn, &key, &refusal(64), None)?
                 .await
                 .is_err(),
             "a second settlement entered the authenticated prefix"
@@ -220,7 +219,7 @@ async fn raw_terminal_observation_cannot_authorize_request_retirement() -> Resul
             None,
         )?
         .await?;
-    let key = tool_settlement_key(0, "call", ToolTerminalOutcome::Failed, None)?;
+    let key = tool_settlement_key(0, "call", None)?;
     let retry = content::operation_digest(turn, &key, None)?
         .to_hex()
         .to_string();

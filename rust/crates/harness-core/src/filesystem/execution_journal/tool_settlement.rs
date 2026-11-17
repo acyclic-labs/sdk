@@ -29,48 +29,46 @@ where
             io,
             cache: None,
         };
-        for outcome in [ToolTerminalOutcome::Completed, ToolTerminalOutcome::Failed] {
-            let key_hold;
-            let key = tool_settlement_key(query.step, query.call_id, outcome, io)?;
-            key_hold = io
-                .map(|io| io.guard_owned(key.capacity() as u64))
-                .transpose()?;
-            let digest = content::operation_digest(query.turn, &key, io)?;
-            if let Some(io) = io {
-                io.charge(acyclic_fs::WorkCounters {
-                    bytes_copied: 64,
-                    ..Default::default()
-                })?;
-            }
-            let retry = digest.to_hex();
-            let retry_key = crate::model::hash_bytes(retry.as_bytes(), io)?;
-            let entry = checkpoint_maps::retry_entry(&reader, state, retry_key).await?;
-            if let Some((sequence, digest)) = entry {
-                self.verify_terminal_record(query, outcome, sequence, digest, retry.as_str(), io)
-                    .await?;
-                // The signed checkpoint's admission already excludes a second
-                // settlement; no other retry path can change this decision.
-                return Ok(Some(ToolSettlement {
-                    cut: state.tail,
-                    sequence,
-                    outcome,
-                }));
-            }
-            drop(key);
-            drop(key_hold);
+        let key_hold;
+        let key = tool_settlement_key(query.step, query.call_id, io)?;
+        key_hold = io
+            .map(|io| io.guard_owned(key.capacity() as u64))
+            .transpose()?;
+        let digest = content::operation_digest(query.turn, &key, io)?;
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters {
+                bytes_copied: 64,
+                ..Default::default()
+            })?;
         }
+        let retry = digest.to_hex();
+        let retry_key = crate::model::hash_bytes(retry.as_bytes(), io)?;
+        let entry = checkpoint_maps::retry_entry(&reader, state, retry_key).await?;
+        if let Some((sequence, digest)) = entry {
+            let outcome = self
+                .verify_terminal_record(query, sequence, digest, retry.as_str(), io)
+                .await?;
+            // One call-scoped retry key admits one terminal outcome. The
+            // signed checkpoint authenticates that outcome on every replay.
+            return Ok(Some(ToolSettlement {
+                cut: state.tail,
+                sequence,
+                outcome,
+            }));
+        }
+        drop(key);
+        drop(key_hold);
         Ok(None)
     }
 
     async fn verify_terminal_record(
         &self,
         query: ToolSettlementQuery<'_>,
-        outcome: ToolTerminalOutcome,
         sequence: u64,
         digest: [u8; 32],
         retry: &str,
         io: Option<&PreparationIo>,
-    ) -> Result<()> {
+    ) -> Result<ToolTerminalOutcome> {
         let path_hold;
         let path = crate::executor::with_history_io(io, |work| {
             crate::distributed::execution_path(query.turn, work)
@@ -96,15 +94,18 @@ where
             })
             .transpose()?;
         let observation = observations::decode_observation(&record.value, io)?;
-        let valid_event = match (&observation.event, outcome) {
-            (
-                ExecutionEvent::ToolCompleted { step, call_id, .. },
-                ToolTerminalOutcome::Completed,
-            )
-            | (ExecutionEvent::ToolFailed { step, call_id, .. }, ToolTerminalOutcome::Failed) => {
-                *step == query.step && call_id == query.call_id
+        let outcome = match &observation.event {
+            ExecutionEvent::ToolCompleted { step, call_id, .. }
+                if *step == query.step && call_id == query.call_id =>
+            {
+                ToolTerminalOutcome::Completed
             }
-            _ => false,
+            ExecutionEvent::ToolFailed { step, call_id, .. }
+                if *step == query.step && call_id == query.call_id =>
+            {
+                ToolTerminalOutcome::Failed
+            }
+            _ => return Err(invalid(io)),
         };
         let actual_digest = crate::executor::with_history_io(io, |work| {
             crate::executor::json::canonical_json_digest(
@@ -118,7 +119,6 @@ where
             || observation.turn_operation != self.turn_operation(query.turn)
             || observation.retry_digest != retry
             || digest != actual_digest
-            || !valid_event
         {
             return Err(invalid(io));
         }
@@ -127,7 +127,7 @@ where
         drop(record_hold);
         drop(path);
         drop(path_hold);
-        Ok(())
+        Ok(outcome)
     }
 }
 

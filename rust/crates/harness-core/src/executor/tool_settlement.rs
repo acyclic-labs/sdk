@@ -77,14 +77,9 @@ impl ToolSettlementQuery<'_> {
 pub(crate) fn tool_settlement_key(
     step: u32,
     call_id: &str,
-    outcome: ToolTerminalOutcome,
     io: Option<&PreparationIo>,
 ) -> Result<String> {
-    let kind = match outcome {
-        ToolTerminalOutcome::Completed => "completed",
-        ToolTerminalOutcome::Failed => "failed",
-    };
     with_history_io(io, |work| {
-        preparation_format(format_args!("tool:{step}:{call_id}:{kind}"), work)
+        preparation_format(format_args!("tool:{step}:{call_id}"), work)
     })
 }

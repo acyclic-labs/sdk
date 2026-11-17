@@ -149,7 +149,7 @@ impl StockExecution<'_> {
         with_history_io(self.io, |work| {
             content.validate_limits(self.stock.limits, work)
         })?;
-        let key = tool_settlement_key(step, call_id, ToolTerminalOutcome::Failed, self.io)?;
+        let key = tool_settlement_key(step, call_id, self.io)?;
         let event = ExecutionEvent::ToolFailed {
             step,
             call_id: stock_string_copy(call_id, self.io)?,

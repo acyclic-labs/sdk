@@ -735,7 +735,7 @@ async fn a_retried_settlement_is_one_record() -> Result<()> {
     for _ in 0..2 {
         assert!(
             journal
-                .append_if_tail(operation, 1, "tool:0:call:failed", &settle, None)?
+                .append_if_tail(operation, 1, "tool:0:call", &settle, None)?
                 .await?
         );
     }
@@ -743,7 +743,7 @@ async fn a_retried_settlement_is_one_record() -> Result<()> {
     let other = failed("other");
     assert!(
         !journal
-            .append_if_tail(operation, 1, "tool:0:other:failed", &other, None)?
+            .append_if_tail(operation, 1, "tool:0:other", &other, None)?
             .await?
     );
     for (operation_id, digest, count) in [(operation, [1; 32], 2), (other_operation, [2; 32], 1)] {
