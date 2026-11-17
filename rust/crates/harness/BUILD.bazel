@@ -4180,7 +4180,6 @@ cargo_build_script(
     crate_root = "build.rs",
     srcs = [
         "build.rs",
-        "src/client/commands/name_index.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
@@ -4203,26 +4202,14 @@ cargo_build_script(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     build_script_env = PACKAGE_ENV,
-    deps = [
-        "@crates//serde_json-1.0.154",
-    ],
 )
 
 rust_library(
     name = "acyclic_harness_wasm",
     crate_name = "acyclic_harness",
     crate_root = "src/lib.rs",
-    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//rust/crates/filesystem:tests/support/native_access.rs",
-    ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
-        "//plugin:tests/hosts/fixtures/native-completion.json",
-        "//plugin:tests/hosts/fixtures/native/codex.jsonl",
-        "//plugin:tests/hosts/fixtures/native/pi.jsonl",
-        "//rust/crates/harness-core:tests/fixtures/notebook-output.png",
-        "//rust/crates/harness-fuzz:corpus/native_answer/agy-hook-refusal.jsonl",
-        "//rust/crates/harness-fuzz:corpus/native_answer/opencode-incomplete.jsonl",
-    ],
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = [
@@ -4239,6 +4226,8 @@ rust_library(
         "//rust/crates/filesystem:acyclic_fs_wasm",
         "//rust/crates/harness-client:acyclic_harness_client_wasm",
         "//rust/crates/harness-core:acyclic_harness_core_wasm",
+        "//rust/crates/harness-hosting:acyclic_harness_hosting_wasm",
+        "//rust/crates/harness-local:acyclic_harness_local_wasm",
         "//rust/crates/harness-search:acyclic_harness_search_wasm",
         "//rust/crates/harness-tui:acyclic_harness_tui_wasm",
         "//rust/crates/host-platform:acyclic_host_platform_wasm",
