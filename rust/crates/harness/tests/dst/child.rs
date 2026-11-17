@@ -76,13 +76,7 @@ fn variants(seed: u64) -> Vec<Variant> {
     let topology = topology(seed);
     PHASES
         .iter()
-        .map(|phase| {
-            Variant::from([
-                ("phase", *phase),
-                ("fault", fault),
-                ("topology", topology),
-            ])
-        })
+        .map(|phase| Variant::from([("phase", *phase), ("fault", fault), ("topology", topology)]))
         .collect()
 }
 
@@ -201,7 +195,6 @@ fn plans(seed: u64) -> Vec<Plan> {
             fail_once: None,
         },
     ];
-    plans.push(settled("c4-batch"));
     plans
 }
 
@@ -263,7 +256,9 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
             .flat_map(|request| settlements(request).unwrap_or_default())
             .any(|settled| settled.call.name == "read" && !settled.succeeded());
         if !tool_error {
-            return Err(format!("{fault}: the child's failure never reached its model"));
+            return Err(format!(
+                "{fault}: the child's failure never reached its model"
+            ));
         }
     }
     Ok(())
@@ -302,8 +297,8 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                     .map_err(|report| format!("after {crashed}: {report}"))?;
                 return Ok(crashed.in_window);
             }
-            let mut world = World::new(seed, &files, service(plans(seed)))
-                .map_err(oracle::failed)?;
+            let mut world =
+                World::new(seed, &files, service(plans(seed))).map_err(oracle::failed)?;
             let incarnation = world
                 .incarnation(None, &[vec![("root", tag("c4-root"))]])
                 .await
@@ -314,7 +309,10 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 .iter()
                 .any(|(outcome, _)| *outcome == oracle::Prompted::Settled(done("c4-root")))
             {
-                return Err(format!("the root turn did not finish: {:?}", incarnation.prompts));
+                return Err(format!(
+                    "the root turn did not finish: {:?}",
+                    incarnation.prompts
+                ));
             }
             checked(seed, &incarnation.requests)?;
             Ok(true)

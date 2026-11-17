@@ -25,12 +25,10 @@ const RELATIONS: [&str; 3] = ["child", "grandchild", "same_parent_other_runtime"
 
 /// One world per variant: 4 forms x 8 states x 3 relations.
 const ALL_SEEDS: &[u64] = &[
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-    32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
-    48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
-    64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
-    80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+    50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
+    74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95,
 ];
 
 pub(super) const GENERATOR: Generator = Generator {
@@ -222,7 +220,10 @@ fn plans(seed: u64) -> Vec<Plan> {
                 if needs_sibling(state) {
                     spawns.push(spawn("mid-spawn-sibling", "sibling", "c3-sibling"));
                 }
-                vec![spawns, vec![state_wait(form, "mid-wait", state, "target", "sibling")]]
+                vec![
+                    spawns,
+                    vec![state_wait(form, "mid-wait", state, "target", "sibling")],
+                ]
             },
             fail_once: None,
         },
@@ -375,7 +376,9 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
                     return Err(format!("wait {id} did not report spawning: {entry}"));
                 }
             } else if field_entry(value, "settled", "target").is_none() {
-                return Err(format!("wait {id} reported neither spawning nor settled: {value}"));
+                return Err(format!(
+                    "wait {id} reported neither spawning nor settled: {value}"
+                ));
             }
         }
         "running" => {
@@ -389,7 +392,9 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
             let entry = field_entry(value, "settled", "target")
                 .ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
             if !is_settled(entry) {
-                return Err(format!("wait {id} did not report a terminal target: {entry}"));
+                return Err(format!(
+                    "wait {id} did not report a terminal target: {entry}"
+                ));
             }
         }
         _ => {
@@ -409,20 +414,19 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
     oracle::simulate(seed, move || {
         entry(async move {
             if relation == "same_parent_other_runtime" {
-                let mut world = World::new(seed, &[("marker.txt", "marker\n")], service(plans(seed)))
-                    .map_err(oracle::failed)?
-                    .completing();
+                let mut world =
+                    World::new(seed, &[("marker.txt", "marker\n")], service(plans(seed)))
+                        .map_err(oracle::failed)?
+                        .completing();
                 let spawn_prompt = vec![("root", tag("c3-reopen-spawn"))];
                 let spawned = world
                     .incarnation(None, &[spawn_prompt])
                     .await
                     .map_err(oracle::failed)?;
                 oracle::all_settled(&spawned.requests)?;
-                if !spawned
-                    .prompts
-                    .iter()
-                    .any(|(outcome, _)| *outcome == oracle::Prompted::Settled(done("c3-reopen-spawn")))
-                {
+                if !spawned.prompts.iter().any(|(outcome, _)| {
+                    *outcome == oracle::Prompted::Settled(done("c3-reopen-spawn"))
+                }) {
                     return Err(format!(
                         "the spawn turn did not finish: {:?}",
                         spawned.prompts
