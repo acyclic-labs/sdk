@@ -42,5 +42,9 @@ node = use_extension("//:node_repo.bzl", "node", dev_dependency = True)
 node.node(version = "24.22.2")
 use_repo(node, "nodejs")
 
+# Standalone production proofs use the verifier's own pinned compiler.
+kani = use_extension("//toolchains/kani:repositories.bzl", "kani", dev_dependency = True)
+use_repo(kani, "kani")
+
 # The Rust toolchain, rustc flags and crate universe, generated from the Cargo configuration.
 include("//:cargo.MODULE.bazel")
