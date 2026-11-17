@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamCategory;
 use acyclic_stream::StreamProviderExt as _;
 
 #[tokio::test]
@@ -263,8 +264,11 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
             ));
         } else {
             assert_eq!(
-                provider.tail(execution.clone()).await,
-                Err(acyclic_stream::StreamError::NotFound)
+                provider
+                    .tail(execution.clone())
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
             );
         }
         drop(store);

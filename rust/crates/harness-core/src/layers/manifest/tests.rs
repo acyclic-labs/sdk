@@ -1,6 +1,8 @@
 use super::*;
 use acyclic_fs::{OperationReceipt, WorkBudget, WorkCounters};
-use acyclic_stream::{AppendRecord, CommitMutation, CommitRequest, MemoryStream, StreamPath};
+use acyclic_stream::{
+    AppendRecord, CommitMutation, CommitRequest, MemoryStream, StreamCategory, StreamPath,
+};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -970,8 +972,11 @@ async fn source_groups_keep_original_layer_pins_and_the_callers_root_cut()
                 acyclic_fs::FilesystemCommitOutcome::Rejected(_)
             ));
             assert_eq!(
-                stream.tail(destination).await,
-                Err(acyclic_stream::StreamError::NotFound)
+                stream
+                    .tail(destination)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(StreamCategory::NotFound)
             );
         } else {
             assert!(matches!(
