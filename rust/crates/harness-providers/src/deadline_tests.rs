@@ -298,6 +298,7 @@ fn receiving_headers_does_not_restart_the_total_deadline() {
         );
         let (chunks, body) = mpsc::unbounded();
         let mut send = pin!(transport.send(request()));
+        assert!(send.as_mut().now_or_never().is_none());
         tokio::time::advance(Duration::from_millis(29_000)).await;
         assert!(headers.send(Ok(response(Box::pin(body)))).is_ok());
         let mut body = send.await.expect("headers before both deadlines").body;

@@ -151,7 +151,9 @@ impl State {
         let waiter = self.waiters.remove(self.position(ticket)?)?.1;
         if self.waiters.is_empty() {
             self.pace = None;
-            self.window = None;
+            if self.closed_until.is_none() {
+                self.window = None;
+            }
         }
         if self.waiters.len() * 4 <= self.waiters.capacity() {
             self.waiters.shrink_to(self.waiters.len() * 2);
