@@ -37,6 +37,8 @@ jobs:
         run: node --test scripts/bazel-build-files.test.mjs
       - name: Check that no tooling file gains a Cargo invocation
         run: node scripts/check-cargo-callers.mjs
+      - name: Check that feature-gated Cargo tests explicitly opt in
+        run: node scripts/check-test-features.mjs
       # Vendored crates keep their upstream bytes.
       - name: Check that the whole tree has no whitespace errors
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!managed-agents'
