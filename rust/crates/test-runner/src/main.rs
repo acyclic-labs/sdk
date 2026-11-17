@@ -372,7 +372,7 @@ impl RunnerDirectory {
         #[cfg(unix)]
         let root_lock = {
             let user = acyclic_native_runtime::private_file::effective_user();
-            let lock = lock_user(root, user)?;
+            let lock = lock_user(&lock_directory()?)?;
             reclaim(root, user)?;
             lock
         };
@@ -408,10 +408,7 @@ impl RunnerDirectory {
     /// Removes the directory once every case has ended.
     fn release(&self) -> Result<(), String> {
         #[cfg(unix)]
-        let _user = lock_user(
-            &self.root,
-            acyclic_native_runtime::private_file::effective_user(),
-        )?;
+        let _user = lock_user(&lock_directory()?)?;
         remove(&self.path)
     }
 }
@@ -443,30 +440,68 @@ fn restore_access(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Takes `user`'s lock file in `root`, which serializes that user's runners' claim, reclaim and
-/// removal. It is created readable only by its owner; a file there that `user` does not own was
-/// put there by someone else, and is refused rather than locked.
+/// The directory holding this user's runner lock. It must be a directory only this user can
+/// write, so another local user cannot pre-create the lock file. The OS per-user runtime
+/// directory is preferred; the account home is the fallback.
 #[cfg(unix)]
-fn lock_user(root: &Path, user: u32) -> Result<File, String> {
-    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-    let path = root.join(format!("{RUNNER_PREFIX}{user}.lock"));
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|error| failed("open", &path, error))?;
-    let metadata = lock
-        .metadata()
-        .map_err(|error| failed("inspect", &path, error))?;
-    if !metadata.is_file() || metadata.uid() != user {
+fn lock_directory() -> Result<PathBuf, String> {
+    let user = acyclic_native_runtime::private_file::effective_user();
+    let mut candidates = vec![PathBuf::from(format!("/run/user/{user}"))];
+    if let Some(home) = env::var_os("HOME") {
+        candidates.push(PathBuf::from(home));
+    }
+    let mut errors = Vec::new();
+    for root in candidates {
+        match private_lock_directory(&root) {
+            Ok(directory) => return Ok(directory),
+            Err(error) => errors.push(error),
+        }
+    }
+    Err(format!(
+        "no private per-user directory for the runner lock: {}",
+        errors.join("; ")
+    ))
+}
+
+/// The runner's lock directory under `root`, created privately if it is missing. `root` itself
+/// must already belong to this user and exclude changes by other users, so a name under it
+/// cannot be reserved by someone else before this user's first run.
+#[cfg(unix)]
+fn private_lock_directory(root: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let user = acyclic_native_runtime::private_file::effective_user();
+    let metadata = fs::symlink_metadata(root).map_err(|error| failed("inspect", root, error))?;
+    if !metadata.is_dir() || metadata.uid() != user || metadata.mode() & 0o022 != 0 {
         return Err(format!(
-            "{} is not a file of user {user}; recovery: its owner removes it",
-            path.display()
+            "{} is not a private directory of user {user}",
+            root.display()
         ));
     }
+    let directory = root.join(".acyclic-test-runner");
+    match acyclic_native_runtime::private_file::validate_directory(&directory) {
+        Ok(()) => return Ok(directory),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(failed("inspect", &directory, error)),
+    }
+    match acyclic_native_runtime::private_file::create_directory(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(failed("create", &directory, error)),
+    }
+    acyclic_native_runtime::private_file::validate_directory(&directory)
+        .map_err(|error| failed("inspect", &directory, error))?;
+    Ok(directory)
+}
+
+/// Takes this user's lock file in `directory`, which serializes that user's runners' claim,
+/// reclaim and removal. The file is created readable only by its owner; an entry there that is
+/// not a private file of this user is refused rather than locked.
+#[cfg(unix)]
+fn lock_user(directory: &Path) -> Result<File, String> {
+    let user = acyclic_native_runtime::private_file::effective_user();
+    let path = directory.join(format!("{RUNNER_PREFIX}{user}.lock"));
+    let lock = acyclic_native_runtime::private_file::open_or_create(&path)
+        .map_err(|error| failed("open", &path, error))?;
     lock.lock().map_err(|error| failed("lock", &path, error))?;
     Ok(lock)
 }
@@ -742,6 +777,34 @@ mod tests {
         let runner = RunnerDirectory::claim(&root).unwrap();
         assert!(runner.path.is_dir());
         runner.release().unwrap();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A lock file that is not private is refused, so a pre-created public entry cannot be used.
+    #[cfg(unix)]
+    #[test]
+    fn a_public_lock_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = env::temp_dir().join(format!("acyclic-lock-private-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let user = acyclic_native_runtime::private_file::effective_user();
+        let path = directory.join(format!("{RUNNER_PREFIX}{user}.lock"));
+        fs::write(&path, "").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(lock_user(&directory).is_err());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// A shared root cannot hold the lock directory, even if a name there is free.
+    #[cfg(unix)]
+    #[test]
+    fn a_shared_root_cannot_hold_the_lock_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = env::temp_dir().join(format!("acyclic-lock-shared-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(private_lock_directory(&root).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 
