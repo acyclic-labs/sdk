@@ -811,20 +811,23 @@ fn excluded_published_path_owners_have_executed_api_and_drift() {
     let original = fs::read_to_string(&demo_manifest)
         .unwrap()
         .replace("name = \"demo\"", "name = \"demo-macros\"");
+    let declared_demo = include_str!("../fixtures/excluded-owners/rust/crates/demo/Cargo.toml");
+    assert_eq!(declared_demo, format!("{}\n[dependencies]\ndemo-macros = {{ path = \"../../vendor/macros\" }}\ndemo-helper = {{ path = \"../../vendor/helper\" }}\n", fs::read_to_string(&demo_manifest).unwrap()));
+    fs::write(&demo_manifest, declared_demo).unwrap();
     fs::write(
-        &demo_manifest,
-        format!("{}\n[dependencies]\ndemo-macros = {{ path = \"../../vendor/macros\" }}\ndemo-helper = {{ path = \"../../vendor/helper\" }}\n", fs::read_to_string(&demo_manifest).unwrap()),
-    ).unwrap();
-    fs::write(fixture.root.join("Cargo.toml"), "[workspace]\nmembers = [\"rust/crates/demo\"]\nexclude = [\"rust/vendor/macros\", \"rust/vendor/helper\", \"rust/vendor/macro-dev-helper\"]\nresolver = \"2\"\n").unwrap();
+        fixture.root.join("Cargo.toml"),
+        include_str!("../fixtures/excluded-owners/Cargo.toml"),
+    )
+    .unwrap();
     fs::create_dir_all(fixture.root.join("rust/vendor/helper/src")).unwrap();
     fs::write(
         fixture.root.join("rust/vendor/helper/Cargo.toml"),
-        "[package]\nname = \"demo-helper\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+        include_str!("../fixtures/excluded-owners/rust/vendor/helper/Cargo.toml"),
     )
     .unwrap();
     fs::write(
         fixture.root.join("rust/vendor/helper/src/lib.rs"),
-        "/// Published excluded library API.\npub struct ExcludedOwnedApi;\n",
+        include_str!("../fixtures/excluded-owners/rust/vendor/helper/src/lib.rs"),
     )
     .unwrap();
     fs::write(
@@ -832,40 +835,41 @@ fn excluded_published_path_owners_have_executed_api_and_drift() {
         "[\"demo\",\"demo-macros\",\"demo-helper\"]\n",
     )
     .unwrap();
-    fs::write(fixture.root.join("Cargo.lock"), "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\ndependencies = [\"demo-helper\", \"demo-macros\"]\n\n[[package]]\nname = \"demo-helper\"\nversion = \"1.0.0\"\n\n[[package]]\nname = \"demo-macros\"\nversion = \"1.0.0\"\n").unwrap();
     fs::write(
-        &manifest,
+        fixture.root.join("Cargo.lock"),
+        include_str!("../fixtures/excluded-owners/Cargo.lock"),
+    )
+    .unwrap();
+    let expected_manifest = format!(
+        "{}\n[dev-dependencies]\nmacro-dev-helper = {{ path = \"../macro-dev-helper\" }}\n",
         original.replace(
             "[lib]\npath = \"src/lib.rs\"",
             "[lib]\nname = \"renamed_macro_target\"\nproc-macro = true\npath = \"src/lib.rs\"",
-        ),
+        )
+    );
+    let declared_manifest =
+        include_str!("../fixtures/excluded-owners/rust/vendor/macros/Cargo.toml");
+    assert_eq!(declared_manifest, expected_manifest);
+    fs::write(&manifest, declared_manifest).unwrap();
+    fs::create_dir_all(fixture.root.join("rust/vendor/macro-dev-helper/src")).unwrap();
+    fs::write(
+        fixture.root.join("rust/vendor/macro-dev-helper/Cargo.toml"),
+        include_str!("../fixtures/excluded-owners/rust/vendor/macro-dev-helper/Cargo.toml"),
     )
     .unwrap();
-    let macro_manifest = fs::read_to_string(&manifest).unwrap();
-    fs::write(&manifest, format!("{macro_manifest}\n[dev-dependencies]\nmacro-dev-helper = {{ path = \"../macro-dev-helper\" }}\n")).unwrap();
-    fs::create_dir_all(fixture.root.join("rust/vendor/macro-dev-helper/src")).unwrap();
-    fs::write(fixture.root.join("rust/vendor/macro-dev-helper/Cargo.toml"), "[package]\nname = \"macro-dev-helper\"\nversion = \"1.0.0\"\nedition = \"2021\"\npublish = false\n").unwrap();
     fs::write(
         fixture.root.join("rust/vendor/macro-dev-helper/src/lib.rs"),
-        "pub struct DevOnly;\n",
+        include_str!("../fixtures/excluded-owners/rust/vendor/macro-dev-helper/src/lib.rs"),
     )
     .unwrap();
-    fs::write(fixture.root.join("rust/vendor/macros/Cargo.lock"), "version = 3\n\n[[package]]\nname = \"demo-macros\"\nversion = \"1.0.0\"\ndependencies = [\"macro-dev-helper\"]\n\n[[package]]\nname = \"macro-dev-helper\"\nversion = \"1.0.0\"\n").unwrap();
+    fs::write(
+        fixture.root.join("rust/vendor/macros/Cargo.lock"),
+        include_str!("../fixtures/excluded-owners/rust/vendor/macros/Cargo.lock"),
+    )
+    .unwrap();
     fs::write(
         fixture.root.join("rust/vendor/macros/src/lib.rs"),
-        r#"//! Public procedural macro documentation.
-extern crate proc_macro;
-use proc_macro::TokenStream;
-/// Return the supplied tokens unchanged.
-#[proc_macro]
-pub fn demo_macro(input: TokenStream) -> TokenStream { input }
-/// Preserve an attributed item.
-#[proc_macro_attribute]
-pub fn demo_attribute(_args: TokenStream, input: TokenStream) -> TokenStream { input }
-/// Add no derived implementation.
-#[proc_macro_derive(DemoDerive)]
-pub fn demo_derive(_input: TokenStream) -> TokenStream { TokenStream::new() }
-"#,
+        include_str!("../fixtures/excluded-owners/rust/vendor/macros/src/lib.rs"),
     )
     .unwrap();
     git(&fixture.root, &["add", "."]);

@@ -133,14 +133,10 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
     };
     if args.first().and_then(|arg| arg.to_str()) != Some("rustdoc")
         || !args.iter().any(|arg| *arg == "--lib")
-        || args.iter().any(|arg| *arg == "--config")
     {
         return Ok(None);
     }
-    let Some(root) = value("--manifest-path")
-        .map(Path::new)
-        .and_then(Path::parent)
-    else {
+    let Some(manifest_path) = value("--manifest-path").map(Path::new) else {
         return Ok(None);
     };
     let Some(package) = value("--package").and_then(|arg| arg.to_str()) else {
@@ -161,12 +157,6 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         .flatten()
         .and_then(|v| v.to_str())
         != Some(rustflags)
-    {
-        return Ok(None);
-    }
-    if root
-        .ancestors()
-        .any(|ancestor| ancestor.join(".cargo").exists())
     {
         return Ok(None);
     }
@@ -206,6 +196,21 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         {
             continue;
         }
+        let declared_manifest = Path::new(metadata["manifest_path"].as_str().unwrap());
+        let mut root = manifest_path;
+        for _ in declared_manifest.components() {
+            let Some(parent) = root.parent() else {
+                return Ok(None);
+            };
+            root = parent;
+        }
+        if root.join(declared_manifest) != manifest_path
+            || root
+                .ancestors()
+                .any(|ancestor| ancestor.join(".cargo").exists())
+        {
+            continue;
+        }
         let declared = metadata["cargo_flags"].as_array().unwrap();
         let mut flags = Vec::new();
         if args.iter().any(|arg| *arg == "--no-default-features") {
@@ -235,6 +240,19 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
             target,
         ];
         expected_args.extend(flags);
+        let selected_lock = metadata["selected_lock"].as_str().unwrap();
+        let config = if selected_lock.is_empty() {
+            None
+        } else {
+            let lock = root.join(selected_lock).canonicalize()?;
+            Some(format!(
+                "resolver.lockfile-path={}",
+                serde_json::to_string(lock.to_str().unwrap())?
+            ))
+        };
+        if let Some(config) = &config {
+            expected_args.extend(["--config", config.as_str()]);
+        }
         expected_args.extend(["--", "-Z", "unstable-options", "--output-format", "json"]);
         if args
             .iter()
@@ -280,7 +298,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         if json["target"]["triple"].as_str() != Some(target) {
             continue;
         }
-        fn relocate(value: &mut Value, root: &Path, sources: &[String]) {
+        fn relocate(value: &mut Value, root: &Path, sources: &[String], owner: &str) {
             match value {
                 Value::Object(object) => {
                     if let Some(Value::Object(span)) = object.get_mut("span") {
@@ -288,35 +306,42 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                             let normalized = filename.replace('\\', "/");
                             if let Some(source) = sources.iter().find(|source| {
                                 normalized.ends_with(source.as_str())
-                                    || normalized == "src/lib.rs" && source.ends_with("/src/lib.rs")
+                                    || normalized == "src/lib.rs"
+                                        && source == &format!("{owner}/src/lib.rs")
                             }) {
                                 *filename = root.join(source).to_string_lossy().into_owned();
                             }
                         }
                     }
                     for child in object.values_mut() {
-                        relocate(child, root, sources);
+                        relocate(child, root, sources, owner);
                     }
                 }
                 Value::Array(array) => {
                     for child in array {
-                        relocate(child, root, sources);
+                        relocate(child, root, sources, owner);
                     }
                 }
                 _ => {}
             }
         }
-        relocate(&mut json, root, &relative_sources);
+        let owner = metadata["owner_path"].as_str().unwrap();
+        relocate(&mut json, root, &relative_sources, owner);
         let target_dir = command
             .get_envs()
             .find(|(key, _)| *key == "CARGO_TARGET_DIR")
             .and_then(|(_, value)| value)
             .map(Path::new)
             .unwrap();
-        let output = target_dir
-            .join(target)
-            .join("doc")
-            .join(format!("{}.json", package.replace('-', "_")));
+        let output_dir = if metadata["proc_macro"].as_bool() == Some(true) {
+            target_dir.join("doc")
+        } else {
+            target_dir.join(target).join("doc")
+        };
+        let output = output_dir.join(format!(
+            "{}.json",
+            metadata["library_name"].as_str().unwrap()
+        ));
         fs::create_dir_all(output.parent().unwrap())?;
         fs::write(output, serde_json::to_vec(&json)?)?;
         #[cfg(unix)]

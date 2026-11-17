@@ -21,6 +21,7 @@ rustdoc_fixture_set(
     srcs = _INPUTS,
     fixture_root = "rust/crates/sdk-generation/tests/fixtures/feature-profile/",
     package = "demo",
+    owner_path = "rust/crates/demo",
     profiles = {
         "feature_default": [],
         "feature_no_default": ["--no-default-features"],
@@ -37,8 +38,8 @@ rustdoc_fixture_set(
     srcs = _INPUTS,
     fixture_root = "rust/crates/sdk-generation/tests/fixtures/feature-profile/",
     package = "demo",
-    override = _LONG_MANIFEST,
-    override_path = "rust/crates/demo/Cargo.toml",
+    owner_path = "rust/crates/demo",
+    mapped_sources = {_LONG_MANIFEST: "rust/crates/demo/Cargo.toml"},
     profiles = {
         "long_default": [],
         "long_no_default": ["--no-default-features"],
@@ -49,4 +50,65 @@ rustdoc_fixture_set(
     },
 )
 
-filegroup(name = "feature_profiles", srcs = _INPUTS + [_LONG_MANIFEST] + [":feature_default", ":feature_no_default", ":feature_base", ":feature_extra", ":feature_all", ":long_default", ":long_no_default", ":long_base", ":long_extra", ":long_feature", ":long_all"])
+_EXCLUDED_ROOT = "rust/crates/sdk-generation/tests/fixtures/excluded-owners/"
+_EXCLUDED_INPUTS = [
+    "//rust/crates/sdk-generation:tests/fixtures/excluded-owners/Cargo.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/excluded-owners/Cargo.lock",
+    "//rust/crates/sdk-generation:tests/fixtures/excluded-owners/rust/crates/demo/Cargo.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/excluded-owners/rust/vendor/helper/Cargo.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/excluded-owners/rust/vendor/helper/src/lib.rs",
+    "//rust/crates/sdk-generation:tests/fixtures/excluded-owners/rust/vendor/macros/Cargo.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/excluded-owners/rust/vendor/macros/Cargo.lock",
+    "//rust/crates/sdk-generation:tests/fixtures/excluded-owners/rust/vendor/macros/src/lib.rs",
+    "//rust/crates/sdk-generation:tests/fixtures/excluded-owners/rust/vendor/macro-dev-helper/Cargo.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/excluded-owners/rust/vendor/macro-dev-helper/src/lib.rs",
+]
+_SHARED = {
+    "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust-toolchain.toml": "rust-toolchain.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust/crates/demo/src/lib.rs": "rust/crates/demo/src/lib.rs",
+}
+_EXCLUDED_PROFILES = {
+    "default": [],
+    "no_default": ["--no-default-features"],
+    "base": ["--no-default-features", "--features", "base"],
+    "extra": ["--no-default-features", "--features", "extra"],
+    "all": ["--features", "base,extra"],
+}
+
+rustdoc_fixture_set(
+    srcs = _EXCLUDED_INPUTS,
+    fixture_root = _EXCLUDED_ROOT,
+    package = "demo",
+    owner_path = "rust/crates/demo",
+    mapped_sources = _SHARED,
+    profiles = {"excluded_demo_" + name: flags for name, flags in _EXCLUDED_PROFILES.items()},
+)
+
+rustdoc_fixture_set(
+    srcs = _EXCLUDED_INPUTS,
+    fixture_root = _EXCLUDED_ROOT,
+    package = "demo-macros",
+    manifest_path = "rust/vendor/macros/Cargo.toml",
+    owner_path = "rust/vendor/macros",
+    selected_lock = "rust/vendor/macros/Cargo.lock",
+    library_name = "renamed_macro_target",
+    proc_macro = True,
+    mapped_sources = _SHARED,
+    profiles = {"excluded_macros_" + name: flags for name, flags in _EXCLUDED_PROFILES.items()},
+)
+
+rustdoc_fixture_set(
+    srcs = _EXCLUDED_INPUTS,
+    fixture_root = _EXCLUDED_ROOT,
+    package = "demo-helper",
+    manifest_path = "rust/vendor/helper/Cargo.toml",
+    owner_path = "rust/vendor/helper",
+    selected_lock = "Cargo.lock",
+    mapped_sources = _SHARED,
+    profiles = {"excluded_helper_default": []},
+)
+
+filegroup(
+    name = "feature_profiles",
+    srcs = _INPUTS + _EXCLUDED_INPUTS + [_LONG_MANIFEST] + [":feature_default", ":feature_no_default", ":feature_base", ":feature_extra", ":feature_all", ":long_default", ":long_no_default", ":long_base", ":long_extra", ":long_feature", ":long_all", ":excluded_helper_default"] + [":excluded_demo_" + name for name in _EXCLUDED_PROFILES] + [":excluded_macros_" + name for name in _EXCLUDED_PROFILES],
+)
