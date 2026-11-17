@@ -5603,7 +5603,36 @@ async fn file_stop_closes_the_whole_subtree_world() -> Result<()> {
     else {
         return Err(Error::Invalid("child was refused".into()));
     };
+    let grandchild_profile = harness
+        .agents
+        .get()
+        .ok_or_else(|| Error::Invalid("missing host".into()))?
+        .server()
+        .bound()
+        .child_profile(&child, "worker")
+        .await
+        .map_err(agent)?;
+    let record = InboxRecord::Spawn(SpawnRequest {
+        by: by.clone(),
+        id: IntentId::try_from("stop-grandchild").map_err(agent)?,
+        brief: None,
+        profile: grandchild_profile,
+        history: None,
+    });
+    let Delivered::Committed { inbox } = agents.send(&child, &by, &record).await.map_err(agent)?
+    else {
+        return Err(Error::Invalid("child was closed".into()));
+    };
+    let (intent, _) = crate::agent::requested_child(&child, inbox).map_err(agent)?;
+    let SpawnOutcome::Spawned { child: grandchild } = agents
+        .spawned(&child, inbox, &intent)
+        .await
+        .map_err(agent)?
+    else {
+        return Err(Error::Invalid("grandchild was refused".into()));
+    };
     assert!(!agents.state(&child).await.map_err(agent)?.closed);
+    assert!(!agents.state(&grandchild).await.map_err(agent)?.closed);
     let conversation = Conversation::open(connection.clone());
     let mut events = conversation.connection().supervision_own().await?;
     conversation
@@ -5617,22 +5646,62 @@ async fn file_stop_closes_the_whole_subtree_world() -> Result<()> {
             }],
         )
         .await?;
-    loop {
-        if matches!(events.next().await?.event, Lifecycle::Stopped { .. }) {
-            break;
+    let (_, stopped_record, stopped) = loop {
+        let (position, record, event) = events.next_publication().await?;
+        if matches!(event.event, Lifecycle::Stopped { .. }) {
+            break (position, record, event);
         }
-    }
+    };
+    assert!(matches!(stopped.event, Lifecycle::Stopped { .. }));
+    let mut closed = connection
+        .session
+        .read_provider()
+        .read(ReadRequest {
+            key: None,
+            path: root.closed()?,
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?;
+    let closed = closed
+        .try_next()
+        .await?
+        .ok_or_else(|| Error::NotFound("root close marker".into()))?;
+    assert_ne!(
+        stopped_record.commit_id, closed.commit_id,
+        "the stop was acknowledged in the commit that closed only the root"
+    );
+    let mut grandchild_closed = connection
+        .session
+        .read_provider()
+        .read(ReadRequest {
+            key: None,
+            path: grandchild.closed()?,
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?;
+    let grandchild_closed = grandchild_closed
+        .try_next()
+        .await?
+        .ok_or_else(|| Error::NotFound("grandchild close marker".into()))?;
+    assert!(
+        grandchild_closed.committed_at_micros <= stopped_record.committed_at_micros,
+        "the stop was acknowledged before the grandchild closed"
+    );
     assert!(
         agents.state(&child).await.map_err(agent)?.closed,
         "the root acknowledged stop while its child stayed open"
     );
+    assert!(
+        agents.state(&grandchild).await.map_err(agent)?.closed,
+        "the root acknowledged stop while its grandchild stayed open"
+    );
     Ok(())
 }
 
-/// Editing AGENTS.md between turns keeps the cached span (system block and
-/// tools) of the first request byte-identical in the second, and appends the
-/// edit as a notice the second request carries. Its host-only delivery
-/// frontier survives reopen and prevents losing or repeating transitions.
 #[tokio::test]
 async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> Result<()> {
     use crate::test_support::ScriptedTurn;
