@@ -1039,7 +1039,12 @@ function moduleFile() {
       ["extra_rustc_flags", list(flags)],
       ["extra_exec_rustc_flags", list(flags)],
     ]),
-    `use_repo(rust, "rust_toolchains", ${[
+    // Compiler executables support this workspace's own qualification scripts.
+    // rules_rust generates tools only for the root's toolchain tags; importing
+    // these from a dependency would require its consumer to reproduce our tags.
+    `use_repo(rust, "rust_toolchains")\n\n`,
+    `rust_tools = use_extension("@rules_rust//rust:extensions.bzl", "rust", dev_dependency = True)\n`,
+    `use_repo(rust_tools, ${[
       `rust_linux_x86_64__${LINUX_GNU_TRIPLE}__${channelName}_tools`,
       `rust_macos_aarch64__aarch64-apple-darwin__${channelName}_tools`,
       "rust_windows_x86_64_tools",
