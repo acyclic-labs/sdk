@@ -163,7 +163,7 @@ fn child_digest(seed: u64) -> std::result::Result<blake3::Hash, String> {
     let output = std::process::Command::new(executable)
         .args([
             "--exact",
-            "determinism::x1_child",
+            "dst::determinism::x1_child",
             "--nocapture",
             "--test-threads=1",
         ])
