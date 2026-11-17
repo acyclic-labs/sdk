@@ -311,8 +311,8 @@ fn parent_steps(
     steps
 }
 
-fn event_plan(event: &str, child_tag: &'static str, file: &str) -> Plan {
-    let (steps, fail_once) = match event {
+fn event_plan(event: &str, mode: &str, child_tag: &'static str, file: &str) -> Plan {
+    let (mut steps, fail_once) = match event {
         "child_failure" => (
             vec![Vec::new()],
             Some((
@@ -340,6 +340,20 @@ fn event_plan(event: &str, child_tag: &'static str, file: &str) -> Plan {
         ),
         _ => (Vec::new(), None),
     };
+    if mode == "in_compaction" {
+        // Keep the child active past the parent's first compaction request,
+        // so the settlement really overlaps the parent's compaction.
+        for index in 0..8 {
+            steps.push(vec![call(
+                &format!("child-{child_tag}-{index}"),
+                "write",
+                json!({
+                    "path": format!("child-{child_tag}-{index}.txt"),
+                    "content": format!("child {child_tag} boundary {index}"),
+                }),
+            )]);
+        }
+    }
     Plan {
         tag: child_tag,
         steps,
@@ -383,8 +397,8 @@ fn plans(event: &str, mode: &str) -> Vec<Plan> {
         },
         fail_once: None,
     });
-    plans.push(event_plan(event, "d", "d.txt"));
-    plans.push(event_plan(event, "g", "g.txt"));
+    plans.push(event_plan(event, mode, "d", "d.txt"));
+    plans.push(event_plan(event, mode, "g", "g.txt"));
     plans.push(Plan {
         tag: "recover",
         steps: vec![
@@ -547,6 +561,25 @@ fn merged(
     Ok(())
 }
 
+fn settled_during_compaction(
+    requests: &[acyclic_harness::model::ModelRequest],
+    parent: &str,
+    child: &str,
+) -> std::result::Result<(), String> {
+    let first_summary = requests
+        .iter()
+        .position(|request| request.summary && request_tag(request) == Some(parent))
+        .ok_or_else(|| format!("{parent} never compacted"))?;
+    let child_last = requests
+        .iter()
+        .rposition(|request| request_tag(request) == Some(child))
+        .ok_or_else(|| format!("{child} made no request"))?;
+    if child_last <= first_summary {
+        return Err(format!("{child} settled before {parent} began compacting"));
+    }
+    Ok(())
+}
+
 fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
     let (event, parent) = settlement(seed);
     let mode = parent;
@@ -611,6 +644,10 @@ fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
             observed_child(&incarnation.requests, "root", "d")?;
             observed_child(&incarnation.requests, "root", "w")?;
             observed_child(&incarnation.requests, "w", "g")?;
+            if mode == "in_compaction" {
+                settled_during_compaction(&incarnation.requests, "root", "d")?;
+                settled_during_compaction(&incarnation.requests, "w", "g")?;
+            }
             if event == "send_delivery" {
                 // Each child must wake on the delivered input, not on its
                 // wait deadline.
