@@ -178,10 +178,10 @@ fn plans(seed: u64) -> Vec<Plan> {
         settled("c3-wake"),
         Plan {
             tag: "c3-mid",
-            steps: vec![vec![
-                spawn("mid-spawn-target", "target", "c3-target"),
-                state_wait(form, "mid-wait", state, "target", "sibling"),
-            ]],
+            steps: vec![
+                vec![spawn("mid-spawn-target", "target", "c3-target")],
+                vec![state_wait(form, "mid-wait", state, "target", "sibling")],
+            ],
             fail_once: None,
         },
         Plan {
@@ -316,10 +316,12 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
     }
     match state {
         "starting" if relation != "same_parent_other_runtime" => {
-            let entry = field_entry(value, "unsettled", "target")
-                .ok_or_else(|| format!("wait {id} settled a child in its spawn step: {value}"))?;
-            if entry.get("phase").and_then(Value::as_str) != Some("spawning") {
-                return Err(format!("wait {id} did not report spawning: {entry}"));
+            if let Some(entry) = field_entry(value, "unsettled", "target") {
+                if entry.get("phase").and_then(Value::as_str) != Some("spawning") {
+                    return Err(format!("wait {id} did not report spawning: {entry}"));
+                }
+            } else if field_entry(value, "settled", "target").is_none() {
+                return Err(format!("wait {id} reported neither spawning nor settled: {value}"));
             }
         }
         "running" => {
