@@ -178,12 +178,16 @@ fn child_digest(seed: u64) -> std::result::Result<blake3::Hash, String> {
             String::from_utf8_lossy(&output.stdout),
         ));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
     let marker = format!("DST_X1_DIGEST={} ", class(seed));
-    stdout
+    output
         .lines()
         .find_map(|line| line.strip_prefix(&marker))
-        .ok_or_else(|| format!("fresh-process replay printed no digest: {stdout}"))
+        .ok_or_else(|| format!("fresh-process replay printed no digest: {output}"))
         .and_then(|digest| {
             blake3::Hash::from_hex(digest.trim()).map_err(|error| error.to_string())
         })
