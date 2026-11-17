@@ -307,7 +307,7 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                             if let Some(source) = sources.iter().find(|source| {
                                 normalized.ends_with(source.as_str())
                                     || normalized == "src/lib.rs"
-                                        && source == &format!("{owner}/src/lib.rs")
+                                        && source.as_str() == format!("{owner}/src/lib.rs")
                             }) {
                                 *filename = root.join(source).to_string_lossy().into_owned();
                             }
