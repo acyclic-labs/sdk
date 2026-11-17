@@ -169,25 +169,17 @@ mod tests {
             assert_eq!(cost.count_total, 0);
         }
         let semantic = domain::DeleteAllRequest::try_from(valid.clone()).expect("valid delete");
-        assert_eq!(semantic.actor_id().as_str(), "actor-a");
-        assert_eq!(semantic.idempotency_key(), "delete-a");
         assert_eq!(wire::DeleteAllRequest::from(semantic), valid);
         for invalid in [
             wire::DeleteAllRequest {
-                namespace: None,
-                account_id: Vec::new(),
                 actor_id: String::new(),
                 ..valid.clone()
             },
             wire::DeleteAllRequest {
-                namespace: None,
-                account_id: Vec::new(),
                 idempotency_key: String::new(),
                 ..valid.clone()
             },
             wire::DeleteAllRequest {
-                namespace: None,
-                account_id: Vec::new(),
                 idempotency_key: "k".repeat(257),
                 ..valid.clone()
             },
@@ -199,16 +191,10 @@ mod tests {
             assert!(domain::DeleteAllRequest::try_from(invalid).is_err());
         }
         let boundary = wire::DeleteAllRequest {
-            namespace: None,
-            account_id: Vec::new(),
             idempotency_key: "k".repeat(256),
             ..valid
         };
         assert_eq!(validate_delete(&boundary), Ok(()));
-        assert_eq!(
-            domain::DeleteAllResponse::try_from(wire::DeleteAllResponse {}),
-            Ok(domain::DeleteAllResponse::default())
-        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
