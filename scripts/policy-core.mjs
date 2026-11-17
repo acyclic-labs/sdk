@@ -134,7 +134,8 @@ export function testFeatureFindings(root) {
         const source = join(directory, path), text = readUtf8(source);
         const enabled = new Set(target['required-features'] ?? []), pending = [...enabled];
         while (pending.length) {
-          for (const feature of data.features?.[pending.pop()] ?? []) {
+          const next = pending.pop();
+          for (const feature of data.features?.[next] ?? []) {
             if (!enabled.has(feature)) { enabled.add(feature); pending.push(feature); }
           }
         }
