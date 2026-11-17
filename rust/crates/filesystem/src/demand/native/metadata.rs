@@ -107,6 +107,38 @@ fn with_fixture_content(
     Ok(stat.with_content(*hasher.finalize().as_bytes()))
 }
 
+/// Hashes the already-open file, not its current name, so a rename and
+/// same-length replacement at the old path cannot satisfy a held-file check.
+#[cfg(feature = "test-support")]
+fn with_fixture_content_file(
+    stat: HostStat,
+    file: &SourceFile,
+    context: &mut CallbackWork,
+) -> Result<HostStat, DemandError> {
+    if stat.file_type() != crate::demand::SourceNodeKind::RegularFile
+        || fixture_times(&stat).is_none()
+    {
+        return Ok(stat);
+    }
+    let mut hasher = blake3::Hasher::new();
+    let mut offset = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        context.check()?;
+        let read = read_at(file, offset, &mut buffer, context)?;
+        if read == 0 {
+            break;
+        }
+        context.admit(WorkCounters {
+            bytes_hashed: read as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        hasher.update(&buffer[..read]);
+        offset += read as u64;
+    }
+    Ok(stat.with_content(*hasher.finalize().as_bytes()))
+}
+
 fn version(path: Option<&[u8]>, metadata: &HostStat) -> SourceVersion {
     #[cfg(feature = "test-support")]
     if let Some(times) = fixture_times(metadata) {

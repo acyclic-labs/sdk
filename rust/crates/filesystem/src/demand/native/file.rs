@@ -55,7 +55,7 @@ impl NativeDemandFile {
         };
         let opened = stat_held(&provider, &file, context)?;
         #[cfg(feature = "test-support")]
-        let opened = with_fixture_content(&provider, &relative, opened, context)?;
+        let opened = with_fixture_content_file(opened, &file, context)?;
         if opened.file_type() != crate::demand::SourceNodeKind::RegularFile {
             return Err(DemandError::NotRegularFile);
         }
@@ -167,7 +167,7 @@ impl NativeDemandFile {
         };
         let opened = stat_held(&self.provider, &file, context)?;
         #[cfg(feature = "test-support")]
-        let opened = with_fixture_content(&self.provider, &self.relative, opened, context)?;
+        let opened = with_fixture_content_file(opened, &file, context)?;
         if self.version(&opened) != self.expected {
             return Err(DemandError::StaleVersion);
         }
@@ -300,7 +300,7 @@ impl NativeDemandFile {
     ) -> Result<(), DemandError> {
         let held = stat_held(&self.provider, file, context)?;
         #[cfg(feature = "test-support")]
-        let held = with_fixture_content(&self.provider, &self.relative, held, context)?;
+        let held = with_fixture_content_file(held, file, context)?;
         #[cfg(unix)]
         let named = self
             .provider
