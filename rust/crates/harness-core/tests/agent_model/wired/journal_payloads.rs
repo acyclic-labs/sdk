@@ -257,10 +257,50 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
 
 #[tokio::test]
 async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
-    use acyclic_harness_core::{model::ModelEvent, test_support::ScriptedEvent};
+    use acyclic_harness_core::{
+        conversation::{ContentAccess, ContentPublisher},
+        filesystem::{FilesystemContentPublisher, agent_authority},
+        model::ModelEvent,
+        test_support::ScriptedEvent,
+    };
     let path = AgentPath::root(&id(230));
     let stream = Arc::new(MemoryStream::default());
     let (filesystem, binding) = private_in(&stream, &path).await?;
+    let issuer = AuthorityRoot::new(
+        "agents",
+        [7; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "agents".into(),
+        },
+    );
+    let volumes = vec![binding.clone()];
+    let authority = agent_authority(
+        &issuer.clone().into(),
+        &TurnAdmission::LocalRoot,
+        &path,
+        &volumes,
+        &[],
+    )
+    .await?;
+    let publisher = FilesystemContentPublisher::new(
+        filesystem.clone(),
+        binding.volume()?,
+        &authority.verifier,
+        &authority.scope,
+        LIMITS.maximum_bytes,
+        None,
+    )?;
+    let (body, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "input.txt",
+            b"same prompt",
+            "text/plain",
+            "input.txt",
+            ContentAccess::default(),
+        )?
+        .await?;
     let model = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::Reasoning {
@@ -276,14 +316,7 @@ async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
         stream.clone(),
         within(),
         filesystem.clone(),
-        AuthorityRoot::new(
-            "agents",
-            [7; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "agents".into(),
-            },
-        ),
+        issuer,
         TurnAdmission::LocalRoot,
         executors(model.clone())?,
         LIMITS,
@@ -291,14 +324,25 @@ async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
     ));
     let host = committing(&stream, &filesystem, driver)?;
     let mut adoption = adopted(path.id());
-    adoption.volumes = vec![binding];
+    adoption.volumes = volumes;
     create_filesystem_root(&host, &filesystem, &intent("stream-abort"), adoption).await?;
-    let first = deliver(&host, &path, requested("same", &path)).await?;
-    assert_eq!(first.phase, Phase::Idle);
-    assert_eq!(first.conversation_tail, 1);
-    let second = deliver(&host, &path, requested("same", &path)).await?;
-    assert_eq!(second.phase, Phase::Idle);
-    assert_eq!(second.conversation_tail, 2);
+    let sender = super::super::user();
+    for id in ["first", "second"] {
+        let wake = Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::Message(Message {
+                from: sender.clone(),
+                id: intent(id),
+                body: Box::new(body.clone()),
+                re: None,
+                attachments: None,
+            }),
+        };
+        let state = deliver(&host, &path, wake).await?;
+        assert_eq!(state.phase, Phase::Idle);
+    }
+    let state = host.state(&path).await?;
+    assert_eq!(state.conversation_tail, 2);
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(
