@@ -307,7 +307,7 @@ impl TurnContext for LocalContext {
                 .await?;
             let journal_content = authority
                 .journal
-                .output_content(turn)?
+                .output_content(turn, None)?
                 .ok_or_else(|| Error::Invalid("agent turn has no journal content".into()))?;
             let writer = journal_content
                 .writer

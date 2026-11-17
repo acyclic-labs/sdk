@@ -62,7 +62,7 @@ impl TaskContext {
             .as_ref()
             .map(|content| content.volume.directory_read_capability("tools", &mut None))
             .transpose()?;
-        let mut output = journal.output_content(operation)?;
+        let mut output = journal.output_content(operation, None)?;
         let mut publisher = None;
         let grant = output
             .as_mut()

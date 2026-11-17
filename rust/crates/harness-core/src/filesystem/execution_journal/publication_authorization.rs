@@ -113,7 +113,9 @@ mod tests {
                 .authenticate_publication(operation, &private_file, None)?
                 .await?
         );
-        let content = journal.output_content(operation)?.expect("journal content");
+        let content = journal
+            .output_content(operation, None)?
+            .expect("journal content");
         let writer = content.writer.as_deref().expect("journal writer");
         let path = crate::context::ContextEpoch::path(operation);
         let (original, _) = writer

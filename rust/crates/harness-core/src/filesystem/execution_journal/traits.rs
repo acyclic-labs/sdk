@@ -64,8 +64,9 @@ where
     fn output_content(
         &self,
         operation: OperationId,
+        io: Option<&PreparationIo>,
     ) -> Result<Option<crate::runtime::ContentBindings>> {
-        self.require_operation(operation, None)?;
+        self.require_operation(operation, io)?;
         Ok(Some(crate::runtime::ContentBindings {
             volume: self.volume.clone(),
             reader: crate::filesystem::FilesystemContentVerifier::new(
@@ -73,7 +74,7 @@ where
                 &self.verifier,
                 &self.scope,
                 super::MAXIMUM_PAYLOAD_BYTES,
-                None,
+                io,
             )?,
             writer: Some(crate::filesystem::FilesystemContentPublisher::new(
                 Arc::clone(&self.host),
@@ -81,7 +82,7 @@ where
                 &self.verifier,
                 &self.scope,
                 super::MAXIMUM_PAYLOAD_BYTES,
-                None,
+                io,
             )?),
         }))
     }
