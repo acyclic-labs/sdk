@@ -5,6 +5,10 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::addressing::DEFAULT_ACTOR_NAMESPACE;
 
+    let actor = ActorId::new("original".into())?;
+    assert!(RemoveSubscriptionRequest::new(actor.clone(), String::new(), "remove".into()).is_err());
+    assert!(ResumeSubscriptionRequest::new(actor, "events".into(), String::new()).is_err());
+
     for account in [vec![0xff, 0, 1], vec![0xfe; 65_536]] {
         let address = ActorReference::new(&account, b"Class_One", b"Bound_ID")?;
         let subscription = wire::SubscriptionSpec {
