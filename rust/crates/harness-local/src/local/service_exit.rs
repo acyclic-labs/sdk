@@ -27,8 +27,8 @@ struct Record {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 enum State {
-    Running,
-    Stopped,
+    Running {},
+    Stopped {},
     Failed { status: Parts },
 }
 
@@ -50,7 +50,7 @@ impl Journal {
             selection: Observation::new(directory, incarnation),
             attempted: AtomicBool::new(false),
         });
-        journal.publish(State::Running, RenameMode::NoReplace)?;
+        journal.publish(State::Running {}, RenameMode::NoReplace)?;
         Ok(journal)
     }
 
@@ -83,7 +83,7 @@ impl Journal {
             return result;
         }
         let state = match &result {
-            Ok(_) => State::Stopped,
+            Ok(_) => State::Stopped {},
             Err(error) => {
                 let mut message = error.to_string();
                 let mut source = std::error::Error::source(error);
@@ -129,7 +129,7 @@ impl Observation {
         }
         let (status, reason) = match record.state {
             State::Failed { status } => (status, "failed"),
-            State::Stopped => (
+            State::Stopped {} => (
                 Parts {
                     code: 14,
                     message: "local owner stopped".into(),
@@ -138,7 +138,7 @@ impl Observation {
                 },
                 "stopped",
             ),
-            State::Running => (
+            State::Running {} => (
                 Parts {
                     code: 14,
                     message: "no durable terminal record was reported for this owner incarnation"
