@@ -1,17 +1,23 @@
 import { Code, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { credentialStream, resolveCredential, watchCredential, type CredentialProvider, type CredentialRequest } from "./credential.js";
 
+class LocalCredentialError extends ConnectError {
+  static override [Symbol.hasInstance](value: unknown): boolean {
+    return Function.prototype[Symbol.hasInstance].call(this, value);
+  }
+}
+
 /** Credential admission failed before the transport acquired the request. */
-export class RequestCredentialError extends ConnectError {
+export class RequestCredentialError extends LocalCredentialError {
   constructor(cause: unknown) { super("credential source unavailable", Code.Unavailable, undefined, undefined, cause); }
 }
 
 /** Local credential refusal after the transport acquired the request. */
-export class ResponseCredentialError extends ConnectError {
+export class ResponseCredentialError extends LocalCredentialError {
   constructor(message: string) { super(message, Code.PermissionDenied); }
 }
 
-class CredentialAdmissionError extends ConnectError {
+class CredentialAdmissionError extends LocalCredentialError {
   constructor(message: string) { super(message, Code.PermissionDenied); }
 }
 
