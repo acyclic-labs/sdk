@@ -83,9 +83,9 @@ fn wait_variants(_seed: u64) -> Vec<Variant> {
     WAITERS
         .iter()
         .flat_map(|waiter| {
-            TRIGGERS.iter().map(move |trigger| {
-                Variant::from([("waiter", *waiter), ("trigger", *trigger)])
-            })
+            TRIGGERS
+                .iter()
+                .map(move |trigger| Variant::from([("waiter", *waiter), ("trigger", *trigger)]))
         })
         .collect()
 }
@@ -94,7 +94,7 @@ fn wait_variants(_seed: u64) -> Vec<Variant> {
 /// its event. The deadline is always far in the future, so a test that only
 /// passes because a timer fired fails the assertion below.
 fn waiting(waiter: &str) -> (kernel::Control, bool, bool, usize) {
-    use kernel::{Control, Mode, CONTINUE_NOW};
+    use kernel::{CONTINUE_NOW, Control, Mode};
     let control = match waiter {
         // A deferred wait on an open child.
         "wait_tool" => Control {
@@ -136,7 +136,10 @@ fn waiting(waiter: &str) -> (kernel::Control, bool, bool, usize) {
         "stream_follow" => Control::ADOPTED,
         other => panic!("unknown waiter {other}"),
     };
-    let queued = matches!(waiter, "turn_boundary" | "actor_redelivery" | "resume" | "stream_follow");
+    let queued = matches!(
+        waiter,
+        "turn_boundary" | "actor_redelivery" | "resume" | "stream_follow"
+    );
     let approval = false;
     (control, queued, approval, 0)
 }
@@ -246,13 +249,7 @@ fn settlement_variants(seed: u64) -> Vec<Variant> {
     let (event, parent) = settlement(seed);
     DEPTHS
         .iter()
-        .map(|depth| {
-            Variant::from([
-                ("event", event),
-                ("parent", parent),
-                ("depth", *depth),
-            ])
-        })
+        .map(|depth| Variant::from([("event", event), ("parent", parent), ("depth", *depth)]))
         .collect()
 }
 
@@ -264,7 +261,12 @@ fn role(event: &str) -> &'static str {
     }
 }
 
-fn parent_steps(event: &str, mode: &str, children: &[&str], file: &str) -> Vec<Vec<acyclic_harness::model::ToolCall>> {
+fn parent_steps(
+    event: &str,
+    mode: &str,
+    children: &[&str],
+    file: &str,
+) -> Vec<Vec<acyclic_harness::model::ToolCall>> {
     let mut steps = Vec::new();
     if event == "send_delivery" {
         for child in children {
@@ -283,11 +285,7 @@ fn parent_steps(event: &str, mode: &str, children: &[&str], file: &str) -> Vec<V
                 json!({"agents": children}),
             )]);
             if event == "merge_done" {
-                steps.push(vec![call(
-                    "read-merged",
-                    "read",
-                    json!({"path": file}),
-                )]);
+                steps.push(vec![call("read-merged", "read", json!({"path": file}))]);
             }
         }
         "mid_turn" | "in_compaction" => {
@@ -305,11 +303,7 @@ fn parent_steps(event: &str, mode: &str, children: &[&str], file: &str) -> Vec<V
                 )]);
             }
             if event == "merge_done" {
-                steps.push(vec![call(
-                    "read-merged",
-                    "read",
-                    json!({"path": file}),
-                )]);
+                steps.push(vec![call("read-merged", "read", json!({"path": file}))]);
             }
         }
         other => panic!("unknown parent mode {other}"),
@@ -399,11 +393,7 @@ fn plans(event: &str, mode: &str) -> Vec<Plan> {
                 "send",
                 json!({"agent": "w", "message": "recover"}),
             )],
-            vec![call(
-                "recover-wait",
-                "wait",
-                json!({"agents": ["d", "w"]}),
-            )],
+            vec![call("recover-wait", "wait", json!({"agents": ["d", "w"]}))],
         ],
         fail_once: None,
     });
@@ -427,13 +417,18 @@ fn request_tag(request: &acyclic_harness::model::ModelRequest) -> Option<&'stati
             )
         })
         .collect();
-    request.messages.iter().rev().filter(|message| message.role == ModelRole::User).find_map(|message| {
-        let body = serde_json::to_string(&message.content).unwrap_or_default();
-        needles
-            .iter()
-            .find(|(_, text, digest)| body.contains(text) || body.contains(digest))
-            .map(|(name, _, _)| *name)
-    })
+    request
+        .messages
+        .iter()
+        .rev()
+        .filter(|message| message.role == ModelRole::User)
+        .find_map(|message| {
+            let body = serde_json::to_string(&message.content).unwrap_or_default();
+            needles
+                .iter()
+                .find(|(_, text, digest)| body.contains(text) || body.contains(digest))
+                .map(|(name, _, _)| *name)
+        })
 }
 
 fn notices(request: &acyclic_harness::model::ModelRequest) -> BTreeSet<String> {
@@ -456,20 +451,18 @@ fn observed(
         .iter()
         .filter(|request| request_tag(request) == Some(node))
         .collect();
-    let last = tagged.last().ok_or_else(|| format!("{node} made no request"))?;
+    let last = tagged
+        .last()
+        .ok_or_else(|| format!("{node} made no request"))?;
     let seen = notices(last);
     let wait_results = last
         .messages
         .iter()
         .flat_map(|message| message.content.parts())
         .filter_map(|part| match part {
-            ModelContentPart::ToolResult {
-                name,
-                content,
-                ..
-            } if name == "wait" => Some(
-                serde_json::to_string(content).unwrap_or_default(),
-            ),
+            ModelContentPart::ToolResult { name, content, .. } if name == "wait" => {
+                Some(serde_json::to_string(content).unwrap_or_default())
+            }
             _ => None,
         })
         .filter(|result| result.contains("\"settled\""))
@@ -498,8 +491,7 @@ fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
                     output_shares_context: false,
                 });
             }
-            let mut world =
-                World::new(seed + 100, &[], model).map_err(oracle::failed)?;
+            let mut world = World::new(seed + 100, &[], model).map_err(oracle::failed)?;
             if mode == "in_compaction" {
                 world = world.compaction(CompactionPolicy::Capacity(CapacityCompaction {}));
             }
@@ -511,8 +503,7 @@ fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
                     plans: || plans(event, mode),
                     prompts: vec![vec![root.clone()]],
                     window: (1, usize::MAX),
-                    mode: oracle::crash_mode("crash_after", seed)
-                        .ok_or("crash mode")?,
+                    mode: oracle::crash_mode("crash_after", seed).ok_or("crash mode")?,
                 };
                 let (crashed, recovered) = crash
                     .recover(vec![vec![("recover", tag("recover"))]])
@@ -553,9 +544,9 @@ fn settlement_world(seed: u64) -> std::result::Result<bool, String> {
                     .iter()
                     .filter(|request| {
                         settlements(request).is_ok_and(|settled| {
-                            settled.iter().any(|settled| {
-                                settled.call.name == "send" && settled.succeeded()
-                            })
+                            settled
+                                .iter()
+                                .any(|settled| settled.call.name == "send" && settled.succeeded())
                         })
                     })
                     .count();
