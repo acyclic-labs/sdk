@@ -263,6 +263,10 @@ test("a generation key covers every crate a generator compiles and names content
     for (const crate of ["actors-napi", "stream-napi", "filesystem-napi", "filesystem"]) {
       assert.ok(inputs.has(`rust/crates/${crate}/src/lib.rs`), `${crate} sources are generation inputs`);
     }
+    // The generators and the WASM build live in tools/; a change there must select a new entry.
+    for (const tool of ["tools/generate-proto.mjs", "tools/build-wasm.mjs"]) {
+      assert.ok(inputs.has(tool), `${tool} is a generation input`);
+    }
     // The compiler Cargo runs and every setting that changes its output select the entry; output directories do not.
     const fake = join(repository, "rustc");
     writeFileSync(fake, "#!/bin/sh\necho fake-rustc\n", { mode: 0o755 });
