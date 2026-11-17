@@ -5,7 +5,7 @@ use crate::{
     Error, OperationId, Result,
     agent::{AgentPath, IntentId, StatusRecord, TurnInput},
     client::{AgentCommand, AgentPageRequest, AgentReply},
-    client_files::ClientFileChange,
+    client_files::{ClientFileChange, FileRoot},
     ui::TITLE_FILE,
 };
 use acyclic_harness_client::ReadTarget;
@@ -371,36 +371,20 @@ pub async fn name(connection: &Connection, name: String, operation: &str) -> Res
 
 /// Rename by one conditional file publication; a competing rename is a conflict.
 pub async fn rename(connection: &Connection, operation: OperationId, title: String) -> Result<()> {
-    let agent = connection.root().clone();
-    let AgentReply::ClientFiles { snapshot } = connection
-        .execute(&AgentCommand::ClientFiles {
-            agent: agent.clone(),
-            root: crate::client_files::FileRoot::Private {},
-            publication: None,
-            paths: vec![TITLE_FILE.into()],
-            after: None,
-        })
-        .await?
-    else {
-        return Err(unexpected());
-    };
+    let agent = connection.root();
+    let root = FileRoot::Private {};
+    let snapshot = connection
+        .selected_files(agent, root, vec![TITLE_FILE.into()], None, None)
+        .await?;
     let existing = snapshot.files.get(TITLE_FILE).and_then(Option::as_ref);
     let change = ClientFileChange {
         path: TITLE_FILE.into(),
         expected: existing.and_then(|file| file.original().cloned()),
         text: Some(title),
     };
-    let AgentReply::ClientFilesPublished { .. } = connection
-        .execute(&AgentCommand::PublishClientFiles {
-            agent,
-            root: crate::client_files::FileRoot::Private {},
-            operation,
-            changes: vec![change],
-        })
-        .await?
-    else {
-        return Err(unexpected());
-    };
+    connection
+        .publish_files(agent, root, operation, vec![change])
+        .await?;
     Ok(())
 }
 

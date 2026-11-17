@@ -190,7 +190,9 @@ impl Conversation {
         paths: Vec<String>,
         after: Option<FileCut>,
     ) -> Result<ClientFiles> {
-        self.selected_files(root, paths, after, None).await
+        self.connection
+            .selected_files(self.agent(), root, paths, after, None)
+            .await
     }
 
     /// Read original files by their protected conditional-publication identity.
@@ -200,21 +202,37 @@ impl Conversation {
         paths: Vec<String>,
         operation: OperationId,
     ) -> Result<ClientFiles> {
-        self.selected_files(root, paths, None, Some(operation))
+        self.connection
+            .selected_files(self.agent(), root, paths, None, Some(operation))
             .await
     }
 
-    async fn selected_files(
+    /// Publish an atomic conditional file batch. An uncertain outcome retains
+    /// the caller's operation identity and exact original source descriptors.
+    pub async fn publish_files(
         &self,
+        root: FileRoot,
+        operation: OperationId,
+        changes: Vec<ClientFileChange>,
+    ) -> Result<GenerationRef> {
+        self.connection
+            .publish_files(self.agent(), root, operation, changes)
+            .await
+    }
+}
+
+impl Connection {
+    pub(in crate::local) async fn selected_files(
+        &self,
+        agent: &AgentPath,
         root: FileRoot,
         paths: Vec<String>,
         after: Option<FileCut>,
         publication: Option<OperationId>,
     ) -> Result<ClientFiles> {
         match self
-            .connection
             .execute(&AgentCommand::ClientFiles {
-                agent: self.agent().clone(),
+                agent: agent.clone(),
                 root,
                 publication,
                 paths,
@@ -227,18 +245,16 @@ impl Conversation {
         }
     }
 
-    /// Publish an atomic conditional file batch. An uncertain outcome retains
-    /// the caller's operation identity and exact original source descriptors.
-    pub async fn publish_files(
+    pub(in crate::local) async fn publish_files(
         &self,
+        agent: &AgentPath,
         root: FileRoot,
         operation: OperationId,
         changes: Vec<ClientFileChange>,
     ) -> Result<GenerationRef> {
         match self
-            .connection
             .execute(&AgentCommand::PublishClientFiles {
-                agent: self.agent().clone(),
+                agent: agent.clone(),
                 root,
                 operation,
                 changes,
