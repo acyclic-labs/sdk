@@ -320,7 +320,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     .await?;
                 added.retain(|change| match change {
                     SubscriptionChange::Add { id, .. } => delivery.subscriptions.get(id).is_none(),
-                    SubscriptionChange::Remove { .. } => true,
+                    SubscriptionChange::Remove { .. }
+                    | SubscriptionChange::Pause { .. }
+                    | SubscriptionChange::Resume { .. } => true,
                 });
             }
             let remaining = delivery
