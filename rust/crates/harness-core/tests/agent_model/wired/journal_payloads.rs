@@ -303,12 +303,12 @@ async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
     adoption.volumes = volumes;
     let mut state = Some(AgentState::adopted(path.clone(), &adoption)?);
     let sender = super::super::user();
-    for (sequence, id) in ["first", "second"].into_iter().enumerate() {
+    for (sequence, id) in [operation.to_string(), "second".into()].into_iter().enumerate() {
         let wake = Wake::Inbox {
             sequence: sequence as u64 + 1,
             record: InboxRecord::Message(Message {
                 from: sender.clone(),
-                id: intent(id),
+                id: intent(&id),
                 body: Box::new(body.clone()),
                 re: None,
                 attachments: None,
