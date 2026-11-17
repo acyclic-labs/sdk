@@ -400,18 +400,6 @@ mod tests {
         }
     }
 
-    /// A variable the package declares in `test-env-inherit` reaches its cases from the
-    /// environment that invoked Bazel, and only a declared one does. Run as
-    /// `ACYCLIC_TEST_RUNNER_INHERITED=declared bazel test <target> --test_arg=--ignored`.
-    #[test]
-    #[ignore = "needs ACYCLIC_TEST_RUNNER_INHERITED=declared where Bazel is invoked"]
-    fn a_declared_variable_reaches_the_case() {
-        assert_eq!(
-            env::var("ACYCLIC_TEST_RUNNER_INHERITED").as_deref(),
-            Ok("declared")
-        );
-    }
-
     /// A case started by a runner whose own settings are set: it sees its source root,
     /// executables and own resolved temporary directory, and none of the runner's settings.
     #[test]

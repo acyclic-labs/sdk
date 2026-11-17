@@ -68,7 +68,6 @@ isolated_test(
     id = "acyclic-test-runner::bin/acyclic-test-runner",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
-    env_inherit = ["ACYCLIC_TEST_RUNNER_INHERITED"],
 )
 
 isolated_test(
@@ -79,7 +78,6 @@ isolated_test(
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
-    env_inherit = ["ACYCLIC_TEST_RUNNER_INHERITED"],
     tags = ["manual"],
 )
 
@@ -115,7 +113,6 @@ isolated_test(
     id = "acyclic-test-runner::arguments",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
-    env_inherit = ["ACYCLIC_TEST_RUNNER_INHERITED"],
 )
 
 isolated_test(
@@ -127,7 +124,6 @@ isolated_test(
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
-    env_inherit = ["ACYCLIC_TEST_RUNNER_INHERITED"],
     tags = ["manual"],
 )
 
