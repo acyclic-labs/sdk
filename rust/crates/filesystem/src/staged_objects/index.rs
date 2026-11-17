@@ -409,7 +409,7 @@ fn invalid_spill_ranges_leave_the_index_unchanged() {
         (second.object_id(), second.stored_bytes().clone()),
     ];
     index.admit_resident(first.clone()).unwrap();
-    index.admit_resident(second).unwrap();
+    index.admit_resident(second.clone()).unwrap();
     index.mark_spilled(&victims, 0, 128).unwrap();
     index.remove(first.object_id());
     index.admit_resident(pending.clone()).unwrap();
@@ -432,9 +432,18 @@ fn invalid_spill_ranges_leave_the_index_unchanged() {
         assert_eq!(index.order, order);
         assert_eq!(index.resident_bytes, resident_bytes);
         assert_eq!(index.spill_end, spill_end);
+        let Some(Staged::Resident { object, .. }) = index.objects.get(&pending.object_id()) else {
+            panic!("pending object lost its resident state");
+        };
+        assert_eq!(object.stored_bytes(), pending.stored_bytes());
+        assert_eq!(index.objects.len(), 2);
         assert!(matches!(
-            index.objects.get(&pending.object_id()),
-            Some(Staged::Resident { .. })
+            index.objects.get(&second.object_id()),
+            Some(Staged::Spilled {
+                offset: 64,
+                length: 64,
+                stored_length: 64
+            })
         ));
     }
 }
