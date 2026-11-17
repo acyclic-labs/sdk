@@ -231,6 +231,14 @@ fn observe_steps(form: &str, state: &str, prefix: &str) -> Vec<Vec<ToolCall>> {
             vec![archive(&format!("{prefix}-archive"), "target")],
             vec![form_wait(form, &wait_id, "target")],
         ],
+        "running" if form == "named" => vec![
+            vec![call(
+                &format!("{prefix}-delay"),
+                "read",
+                json!({"path": "marker.txt"}),
+            )],
+            vec![form_wait(form, &wait_id, "target")],
+        ],
         _ => vec![vec![form_wait(form, &wait_id, "target")]],
     }
 }
