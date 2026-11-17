@@ -32,7 +32,7 @@ fn persistent_generated_histories() -> Result<(), &'static str> {
                     let mut expected = expected.clone();
                     let view = if let Some(cut) = cut {
                         expected.retain(|key, _| *key < cut);
-                        original.prefix(cut.to_be_bytes())
+                        original.prefix(cut.to_be_bytes(), &mut work)?
                     } else {
                         original.clone()
                     };
@@ -108,7 +108,7 @@ fn persistent_physical_retirement() -> Result<(), &'static str> {
                 );
             }
             let original = history.clone();
-            history = history.prefix(128_u64.to_be_bytes());
+            history = history.prefix(128_u64.to_be_bytes(), &mut work)?;
             let live = work.live.get();
             for claims in 0..=8 {
                 work.maximum_claims = Some(work.claims + claims);

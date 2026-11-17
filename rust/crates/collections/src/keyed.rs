@@ -260,7 +260,7 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
         let entries = match self.keys.exact_position(key, work)? {
             Some(entry) => entry.value_before.map_or_else(
                 || entry.value.clone(),
-                |before| entry.value.prefix(before.to_be_bytes()),
+                |before| entry.value.prefix(before.to_be_bytes(), work),
             ),
             _ => PersistentIndex::default(),
         };
