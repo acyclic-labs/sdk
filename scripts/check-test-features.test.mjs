@@ -39,6 +39,9 @@ test('real Cargo targets retain feature closure, alternatives, platform independ
   mkdirSync(join(broken, 'tests/nested'));
   symlinkSync('absent.rs', join(broken, 'tests/nested/main.rs'), 'file');
   assert.match(testFeatureFindings(broken)[0], /ENOENT/);
+  for (const path of ['Cargo.toml', 'tests/case.rs']) {
+    assert.match(testFeatureFindings(fixture(t, '', '', {[path]: Buffer.from([0xff])}))[0], /encoding utf-8/);
+  }
 });
 
 test('bounded cfg model: direct evaluation agrees with the former independent DNF representation', () => {

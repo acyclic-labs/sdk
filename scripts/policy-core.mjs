@@ -7,6 +7,9 @@ export const isMain = url => Boolean(process.argv[1]) && resolve(process.argv[1]
 
 export const repositoryRoot = resolve(import.meta.dirname, '..');
 
+const utf8 = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
+export const readUtf8 = file => utf8.decode(readFileSync(file));
+
 // Git paths are NUL-delimited, including names with newlines or quoting characters.
 // Each policy owns its pathspecs; discovery never silently drops missing files.
 /** @param {string} [root] @param {string[]} [paths] @param {import('node:child_process').ExecFileSyncOptions & {untracked?: boolean}} [options] */
@@ -44,7 +47,7 @@ json.dump(encode(documents), sys.stdout, allow_nan=False)
 export function tomlFiles(root, files) {
   const missing = files.filter(file => !manifests.has(resolve(root, file)));
   if (missing.length) {
-    const parsed = parseToml(Object.fromEntries(missing.map(file => [file, readFileSync(resolve(root, file), 'utf8')])));
+    const parsed = parseToml(Object.fromEntries(missing.map(file => [file, readUtf8(resolve(root, file))])));
     for (const [file, manifest] of Object.entries(parsed)) manifests.set(resolve(root, file), manifest);
   }
   return Object.fromEntries(files.map(file => [file, manifests.get(resolve(root, file))]));
@@ -56,7 +59,7 @@ export const toml = (root, file) => tomlFiles(root, [file])[file];
 export function checkManifestFields(root, expectations) {
   const files = [...new Set(expectations.map(([file]) => file))];
   const parsed = tomlFiles(root, files.filter(file => file.endsWith('.toml')));
-  for (const file of files.filter(file => !file.endsWith('.toml'))) parsed[file] = JSON.parse(readFileSync(resolve(root, file), 'utf8'));
+  for (const file of files.filter(file => !file.endsWith('.toml'))) parsed[file] = JSON.parse(readUtf8(resolve(root, file)));
   for (const [file, keys, expected] of expectations) {
     const actual = keys.reduce((value, key) => value?.[key], parsed[file]);
     if (actual !== expected) throw new Error(`${file}: ${keys.join('.')} must be ${JSON.stringify(expected)}; found ${JSON.stringify(actual)}`);
@@ -128,7 +131,7 @@ export function testFeatureFindings(root) {
         }
       }
       for (const [path, target] of targets) {
-        const source = join(directory, path), text = readFileSync(source, 'utf8');
+        const source = join(directory, path), text = readUtf8(source);
         const enabled = new Set(target['required-features'] ?? []), pending = [...enabled];
         while (pending.length) {
           for (const feature of data.features?.[pending.pop()] ?? []) {
