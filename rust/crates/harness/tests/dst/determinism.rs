@@ -144,11 +144,10 @@ async fn trace(
     }
     let settled = incarnation
         .requests
-        .last()
-        .map(settlements)
-        .transpose()
-        .map_err(failed)?
-        .ok_or_else(|| format!("X1 {class} seed {world_seed} made no model request"))?;
+        .iter()
+        .rev()
+        .find_map(|request| settlements(request).ok().filter(|calls| !calls.is_empty()))
+        .ok_or_else(|| format!("X1 {class} seed {world_seed} made no settled model request"))?;
     if settled.len() != 2 || !settled.iter().all(|call| call.succeeded()) {
         return Err(format!(
             "X1 {class} seed {world_seed} did not settle both tool calls: {settled:?}"

@@ -131,6 +131,7 @@ impl Host {
         Self::with_pool(Pool::new(threads), progress)
     }
 
+    #[cfg(test)]
     pub(super) fn for_workers(
         workers: &crate::NativeWorkers,
         progress: Arc<Progress>,
