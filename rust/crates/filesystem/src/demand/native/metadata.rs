@@ -1,3 +1,4 @@
+#[cfg(feature = "test-support")]
 fn path_key(path: &NamespacePath) -> Vec<u8> {
     let mut key = Vec::new();
     for name in path.components() {
@@ -7,11 +8,41 @@ fn path_key(path: &NamespacePath) -> Vec<u8> {
     key
 }
 
+#[cfg(feature = "test-support")]
 fn child_path_key(parent: &NamespacePath, name: &crate::kernel::LogicalName) -> Vec<u8> {
     let mut key = path_key(parent);
     key.extend_from_slice(&(name.as_bytes().len() as u64).to_le_bytes());
     key.extend_from_slice(name.as_bytes());
     key
+}
+
+/// A fixture path key, or nothing in production, where a source version does
+/// not include the logical path.
+fn fixture_path_key(path: &NamespacePath) -> Option<Vec<u8>> {
+    #[cfg(feature = "test-support")]
+    {
+        Some(path_key(path))
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+fn child_fixture_path_key(
+    parent: &NamespacePath,
+    name: &crate::kernel::LogicalName,
+) -> Option<Vec<u8>> {
+    #[cfg(feature = "test-support")]
+    {
+        Some(child_path_key(parent, name))
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = (parent, name);
+        None
+    }
 }
 
 #[cfg(feature = "test-support")]
@@ -33,13 +64,15 @@ fn fixture_times(metadata: &HostStat) -> Option<acyclic_native_runtime::testing:
     })
 }
 
-fn version(path: &[u8], metadata: &HostStat) -> SourceVersion {
+fn version(path: Option<&[u8]>, metadata: &HostStat) -> SourceVersion {
     #[cfg(feature = "test-support")]
     if let Some(times) = fixture_times(metadata) {
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic-fs-native-source-version-v1\0");
         hash.update(&metadata.len().to_le_bytes());
-        hash.update(path);
+        if let Some(path) = path {
+            hash.update(path);
+        }
         hash.update(&times.modified_ns.unwrap_or_default().to_le_bytes());
         hash.update(&times.changed_ns.unwrap_or_default().to_le_bytes());
         return SourceVersion(*hash.finalize().as_bytes());

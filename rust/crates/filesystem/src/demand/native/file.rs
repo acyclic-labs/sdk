@@ -3,6 +3,7 @@ struct NativeDemandFile {
     provider: NativeDemandSource,
     source: SourceReference,
     relative: DemandPath,
+    #[cfg(feature = "test-support")]
     path_key: Vec<u8>,
     expected: SourceVersion,
     logical_bytes: u64,
@@ -61,14 +62,20 @@ impl NativeDemandFile {
         if opened.file_type() != crate::demand::SourceNodeKind::RegularFile {
             return Err(DemandError::NotRegularFile);
         }
+        #[cfg(feature = "test-support")]
         let path_key = path_key(path);
-        if version(&path_key, &opened) != expected {
+        #[cfg(feature = "test-support")]
+        let version = version(Some(&path_key), &opened);
+        #[cfg(not(feature = "test-support"))]
+        let version = version(None, &opened);
+        if version != expected {
             return Err(DemandError::StaleVersion);
         }
         Ok(Self {
             provider,
             source,
             relative,
+            #[cfg(feature = "test-support")]
             path_key,
             _ownership: Arc::new(ownership),
             expected,
@@ -155,7 +162,7 @@ impl NativeDemandFile {
             Err(error) => return Err(error),
         };
         let opened = stat_held(&self.provider, &file, context)?;
-        if version(&opened) != self.expected {
+        if self.version(&opened) != self.expected {
             return Err(DemandError::StaleVersion);
         }
         Ok(file)
@@ -269,6 +276,17 @@ impl NativeDemandFile {
         }
         Ok(filled)
     }
+    fn version(&self, metadata: &HostStat) -> SourceVersion {
+        #[cfg(feature = "test-support")]
+        {
+            version(Some(&self.path_key), metadata)
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            version(None, metadata)
+        }
+    }
+
     fn prove_current(
         &self,
         file: &SourceFile,
@@ -289,10 +307,10 @@ impl NativeDemandFile {
             .root
             .held(context)
             .and_then(|root| root.stat(&self.relative, context));
-        if version(&self.path_key, &held) != self.expected
+        if self.version(&held) != self.expected
             || named
                 .as_ref()
-                .map(|metadata| version(&self.path_key, metadata))
+                .map(|metadata| self.version(metadata))
                 .ok()
                 != Some(self.expected)
         {

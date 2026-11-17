@@ -54,14 +54,14 @@ impl DemandSource for NativeDemandSource {
                 let mut node = provider
                     .metadata(path, context)?
                     .as_ref()
-                    .map(|metadata| Self::node(&path_key(path), metadata));
+                    .map(|metadata| Self::node(fixture_path_key(path).as_deref(), metadata));
                 if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
                     && provider.admit_to_watches(path, context)?
                 {
                     node = provider
                         .metadata(path, context)?
                         .as_ref()
-                        .map(|metadata| Self::node(&path_key(path), metadata));
+                        .map(|metadata| Self::node(fixture_path_key(path).as_deref(), metadata));
                 }
                 provider.check(&source, context)?;
                 Ok(node)
@@ -164,7 +164,7 @@ impl DemandSource for NativeDemandSource {
                 if before.file_type() != crate::demand::SourceNodeKind::SymbolicLink {
                     return Err(DemandError::InvalidRequest);
                 }
-                if version(&path_key(path), &before) != expected {
+                if version(fixture_path_key(path).as_deref(), &before) != expected {
                     return Err(DemandError::StaleVersion);
                 }
                 let (relative, allocation) = provider.relative(path, context)?;
@@ -175,7 +175,7 @@ impl DemandSource for NativeDemandSource {
                 if provider
                     .metadata(path, context)?
                     .as_ref()
-                    .map(|metadata| version(&path_key(path), metadata))
+                    .map(|metadata| version(fixture_path_key(path).as_deref(), metadata))
                     != Some(expected)
                 {
                     return Err(DemandError::StaleVersion);

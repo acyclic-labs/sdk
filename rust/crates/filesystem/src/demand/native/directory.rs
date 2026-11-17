@@ -255,7 +255,7 @@ impl NativeDemandSource {
                 .map_err(DemandError::from)?;
         }
         let name = LogicalName::new(encoding, bytes).map_err(|_| DemandError::InvalidRequest)?;
-        let node = Self::node(&child_path_key(logical, &name), stat);
+        let node = Self::node(child_fixture_path_key(logical, &name).as_deref(), stat);
         Ok(Some(SourceDirectoryEntry { name, node }))
     }
     fn page_entries(
@@ -349,7 +349,7 @@ impl NativeDemandSource {
         if !stat.is_dir() {
             return Err(DemandError::NotDirectory);
         }
-        let observed = version(&path_key(directory), &stat);
+        let observed = version(fixture_path_key(directory).as_deref(), &stat);
         let restore = cursor.is_some();
         let (cursor, state) = if let Some(cursor) = cursor {
             if cursor.source != source {
@@ -458,7 +458,7 @@ impl NativeDemandSource {
         if self
             .metadata(directory, work)?
             .as_ref()
-            .map(|metadata| version(&path_key(directory), metadata))
+            .map(|metadata| version(fixture_path_key(directory).as_deref(), metadata))
             != Some(observed)
         {
             *lease

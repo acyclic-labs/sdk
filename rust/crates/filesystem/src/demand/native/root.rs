@@ -457,7 +457,7 @@ impl NativeDemandSource {
         }
     }
 
-    fn node(path: &[u8], metadata: &HostStat) -> SourceNode {
+    fn node(path: Option<&[u8]>, metadata: &HostStat) -> SourceNode {
         let kind = metadata.file_type();
         SourceNode {
             kind,
