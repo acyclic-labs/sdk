@@ -659,6 +659,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     .subscriptions
                     .push(SubscriptionChange::Remove { id: id.into() });
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            for (id, _) in delivery.subscriptions.iter() {
+                if id.starts_with(hooks::HOOK) {
+                    transition
+                        .subscriptions
+                        .push(SubscriptionChange::Remove { id: id.clone() });
+                }
+            }
         }
         transition.subscriptions.extend(descendant_subscriptions);
         Ok(transition)
