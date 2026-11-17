@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import fc from "fast-check";
-import { compatibilityArtifacts, writeChanged } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, recordGeneration, writeChanged } from "./generated-bindings.mjs";
 import { packagedTypeScriptBindings, retiredTypeScriptBindingPackages } from "./protobuf-bindings.mjs";
 
 const source = readFileSync(new URL("./generate-proto.mjs", import.meta.url), "utf8");
@@ -28,7 +28,7 @@ function exercise(selected, seed, code = implementation) {
   let calls = 0;
   let writes = 0;
   const context = {
-    root, compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, dirname, join, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
+    root, compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, dirname, join, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, recordGeneration,
     process: { platform: process.platform },
     writeFileSync: (path, bytes) => { writes++; writeFileSync(path, bytes); },
     spawnSync: (_command, args) => {
