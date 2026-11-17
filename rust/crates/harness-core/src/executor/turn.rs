@@ -451,7 +451,6 @@ impl StockExecution<'_> {
                             settled_call = true;
                             // The turn's own stop ends the turn before another
                             // call can start, after the call it interrupted.
-                            #[cfg(not(target_arch = "wasm32"))]
                             if futures::FutureExt::now_or_never(journal.model_cancellation())
                                 .is_some()
                             {
