@@ -4,7 +4,7 @@
 use acyclic_actors::guest::Handler;
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
 use acyclic_stream::{
-    BoxProviderFuture, LocalStream, LocalStreamLimits, StreamCategory, StreamError, StreamPath,
+    BoxProviderFuture, LocalStream, LocalStreamLimits, StreamCategory, StreamPath,
     StreamProviderExt as _, testing::Counted,
 };
 use std::sync::Arc;
