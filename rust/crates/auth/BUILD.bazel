@@ -356,6 +356,7 @@ rust_binary(
         "//rust/crates/contract-derive:acyclic_contract_derive",
         "@crates//napi-derive-3.6.13",
     ],
+    visibility = ["//visibility:public"],
 )
 
 rust_binary(

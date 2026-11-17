@@ -986,6 +986,7 @@ rust_binary(
         "//rust/crates/contract-derive:acyclic_contract_derive",
         "@crates//async-trait-0.1.92",
     ],
+    visibility = ["//visibility:public"],
 )
 
 rust_binary(
@@ -1134,6 +1135,7 @@ rust_binary(
         "//rust/crates/contract-derive:acyclic_contract_derive",
         "@crates//async-trait-0.1.92",
     ],
+    visibility = ["//visibility:public"],
 )
 
 rust_binary(

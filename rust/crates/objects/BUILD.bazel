@@ -768,6 +768,7 @@ rust_binary(
         "@crates//async-trait-0.1.92",
     ],
     aliases = {"@crates//reqwest_0_13_5-0.13.5":"reqwest_s3"},
+    visibility = ["//visibility:public"],
 )
 
 cargo_build_script(

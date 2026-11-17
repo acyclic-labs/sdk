@@ -55,6 +55,13 @@ const LOADS = {
   wasm_package: "//:wasm_package.bzl",
 };
 const q = JSON.stringify;
+// The harness Actor bundle runs these generator executables as declared tools, so they are public.
+const generatorFile = path.join(root, "typescript/packages/harness-actor/generators.bzl");
+const generatorLabels = new Set(fs.existsSync(generatorFile)
+  ? [...fs.readFileSync(generatorFile, "utf8").matchAll(/"(\/\/[^"]+)"/g)].map(match => match[1])
+  : []);
+const generatorVisibility = (packageLabel, name) => generatorLabels.has(`${packageLabel}:${name}`)
+  ? [["visibility", q(["//visibility:public"])]] : [];
 
 // A TOML file, parsed by a real TOML parser (Python's tomllib): strings, arrays and inline tables
 // keep their exact values, whatever quotes or nesting they use.
@@ -702,6 +709,7 @@ function buildFile(p) {
       ...common(bin),
       ...deps([null], [...ownLib, ...ownDeps], ownMacro),
       ["visibility", q(["//visibility:public"])],
+      ...generatorVisibility(label(p), bin.name),
     ]]);
     // A binary's own #[cfg(test)] cases, as `cargo test` runs them.
     const binCrate = bin.name.replaceAll("-", "_");
@@ -743,7 +751,7 @@ function buildFile(p) {
     while (names.has(name)) name += "_example";
     names.add(name);
     covered.add(`build example ${example.name}`);
-    rules.push(["rust_binary", [["name", q(name)], ...separate(example)]]);
+    rules.push(["rust_binary", [["name", q(name)], ...separate(example), ...generatorVisibility(label(p), name)]]);
   }
   // The wasm variants of every workspace library, from the one wasm resolution. They are
   // separate targets so a host build never selects a wasm action and vice versa.

@@ -282,6 +282,7 @@ rust_binary(
         "@crates//uuid-1.29.0",
         "@crates//zeroize-1.9.1",
     ],
+    visibility = ["//visibility:public"],
 )
 
 cargo_build_script(

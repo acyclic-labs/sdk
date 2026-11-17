@@ -187,6 +187,7 @@ rust_binary(
         "@crates//thiserror-2.0.21",
         "@crates//tokio-1.54.1",
     ],
+    visibility = ["//visibility:public"],
 )
 
 filegroup(

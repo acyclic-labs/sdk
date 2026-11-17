@@ -3107,6 +3107,7 @@ rust_binary(
     proc_macro_deps = [
         "@crates//async-trait-0.1.92",
     ],
+    visibility = ["//visibility:public"],
 )
 
 rust_binary(
@@ -3639,6 +3640,7 @@ rust_binary(
     proc_macro_deps = [
         "@crates//async-trait-0.1.92",
     ],
+    visibility = ["//visibility:public"],
 )
 
 rust_binary(

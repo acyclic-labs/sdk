@@ -145,6 +145,7 @@ rust_binary(
         "@crates//tonic-0.14.9",
         "@crates//tonic-prost-0.14.6",
     ],
+    visibility = ["//visibility:public"],
 )
 
 cargo_build_script(

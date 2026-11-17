@@ -2103,6 +2103,7 @@ rust_binary(
         "@crates//async-trait-0.1.92",
         "@crates//napi-derive-3.6.13",
     ],
+    visibility = ["//visibility:public"],
 )
 
 rust_binary(
@@ -2327,6 +2328,7 @@ rust_binary(
         "@crates//async-trait-0.1.92",
         "@crates//napi-derive-3.6.13",
     ],
+    visibility = ["//visibility:public"],
 )
 
 rust_binary(

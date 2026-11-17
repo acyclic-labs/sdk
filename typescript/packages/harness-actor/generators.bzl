@@ -1,5 +1,34 @@
 """Names the generator executables the bundle runs without starting a second Bazel."""
 
+GENERATOR_LABELS = [
+    "//rust/crates/actors-wasm:actors-wasm-rpc-inventory",
+    "//rust/crates/actors:actors-authorization_example",
+    "//rust/crates/actors:actors-http-routes_example",
+    "//rust/crates/actors:actors-rpc-inventory",
+    "//rust/crates/auth:generate_example",
+    "//rust/crates/filesystem-wire:filesystem-authorization_example",
+    "//rust/crates/filesystem:filesystem-contracts_example",
+    "//rust/crates/filesystem:filesystem-object-reference-contract_example",
+    "//rust/crates/harness-core:agent-record-corpus_example",
+    "//rust/crates/harness:file-tools-contract_example",
+    "//rust/crates/harness:model-contract-fixtures_example",
+    "//rust/crates/inference-wasm:inference-typescript-http-routes_example",
+    "//rust/crates/inference-wasm:inference-typescript-terminal-metadata_example",
+    "//rust/crates/inference-wasm:inference-typescript-widths_example",
+    "//rust/crates/inference:inference-typescript-defaults_example",
+    "//rust/crates/machines:machines-authorization_example",
+    "//rust/crates/machines:machines-managed-oci-contract",
+    "//rust/crates/manifest:deployment-manifest_example",
+    "//rust/crates/objects:objects-authorization_example",
+    "//rust/crates/objects:objects-rpc-inventory",
+    "//rust/crates/proto-codegen:sdk-proto-codegen",
+    "//rust/crates/stream:stream-authorization_example",
+    "//rust/crates/stream:stream-http-contract",
+    "//rust/crates/stream:stream-rpc-inventory",
+    "//rust/crates/stream:token-operations_example",
+    "//rust/crates/workers:workers-authorization_example",
+]
+
 def _generator_executables_impl(ctx):
     output = ctx.actions.declare_file(ctx.label.name + ".json")
     executables = [target[DefaultInfo].files_to_run.executable for target in ctx.attr.targets]
