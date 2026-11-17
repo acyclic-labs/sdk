@@ -38,3 +38,17 @@ impl DeleteWorkerRequest {
 #[ts(export_to = "actors/DeleteWorkerResponse.ts")]
 #[ts(type = "Record<never, never>")]
 pub struct DeleteWorkerResponse {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_deletion_admission_borrows_original_fields() -> Result<(), DomainError> {
+        let request =
+            DeleteWorkerRequest::new(ActorNamespace::new("worker".into())?, "delete".repeat(32))?;
+        let cost = acyclic_test_support::measure(|| request.validate_from_proto().unwrap());
+        assert_eq!(cost.count_total, 0);
+        Ok(())
+    }
+}
