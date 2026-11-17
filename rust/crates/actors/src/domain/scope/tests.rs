@@ -83,11 +83,20 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // Negative control: reparsing a validated namespace allocates twice.
-            let reparsing = acyclic_test_support::measure(|| {
-                assert!(ActorNamespace::new(address.namespace().as_str().to_owned()).is_ok());
+            let name = address.namespace().as_str().to_owned();
+            let original = name.as_ptr();
+            let mut admitted = None;
+            let allocations = acyclic_test_support::measure(|| {
+                admitted = Some(ActorNamespace::new(name));
             });
-            assert_eq!(reparsing.count_total, 2);
+            assert_eq!(allocations.count_total, 0);
+            assert_eq!(
+                admitted
+                    .ok_or("namespace admission did not complete")??
+                    .as_str()
+                    .as_ptr(),
+                original
+            );
         }
     }
     Ok(())
