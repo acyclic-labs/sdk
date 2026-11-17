@@ -332,7 +332,7 @@ deployment_provenance!(InvokeActorRequest, InvokeWorkerRequest, InvokeActorRespo
 impl InvokeWorkerRequest {
     /// A named binding, admitted by the host, authorizes private RPC/fetch.
     pub fn with_binding(mut self, account: &[u8], binding: String) -> Result<Self, DomainError> {
-        crate::addressing::AccountId::new(account)?;
+        crate::addressing::validate_account(account)?;
         if binding.is_empty() {
             return Err(DomainError::InvalidBinding);
         }

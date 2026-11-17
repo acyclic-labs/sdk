@@ -159,6 +159,15 @@ mod tests {
             idempotency_key: "delete-a".into(),
         };
         assert_eq!(validate_delete(&valid), Ok(()));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let scoped = wire::DeleteAllRequest {
+                account_id: vec![1; 65_536],
+                ..valid.clone()
+            };
+            let cost = acyclic_test_support::measure(|| validate_delete(&scoped).unwrap());
+            assert_eq!(cost.count_total, 0);
+        }
         let semantic = domain::DeleteAllRequest::try_from(valid.clone()).expect("valid delete");
         assert_eq!(semantic.actor_id().as_str(), "actor-a");
         assert_eq!(semantic.idempotency_key(), "delete-a");
