@@ -68,7 +68,10 @@ impl Budget {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if held.0 + bytes > self.limit {
-            return Err(std::io::ErrorKind::OutOfMemory.into());
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                format!("live={} requested={bytes} limit={}", held.0, self.limit),
+            ));
         }
         held.0 += bytes;
         held.1 = held.1.max(held.0);

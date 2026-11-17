@@ -653,6 +653,49 @@ async fn native_manifest_reads_release_copied_fragments_before_the_next_read()
 }
 
 #[tokio::test]
+async fn native_manifest_growth_releases_replaced_backing() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let store =
+        Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
+    let blobs = store.account(b"wide-manifest-custody")?;
+    let leaf = blobs
+        .put(OwnedBytes::from_static(b"x"), Vec::new())
+        .await?
+        .verified()
+        .ok_or("leaf publication is known")?
+        .digest;
+    let count = 160;
+    let digest = blobs
+        .put_manifest(crate::Manifest {
+            parts: vec![
+                crate::Part {
+                    digest: leaf,
+                    length: 1
+                };
+                count
+            ],
+            edges: Vec::new(),
+        })
+        .await?
+        .verified()
+        .ok_or("manifest publication is known")?
+        .digest;
+    // 160 siblings grow the stack through 256 slots. The original 32 KiB
+    // budget covers the request frame, metadata and overlapping backings;
+    // accumulating retired backings exceeds it.
+    let budget = Arc::new(Budget::new(32 * 1024));
+    let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+    let request =
+        crate::ObjectsNativeRequest::new((digest, ByteRange::FULL, count as u64), (), &meter)?;
+    let object = blobs.get_native(request, meter)?.await?;
+    assert_eq!(object.body().as_ref(), vec![b'x'; count]);
+    drop(object);
+    assert_eq!(budget.live(), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn std::error::Error>>
 {
     use acyclic_stream::RevisionCut;
