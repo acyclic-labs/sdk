@@ -239,6 +239,6 @@ exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visib
 genrule(
     name = "probe_tools",
     outs = ["probe_tools.txt"],
-    cmd = "which bun > $@ 2>&1 || true; bun --version >> $@ 2>&1 || true; which node >> $@ 2>&1 || true; node --version >> $@ 2>&1 || true; echo PATH=$$PATH >> $@",
+    cmd = "bun --version > $@ && node --version >> $@ && echo PATH=$$PATH >> $@",
     local = 1,
 )
