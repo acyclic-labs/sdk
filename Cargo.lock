@@ -839,8 +839,10 @@ name = "acyclic-harness-layout"
 version = "0.2.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-stream",
+ "rmcp",
  "serde",
  "serde_json",
  "uuid",
