@@ -8,7 +8,7 @@ import { readResponseRecords, wireAppendRequest } from "../dist/contract.js";
 import { validateAppend } from "../dist/client.js";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import { AppendRequestSchema, AppendResponseSchema } from "../generated/proto/stream/v1/stream_pb.js";
-import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
+import { projectMemoryResponse } from "../generated/wasm/index.js";
 
 export async function measureLatency(options) {
   const session = new Http2SessionManager(new URL(options.endpoint), {}, { ca: options.caCertificate });

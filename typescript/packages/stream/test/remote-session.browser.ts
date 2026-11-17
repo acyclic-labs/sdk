@@ -1,6 +1,6 @@
 import { HttpStreamProvider } from "../src/http.js";
 import { streamResource } from "../src/contract.js";
-import init, { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
+import init, { WasmStream } from "../generated/wasm/index.js";
 import { create, toBinary, fromBinary } from "@bufbuild/protobuf";
 import { AppendRequestSchema, AppendResponseSchema, FollowRequestSchema, ForkRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionDelivery, SessionFrameSchema, SessionSubscriptionSchema } from "../generated/proto/stream/v1/session_pb.js";

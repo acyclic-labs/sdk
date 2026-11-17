@@ -1,6 +1,6 @@
 import { HeadProjection, ReadOrder, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
+import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence, wasmUrl as streamWasmUrl } from "../generated/wasm/index.js";
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitEffectSchema, CommitMutationSchema, CommitRequestSchema,
@@ -17,7 +17,7 @@ import type { HttpRoute } from "./http-contract.js";
 let wasmReady: Promise<void> | undefined;
 export async function ensureStreamWasm(): Promise<void> {
   wasmReady ??= (async () => {
-    const wasmUrl = new URL("../generated/wasm/acyclic_stream_wasm_bg.wasm", import.meta.url);
+    const wasmUrl = streamWasmUrl;
     if (wasmUrl.protocol === "file:") {
       const { readFile } = await import("node:fs/promises");
       const instance = await initStreamWasm({ module_or_path: Uint8Array.from(await readFile(wasmUrl)) });
@@ -43,7 +43,7 @@ function initializeStreamWasmSync(): boolean {
   if (getBuiltinModule === undefined) return false;
   const filesystem = getBuiltinModule("node:fs") as { readFileSync?: (path: URL) => Uint8Array } | undefined;
   if (filesystem?.readFileSync === undefined) return false;
-  const wasmUrl = new URL("../generated/wasm/acyclic_stream_wasm_bg.wasm", import.meta.url);
+  const wasmUrl = streamWasmUrl;
   const instance = initStreamWasmSync({ module: filesystem.readFileSync(wasmUrl) });
   verifyExports(instance);
   return true;
@@ -359,7 +359,7 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
 }
 
 // Resource spelling stays in the same Rust codec as node admission.
-export { streamResource, streamResourcePath } from "../generated/wasm/acyclic_stream_wasm.js";
+export { streamResource, streamResourcePath } from "../generated/wasm/index.js";
 
 /** Preserve initial absence policy at every provider boundary. */
 export function wireWhenAbsent(value: "not_found" | "wait" | undefined): WhenAbsent {

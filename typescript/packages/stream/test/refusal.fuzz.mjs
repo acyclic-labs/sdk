@@ -4,11 +4,11 @@ import { pathToFileURL } from "node:url";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { producer } from "../../objects/test/refusal.fuzz.mjs";
 import { HeadsRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
-import init, { WasmSession, grpcErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
+import init, { WasmSession, grpcErrorCode, wasmUrl } from "../generated/wasm/index.js";
 
 let ready;
 async function initialize() {
-  ready ??= (async () => init({ module_or_path: await readFile(new URL("../generated/wasm/acyclic_stream_wasm_bg.wasm", import.meta.url)) }))();
+  ready ??= (async () => init({ module_or_path: await readFile(wasmUrl) }))();
   await ready;
 }
 

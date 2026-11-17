@@ -1,5 +1,5 @@
 import { fromBinary } from "@bufbuild/protobuf";
-import type { WasmOpened, WasmProviderRequest } from "../generated/wasm/acyclic_stream_wasm.js";
+import type { WasmOpened, WasmProviderRequest } from "../generated/wasm/index.js";
 import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { Opened, closeAfterFailure, streamOpening } from "./opened.js";
 import { recordsFromFrames } from "./record.js";

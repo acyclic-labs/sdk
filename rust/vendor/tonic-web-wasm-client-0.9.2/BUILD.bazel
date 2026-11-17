@@ -28,6 +28,40 @@ rust_library(
     visibility = ["//visibility:public"],
 )
 
+rust_library(
+    name = "tonic_web_wasm_client_wasm",
+    crate_name = "tonic_web_wasm_client",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    rustc_env = PACKAGE_ENV,
+    deps = [
+        "@sdk_crates_wasm//base64_0_23_1-0.23.1",
+        "@sdk_crates_wasm//bytes-1.12.1",
+        "@sdk_crates_wasm//futures-util-0.3.34",
+        "@sdk_crates_wasm//http-1.5.0",
+        "@sdk_crates_wasm//http-body-1.1.0",
+        "@sdk_crates_wasm//http-body-util-0.1.5",
+        "@sdk_crates_wasm//httparse-1.10.1",
+        "@sdk_crates_wasm//js-sys-0.3.98",
+        "@sdk_crates_wasm//pin-project-1.1.13",
+        "@sdk_crates_wasm//thiserror-2.0.21",
+        "@sdk_crates_wasm//tonic-0.14.9",
+        "@sdk_crates_wasm//tower-service-0.3.3",
+        "@sdk_crates_wasm//wasm-bindgen-0.2.121",
+        "@sdk_crates_wasm//wasm-bindgen-futures-0.4.71",
+        "@sdk_crates_wasm//wasm-streams-0.7.0",
+        "@sdk_crates_wasm//web-sys-0.3.98",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 filegroup(
     name = "rust_sources",
     srcs = glob(["**/*.rs"], allow_empty = True),

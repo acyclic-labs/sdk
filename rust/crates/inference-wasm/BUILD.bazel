@@ -33,10 +33,10 @@ rust_shared_library(
     lint_config = ":lints",
     deps = [
         "//rust/crates/inference:acyclic_inference",
-        "@sdk_crates//js-sys-0.3.94",
+        "@sdk_crates//js-sys-0.3.98",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
-        "@sdk_crates//wasm-bindgen-0.2.117",
+        "@sdk_crates//wasm-bindgen-0.2.121",
     ],
     visibility = ["//visibility:public"],
 )
@@ -61,10 +61,10 @@ rust_library(
     lint_config = ":lints",
     deps = [
         "//rust/crates/inference:acyclic_inference",
-        "@sdk_crates//js-sys-0.3.94",
+        "@sdk_crates//js-sys-0.3.98",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
-        "@sdk_crates//wasm-bindgen-0.2.117",
+        "@sdk_crates//wasm-bindgen-0.2.121",
     ],
     visibility = ["//visibility:public"],
 )
@@ -135,11 +135,11 @@ rust_binary(
         ":acyclic_inference_wasm",
     ] + [
         "//rust/crates/inference:acyclic_inference",
-        "@sdk_crates//js-sys-0.3.94",
+        "@sdk_crates//js-sys-0.3.98",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//wasm-bindgen-0.2.117",
+        "@sdk_crates//wasm-bindgen-0.2.121",
     ],
 )
 
@@ -166,11 +166,11 @@ rust_binary(
         ":acyclic_inference_wasm",
     ] + [
         "//rust/crates/inference:acyclic_inference",
-        "@sdk_crates//js-sys-0.3.94",
+        "@sdk_crates//js-sys-0.3.98",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//wasm-bindgen-0.2.117",
+        "@sdk_crates//wasm-bindgen-0.2.121",
     ],
 )
 
@@ -197,11 +197,11 @@ rust_binary(
         ":acyclic_inference_wasm",
     ] + [
         "//rust/crates/inference:acyclic_inference",
-        "@sdk_crates//js-sys-0.3.94",
+        "@sdk_crates//js-sys-0.3.98",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//wasm-bindgen-0.2.117",
+        "@sdk_crates//wasm-bindgen-0.2.121",
     ],
 )
 

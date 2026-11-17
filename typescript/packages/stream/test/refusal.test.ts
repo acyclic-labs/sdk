@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { GrpcStreamProvider } from "../src/grpc.js";
 import { StreamError } from "../src/types.js";
-import { grpcStatusError } from "../generated/wasm/acyclic_stream_wasm.js";
+import { grpcStatusError } from "../generated/wasm/index.js";
 import { grpcFixture, tlsIdentity } from "./session-grpc-fixture.js";
 
 test("the native status decoder retains opaque gRPC details", () => {

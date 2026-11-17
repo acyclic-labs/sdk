@@ -17,6 +17,9 @@ function fixture({ module = false } = {}) {
   writeFileSync(join(root, "scripts/policy-core.mjs"), readFileSync("scripts/policy-core.mjs"));
   writeFileSync(join(root, "scripts/workspace-model.mjs"), readFileSync("scripts/workspace-model.mjs"));
   if (module) writeFileSync(join(root, "MODULE.bazel"), 'module(name = "fixture")\n');
+  cpSync("scripts/wasm-packages.mjs", join(root, "scripts/wasm-packages.mjs"));
+  mkdirSync(join(root, "compatibility/native-families"), { recursive: true });
+  cpSync("compatibility/native-families/stream.json", join(root, "compatibility/native-families/stream.json"));
   writeFileSync(join(root, "rust-toolchain.toml"), readFileSync("rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));
   writeFileSync(join(root, ".cargo/config.toml"), '[target.x86_64-unknown-linux-gnu]\nlinker = "scripts/mold-linker.sh"\n\n[env]\n');
