@@ -271,6 +271,7 @@ async fn pending_redelivery(
         unknown,
         "{text}"
     );
+    assert_eq!(text.contains("may still complete"), unknown, "{text}");
     assert!(
         journal
             .replay(input.operation_id, 0, 100, None)?
@@ -384,7 +385,7 @@ impl crate::tool::ToolExecutor for KeyedTool {
 }
 
 /// A fenced start of a keyed effect runs again, once, after reconciliation
-/// finds no receipt; while its producer may be live it is only retained.
+/// finds no receipt; an unfenced effect is never repeated.
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn a_fenced_keyed_call_runs_its_one_effect_again() -> Result<()> {

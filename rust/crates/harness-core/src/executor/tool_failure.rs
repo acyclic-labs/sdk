@@ -191,7 +191,11 @@ impl fmt::Display for CauseText<'_> {
         let mut probe = Visible(false);
         let _ = write!(probe, "{cause}");
         if probe.0 {
-            write!(formatter, "{}", Sanitized(cause))
+            write!(formatter, "{}", Sanitized(cause))?;
+            if matches!(self.0, Error::Indeterminate(_)) {
+                formatter.write_str("; the original effect may still complete")?;
+            }
+            Ok(())
         } else {
             write!(formatter, "{} error", ToolErrorClass::of(self.0).label())
         }

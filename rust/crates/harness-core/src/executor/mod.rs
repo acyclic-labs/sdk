@@ -577,7 +577,7 @@ impl ToolFailureKind {
             Self::Removed => "tool was removed",
             Self::InvalidInput => "tool arguments violated the input schema",
             Self::Interrupted => {
-                "tool invocation ended without a recorded outcome; the effect may have run, partly or fully, or may still complete"
+                "tool was interrupted before its outcome was recorded; it may have run, partly or fully"
             }
         }
     }

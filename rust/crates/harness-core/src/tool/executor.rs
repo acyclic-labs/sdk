@@ -316,8 +316,8 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// Whether dropping an invocation future retires all its I/O before return.
     /// Opt in only when cancellation leaves no independently running effect.
     /// The stock journal records interruption before settling the turn, and
-    /// never retries an interrupted invocation. Other executors retain their
-    /// existing reconciliation and effect-fencing behavior.
+    /// never retries an interrupted invocation. Without this guarantee,
+    /// reconciliation cannot infer that the original effect stopped.
     /// On redelivery, exclusive invocation custody proves the prior future
     /// retired; this guarantee fences its I/O without restarting the owner.
     fn cancellable_on_drop(&self) -> bool {
