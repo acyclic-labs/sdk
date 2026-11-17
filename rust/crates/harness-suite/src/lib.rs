@@ -8,3 +8,5 @@ use acyclic_harness_core::*;
 use acyclic_harness_hosting as hosting;
 
 pub mod conformance;
+
+use acyclic_harness_oidc as oidc;

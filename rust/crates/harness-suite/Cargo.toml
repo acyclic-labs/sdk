@@ -10,6 +10,7 @@ description = "The in-process conformance suite behind the acyclic-harness facad
 documentation = "https://docs.rs/acyclic-harness-suite"
 
 [dependencies]
+acyclic-harness-oidc = { version = "=0.2.0", path = "../harness-oidc" }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["conformance", "test-support"] }

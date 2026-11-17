@@ -78,25 +78,6 @@ impl Journal {
     }
 }
 
-pub(crate) struct ChangingContextSource(pub(crate) AtomicUsize);
-
-impl crate::context::ContextSource for ChangingContextSource {
-    fn load<'a>(
-        &'a self,
-        _: &'a ContextInput,
-        _: Limits,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
-        let read = self.0.fetch_add(1, Ordering::SeqCst);
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            Ok(vec![ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text(format!("source revision {read}")),
-            }])
-        })
-    }
-}
-
 impl ExecutionJournal for Journal {
     fn model_cancellation(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async {
@@ -467,30 +448,5 @@ impl crate::conversation::ContentResidencyVerifier for Journal {
             io,
             || async move { self.load(file, io)?.await },
         )
-    }
-}
-
-pub(crate) struct OnceStage(pub(crate) AtomicUsize);
-
-impl crate::context::ContextStage for OnceStage {
-    fn name(&self) -> &str {
-        "once"
-    }
-    fn contract(&self, _: Option<&crate::executor::PreparationIo>) -> Result<Value> {
-        Ok(json!({"revision": "1"}))
-    }
-    fn apply<'a>(
-        &'a self,
-        _: &'a ContextInput,
-        context: crate::context::Context,
-        _: Limits,
-        io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::context::Context>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            if self.0.fetch_add(1, Ordering::SeqCst) != 0 {
-                return Err(Error::NotFound("source removed after admission".into()));
-            }
-            Ok(context)
-        })
     }
 }

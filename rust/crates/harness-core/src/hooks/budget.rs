@@ -24,7 +24,7 @@ enum State {
 
 /// How a command's outcome is read: its failure policy, and whether it
 /// speaks the plugin protocol (a decision) rather than its host's.
-pub(super) struct Protocol(HookFailure, bool);
+pub struct Protocol(HookFailure, bool);
 
 impl From<HookFailure> for Protocol {
     fn from(policy: HookFailure) -> Self {

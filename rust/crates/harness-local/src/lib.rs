@@ -39,3 +39,15 @@ pub mod test_support;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use local::{LocalHarness, LocalHarnessConfig};
+
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness_experiments as experiments;
+
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness_input_watch as input_watch;
+
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness_mcp as mcp;
+
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness_native_settings as native_settings;
