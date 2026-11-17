@@ -749,10 +749,15 @@ mod tests {
                 );
                 assert_eq!(reader.cache.record(&path, u64::MAX - 2).is_none(), invalid);
                 assert!(reader.cache.record(&path, u64::MAX).is_none());
-                assert_eq!(
-                    reader.issues.get(&path),
-                    invalid.then_some(&ReadIssue::Refused(StreamError::InvalidResponse))
-                );
+                assert_eq!(reader.issues.get(&path).is_some(), invalid);
+                if invalid {
+                    assert!(matches!(
+                        reader.issues.get(&path),
+                        Some(ReadIssue::Refused(error))
+                            if error.category()
+                                == acyclic_stream::StreamCategory::InvalidResponse
+                    ));
+                }
                 if !invalid {
                     assert_eq!(
                         reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
@@ -801,10 +806,15 @@ mod tests {
                     if invalid { None } else { Some(u64::MAX) }
                 );
                 assert_eq!(reader.cache.record(&path, sequence).is_none(), invalid);
-                assert_eq!(
-                    reader.issues.get(&parent),
-                    invalid.then_some(&ReadIssue::Refused(StreamError::InvalidResponse))
-                );
+                assert_eq!(reader.issues.get(&parent).is_some(), invalid);
+                if invalid {
+                    assert!(matches!(
+                        reader.issues.get(&parent),
+                        Some(ReadIssue::Refused(error))
+                            if error.category()
+                                == acyclic_stream::StreamCategory::InvalidResponse
+                    ));
+                }
                 reader.plan([(listing.clone(), Priority::Visible)]);
                 assert!(reader.poll(1).is_empty());
             }

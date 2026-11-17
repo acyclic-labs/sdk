@@ -385,10 +385,10 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
         assert_eq!(listed.cache().tail(&child), None);
         let window = NonZeroU32::new(3).unwrap();
         let want = selected.want_page(0, window).unwrap();
-        assert_eq!(
+        assert!(matches!(
             selected.page(&listed, 0, window).unwrap().next(),
             Some((0, Err(Error::Pending)))
-        );
+        ));
         listed.plan([(want.clone(), Priority::Visible)]);
         let [read]: [Op; 1] = listed.poll(0).try_into().unwrap();
         assert!(matches!(&read, Op::Read { .. }));
