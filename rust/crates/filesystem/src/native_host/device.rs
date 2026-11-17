@@ -84,8 +84,8 @@ pub fn check_device_codec(input: &[u8]) {
         libc::minor(native as libc::dev_t).cast_unsigned(),
     );
     assert_eq!(components, expected);
-    let joined = join_device(components.0, components.1).unwrap();
-    assert_eq!(split_device(widen(joined)), components);
+    assert!(matches!(join_device(components.0, components.1), Ok(joined)
+        if split_device(widen(joined)) == components));
 
     let components = (u32::from_le_bytes(*major), u32::from_le_bytes(*minor));
     match join_device(components.0, components.1) {
@@ -93,7 +93,11 @@ pub fn check_device_codec(input: &[u8]) {
         Err(error) => {
             assert_eq!(error, libc::EOVERFLOW);
             #[cfg(target_os = "linux")]
-            panic!("Linux dev_t must retain both complete u32 components");
+            assert_ne!(
+                error,
+                libc::EOVERFLOW,
+                "Linux dev_t must retain both complete u32 components"
+            );
             #[cfg(target_os = "macos")]
             assert!(components.0 > 0xFF || components.1 > 0xFF_FFFF);
         }

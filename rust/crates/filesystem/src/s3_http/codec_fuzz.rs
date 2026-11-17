@@ -13,15 +13,17 @@ fn etag() -> String {
 /// Decode in an explicit upload context, then compare the owning writer bytes.
 /// The context is codec input, not evidence of stored content or publication.
 pub fn check(bytes: &[u8]) {
+    let result = check_inner(bytes);
+    assert!(result.is_ok(), "multipart codec check failed: {result:?}");
+}
+
+fn check_inner(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let limits = FilesystemS3Limits::default();
     let input: acyclic_stream::OwnedBytes = Bytes::copy_from_slice(bytes).into();
-    let initial =
-        created().expect("multipart created writer; recovery: cargo run --example capture");
+    let initial = created()?;
     if let Ok((key, parts, maximum, minimum)) = decode_multipart_header(&input, limits) {
         assert_eq!(
-            encode_multipart_created(&key, parts, maximum, minimum)
-                .unwrap()
-                .as_ref(),
+            encode_multipart_created(&key, parts, maximum, minimum)?.as_ref(),
             bytes,
         );
     }
@@ -29,8 +31,11 @@ pub fn check(bytes: &[u8]) {
         match snapshot.terminal {
             None => {
                 assert_eq!(snapshot.operations.len(), 1);
-                let (operation, (number, etag)) = snapshot.operations.first_key_value().unwrap();
-                let part = snapshot.parts.get(number).unwrap();
+                let (operation, (number, etag)) = snapshot
+                    .operations
+                    .first_key_value()
+                    .ok_or("missing operation")?;
+                let part = snapshot.parts.get(number).ok_or("missing part")?;
                 assert_eq!(
                     encode_multipart_part(
                         *number,
@@ -43,17 +48,17 @@ pub fn check(bytes: &[u8]) {
                 );
             }
             Some(MultipartTerminal::Completing(parts)) => {
-                assert_eq!(encode_multipart_completing(&parts).unwrap().as_ref(), bytes,)
+                assert_eq!(encode_multipart_completing(&parts)?.as_ref(), bytes,)
             }
             Some(MultipartTerminal::Aborted) => {
                 assert_eq!(encode_multipart_aborted().as_ref(), bytes)
             }
-            Some(MultipartTerminal::Completed(_)) => panic!(
-                "completed record requires its original completing predecessor; recovery: cargo run --example capture"
-            ),
+            Some(MultipartTerminal::Completed(_)) => {
+                return Err("completed record requires its original completing predecessor".into());
+            }
         }
     }
-    let completing = encode_multipart_completing(&[(1, etag())]).unwrap();
+    let completing = encode_multipart_completing(&[(1, etag())])?;
     if let Ok(snapshot) = decode_multipart(
         vec![initial.clone().into(), completing.clone().into(), input],
         3,
@@ -63,10 +68,11 @@ pub fn check(bytes: &[u8]) {
             assert_eq!(encode_multipart_completed(generation).as_ref(), bytes);
         }
     }
-    check_versions();
+    check_versions()?;
+    Ok(())
 }
 
-fn check_versions() {
+fn check_versions() -> Result<(), Box<dyn std::error::Error>> {
     for version in [0, 2, u8::MAX] {
         let mut header = RecordCursor::new(std::slice::from_ref(&version));
         assert!(
@@ -100,10 +106,8 @@ fn check_versions() {
         maximum_multipart_parts: Some(u32::MAX),
         ..FilesystemS3Limits::default()
     };
-    let initial = encode_multipart_created("key", Some(u32::MAX), Some(1), 0).unwrap();
-    let mut count_only = encode_multipart_completing(&[(1, etag())])
-        .unwrap()
-        .to_vec();
+    let initial = encode_multipart_created("key", Some(u32::MAX), Some(1), 0)?;
+    let mut count_only = encode_multipart_completing(&[(1, etag())])?.to_vec();
     count_only.truncate(6);
     count_only[2..6].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(matches!(
@@ -116,6 +120,7 @@ fn check_versions() {
     ));
     let malformed: s3s::S3Error = MultipartDecodeError::Malformed.into();
     assert_eq!(malformed.code(), &s3s::S3ErrorCode::InvalidRequest);
+    Ok(())
 }
 
 /// Capture each production writer with complete plain and sealed references.

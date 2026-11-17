@@ -27,7 +27,7 @@ pub fn check(bytes: &[u8]) -> bool {
         assert!(!value.binds(value.fence, NativeRootIdentity::from_bytes(other)));
     }
     let original = sample().encode();
-    assert_eq!(decode(&original).unwrap(), sample());
+    assert!(matches!(decode(&original), Ok(value) if value == sample()));
     for index in [16, 32, 48, 64, 80, 84, 92] {
         let mut corrupt = original;
         corrupt[index] ^= 1;
