@@ -244,7 +244,9 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         let config = if selected_lock.is_empty() {
             None
         } else {
-            let lock = root.join(selected_lock).canonicalize()?;
+            let Ok(lock) = root.join(selected_lock).canonicalize() else {
+                continue;
+            };
             Some(format!(
                 "resolver.lockfile-path={}",
                 serde_json::to_string(lock.to_str().unwrap())?
@@ -274,7 +276,9 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
                 matches = false;
                 break;
             }
-            if relative.ends_with("/Cargo.toml")
+            if Path::new(relative)
+                .file_name()
+                .is_some_and(|name| name == "Cargo.toml")
                 && root
                     .join(relative)
                     .parent()
