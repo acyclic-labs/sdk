@@ -124,7 +124,7 @@ fn failed(tag_name: &'static str) -> Plan {
         fail_once: Some((
             0,
             ScriptedEvent::Refused {
-                status: 400,
+                status: 401,
                 error: "child turn failed".into(),
             },
         )),
