@@ -180,6 +180,8 @@ pub(super) fn binary(name: &str) -> PathBuf {
                 .unwrap()
                 .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
         })
+        .canonicalize()
+        .expect("declared executable must resolve to its toolchain location")
 }
 
 struct Timing(std::time::Instant, String);
