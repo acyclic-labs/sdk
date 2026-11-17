@@ -246,32 +246,47 @@ fn state_steps(form: &str, prefix: &str, include_mid: bool) -> Vec<Vec<ToolCall>
 fn state_tag(prefix: &str, name: &str) -> &'static str {
     // A fixed set of tags per root/mid prefix; the plans below register them.
     let tags: &[(&str, &str, &'static str)] = &[
-        ("root", "ok", "c3-root-ok"),
-        ("root", "bad", "c3-root-bad"),
-        ("root", "run", "c3-root-run"),
-        ("root", "idle", "c3-root-idle"),
+        ("root", "ok", "root-ok"),
+        ("root", "bad", "root-bad"),
+        ("root", "run", "root-run"),
+        ("root", "idle", "root-idle"),
         ("root", "merge", "c3-root-merge"),
         ("root", "arch", "c3-root-arch"),
         ("root", "stop", "c3-root-stop"),
-        ("root", "start", "c3-root-start"),
-        ("mid", "ok", "c3-mid-ok"),
-        ("mid", "bad", "c3-mid-bad"),
-        ("mid", "run", "c3-mid-run"),
-        ("mid", "idle", "c3-mid-idle"),
+        ("root", "start", "root-start"),
+        ("mid", "ok", "mid-ok"),
+        ("mid", "bad", "mid-bad"),
+        ("mid", "run", "mid-run"),
+        ("mid", "idle", "mid-idle"),
         ("mid", "merge", "c3-mid-merge"),
         ("mid", "arch", "c3-mid-arch"),
         ("mid", "stop", "c3-mid-stop"),
-        ("mid", "start", "c3-mid-start"),
+        ("mid", "start", "mid-start"),
         ("reopen", "ok", "c3-reopen-ok"),
     ];
     tags.iter()
         .find(|(owner, child, _)| *owner == prefix && *child == name)
         .map(|(_, _, tag)| *tag)
-        .unwrap_or("c3-root-ok")
+        .unwrap_or("root-ok")
 }
 
 fn mid_tag(prefix: &str) -> &'static str {
     if prefix == "root" { "c3-mid" } else { "c3-nested-mid" }
+}
+
+/// The middle agent's one grandchild wait: the grandchild relation.
+fn mid_steps(form: &str) -> Vec<Vec<ToolCall>> {
+    if form == "no_agents" {
+        vec![vec![
+            spawn("mid-spawn-g", "g", "c3-mid-g"),
+            call("mid-alarm", "wait", json!({"timeout_ms": 1})),
+        ]]
+    } else {
+        vec![vec![
+            spawn("mid-spawn-g", "g", "c3-mid-g"),
+            waited(form, "mid-g", &["g"], None),
+        ]]
+    }
 }
 
 fn plans(form: &str) -> Vec<Plan> {
@@ -283,7 +298,7 @@ fn plans(form: &str) -> Vec<Plan> {
         },
         Plan {
             tag: "c3-mid",
-            steps: state_steps(form, "mid", false),
+            steps: mid_steps(form),
             fail_once: None,
         },
         Plan {
@@ -307,6 +322,7 @@ fn plans(form: &str) -> Vec<Plan> {
             settled(state_tag(prefix, "start")),
         ]);
     }
+    plans.push(settled("c3-mid-g"));
     plans.push(settled(state_tag("reopen", "ok")));
     plans.push(Plan {
         tag: "done",
@@ -384,14 +400,14 @@ fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), Str
     // no-agent form names no child, so it has no entries to compare.
     if form != "no_agents" {
     for (id, name) in [
-        ("c3-root-ok", "ok"),
-        ("c3-root-bad", "bad"),
-        ("c3-root-idle", "idle"),
-        ("c3-root-merged", "merge"),
-        ("c3-mid-ok", "ok"),
-        ("c3-mid-bad", "bad"),
-        ("c3-mid-idle", "idle"),
-        ("c3-mid-merged", "merge"),
+        ("root-ok", "ok"),
+        ("root-bad", "bad"),
+        ("root-idle", "idle"),
+        ("root-merged", "merge"),
+        ("mid-ok", "ok"),
+        ("mid-bad", "bad"),
+        ("mid-idle", "idle"),
+        ("mid-merged", "merge"),
         ("c3-reopen-wait", "ok"),
     ] {
         let value = result(&results, id)?;
@@ -418,7 +434,7 @@ fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), Str
     }
     // A running child is reported unsettled, never as done.
     if form != "no_agents" {
-    for (id, name) in [("c3-root-run", "run"), ("c3-mid-run", "run")] {
+    for (id, name) in [("root-run", "run")] {
         let value = result(&results, id)?;
         let entry = unsettled_entry(value, name)
             .ok_or_else(|| format!("wait {id} settled a running child: {value}"))?;
@@ -433,7 +449,7 @@ fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), Str
         }
     }
     // A child spawned in the wait's own step is still starting.
-    for (id, name) in [("c3-root-start", "start"), ("c3-mid-start", "start")] {
+    for (id, name) in [("root-start", "start")] {
         let value = result(&results, id)?;
         let entry = unsettled_entry(value, name)
             .ok_or_else(|| format!("wait {id} settled a child in its spawn step: {value}"))?;
@@ -444,7 +460,7 @@ fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), Str
     }
     // A quorum returns once one of two named children settles.
     if form != "no_agents" {
-        let quorum = result(&results, "c3-root-quorum")?;
+        let quorum = result(&results, "root-quorum")?;
         if reason(quorum) != "need_met" {
             return Err(format!("quorum wait returned {}: {quorum}", reason(quorum)));
         }
@@ -458,7 +474,7 @@ fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), Str
     }
     // The no-agent form reports no child, only its reason.
     if form == "no_agents" {
-        let value = result(&results, "c3-root-alarm")?;
+        let value = result(&results, "root-alarm")?;
         if reason(value) != "deadline" {
             return Err(format!("no-agent wait returned {}: {value}", reason(value)));
         }
@@ -470,10 +486,19 @@ fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), Str
             return Err(format!("no-agent wait reported children: {value}"));
         }
     }
-    // The middle agent's own waits are the grandchild relation.
-    if result(&results, "c3-mid-join-mid").is_err()
-        && result(&results, "c3-root-join-mid").is_err()
-    {
+    // The middle agent's own wait is the grandchild relation.
+    if form == "no_agents" {
+        let value = result(&results, "mid-alarm")?;
+        if reason(value) != "deadline" {
+            return Err(format!("grandchild alarm returned {}: {value}", reason(value)));
+        }
+    } else {
+        let value = result(&results, "mid-g")?;
+        if settled_entry(value, "g").is_none() {
+            return Err(format!("the grandchild wait did not settle g: {value}"));
+        }
+    }
+    if result(&results, "root-join-mid").is_err() {
         return Err("the middle agent never joined".into());
     }
     Ok(())
