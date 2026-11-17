@@ -330,7 +330,7 @@ impl World {
                             let query = conversation
                                 .execution_page(position.input, position.after, false)
                                 .await?;
-                            position = query.continuation().map_err(storage)?;
+                            let next = query.continuation().map_err(storage)?;
                             let Some(page) = query.page else {
                                 break;
                             };
@@ -338,9 +338,10 @@ impl World {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .extend(page.items);
-                            if position.input != input {
+                            if next == position || next.input != input {
                                 break;
                             }
+                            position = next;
                         }
                     }
                     Ok::<_, Error>(())
