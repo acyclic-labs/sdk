@@ -2201,3 +2201,45 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
     assert!(host.state(&root).await?.open_children.is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn normal_child_completion_does_not_cancel_its_pending_archive() -> Result {
+    let root = AgentPath::root(&id(70));
+    let child = root.child(&id(u8::try_from(kernel::MAX_FANOUT)?))?;
+    let mut state = AgentState::adopted(root.clone(), &adopted(root.id()))?;
+    // A prior archive step sent its first fan-out. Those children have
+    // settled; this final child completes normally before its archive is sent.
+    for byte in 0..=kernel::MAX_FANOUT {
+        state
+            .spawned_children
+            .insert(&root.child(&id(u8::try_from(byte)?))?)
+            .await?;
+    }
+    state.open_children.insert(&child).await?;
+    state.archive_pending.insert(&child).await?;
+    state.closed = true;
+    state.dropped_before = 1;
+    let result = step(
+        &super::script(Vec::new()),
+        &root,
+        Some(state),
+        (3, 0),
+        Wake::Inbox {
+            sequence: 2,
+            record: InboxRecord::ChildDone(ChildDone {
+                child: child.clone(),
+                outcome: AgentOutcome::Succeeded { result: None },
+            }),
+        },
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert!(
+        result
+            .outs
+            .iter()
+            .any(|out| matches!(out, Out::Archive { target, .. } if target == &child)),
+        "normal completion cancelled an unsent archive request"
+    );
+    Ok(())
+}
