@@ -1409,7 +1409,7 @@ mod tests {
                     operation_id: crate::OperationId::from_bytes([75; 16]),
                     call_id: "spawn".into(),
                     name: "spawn".into(),
-                    arguments: json!({"name": "w", "task": "work"}),
+                    arguments: json!({"name": "w", "task": "work", "role": "worker"}),
                 },
                 None,
             )
