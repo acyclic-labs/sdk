@@ -88,6 +88,7 @@ def _rustdoc_fixture_impl(ctx):
 
 rustdoc_fixture = rule(
     implementation = _rustdoc_fixture_impl,
+    fragments = ["cpp"],
     toolchains = use_cpp_toolchain(),
     attrs = {
         "srcs": attr.label_list(allow_files = True, mandatory = True),
