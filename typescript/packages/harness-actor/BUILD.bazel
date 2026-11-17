@@ -1,3 +1,5 @@
+load(":generators.bzl", "generator_executables")
+
 # The deployable harness Actor artifact. The proto target projects the protobuf schemas the
 # TypeScript packages import; the bundle target generates the TypeScript projections, consumes
 # the generated wasm packages and runs tsc and the Bun bundle over the owner configuration.
@@ -9,10 +11,43 @@ genrule(
     executable = True,
 )
 
+generator_executables(
+    name = "generators",
+    targets = [
+        "//rust/crates/actors-wasm:actors-wasm-rpc-inventory",
+        "//rust/crates/actors:actors-authorization_example",
+        "//rust/crates/actors:actors-http-routes_example",
+        "//rust/crates/actors:actors-rpc-inventory",
+        "//rust/crates/auth:generate_example",
+        "//rust/crates/filesystem-wire:filesystem-authorization_example",
+        "//rust/crates/filesystem:filesystem-contracts_example",
+        "//rust/crates/filesystem:filesystem-object-reference-contract_example",
+        "//rust/crates/harness-core:agent-record-corpus_example",
+        "//rust/crates/harness:file-tools-contract_example",
+        "//rust/crates/harness:model-contract-fixtures_example",
+        "//rust/crates/inference-wasm:inference-typescript-http-routes_example",
+        "//rust/crates/inference-wasm:inference-typescript-terminal-metadata_example",
+        "//rust/crates/inference-wasm:inference-typescript-widths_example",
+        "//rust/crates/inference:inference-typescript-defaults_example",
+        "//rust/crates/machines:machines-authorization_example",
+        "//rust/crates/machines:machines-managed-oci-contract",
+        "//rust/crates/manifest:deployment-manifest_example",
+        "//rust/crates/objects:objects-authorization_example",
+        "//rust/crates/objects:objects-rpc-inventory",
+        "//rust/crates/proto-codegen:sdk-proto-codegen",
+        "//rust/crates/stream:stream-authorization_example",
+        "//rust/crates/stream:stream-http-contract",
+        "//rust/crates/stream:stream-rpc-inventory",
+        "//rust/crates/stream:token-operations_example",
+        "//rust/crates/workers:workers-authorization_example",
+    ],
+)
+
 genrule(
     name = "bundle",
     srcs = ["//:tools/harness-actor-bundle.mjs"],
     tools = [
+        ":generators",
         "//rust/crates/harness-providers:acyclic_harness_wasm",
         "//rust/crates/manifest:acyclic_manifest_wasm",
         "//:wasm_auth_generated",
@@ -24,6 +59,6 @@ genrule(
         "//:wasm_inference_generated",
     ],
     outs = ["bundle.sh"],
-    cmd = "printf '#!/usr/bin/env bash\\nset -euo pipefail\\nhere=\"$$(cd \"$$(dirname \"$$0\")\" && pwd)\"\\nexecroot=\"$${here%%/bazel-out/*}\"\\ncd \"$$execroot\"\\nexec bun \"$$BUILD_WORKSPACE_DIRECTORY/tools/harness-actor-bundle.mjs\" --wasm \"$(location //rust/crates/harness-providers:acyclic_harness_wasm)=typescript/packages/harness/generated/wasm\" --wasm \"$(location //rust/crates/manifest:acyclic_manifest_wasm)=typescript/packages/workers/generated/wasm\" --wasm \"$(location //:wasm_auth_generated)=typescript/packages/auth/generated/wasm\" --wasm \"$(location //:wasm_actors_generated)=typescript/packages/actors/generated/wasm\" --wasm \"$(location //:wasm_filesystem_generated)=typescript/packages/filesystem/generated/wasm\" --wasm \"$(location //:wasm_stream_generated)=typescript/packages/stream/generated/wasm\" --wasm \"$(location //:wasm_objects_generated)=typescript/packages/objects/generated/wasm\" --wasm \"$(location //:wasm_machines_generated)=typescript/packages/machines/generated/wasm\" --wasm \"$(location //:wasm_inference_generated)=typescript/packages/inference/generated/wasm\" \"$$@\"\\n' > $@ && chmod +x $@",
+    cmd = "printf '#!/usr/bin/env bash\\nset -euo pipefail\\nhere=\"$$(cd \"$$(dirname \"$$0\")\" && pwd)\"\\nexecroot=\"$${here%%/bazel-out/*}\"\\ncd \"$$execroot\"\\nexec bun \"$$BUILD_WORKSPACE_DIRECTORY/tools/harness-actor-bundle.mjs\" --generators \"$(location :generators)\" --wasm \"$(location //rust/crates/harness-providers:acyclic_harness_wasm)=typescript/packages/harness/generated/wasm\" --wasm \"$(location //rust/crates/manifest:acyclic_manifest_wasm)=typescript/packages/workers/generated/wasm\" --wasm \"$(location //:wasm_auth_generated)=typescript/packages/auth/generated/wasm\" --wasm \"$(location //:wasm_actors_generated)=typescript/packages/actors/generated/wasm\" --wasm \"$(location //:wasm_filesystem_generated)=typescript/packages/filesystem/generated/wasm\" --wasm \"$(location //:wasm_stream_generated)=typescript/packages/stream/generated/wasm\" --wasm \"$(location //:wasm_objects_generated)=typescript/packages/objects/generated/wasm\" --wasm \"$(location //:wasm_machines_generated)=typescript/packages/machines/generated/wasm\" --wasm \"$(location //:wasm_inference_generated)=typescript/packages/inference/generated/wasm\" \"$$@\"\\n' > $@ && chmod +x $@",
     executable = True,
 )

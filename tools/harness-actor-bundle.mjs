@@ -73,16 +73,22 @@ export async function bundleHarnessActor(configFile, outputDirectory) {
 
 if (import.meta.main) {
   const { values } = parseArgs({ options: {
-    config: { type: "string" }, out: { type: "string" },
+    config: { type: "string" }, out: { type: "string" }, generators: { type: "string" },
     wasm: { type: "string", multiple: true },
   } });
   if (!values.config || !values.out) throw new Error("usage: bun tools/harness-actor-bundle.mjs --config OWNER.json --out DIRECTORY");
-  const step = (name, command, args) => {
-    const result = spawnSync(command, args, { cwd: root, stdio: "inherit", windowsHide: true });
+  const step = (name, command, args, env = {}) => {
+    const result = spawnSync(command, args, { cwd: root, stdio: "inherit", windowsHide: true, env: { ...process.env, ...env } });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`STEP ${name} failed (exit ${result.status}); recovery: bun tools/harness-actor-bundle.mjs`);
   };
-  step("generate", "bun", ["scripts/generate.mjs", "harness-actor"]);
+  // The bundle target declares every generator as a tool, so generation runs those executables
+  // directly rather than starting a second Bazel from inside the run environment.
+  const generators = values.generators
+    ? Object.fromEntries(Object.entries(JSON.parse(readFileSync(resolve(values.generators), "utf8")))
+      .map(([label, path]) => [label, resolve(process.cwd(), path)]))
+    : undefined;
+  step("generate", "bun", ["scripts/generate.mjs", "harness-actor"], generators ? { ACYCLIC_BAZEL_EXECUTABLES: JSON.stringify(generators) } : {});
   const place = (source, destination) => {
     if (!source) return;
     const target = join(root, destination);

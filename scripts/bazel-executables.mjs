@@ -10,6 +10,13 @@ export const bazelCommand = () => process.env.ACYCLIC_BAZEL || "bazel";
 
 const LABEL = /^\/\/[A-Za-z0-9_./-]*:[A-Za-z0-9_.+-]+$/;
 const FLAGS = ["--color=no", "--noshow_progress", "--ui_event_filters=-info"];
+// A run target may already declare the executables as Bazel tools, so its script runs them
+// directly instead of starting a second Bazel invocation from the run environment.
+const supplied = (() => {
+  const value = process.env.ACYCLIC_BAZEL_EXECUTABLES;
+  return value ? JSON.parse(value) : {};
+})();
+const suppliedExecutable = label => supplied[label] === undefined ? undefined : resolve(supplied[label]);
 // cquery's Starlark environment reads a target's providers through providers(); DefaultInfo is not a global.
 const EXPRESSION = "str(target.label) + '\\t' + str(getattr(providers(target)['DefaultInfo'].files_to_run.executable, 'path', None))";
 
@@ -55,6 +62,8 @@ export function bazelExecutables(root, labels, capture = defaultCapture(root)) {
   const requested = [...new Set(labels.map(assertLabel))];
   if (requested.length !== labels.length) throw new Error(`STEP_FAILED bazel-label: duplicate label in ${labels.join(", ")}`);
   if (requested.length === 0) return [];
+  const declared = requested.map(suppliedExecutable);
+  if (declared.every(Boolean)) return declared;
   const bazel = bazelCommand();
   // The caller runs each executable from the output tree, so a build without the bytes (a remote cache's
   // --remote_download_minimal) must still materialise the requested targets and their runfiles.
