@@ -6,7 +6,10 @@ use super::*;
 use acyclic_harness::{
     conversation::{DirectoryTarget, PrivateDirectoryEntryKind},
     local::WorkspaceMounting,
-    model::{ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall, ToolResultContent},
+    model::{
+        ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelRequest, ModelRole,
+        ToolCall, ToolResultContent,
+    },
     test_support::{ScriptedEvent, model_visible_messages},
 };
 use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
@@ -126,12 +129,73 @@ pub(super) fn done(tag: &str) -> String {
     format!("done {tag}")
 }
 
+/// The first index after a complete tool exchange: every call before it has
+/// its result, so a cut there preserves whole dependency groups.
+pub(super) fn complete_exchange_cut(source: &[ModelMessage]) -> Option<usize> {
+    let mut pending = std::collections::BTreeSet::new();
+    let mut saw_result = false;
+    for (index, message) in source.iter().enumerate() {
+        for part in message.content.parts() {
+            match part {
+                ModelContentPart::ToolCall(call) => {
+                    pending.insert(call.call_id.clone());
+                }
+                ModelContentPart::ToolResult { call_id, .. } => {
+                    pending.remove(call_id.as_str());
+                    saw_result = true;
+                }
+                _ => {}
+            }
+        }
+        if saw_result && pending.is_empty() {
+            return Some(index + 1);
+        }
+    }
+    None
+}
+
 /// A deterministic model service: each answer is a function of the request's
 /// visible history alone, so every incarnation of a host sees the same model.
 pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
     let failed = Mutex::new(Vec::<&'static str>::new());
     let needles: Vec<_> = plans.iter().map(|plan| appears(&tag(plan.tag))).collect();
     let answer = move |request: &ModelRequest| {
+        if request.summary {
+            // A summary request carries its source before the final instruction.
+            // The manager's window always ends on a complete dependency
+            // boundary, so dropping the whole supplied source is a valid cut.
+            let Ok((source, _)) = request.split_summary_instruction() else {
+                return ScriptedTurn::Text("summary request lacks its instruction".into());
+            };
+            let messages: Vec<_> = model_visible_messages(source).collect();
+            let found = messages
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, message)| {
+                    let body = serde_json::to_string(&message.content).unwrap_or_default();
+                    plans
+                        .iter()
+                        .zip(&needles)
+                        .find(|(_, needles)| needles.iter().any(|needle| body.contains(needle)))
+                        .map(|(plan, _)| (index, plan))
+                });
+            let summary = found.map_or_else(
+                || "untagged summary".to_owned(),
+                |(_, plan)| format!("{} summary", tag(plan.tag)),
+            );
+            // Drop the oldest complete tool exchange. Every call before the
+            // cut must have its result, including parallel calls in one step.
+            let drop_through = complete_exchange_cut(source).unwrap_or(source.len());
+            return ScriptedTurn::Text(
+                serde_json::json!({
+                    "version": 1,
+                    "drop_through": drop_through,
+                    "summary": summary,
+                })
+                .to_string(),
+            );
+        }
         let messages: Vec<_> = model_visible_messages(&request.messages).collect();
         let found = messages
             .iter()
@@ -147,7 +211,7 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
                     .find(|(_, needles)| needles.iter().any(|needle| body.contains(needle)))
                     .map(|(plan, _)| (index, plan))
             });
-        let Some((index, plan)) = found.filter(|_| !request.summary) else {
+        let Some((index, plan)) = found else {
             // Name the unexpected request in the answer the world reports.
             let last: Vec<_> = messages.iter().rev().take(2).collect();
             return ScriptedTurn::Text(format!(
@@ -155,17 +219,22 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
                 serde_json::to_string(&last).unwrap_or_default()
             ));
         };
+        // A rewrite may drop the older calls, so the newest visible call names
+        // the step that follows it rather than the number of calls still shown.
         let step = messages
             .iter()
             .skip(index)
-            .filter(|message| {
-                message
-                    .content
-                    .parts()
+            .flat_map(|message| message.content.parts())
+            .filter_map(|part| match part {
+                ModelContentPart::ToolCall(call) => plan
+                    .steps
                     .iter()
-                    .any(|part| matches!(part, ModelContentPart::ToolCall(_)))
+                    .position(|calls| calls.iter().any(|planned| planned.call_id == call.call_id))
+                    .map(|position| position + 1),
+                _ => None,
             })
-            .count();
+            .last()
+            .unwrap_or(0);
         let Some(calls) = plan.steps.get(step) else {
             return ScriptedTurn::Text(done(plan.tag));
         };
@@ -532,4 +601,38 @@ pub(super) fn simulate<T>(
 
 pub(super) fn failed(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[test]
+fn summary_cut_waits_for_parallel_results() {
+    let call = |id: &str| ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
+            id.into(),
+            "write".into(),
+            serde_json::json!({}),
+        ))),
+    };
+    let result = |id: &str| ModelMessage {
+        role: ModelRole::Tool,
+        content: ModelContent::Part(ModelContentPart::ToolResult {
+            call_id: id.into(),
+            name: "write".into(),
+            content: ToolResultContent::Json {
+                value: serde_json::json!({"ok": true}),
+            },
+        }),
+    };
+    // Parallel calls: the cut waits for the second result.
+    assert_eq!(
+        complete_exchange_cut(&[call("a"), call("b"), result("a"), result("b")]),
+        Some(4)
+    );
+    // Sequential calls: the first complete exchange is the cut.
+    assert_eq!(
+        complete_exchange_cut(&[call("a"), result("a"), call("b"), result("b")]),
+        Some(2)
+    );
+    // No result yet: no complete exchange.
+    assert_eq!(complete_exchange_cut(&[call("a"), call("b")]), None);
 }

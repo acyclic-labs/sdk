@@ -931,6 +931,7 @@ rust_test(
         "tests/dst/recovery.rs",
         "tests/dst/redelivery.rs",
         "tests/dst/refusal.rs",
+        "tests/dst/scale.rs",
         "tests/dst/settlement.rs",
         "tests/dst/swarm.rs",
         "tests/e2e/case_workers.rs",
