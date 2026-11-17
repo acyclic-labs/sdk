@@ -5,9 +5,10 @@
 //! `ACYCLIC_TEST_BINARY` (the libtest executable), `ACYCLIC_TEST_ID` (its nextest binary id),
 //! `ACYCLIC_TEST_PACKAGE` (the Cargo package directory, each case's working directory as under
 //! Cargo), `ACYCLIC_TEST_SOURCE` (this SDK's own repository in the runfiles, which a consuming
-//! workspace sees as an external repository) and `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case
-//! limit). A nextest profile's cases
-//! select through `ACYCLIC_TEST_ONLY` (run only cases whose name contains it) and
+//! workspace sees as an external repository), `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case limit)
+//! and `ACYCLIC_TEST_TEMP_ROOT` (`memory`, or `disk` for a target tagged `requires-disk-tmp`; see
+//! `temporary_root`). A nextest profile's cases select through `ACYCLIC_TEST_ONLY` (run only cases
+//! whose name contains it) and
 //! `ACYCLIC_TEST_EXCLUDE` (newline-separated; skip cases whose name contains any), as
 //! nextest's `test(...)` default filters do; a profile whose cases nextest runs under a wrapper
 //! script names it as `ACYCLIC_TEST_WRAPPER`. Within those, cases are selected as libtest
@@ -23,6 +24,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};
+use std::hash::BuildHasher as _;
 use std::io::{self, Write};
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
@@ -61,6 +63,8 @@ struct Suite {
     exclude: Vec<String>,
     package: PathBuf,
     logs: PathBuf,
+    /// Where each case's own temporary directory is made (`temporary_root`).
+    temporary: PathBuf,
     limit: Duration,
 }
 
@@ -93,7 +97,7 @@ fn main() -> ExitCode {
 
 /// The runner's own settings, from its rule. Cases never see them: a case may read a variable of
 /// the same name as its own input.
-const SETTINGS: [&str; 9] = [
+const SETTINGS: [&str; 10] = [
     "ACYCLIC_TEST_BINARY",
     "ACYCLIC_TEST_EXCLUDE",
     "ACYCLIC_TEST_ID",
@@ -101,6 +105,7 @@ const SETTINGS: [&str; 9] = [
     "ACYCLIC_TEST_ONLY",
     "ACYCLIC_TEST_PACKAGE",
     "ACYCLIC_TEST_SOURCE",
+    "ACYCLIC_TEST_TEMP_ROOT",
     "ACYCLIC_TEST_WORKERS",
     "ACYCLIC_TEST_WRAPPER",
 ];
@@ -121,6 +126,7 @@ fn run() -> Result<usize, String> {
                 .then(|| (name, root.join(path)))
         })
         .collect();
+    let logs = PathBuf::from(setting("TEST_TMPDIR")?);
     let suite = Suite {
         source: root.join(setting("ACYCLIC_TEST_SOURCE")?),
         executables,
@@ -132,7 +138,12 @@ fn run() -> Result<usize, String> {
             .map(|patterns| patterns.lines().map(str::to_owned).collect())
             .unwrap_or_default(),
         package: root.join(setting("ACYCLIC_TEST_PACKAGE")?),
-        logs: PathBuf::from(setting("TEST_TMPDIR")?),
+        temporary: temporary_root(
+            &setting("ACYCLIC_TEST_TEMP_ROOT")?,
+            Path::new(MEMORY_ROOT),
+            &logs,
+        )?,
+        logs,
         limit: Duration::from_secs(limit),
     };
     let selection: Vec<OsString> = env::var_os("TESTBRIDGE_TEST_ONLY")
@@ -220,8 +231,8 @@ fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Resu
                 {
                     let log = suite.logs.join(format!("case-{index}.log"));
                     let temporary = temporary_for(
-                        &suite.logs,
-                        std::process::id(),
+                        &suite.temporary,
+                        *RUNNER,
                         CASES.fetch_add(1, Ordering::Relaxed),
                     );
                     let started = Instant::now();
@@ -269,26 +280,62 @@ fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Resu
 /// test` runs this crate's own tests) never share a temporary directory.
 static CASES: AtomicUsize = AtomicUsize::new(0);
 
-/// A case's own temporary directory, short by construction so a socket bound in it fits
-/// `sun_path`: Bazel's test directory alone can exceed it. On Unix it sits under `/tmp`, which
-/// the Linux sandbox makes private to the test, named by the runner's process and the case's
-/// number in it. Windows keeps it under the test's directory.
-fn temporary_for(logs: &Path, runner: u32, number: usize) -> PathBuf {
-    let name = format!("acyclic-{runner:x}-{number:x}");
-    if cfg!(unix) {
-        Path::new("/tmp").join(name)
-    } else {
-        logs.join(name)
+/// Linux's RAM-backed directory: a case's durability syncs there cost no device flush, so a
+/// test's wall time does not follow the load on the host's disk. The product still syncs.
+const MEMORY_ROOT: &str = "/dev/shm";
+
+/// The root of every case's temporary directory, by the rule's `ACYCLIC_TEST_TEMP_ROOT`. On Linux
+/// `memory` is `memory_root`, which must exist: there is no silent fallback to a disk. A target
+/// that needs a real disk's semantics (`O_DIRECT`, a block device behind `statfs`) is tagged
+/// `requires-disk-tmp` and gets `disk`. Elsewhere, and for `disk`, the root is `/tmp` on Unix
+/// (short, so a socket path fits) and the test's own directory on Windows.
+fn temporary_root(kind: &str, memory_root: &Path, logs: &Path) -> Result<PathBuf, String> {
+    let memory = match kind {
+        "memory" => true,
+        "disk" => false,
+        other => {
+            return Err(format!(
+                "ACYCLIC_TEST_TEMP_ROOT: {other:?} is neither \"memory\" nor \"disk\""
+            ));
+        }
+    };
+    if cfg!(target_os = "linux") && memory {
+        if !memory_root.is_dir() {
+            return Err(format!(
+                "{} is not a directory, so cases cannot have RAM-backed temporary directories; \
+                 recovery: mount it, or tag a target that needs a real disk requires-disk-tmp",
+                memory_root.display()
+            ));
+        }
+        return Ok(memory_root.to_path_buf());
     }
+    Ok(if cfg!(unix) {
+        PathBuf::from("/tmp")
+    } else {
+        logs.to_path_buf()
+    })
+}
+
+/// This runner's own random name. A root such as `/dev/shm` is shared by every sandbox, where
+/// each runner may have the same process id, so a process id cannot name a case's directory.
+static RUNNER: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+    std::collections::hash_map::RandomState::new().hash_one(std::process::id())
+});
+
+/// A case's own temporary directory under `root`, short by construction so a socket bound in it
+/// fits `sun_path`: Bazel's test directory alone can exceed it. It is named by the runner's
+/// random name and the case's number in it.
+fn temporary_for(root: &Path, runner: u64, number: usize) -> PathBuf {
+    root.join(format!("acyclic-{runner:x}-{number:x}"))
 }
 
 /// Runs one case in its own custodied process tree. A case past the limit fails, and the
 /// tree is stopped with every process the case started, including ones that left its group.
 ///
-/// The case's temporary directory is its own (`temporary_for`), created empty and removed after
-/// the case, and on Unix is named by its resolved path: Bazel gives a test no TMPDIR, and
+/// The case's temporary directory is its own (`temporary_for`), created new and empty and removed
+/// after the case, and on Unix is named by its resolved path: Bazel gives a test no TMPDIR, and
 /// macOS's `/tmp` is a symlink, which every case that checks its paths for links refuses. A
-/// directory left by an earlier runner of the same process id is stale and is replaced.
+/// directory of that name already present belongs to another runner, so creating it fails.
 /// Windows names it by its absolute path, never a resolved one: `canonicalize` there returns a
 /// `\\?\` verbatim path, which programs a case starts (the vendored protoc) cannot open.
 fn case(
@@ -299,10 +346,7 @@ fn case(
     temporary: &Path,
 ) -> io::Result<Outcome> {
     let output = File::create(log)?;
-    match fs::remove_dir_all(temporary) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-        _ => fs::create_dir(temporary)?,
-    }
+    fs::create_dir(temporary)?;
     let named = if cfg!(windows) {
         std::path::absolute(temporary)?
     } else {
@@ -444,15 +488,34 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn every_case_directory_leaves_room_for_a_socket() {
-        let root = Path::new("/tmp").canonicalize().unwrap();
-        let longest = temporary_for(Path::new("/unused"), u32::MAX, usize::MAX);
-        let resolved = root.join(longest.file_name().unwrap());
-        let length = resolved.as_os_str().len() + 1 + SOCKET_NAME_ROOM;
-        assert!(
-            length <= 107,
-            "{} leaves {length} > 107",
-            resolved.display()
-        );
+        for kind in ["memory", "disk"] {
+            let root = temporary_root(kind, Path::new(MEMORY_ROOT), Path::new("/unused"))
+                .unwrap()
+                .canonicalize()
+                .unwrap();
+            let longest = temporary_for(&root, u64::MAX, usize::MAX);
+            let length = longest.as_os_str().len() + 1 + SOCKET_NAME_ROOM;
+            assert!(length <= 107, "{} leaves {length} > 107", longest.display());
+        }
+    }
+
+    /// Cases get RAM-backed directories on Linux and a disk only when the target declares one;
+    /// a missing RAM root or an unknown kind refuses the suite instead of falling back.
+    #[test]
+    fn the_temporary_root_is_memory_on_linux_unless_a_disk_is_declared() {
+        let logs = Path::new("/unused");
+        let memory = temporary_root("memory", Path::new(MEMORY_ROOT), logs).unwrap();
+        let disk = temporary_root("disk", Path::new(MEMORY_ROOT), logs).unwrap();
+        if cfg!(target_os = "linux") {
+            assert_eq!(memory, Path::new(MEMORY_ROOT));
+            let missing = env::temp_dir().join(format!("acyclic-no-root-{}", std::process::id()));
+            let refused = temporary_root("memory", &missing, logs).unwrap_err();
+            assert!(refused.contains("requires-disk-tmp"), "{refused}");
+        } else {
+            assert_eq!(memory, disk);
+        }
+        assert_ne!(disk, Path::new(MEMORY_ROOT));
+        assert!(temporary_root("ram", Path::new(MEMORY_ROOT), logs).is_err());
     }
 
     /// Acts as a runner started with its settings set, running `environment_case`.
@@ -473,6 +536,7 @@ mod tests {
                 only: None,
                 exclude: Vec::new(),
                 package: root.clone(),
+                temporary: temporary_root("memory", Path::new(MEMORY_ROOT), &root).unwrap(),
                 logs: root,
                 limit: Duration::from_secs(10),
             };
@@ -522,6 +586,7 @@ mod tests {
             only: None,
             exclude: Vec::new(),
             package: dir.clone(),
+            temporary: temporary_root("memory", Path::new(MEMORY_ROOT), &dir).unwrap(),
             logs: dir,
             limit: Duration::from_secs(2),
         }
