@@ -393,10 +393,7 @@ impl RunnerDirectory {
             let lock = File::open(&path).map_err(|error| failed("open", &path, error))?;
             lock.lock().map_err(|error| failed("lock", &path, error))?;
             drop(root_lock);
-            Ok(Self {
-                path,
-                _lock: lock,
-            })
+            Ok(Self { path, _lock: lock })
         }
         #[cfg(not(unix))]
         Ok(Self { path })
@@ -782,7 +779,8 @@ mod tests {
     #[test]
     fn a_public_lock_file_is_refused() {
         use std::os::unix::fs::PermissionsExt as _;
-        let directory = env::temp_dir().join(format!("acyclic-lock-private-{}", std::process::id()));
+        let directory =
+            env::temp_dir().join(format!("acyclic-lock-private-{}", std::process::id()));
         fs::create_dir(&directory).unwrap();
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
         let user = acyclic_native_runtime::private_file::effective_user();
