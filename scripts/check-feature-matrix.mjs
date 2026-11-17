@@ -14,7 +14,7 @@
 //        [--external-only] [--target=TRIPLE]
 // Every extra worker uses its own target directory, so Cargo's build lock never
 // serializes them; the compiler cache still deduplicates their dependencies.
-import { repositoryRoot as root, selectionWorker, workerEnv } from "./policy-core.mjs";
+import { dependencyEnabled, forwardedFeatures, repositoryRoot as root, selectionWorker, workerEnv } from "./policy-core.mjs";
 import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -102,16 +102,10 @@ export function consumerSelections(packages, selected = [], { declared = false }
     for (const closure of closures) {
       const tokens = closure.split(" ").filter(Boolean);
       for (const dependency of consumer.dependencies) {
-        if (!dependency.path || !sets.has(dependency.name)) continue;
-        const alias = dependency.rename ?? dependency.name;
-        const active = !dependency.optional || tokens.includes(`dep:${alias}`)
-          || tokens.some(token => token.startsWith(`${alias}/`));
-        if (!active) continue;
+        if (!dependency.path || !sets.has(dependency.name) || !dependencyEnabled(tokens, dependency)) continue;
         const features = [...dependency.features];
         if (dependency.uses_default_features && Object.hasOwn(inventory.get(dependency.name).features, "default")) features.push("default");
-        for (const token of tokens) {
-          if (token.startsWith(`${alias}/`) || token.startsWith(`${alias}?/`)) features.push(token.slice(token.indexOf("/") + 1));
-        }
+        features.push(...forwardedFeatures(tokens, dependency.rename ?? dependency.name));
         add(dependency.name, features);
       }
     }

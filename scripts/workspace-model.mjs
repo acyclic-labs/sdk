@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {evaluateCfg, manifestDependencies, reachable, toml, tomlFiles} from './policy-core.mjs';
+import {dependencyEnabled, evaluateCfg, forwardedFeatures, manifestDependencies, reachable, toml, tomlFiles} from './policy-core.mjs';
 
 const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
@@ -312,14 +312,9 @@ export function registryInputs(root) {
         const locked = (lock.package ?? []).find(x => x.name === p.name && x.version === p.version && !x.source);
         if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
         for (const d of p.dependencies) {
-          const alias = d.rename ?? d.name;
           if ((d.kind === 'dev' && !p.workspace_member) || !targetMatches(d.target, triple) ||
-              (d.optional && !features.has(`dep:${alias}`) && ![...features].some(f => f.startsWith(`${alias}/`)))) continue;
-          const requested = [...d.features];
-          for (const feature of features) {
-            const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
-            if (match?.[1] === alias) requested.push(match[2]);
-          }
+              !dependencyEnabled(features, d)) continue;
+          const requested = [...d.features, ...forwardedFeatures(features, d.rename ?? d.name)];
           if (d.resolved_path) {
             const dep = local.find(x => path.dirname(x.manifest_path) === d.resolved_path);
             if (!dep) throw Error(`${p.name}: missing path dependency ${d.name}`);
@@ -423,16 +418,12 @@ export function workspaceBrowserGraph(root, selections) {
         for (const d of pkg.dependencies) {
           const alias = d.rename ?? d.name;
           if (d.kind === 'dev' || !targetMatches(d.target, triple) ||
-              (d.optional && !features.has(`dep:${alias}`) && ![...features].some(f => f.startsWith(`${alias}/`)))) continue;
+              !dependencyEnabled(features, d)) continue;
           const dep = localDependency(pkg, d);
           addEdge(alias.replaceAll('-', '_'), dep, d.kind, d.target);
           if (d.kind !== null) continue;
           add(reachable, dep.id);
-          const requestedFeatures = [...d.features];
-          for (const feature of features) {
-            const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
-            if (match?.[1] === alias) requestedFeatures.push(match[2]);
-          }
+          const requestedFeatures = [...d.features, ...forwardedFeatures(features, alias)];
           if (dep.source) {
             const input = registryInputs.get(dep.id) ?? {features:new Set(), defaultFeatures:false};
             for (const feature of requestedFeatures) input.features.add(feature);
@@ -473,7 +464,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
   const packages = [...local, ...registry], byName = name => packages.filter(p => p.name === name);
   const matches = cfg => allPlatforms || targetMatches(cfg, triple);
   const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : selectedEntries(universe.crates[`${p.name} ${p.version}`]?.common_attrs?.crate_features, universe, allPlatforms ? null : triple))]));
-  const active = (p, d) => !d.optional || [...enabled.get(p.id)].some(f => f === `dep:${d.rename ?? d.name}` || f.startsWith(`${d.rename ?? d.name}/`));
+  const active = (p, d) => dependencyEnabled(enabled.get(p.id), d);
   let changed = true;
   while (changed) {
     changed = false;
@@ -486,10 +477,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
         const target = enabled.get(dependency.id), alias = d.rename ?? d.name;
         for (const feature of d.features) add(target, feature);
         if (d.uses_default_features && Object.hasOwn(dependency.features, 'default')) add(target, 'default');
-        for (const feature of features) {
-          const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
-          if (match?.[1] === alias) add(target, match[2]);
-        }
+        for (const feature of forwardedFeatures(features, alias)) add(target, feature);
       }
     }
   }

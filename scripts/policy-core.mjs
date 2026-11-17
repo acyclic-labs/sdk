@@ -127,6 +127,21 @@ export function featureClosure(features = {}, roots) {
   return reachable(roots, feature => Object.hasOwn(features, feature) ? features[feature] : []);
 }
 
+export function dependencyEnabled(features, dependency) {
+  if (!dependency.optional) return true;
+  const alias = dependency.rename ?? dependency.name;
+  for (const feature of features)
+    if (feature === `dep:${alias}` || feature.startsWith(`${alias}/`)) return true;
+  return false;
+}
+
+export function* forwardedFeatures(features, alias) {
+  for (const feature of features) {
+    const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
+    if (match?.[1] === alias) yield match[2];
+  }
+}
+
 // Every package with a compiler configuration belongs to the root build.
 export function checkTypeScriptReferences(root, required = []) {
   const packages = readdirSync(join(root, 'typescript/packages'))
