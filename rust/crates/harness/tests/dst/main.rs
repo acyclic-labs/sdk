@@ -262,9 +262,12 @@ fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u
             .create_volume(&volume)
             .await?;
         let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
+        // Each prompt makes its response request and one follow-up request.
         let provider = Arc::new(ScriptedModelProvider::new([
             ScriptedTurn::Text("done".into()),
+            ScriptedTurn::Text("summarized".into()),
             ScriptedTurn::Text("reopened".into()),
+            ScriptedTurn::Text("summarized".into()),
         ]));
         let config = || -> Result<_> {
             Ok(local_harness_config(
