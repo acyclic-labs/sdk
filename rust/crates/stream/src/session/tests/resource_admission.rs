@@ -155,6 +155,11 @@ async fn resource_refusals_preserve_other_channels_in_the_same_interest() -> Tes
                         original.map(|error| error.category()),
                         Some(error.category())
                     );
+                    assert_eq!(
+                        original.as_ref().and_then(|error| error.member_refusal()),
+                        error.member_refusal(),
+                        "resource refusal lost its original details"
+                    );
                     refused = true;
                 }
                 Some(Body::InterestApplied(_)) => applied = true,

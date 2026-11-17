@@ -1,4 +1,4 @@
-use crate::{StreamCategory, StreamError, StreamWatermarks, wire};
+use crate::{StreamError, StreamWatermarks, wire};
 
 /// Decodes an explicit accepted observation, rejecting legacy peers and
 /// impossible persistence claims instead of inferring durability from acceptance.
@@ -18,6 +18,7 @@ pub fn watermarks_from_wire(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StreamCategory;
     use proptest::prelude::*;
     use prost::Message;
     proptest! {
