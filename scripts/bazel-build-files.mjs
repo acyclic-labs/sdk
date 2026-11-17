@@ -195,9 +195,52 @@ function cfgHasTest(expr) {
   }
   return false;
 }
-// The crate's own unit tests, from the #[cfg] expressions its library root reaches. Only such a
-// crate needs a test-config compile of its library; a crate whose tests all live under tests/
-// links the library's rlib instead and never compiles the library twice.
+// The end of the string literal that starts at `at`: its closing quote, raw or not.
+function stringEnd(text, at) {
+  const raw = /^r(#*)"/.exec(text.slice(at));
+  if (raw) {
+    const close = `"${raw[1]}`, end = text.indexOf(close, at + raw[0].length);
+    return end < 0 ? text.length : end + close.length;
+  }
+  let i = at + 1;
+  while (i < text.length && text[i] !== '"') i += text[i] === "\\" ? 2 : 1;
+  return i + 1;
+}
+// Every attribute a source file declares, as its path and arguments: `#[tokio::test]` is
+// { path: "tokio::test", args: "" }. Comments and literals are skipped, so a `#[test]` a doc
+// comment spells is not a test of this crate.
+function* attributes(text) {
+  const string = at => text[at] === '"' || (text[at] === "r" && /^r#*"/.test(text.slice(at)) && !/\w/.test(text[at - 1] ?? ""));
+  for (let i = 0; i < text.length;) {
+    if (text.startsWith("//", i)) {
+      const end = text.indexOf("\n", i);
+      i = end < 0 ? text.length : end;
+    } else if (text.startsWith("/*", i)) {
+      let depth = 0;
+      while (i < text.length) {
+        if (text.startsWith("/*", i)) depth++, i += 2;
+        else if (text.startsWith("*/", i)) { i += 2; if (!--depth) break; }
+        else i++;
+      }
+    } else if (string(i)) i = stringEnd(text, i);
+    else if (text[i] === "#" && text[i + 1] === "[") {
+      let depth = 1, j = i + 2;
+      while (j < text.length && depth) {
+        if (string(j)) j = stringEnd(text, j);
+        else if (text[j] === "[") depth++, j++;
+        else if (text[j] === "]") depth--, j++;
+        else j++;
+      }
+      const inner = text.slice(i + 2, j - 1);
+      const head = /^\s*((?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)\s*(?:\(([\s\S]*)\))?\s*$/.exec(inner);
+      if (head) yield { path: head[1].replace(/\s+/g, ""), args: head[2] ?? "" };
+      i = j;
+    } else i++;
+  }
+}
+// The crate's own unit tests, from the test attributes and #[cfg] expressions its library root
+// reaches. Only such a crate needs a test-config compile of its library; a crate whose tests all
+// live under tests/ links the library's rlib instead and never compiles the library twice.
 const unitTests = new Map();
 function hasUnitTests(crateDir, rootFile) {
   const key = `${crateDir} ${rootFile}`;
@@ -205,14 +248,10 @@ function hasUnitTests(crateDir, rootFile) {
   let found = false;
   for (const file of closure(crateDir, rootFile)) {
     if (!file.endsWith(".rs")) continue;
-    const text = fs.readFileSync(path.join(root, file), "utf8");
-    for (let at = text.indexOf("#[cfg("); at >= 0; at = text.indexOf("#[cfg(", at + 1)) {
-      let i = at + "#[cfg(".length, depth = 1;
-      for (; i < text.length && depth; i++) {
-        if (text[i] === "(") depth++;
-        else if (text[i] === ")") depth--;
-      }
-      if (cfgHasTest(text.slice(at + "#[cfg(".length, i - 1))) {
+    for (const { path: attribute, args } of attributes(fs.readFileSync(path.join(root, file), "utf8"))) {
+      // The test harnesses in use: `#[test]`, `#[tokio::test]`, `#[wasm_bindgen_test]`.
+      const name = attribute.split("::").pop();
+      if (name === "cfg" ? cfgHasTest(args) : name === "test" || name.endsWith("_test")) {
         found = true;
         break;
       }
