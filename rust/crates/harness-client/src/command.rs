@@ -1301,9 +1301,7 @@ impl PageCredit {
     ) -> Result<Self, AgentError> {
         let end_envelope = page_json_bytes(end)?;
         let maximum = u64::from(page.bytes());
-        if !crate::encoded_agent_reply_size(end_envelope)
-            .is_ok_and(|encoded| encoded <= maximum)
-        {
+        if !crate::encoded_agent_reply_size(end_envelope).is_ok_and(|encoded| encoded <= maximum) {
             return Err(AgentError::Stream(StreamError::Capacity));
         }
         Ok(Self {
@@ -1356,10 +1354,8 @@ impl PageCredit {
     ) -> Result<Option<u64>, AgentError> {
         let bytes = self.bytes + page_json_bytes(item)? + u64::from(self.items != 0);
         let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
-        Ok(
-            crate::encoded_agent_reply_size(bytes + envelope)
-                .is_ok_and(|encoded| encoded <= self.maximum)
-                .then_some(bytes),
-        )
+        Ok(crate::encoded_agent_reply_size(bytes + envelope)
+            .is_ok_and(|encoded| encoded <= self.maximum)
+            .then_some(bytes))
     }
 }

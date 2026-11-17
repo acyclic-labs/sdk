@@ -21,10 +21,10 @@
 acyclic_test_support::counting_allocator!();
 
 // The core's items keep their `crate::` paths here, as in the facade.
-#[cfg(any(not(target_arch = "wasm32"), test, feature = "test-support"))]
-use acyclic_harness_core::*;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_harness_client as client;
+#[cfg(any(not(target_arch = "wasm32"), test, feature = "test-support"))]
+use acyclic_harness_core::*;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_harness_hosting as hosting;
 #[cfg(not(target_arch = "wasm32"))]

@@ -68,4 +68,3 @@ pub fn credit_error(error: AgentError) -> crate::Error {
         error => crate::Error::Invalid(error.to_string()),
     }
 }
-

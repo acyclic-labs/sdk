@@ -31,10 +31,10 @@ pub use acyclic_harness_hosting as hosting;
 pub mod client;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod completion;
-#[cfg(feature = "conformance")]
-pub use acyclic_harness_suite::conformance;
 #[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_harness_local::local;
+#[cfg(feature = "conformance")]
+pub use acyclic_harness_suite::conformance;
 pub mod preset;
 #[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_harness_local::server;

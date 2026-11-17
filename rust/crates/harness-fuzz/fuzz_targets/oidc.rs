@@ -9,8 +9,10 @@ use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
 
 const CAPTURE: &str = "../../harness-suite/fixtures/conformance/identity/dex/";
-const JWKS: &[u8] = include_bytes!("../../harness-suite/fixtures/conformance/identity/dex/jwks.body");
-const RESPONSE: &str = include_str!("../../harness-suite/fixtures/conformance/identity/dex/token.body");
+const JWKS: &[u8] =
+    include_bytes!("../../harness-suite/fixtures/conformance/identity/dex/jwks.body");
+const RESPONSE: &str =
+    include_str!("../../harness-suite/fixtures/conformance/identity/dex/token.body");
 const MANIFEST: &str =
     include_str!("../../harness-suite/fixtures/conformance/identity/dex/manifest.json");
 

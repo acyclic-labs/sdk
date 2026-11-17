@@ -25,7 +25,10 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn prepare(self: Arc<Self>, open: Bytes) -> std::result::Result<Box<dyn PreparedSocketOpen>, StreamError> {
+    fn prepare(
+        self: Arc<Self>,
+        open: Bytes,
+    ) -> std::result::Result<Box<dyn PreparedSocketOpen>, StreamError> {
         let (projection, invocation) =
             QueryProjection::decode_open(&open).map_err(|_| StreamError::InvalidArgument)?;
         let call = self.admit(invocation)?;
