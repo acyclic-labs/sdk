@@ -305,10 +305,7 @@ where
             }));
         }
     };
-    if platform.sessions() {
-        bound.initialize_sessions().await?;
-    }
-    Ok(Serving::Served(server(bound, platform, root)?))
+    Ok(Serving::Served(server(bound, platform, root).await?))
 }
 
 /// Restores a platform's durable placement of an already adopted tree.
@@ -326,13 +323,10 @@ where
     O: AsyncObjectStore + 'static,
 {
     bound.admit_path(&root)?;
-    if platform.sessions() {
-        bound.initialize_sessions().await?;
-    }
-    server(bound, platform, root)
+    server(bound, platform, root).await
 }
 
-fn server<P, O>(
+async fn server<P, O>(
     bound: Bound<P, O>,
     platform: Arc<dyn Platform>,
     root: AgentPath,
@@ -341,6 +335,9 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    if platform.sessions() {
+        bound.initialize_sessions().await?;
+    }
     let resource = format!(
         "actors:/{}",
         acyclic_auth::encode_component(bound.within().namespace().as_str().as_bytes())
