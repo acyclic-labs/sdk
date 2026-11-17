@@ -51,12 +51,9 @@ acyclic_test_support::cases! {
     values: u64,
     runner = super::prefix_case,
     cases = [
-        seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3, seed_4 => 4,
-        seed_5 => 5, seed_6 => 6, seed_7 => 7, seed_8 => 8, seed_9 => 9,
-        seed_10 => 10, seed_11 => 11, seed_12 => 12, seed_13 => 13, seed_14 => 14,
-        seed_15 => 15, seed_16 => 16, seed_17 => 17, seed_18 => 18, seed_19 => 19,
-        seed_20 => 20, seed_21 => 21, seed_22 => 22, seed_23 => 23, seed_24 => 24,
-        seed_25 => 25, seed_26 => 26,
+        seed_0 => 0, seed_1 => 1, seed_2 => 2,
+        seed_3 => 3, seed_4 => 4, seed_5 => 5,
+        seed_6 => 6, seed_7 => 7, seed_8 => 8,
     ],
 }
 
@@ -84,25 +81,27 @@ fn length_case(seed: u64) -> std::result::Result<(), String> {
     LENGTH_GENERATOR.run(seed)
 }
 
-fn transition(seed: u64) -> &'static str {
-    TRANSITIONS
-        .get(usize::try_from(seed).unwrap_or(0) % TRANSITIONS.len())
-        .copied()
-        .unwrap_or("tool_result")
-}
-
-fn dialect(seed: u64) -> &'static str {
+fn prefix_dialect(seed: u64) -> &'static str {
     DIALECTS
-        .get(usize::try_from(seed / TRANSITIONS.len() as u64).unwrap_or(0) % DIALECTS.len())
+        .get(usize::try_from(seed % DIALECTS.len() as u64).unwrap_or(0))
         .copied()
         .unwrap_or("chat_completions")
 }
 
+/// Three transitions per seed: one dialect's nine transitions across three
+/// seeds, so the default suite opens nine worlds instead of twenty-seven.
+fn prefix_transitions(seed: u64) -> [&'static str; 3] {
+    let group = usize::try_from(seed / DIALECTS.len() as u64).unwrap_or(0) % 3;
+    let start = group * 3;
+    [TRANSITIONS[start], TRANSITIONS[start + 1], TRANSITIONS[start + 2]]
+}
+
 fn prefix_variants(seed: u64) -> Vec<Variant> {
-    vec![Variant::from([
-        ("transition", transition(seed)),
-        ("dialect", dialect(seed)),
-    ])]
+    let dialect = prefix_dialect(seed);
+    prefix_transitions(seed)
+        .into_iter()
+        .map(|transition| Variant::from([("transition", transition), ("dialect", dialect)]))
+        .collect()
 }
 
 fn call(seed: u64) -> (u64, &'static str) {
@@ -432,10 +431,26 @@ fn d3_service(transition: &'static str, _dialect: &'static str) -> ScriptedModel
 }
 
 fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
-    let transition = transition(seed);
-    let dialect = dialect(seed);
+    let dialect = prefix_dialect(seed);
+    let transitions = prefix_transitions(seed);
     oracle::simulate(seed, move || {
         entry(async move {
+            for transition in transitions {
+                if !prefix_case_world(seed, transition, dialect).await? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        })
+    })
+}
+
+async fn prefix_case_world(
+    seed: u64,
+    transition: &'static str,
+    dialect: &'static str,
+) -> std::result::Result<bool, String> {
+    {
             let service = d3_service(transition, dialect);
             let files = [("a.txt", "alpha\n"), ("b.txt", "beta\n")];
             let mut world = World::new(seed, &files, service).map_err(oracle::failed)?;
@@ -583,8 +598,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 _ => assert_history(&incarnation.requests, "d3-parent")?,
             }
             Ok(true)
-        })
-    })
+    }
 }
 
 struct LengthState {
