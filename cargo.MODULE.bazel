@@ -34,7 +34,7 @@ npm_archive(
     build_file_content = "filegroup(name = \"files\", srcs = glob([\"**\"], exclude = [\"BUILD.bazel\"]), visibility = [\"//visibility:public\"])\n",
 )
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-rustfmt = use_repo_rule("@rules_rust//rust:repositories.bzl", "rustfmt_toolchain_tools_repository")
+rustfmt = use_repo_rule("@rules_rust//rust/private:repositories.bzl", "rustfmt_toolchain_tools_repository")
 rustfmt(name = "pinned_rustfmt_x86_64_unknown_linux_gnu", version = "1.98.1", exec_triple = "x86_64-unknown-linux-gnu")
 rustfmt(name = "pinned_rustfmt_aarch64_apple_darwin", version = "1.98.1", exec_triple = "aarch64-apple-darwin")
 rustfmt(name = "pinned_rustfmt_x86_64_pc_windows_msvc", version = "1.98.1", exec_triple = "x86_64-pc-windows-msvc")
