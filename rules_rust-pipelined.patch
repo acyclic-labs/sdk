@@ -1,0 +1,67 @@
+diff --git a/util/process_wrapper/options.rs b/util/process_wrapper/options.rs
+index 29467a62a..d13434ac1 100644
+--- a/util/process_wrapper/options.rs
++++ b/util/process_wrapper/options.rs
+@@ -161,22 +161,35 @@ pub(crate) fn options() -> Result<Options, OptionError> {
+         .ok_or_else(|| OptionError::Generic("current directory not utf-8".to_owned()))?
+         .to_owned();
+     let output_base = {
+-        let external = std::path::Path::new(&current_dir).join("external");
+-        match std::fs::canonicalize(external) {
+-            Ok(canonical) => canonical
+-                .parent()
+-                .and_then(|p| p.to_str())
+-                .unwrap_or(&current_dir)
+-                .to_owned(),
+-            Err(_) => match std::fs::canonicalize(&current_dir) {
++        // A sandboxed action runs in <output_base>/sandbox/linux-sandbox/<id>/execroot/<workspace>.
++        // Name the real output base so ${exec_root} points at the files the action reads, not at a
++        // per-action sandbox copy: paths derived from it stay identical across the metadata and rlib
++        // actions that must produce the same crate hash.
++        let sandbox_base = std::path::Path::new(&current_dir)
++            .ancestors()
++            .find(|path| path.file_name().is_some_and(|name| name == "sandbox"))
++            .and_then(|path| path.parent())
++            .and_then(|path| path.to_str());
++        if let Some(base) = sandbox_base {
++            base.to_owned()
++        } else {
++            let external = std::path::Path::new(&current_dir).join("external");
++            match std::fs::canonicalize(external) {
+                 Ok(canonical) => canonical
+                     .parent()
+-                    .and_then(|p| p.parent())
+                     .and_then(|p| p.to_str())
+                     .unwrap_or(&current_dir)
+                     .to_owned(),
+-                Err(_) => current_dir.clone(),
+-            },
++                Err(_) => match std::fs::canonicalize(&current_dir) {
++                    Ok(canonical) => canonical
++                        .parent()
++                        .and_then(|p| p.parent())
++                        .and_then(|p| p.to_str())
++                        .unwrap_or(&current_dir)
++                        .to_owned(),
++                    Err(_) => current_dir.clone(),
++                },
++            }
+         }
+     };
+ 
+@@ -237,10 +250,11 @@ pub(crate) fn options() -> Result<Options, OptionError> {
+         //
+         // Inserting into `environment_file_block` (which subsequently
+         // overrides the inherited process env) makes this take precedence
+-        // over any stale `OUT_DIR` Bazel may have set on the action and
+-        // lets the existing `${pwd}` substitution in `environment_block`
+-        // handle the working-directory prefix.
+-        environment_file_block.insert("OUT_DIR".to_owned(), format!("${{pwd}}/{out_dir}"));
++        // over any stale `OUT_DIR` Bazel may have set on the action. Name it
++        // from the real execution root, not the per-action sandbox working
++        // directory, so the metadata and rlib actions of one crate embed the
++        // same `OUT_DIR` and therefore the same crate hash.
++        environment_file_block.insert("OUT_DIR".to_owned(), format!("${{exec_root}}/{out_dir}"));
+     }
+     let mut file_arguments = args_from_file(arg_file_raw.unwrap_or_default())?;
+     if let Some(paths) = bin_arg_file_raw {
