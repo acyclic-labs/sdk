@@ -1205,12 +1205,7 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                 for _ in 0..checks {
                     assert_eq!(
                         context
-                            .authorize(
-                                "fs:/volume/public",
-                                &[],
-                                &attributes,
-                                PolicyDecision::Allow
-                            )
+                            .authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow)
                             .map_err(|error| error.category()),
                         Ok(())
                     );

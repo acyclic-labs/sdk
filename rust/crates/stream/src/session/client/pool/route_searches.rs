@@ -263,11 +263,7 @@ fn run(mut state: State, redundant: bool) -> (Output, usize, AllocationInfo) {
         .iter_mut()
         .map(|r| {
             r.try_recv()
-                .map(|outcome| {
-                    outcome
-                        .map(|(id, _)| id)
-                        .map_err(|error| error.category())
-                })
+                .map(|outcome| outcome.map(|(id, _)| id).map_err(|error| error.category()))
                 .map_err(|error| error.to_string())
         })
         .collect();

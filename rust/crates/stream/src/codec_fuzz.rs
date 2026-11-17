@@ -347,7 +347,7 @@ pub fn check(bytes: &[u8]) -> bool {
                 records.clone(),
             ))
             .map_err(|error| error.category())
-            != Ok(records))
+                != Ok(records))
     {
         return false;
     }
@@ -448,7 +448,7 @@ fn wire_records_admitted(envelope: &crate::CommittedEnvelope) -> bool {
             encoded.clone(),
         ))
         .map_err(|error| error.category())
-        != Ok(encoded)
+            != Ok(encoded)
         {
             return false;
         }

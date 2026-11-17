@@ -164,7 +164,10 @@ async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), 
             Some(0)
         );
         assert_eq!(
-            provider.inner.tail(path("participant/child")?).await
+            provider
+                .inner
+                .tail(path("participant/child")?)
+                .await
                 .map_err(|error| error.category()),
             Err(StreamCategory::NotFound)
         );
@@ -808,7 +811,10 @@ async fn composer_cannot_fork_over_the_original_invocation_reply() -> Result<(),
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
     assert_eq!(store.load(&actor).await?.tail, snapshot.tail);
     assert_eq!(
-        provider.inner.tail(path("participant/child")?).await
+        provider
+            .inner
+            .tail(path("participant/child")?)
+            .await
             .map_err(|error| error.category()),
         Err(StreamCategory::NotFound)
     );
@@ -1110,7 +1116,10 @@ async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result
     ));
     assert_eq!(provider.calls.load(Ordering::SeqCst), before);
     assert_eq!(
-        provider.inner.tail(path("participant/child")?).await
+        provider
+            .inner
+            .tail(path("participant/child")?)
+            .await
             .map_err(|error| error.category()),
         Err(StreamCategory::NotFound)
     );

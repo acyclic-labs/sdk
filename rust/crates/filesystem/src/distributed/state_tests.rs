@@ -506,9 +506,9 @@ async fn stale_root_or_authorization_publishes_no_other_root() -> TestResult {
             FilesystemCommitOutcome::Rejected(_)
         ));
         assert_eq!(
-        provider.tail(right).await.map_err(|error| error.category()),
-        Err(StreamCategory::NotFound)
-    );
+            provider.tail(right).await.map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
+        );
         assert_eq!(provider.tail(left).await?, if stale_policy { 1 } else { 2 });
     }
     Ok(())
@@ -640,11 +640,17 @@ async fn prepared_commit_cannot_mix_or_switch_provider_owners() -> TestResult {
         FilesystemCommitOutcome::Unknown { .. }
     ));
     assert_eq!(
-        provider.tail(path.clone()).await.map_err(|error| error.category()),
+        provider
+            .tail(path.clone())
+            .await
+            .map_err(|error| error.category()),
         Err(StreamCategory::NotFound)
     );
     assert_eq!(
-        foreign_provider.tail(path).await.map_err(|error| error.category()),
+        foreign_provider
+            .tail(path)
+            .await
+            .map_err(|error| error.category()),
         Err(StreamCategory::NotFound)
     );
     Ok(())
@@ -765,9 +771,9 @@ async fn canonical_request_keeps_the_earliest_expiry_for_external_and_owned_subm
                     .await;
                 if expired {
                     assert_eq!(
-                    tail.map_err(|error| error.category()),
-                    Err(StreamCategory::NotFound)
-                );
+                        tail.map_err(|error| error.category()),
+                        Err(StreamCategory::NotFound)
+                    );
                 } else {
                     assert_eq!(tail?, 1);
                 }
@@ -1126,7 +1132,10 @@ async fn prepared_state_batches_reconcile_all_roots_and_refs_from_exact_records(
         assert!(publication.request_mut().is_none());
         assert_eq!(publication.request().effects[0].mutations.len(), count + 1);
         assert_eq!(
-            provider.tail(first.clone()).await.map_err(|error| error.category()),
+            provider
+                .tail(first.clone())
+                .await
+                .map_err(|error| error.category()),
             Err(StreamCategory::NotFound)
         );
 
@@ -1274,11 +1283,17 @@ async fn final_state_fence_refusal_preserves_original_request_and_collection_cus
         before.backend_write_operations
     );
     assert_eq!(
-        provider.tail(original_path).await.map_err(|error| error.category()),
+        provider
+            .tail(original_path)
+            .await
+            .map_err(|error| error.category()),
         Err(StreamCategory::NotFound)
     );
     assert_eq!(
-        provider.tail(staged_path).await.map_err(|error| error.category()),
+        provider
+            .tail(staged_path)
+            .await
+            .map_err(|error| error.category()),
         Err(StreamCategory::NotFound)
     );
     let mut collecting = Box::pin(collection.begin());

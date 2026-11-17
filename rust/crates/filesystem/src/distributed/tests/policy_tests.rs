@@ -84,9 +84,12 @@ async fn external_composition_policy_fence(seal: bool, changed: usize) -> TestRe
     if seal {
         assert!(matches!(outcome, CommitOutcome::Conflict(_)));
         assert_eq!(
-        provider.tail(effect).await.map_err(|error| error.category()),
-        Err(StreamCategory::NotFound)
-    );
+            provider
+                .tail(effect)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
+        );
         assert!(matches!(
             store.settle(commit, outcome, &mut work).await?,
             crate::FilesystemCommitOutcome::Rejected(_)

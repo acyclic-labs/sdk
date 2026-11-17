@@ -726,7 +726,9 @@ mod tests {
                 );
                 if let Some(projected) = projected {
                     assert_eq!(
-                        filter.preserves(projected).map_err(|error| error.category()),
+                        filter
+                            .preserves(projected)
+                            .map_err(|error| error.category()),
                         Ok(true)
                     );
                     assert_eq!(projected.sequence, record.sequence);

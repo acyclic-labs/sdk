@@ -167,7 +167,10 @@ async fn pending_durability_preserves_reads_registration_and_writer_order()
         .now_or_never()
         .ok_or(StreamError::Unavailable)??;
     assert_eq!(envelope.commit_id, initial.commit_id);
-    assert!(matches!(core.tail(path.clone()).now_or_never(), Some(Ok(1))));
+    assert!(matches!(
+        core.tail(path.clone()).now_or_never(),
+        Some(Ok(1))
+    ));
     let mut later = request(2)?;
     later.idempotency_key = IdempotencyKey::unique();
     let later = apply(&core, WriteRequest::Append(later), None, async { Ok(()) });

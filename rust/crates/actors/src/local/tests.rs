@@ -970,7 +970,13 @@ async fn foreign_soft_only_publication_commits_and_replays_after_reopen() -> Tes
         (receipt.commit_id, &receipt.skipped)
     );
     assert_eq!(reopened.tail(inbox).await?, 2);
-    assert_eq!(reopened.tail(absent).await.map_err(|error| error.category()), Err(StreamCategory::NotFound));
+    assert_eq!(
+        reopened
+            .tail(absent)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
+    );
     Ok(())
 }
 
@@ -1758,5 +1764,8 @@ fn a_provider_refusal_keeps_its_stream_code_in_the_source_chain() {
     assert_eq!(error.kind(), "unavailable");
     let source =
         std::error::Error::source(&error).and_then(|source| source.downcast_ref::<StreamError>());
-    assert_eq!(source.map(|error| error.category()), Some(StreamCategory::Unavailable));
+    assert_eq!(
+        source.map(|error| error.category()),
+        Some(StreamCategory::Unavailable)
+    );
 }

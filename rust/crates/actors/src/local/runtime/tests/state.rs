@@ -1,8 +1,8 @@
 use super::*;
-use acyclic_stream::StreamCategory;
 use crate::guest::{
     ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateHost, GuestError, Requests,
 };
+use acyclic_stream::StreamCategory;
 
 struct Flushes {
     manifest: Manifest,

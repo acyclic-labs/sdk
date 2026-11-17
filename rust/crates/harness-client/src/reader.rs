@@ -296,9 +296,7 @@ impl PartialEq for ReadIssue {
             (Self::AccessDenied, Self::AccessDenied)
             | (Self::RetentionLost, Self::RetentionLost)
             | (Self::HierarchyChanged, Self::HierarchyChanged) => true,
-            (Self::Refused(left), Self::Refused(right)) => {
-                left.category() == right.category()
-            }
+            (Self::Refused(left), Self::Refused(right)) => left.category() == right.category(),
             _ => false,
         }
     }

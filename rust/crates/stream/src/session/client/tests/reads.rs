@@ -370,7 +370,11 @@ async fn indexed_reads_share_session_credit_and_count_delivered_records() -> Tes
             before: 4,
         });
         assert_eq!(
-            client.read(request).await.err().map(|error| error.category()),
+            client
+                .read(request)
+                .await
+                .err()
+                .map(|error| error.category()),
             Some(if cancelled {
                 StreamCategory::Unavailable
             } else {

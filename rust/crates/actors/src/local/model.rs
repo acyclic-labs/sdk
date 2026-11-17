@@ -419,7 +419,12 @@ fn plans(length: usize, faults: usize) -> Vec<Vec<Fault>> {
                         next
                     })
             })
-            .filter(|plan| plan.iter().filter(|fault| !matches!(**fault, Fault::None)).count() <= faults)
+            .filter(|plan| {
+                plan.iter()
+                    .filter(|fault| !matches!(**fault, Fault::None))
+                    .count()
+                    <= faults
+            })
             .collect();
     }
     plans
