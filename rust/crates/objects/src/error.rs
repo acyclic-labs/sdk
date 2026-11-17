@@ -95,7 +95,8 @@ impl Error {
             wire::ErrorCode::MissingReference
             | wire::ErrorCode::Conflict
             | wire::ErrorCode::Suspended
-            | wire::ErrorCode::RevisionForeign => 9,
+            | wire::ErrorCode::RevisionForeign
+            | wire::ErrorCode::TerminalFence => 9,
             wire::ErrorCode::DeadlineElapsed => 4,
             wire::ErrorCode::QuotaExceeded => 8,
             wire::ErrorCode::Unsupported => 12,

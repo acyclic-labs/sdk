@@ -1,0 +1,263 @@
+//! Conditional ownership of a retained intent's terminal fence.
+//!
+//! Every fenced retain and release changes the same medium key. The original
+//! observation is consumed by the conditional commit, so a release that wins
+//! cannot be crossed by an older retain, even across independent stores.
+use super::*;
+
+const MAGIC: &[u8] = b"acyclic.objects.terminal-fence.v1\0";
+
+#[derive(Clone, Copy)]
+struct Fence {
+    terminal: Option<u64>,
+    nonce: [u8; 16],
+}
+
+impl Fence {
+    fn encode(self) -> OwnedBytes {
+        let mut bytes = Vec::with_capacity(MAGIC.len() + 25);
+        bytes.extend_from_slice(MAGIC);
+        bytes.push(u8::from(self.terminal.is_some()));
+        bytes.extend_from_slice(&self.terminal.unwrap_or_default().to_be_bytes());
+        bytes.extend_from_slice(&self.nonce);
+        bytes.into()
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let bytes = bytes.strip_prefix(MAGIC).ok_or_else(corrupt)?;
+        let [present, rest @ ..] = bytes else {
+            return Err(corrupt());
+        };
+        let (number, nonce) = rest.split_at_checked(8).ok_or_else(corrupt)?;
+        let number = u64::from_be_bytes(number.try_into().map_err(|_| corrupt())?);
+        let terminal = match present {
+            0 if number == 0 => None,
+            1 => Some(number),
+            _ => return Err(corrupt()),
+        };
+        Ok(Self {
+            terminal,
+            nonce: nonce.try_into().map_err(|_| corrupt())?,
+        })
+    }
+
+    fn require_open(self, fence: u64) -> Result<(), Error> {
+        if self.terminal.is_some_and(|terminal| fence <= terminal) {
+            return Err(ErrorCode::TerminalFence.into());
+        }
+        Ok(())
+    }
+}
+
+impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
+    fn terminal_key(&self, root: &RootId) -> String {
+        format!(
+            "{}t/{}",
+            self.state.prefix,
+            Digest::of(root.as_bytes()).to_hex()
+        )
+    }
+
+    async fn terminal_observed(&self, root: &RootId) -> Result<(Fence, Observed<'_>), Error> {
+        let key = self.terminal_key(root);
+        let mut observed = self.medium.observe(key.clone()).await.map_err(medium)?;
+        if observed.is_none() {
+            let initial = Fence {
+                terminal: None,
+                nonce: version()?,
+            };
+            self.medium
+                .create(&key, initial.encode())
+                .await
+                .map_err(moved)?;
+            observed = self.medium.observe(key).await.map_err(medium)?;
+        }
+        let observed = observed.ok_or_else(changed)?;
+        Ok((Fence::decode(&observed.bytes)?, observed))
+    }
+
+    async fn terminal_replace(
+        &self,
+        observed: Observed<'_>,
+        terminal: Option<u64>,
+    ) -> Result<bool, Error> {
+        let next = Fence {
+            terminal,
+            nonce: version()?,
+        };
+        Ok(self
+            .medium
+            .replace(observed.observation, next.encode())
+            .await
+            .map_err(moved)?
+            .is_some())
+    }
+
+    fn fenced_prefix(&self, root: &RootId) -> String {
+        format!(
+            "{}f/{}/",
+            self.state.prefix,
+            Digest::of(root.as_bytes()).to_hex()
+        )
+    }
+
+    pub(super) async fn fenced_rooted(&self) -> Result<Vec<Digest>, Error> {
+        let mut references = Vec::new();
+        let mut pages = self.pages(format!("{}f/", self.state.prefix));
+        while let Some(page) = pages.next().await? {
+            for (key, _) in page {
+                let (root, name) = key
+                    .strip_prefix(&format!("{}f/", self.state.prefix))
+                    .and_then(|key| key.split_once('/'))
+                    .ok_or_else(corrupt)?;
+                let encoded = name.split('.').next().ok_or_else(corrupt)?;
+                let fence = u64::from_str_radix(encoded, 16).map_err(|_| corrupt())?;
+                let terminal_key = format!("{}t/{root}", self.state.prefix);
+                let terminal = self
+                    .medium
+                    .read(&terminal_key, None)
+                    .await
+                    .map_err(medium)?;
+                let closed = terminal
+                    .as_ref()
+                    .map(|bytes| Fence::decode(bytes))
+                    .transpose()?
+                    .and_then(|state| state.terminal)
+                    .is_some_and(|terminal| fence <= terminal);
+                let Some(batch) = self.batch(&key).await? else {
+                    continue;
+                };
+                if closed {
+                    // A visible terminal record must be durable before its
+                    // batches or their child indexes can be removed.
+                    self.medium.flush(&[terminal_key]).await.map_err(medium)?;
+                    if self.medium.remove(&key).await.map_err(moved)? {
+                        self.medium
+                            .flush(std::slice::from_ref(&key))
+                            .await
+                            .map_err(medium)?;
+                        let tag = format!("f{root}.{name}");
+                        self.unreference(&batch, &tag).await?;
+                        let indexes: Vec<_> = batch
+                            .iter()
+                            .map(|child| self.index_key(child, &tag))
+                            .collect();
+                        self.medium.flush(&indexes).await.map_err(medium)?;
+                    }
+                } else {
+                    references.extend(batch);
+                }
+            }
+        }
+        Ok(references)
+    }
+
+    /// Retains one batch under the exact observed terminal fence.
+    pub async fn retain_fenced(
+        &self,
+        root: &RootId,
+        fence: u64,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        let references = canonical(references);
+        if references.is_empty() {
+            return Err(invalid());
+        }
+        let issued = self.issued().await?;
+        let _gate = self.state.gate.read().await;
+        let (state, observed) = self.terminal_observed(root).await?;
+        state.require_open(fence)?;
+        self.medium
+            .allocate(references.len() as u64 * 32)
+            .map_err(medium)?;
+        let batch = encode_batch(&references);
+        let name = format!("{fence:016x}.{}.{}", Digest::of(&batch).to_hex(), nonce()?);
+        let tag = format!("f{}.{name}", Digest::of(root.as_bytes()).to_hex());
+        let key = format!("{}{name}", self.fenced_prefix(root));
+        let first = references.first().ok_or_else(invalid)?;
+        let held = (std::mem::size_of::<String>() + self.index_key(first, &tag).len()) as u64
+            * references.len() as u64;
+        self.medium.allocate(held).map_err(medium)?;
+        self.medium
+            .reserve_writes(2 * references.len() as u64 + 4)
+            .map_err(medium)?;
+        match self.commit_batch(&references, &tag, &key, batch).await {
+            Ok(()) => {}
+            Err(Commit::Unknown(error) | Commit::Unflushed(error)) => return Err(error),
+            Err(Commit::Failed(error)) => {
+                self.unreference(&references, &tag).await?;
+                return Err(error);
+            }
+        }
+        if !self.terminal_replace(observed, state.terminal).await? {
+            self.medium.remove(&key).await.map_err(moved)?;
+            self.unreference(&references, &tag).await?;
+            let (current, _) = self.terminal_observed(root).await?;
+            current.require_open(fence)?;
+            return Err(changed());
+        }
+        self.medium
+            .flush(&[self.terminal_key(root)])
+            .await
+            .map_err(medium)?;
+        let (current, _) = self.terminal_observed(root).await?;
+        if let Err(error) = current.require_open(fence) {
+            self.medium.remove(&key).await.map_err(moved)?;
+            self.unreference(&references, &tag).await?;
+            return Err(error);
+        }
+        Ok(Retained {
+            references: references.len() as u64,
+            revision: Some(issued.commit()),
+        })
+    }
+
+    /// Commits a terminal fence before releasing its retained batches.
+    pub async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
+        let issued = self.issued().await?;
+        let _gate = self.state.gate.read().await;
+        let (state, observed) = self.terminal_observed(root).await?;
+        if state.terminal.is_none_or(|current| fence > current)
+            && !self.terminal_replace(observed, Some(fence)).await?
+        {
+            return Err(changed());
+        }
+        self.medium
+            .flush(&[self.terminal_key(root)])
+            .await
+            .map_err(medium)?;
+        let root_hash = Digest::of(root.as_bytes()).to_hex();
+        let mut pages = self.pages(self.fenced_prefix(root));
+        let mut existed = false;
+        while let Some(page) = pages.next().await? {
+            for (key, _) in page {
+                let name = key.rsplit('/').next().ok_or_else(corrupt)?;
+                let encoded_fence = name.split('.').next().ok_or_else(corrupt)?;
+                let batch_fence = u64::from_str_radix(encoded_fence, 16).map_err(|_| corrupt())?;
+                if batch_fence > fence {
+                    continue;
+                }
+                if let Some(references) = self.batch(&key).await? {
+                    if self.medium.remove(&key).await.map_err(moved)? {
+                        existed = true;
+                        self.medium
+                            .flush(std::slice::from_ref(&key))
+                            .await
+                            .map_err(medium)?;
+                        let tag = format!("f{root_hash}.{name}");
+                        self.unreference(&references, &tag).await?;
+                        let indexes: Vec<_> = references
+                            .iter()
+                            .map(|child| self.index_key(child, &tag))
+                            .collect();
+                        self.medium.flush(&indexes).await.map_err(medium)?;
+                    }
+                }
+            }
+        }
+        Ok(Released {
+            existed,
+            revision: Some(issued.commit()),
+        })
+    }
+}

@@ -71,6 +71,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 mod read;
+mod terminal;
 
 const PAGE: usize = 1000;
 
@@ -768,6 +769,16 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 repaired.push(key);
             }
         }
+        let mut pages = self.pages(format!("{}f/", self.state.prefix));
+        while let Some(page) = pages.next().await? {
+            for (key, _) in page {
+                if !self.batch_survived(&key, &blobs).await? {
+                    self.medium.remove(&key).await.map_err(medium)?;
+                    repaired.push(key);
+                }
+            }
+        }
+        self.fenced_rooted().await?;
         Ok(repaired)
     }
 
@@ -786,11 +797,13 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             Err(error) if error.code == ErrorCode::Corrupt => return Ok(false),
             Err(error) => return Err(error),
         };
-        let (root, name) = key
-            .strip_prefix(&format!("{}r/", self.state.prefix))
+        let (kind, rest) = key
+            .strip_prefix(&self.state.prefix)
             .and_then(|rest| rest.split_once('/'))
+            .filter(|(kind, _)| matches!(*kind, "r" | "f"))
             .ok_or_else(corrupt)?;
-        let tag = format!("r{root}.{name}");
+        let (root, name) = rest.split_once('/').ok_or_else(corrupt)?;
+        let tag = format!("{kind}{root}.{name}");
         for member in &members {
             if !blobs.contains_key(member)
                 || self
@@ -1523,6 +1536,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 .map_err(suspended)?;
             references.extend(batch);
         }
+        references.extend(self.fenced_rooted().await.map_err(suspended)?);
         Ok(references)
     }
 

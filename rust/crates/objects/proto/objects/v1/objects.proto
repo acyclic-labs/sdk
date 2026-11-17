@@ -215,6 +215,8 @@ enum ErrorCode {
   ERROR_CODE_REVISION_FOREIGN = 14;
   // The call deadline elapsed before its minimum revision applied.
   ERROR_CODE_DEADLINE_ELAPSED = 15;
+  // The retained intent was terminally released at or above this fence.
+  ERROR_CODE_TERMINAL_FENCE = 16;
 }
 // Customer diagnostic identity; operator topology stays in protected evidence.
 message ErrorDetail {

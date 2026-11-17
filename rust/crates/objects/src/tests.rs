@@ -1450,6 +1450,57 @@ async fn a_release_never_unpins_a_concurrent_equal_retain() -> Result<(), Box<dy
     Ok(())
 }
 
+/// Two independently opened stores race a terminal release with a retain
+/// parked after reading its original fence, before it can commit its batch.
+#[tokio::test]
+async fn a_terminal_release_fences_a_delayed_retain() -> Result<(), Box<dyn std::error::Error>> {
+    for fence in [0_u64, 1, u64::MAX - 1] {
+        let medium = Shared::default();
+        let retaining = Store::new(medium.clone()).account(b"terminal-account")?;
+        let releasing = Store::new(medium.clone()).account(b"terminal-account")?;
+        let digest = retaining
+            .put(vec![7; 32].into(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("unknown put")?
+            .digest;
+        let root = RootId::new(b"accepted-intent".to_vec())?;
+        let (mut reached, resume) = medium.park("read", "/t/");
+        let pending = retaining.retain_fenced(&root, fence, vec![digest]);
+        tokio::pin!(pending);
+        drive_to_park(pending.as_mut(), &mut reached).await;
+        releasing.release_terminal(&root, fence).await?;
+        resume
+            .send(())
+            .map_err(|()| "retain lost its original cut")?;
+        assert_eq!(
+            pending.await.map_err(|error| error.code),
+            Err(ErrorCode::TerminalFence)
+        );
+        assert_eq!(
+            retaining
+                .retain_fenced(&root, fence, vec![digest])
+                .await
+                .map_err(|error| error.code),
+            Err(ErrorCode::TerminalFence)
+        );
+        if fence > 0 {
+            assert_eq!(
+                retaining
+                    .retain_fenced(&root, fence - 1, vec![digest])
+                    .await
+                    .map_err(|error| error.code),
+                Err(ErrorCode::TerminalFence)
+            );
+        }
+        retaining
+            .retain_fenced(&root, fence + 1, vec![digest])
+            .await?;
+        assert_eq!(retaining.delete(digest).await?.outcome, Delete::Referenced);
+    }
+    Ok(())
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 async fn a_delete_never_removes_a_writers_pending_reference()
