@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,13 +11,13 @@ import { pathToFileURL } from "node:url";
 function fixture({ module = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "bazel-build-files-"));
   mkdirSync(join(root, "scripts"));
-  cpSync("scripts/bazel-build-files.mjs", join(root, "scripts/bazel-build-files.mjs"), {dereference: true});
-  cpSync("scripts/bazel-executables.mjs", join(root, "scripts/bazel-executables.mjs"), {dereference: true});
-  cpSync("scripts/check-bazel-lockfile.mjs", join(root, "scripts/check-bazel-lockfile.mjs"), {dereference: true});
-  cpSync("scripts/policy-core.mjs", join(root, "scripts/policy-core.mjs"), {dereference: true});
-  cpSync("scripts/workspace-model.mjs", join(root, "scripts/workspace-model.mjs"), {dereference: true});
+  writeFileSync(join(root, "scripts/bazel-build-files.mjs"), readFileSync("scripts/bazel-build-files.mjs"));
+  writeFileSync(join(root, "scripts/bazel-executables.mjs"), readFileSync("scripts/bazel-executables.mjs"));
+  writeFileSync(join(root, "scripts/check-bazel-lockfile.mjs"), readFileSync("scripts/check-bazel-lockfile.mjs"));
+  writeFileSync(join(root, "scripts/policy-core.mjs"), readFileSync("scripts/policy-core.mjs"));
+  writeFileSync(join(root, "scripts/workspace-model.mjs"), readFileSync("scripts/workspace-model.mjs"));
   if (module) writeFileSync(join(root, "MODULE.bazel"), 'module(name = "fixture")\n');
-  cpSync("rust-toolchain.toml", join(root, "rust-toolchain.toml"), {dereference: true});
+  writeFileSync(join(root, "rust-toolchain.toml"), readFileSync("rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));
   writeFileSync(join(root, ".cargo/config.toml"), '[target.x86_64-unknown-linux-gnu]\nlinker = "scripts/mold-linker.sh"\n\n[env]\n');
   writeFileSync(join(root, "scripts/mold-linker.sh"), "#!/bin/sh\n");
