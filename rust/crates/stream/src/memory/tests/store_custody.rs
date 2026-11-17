@@ -100,3 +100,65 @@ async fn kept_request_bytes_funded_by_their_caller_leave_the_callers_ledger() ->
     assert_eq!(records[0].origin.as_str(), "custody/body");
     Ok(())
 }
+
+// A body the store already funds is shared when another write retains it, so
+// the second write does not copy the whole payload or reserve it again.
+#[tokio::test]
+async fn a_landed_body_is_shared_when_appended_again() -> TestResult<()> {
+    let provider = MemoryStream::default();
+    let capacity = Arc::clone(&provider.capacity);
+    let source = path("custody/shared/source")?;
+    let destination = path("custody/shared/destination")?;
+    let body = Bytes::from(vec![7_u8; 64 * 1024]);
+    let body_len = body.len() as u64;
+    let writer = Arc::new(Meter::default());
+    provider
+        .native_append(
+            AppendRequest {
+                path: source.clone(),
+                records: vec![AppendRecord {
+                    value: body,
+                    headers: Default::default(),
+                }],
+                if_tail: Some(0),
+                idempotency_key: crate::IdempotencyKey::unique(),
+            },
+            writer.original(),
+        )
+        .await??;
+    let record = provider
+        .read(ReadRequest {
+            key: None,
+            path: source,
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .next()
+        .ok_or("the landed record is absent")??;
+    let before = capacity.held();
+    let writer = Arc::new(Meter::default());
+    provider
+        .native_append(
+            AppendRequest {
+                path: destination,
+                records: vec![AppendRecord {
+                    value: record.value,
+                    headers: record.headers,
+                }],
+                if_tail: Some(0),
+                idempotency_key: crate::IdempotencyKey::unique(),
+            },
+            writer.original(),
+        )
+        .await??;
+    assert!(
+        capacity.held().saturating_sub(before) < body_len,
+        "appending a store-funded body copied its payload again"
+    );
+    Ok(())
+}

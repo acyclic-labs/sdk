@@ -42,6 +42,10 @@ pub trait NativeReadMeter: Send + Sync {
     fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> {
         None
     }
+    /// The store capacity that currently owns this meter's retained bytes.
+    fn store_capacity(&self) -> Option<Arc<NativeCapacity>> {
+        None
+    }
     /// Withholds a concrete request's possible operations without inventing spent work; allowance remains unavailable to reentrant callbacks.
     fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> io::Result<()>;
     /// Refunds only a request token's unused withheld allowance.

@@ -420,8 +420,12 @@ impl OwnedBytes {
     /// funds are copied once, so whoever keeps them pays for them; unmetered
     /// bytes and bytes `meter` already funds are shared without a copy.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn bind_native(&self, meter: &Arc<dyn NativeReadMeter>) -> io::Result<Self> {
-        if self.data.meter().is_none() || self.matches_meter(meter) {
+    pub(crate) fn bind_native(
+        &self,
+        meter: &Arc<dyn NativeReadMeter>,
+        store: &Arc<acyclic_native_runtime::NativeCapacity>,
+    ) -> io::Result<Self> {
+        if self.data.meter().is_none() || self.matches_meter(meter) || self.matches_store(store) {
             return Ok(self.clone());
         }
         let length = self.len();
@@ -442,6 +446,14 @@ impl OwnedBytes {
             PreparedOwnedBytesError::Admission(error) => error,
             PreparedOwnedBytesError::NotFullyInitialized => io::ErrorKind::InvalidData.into(),
         })
+    }
+    /// Whether these bytes are already funded by `store`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn matches_store(&self, store: &Arc<acyclic_native_runtime::NativeCapacity>) -> bool {
+        self.data
+            .meter()
+            .and_then(|meter| meter.store_capacity())
+            .is_some_and(|capacity| Arc::ptr_eq(&capacity, store))
     }
     /// Compares the original allocation-owner identity.
     #[cfg(not(target_arch = "wasm32"))]

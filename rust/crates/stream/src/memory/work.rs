@@ -187,7 +187,10 @@ impl MemoryStream {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             return work
-                .record(key.0.bind_native(self.allocation_meter(work)))
+                .record(
+                    key.0
+                        .bind_native(self.allocation_meter(work), &self.capacity),
+                )
                 .map(IdempotencyKey);
         }
         Ok(key.clone())
@@ -203,7 +206,7 @@ impl MemoryStream {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             let meter = self.allocation_meter(work);
-            *_value = work.record(_value.bind_native(meter))?;
+            *_value = work.record(_value.bind_native(meter, &self.capacity))?;
             *_headers = work.record(_headers.bind_native(meter))?;
         }
         Ok(())

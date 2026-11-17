@@ -219,6 +219,12 @@ impl Drop for CustodyTransfer {
 }
 
 impl NativeReadMeter for NativeCustody {
+    fn store_capacity(&self) -> Option<Arc<NativeCapacity>> {
+        match &self.lock().holder {
+            Holder::Store(capacity) => Some(Arc::clone(capacity)),
+            Holder::Invocation { .. } => None,
+        }
+    }
     fn check(&self) -> io::Result<()> {
         match &self.lock().holder {
             Holder::Invocation { meter, .. } => meter.check(),
