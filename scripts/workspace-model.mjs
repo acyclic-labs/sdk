@@ -307,6 +307,18 @@ function uniqueDependency(owner, declaration, matches) {
   return matches[0];
 }
 
+function applyRequests(add, enabled, dependency, declaration, features) {
+  for (const feature of declaration.features) add(enabled, feature);
+  if (declaration.uses_default_features && Object.hasOwn(dependency.features, 'default')) add(enabled, 'default');
+  for (const feature of forwardedFeatures(features, declaration.rename ?? declaration.name)) add(enabled, feature);
+}
+
+function recordRegistryRequests(input, declaration, features) {
+  for (const feature of declaration.features) input.features.add(feature);
+  for (const feature of forwardedFeatures(features, declaration.rename ?? declaration.name)) input.features.add(feature);
+  input.defaultFeatures ||= declaration.uses_default_features;
+}
+
 // Inputs to crate_universe come from the current Cargo lock and declarations.
 // The resolved features themselves remain crate_universe's responsibility.
 export function registryInputs(root) {
@@ -327,19 +339,15 @@ export function registryInputs(root) {
         for (const d of p.dependencies) {
           if ((d.kind === 'dev' && !p.workspace_member) || !targetMatches(d.target, triple) ||
               !dependencyEnabled(features, d)) continue;
-          const requested = [...d.features, ...forwardedFeatures(features, d.rename ?? d.name)];
           if (d.resolved_path) {
             const dep = local.find(x => path.dirname(x.manifest_path) === d.resolved_path);
             if (!dep) throw Error(`${p.name}: missing path dependency ${d.name}`);
             add(reachable, dep.id);
-            const target = enabled.get(dep.id);
-            for (const feature of requested) add(target, feature);
-            if (d.uses_default_features && Object.hasOwn(dep.features, 'default')) add(target, 'default');
+            applyRequests(add, enabled.get(dep.id), dep, d, features);
           } else {
             const input = uniqueDependency(p, d, lockedCandidates(candidates, d, locked));
             inputs.add(input);
-            for (const feature of requested) input.features.add(feature);
-            input.defaultFeatures ||= d.uses_default_features;
+            recordRegistryRequests(input, d, features);
           }
         }
       }
@@ -435,16 +443,12 @@ export function workspaceBrowserGraph(root, selections) {
           addEdge(alias.replaceAll('-', '_'), dep, d.kind, d.target);
           if (d.kind !== null) continue;
           add(reachable, dep.id);
-          const requestedFeatures = [...d.features, ...forwardedFeatures(features, alias)];
           if (dep.source) {
             const input = registryInputs.get(dep.id) ?? {features:new Set(), defaultFeatures:false};
-            for (const feature of requestedFeatures) input.features.add(feature);
-            input.defaultFeatures ||= d.uses_default_features;
+            recordRegistryRequests(input, d, features);
             registryInputs.set(dep.id, input);
           } else {
-            const requested = enabled.get(dep.id);
-            for (const feature of requestedFeatures) add(requested, feature);
-            if (d.uses_default_features && Object.hasOwn(dep.features, 'default')) add(requested, 'default');
+            applyRequests(add, enabled.get(dep.id), dep, d, features);
           }
         }
       }
@@ -477,10 +481,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourc
       for (const feature of features) for (const next of p.features[feature] ?? []) add(features, next);
       for (const d of p.dependencies.filter(d => (d.kind !== 'dev' || p.workspace_member) && matches(d.target) && active(p, d) && d.resolved_path)) {
         const dependency = local.find(x => path.dirname(x.manifest_path) === d.resolved_path);
-        const target = enabled.get(dependency.id), alias = d.rename ?? d.name;
-        for (const feature of d.features) add(target, feature);
-        if (d.uses_default_features && Object.hasOwn(dependency.features, 'default')) add(target, 'default');
-        for (const feature of forwardedFeatures(features, alias)) add(target, feature);
+        applyRequests(add, enabled.get(dependency.id), dependency, d, features);
       }
     }
   });
