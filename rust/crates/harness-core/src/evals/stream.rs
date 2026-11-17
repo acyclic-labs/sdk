@@ -374,7 +374,7 @@ fn stream_error(error: acyclic_stream::StreamError) -> DemandError {
         }
         StreamError::Unsupported => DemandError::NativeWorkUnavailable,
         error => DemandError::Io(std::io::Error::new(
-            if error == StreamError::AccessDenied {
+            if error.category() == acyclic_stream::StreamCategory::AccessDenied {
                 std::io::ErrorKind::PermissionDenied
             } else {
                 std::io::ErrorKind::Other
