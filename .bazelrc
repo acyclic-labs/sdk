@@ -15,6 +15,10 @@ build --verbose_failures
 # a C++ -sys crate (libfuzzer-sys) importing CRT symbols no static link provides. Toolchains without the
 # feature ignore it.
 build --features=static_link_msvcrt
+# Every Rust compile runs through clippy-driver, so lints are part of compilation and no separate
+# clippy aspect type-checks the same tree again.
+build --@rules_rust//rust/settings:clippy_driver
+build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
 test --test_output=errors
 # `--config=check` is `cargo check`: each requested crate is type-checked to its metadata, with no code
 # generation or link for it. Its dependencies are their ordinary outputs, shared with every other build.
