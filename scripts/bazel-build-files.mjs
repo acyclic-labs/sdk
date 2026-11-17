@@ -174,6 +174,7 @@ const wasmGenerated = wasmSelections.map(selection => {
     entry: wasmArtifacts.get(selection.packageName),
   };
 });
+const wasmGeneratedTarget = name => `//:wasm_${name}_generated`;
 const wasmNodeModulesTarget = name => `//:wasm_${name}_node_modules`;
 const workspaceTargetName = name => `workspace_${name.replaceAll("@", "").replaceAll("/", "_").replaceAll("-", "_")}`;
 const starlarkDict = entries => `{\n${entries.map(([key, value]) => `        ${q(key)}: ${q(value)},\n`).join("")}    }`;
@@ -723,7 +724,7 @@ function buildFile(p) {
       : {};
     const reads = runtimeData(target);
     const consumer = wasmTestConsumers[p.name];
-    if (consumer) reads.push(wasmNodeModulesTarget(consumer));
+    if (consumer) reads.push(wasmGeneratedTarget(consumer), wasmNodeModulesTarget(consumer));
     test(target.name, separate(target), reads, binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`);
   }
   for (const example of executables.filter(t => t.kind.includes("example") && !t.test)) {
@@ -1103,17 +1104,13 @@ const wasmGeneratedRules = wasmGenerated.map(g => rule("wasm_package", [
   ["visibility", q(["//visibility:public"])],
 ])).join("\n");
 const wasmNodeModulesRules = wasmSelections.filter(selection => selection.wasmPackage).map(selection => {
-  const generated = wasmGenerated.find(g => g.name === `wasm_${selection.name}_generated`);
   const deps = wasmNodeModules.get(selection.name) ?? [];
   const filegroups = deps.map(dep => rule("filegroup", [
     ["name", q(workspaceTargetName(dep.name))],
     ["srcs", `glob(${q([`${dep.dir}/**`])})`],
     ["visibility", q(["//visibility:public"])],
   ])).join("\n");
-  const packages = [
-    ...deps.map(dep => [`:${workspaceTargetName(dep.name)}`, `${dep.name}=${dep.dir}`]),
-    [`:${generated.name}`, `${selection.wasmPackage}=${generated.outDir}`],
-  ];
+  const packages = deps.map(dep => [`:${workspaceTargetName(dep.name)}`, `${dep.name}=${dep.dir}`]);
   return `${filegroups}\n${rule("node_modules", [
     ["name", q(`wasm_${selection.name}_node_modules`)],
     ["packages", starlarkDict(packages)],

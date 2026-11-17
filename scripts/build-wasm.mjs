@@ -27,7 +27,7 @@ export const wasmPackages = {
   auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm" },
   actors: { family: true },
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
-  stream: { family: true },
+  stream: { family: true, wasmPackage: "@acyclic/stream-wasm" },
   objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
   manifest: { cargo: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers" },
   machines: {
@@ -48,15 +48,15 @@ export const wasmPackages = {
 export function wasmSelection(name) {
   const entry = wasmPackages[name];
   if (!entry.family) {
-    const { cargo: selection, artifact, outName = artifact, postprocess, targetDirectory } = entry;
-    return { selection, artifact, outName, postprocess, targetDirectory };
+    const { cargo: selection, artifact, outName = artifact, postprocess, targetDirectory, wasmPackage } = entry;
+    return { selection, artifact, outName, postprocess, targetDirectory, wasmPackage };
   }
   const family = nativeFamily(name);
   const { artifact, outName, targetDirectory } = family.wasm;
   const selection = ["-p", family.wasmPackageName,
     ...(family.wasm.noDefaultFeatures ? ["--no-default-features"] : []),
     ...(family.wasm.features.length ? ["--features", family.wasm.features.join(",")] : [])];
-  return { selection, artifact, outName, targetDirectory, family };
+  return { selection, artifact, outName, targetDirectory, family, wasmPackage: entry.wasmPackage };
 }
 
 const packages = wasmPackages;
@@ -120,7 +120,7 @@ async function buildWasm() {
   if (!grouped) run(process.execPath, [join(root, "scripts/generate.mjs"), ...(packageArgument ? [packageArgument === "manifest" ? "workers" : packageArgument] : [])]);
 
   for (const name of targets) {
-    const { selection, artifact, outName, postprocess, targetDirectory, family } = wasmSelection(name);
+    const { selection, artifact, outName, postprocess, targetDirectory, family, wasmPackage } = wasmSelection(name);
     let producer, source, revision;
     if (family) {
       const { createNativeProducer } = await import("./build-native-family.mjs");
@@ -166,7 +166,13 @@ async function buildWasm() {
       const module = resolve(target, "wasm32-unknown-unknown", profileDirectory, `${artifact}.wasm`);
       const bindings = resolve(target, "wasm-bindgen", name);
       const stamp = `${bindings}.sha256`;
-      const key = createHash("sha256").update(script).update(expectedVersion).update(readFileSync(module)).digest("hex");
+      // A published wasm package re-exports its bindings and names its module URL, so the
+      // package's entry point is part of the cached output and of the key that admits it.
+      const index = wasmPackage ? {
+        js: `export { default } from "./${outName}.js";\nexport * from "./${outName}.js";\nexport const wasmUrl = new URL("./${outName}_bg.wasm", import.meta.url);\n`,
+        dts: `export { default } from "./${outName}.js";\nexport * from "./${outName}.js";\nexport const wasmUrl: URL;\n`,
+      } : undefined;
+      const key = createHash("sha256").update(script).update(expectedVersion).update(readFileSync(module)).update(index?.js ?? "").update(index?.dts ?? "").digest("hex");
       if (!existsSync(stamp) || readFileSync(stamp, "utf8") !== key) {
         for (const stale of [stamp, bindings]) rmSync(stale, { recursive: true, force: true });
         run(wasmBindgen, [
@@ -174,6 +180,10 @@ async function buildWasm() {
           "--remove-name-section", "--remove-producers-section",
         ]);
         postprocess?.(bindings);
+        if (index) {
+          writeFileSync(resolve(bindings, "index.js"), index.js);
+          writeFileSync(resolve(bindings, "index.d.ts"), index.dts);
+        }
         writeFileSync(stamp, key);
       }
       const artifacts = copyWasmArtifacts(bindings, output);

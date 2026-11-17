@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { producer } from "../../objects/test/refusal.fuzz.mjs";
 import { HeadsRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
-import init, { WasmSession, grpcErrorCode, wasmUrl } from "@acyclic/stream-wasm";
+import init, { WasmSession, grpcErrorCode, wasmUrl } from "../generated/wasm/index.js";
 
 let ready;
 async function initialize() {

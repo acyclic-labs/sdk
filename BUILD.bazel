@@ -153,7 +153,6 @@ node_modules(
     packages = {
         ":workspace_acyclic_labs_core": "@acyclic-labs/core=typescript/packages/core",
         ":workspace_acyclic_labs_auth": "@acyclic-labs/auth=typescript/packages/auth",
-        ":wasm_stream_generated": "@acyclic/stream-wasm=typescript/packages/stream/generated/wasm",
     },
     visibility = ["//visibility:public"],
 )

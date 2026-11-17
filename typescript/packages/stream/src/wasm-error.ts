@@ -1,4 +1,4 @@
-import { is_stream_error_code, type StreamErrorCode } from "@acyclic/stream-wasm";
+import { is_stream_error_code, type StreamErrorCode } from "../generated/wasm/index.js";
 import { StreamError, type StreamFailureCode, type StreamRefusal } from "./types.js";
 
 export function streamError(error: unknown, operation: string): Error {

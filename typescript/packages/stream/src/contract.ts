@@ -1,6 +1,6 @@
 import { HeadProjection, ReadOrder, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence, wasmUrl as streamWasmUrl } from "@acyclic/stream-wasm";
+import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence, wasmUrl as streamWasmUrl } from "../generated/wasm/index.js";
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitEffectSchema, CommitMutationSchema, CommitRequestSchema,
@@ -359,7 +359,7 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
 }
 
 // Resource spelling stays in the same Rust codec as node admission.
-export { streamResource, streamResourcePath } from "@acyclic/stream-wasm";
+export { streamResource, streamResourcePath } from "../generated/wasm/index.js";
 
 /** Preserve initial absence policy at every provider boundary. */
 export function wireWhenAbsent(value: "not_found" | "wait" | undefined): WhenAbsent {

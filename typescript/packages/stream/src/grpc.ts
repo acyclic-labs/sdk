@@ -14,7 +14,7 @@ import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/c
 import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
-import { grpcStatusError, projectMemoryResponse } from "@acyclic/stream-wasm";
+import { grpcStatusError, projectMemoryResponse } from "../generated/wasm/index.js";
 import { validateAppend } from "./client.js";
 import { encodeHttpRequest, normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamRefusal } from "./types.js";

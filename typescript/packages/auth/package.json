@@ -47,7 +47,6 @@
     },
     "./proto": {
       "types": "./generated/proto/auth/v1/auth_pb.d.ts",
-      "bun": "./src/proto.ts",
       "default": "./generated/proto/auth/v1/auth_pb.js"
     },
     "./guest-admission": {

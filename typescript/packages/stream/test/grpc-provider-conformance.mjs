@@ -20,7 +20,7 @@ const { idempotencyKey, commitId, StreamError } = await import(installed ? pathT
 const { ensureStreamWasm, streamResourcePath } = await import(new URL("dist/contract.js", packageUrl).href);
 const { openWasmCursor } = await import(new URL("dist/wasm-records.js", packageUrl).href);
 const { recordsFromFrames } = await import(new URL("dist/record.js", packageUrl).href);
-const { WasmStream } = await import("@acyclic/stream-wasm");
+const { WasmStream } = await import(new URL("generated/wasm/index.js", packageUrl).href);
 const { Codec, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, FollowRequestSchema, StreamService } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/proto")).href : new URL("../generated/proto/stream/v1/stream_pb.js", import.meta.url).href);
 const sessionWire = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/session/proto")).href : new URL("../generated/proto/stream/v1/session_pb.js", import.meta.url).href);
 

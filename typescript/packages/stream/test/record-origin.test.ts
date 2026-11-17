@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
 import { RecordSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
-import { decodeHttpResponse } from "@acyclic/stream-wasm";
+import { decodeHttpResponse } from "../generated/wasm/index.js";
 import { checkedRecord } from "../src/record.js";
 import { MemoryStreamProvider } from "../src/memory.js";
 import { StreamSessions } from "../src/session.js";

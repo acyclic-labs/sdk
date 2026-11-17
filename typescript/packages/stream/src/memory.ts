@@ -1,7 +1,7 @@
 import { wireWhenAbsent } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { projectMemoryResponse, WasmStream } from "@acyclic/stream-wasm";
+import { projectMemoryResponse, WasmStream } from "../generated/wasm/index.js";
 import {
   TailResponseSchema, FollowRequestSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";

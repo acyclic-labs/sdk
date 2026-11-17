@@ -1,7 +1,7 @@
 import { validateWireRequest, wireWhenAbsent } from "./contract.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
-import { projectMemoryResponse, WasmSession, type WasmProviderRequest, type WasmApplicationDelivery } from "@acyclic/stream-wasm";
+import { projectMemoryResponse, WasmSession, type WasmProviderRequest, type WasmApplicationDelivery } from "../generated/wasm/index.js";
 import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { RevisionSchema } from "../generated/proto/stream/v1/stream_pb.js";

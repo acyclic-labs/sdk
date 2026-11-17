@@ -23,8 +23,8 @@ if (process.versions.bun) {
 }
 const { GrpcStreamProvider } = await import("../src/grpc.js");
 const { StreamError } = await import("../src/types.js");
-const { streamErrorCodes, publicHttpErrorCode } = await import("@acyclic/stream-wasm");
-import type { StreamErrorCode } from "@acyclic/stream-wasm";
+const { streamErrorCodes, publicHttpErrorCode } = await import("../generated/wasm/index.js");
+import type { StreamErrorCode } from "../generated/wasm/index.js";
 
 // Independent wire oracle; its completeness is checked against Rust's ALL,
 // not against another hand-maintained JavaScript code inventory.

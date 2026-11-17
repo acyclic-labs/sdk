@@ -48,6 +48,8 @@ rust_test(
         "//:typescript/packages/stream/test/session-model-driver.ts",
         "//:typescript/packages/stream/test/session-queue-model-driver.ts",
         "//:typescript/packages/stream/test/session-queue-work-driver.ts",
+        "//:typescript/packages/stream/test/wasm-runfiles-plugin.mjs",
+        "//:wasm_stream_generated",
         "//:wasm_stream_node_modules",
     ],
     tags = ["manual"],

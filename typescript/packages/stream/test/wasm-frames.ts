@@ -1,5 +1,5 @@
 import { openWasmCursor } from "../src/wasm-records.js";
-import type { WasmProviderRequest } from "@acyclic/stream-wasm";
+import type { WasmProviderRequest } from "../generated/wasm/index.js";
 
 /** Consume the actual Rust request owner rather than emulate its selected cut. */
 export const openCursor = (request: WasmProviderRequest, signal = new AbortController().signal) =>
