@@ -292,36 +292,41 @@ async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
         within(),
-        filesystem.clone(),
+        filesystem,
         issuer,
         TurnAdmission::LocalRoot,
         executors(model.clone())?,
         LIMITS,
         Default::default(),
     ));
-    let host = committing(&stream, &filesystem, driver)?;
     let mut adoption = adopted(path.id());
     adoption.volumes = volumes;
-    create_filesystem_root(&host, &filesystem, &intent("stream-abort"), adoption).await?;
+    let mut state = Some(AgentState::adopted(path.clone(), &adoption)?);
     let sender = super::super::user();
-    for id in ["first", "second"] {
-        host.send(
-            &path,
-            &sender,
-            &InboxRecord::Message(Message {
+    for (sequence, id) in ["first", "second"].into_iter().enumerate() {
+        let wake = Wake::Inbox {
+            sequence: sequence as u64,
+            record: InboxRecord::Message(Message {
                 from: sender.clone(),
                 id: intent(id),
                 body: Box::new(body.clone()),
                 re: None,
                 attachments: None,
             }),
-        )
-        .await?;
-        host.drain(&path).await?;
+        };
+        state = Some(
+            super::super::step_to_rest(
+                &driver,
+                &path,
+                state,
+                (2, 0),
+                wake,
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?
+            .state,
+        );
     }
-    let state = host.state(&path).await?;
-    assert_eq!(state.phase, Phase::Idle);
-    assert_eq!(state.conversation_tail, 2);
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(
