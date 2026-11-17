@@ -195,9 +195,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 },
             )
             .await?;
-        let mut retained = convert::retained(&reply);
-        retained.revision = revision;
-        Ok(retained)
+        Ok(convert::retained(&reply, revision))
     }
 
     async fn release(&self, root: &RootId) -> Result<Released, Error> {
@@ -231,9 +229,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 },
             )
             .await?;
-        let mut retained = convert::retained(&reply);
-        retained.revision = revision;
-        Ok(retained)
+        Ok(convert::retained(&reply, revision))
     }
 
     async fn release_terminal(&self, root: &RootId, fence: u64) -> Result<Released, Error> {
@@ -254,9 +250,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
 
     async fn collect(&self) -> Result<Collection, Error> {
         let (reply, revision) = self.call("blobs/collect", wire::CollectRequest {}).await?;
-        let mut collection = convert::collection(&reply);
-        collection.revision = revision;
-        Ok(collection)
+        Ok(convert::collection(&reply, revision))
     }
 
     async fn usage(&self) -> Result<Usage, Error> {

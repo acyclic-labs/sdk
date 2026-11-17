@@ -446,9 +446,7 @@ impl Blobs for GrpcObjects {
                 },
                 None
             )?;
-            let mut retained = convert::retained(&reply.0);
-            retained.revision = reply.1;
-            Ok(retained)
+            Ok(convert::retained(&reply.0, reply.1))
         })
         .await
     }
@@ -488,9 +486,7 @@ impl Blobs for GrpcObjects {
                 },
                 None
             )?;
-            let mut retained = convert::retained(&reply.0);
-            retained.revision = reply.1;
-            Ok(retained)
+            Ok(convert::retained(&reply.0, reply.1))
         })
         .await
     }
@@ -522,9 +518,7 @@ impl Blobs for GrpcObjects {
                 wire::CollectRequest {},
                 self.transfer_timeout
             )?;
-            let mut collection = convert::collection(&reply.0);
-            collection.revision = reply.1;
-            Ok(collection)
+            Ok(convert::collection(&reply.0, reply.1))
         })
         .await
     }

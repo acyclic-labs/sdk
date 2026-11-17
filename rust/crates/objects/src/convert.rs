@@ -248,20 +248,26 @@ pub(crate) fn wire_page(value: &Page) -> wire::ListBlobsResponse {
     }
 }
 
-pub(crate) fn retained(value: &wire::RetainResponse) -> Retained {
+pub(crate) fn retained(
+    value: &wire::RetainResponse,
+    revision: Option<acyclic_stream::Revision>,
+) -> Retained {
     Retained {
         references: value.references,
-        revision: None,
+        revision,
     }
 }
 
-pub(crate) fn collection(value: &wire::CollectResponse) -> Collection {
+pub(crate) fn collection(
+    value: &wire::CollectResponse,
+    revision: Option<acyclic_stream::Revision>,
+) -> Collection {
     Collection {
         epoch: value.epoch,
         marked: value.marked,
         swept: value.swept,
         swept_bytes: value.swept_bytes,
-        revision: None,
+        revision,
     }
 }
 
