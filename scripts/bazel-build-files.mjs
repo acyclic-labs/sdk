@@ -1163,19 +1163,19 @@ const runtimeFilegroups = [...workspaceRuntimeDeps.values()].map(dep => {
     ["visibility", q(["//visibility:public"])],
     ]);
 }).join("\n");
-const wasmNodeModulesRules = runtimeFilegroups + runtimeSelections.map(selection => {
+const wasmNodeModulesRules = runtimeFilegroups + "\n" + runtimeSelections.map(selection => {
   const deps = wasmNodeModules.get(selection.name) ?? [];
   const packages = deps.map(dep => [dep.dir ? `:${workspaceTargetName(dep.name)}` : `@${dep.repository}//:files`, `${dep.name}=${dep.dir ?? ""}`]);
   for (const dep of deps.filter(dep => dep.dir)) {
     const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
     if (generated) packages.push([generated.name, `${dep.name}/generated/wasm=`]);
   }
-  return `\n${rule("node_modules", [
+  return rule("node_modules", [
     ["name", q(`wasm_${selection.name}_node_modules`)],
     ["directory", selection.runtimeDirectory ? q(selection.runtimeDirectory) : undefined],
     ["packages", starlarkDict(packages)],
     ["visibility", q(["//visibility:public"])],
-  ])}`;
+  ]);
 }).join("\n");
 /** @type {Map<string,string|null>} */
 const files = new Map([
