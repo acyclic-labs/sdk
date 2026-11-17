@@ -24,15 +24,24 @@ const STATES: [&str; 8] = [
 const RELATIONS: [&str; 3] = ["child", "grandchild", "same_parent_other_runtime"];
 
 /// One world per variant: 4 forms x 8 states x 3 relations.
+const ALL_SEEDS: &[u64] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+    32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+    48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+    64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
+    80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95,
+];
+
 pub(super) const GENERATOR: Generator = Generator {
     class: "C3",
-    seeds: every_wait_reports_the_state_it_returned_at::VALUES,
+    seeds: ALL_SEEDS,
     variants,
     world,
 };
 
 acyclic_test_support::cases! {
-    module = every_wait_reports_the_state_it_returned_at,
+    module = wait_child,
     values: u64,
     runner = super::run,
     cases = [
@@ -44,6 +53,14 @@ acyclic_test_support::cases! {
         seed_20 => 20, seed_21 => 21, seed_22 => 22, seed_23 => 23,
         seed_24 => 24, seed_25 => 25, seed_26 => 26, seed_27 => 27,
         seed_28 => 28, seed_29 => 29, seed_30 => 30, seed_31 => 31,
+    ],
+}
+
+acyclic_test_support::cases! {
+    module = wait_grandchild,
+    values: u64,
+    runner = super::run,
+    cases = [
         seed_32 => 32, seed_33 => 33, seed_34 => 34, seed_35 => 35,
         seed_36 => 36, seed_37 => 37, seed_38 => 38, seed_39 => 39,
         seed_40 => 40, seed_41 => 41, seed_42 => 42, seed_43 => 43,
@@ -52,6 +69,14 @@ acyclic_test_support::cases! {
         seed_52 => 52, seed_53 => 53, seed_54 => 54, seed_55 => 55,
         seed_56 => 56, seed_57 => 57, seed_58 => 58, seed_59 => 59,
         seed_60 => 60, seed_61 => 61, seed_62 => 62, seed_63 => 63,
+    ],
+}
+
+acyclic_test_support::cases! {
+    module = wait_same_parent,
+    values: u64,
+    runner = super::run,
+    cases = [
         seed_64 => 64, seed_65 => 65, seed_66 => 66, seed_67 => 67,
         seed_68 => 68, seed_69 => 69, seed_70 => 70, seed_71 => 71,
         seed_72 => 72, seed_73 => 73, seed_74 => 74, seed_75 => 75,
