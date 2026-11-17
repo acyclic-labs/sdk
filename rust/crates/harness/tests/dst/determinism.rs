@@ -311,9 +311,17 @@ fn two_incarnations_reopen_the_same_state() -> std::result::Result<(), String> {
 
 #[test]
 fn seed_1000_maps_to_a_world() -> std::result::Result<(), String> {
-    if world(1000)? {
-        Ok(())
-    } else {
-        Err("X1 seed 1000 did not reach its world".into())
+    let class = class(1000);
+    if class != "A2" {
+        return Err(format!("X1 seed 1000 mapped to {class}, not A2"));
     }
+    let world_seed = 1000 % WORLDS.len() as u64;
+    oracle::simulate(1000, || {
+        entry(async move {
+            // A single replay proves the mapping reaches a world without the
+            // index panic; the default seeds own the in-process comparison.
+            trace(world_seed, 1000, class, false).await?;
+            Ok(())
+        })
+    })
 }
