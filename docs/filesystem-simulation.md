@@ -59,9 +59,9 @@ All three histories use `acyclic_native_runtime::testing::sweep`. Default volume
 and command runs use four seeds; worker restart uses two. A volume history has
 sixteen operations. `DST_SEED=<seed>` replays one world; `DST_SEEDS=<a>..<b>`
 selects a deep range. The separate deep target is
-`DST_SEEDS=0..10000 bash scripts/sweep-filesystem-simulation.sh`; submit it only
-to an idle-priority remote worker. It lowers CPU priority as well and selects
-only these seeded filesystem histories. Each sweep reports its elapsed time.
+`bazel test //rust/crates/filesystem:acyclic_fs_test --test_env=DST_SEEDS=0..10000 --test_arg=seeded_`;
+submit it only to an idle-priority remote worker. It selects only these seeded
+filesystem histories. Each sweep reports its elapsed time.
 The same locked dependencies and compiler are required for scheduler replay.
 
 A failed volume history uses the shared `minimize` function to remove actions

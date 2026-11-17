@@ -145,7 +145,6 @@ configured core limits; the SQL journal itself has no compaction yet.
 From the repository root, run:
 
 ```sh
-bash scripts/backends/compile-storage.sh
 bash scripts/backends/storage-conformance.sh
 ```
 
