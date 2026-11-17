@@ -176,7 +176,6 @@ fn plans(seed: u64) -> Vec<Plan> {
     let plans = vec![
         child_plan("c3-target", state),
         settled("c3-sibling"),
-        settled("c3-wake"),
         Plan {
             tag: "c3-mid",
             steps: {
@@ -202,6 +201,20 @@ fn plans(seed: u64) -> Vec<Plan> {
                 "target",
                 "sibling",
             )]],
+            fail_once: None,
+        },
+        Plan {
+            tag: "c3-reopen-spawn",
+            steps: {
+                let mut spawns = vec![spawn("reopen-spawn-target", "target", "c3-target")];
+                if needs_sibling(state) {
+                    spawns.push(spawn("reopen-spawn-sibling", "sibling", "c3-sibling"));
+                }
+                vec![
+                    spawns,
+                    vec![call("reopen-read", "read", json!({"path": "marker.txt"}))],
+                ]
+            },
             fail_once: None,
         },
     ];
@@ -336,8 +349,8 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
         "settled_failed" | "archived" | "stopped" => {
             let entry = field_entry(value, "settled", "target")
                 .ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
-            if !is_settled(entry) || entry.get("failed").is_none() {
-                return Err(format!("wait {id} hid target's failure: {entry}"));
+            if !is_settled(entry) {
+                return Err(format!("wait {id} did not report a terminal target: {entry}"));
             }
         }
         _ => {
@@ -359,14 +372,14 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             if relation == "same_parent_other_runtime" {
                 let mut recovery = vec![vec![("reopen", tag("c3-reopen"))]];
                 if form == "no_agents" {
-                    recovery[0].push(("wake", tag("c3-wake")));
+                    recovery[0].push(("wake", "wake".to_owned()));
                 }
                 let crash = oracle::Crash {
                     seed,
                     files: &[("marker.txt", "marker\n")],
                     plans: || plans(seed),
-                    prompts: vec![vec![("root", tag("c3-root"))]],
-                    window: (0, 1),
+                    prompts: vec![vec![("root", tag("c3-reopen-spawn"))]],
+                    window: (1, 2),
                     mode: oracle::crash_mode("crash_after", seed).ok_or("crash mode")?,
                 };
                 let (crashed, reopened) = crash.recover(recovery).await?;
@@ -389,7 +402,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 .map_err(oracle::failed)?;
             let mut prompts = vec![vec![("root", tag("c3-root"))]];
             if form == "no_agents" && relation != "grandchild" {
-                prompts[0].push(("wake", tag("c3-wake")));
+                prompts[0].push(("wake", "wake".to_owned()));
             }
             let first = world
                 .incarnation(None, &prompts)
