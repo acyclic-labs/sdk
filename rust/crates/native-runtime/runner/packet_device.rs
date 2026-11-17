@@ -755,34 +755,6 @@ impl Session {
     }
 }
 
-pub(super) fn trace_host(label: &str, value: i32) {
-    use core::fmt::Write as _;
-    struct Buffer {
-        bytes: [u8; 96],
-        len: usize,
-    }
-    impl core::fmt::Write for Buffer {
-        fn write_str(&mut self, text: &str) -> core::fmt::Result {
-            let end = self.len + text.len();
-            if end > self.bytes.len() {
-                return Err(core::fmt::Error);
-            }
-            self.bytes[self.len..end].copy_from_slice(text.as_bytes());
-            self.len = end;
-            Ok(())
-        }
-    }
-    let mut buffer = Buffer {
-        bytes: [0; 96],
-        len: 0,
-    };
-    let _ = write!(&mut buffer, "host {label} value={value}\n");
-    if let Ok(file) = sys::openat(-100, c"fuse-host.log", 2 | 0o100 | 0o2000, 0o644) {
-        let _ = sys::write(file, &buffer.bytes[..buffer.len]);
-        sys::close(file);
-    }
-}
-
 fn frame_length(packet: &Packet) -> usize {
     // SAFETY: callers require four initialized bytes in this live mapping.
     let bytes = unsafe { core::slice::from_raw_parts(packet.bytes, 4) };
