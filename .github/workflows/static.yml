@@ -23,6 +23,8 @@ jobs:
           persist-credentials: false
       - name: Check that every Bazel Git pin is fetchable
         run: node scripts/check-git-pins.mjs
+      - name: Install Bazelisk
+        run: npm install --global @bazel/bazelisk@1.26.0
       - name: Check lockfile and manifests without compiling
         run: node scripts/check-cargo-lock.mjs
         env:
@@ -35,7 +37,9 @@ jobs:
         run: node scripts/bazel-build-files.mjs check
       # Module resolution is committed. A stale lockfile makes this fail instead of being rewritten.
       - name: Check that the Bazel module lockfile is current
-        run: bazel mod deps --lockfile_mode=error
+        env:
+          ACYCLIC_BAZEL: bazelisk
+        run: node scripts/check-bazel-lockfile.mjs
       # The repository's own manifests exercise one shape; the generator's test
       # builds the other shapes Cargo accepts (no [workspace.package], for one).
       - name: Test the Bazel file generator
