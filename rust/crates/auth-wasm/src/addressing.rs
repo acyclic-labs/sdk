@@ -94,14 +94,12 @@ pub fn encode_actor_reference(
 #[wasm_bindgen(js_name = actorReferenceFromLegacyFields)]
 pub fn actor_reference_from_legacy_fields(
     account: &[u8],
-    namespace: Option<String>,
+    namespace: Option<&str>,
     id: &str,
 ) -> Result<Vec<u8>, JsValue> {
-    Ok(
-        ActorReference::from_legacy_fields(account, namespace.as_deref(), id)
-            .map_err(identity_error)?
-            .encode(),
-    )
+    Ok(ActorReference::from_legacy_fields(account, namespace, id)
+        .map_err(identity_error)?
+        .encode())
 }
 
 /// Recover an exact actor-reference field after validating the entire encoding.
