@@ -117,6 +117,9 @@ const wasmMetadata = JSON.parse(execFileSync("cargo", ["metadata", "--format-ver
 for (const p of wasmMetadata.packages) {
   if (![...packages.values()].some(q => q.manifest_path === p.manifest_path)) packages.set(p.id, p);
 }
+// Path crates belong to this repository before either graph is partitioned.
+// A crate universe must never generate a second BUILD file in their source tree.
+for (const p of packages.values()) if (p.source === null) members.add(p.id);
 // Cargo resolves each wasm artifact separately; `cargo tree` reports the exact feature set and
 // dependency edges of that selection, so neither another member's defaults nor a host-only
 // target can enter the wasm graph.
@@ -155,10 +158,6 @@ const wasmWorkspaceFeatures = new Map(), wasmPinned = new Map();
 for (const [id, features] of wasmTreeFeatures) (members.has(id) ? wasmWorkspaceFeatures : wasmPinned).set(id, features);
 const dir = p => path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/");
 tomlFiles(root, [...new Set(["Cargo.toml", "rust-toolchain.toml", ...base.packages.filter(p => p.source === null).map(p => path.relative(root, p.manifest_path))])]);
-// Local path crates are first-party: their BUILD files are generated here, so the
-// crate universe must not carry them as local path dependencies. Cargo tests only the
-// workspace, so a path crate renders its library and build script alone.
-for (const p of base.packages) if (p.source === null) members.add(p.id);
 const label = p => `//${dir(p)}`;
 const libOf = p => p.targets.find(t => t.kind.some(k => k === "lib" || k === "rlib" || k === "proc-macro"));
 const crateName = target => target.name.replaceAll("-", "_");
@@ -832,25 +831,17 @@ function universeSpecs() {
 `);
 }
 
-// The wasm universe's pins, from the one wasm resolution. A pin names its universe (a spec of
-// one extension otherwise splices into every universe), and only a registry crate is pinned: a
-// path or patch source keeps its lockfile resolution.
+// A pin names its universe; first-party path crates use this repository's targets.
 function wasmSpecs() {
-  const registry = [...wasmPinned].filter(([id]) => packages.get(id).source?.startsWith("registry+"));
-  const paths = [...wasmPinned].filter(([id]) => !packages.get(id).source?.startsWith("registry+"));
-  const spec = (id, features, extra) => `${rule("crate_wasm.spec", [
+  return [...wasmPinned].sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => `${rule("crate_wasm.spec", [
     ["package", q(packages.get(id).name)],
-    ...extra,
+    ["version", q(`=${packages.get(id).version}`)],
     ["repositories", list([WASM_HUB])],
     ["package_alias", wasmSpliceKey.has(id) ? q(wasmSpliceKey.get(id)) : undefined],
     ["default_features", "False"],
     ["features", list([...features].sort())],
   ])}
-`;
-  return [
-    ...registry.sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => spec(id, features, [["version", q(`=${packages.get(id).version}`)]])),
-    ...paths.sort(([a], [b]) => (a < b ? -1 : 1)).map(([id, features]) => spec(id, features, [["path", q(path.relative(root, path.dirname(packages.get(id).manifest_path)).replaceAll("\\", "/"))]])),
-  ].join("");
+`).join("");
 }
 
 // Workspace members that a third-party crate depends on (a [patch]). The wasm universe names
