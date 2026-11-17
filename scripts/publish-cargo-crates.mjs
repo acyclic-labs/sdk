@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { repositoryRoot as root } from "./policy-core.mjs";
+import { isCratesIoPackage, reachable, repositoryRoot as root } from "./policy-core.mjs";
 import { workspacePackages } from "./workspace-model.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -23,17 +23,14 @@ function run(command, args, options = {}) {
 
 export function localCargoPackages() {
   const packages = workspacePackages(root);
-  const selected = new Set(packages.filter(item => item.workspace_member));
   const byDirectory = new Map(packages.map(item => [dirname(item.manifest_path), item]));
-  for (const item of selected) {
-    for (const dependency of item.dependencies) {
-      if (!dependency.path) continue;
-      const local = byDirectory.get(dependency.path);
-      if (!local) fail(`missing local publication dependency ${dependency.path}`);
-      selected.add(local);
+  return [...reachable(packages.filter(item => item.workspace_member), function* (item) {
+    for (const {path} of item.dependencies) if (path) {
+      const local = byDirectory.get(path);
+      if (!local) fail(`missing local publication dependency ${path}`);
+      yield local;
     }
-  }
-  return [...selected];
+  })];
 }
 
 
@@ -41,7 +38,7 @@ export function localCargoPackages() {
 // every crate follows the local crates it depends on. Deriving it from Cargo
 // declarations means a new publishable crate cannot be left out of the inventory.
 export function publicationOrder(packages) {
-  const publishable = packages.filter(item => item.source === null && (item.publish === null || item.publish.includes("crates-io")));
+  const publishable = packages.filter(isCratesIoPackage);
   const byName = new Map(publishable.map(item => [item.name, item]));
   const remaining = new Map(publishable.map(item => [item.name, new Set(item.dependencies
     .filter(dependency => dependency.kind !== "dev" && byName.has(dependency.name))
@@ -68,7 +65,7 @@ function generate() {
 
 export function metadata(releaseVersion) {
   const packages = localCargoPackages();
-  const publishable = packages.filter(item => item.source === null && (item.publish === null || item.publish.includes("crates-io")));
+  const publishable = packages.filter(isCratesIoPackage);
   const byName = new Map(publishable.map(item => [item.name, item]));
   if (new Set(order).size !== order.length || order.some(name => !byName.has(name)) || byName.size !== order.length) {
     fail("release/cargo-crates.json must contain every publishable local crate exactly once");

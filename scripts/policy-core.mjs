@@ -123,6 +123,8 @@ export function reachable(roots, edges) {
   return reached;
 }
 
+export const isCratesIoPackage = item => item.source === null && (item.publish === null || item.publish.includes('crates-io'));
+
 export function featureClosure(features = {}, roots) {
   return reachable(roots, feature => Object.hasOwn(features, feature) ? features[feature] : []);
 }

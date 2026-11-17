@@ -14,7 +14,7 @@
 //        [--external-only] [--target=TRIPLE]
 // Every extra worker uses its own target directory, so Cargo's build lock never
 // serializes them; the compiler cache still deduplicates their dependencies.
-import { dependencyEnabled, forwardedFeatures, repositoryRoot as root, selectionWorker, workerEnv } from "./policy-core.mjs";
+import { dependencyEnabled, forwardedFeatures, isCratesIoPackage, repositoryRoot as root, selectionWorker, workerEnv } from "./policy-core.mjs";
 import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -67,8 +67,7 @@ export function publishedMatrixPackages(packages) {
   return packages.filter(item => {
     const path = relative(vendor, resolve(item.manifest_path));
     const outsideVendor = isAbsolute(path) || path === ".." || path.startsWith(".." + sep);
-    return outsideVendor && item.source === null
-      && (item.publish === null || item.publish.includes("crates-io"));
+    return outsideVendor && isCratesIoPackage(item);
   });
 }
 
