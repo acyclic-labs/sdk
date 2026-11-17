@@ -8,6 +8,23 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 pub(crate) mod availability;
 
+#[tokio::test]
+async fn listing_rejects_an_envelope_in_the_wrong_shard() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store = Store::new(MemoryMedium::default());
+    let account = b"medium-key-test";
+    let digest = Digest::of(b"body").to_hex();
+    let shard = if digest.starts_with("00") { "ff" } else { "00" };
+    let key = format!("{}/e/{shard}/{digest}", Digest::of(account));
+    assert!(store.medium().create(&key, Vec::new().into()).await?);
+    let error = match store.account(account)?.list(None, 10).await {
+        Err(error) => error,
+        Ok(_) => return Err("malformed envelope key was silently skipped".into()),
+    };
+    assert_eq!(error.code, ErrorCode::Corrupt);
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod simulation;
 
