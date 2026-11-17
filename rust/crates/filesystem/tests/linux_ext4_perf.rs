@@ -20,6 +20,20 @@ fn component(value: &str) -> Vec<u8> {
     value.as_bytes().to_vec()
 }
 
+/// Serializes real FUSE mounts across the test runner's per-case processes.
+struct MountSerial(std::fs::File);
+
+impl MountSerial {
+    fn acquire() -> Result<Self, Box<dyn std::error::Error>> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open("/tmp/acyclic-linux-mount-qualification.lock")?;
+        file.lock()?;
+        Ok(Self(file))
+    }
+}
+
 fn source_tree(
     directories: usize,
     files_per_directory: usize,
@@ -70,6 +84,7 @@ fn check_open_hardlinks(view: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error::Error>> {
+    let _serial = MountSerial::acquire()?;
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let source = tempfile::tempdir()?;
@@ -169,6 +184,7 @@ async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error:
 
 #[tokio::test(flavor = "multi_thread")]
 async fn qualify_linux_write_unlink_visibility() -> Result<(), Box<dyn std::error::Error>> {
+    let _serial = MountSerial::acquire()?;
     use std::io::{Read as _, Seek as _, Write as _};
     use std::os::unix::fs::MetadataExt as _;
 
@@ -260,6 +276,7 @@ async fn qualify_linux_write_unlink_visibility() -> Result<(), Box<dyn std::erro
 
 #[tokio::test(flavor = "multi_thread")]
 async fn qualify_linux_open_hardlink_unlink() -> Result<(), Box<dyn std::error::Error>> {
+    let _serial = MountSerial::acquire()?;
     use std::io::{Seek as _, Write as _};
     use std::os::unix::fs::MetadataExt as _;
 
@@ -332,6 +349,7 @@ async fn qualify_linux_open_hardlink_unlink() -> Result<(), Box<dyn std::error::
 
 #[tokio::test(flavor = "multi_thread")]
 async fn qualify_linux_ancestor_whiteout() -> Result<(), Box<dyn std::error::Error>> {
+    let _serial = MountSerial::acquire()?;
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let source = tempfile::tempdir()?;
@@ -384,6 +402,7 @@ async fn qualify_linux_ancestor_whiteout() -> Result<(), Box<dyn std::error::Err
 
 #[tokio::test(flavor = "multi_thread")]
 async fn qualify_linux_source_rename_visibility() -> Result<(), Box<dyn std::error::Error>> {
+    let _serial = MountSerial::acquire()?;
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let source = tempfile::tempdir()?;
