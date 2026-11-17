@@ -313,7 +313,17 @@ impl NativeChanges {
                         inner.root.held(work).and_then(|root| root.stat(path, work))
                     });
                     match metadata {
-                        Ok(metadata) => Some(file_identity(&path_key(&name), &metadata)),
+                        Ok(metadata) => {
+                            let content = fixture_content(&metadata, |hasher| {
+                                let mut file = inner
+                                    .root
+                                    .held(work)
+                                    .and_then(|root| root.open_file(relative, work))
+                                    .map_err(std::io::Error::other)?;
+                                std::io::copy(&mut file, hasher).map(|_| ())
+                            });
+                            Some(file_identity(&path_key(&name), content, &metadata))
+                        }
                         Err(DemandError::Io(error))
                             if matches!(
                                 error.kind(),

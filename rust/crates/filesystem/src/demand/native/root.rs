@@ -503,7 +503,7 @@ impl NativeDemandSource {
         let kind = metadata.file_type();
         SourceNode {
             kind,
-            file_identity: file_identity(&path, metadata),
+            file_identity: file_identity(&path, content, metadata),
             link_count: Some(metadata.nlink()),
             device: metadata.device(),
             logical_bytes: (kind == SourceNodeKind::RegularFile

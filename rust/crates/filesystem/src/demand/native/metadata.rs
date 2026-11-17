@@ -178,13 +178,23 @@ pub(crate) fn physical_version(metadata: &HostStat) -> SourceVersion {
 /// with neither handles nor birth times (a few) cannot tell reuse apart by
 /// identity alone.
 #[cfg(unix)]
-pub(crate) fn file_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
+pub(crate) fn file_identity(
+    path: &[u8],
+    content: FixtureContent,
+    metadata: &HostStat,
+) -> [u8; 32] {
     #[cfg(feature = "test-support")]
     if let Some(identity) = fixture_identity(path, metadata) {
+        if let Some(content) = content {
+            let mut hash = blake3::Hasher::new();
+            hash.update(b"acyclic-fs-native-file-fixture-content-v1\0");
+            hash.update(&content);
+            return *hash.finalize().as_bytes();
+        }
         return identity;
     }
     #[cfg(not(feature = "test-support"))]
-    let _ = path;
+    let _ = (path, content);
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-file-v1\0");
     hash.update(&(metadata.raw.st_dev as u64).to_le_bytes());
@@ -202,13 +212,23 @@ pub(crate) fn file_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
 }
 
 #[cfg(windows)]
-pub(crate) fn file_identity(path: &[u8], metadata: &HostStat) -> [u8; 32] {
+pub(crate) fn file_identity(
+    path: &[u8],
+    content: FixtureContent,
+    metadata: &HostStat,
+) -> [u8; 32] {
     #[cfg(feature = "test-support")]
     if let Some(identity) = fixture_identity(path, metadata) {
+        if let Some(content) = content {
+            let mut hash = blake3::Hasher::new();
+            hash.update(b"acyclic-fs-native-file-fixture-content-v1\0");
+            hash.update(&content);
+            return *hash.finalize().as_bytes();
+        }
         return identity;
     }
     #[cfg(not(feature = "test-support"))]
-    let _ = path;
+    let _ = (path, content);
     windows_file_identity(
         u64::from(metadata.volume_serial_number),
         metadata.raw.FileId.cast_unsigned(),

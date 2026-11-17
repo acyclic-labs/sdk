@@ -412,7 +412,13 @@ impl NativeCredentialSource {
                                         crate::native_host::stat_file(file.as_file(), &mut work)
                                             .map_err(error)?;
                                     NativeHostWork::check(&work).map_err(error)?;
-                                    Ok::<_, CredentialError>((file, file_identity(&key, &metadata)))
+                                    let content = fixture_content(&metadata, |hasher| {
+                                        std::io::copy(&mut &file, hasher).map(|_| ())
+                                    });
+                                    Ok::<_, CredentialError>((
+                                        file,
+                                        file_identity(&key, content, &metadata),
+                                    ))
                                 })
                                 .await
                                 .map_err(|_| error(CredentialSourceError::Unavailable))??;
