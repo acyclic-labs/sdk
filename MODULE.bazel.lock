@@ -240,6 +240,19 @@
         }
       }
     },
+    "//toolchains/kani:repositories.bzl%kani": {
+      "general": {
+        "bzlTransitiveDigest": "gMZzP1xD7oaj/Z+9mtXgLdhK0Ai5pQnbAcpYvv0rubk=",
+        "usagesDigest": "m9TlZU6xUcvsTT/WXVC/O9SXvudouXZnAPGF4ivhj4E=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "kani": {
+            "repoRuleId": "@@//toolchains/kani:repositories.bzl%_repository",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "@@pybind11_bazel+//:internal_configure.bzl%internal_configure_extension": {
       "general": {
         "bzlTransitiveDigest": "BsgERqYptkJeeC8wFaLj251IoTZTSy/58WA6kVp0q8I=",
