@@ -157,18 +157,22 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
                 serde_json::to_string(&last).unwrap_or_default()
             ));
         };
-        let step = messages
+        // The executor may record each tool call as its own assistant
+        // message, so a step is done once all of its calls appear.
+        let mut made = messages
             .iter()
             .skip(index)
-            .filter(|message| {
-                message
-                    .content
-                    .parts()
-                    .iter()
-                    .any(|part| matches!(part, ModelContentPart::ToolCall(_)))
-            })
+            .flat_map(|message| message.content.parts())
+            .filter(|part| matches!(part, ModelContentPart::ToolCall(_)))
             .count();
-        eprintln!("DST service: plan {} at message {} step {}", plan.tag, index, step);
+        let mut step = 0;
+        while let Some(calls) = plan.steps.get(step) {
+            if made < calls.len() {
+                break;
+            }
+            made -= calls.len();
+            step += 1;
+        }
         let Some(calls) = plan.steps.get(step) else {
             return ScriptedTurn::Text(done(plan.tag));
         };
