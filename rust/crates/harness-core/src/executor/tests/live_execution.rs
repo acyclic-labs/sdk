@@ -94,7 +94,6 @@ struct PendingTool {
     retire_on_drop: bool,
     outcome: PendingOutcome,
     calls: AtomicUsize,
-    result: Mutex<Option<ToolResult>>,
     accepted: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -118,12 +117,7 @@ impl crate::tool::ToolExecutor for PendingTool {
         invocation: ToolInvocation,
         _: Option<crate::runtime::ToolContext>,
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async move {
-            match self.result.lock().unwrap().clone() {
-                Some(result) => Ok(Some(result)),
-                None => (self.outcome)(invocation.operation_id),
-            }
-        })
+        Box::pin(async move { (self.outcome)(invocation.operation_id) })
     }
 }
 
@@ -137,7 +131,6 @@ async fn a_live_tool_retry_requires_retirement_before_settlement() -> Result<()>
         retire_on_drop: false,
         outcome: |_| Ok(None),
         calls: AtomicUsize::new(0),
-        result: Mutex::new(None),
         accepted: Mutex::new(Some(accepted)),
     });
     let tools = echo_tools(
@@ -199,7 +192,6 @@ async fn start_pending_call(
         retire_on_drop,
         outcome,
         calls: AtomicUsize::new(0),
-        result: Mutex::new(None),
         accepted: Mutex::new(Some(accepted)),
     });
     let tools = echo_tools(
@@ -341,9 +333,9 @@ fn seeded_pending_redelivery_settles_without_failing_the_turn() -> std::result::
                         },
                     }),
                 ];
+                let (journal, _issuer) = super::publication_observation::journal().await?;
                 for retired in [false, true] {
                     for outcome in outcomes {
-                        let (journal, _issuer) = super::publication_observation::journal().await?;
                         let pending = start_pending_call(&journal, retired, outcome).await?;
                         pending_redelivery(&journal, pending, !retired).await?;
                     }
