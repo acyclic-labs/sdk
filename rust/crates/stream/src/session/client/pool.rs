@@ -171,23 +171,26 @@ impl Pool {
         // close and lose its link. Take the state under the lock and drop it
         // after releasing: dropping a link wakes its waiter, which may take
         // the same lock.
-        let closed = {
+        let (closed, home_error) = {
             let lifetime = Arc::clone(&self.lifetime);
             let _lifetime = lifetime.lock().unwrap_or_else(|error| error.into_inner());
-            (self.active.load(Ordering::Acquire) == 0).then(|| {
-                (
+            if self.active.load(Ordering::Acquire) == 0 {
+                let closed = (
                     std::mem::take(&mut self.links),
                     std::mem::take(&mut self.reads),
                     std::mem::take(&mut self.dials),
                     std::mem::take(&mut self.pending),
                     std::mem::take(&mut self.routes),
                     std::mem::take(&mut self.home),
-                )
-            })
+                );
+                (Some(closed), self.admissions.bind_home("").err())
+            } else {
+                (None, None)
+            }
         };
         if let Some(closed) = closed {
             drop(closed);
-            if let Err(error) = self.admissions.bind_home("") {
+            if let Some(error) = home_error {
                 self.fail(&error);
             }
         } else {
