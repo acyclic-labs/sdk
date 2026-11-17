@@ -31,6 +31,7 @@ mod records;
 mod recovery;
 mod redelivery;
 mod refusal;
+mod scale;
 mod settlement;
 mod swarm;
 
