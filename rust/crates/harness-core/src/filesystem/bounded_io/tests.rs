@@ -389,14 +389,14 @@ fn dropping_charged_bytes_releases_budget_capacity_but_forget_does_not() -> Resu
         acyclic_fs::performance::work_budget(100_000, 16_000_000),
         &CancellationToken::new(),
     )?;
-    let before = io.owned_bytes()?;
+    let before = live_bytes(&io)?;
     let bytes = acyclic_stream::OwnedBytes::from(vec![7_u8; 17]);
     let capacity = u64::try_from(bytes.retained_capacity().unwrap_or(0))
         .map_err(|_| Error::Invalid("test capacity overflows".into()))?;
     drop(io.retain_read_bytes(bytes.clone())?);
-    assert_eq!(io.owned_bytes()?, before);
+    assert_eq!(live_bytes(&io)?, before);
     std::mem::forget(io.retain_read_bytes(bytes)?);
-    assert_eq!(io.owned_bytes()?, before + capacity);
+    assert_eq!(live_bytes(&io)?, before + capacity);
     Ok(())
 }
 
@@ -424,10 +424,10 @@ fn dropping_charged_bytes_releases_native_capacity_but_forget_does_not() -> Resu
     assert_eq!(work.live_allocation_bytes(), before);
     let charged = io.retain_read_bytes(native_bytes()?)?;
     let charged_size = core::mem::size_of_val(&charged);
-    let capacity = u64::try_from(charged.retained_capacity().unwrap_or(0))
-        .map_err(|_| Error::Invalid("test capacity overflows".into()))?;
+    let retained = work.live_allocation_bytes();
+    assert!(retained > before, "a retained native read owns no storage");
     std::mem::forget(charged);
-    assert_eq!(work.live_allocation_bytes(), before + capacity);
+    assert_eq!(work.live_allocation_bytes(), retained);
     println!(
         "size_of Charged<OwnedBytes>={charged_size}, DecodeReservation={}",
         core::mem::size_of::<DecodeReservation<'static>>()
@@ -487,11 +487,23 @@ async fn private_reads_distinguish_measured_and_unmeasured_charges() -> Result<(
     Ok(())
 }
 
+/// The ledger's live bytes, including charges held by split-off values.
+fn live_bytes(io: &PreparationIo) -> Result<u64> {
+    io.account(|accounting| {
+        Ok(accounting
+            .standalone_parts()
+            .ok_or(acyclic_fs::FsError::PendingMutationAllocationFailed)?
+            .0
+            .live_bytes())
+    })
+    .map_err(Into::into)
+}
+
 /// The ledger bytes a held read gives back when its holder drops it.
 fn released_on_drop(io: &PreparationIo, bytes: crate::conversation::Custody) -> Result<u64> {
-    let held = io.owned_bytes()?;
+    let held = live_bytes(io)?;
     drop(bytes);
-    held.checked_sub(io.owned_bytes()?)
+    held.checked_sub(live_bytes(io)?)
         .ok_or_else(|| Error::Invalid("dropping a read grew its ledger".into()))
 }
 

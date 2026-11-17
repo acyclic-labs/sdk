@@ -100,6 +100,22 @@ impl PreparationIo {
         }
     }
 
+    /// Returns a split-off charge to this preparation's own custody.
+    pub(crate) fn absorb_custody(&self, custody: PreparationCustody) -> Result<()> {
+        match (self, custody) {
+            (Self::Owned { custody: own, .. }, PreparationCustody::Standalone(incoming)) => {
+                incoming
+                    .transfer_to(own)
+                    .map_err(|error| acyclic_fs::FsError::from(error).into())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            (Self::Native { .. }, PreparationCustody::Native(incoming)) => {
+                self.absorb_native_custody(incoming)
+            }
+            _ => Err(self.invalid("custody belongs to another ledger")),
+        }
+    }
+
     /// Moves all storage retained by a completed scoped preparation to its
     /// output owner. The scope keeps its custody if cancellation refuses the
     /// transfer; no storage is charged again or released before the value.

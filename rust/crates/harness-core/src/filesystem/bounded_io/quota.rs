@@ -28,6 +28,13 @@ impl<T> Charged<T> {
         self.value
     }
 
+    /// The value, with its charge moved back onto the caller's preparation.
+    /// Used where the public result carries no custody of its own.
+    pub(crate) fn into_retained(self, io: &PreparationIo) -> Result<T> {
+        io.absorb_custody(self._charge)?;
+        Ok(self.value)
+    }
+
     /// The charged value; its charge stays held while it is borrowed.
     pub fn value(&self) -> &T {
         &self.value
