@@ -48,7 +48,7 @@ impl Custody {
 }
 
 /// A live value must not turn a missing source, gap or refused read into zero.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum Error<'a> {
     /// Retained measurements belong to source facts which have been retired.
     #[error("live source continuity lost; recovery: reopen the projection from retained history")]
