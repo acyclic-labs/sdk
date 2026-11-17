@@ -12,6 +12,8 @@ documentation = "https://docs.rs/acyclic-harness-layout"
 test-support = ["acyclic-fs/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support"]
 
 [dependencies]
+acyclic-model-render = { version = "=0.2.0", path = "../model-render" }
+rmcp.workspace = true
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 serde.workspace = true

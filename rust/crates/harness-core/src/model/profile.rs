@@ -128,7 +128,3 @@ impl ModelProfileBinding {
         }
     }
 }
-
-impl crate::heap_layout::HeapLayout for Effort {
-    const LAYOUT: &'static crate::heap_layout::JsonLayout = &crate::heap_layout::JsonLayout::Scalar;
-}
