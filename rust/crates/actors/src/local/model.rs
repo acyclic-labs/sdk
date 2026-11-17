@@ -21,7 +21,7 @@ mod composition;
 mod durability;
 mod simulation;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 enum Fault {
     None,
     /// The commit never reaches the provider.
@@ -419,7 +419,7 @@ fn plans(length: usize, faults: usize) -> Vec<Vec<Fault>> {
                         next
                     })
             })
-            .filter(|plan| plan.iter().filter(|fault| **fault != Fault::None).count() <= faults)
+            .filter(|plan| plan.iter().filter(|fault| !matches!(**fault, Fault::None)).count() <= faults)
             .collect();
     }
     plans

@@ -113,7 +113,7 @@ impl Composition for Participant {
 
 /// This oracle also rejects the former all-errors-are-unknown implementation.
 fn refusal_was_settled(result: &Result<(), Error>, counts: &Counts, refusal: &StreamError) -> bool {
-    matches!(result, Err(Error::Stream(error)) if error.as_ref() == refusal)
+    matches!(result, Err(Error::Stream(error)) if error.category() == refusal.category())
         && counts.refused.load(Ordering::SeqCst) == 1
         && counts.committed.load(Ordering::SeqCst) == 0
         && counts.rejected.load(Ordering::SeqCst) == 0
@@ -164,8 +164,9 @@ async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), 
             Some(0)
         );
         assert_eq!(
-            provider.inner.tail(path("participant/child")?).await,
-            Err(StreamError::NotFound)
+            provider.inner.tail(path("participant/child")?).await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
         // A new attempt can publish; it is not pinned to the refused request.
         store
@@ -227,7 +228,7 @@ async fn a_retry_refusal_cannot_settle_an_earlier_lost_ack() -> Result<(), Failu
     else {
         return Err("retry refusal incorrectly settled an uncertain publication".into());
     };
-    assert_eq!(source.as_ref(), &StreamError::AccessDenied);
+    assert_eq!(source.category(), StreamCategory::AccessDenied);
     assert_eq!(counts.refused.load(Ordering::SeqCst), 0);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
     store.submit(*publication).await?;
@@ -453,7 +454,7 @@ pub(super) async fn recovered_custody_requires_durability(
         else {
             return Err("unconfirmed participant publication was acknowledged".into());
         };
-        assert_eq!(*source, StreamError::AccessDenied);
+        assert_eq!(source.category(), StreamCategory::AccessDenied);
         drop(publication);
         let accepted = store.load(&actor).await?;
         let state_path = store.path(&actor)?;
@@ -462,7 +463,7 @@ pub(super) async fn recovered_custody_requires_durability(
         assert!(matches!(
             store.claim(&accepted, 2, key("durability-reclaim")?).await,
             Err(Error::PublicationDurabilityUnknown { source, .. })
-                if source.as_ref() == &StreamError::AccessDenied
+                if source.category() == StreamCategory::AccessDenied
         ));
         assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
@@ -530,10 +531,10 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
             .clone();
         assert!(matches!(
             store.enqueue_invoke(&invocation).await,
-            Err(Error::Stream(error)) if error.as_ref() == &StreamError::Unavailable
+            Err(Error::Stream(error)) if error.category() == StreamCategory::Unavailable
         ));
         let original = provider.inspect_idempotency(operation.clone()).await?;
-        assert_eq!(original.is_some(), fault == Fault::LoseAck);
+        assert_eq!(original.is_some(), matches!(fault, Fault::LoseAck));
         let retained_input = if original.is_some() {
             Some(
                 provider
@@ -567,7 +568,7 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
             .with_composer(Arc::new(Participants(Arc::clone(&counts))));
         assert!(matches!(
             reopened.enqueue_invoke(&invocation).await,
-            Err(Error::Stream(error)) if error.as_ref() == &StreamError::AccessDenied
+            Err(Error::Stream(error)) if error.category() == StreamCategory::AccessDenied
         ));
         assert_eq!(
             provider.inspect_idempotency(operation.clone()).await?,
@@ -610,7 +611,7 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
         )?;
         assert!(matches!(
             reopened.enqueue_invoke(&changed).await,
-            Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
+            Err(Error::Stream(error)) if error.category() == StreamCategory::IdempotencyMismatch
         ));
         // Dropping a response waiter cannot consume a paused input or retract
         // its original admission, including after an earlier lost reply.
@@ -711,7 +712,7 @@ async fn invocation_lost_ack_retains_the_original_reply_and_participant_through_
     else {
         return Err("retry refusal settled an uncertain invocation".into());
     };
-    assert_eq!(*source, StreamError::AccessDenied);
+    assert_eq!(source.category(), StreamCategory::AccessDenied);
     assert_eq!(publication.request, original);
     assert_eq!(counts.refused.load(Ordering::SeqCst), 0);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
@@ -807,8 +808,9 @@ async fn composer_cannot_fork_over_the_original_invocation_reply() -> Result<(),
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
     assert_eq!(store.load(&actor).await?.tail, snapshot.tail);
     assert_eq!(
-        provider.inner.tail(path("participant/child")?).await,
-        Err(StreamError::NotFound)
+        provider.inner.tail(path("participant/child")?).await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     Ok(())
 }
@@ -1108,8 +1110,9 @@ async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result
     ));
     assert_eq!(provider.calls.load(Ordering::SeqCst), before);
     assert_eq!(
-        provider.inner.tail(path("participant/child")?).await,
-        Err(StreamError::NotFound)
+        provider.inner.tail(path("participant/child")?).await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     assert_eq!(
         store

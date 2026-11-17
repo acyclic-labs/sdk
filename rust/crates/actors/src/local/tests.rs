@@ -592,7 +592,7 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     )?;
     assert!(matches!(
         reopened.enqueue_invoke(&changed).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
+        Err(Error::Stream(error)) if error.category() == StreamCategory::IdempotencyMismatch
     ));
     assert_eq!(
         reopened
@@ -868,7 +868,7 @@ async fn wait_applied_retains_its_cut_across_pause_and_never_consumes_input() ->
                 AppliedCut::through("inbox".into(), path, &different)?
             )
             .await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::PrefixNotRetained
+        Err(Error::Stream(error)) if error.category() == StreamCategory::PrefixNotRetained
     ));
     assert_eq!(
         provider.tail(store.path(&address)?).await?,
@@ -970,7 +970,7 @@ async fn foreign_soft_only_publication_commits_and_replays_after_reopen() -> Tes
         (receipt.commit_id, &receipt.skipped)
     );
     assert_eq!(reopened.tail(inbox).await?, 2);
-    assert_eq!(reopened.tail(absent).await, Err(StreamError::NotFound));
+    assert_eq!(reopened.tail(absent).await.map_err(|error| error.category()), Err(StreamCategory::NotFound));
     Ok(())
 }
 
@@ -1758,5 +1758,5 @@ fn a_provider_refusal_keeps_its_stream_code_in_the_source_chain() {
     assert_eq!(error.kind(), "unavailable");
     let source =
         std::error::Error::source(&error).and_then(|source| source.downcast_ref::<StreamError>());
-    assert_eq!(source, Some(&StreamError::Unavailable));
+    assert_eq!(source.map(|error| error.category()), Some(StreamCategory::Unavailable));
 }
