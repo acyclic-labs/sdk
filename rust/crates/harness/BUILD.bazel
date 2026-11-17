@@ -919,6 +919,7 @@ rust_test(
         "tests/dst/oracle.rs",
         "tests/dst/protective.rs",
         "tests/dst/publication.rs",
+        "tests/dst/records.rs",
         "tests/dst/recovery.rs",
         "tests/dst/redelivery.rs",
         "tests/dst/refusal.rs",
