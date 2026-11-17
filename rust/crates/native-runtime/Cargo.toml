@@ -12,6 +12,9 @@ documentation = "https://docs.rs/acyclic-native-runtime"
 keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
+[package.metadata.bazel.test-tools.main]
+node = "@nodejs//:node"
+
 [[bin]]
 name = "acyclic-process-host"
 path = "src/bin/acyclic-process-host.rs"

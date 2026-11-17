@@ -461,7 +461,7 @@ rust_test(
 isolated_test(
     name = "main",
     binary = ":main_cases",
-    binaries = {":acyclic-process-host":"acyclic-process-host"},
+    binaries = {":acyclic-process-host":"acyclic-process-host","@nodejs//:node":"node"},
     id = "acyclic-native-runtime::main",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
@@ -470,7 +470,7 @@ isolated_test(
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
-    binaries = {":acyclic-process-host":"acyclic-process-host"},
+    binaries = {":acyclic-process-host":"acyclic-process-host","@nodejs//:node":"node"},
     id = "acyclic-native-runtime::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

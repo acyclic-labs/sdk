@@ -79,7 +79,7 @@ async function statusBindingControl(run, host) {
 }
 
 async function argumentControls(host) {
-  const command = ['--', 'node', '-e', 'process.exit(17)'];
+  const command = ['--', process.execPath, '-e', 'process.exit(17)'];
   async function capture(cases, label) {
     const records = [];
     for (const [args, expected] of cases) {
