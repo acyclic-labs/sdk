@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateProto } from "./generate-proto.mjs";
+import { generateProto } from "../tools/generate-proto.mjs";
 import { packageClosure } from "./package-closure.mjs";
 import { generateFiles } from "./generated-bindings.mjs";
 import { generateNativeFamilies } from "./native-family.mjs";

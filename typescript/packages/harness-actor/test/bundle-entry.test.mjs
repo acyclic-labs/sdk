@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bundleHarnessActor } from "../../../../scripts/build-harness-actor.mjs";
+import { bundleHarnessActor } from "../../../../tools/harness-actor-bundle.mjs";
 import { loadHostedArtifact } from "../../../../scripts/artifact-assets.mjs";
 import { fixtureAuthority, initializeFixtureAuthority } from "../../../../rust/crates/conformance/cloudflare/fixture-authority.mjs";
 import { HARNESS_BINDINGS, HARNESS_MODULE, MODEL_FETCH } from "../src/bindings.js";

@@ -8,7 +8,7 @@ import test from "node:test";
 import fc from "fast-check";
 import { compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
 
-const source = readFileSync(new URL("./generate-proto.mjs", import.meta.url), "utf8");
+const source = readFileSync(new URL("../tools/generate-proto.mjs", import.meta.url), "utf8");
 const implementation = source.slice(source.indexOf("export function"), source.lastIndexOf("\nif (process.argv"))
   .replace("export function", "function");
 const names = [...new Set([...packagedTypeScriptBindings.flatMap(([, names]) => names), ...retiredTypeScriptBindingPackages]), "workers"];
@@ -107,7 +107,7 @@ os.execv(sys.argv[1], sys.argv[1:])
 `;
   try {
     for (const file of [".gitignore", "buf.yaml", "buf.lock", "buf.gen.yaml", "package.json",
-      "scripts/generate-proto.mjs", "scripts/generated-bindings.mjs"]) {
+      "tools/generate-proto.mjs", "scripts/generated-bindings.mjs"]) {
       mkdirSync(dirname(join(root, file)), { recursive: true });
       cpSync(file, join(root, file));
     }
@@ -120,7 +120,7 @@ os.execv(sys.argv[1], sys.argv[1:])
       const cache = join(root, label);
       mkdirSync(cache);
       assert.deepEqual(readdirSync(cache), []);
-      return spawnSync("python3", ["-c", isolated, process.execPath, "scripts/generate-proto.mjs"], {
+      return spawnSync("python3", ["-c", isolated, process.execPath, "tools/generate-proto.mjs"], {
         cwd: root, encoding: "utf8",
         env: { ...process.env, BUF_CACHE_DIR: join(cache, "buf"), XDG_CACHE_HOME: cache, HOME: cache,
           BUN_INSTALL_CACHE_DIR: join(cache, "bun") },
