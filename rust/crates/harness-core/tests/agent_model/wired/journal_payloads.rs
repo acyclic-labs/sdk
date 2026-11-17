@@ -305,7 +305,7 @@ async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
     let sender = super::super::user();
     for (sequence, id) in ["first", "second"].into_iter().enumerate() {
         let wake = Wake::Inbox {
-            sequence: sequence as u64,
+            sequence: sequence as u64 + 1,
             record: InboxRecord::Message(Message {
                 from: sender.clone(),
                 id: intent(id),
