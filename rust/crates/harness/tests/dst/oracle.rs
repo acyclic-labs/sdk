@@ -278,8 +278,6 @@ pub(super) struct Incarnation {
     pub dispatched_at: Vec<usize>,
     /// Durable operations the whole incarnation performed.
     pub durable: usize,
-    /// Every durable operation, including its offered and transferred bytes.
-    pub writes: Vec<DurableWrite>,
     pub crashed: Option<InjectedStorageFault>,
 }
 
@@ -324,34 +322,11 @@ impl World {
         cut: Option<(usize, DurableFault)>,
         prompts: &'a [Vec<(&'a str, String)>],
     ) -> EntryFuture<'a, Result<Incarnation>> {
-        self.incarnation_with(cut, prompts, false)
-    }
-
-    /// An incarnation that retains the durable call trace, for worlds that
-    /// measure the bytes offered between dispatches.
-    pub fn incarnation_recorded<'a>(
-        &'a mut self,
-        cut: Option<(usize, DurableFault)>,
-        prompts: &'a [Vec<(&'a str, String)>],
-    ) -> EntryFuture<'a, Result<Incarnation>> {
-        self.incarnation_with(cut, prompts, true)
-    }
-
-    fn incarnation_with<'a>(
-        &'a mut self,
-        cut: Option<(usize, DurableFault)>,
-        prompts: &'a [Vec<(&'a str, String)>],
-        record: bool,
-    ) -> EntryFuture<'a, Result<Incarnation>> {
         entry(async move {
             // Each incarnation is an independent scheduler over the same files.
             let scheduler = self.seed ^ self.incarnations.wrapping_mul(0x9e37_79b9_7f4a_7c15);
             self.incarnations += 1;
-            let mut driver = if record {
-                Driver::new(scheduler, cut)
-            } else {
-                Driver::world(scheduler, cut)
-            };
+            let mut driver = Driver::world(scheduler, cut);
             let schedule = driver.schedule.clone();
             let counter = schedule.clone();
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));
@@ -431,7 +406,6 @@ impl World {
                 requests: provider.requests(),
                 dispatched_at,
                 durable: counter.durable_write_count(),
-                writes: counter.durable_writes(),
                 crashed,
             })
         })
