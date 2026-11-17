@@ -231,14 +231,7 @@ fn observe_steps(form: &str, state: &str, prefix: &str) -> Vec<Vec<ToolCall>> {
             vec![archive(&format!("{prefix}-archive"), "target")],
             vec![form_wait(form, &wait_id, "target")],
         ],
-        "running" if form == "named" => vec![
-            vec![call(
-                &format!("{prefix}-delay"),
-                "read",
-                json!({"path": "marker.txt"}),
-            )],
-            vec![form_wait(form, &wait_id, "target")],
-        ],
+        "running" if form == "named" => vec![vec![wait(&wait_id, &["target"], None, Some(1))]],
         _ => vec![vec![form_wait(form, &wait_id, "target")]],
     }
 }
@@ -437,10 +430,16 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
                 }
             }
             _ => {
-                let entry = settled
-                    .ok_or_else(|| format!("wait {id} did not settle released target: {value}"))?;
-                if !is_settled(entry) {
-                    return Err(format!("wait {id} reported target not settled: {entry}"));
+                if let Some(entry) = settled {
+                    if !is_settled(entry) {
+                        return Err(format!("wait {id} reported target not settled: {entry}"));
+                    }
+                } else if let Some(entry) = unsettled {
+                    if is_settled(entry) || reason(value) != "deadline" {
+                        return Err(format!("wait {id} reported running target wrong: {entry}"));
+                    }
+                } else {
+                    return Err(format!("wait {id} reported no target: {value}"));
                 }
             }
         },
