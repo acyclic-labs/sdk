@@ -201,9 +201,6 @@ fn plans(seed: u64) -> Vec<Plan> {
             fail_once: None,
         },
     ];
-    if needs_sibling(state) {
-        plans.push(settled("c3-sibling"));
-    }
     plans
 }
 

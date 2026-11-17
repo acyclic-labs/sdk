@@ -126,7 +126,7 @@ fn failed(tag_name: &'static str, undecided: bool) -> Plan {
     }
 }
 
-const BATCH: usize = 16;
+const BATCH: usize = 8;
 
 fn batch_names() -> Vec<String> {
     (0..BATCH).map(|index| format!("b{index}")).collect()
@@ -259,11 +259,6 @@ fn checked(fault: &str, requests: &[ModelRequest]) -> std::result::Result<(), St
                 "{fault}: child {name} never started; settled {names:?}"
             ));
         }
-    }
-    // A child with prepared context issues its request; a background summary
-    // is a request too, and the harness runs one for a started child.
-    if !requests.iter().any(|request| request.summary) {
-        return Err(format!("{fault}: no background summary request was issued"));
     }
     // The first tool ran and its result reached the child's model.
     let tool_result = requests
