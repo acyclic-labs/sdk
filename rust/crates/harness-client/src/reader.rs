@@ -221,7 +221,7 @@ pub struct ListedChild {
 }
 
 /// The driver's report for one op.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum Outcome {
     /// Records from the requested position, ascending.
     Records(Vec<Fetched>),
@@ -274,7 +274,7 @@ impl Failure {
 }
 
 /// A reader discontinuity that applications must show separately from outages.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum ReadIssue {
     /// Authorization failed; cached bytes for the stream were discarded.
     #[error("reader source access denied")]
@@ -289,6 +289,22 @@ pub enum ReadIssue {
     #[error("reader source refused: {0}")]
     Refused(#[source] StreamError),
 }
+
+impl PartialEq for ReadIssue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::AccessDenied, Self::AccessDenied)
+            | (Self::RetentionLost, Self::RetentionLost)
+            | (Self::HierarchyChanged, Self::HierarchyChanged) => true,
+            (Self::Refused(left), Self::Refused(right)) => {
+                left.category() == right.category()
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ReadIssue {}
 
 /// What the client can promise about freshness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
