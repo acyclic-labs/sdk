@@ -484,7 +484,7 @@ async fn native_rpc_retains_exact_lease_at_dispatch_and_reply()
                 assert!(std::error::Error::source(&error).is_some());
             }
             assert!(
-                original.check().await.is_err(),
+                cache.check(&original).is_err(),
                 "the original lease must lose admission"
             );
         }
