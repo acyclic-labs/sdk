@@ -352,13 +352,14 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// The caller must authenticate the complete invocation against its original
     /// start record; an operation ID alone does not admit replacement arguments.
     /// `None` or an indeterminate error means completion is still unknown. While
-    /// the call's producer may be live, the caller retains the original
-    /// invocation without recording a terminal failure or executing it again, so
-    /// a later result can settle that invocation. Once its producer is fenced
+    /// the call's producer may be live, redelivery tries its original receipt
+    /// without repeating the effect. If reconciliation is still inconclusive,
+    /// the model receives a failed tool reply warning that the original effect
+    /// may still complete. Once its producer is fenced
     /// (by a successor owner, or by [`Self::cancellable_on_drop`] and exclusive
     /// custody of the redelivered invocation), no
     /// later result can come from it: a call dispatched to another host is
-    /// still retained for that host's settlement, and any other call is
+    /// never dispatched again here, and any other call is
     /// interrupted, or run again where [`Self::reexecutes_fenced`] allows.
     /// A cancellation rejection proves the call no longer runs and has no
     /// recorded result; the caller settles it as interrupted.

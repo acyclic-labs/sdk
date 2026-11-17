@@ -5,10 +5,10 @@ pub(super) struct DispatchRecord(());
 
 /// How a started call is decided once its producer is fenced and
 /// reconciliation cannot settle it. Only the durable start record decides
-/// whether it may wait: no executor can retain a call that ran in-process.
+/// whether it may run again: a dispatched effect is never repeated here.
 pub(super) enum FencedStart {
-    /// Dispatched to another host, whose settlement or fence decides it.
-    Retained(DispatchRecord),
+    /// Dispatched to another host: never run the effect again here.
+    Dispatched(DispatchRecord),
     /// Ran only inside its fenced owner and ended with it: the model's
     /// interrupted failure.
     Interrupted,
@@ -30,7 +30,7 @@ impl FencedStart {
             )
         });
         if dispatched {
-            Self::Retained(DispatchRecord(()))
+            Self::Dispatched(DispatchRecord(()))
         } else if reexecutes {
             Self::Reexecuted
         } else {
@@ -356,11 +356,25 @@ impl<'io> StockExecution<'io> {
                     )
                     .await;
             }
-            // Unknown completion while its producer may be live, including a
-            // dispatched one, retains the original invocation for later
-            // reconciliation; it does not establish a terminal tool failure.
-            // An uncertain re-execution stays fenced, so the next attempt
-            // executes it again.
+            // A redelivery already tried the original receipt and any safe
+            // keyed re-execution. An inconclusive outcome is now feedback to
+            // the model, not another pending handler that can end its agent.
+            // This settles the tool reply only: the effect may still complete,
+            // and an unsafe effect is never dispatched again.
+            Ok(None) | Err(Error::Indeterminate(_)) if started => {
+                return self
+                    .settle_tool_failure(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::Interrupted,
+                        Error::Indeterminate(invocation.operation_id),
+                    )
+                    .await
+                    .map(|content| ToolInvocationOutcome::Settled(content, None));
+            }
+            // The first attempt retains its original operation for redelivery.
             Ok(None) | Err(Error::Indeterminate(_)) => {
                 return Err(Error::Indeterminate(operation_id));
             }

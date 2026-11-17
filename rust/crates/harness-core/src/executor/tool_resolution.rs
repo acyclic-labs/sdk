@@ -88,9 +88,10 @@ impl StockExecution<'_> {
             .await
     }
 
-    /// Records `error` as the call's failure. Callers pass only a definitive cause the model
-    /// can act on, including a settled process failure. Native accounting and uncertain
-    /// effects retain their original custody instead of becoming model feedback.
+    /// Records the model-visible call failure. Callers pass a definitive cause,
+    /// or an inconclusive reconciliation after redelivery: that failure retains
+    /// the original effect identity and warns that the effect may still complete.
+    /// Native accounting failures retain their original custody.
     pub(super) async fn settle_tool_failure(
         &self,
         journal: &dyn ExecutionJournal,

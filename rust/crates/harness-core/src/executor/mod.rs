@@ -558,8 +558,8 @@ pub enum ToolFailureKind {
     Removed,
     /// The arguments violated the tool's pinned input schema; recorded without a start.
     InvalidInput,
-    /// The executing process ended before the outcome was recorded, and the
-    /// executor cannot reconcile it. The effect may have run, partly or fully.
+    /// The invocation ended before its outcome was recorded, and reconciliation
+    /// cannot recover it. The effect may have run or may still complete.
     /// Like every settled failure, it is the call's result and the turn goes on.
     Interrupted,
 }
@@ -577,7 +577,7 @@ impl ToolFailureKind {
             Self::Removed => "tool was removed",
             Self::InvalidInput => "tool arguments violated the input schema",
             Self::Interrupted => {
-                "tool was interrupted before its outcome was recorded; it may have run, partly or fully"
+                "tool invocation ended without a recorded outcome; the effect may have run, partly or fully, or may still complete"
             }
         }
     }

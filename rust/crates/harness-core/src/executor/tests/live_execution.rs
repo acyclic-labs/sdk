@@ -120,7 +120,7 @@ impl crate::tool::ToolExecutor for PendingTool {
 
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
+async fn a_live_tool_retry_requires_retirement_before_settlement() -> Result<()> {
     let (journal, _issuer) = super::publication_observation::journal().await?;
     let provider = Arc::new(scripted_model());
     let (accepted, acceptance) = tokio::sync::oneshot::channel();
@@ -168,49 +168,7 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
     assert_eq!(provider.requests().len(), 1);
     assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
     drop(first);
-    assert!(matches!(
-        executor.execute_progress(input.clone(), &journal).await,
-        Err(Error::Indeterminate(operation)) if operation == input.operation_id
-    ));
-    // Neither cancellation nor an inconclusive reconciliation authorizes a
-    // terminal result. The original serialized invocation remains recoverable.
-    assert_eq!(
-        journal.replay(input.operation_id, 0, 100, None)?.await?,
-        before
-    );
-    assert!(matches!(
-        executor.execute_progress(input.clone(), &journal).await,
-        Err(Error::Indeterminate(operation)) if operation == input.operation_id
-    ));
-    assert_eq!(
-        journal.replay(input.operation_id, 0, 100, None)?.await?,
-        before
-    );
-    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.requests().len(), 1);
-    // A later outcome of that exact invocation can still settle normally.
-    *tool.result.lock().unwrap() = Some(ToolResult {
-        value: json!({"value":"hello"}),
-    });
-    assert_eq!(
-        executor.execute(input.clone(), &journal).await?.text,
-        "done"
-    );
-    let completed = journal.replay(input.operation_id, 0, 100, None)?.await?;
-    assert_eq!(&completed[..before.len()], before.as_slice());
-    assert!(
-        completed
-            .iter()
-            .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
-    );
-    assert!(
-        !completed
-            .iter()
-            .any(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
-    );
-    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.requests().len(), 2);
-    Ok(())
+    pending_redelivery(&journal, (tool, provider, executor, input), true).await
 }
 
 /// Stop the original attempt while its tool outcome is still pending.
@@ -298,6 +256,7 @@ async fn pending_redelivery(
         StockExecutor,
         TurnInput,
     ),
+    unknown: bool,
 ) -> Result<()> {
     let settled = executor.execute(input.clone(), journal).await?;
     assert_eq!(settled.text, "done");
@@ -305,6 +264,11 @@ async fn pending_redelivery(
         .expect("the next model request carries the call's failure");
     assert!(
         text.starts_with(ToolFailureKind::Interrupted.message()),
+        "{text}"
+    );
+    assert_eq!(
+        text.contains("operation outcome is indeterminate"),
+        unknown,
         "{text}"
     );
     assert!(
@@ -345,10 +309,15 @@ fn seeded_pending_redelivery_settles_without_failing_the_turn() -> std::result::
             let (schedule, mut boundaries) = Schedule::seeded(seed);
             let history = async {
                 let (reopened, tool, provider, executor, input) = fenced_pending_call(false).await?;
-                pending_redelivery(&reopened, (tool, provider, executor, input)).await?;
-                let (journal, _issuer) = super::publication_observation::journal().await?;
-                let pending = start_pending_call(&journal, true).await?;
-                pending_redelivery(&journal, pending).await
+                pending_redelivery(&reopened, (tool, provider, executor, input), false).await?;
+                let (reopened, tool, provider, executor, input) = fenced_pending_call(true).await?;
+                pending_redelivery(&reopened, (tool, provider, executor, input), true).await?;
+                for retired in [false, true] {
+                    let (journal, _issuer) = super::publication_observation::journal().await?;
+                    let pending = start_pending_call(&journal, retired).await?;
+                    pending_redelivery(&journal, pending, !retired).await?;
+                }
+                Ok::<(), Error>(())
             };
             let mut execution = Box::pin(schedule.scope(history));
             let result = loop {
@@ -369,34 +338,6 @@ fn seeded_pending_redelivery_settles_without_failing_the_turn() -> std::result::
         },
     )
     .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-/// A call dispatched to another host outlives its fenced owner: it stays
-/// retained, with nothing recorded and nothing run again, until that host's
-/// own settlement decides it.
-#[tokio::test]
-#[cfg(not(target_arch = "wasm32"))]
-async fn a_fenced_dispatched_call_waits_for_its_host_to_settle_it() -> Result<()> {
-    let (reopened, tool, _, executor, input) = fenced_pending_call(true).await?;
-    let retained = executor.execute(input.clone(), &reopened).await;
-    assert!(
-        matches!(&retained, Err(Error::Indeterminate(id)) if *id == input.operation_id),
-        "{retained:?}"
-    );
-    assert!(!reopened.0.lock().unwrap().iter().any(|record| matches!(
-        &record.event,
-        ExecutionEvent::ToolFailed { .. } | ExecutionEvent::ToolCompleted { .. }
-    )));
-    *tool.result.lock().unwrap() = Some(ToolResult {
-        value: json!({"value":"hello"}),
-    });
-    assert_eq!(executor.execute(input, &reopened).await?.text, "done");
-    assert!(reopened.0.lock().unwrap().iter().any(|record| matches!(
-        &record.event,
-        ExecutionEvent::ToolCompleted { call_id, .. } if call_id == "call-1"
-    )));
-    assert_eq!(tool.calls.load(Ordering::SeqCst), 1, "the host ran it once");
     Ok(())
 }
 
@@ -482,12 +423,6 @@ async fn a_fenced_keyed_call_runs_its_one_effect_again() -> Result<()> {
         accepted = acceptance => accepted.expect("tool acceptance producer was dropped"),
     }
     drop(first);
-    // The same owner's start is never fenced: it is retained, not run again.
-    assert!(matches!(
-        executor.execute_progress(input.clone(), &journal).await,
-        Err(Error::Indeterminate(operation)) if operation == input.operation_id
-    ));
-    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
     let reopened = journal.reopen_before_tool_completion("call-1");
     let settled = executor.execute(input.clone(), &reopened).await?;
     assert_eq!(settled.text, "done");
@@ -502,8 +437,8 @@ async fn a_fenced_keyed_call_runs_its_one_effect_again() -> Result<()> {
             tool.reconciles.load(Ordering::SeqCst),
             tool.effects.load(Ordering::SeqCst),
         ),
-        (2, 2, 1),
-        "one live reconciliation, one fenced reconciliation, one effect"
+        (2, 1, 1),
+        "one fenced reconciliation, one effect"
     );
     Ok(())
 }
