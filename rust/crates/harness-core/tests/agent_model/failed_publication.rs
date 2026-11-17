@@ -11,7 +11,8 @@ use acyclic_actors::{
 };
 use acyclic_stream::{
     BoxProviderFuture, CommitId, CommittedEnvelope, FollowRequest, FollowStream, Heads,
-    HeadsRequest, IdempotencyKey, IdempotencyObservation, RecordStream, WriteOutcome, WriteRequest,
+    HeadsRequest, IdempotencyKey, IdempotencyObservation, RecordStream, StreamCategory,
+    WriteOutcome, WriteRequest,
 };
 use std::sync::{
     Arc,
@@ -385,7 +386,7 @@ async fn a_definitively_refused_child_publication_settles_its_parent_once() -> R
         let serving = Box::pin(host.runtime().run(|_, error| {
             assert!(matches!(
                 error,
-                acyclic_actors::local::Error::Stream(error) if error.as_ref() == &StreamError::AccessDenied
+                acyclic_actors::local::Error::Stream(error) if error.category() == StreamCategory::AccessDenied
             ));
             failures.fetch_add(1, Ordering::SeqCst);
         }));
