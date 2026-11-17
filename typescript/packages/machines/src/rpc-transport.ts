@@ -7,7 +7,7 @@ type RpcMethod = Parameters<Transport["unary"]>[0] | Parameters<Transport["strea
 
 function bridgeFailure(error: unknown): unknown {
   if (error instanceof RequestCredentialError) {
-    return Object.assign(new ConnectError(error.rawMessage, error.code), { requestCredentialAdmission: true });
+    return Object.assign(new ConnectError(error.rawMessage, error.code, undefined, undefined, error.cause), { requestCredentialAdmission: true });
   }
   if (error instanceof ResponseCredentialError) {
     return Object.assign(new ConnectError(error.rawMessage, error.code), { responseCredentialAdmission: true });
