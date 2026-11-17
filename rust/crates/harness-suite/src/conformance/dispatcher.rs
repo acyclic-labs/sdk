@@ -3,7 +3,7 @@ use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_actors::local::{Error, State};
 use acyclic_harness_core::agent::{AgentHost, AgentPath};
 use acyclic_stream::StreamProviderExt as _;
-use acyclic_stream::{CommitMutation, StreamCategory, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{CommitMutation, StreamCategory, StreamPath, StreamProvider};
 use futures::TryFutureExt as _;
 use futures::future::Either;
 use std::sync::Arc;
