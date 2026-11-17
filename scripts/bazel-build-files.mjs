@@ -486,13 +486,18 @@ function buildFile(p) {
   // identity whichever runner ran it: `<package>` for the library, `<package>::bin/<name>` for a
   // binary, `<package>::<name>` for an integration test, `<package>::<kind>/<name>` for the rest.
   const profiles = PROFILES.filter(entry => entry.package === undefined || entry.package === p.name);
+  // Tools a test starts beyond its package's own executables, from
+  // [package.metadata.bazel.test-tools.<test>]: ENV = "@repo//:target". The runner names each
+  // executable by its Cargo variable, so the test finds it in runfiles without a host path.
+  const testTools = (p, test) => Object.fromEntries(Object.entries(p.metadata?.bazel?.["test-tools"]?.[test] ?? {}).map(([name, label]) => [label, name]));
   const test = (wanted, attrs, reads, binaries, id) => {
+    const tools = { ...binaries, ...testTools(p, wanted) };
     let name = wanted;
     while (names.has(name) || names.has(`${name}_cases`) || profiles.some(({ profile }) => names.has(`${name}_${profile}`))) name += "_test";
     names.add(name).add(`${name}_cases`);
     for (const { profile } of profiles) names.add(`${name}_${profile}`);
     const tags = reachesMount(p.id, [null, "dev"]) ? ["no-sandbox"] : [];
-    const isolated = (target, selection, extra) => ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(binaries).length ? q(binaries) : undefined], ["id", q(id)], ...selection, ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
+    const isolated = (target, selection, extra) => ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(tools).length ? q(tools) : undefined], ["id", q(id)], ...selection, ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
     rules.push(
       ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
       isolated(name, [["exclude", profiles.length ? q(profiles.map(({ pattern }) => pattern)) : undefined]], []),
