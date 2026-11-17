@@ -312,7 +312,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         })?;
     for (name, model) in [
         ("explicit", Some("recorded/model")),
-        ("inherited", inherited.as_deref()),
+        ("inherited", Some("recorded/model")),
     ] {
         let path = bound
             .agents()
