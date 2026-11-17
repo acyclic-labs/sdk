@@ -1597,3 +1597,59 @@ async fn manager_shrinks_source_before_encoding_under_a_finite_file_bound() -> R
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn projected_manager_keeps_the_selected_cut_without_a_recorded_prefix() -> Result<()> {
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let (provider, _) = counted_model(
+        65_536,
+        None,
+        [ScriptedTurn::Text(
+            r#"{"version":1,"drop_through":4,"summary":"retained fact"}"#.into(),
+        )],
+        [],
+    );
+    let executor = StockExecutor::new(
+        Model::new("fixture".into(), "projected-manager".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let source = crate::context::Context {
+        messages: std::iter::once(ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text("HEADER".into()),
+        })
+        .chain((0..4).map(|index| ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text(format!("FACT_{index}")),
+        }))
+        .collect(),
+        current_input_index: Some(4),
+        ..Default::default()
+    };
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("continue".into()),
+        selected_context: None,
+        max_steps: None,
+    };
+    let digest = crate::context::prefix_digest(&source, 5, None)?;
+    let execution = StockExecution::ordinary(&executor);
+    let (summary, _, _) = execution
+        .managed_summary(
+            journal.as_ref(),
+            (&input, 0),
+            &source,
+            &crate::context::CapacityCompaction::default(),
+            (5, None),
+            (0, None, digest),
+        )
+        .await?;
+    assert_eq!(
+        summary.source_messages, 4,
+        "a projected source has no request prefix to remove, so the selected cut is unchanged"
+    );
+    Ok(())
+}

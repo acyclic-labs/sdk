@@ -400,3 +400,86 @@ async fn paged_file_creation_retry_has_linear_work() -> Result<(), Box<dyn Error
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn recovery_requires_the_complete_creation_attribute_set() -> Result<(), Box<dyn Error>> {
+    let config = crate::VolumeInitialization {
+        config: VolumeConfig::portable(Lifecycle::Ephemeral),
+        access_policy: Some(crate::access::INITIAL_POLICY),
+    };
+    let operation = IdempotencyKey::from_bytes([0xe6; 16]).operation_id();
+    let cancellation = CancellationToken::new();
+    let files = [("/report.json", OwnedBytes::from_static(b"{\"ok\":true}"))];
+    let name = crate::kernel::AttributeName::new(
+        crate::kernel::AttributeClass::PosixXattr,
+        b"user.creation".to_vec(),
+    )?;
+    let attributes = vec![crate::CreationAttribute {
+        path: "/report.json".into(),
+        name: name.clone(),
+        value: OwnedBytes::from_static(b"metadata"),
+    }];
+    let fs = Fs::memory();
+    fs.create_workspace_with_operation::<_, (), WorkspaceError>(
+        "journal",
+        config,
+        crate::CreationOperation::populated_with_attributes(
+            operation,
+            &files,
+            attributes.clone(),
+        ),
+        budget()?,
+        &cancellation,
+        None,
+    )
+    .await?;
+    // A retry that omits the recorded attribute is not this creation.
+    let omitted = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "journal",
+            config,
+            crate::CreationOperation::populated(operation, &files),
+            read_only()?,
+            &cancellation,
+            None,
+        )
+        .await
+        .err()
+        .ok_or("a creation without its recorded attribute recovered")?;
+    assert!(
+        matches!(
+            omitted.error,
+            WorkspaceError::Filesystem(FsError::CreationRejected)
+        ),
+        "{:?}",
+        omitted.error
+    );
+    // A retry naming an attribute for a file the creation does not hold is
+    // rejected exactly as a fresh creation rejects it.
+    let missing = vec![crate::CreationAttribute {
+        path: "/missing.json".into(),
+        name,
+        value: OwnedBytes::from_static(b"metadata"),
+    }];
+    let rejected = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "journal",
+            config,
+            crate::CreationOperation::populated_with_attributes(operation, &files, missing),
+            read_only()?,
+            &cancellation,
+            None,
+        )
+        .await
+        .err()
+        .ok_or("a creation with an attribute for a missing file recovered")?;
+    assert!(
+        matches!(
+            rejected.error,
+            WorkspaceError::Filesystem(FsError::CreationRejected)
+        ),
+        "{:?}",
+        rejected.error
+    );
+    Ok(())
+}
