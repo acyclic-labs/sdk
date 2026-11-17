@@ -165,8 +165,24 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
             .flat_map(|message| message.content.parts())
             .filter(|part| matches!(part, ModelContentPart::ToolCall(_)))
             .count();
+        let mut failed = failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut step = 0;
         while let Some(calls) = plan.steps.get(step) {
+            if calls.is_empty() {
+                // An empty step is one model answer with no calls. A one-shot
+                // failure on it must be emitted before the plan advances.
+                if plan
+                    .fail_once
+                    .as_ref()
+                    .is_some_and(|(at, _)| *at == step && !failed.contains(&plan.tag))
+                {
+                    break;
+                }
+                step += 1;
+                continue;
+            }
             if made < calls.len() {
                 break;
             }
@@ -180,9 +196,6 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
             .iter()
             .map(|call| ScriptedEvent::Event(ModelEvent::ToolCall(call.clone())))
             .collect();
-        let mut failed = failed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((_, failure)) = plan
             .fail_once
             .as_ref()
