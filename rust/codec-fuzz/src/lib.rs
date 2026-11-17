@@ -302,7 +302,7 @@ pub fn stream_persistence(bytes: &[u8]) {
 }
 
 pub fn ids(bytes: &[u8]) {
-    acyclic_machines::identity_codec_fuzz::check(bytes);
+    assert!(acyclic_machines::identity_codec_fuzz::check(bytes).is_ok());
     match acyclic_fs::ObjectId::from_prefix(bytes) {
         Ok((id, tail)) => {
             let encoded = id.to_bytes();

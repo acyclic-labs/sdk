@@ -16,20 +16,25 @@ fn capabilities() -> BTreeSet<Capability> {
     ])
 }
 
-fn project<W, T>(bytes: &[u8], decode: impl Fn(W) -> Result<T, ProviderError>) -> Option<T>
+fn project<W, T>(
+    bytes: &[u8],
+    decode: impl Fn(W) -> Result<T, ProviderError>,
+) -> Result<Option<T>, Box<dyn std::error::Error>>
 where
     W: Message + Default,
     T: Debug + PartialEq,
 {
-    let wire = W::decode(bytes).ok()?;
+    let Ok(wire) = W::decode(bytes) else {
+        return Ok(None);
+    };
     let canonical = wire.encode_to_vec();
     let result = decode(wire);
     assert_eq!(
-        decode(W::decode(canonical.as_slice()).expect("writer output decodes")),
+        decode(W::decode(canonical.as_slice())?),
         result,
         "protobuf spelling cannot change semantic admission",
     );
-    result.ok()
+    Ok(result.ok())
 }
 
 fn identity<T: Copy>(
@@ -53,14 +58,15 @@ fn identity<T: Copy>(
 
 /// Feed the generated protobuf writers with original public identity bytes and
 /// their malformed descendants, using the same oracle as the protobuf targets.
-pub fn check_identities(bytes: &[u8]) {
+pub fn check_identities(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! check {
         ($($name:ident),+ $(,)?) => { $(
             let value = wire::$name { value: bytes.to_vec() };
-            check(concat!("acyclic.machines.v1.", stringify!($name)), &value.encode_to_vec());
+            check(concat!("acyclic.machines.v1.", stringify!($name)), &value.encode_to_vec())?;
         )+ };
     }
     check!(MachineId, CheckpointId, OperationId, IdempotencyKey);
+    Ok(())
 }
 
 fn machine_page(
@@ -103,8 +109,8 @@ fn machine_page(
 
 /// Admit arbitrary protobuf output with the caller's retained identity. These
 /// checks do not dispatch a request, replace a provider, or wait for a producer.
-pub fn check(name: &str, bytes: &[u8]) {
-    guest::check(name, bytes);
+pub fn check(name: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    guest::check(name, bytes)?;
     match name {
         "acyclic.machines.v1.MachineId" => {
             let _ = project::<wire::MachineId, _>(bytes, |value| {
@@ -113,7 +119,7 @@ pub fn check(name: &str, bytes: &[u8]) {
                     decode_machine(Some(&value)),
                     MachineId::as_bytes,
                 )
-            });
+            })?;
         }
         "acyclic.machines.v1.CheckpointId" => {
             let _ = project::<wire::CheckpointId, _>(bytes, |value| {
@@ -122,7 +128,7 @@ pub fn check(name: &str, bytes: &[u8]) {
                     decode_checkpoint(Some(&value)),
                     CheckpointId::as_bytes,
                 )
-            });
+            })?;
         }
         "acyclic.machines.v1.OperationId" => {
             let _ = project::<wire::OperationId, _>(bytes, |value| {
@@ -131,18 +137,18 @@ pub fn check(name: &str, bytes: &[u8]) {
                     decode_operation(Some(&value)),
                     OperationId::as_bytes,
                 )
-            });
+            })?;
         }
         "acyclic.machines.v1.IdempotencyKey" => {
             let _ = project::<wire::IdempotencyKey, _>(bytes, |value| {
                 identity(&value.value, decode_uuid(&value.value), |id| *id.as_bytes())
-            });
+            })?;
         }
         "acyclic.machines.v1.Image" => {
             if let Some(image) =
-                project::<wire::Image, _>(bytes, |value| decode_image(Some(&value)))
+                project::<wire::Image, _>(bytes, |value| decode_image(Some(&value)))?
             {
-                let encoded = encode_image(&image).expect("admitted image is representable");
+                let encoded = encode_image(&image)?;
                 assert_eq!(decode_image(Some(&encoded)), Ok(image));
             }
         }
@@ -150,9 +156,8 @@ pub fn check(name: &str, bytes: &[u8]) {
             let available = capabilities();
             if let Some(policy) = project::<wire::CompatibilityPolicy, _>(bytes, |value| {
                 decode_compatibility(Some(&value), &available)
-            }) {
-                let encoded =
-                    encode_compatibility(&policy).expect("admitted policy is representable");
+            })? {
+                let encoded = encode_compatibility(&policy)?;
                 if let CompatibilityPolicy::Require(_) = policy {
                     assert!(decode_compatibility(Some(&encoded), &BTreeSet::new()).is_err());
                 }
@@ -160,47 +165,45 @@ pub fn check(name: &str, bytes: &[u8]) {
             }
         }
         "acyclic.machines.v1.SuspensionPolicy" => {
-            if let Some(policy) =
-                project::<wire::SuspensionPolicy, _>(bytes, |value| decode_suspension(Some(&value)))
-            {
-                let encoded =
-                    encode_suspension(policy).expect("admitted duration is representable");
+            if let Some(policy) = project::<wire::SuspensionPolicy, _>(bytes, |value| {
+                decode_suspension(Some(&value))
+            })? {
+                let encoded = encode_suspension(policy)?;
                 assert_eq!(decode_suspension(Some(&encoded)), Ok(policy));
             }
         }
         "acyclic.machines.v1.ExpirationPolicy" => {
-            if let Some(policy) =
-                project::<wire::ExpirationPolicy, _>(bytes, |value| decode_expiration(Some(&value)))
-            {
-                let encoded =
-                    encode_expiration(policy).expect("admitted duration is representable");
+            if let Some(policy) = project::<wire::ExpirationPolicy, _>(bytes, |value| {
+                decode_expiration(Some(&value))
+            })? {
+                let encoded = encode_expiration(policy)?;
                 assert_eq!(decode_expiration(Some(&encoded)), Ok(policy));
             }
         }
         "acyclic.machines.v1.ImageQualification" => {
             if let Some(qualification) = project::<wire::ImageQualification, _>(bytes, |value| {
                 decode_qualification(value, None)
-            }) {
-                let wire = wire::ImageQualification::decode(bytes).unwrap();
+            })? {
+                let wire = wire::ImageQualification::decode(bytes)?;
                 assert_eq!(
                     decode_qualification(wire.clone(), Some(&qualification.image)),
                     Ok(qualification.clone())
                 );
-                let foreign = if qualification.image == Image::custom([4; 32]).unwrap() {
-                    Image::custom([5; 32]).unwrap()
+                let foreign = if qualification.image == Image::custom([4; 32])? {
+                    Image::custom([5; 32])?
                 } else {
-                    Image::custom([4; 32]).unwrap()
+                    Image::custom([4; 32])?
                 };
                 assert!(decode_qualification(wire, Some(&foreign)).is_err());
             }
         }
         "acyclic.machines.v1.MachineContract" => {
             let _ =
-                project::<wire::MachineContract, _>(bytes, |value| decode_contract(Some(&value)));
+                project::<wire::MachineContract, _>(bytes, |value| decode_contract(Some(&value)))?;
         }
         "acyclic.machines.v1.MachineState" => {
             if let Some(original) =
-                project::<wire::MachineState, _>(bytes, MachineObservation::try_from)
+                project::<wire::MachineState, _>(bytes, MachineObservation::try_from)?
             {
                 let foreign = if original.id == MachineId::from_digest([9; 32]) {
                     MachineId::from_digest([1; 32])
@@ -208,7 +211,7 @@ pub fn check(name: &str, bytes: &[u8]) {
                     MachineId::from_digest([9; 32])
                 };
                 assert!(
-                    decode_machine_observation(wire::MachineState::decode(bytes).unwrap(), foreign)
+                    decode_machine_observation(wire::MachineState::decode(bytes)?, foreign)
                         .is_err()
                 );
             }
@@ -216,14 +219,11 @@ pub fn check(name: &str, bytes: &[u8]) {
         "acyclic.machines.v1.MachinePage" => {
             for limit in [1, MAX_PAGE_SIZE] {
                 if let Some(original) =
-                    project::<wire::MachinePage, _>(bytes, |page| machine_page(page, None, limit))
+                    project::<wire::MachinePage, _>(bytes, |page| machine_page(page, None, limit))?
                 {
                     if let Some(first) = original.machines.first() {
-                        let _ = machine_page(
-                            wire::MachinePage::decode(bytes).unwrap(),
-                            Some(first.id),
-                            limit,
-                        );
+                        let _ =
+                            machine_page(wire::MachinePage::decode(bytes)?, Some(first.id), limit);
                     }
                 }
             }
@@ -231,18 +231,15 @@ pub fn check(name: &str, bytes: &[u8]) {
         "acyclic.machines.v1.CheckpointState" => {
             if let Some(original) = project::<wire::CheckpointState, _>(bytes, |value| {
                 decode_checkpoint_observation(&value, decode_checkpoint(value.checkpoint.as_ref())?)
-            }) {
+            })? {
                 let foreign = if original.id == CheckpointId::from_digest([9; 32]) {
                     CheckpointId::from_digest([8; 32])
                 } else {
                     CheckpointId::from_digest([9; 32])
                 };
                 assert!(
-                    decode_checkpoint_observation(
-                        &wire::CheckpointState::decode(bytes).unwrap(),
-                        foreign
-                    )
-                    .is_err(),
+                    decode_checkpoint_observation(&wire::CheckpointState::decode(bytes)?, foreign)
+                        .is_err(),
                     "original checkpoint must refuse a substituted caller identity"
                 );
             }
@@ -250,14 +247,14 @@ pub fn check(name: &str, bytes: &[u8]) {
         "acyclic.machines.v1.MachineEvent" => {
             if let Some(original) = project::<wire::MachineEvent, _>(bytes, |value| {
                 decode_event(&value, decode_machine(value.machine.as_ref())?)
-            }) {
+            })? {
                 let foreign = if original.machine == MachineId::from_digest([9; 32]) {
                     MachineId::from_digest([8; 32])
                 } else {
                     MachineId::from_digest([9; 32])
                 };
                 assert!(
-                    decode_event(&wire::MachineEvent::decode(bytes).unwrap(), foreign).is_err(),
+                    decode_event(&wire::MachineEvent::decode(bytes)?, foreign).is_err(),
                     "original machine event must refuse a substituted caller identity"
                 );
             }
@@ -265,18 +262,15 @@ pub fn check(name: &str, bytes: &[u8]) {
         "acyclic.machines.v1.OperationState" => {
             if let Some(original) = project::<wire::OperationState, _>(bytes, |value| {
                 decode_operation_observation(&value, decode_operation(value.operation.as_ref())?)
-            }) {
+            })? {
                 let foreign = if original.id == OperationId::from_digest([9; 32]) {
                     OperationId::from_digest([8; 32])
                 } else {
                     OperationId::from_digest([9; 32])
                 };
                 assert!(
-                    decode_operation_observation(
-                        &wire::OperationState::decode(bytes).unwrap(),
-                        foreign
-                    )
-                    .is_err(),
+                    decode_operation_observation(&wire::OperationState::decode(bytes)?, foreign)
+                        .is_err(),
                     "original operation must refuse a substituted caller identity"
                 );
             }
@@ -285,10 +279,10 @@ pub fn check(name: &str, bytes: &[u8]) {
             let machine = MachineId::from_digest([1; 32]);
             if project::<wire::UsageReceipt, _>(bytes, |value| {
                 decode_usage_receipt(value, machine, 1, 2)
-            })
+            })?
             .is_some()
             {
-                let wire = wire::UsageReceipt::decode(bytes).unwrap();
+                let wire = wire::UsageReceipt::decode(bytes)?;
                 assert!(
                     decode_usage_receipt(wire.clone(), MachineId::from_digest([9; 32]), 1, 2)
                         .is_err()
@@ -299,6 +293,7 @@ pub fn check(name: &str, bytes: &[u8]) {
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// The public observation writer and reader must retain the original producer's
@@ -412,7 +407,10 @@ pub fn seeds() -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, ProviderErr
     seed!(
         "OperationId",
         "canonical",
-        request.operation.as_ref().unwrap()
+        request
+            .operation
+            .as_ref()
+            .ok_or("seed operation is absent")?
     );
     seed!("OperationRequest", "canonical", request);
     for (name, image) in [
