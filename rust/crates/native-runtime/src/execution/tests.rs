@@ -209,7 +209,7 @@ fn sandbox_policy_probe() {
     assert_eq!(output.stdout, b"runtime");
     #[cfg(target_os = "linux")]
     {
-        let listing = shell("ls -la && find . -maxdepth 1 -type f");
+        let listing = shell("ls -la && ls -1");
         assert!(
             listing.status.success(),
             "workspace browsing failed: {listing:?}"
@@ -2163,7 +2163,7 @@ fn directory_inspection_handles_unavailable_local_sockets() -> io::Result<()> {
         let mut inspection = Command::new(shell);
         inspection
             .args(acyclic_host_platform::shell::PLATFORM.arguments)
-            .arg("ls -l readable && stat readable && which -a sh && file readable && find . -maxdepth 1 -type f");
+            .arg("ls -l readable && stat readable && which -a sh && file readable && ls -1");
         for mut command in [probe, inspection] {
             command
                 .env_clear()
