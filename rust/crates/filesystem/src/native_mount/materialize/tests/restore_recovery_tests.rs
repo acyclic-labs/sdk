@@ -107,7 +107,7 @@ async fn observe_multipath_failure<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     assert!(matches!(failed.error, MaterializeError::MissingPath));
     assert_eq!(std::fs::read(output.path().join("a-present"))?, b"first");
     let failed = ObservedReadReceipt {
-        work: *failed.work,
+        work: *failed.work().unwrap(),
         source_reads: failed_source_reads,
     };
     eprintln!(
@@ -319,7 +319,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     .err()
     .ok_or("zero materialization budget was accepted")?;
     assert!(matches!(zero.error, MaterializeError::Work(_)));
-    assert_eq!(*zero.work, WorkCounters::UNCHARGED);
+    assert_eq!(*zero.work().unwrap(), WorkCounters::UNCHARGED);
     assert!(std::fs::read_dir(zero_output.path())?.next().is_none());
 
     let no_read_output = tempfile::tempdir()?;
@@ -357,7 +357,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     .err()
     .ok_or("cancelled materialization was accepted")?;
     assert!(matches!(cancelled.error, MaterializeError::Cancelled(_)));
-    assert_eq!(*cancelled.work, WorkCounters::UNCHARGED);
+    assert_eq!(*cancelled.work().unwrap(), WorkCounters::UNCHARGED);
     assert!(std::fs::read_dir(cancelled_output.path())?.next().is_none());
 
     let no_write_output = tempfile::tempdir()?;

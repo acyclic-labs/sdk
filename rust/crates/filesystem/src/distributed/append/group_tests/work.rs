@@ -24,7 +24,7 @@ impl AuthorityGuard for OriginalWork {
             work as *mut AuthorityWork<'_> as usize, self.address,
             "group admission replaced the original work frame"
         );
-        assert!(work.spent().items_examined >= self.prior_items);
+        assert!(work.spent().unwrap().items_examined >= self.prior_items);
         assert!(work.allocations.live_bytes() >= self.prior_live);
         if self.observed_items.is_none() {
             work.charge(WorkCounters {
@@ -36,7 +36,7 @@ impl AuthorityGuard for OriginalWork {
                     .map_err(crate::async_storage::authority_error)?,
             );
             work.hold_opaque(31)?;
-            self.observed_items = Some(work.spent().items_examined);
+            self.observed_items = Some(work.spent().unwrap().items_examined);
         }
         if self.refuse {
             return Err(AuthorityError::Owner(AuthorityStoreError::RejectedStatic(
@@ -91,7 +91,7 @@ pub(super) async fn original_work_survives_group_guard_and_withdrawal() -> TestR
             let producer = (exit != 3).then_some(producer);
             let mut guard = OriginalWork {
                 address: &mut work as *mut AuthorityWork<'_> as usize,
-                prior_items: work.spent().items_examined,
+                prior_items: work.spent().unwrap().items_examined,
                 prior_live: work.allocations.live_bytes(),
                 observed_items: None,
                 retained: None,
@@ -119,7 +119,7 @@ pub(super) async fn original_work_survives_group_guard_and_withdrawal() -> TestR
                 .ok_or("original guard was not entered")?;
             assert!(observed >= guard.prior_items + 17);
             assert!(
-                work.spent().items_examined >= observed,
+                work.spent().unwrap().items_examined >= observed,
                 "completed group work disappeared on refusal or withdrawal"
             );
             assert!(guard.retained.is_some());
@@ -142,12 +142,12 @@ pub(super) async fn original_work_survives_group_guard_and_withdrawal() -> TestR
                     result,
                     Some(Ok(AppendGroupOutcome::Published { .. }))
                 ));
-                assert_eq!(work.spent().backend_write_operations, 1);
+                assert_eq!(work.spent().unwrap().backend_write_operations, 1);
             } else {
                 if exit != 2 {
                     assert!(matches!(result, Some(Err(AuthorityError::Owner(_)))));
                 }
-                assert_eq!(work.spent().backend_write_operations, 0);
+                assert_eq!(work.spent().unwrap().backend_write_operations, 0);
                 let mut observer = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
                 assert_eq!(
                     store.head(authority, &mut observer).await?,

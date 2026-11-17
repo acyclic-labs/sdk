@@ -482,7 +482,7 @@ fn sync_rebase_conflict_limit_and_truncation_are_exact() -> Result<(), Box<dyn s
     .err()
     .ok_or("zero conflict limit was accepted")?;
     assert!(matches!(zero.error, RebaseError::ZeroConflictLimit));
-    assert_eq!(*zero.work, WorkCounters::default());
+    assert_eq!(*zero.work().unwrap(), WorkCounters::default());
     assert_eq!(probe.calls.get(), 0);
 
     let receipt = classify_rebase(

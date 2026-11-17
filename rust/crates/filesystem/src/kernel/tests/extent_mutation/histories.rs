@@ -313,13 +313,16 @@ async fn generated_sparse_histories_match_independent_byte_model()
                 let failure = result.expect_err("extent admission differs from byte model");
                 refusal_mismatches[refusal] |= std::mem::discriminant(&failure.error)
                     != std::mem::discriminant(&expected_error);
-                assert_eq!(failure.work.items_examined, u64::try_from(mutations.len())?);
-                assert_eq!(failure.work.allocation_operations, 0);
-                assert_eq!(failure.work.peak_allocation_bytes, 0);
-                assert_eq!(failure.work.backend_read_operations, 0);
-                assert_eq!(failure.work.backend_write_operations, 0);
-                assert_eq!(failure.work.object_bytes_read, 0);
-                assert_eq!(failure.work.object_bytes_written, 0);
+                assert_eq!(
+                    failure.work.as_deref().unwrap().items_examined,
+                    u64::try_from(mutations.len())?
+                );
+                assert_eq!(failure.work.as_deref().unwrap().allocation_operations, 0);
+                assert_eq!(failure.work.as_deref().unwrap().peak_allocation_bytes, 0);
+                assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+                assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
+                assert_eq!(failure.work.as_deref().unwrap().object_bytes_read, 0);
+                assert_eq!(failure.work.as_deref().unwrap().object_bytes_written, 0);
                 continue;
             }
             let receipt = result?;

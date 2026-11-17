@@ -384,7 +384,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
         panic!("cancelled parent read must fail");
     };
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
 
     // A parent digest is scalar: both decoded roots and its encoding must
     // retire before the public operation returns, preserving earlier backing.
@@ -457,7 +457,7 @@ async fn generation_parents_keep_original_work_and_result_custody()
         .await
         .unwrap_err();
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::UNCHARGED);
+    assert_eq!(*failure.work().unwrap(), WorkCounters::UNCHARGED);
 
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -754,7 +754,7 @@ async fn extent_plans_keep_original_work_and_output_custody()
         }
         .unwrap_err();
         assert!(matches!(failure.error, FsError::Cancelled(_)));
-        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
     }
     Ok(())
 }
@@ -1004,7 +1004,7 @@ async fn workspace_extent_projection_keeps_original_work_and_single_output_backi
         panic!("cancelled extent planning must fail");
     };
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
 
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1141,7 +1141,7 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
             panic!("cancelled directory listing must fail");
         };
         assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
     }
     for exact_payload in [false, true] {
         for reads in [0, budget.backend_read_operations] {

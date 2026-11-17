@@ -73,7 +73,7 @@ async fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn st
         .err()
         .ok_or("pre-cancelled asynchronous blob read unexpectedly succeeded")?;
     assert!(matches!(failure.error, BlobReadError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -325,7 +325,7 @@ async fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission
         failure.error,
         BlobReadError::Storage(ObjectStoreError::Corrupt)
     ));
-    assert!(failure.work.backend_read_operations > 0);
+    assert!(failure.work.as_deref().unwrap().backend_read_operations > 0);
     Ok(())
 }
 
@@ -543,7 +543,7 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     .err()
     .ok_or("wrong blob root kind unexpectedly succeeded")?;
     assert!(matches!(wrong.error, BlobReadError::WrongRootKind));
-    assert_eq!(*wrong.work, WorkCounters::default());
+    assert_eq!(*wrong.work().unwrap(), WorkCounters::default());
     let invalid_limits = DecodeLimits {
         maximum_page_height: 0,
         ..DecodeLimits::default()
@@ -563,7 +563,7 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     .err()
     .ok_or("invalid blob limits unexpectedly succeeded")?;
     assert!(matches!(invalid.error, BlobReadError::InvalidLimits));
-    assert_eq!(*invalid.work, WorkCounters::default());
+    assert_eq!(*invalid.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -654,9 +654,9 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
         ),
         "{failure:?}"
     );
-    assert!(failure.work.peak_allocation_bytes <= maximum);
-    assert_eq!(failure.work.backend_read_operations, 1);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert!(failure.work.as_deref().unwrap().peak_allocation_bytes <= maximum);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 1);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -745,7 +745,7 @@ async fn pre_cancelled_async_blob_build_performs_zero_work()
     .err()
     .ok_or("cancelled blob build unexpectedly succeeded")?;
     assert!(matches!(failure.error, BlobBuildError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     assert_eq!(source.position(), 0);
     Ok(())
 }

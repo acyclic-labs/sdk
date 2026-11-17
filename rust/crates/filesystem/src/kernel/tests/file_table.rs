@@ -81,9 +81,9 @@ fn kind_payload_mismatches_fail_before_identity() {
     )
     .expect_err("invalid record must reject without allocation");
     assert!(matches!(failure.error, EncodeError::Canonical(_)));
-    assert_eq!(failure.work.items_examined, 1);
-    assert_eq!(failure.work.allocation_operations, 0);
-    assert_eq!(failure.work.bytes_encoded, 0);
+    assert_eq!(failure.work.as_deref().unwrap().items_examined, 1);
+    assert_eq!(failure.work.as_deref().unwrap().allocation_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().bytes_encoded, 0);
 }
 
 #[test]
@@ -689,7 +689,7 @@ async fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::
         .err()
         .ok_or("pre-cancelled asynchronous file lookup unexpectedly succeeded")?;
     assert!(matches!(failure.error, FileRecordReadError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -742,7 +742,7 @@ async fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
                 failure.error,
                 FileRecordReadError::Work(WorkError::BudgetExceeded { .. })
             ));
-            assert_eq!(*failure.work, WorkCounters::default());
+            assert_eq!(*failure.work().unwrap(), WorkCounters::default());
         }
         assert_eq!(owner.take_completed_data_work(), WorkCounters::default());
     }
@@ -772,7 +772,7 @@ async fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
     .expect_err("cold batch cancellation");
     for failure in [point, batch] {
         assert!(matches!(failure.error, FileRecordReadError::Cancelled));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
     assert_eq!(owner.take_completed_data_work(), WorkCounters::default());
     Ok(())
@@ -911,7 +911,7 @@ async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
         failure.error,
         FileRecordReadError::ChildBoundsMismatch
     ));
-    assert_eq!(failure.work.page_reads, 2);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 2);
     Ok(())
 }
 

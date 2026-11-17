@@ -31,7 +31,7 @@ async fn probe_limits_reject_oversized_dependencies_before_backend_work()
         directory.error,
         AuthenticatedProbeError::DirectoryPageTooLarge
     ));
-    assert_eq!(*directory.work, WorkCounters::default());
+    assert_eq!(*directory.work().unwrap(), WorkCounters::default());
 
     let empty = probe
         .probe_async(
@@ -51,7 +51,7 @@ async fn probe_limits_reject_oversized_dependencies_before_backend_work()
         empty.error,
         AuthenticatedProbeError::InvalidDependency(DependencyError::EmptyContentRange)
     ));
-    assert_eq!(*empty.work, WorkCounters::default());
+    assert_eq!(*empty.work().unwrap(), WorkCounters::default());
 
     let overflow = probe
         .probe_async(
@@ -71,7 +71,7 @@ async fn probe_limits_reject_oversized_dependencies_before_backend_work()
         overflow.error,
         AuthenticatedProbeError::InvalidDependency(DependencyError::RangeOverflow)
     ));
-    assert_eq!(*overflow.work, WorkCounters::default());
+    assert_eq!(*overflow.work().unwrap(), WorkCounters::default());
 
     let zero_page = probe
         .probe_async(
@@ -91,7 +91,7 @@ async fn probe_limits_reject_oversized_dependencies_before_backend_work()
         zero_page.error,
         AuthenticatedProbeError::InvalidDependency(DependencyError::ZeroDirectoryPageLimit)
     ));
-    assert_eq!(*zero_page.work, WorkCounters::default());
+    assert_eq!(*zero_page.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -199,10 +199,10 @@ async fn authenticated_batch_admits_dependency_copy_before_output_push()
             failure.error,
             AuthenticatedProbeError::Work(WorkError::BudgetExceeded { .. })
         ));
-        assert_eq!(failure.work.bytes_copied, 0);
-        assert_eq!(failure.work.items_returned, 0);
-        assert_eq!(failure.work.backend_read_operations, 0);
-        assert_eq!(failure.work.allocation_operations, 1);
+        assert_eq!(failure.work.as_deref().unwrap().bytes_copied, 0);
+        assert_eq!(failure.work.as_deref().unwrap().items_returned, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().allocation_operations, 1);
     }
     let copied = usize_to_u64(size_of::<Dependency>());
     let receipt = (probe.capture_records_many_async(

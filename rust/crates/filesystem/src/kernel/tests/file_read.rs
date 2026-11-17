@@ -93,7 +93,7 @@ async fn invalid_inline_range_fails_before_work() -> Result<(), Box<dyn std::err
         return Err("invalid range succeeded".into());
     };
     assert!(matches!(failure.error, FileRangeReadError::InvalidRange));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -121,7 +121,7 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
     .err()
     .ok_or("cancelled read succeeded")?;
     assert!(matches!(cancelled.error, FileRangeReadError::Cancelled));
-    assert_eq!(*cancelled.work, WorkCounters::default());
+    assert_eq!(*cancelled.work().unwrap(), WorkCounters::default());
 
     let metadata = inline_record(b"")?.metadata;
     let not_regular = FileRecord {
@@ -156,7 +156,7 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
     .err()
     .ok_or("non-regular read succeeded")?;
     assert!(matches!(rejected.error, FileRangeReadError::NotRegular));
-    assert_eq!(*rejected.work, WorkCounters::default());
+    assert_eq!(*rejected.work().unwrap(), WorkCounters::default());
 
     let mut mismatched = inline_record(b"abc")?;
     mismatched.payload = FilePayload::SymbolicLink {
@@ -185,7 +185,7 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
     .err()
     .ok_or("payload-mismatched read succeeded")?;
     assert!(matches!(rejected.error, FileRangeReadError::NotRegular));
-    assert_eq!(*rejected.work, WorkCounters::default());
+    assert_eq!(*rejected.work().unwrap(), WorkCounters::default());
 
     Ok(())
 }
@@ -220,7 +220,7 @@ async fn inline_budget_rejects_before_copy_or_allocation() -> Result<(), Box<dyn
             ..
         })
     ));
-    assert_eq!(*rejected.work, WorkCounters::default());
+    assert_eq!(*rejected.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 

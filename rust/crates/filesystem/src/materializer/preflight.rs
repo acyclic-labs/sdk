@@ -391,7 +391,7 @@ mod tests {
             ),
             "{result:?}"
         );
-        assert_eq!(original.receipt().bytes_encoded, 0);
+        assert_eq!(original.receipt().unwrap().bytes_encoded, 0);
         assert_eq!(std::fs::read(directory.path().join("known"))?, b"physical");
 
         let original =
@@ -401,11 +401,14 @@ mod tests {
         assert!(!host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
         assert_eq!(original.live_allocation_bytes(), retained);
         assert_eq!(
-            original.receipt().items_returned,
+            original.receipt().unwrap().items_returned,
             0,
             "membership must not enumerate unrelated authored children"
         );
-        assert_eq!(original.receipt().bytes_encoded, 2 * "known".len() as u64);
+        assert_eq!(
+            original.receipt().unwrap().bytes_encoded,
+            2 * "known".len() as u64
+        );
         use std::os::unix::ffi::OsStrExt as _;
         // Native volumes may require valid Unicode. Keep the unrepresentable
         // byte-name control at the encoding boundary before any host I/O.
@@ -462,7 +465,7 @@ mod tests {
         .map_err(|(error, _)| error)?;
         let root = HostRoot::open(directory.path(), &mut &original)?;
         assert!(!host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
-        assert_eq!(original.receipt().bytes_encoded, 0);
+        assert_eq!(original.receipt().unwrap().bytes_encoded, 0);
 
         let stopped = crate::CancellationToken::new();
         let stopped_work =

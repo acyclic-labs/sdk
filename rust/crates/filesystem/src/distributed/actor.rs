@@ -812,7 +812,7 @@ mod tests {
                     // A fresh exact-head operation is admitted by the existing
                     // atomic locator condition, with no preflight authority I/O.
                     assert_eq!(
-                        work.spent().authority_records_read,
+                        work.spent().unwrap().authority_records_read,
                         0,
                         "owned journal projection resampled its head or gate"
                     );
@@ -919,7 +919,7 @@ mod tests {
         let ReservationOutcome::Reserved(reservation) = reservation else {
             return Err("reservation rejected".into());
         };
-        let writes = work.spent().backend_write_operations;
+        let writes = work.spent().unwrap().backend_write_operations;
         assert!(matches!(
             store
                 .compare_and_append(requests[1].clone(), &mut work, None::<&mut ()>)
@@ -927,7 +927,7 @@ mod tests {
             FsAppendOutcome::Fenced { .. }
         ));
         assert_eq!(
-            work.spent().backend_write_operations,
+            work.spent().unwrap().backend_write_operations,
             writes,
             "reservation was discovered only by a rejected publication append"
         );

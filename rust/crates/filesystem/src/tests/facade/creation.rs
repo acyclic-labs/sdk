@@ -12,7 +12,7 @@ fn cancelled<T>(result: Result<OperationReceipt<T>, OperationFailure<FsError>>) 
         source = error.source();
     }
     assert!(cancellation, "unexpected error: {:?}", failure.error);
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
 }
 
 #[tokio::test]
@@ -172,7 +172,7 @@ async fn unsupported_semantics_reject_before_backend_work() -> TestResult {
         .err()
         .ok_or("durable memory volume succeeded")?;
     assert!(matches!(failure.error, FsError::UnsupportedDurability));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 

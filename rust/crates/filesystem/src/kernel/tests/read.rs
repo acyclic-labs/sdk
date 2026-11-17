@@ -135,7 +135,7 @@ async fn zero_height_limit_fails_without_backend_work() -> Result<(), Box<dyn st
     .err()
     .ok_or("zero-height lookup unexpectedly succeeded")?;
     assert!(matches!(failure.error, TreeReadError::InvalidHeightLimit));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -203,7 +203,7 @@ async fn pre_cancelled_async_lookup_reads_nothing() -> Result<(), Box<dyn std::e
         .err()
         .ok_or("pre-cancelled asynchronous lookup unexpectedly succeeded")?;
     assert!(matches!(failure.error, TreeReadError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -309,7 +309,7 @@ async fn batch_cancellation_precedes_backend_work() -> Result<(), Box<dyn std::e
     .err()
     .ok_or("pre-cancelled batch unexpectedly succeeded")?;
     assert!(matches!(failure.error, TreeReadError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
 
     Ok(())
 }

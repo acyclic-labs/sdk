@@ -64,7 +64,7 @@ async fn content_digest_is_layout_independent_and_hash_budget_is_exact()
             maximum,
         }) if observed == hash_bytes && maximum == hash_bytes - 1
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -112,7 +112,7 @@ fn canonical_content_range_surface_matches_golden_vector_and_fails_before_work()
     assert!(
         cases
             .iter()
-            .all(|failure| *failure.work == WorkCounters::default())
+            .all(|failure| *failure.work().unwrap() == WorkCounters::default())
     );
     Ok(())
 }
@@ -161,7 +161,7 @@ async fn inline_content_probe_rejects_overflow_and_eof_before_hashing()
                 AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange)
             ));
         }
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
     let exact = probe
         .capture_record_async(
@@ -395,7 +395,7 @@ async fn content_dependencies_stream_past_byte_and_span_pages()
             failure.error,
             AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange)
         ));
-        assert_eq!(*failure.work, WorkCounters::UNCHARGED);
+        assert_eq!(*failure.work().unwrap(), WorkCounters::UNCHARGED);
     }
     let region = DependencyRegion::ContentRange {
         file_id: record.file_id,

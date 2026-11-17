@@ -266,7 +266,7 @@ async fn import_keeps_cumulative_work_live_backing_and_cancelled_prefix()
                 counter: observed, ..
             })) if observed == counter
         ));
-        failure.work.verify(bound)?;
+        failure.work.as_deref().unwrap().verify(bound)?;
         assert!(matches!(
             limited
                 .read(manifest.objects[1], 1024, &mut reference)
@@ -312,7 +312,7 @@ async fn import_keeps_cumulative_work_live_backing_and_cancelled_prefix()
                 ObjectStoreError::Rejected(ref cause)
             ) if cause == "cache fill producer lost"));
         }
-        assert_eq!(*failure.work, first);
+        assert_eq!(*failure.work().unwrap(), first);
         let read = paused
             .inner
             .read(manifest.objects[0], 1024, &mut reference)
@@ -364,7 +364,7 @@ async fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
         invalid.error,
         GenerationTransferError::InvalidCursor
     ));
-    assert_eq!(*invalid.work, WorkCounters::default());
+    assert_eq!(*invalid.work().unwrap(), WorkCounters::default());
 
     cancellation.cancel();
     let cancelled = (import_generation_batch_async(
@@ -383,7 +383,7 @@ async fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
         cancelled.error,
         GenerationTransferError::Cancelled(_)
     ));
-    assert_eq!(*cancelled.work, WorkCounters::default());
+    assert_eq!(*cancelled.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -410,7 +410,7 @@ async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
         .err()
         .ok_or("zero export bound was accepted")?;
         assert!(matches!(failure.error, GenerationTransferError::EmptyBatch));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
 
     let terminal = (import_generation_batch_async(
@@ -446,7 +446,7 @@ async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
         budget_failure.error,
         GenerationTransferError::Work(_)
     ));
-    assert_eq!(*budget_failure.work, WorkCounters::default());
+    assert_eq!(*budget_failure.work().unwrap(), WorkCounters::default());
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
@@ -466,7 +466,10 @@ async fn transfer_page_bounds_are_total_and_terminal_import_is_idempotent()
         cancellation_failure.error,
         GenerationTransferError::Cancelled(_)
     ));
-    assert_eq!(*cancellation_failure.work, WorkCounters::default());
+    assert_eq!(
+        *cancellation_failure.work().unwrap(),
+        WorkCounters::default()
+    );
     Ok(())
 }
 
@@ -524,7 +527,7 @@ async fn import_rejects_every_noncanonical_page_before_backend_work()
             std::mem::discriminant(&failure.error),
             std::mem::discriminant(&expected)
         );
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
     Ok(())
 }

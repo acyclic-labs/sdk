@@ -230,7 +230,7 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
         .read_resolved_ranges(&requests, 2, one.work, &cancel)
         .await
         .unwrap_err();
-    failure.work.verify(one.work)?;
+    failure.work.as_deref().unwrap().verify(one.work)?;
     let invalid = [
         ResolvedFileRangeReadRequest {
             file: second,
@@ -765,6 +765,6 @@ async fn reverse_pages_retain_generation_names_records_and_bodies() -> TestResul
         .await
         .err()
         .ok_or("cancelled reverse reader completed")?;
-    assert_eq!(*failed.work, WorkCounters::default());
+    assert_eq!(*failed.work().unwrap(), WorkCounters::default());
     Ok(())
 }

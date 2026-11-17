@@ -109,8 +109,8 @@ async fn cross_volume_merge_fails_before_any_candidate_write()
     .err()
     .ok_or("cross-volume merge unexpectedly succeeded")?;
     assert!(matches!(failure.error, CheckpointError::CrossVolumeMerge));
-    assert_eq!(failure.work.backend_read_operations, 2);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 2);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -139,7 +139,7 @@ async fn pre_cancelled_checkpoint_performs_zero_backend_work()
         failure.error,
         CheckpointError::Storage(ObjectStoreError::Cancelled)
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -207,7 +207,7 @@ async fn checkpoint_request_and_merge_identity_guards_are_total_before_publicati
             "duplicate" => matches!(failure.error, CheckpointError::DuplicateParent),
             _ => false,
         });
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
 
     let other_root_identity = put_root(&store, 1, 9, 5).await?;

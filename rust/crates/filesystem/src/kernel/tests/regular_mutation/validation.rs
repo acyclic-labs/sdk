@@ -22,7 +22,7 @@ async fn rejection_precedes_storage_work() -> Result<(), Box<dyn std::error::Err
         failure.error,
         RegularMutationError::WrongContentKind
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     let clone_failure = clone_range(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(b"a")?),
@@ -38,7 +38,7 @@ async fn rejection_precedes_storage_work() -> Result<(), Box<dyn std::error::Err
         clone_failure.error,
         RegularMutationError::SourceRangeOutOfBounds
     ));
-    assert_eq!(*clone_failure.work, WorkCounters::default());
+    assert_eq!(*clone_failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -106,7 +106,7 @@ async fn dense_volume_rejects_sparse_semantics_before_work()
             failure.error,
             RegularMutationError::SparseSemanticsDisabled
         ));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
 
     let clone_failure = (async {
@@ -135,7 +135,7 @@ async fn dense_volume_rejects_sparse_semantics_before_work()
         clone_failure.error,
         RegularMutationError::SparseSemanticsDisabled
     ));
-    assert_eq!(*clone_failure.work, WorkCounters::default());
+    assert_eq!(*clone_failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -200,7 +200,7 @@ async fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
         .err()
         .ok_or("malformed range unexpectedly succeeded")?;
         assert!(matches!(failure.error, RegularMutationError::RangeOverflow));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
 
     let nonregular = (apply_regular_mutation_async(
@@ -215,7 +215,7 @@ async fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
     .err()
     .ok_or("nonregular mutation unexpectedly succeeded")?;
     assert!(matches!(nonregular.error, RegularMutationError::NotRegular));
-    assert_eq!(*nonregular.work, WorkCounters::default());
+    assert_eq!(*nonregular.work().unwrap(), WorkCounters::default());
     for (source, destination) in [(FilePayload::Empty, inline), (inline, FilePayload::Empty)] {
         let failure = (async {
             let cancellation = &cancellation;
@@ -240,7 +240,7 @@ async fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
         .err()
         .ok_or("nonregular clone unexpectedly succeeded")?;
         assert!(matches!(failure.error, RegularMutationError::NotRegular));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
     for (source_offset, destination_offset, length) in
         [(u64::MAX, 0, 1), (0, u64::MAX, 1), (0, 0, 0)]
@@ -271,7 +271,7 @@ async fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
             failure.error,
             RegularMutationError::RangeOverflow | RegularMutationError::SourceRangeOutOfBounds
         ));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
 
     let zero_noop = apply(

@@ -339,7 +339,7 @@ async fn execution_warms_the_same_authenticated_cache_without_retaining_a_second
         stale.error,
         crate::storage::ObjectStoreError::Rejected(_)
     ));
-    assert_eq!(*stale.work, WorkCounters::default());
+    assert_eq!(*stale.work().unwrap(), WorkCounters::default());
 
     let warm = (async {
         let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation);
@@ -458,7 +458,7 @@ async fn cancelled_residency_execution_is_inert_until_explicit_terminal_feedback
         failure.error,
         crate::storage::ObjectStoreError::Cancelled
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     assert_eq!(engine.metrics().active, 1);
     assert_eq!(store.stats()?.resident_entries, 0);
     engine.finish(permit.candidate().operation_id, false)?;

@@ -443,7 +443,7 @@ fn empty_finalization(length: u64) -> Result<(), Box<dyn std::error::Error>> {
                                     Err(failure) => {
                                         prop_assert_eq!(limit + 1, reads);
                                         prop_assert_eq!(bounded.root(), baseline.root());
-                                        *failure.work
+                                        *failure.work().unwrap()
                                     }
                                 };
                                 prop_assert!(

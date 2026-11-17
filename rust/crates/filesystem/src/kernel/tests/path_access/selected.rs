@@ -139,7 +139,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
     .await
     .expect_err("a malformed binding is not authenticated absence");
     assert!(matches!(failure.error, PathLookupError::KindMismatch));
-    assert!(failure.work.backend_read_operations > 0);
+    assert!(failure.work.as_deref().unwrap().backend_read_operations > 0);
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let failure = async {
@@ -161,8 +161,8 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
     }
     .await
     .expect_err("cancelled selected batch must fail before allocation/read");
-    assert_eq!(failure.work.allocation_operations, 0);
-    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().allocation_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
     let failure = async {
         let cancellation = &CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(
@@ -188,7 +188,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
     }
     .await
     .expect_err("unadmitted selected batch must fail before allocation/read");
-    assert_eq!(failure.work.allocation_operations, 0);
-    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().allocation_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
     Ok(())
 }

@@ -112,7 +112,7 @@ async fn creation_retains_complete_name_backing_on_original_accounting()
             ..
         })
     ));
-    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
     assert!(authority.replay_minimum.lock().unwrap().is_some());
 
     cancellation.cancel();
@@ -122,7 +122,7 @@ async fn creation_retains_complete_name_backing_on_original_accounting()
         .err()
         .ok_or("cancelled identity reached authority storage")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+    assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
     assert!(authority.replay_minimum.lock().unwrap().is_some());
     Ok(())
 }

@@ -594,7 +594,7 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         .err()
         .ok_or("verification ignored its allocation gate")?;
         assert!(matches!(failed.error, WorkspaceError::Work(_)));
-        assert_eq!(failed.work.allocation_operations, 0);
+        assert_eq!(failed.work.as_deref().unwrap().allocation_operations, 0);
     }
     reads.store(0, Ordering::Relaxed);
     let cancelled = CancellationToken::new();
@@ -605,8 +605,8 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
             .err()
             .ok_or("verification ignored cancellation")?;
     assert!(matches!(failed.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(failed.work.allocation_operations, 0);
-    assert_eq!(failed.work.backend_read_operations, 0);
+    assert_eq!(failed.work.as_deref().unwrap().allocation_operations, 0);
+    assert_eq!(failed.work.as_deref().unwrap().backend_read_operations, 0);
     assert_eq!(reads.load(Ordering::Relaxed), 0);
     Ok(())
 }

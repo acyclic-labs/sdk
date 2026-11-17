@@ -143,6 +143,7 @@ async fn native_committed_group_delivers_original_receipts_after_cancel_or_with_
         assert_eq!(token.is_cancelled(), schedule == 0);
         original
             .receipt()
+            .unwrap()
             .verify(crate::performance::BOUNDARY_BUDGET)?;
         drop(receipts);
         drop(allocation);

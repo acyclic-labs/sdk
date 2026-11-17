@@ -208,7 +208,7 @@ async fn original_closure_custody<S: crate::AsyncObjectStore>(
         );
         eprintln!("closure caller future: {bytes} bytes");
         let proof = future.await?;
-        assert_eq!(proof.0.work, meter.work());
+        assert_eq!(proof.0.work, meter.work().unwrap());
         proof
     };
     assert_eq!(

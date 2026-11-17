@@ -294,7 +294,7 @@ fn watch_open_rejects_denied_cancelled_and_missing_roots() -> Result<(), Box<dyn
                 failure.error,
                 NativeWatchError::Work(_) | NativeWatchError::Cancelled(_)
             ));
-            assert_eq!(*failure.work, WorkCounters::default());
+            assert_eq!(*failure.work().unwrap(), WorkCounters::default());
         }
     }
     let failure = NativeWatch::open_with_profile_measured(

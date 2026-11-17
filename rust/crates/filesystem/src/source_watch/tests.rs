@@ -710,7 +710,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     let terminal = birth
         .state
         .with_original_leaf(crate::demand::DemandWork::receipt);
-    terminal.verify(budget)?;
+    terminal.unwrap().verify(budget)?;
     let callbacks = recorded.take();
     watch.stop_with_cleanup_wait(&crate::CancellationToken::new())?;
     assert_eq!(

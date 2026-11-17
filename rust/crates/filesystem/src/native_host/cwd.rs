@@ -525,17 +525,17 @@ mod tests {
                 &cancellation,
             )
             .map_err(|(error, _)| error)?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes().unwrap();
             let (path, allocation) = canonical_directory_path_held(directory, &mut &work)?;
             assert_eq!(path, expected);
             assert_eq!(
-                work.live_allocation_bytes(),
+                work.live_allocation_bytes().unwrap(),
                 baseline + path.capacity() as u64
             );
             let receipt = work.receipt();
             drop(path);
             drop(allocation);
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
             Ok(receipt)
         };
         let before = read()?;
@@ -566,13 +566,13 @@ mod tests {
         );
         drop(path);
         work.release(allocation)?;
-        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.live_allocation_bytes().unwrap(), 0);
         std::fs::remove_dir(&moved)?;
         assert!(matches!(
             canonical_directory_path_held(directory, &mut work),
             Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::NotFound
         ));
-        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.live_allocation_bytes().unwrap(), 0);
         Ok(())
     }
 
@@ -588,7 +588,7 @@ mod tests {
             canonical_directory_path_held(directory, &mut work),
             Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::InvalidInput
         ));
-        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.live_allocation_bytes().unwrap(), 0);
         Ok(())
     }
 
@@ -608,13 +608,16 @@ mod tests {
         let (path, allocation) = canonical_directory_path_held(directory, &mut work)?;
         assert_eq!(path, expected);
         assert!(
-            work.receipt().source_bytes_read > path.as_os_str().len() as u64,
+            work.receipt().unwrap().source_bytes_read > path.as_os_str().len() as u64,
             "truncated native queries were not charged",
         );
-        assert_eq!(work.live_allocation_bytes(), path.capacity() as u64);
+        assert_eq!(
+            work.live_allocation_bytes().unwrap(),
+            path.capacity() as u64
+        );
         drop(path);
         work.release(allocation)?;
-        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.live_allocation_bytes().unwrap(), 0);
         Ok(())
     }
 
@@ -630,7 +633,7 @@ mod tests {
         measured.release(allocation)?;
         // Exercise every refused native read, including those after a query
         // buffer has been funded, without pinning the implementation's count.
-        for read_limit in 0..measured.receipt().backend_read_operations {
+        for read_limit in 0..measured.receipt().unwrap().backend_read_operations {
             let cancellation = crate::CancellationToken::new();
             let work = NativeMaterializationWork::new(
                 WorkBudget {
@@ -640,7 +643,7 @@ mod tests {
                 &cancellation,
             )
             .map_err(|(error, _)| error)?;
-            let baseline = work.live_allocation_bytes();
+            let baseline = work.live_allocation_bytes().unwrap();
             assert!(matches!(
                 canonical_directory_path_held(directory.try_clone()?, &mut &work),
                 Err(NativeTreeMaterializationError::Work(
@@ -650,7 +653,7 @@ mod tests {
                     }
                 ))
             ));
-            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
         }
         Ok(())
     }
@@ -671,7 +674,7 @@ mod tests {
             linux_directory_path_held(&directory, c"/proc/self", &mut work),
             Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::NotFound
         ));
-        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.live_allocation_bytes().unwrap(), 0);
         let cancellation = crate::CancellationToken::new();
         cancellation.cancel();
         let mut cancelled = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -679,7 +682,7 @@ mod tests {
             linux_directory_path_held(&directory, c"/proc/self/fd", &mut cancelled),
             Err(DemandError::Cancelled)
         ));
-        assert_eq!(cancelled.receipt(), WorkCounters::UNCHARGED);
+        assert_eq!(cancelled.receipt().unwrap(), WorkCounters::UNCHARGED);
         Ok(())
     }
 }

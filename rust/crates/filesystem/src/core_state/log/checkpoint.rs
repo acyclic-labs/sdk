@@ -342,6 +342,6 @@ mod tests {
             ),
             "checkpoint accepted a replaced named family"
         );
-        work.receipt().verify(budget).unwrap();
+        work.receipt().unwrap().verify(budget).unwrap();
     }
 }

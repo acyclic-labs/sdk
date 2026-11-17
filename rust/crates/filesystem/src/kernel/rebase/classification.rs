@@ -194,6 +194,10 @@ impl<P: AsyncRebaseProbe> AccountingRebaseProbe for StandaloneClassificationProb
             .0
             .probe_async(generation, region, budget, cancellation)
             .await
+            .map(|receipt| crate::OperationReceipt {
+                value: receipt.value,
+                work: receipt.work,
+            })
             .map_err(|failure| failure.map_error(ClassifyRebaseFailure::Probe));
         let (result, work) = accounting.split_receipt(answer)?;
         retain_standalone_probe_work(accounting, work)

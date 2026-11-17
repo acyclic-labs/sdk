@@ -381,7 +381,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
                 .await
         )?;
-        let prepared_items = calibration.work().items_examined;
+        let prepared_items = calibration.work().unwrap().items_examined;
         assert!(
             matches!(
                 calibration
@@ -454,11 +454,12 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         let view = &rendered.value;
         assert_eq!(view.kind, ConflictKind::Binary);
         assert!(
-            calibration.work().output_bytes > before_body.output_bytes,
+            calibration.work().unwrap().output_bytes > before_body.unwrap().output_bytes,
             "the selected body was absent from the original work receipt"
         );
         let without_body = calibration
             .work()
+            .unwrap()
             .output_bytes
             .checked_sub(body_bytes)
             .ok_or("selected body was missing from the actual receipt")?;
@@ -500,7 +501,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
                 .await
         )?;
-        let prepared_components = calibration.work().source_path_components;
+        let prepared_components = calibration.work().unwrap().source_path_components;
         let rendered = calibration.describe_conflict_file(conflict.clone()).await?;
         let view = &rendered.value;
         assert_eq!(view.kind, ConflictKind::Binary);
@@ -514,7 +515,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
                 }
             );
         }
-        assert!(calibration.work().source_path_components > prepared_components);
+        assert!(calibration.work().unwrap().source_path_components > prepared_components);
         drop(calibration);
         let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
         let mut bounded = value!(
@@ -1217,6 +1218,7 @@ async fn merge_directory_staging_credit() -> Result<(), Box<dyn Error>> {
     assert_eq!(calibration.conflict_count(), 0);
     let allowance = calibration
         .work()
+        .unwrap()
         .items_examined
         .checked_add(1)
         .ok_or("item count overflow")?;
@@ -1966,7 +1968,7 @@ impl MergePreviewFixture {
                     .value,
                 expected.as_ref()
             );
-            assert_eq!(pages.work(), peek_work);
+            assert_eq!(pages.work().unwrap(), peek_work);
             let taken = pages.next_conflict().map_err(|failure| failure.error)?;
             assert_eq!(taken.work, peek_work);
             assert_eq!(
@@ -2065,12 +2067,12 @@ impl MergePreviewFixture {
                             crate::MergeConflict::Binding { .. } => None,
                         });
                 if let Some(file_id) = file_id {
-                    let before = pages.work();
+                    let before = pages.work().unwrap();
                     let path = pages
                         .file_path(file_id, side)
                         .await
                         .map_err(|failure| failure.error)?;
-                    assert!(path.work.items_examined > before.items_examined);
+                    assert!(path.work.items_examined > before.unwrap().items_examined);
                     assert_eq!(path.value.is_some(), record.is_some());
                     if let Some(path) = path.value {
                         if matches!(row.value(), crate::MergeConflict::Binding { .. })
@@ -2149,7 +2151,7 @@ impl MergePreviewFixture {
                 .value
                 .is_some()
         );
-        assert_eq!(pages.work(), first_work);
+        assert_eq!(pages.work().unwrap(), first_work);
         let clean = pages
             .next_clean()
             .await

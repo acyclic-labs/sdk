@@ -203,20 +203,20 @@ async fn exercise_original_publication<
         .await
         .err()
         .ok_or("unfunded read admitted")?;
-    assert_eq!(failure.work.backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
     cancellation.cancel();
     let failure = workspace
         .operation_publication(key, None, budget, &cancellation)
         .await
         .err()
         .ok_or("cancelled read admitted")?;
-    assert_eq!(*failure.work, crate::WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), crate::WorkCounters::default());
     let failure = publication
         .predecessor(budget, &cancellation)
         .await
         .err()
         .ok_or("cancelled predecessor lookup admitted")?;
-    assert_eq!(*failure.work, crate::WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), crate::WorkCounters::default());
     Ok(key)
 }
 

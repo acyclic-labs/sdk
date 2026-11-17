@@ -107,8 +107,8 @@ async fn authenticated_bindings_fail_closed_on_kind_or_record_mismatch()
         .err()
         .ok_or("inconsistent authenticated binding resolved")?;
         assert!(matches!(failure.error, PathLookupError::KindMismatch));
-        assert!(failure.work.backend_read_operations > 0);
-        assert!(failure.work.page_reads > 0);
+        assert!(failure.work.as_deref().unwrap().backend_read_operations > 0);
+        assert!(failure.work.as_deref().unwrap().page_reads > 0);
 
         let batch_failure = lookup_paths(
             &store,
@@ -169,7 +169,7 @@ async fn unsupported_name_encoding_rejects_before_backend_work()
         PathLookupError::UnsupportedNameEncoding
     ));
     assert_eq!(
-        *failure.work,
+        *failure.work().unwrap(),
         WorkCounters {
             items_examined: 1,
             ..WorkCounters::UNCHARGED
@@ -331,7 +331,7 @@ async fn root_observation_and_missing_root_identity_are_exact()
     .err()
     .ok_or("missing root record unexpectedly succeeded")?;
     assert!(matches!(failure.error, PathLookupError::MissingRootRecord));
-    assert!(failure.work.page_reads > 0);
+    assert!(failure.work.as_deref().unwrap().page_reads > 0);
     Ok(())
 }
 

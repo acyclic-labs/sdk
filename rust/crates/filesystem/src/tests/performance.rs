@@ -80,8 +80,8 @@ fn nested_failure_accounting_never_substitutes_a_sentinel_receipt() {
         |()| OuterError::Inner,
     );
     assert_eq!(mapped.error, OuterError::Work(WorkError::Overflow));
-    assert_eq!(mapped.work.page_reads, u64::MAX);
-    assert_ne!(*mapped.work, WorkCounters::UNBOUNDED);
+    assert_eq!(mapped.work.as_deref().unwrap().page_reads, u64::MAX);
+    assert_ne!(*mapped.work().unwrap(), WorkCounters::UNBOUNDED);
 }
 
 /// Every counter of [`WorkCounters`], as mutable references in declaration

@@ -164,7 +164,7 @@ mod tests {
                 let KernelAccounting::Standalone { budget, .. } = &mut accounting else {
                     return Err("expected standalone custody".into());
                 };
-                budget.bytes_copied = before.2.bytes_copied;
+                budget.bytes_copied = before.2.unwrap().bytes_copied;
                 let refused = keys.ensure_for_push(maximum, &mut accounting);
                 let KernelAccounting::Standalone { budget, .. } = &mut accounting else {
                     return Err("expected standalone custody".into());

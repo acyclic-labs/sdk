@@ -37,8 +37,8 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
                     }
                     Err(failure) => {
                         assert!(
-                            failure.work.backend_read_operations
-                                + failure.work.backend_write_operations
+                            failure.work.as_deref().unwrap().backend_read_operations
+                                + failure.work.as_deref().unwrap().backend_write_operations
                                 > 0
                         );
                         assert_eq!(checkout_state(&checkout), original_state);
@@ -484,8 +484,8 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
                     }
                     Err(failure) => {
                         assert!(
-                            failure.work.backend_read_operations
-                                + failure.work.backend_write_operations
+                            failure.work.as_deref().unwrap().backend_read_operations
+                                + failure.work.as_deref().unwrap().backend_write_operations
                                 > 0
                         );
                         assert_eq!(detached.record, original_record);

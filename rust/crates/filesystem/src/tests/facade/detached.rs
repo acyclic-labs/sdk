@@ -107,7 +107,7 @@ async fn metadata_work_trace(metadata: FileMetadata) -> TestResult<(u64, u64)> {
                 ),
                 "{failure:?}"
             );
-            assert!(failure.work.bytes_copied <= maximum);
+            assert!(failure.work.as_deref().unwrap().bytes_copied <= maximum);
         }
     }
     commit(&mut checkout, &cancel).await?;

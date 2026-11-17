@@ -302,8 +302,8 @@ async fn stale_record_precondition_writes_nothing() -> Result<(), Box<dyn std::e
         failure.error,
         FileTableMutationError::StateConflict
     ));
-    assert_eq!(failure.work.page_reads, 2);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 2);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -423,7 +423,7 @@ async fn item_larger_than_page_bound_takes_a_page_and_only_the_object_bound_refu
         failure.error,
         FileTableMutationError::PageItemTooLarge
     ));
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 

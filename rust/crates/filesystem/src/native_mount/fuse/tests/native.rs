@@ -420,7 +420,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
     assert_eq!(retained.1, prefix);
     assert_eq!(
         core.completed_callback_work(),
-        missing_prefix.checked_add(prefix)?
+        missing_prefix.unwrap().checked_add(prefix)?
     );
     assert!(
         around.lookup(&path)?.is_none(),

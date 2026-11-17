@@ -196,7 +196,7 @@ async fn pre_cancelled_single_path_operations_do_no_backend_work()
         lookup.error,
         PathLookupError::Tree(TreeReadError::Cancelled)
     ));
-    assert_eq!(*lookup.work, WorkCounters::default());
+    assert_eq!(*lookup.work().unwrap(), WorkCounters::default());
 
     let observed = (observe_path_async(
         &store,
@@ -213,7 +213,7 @@ async fn pre_cancelled_single_path_operations_do_no_backend_work()
         observed.error,
         PathLookupError::Tree(TreeReadError::Cancelled)
     ));
-    assert_eq!(*observed.work, WorkCounters::default());
+    assert_eq!(*observed.work().unwrap(), WorkCounters::default());
     assert_eq!(store.reads.load(Ordering::Relaxed), 0);
     Ok(())
 }
@@ -234,7 +234,7 @@ async fn empty_path_batches_reject_before_backend_work() -> Result<(), Box<dyn s
     .err()
     .ok_or("empty path batch succeeded")?;
     assert!(matches!(empty.error, PathLookupError::EmptyBatch));
-    assert_eq!(*empty.work, WorkCounters::default());
+    assert_eq!(*empty.work().unwrap(), WorkCounters::default());
 
     Ok(())
 }
@@ -261,7 +261,7 @@ async fn cancelled_and_unadmitted_batches_perform_no_backend_work()
         cancelled.error,
         PathLookupError::Tree(TreeReadError::Cancelled)
     ));
-    assert_eq!(*cancelled.work, WorkCounters::default());
+    assert_eq!(*cancelled.work().unwrap(), WorkCounters::default());
 
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = 0;

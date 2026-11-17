@@ -1,4 +1,5 @@
 use super::*;
+use crate::OperationFailure;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{

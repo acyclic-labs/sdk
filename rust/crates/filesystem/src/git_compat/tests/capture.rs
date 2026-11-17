@@ -668,7 +668,7 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
                     WorkspaceError::Cancelled(_)
                 ))
             ));
-            assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+            assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
         } else {
             let expected = if reads == 0 {
                 "backend_read_operations"
@@ -680,7 +680,7 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
                 | GitCaptureAuthenticationError::Lineage(crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(crate::WorkError::BudgetExceeded { counter, .. })))
                 if counter == expected));
         }
-        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
     }
 }
 

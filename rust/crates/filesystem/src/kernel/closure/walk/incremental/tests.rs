@@ -240,7 +240,7 @@ fn validate(diff: &crate::GenerationDiff, budget: WorkBudget) -> TestResult<(boo
         meter.clone(),
     );
     let valid = context.validate_increment_namespace(diff)?;
-    Ok((valid, meter.work()))
+    Ok((valid, meter.work().unwrap()))
 }
 
 #[test]
@@ -339,7 +339,7 @@ fn ordered_child_matching_is_metered_and_linear() -> TestResult<()> {
                 old.get((first / 2) as usize).ok_or("missing predecessor")?
             );
         }
-        let examined = meter.work().items_examined;
+        let examined = meter.work().unwrap().items_examined;
         assert!(
             examined >= 2 * count,
             "child matching must charge its probes"

@@ -364,10 +364,10 @@ async fn failed_identity_precondition_writes_no_objects() -> Result<(), Box<dyn 
     ));
     // Removing the following leaf's first name retains its predecessor tail
     // before checking the selected identity: root, predecessor, selected leaf.
-    assert_eq!(failure.work.page_reads, 3);
-    assert_eq!(failure.work.backend_write_operations, 0);
-    assert_eq!(failure.work.page_writes, 0);
-    assert_eq!(failure.work.bytes_encoded, 0);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 3);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().page_writes, 0);
+    assert_eq!(failure.work.as_deref().unwrap().bytes_encoded, 0);
     Ok(())
 }
 
@@ -425,7 +425,7 @@ async fn every_tree_semantic_failure_is_exact_and_non_mutating()
             "identity" => matches!(failure.error, TreeMutationError::FileIdentityConflict),
             _ => false,
         });
-        assert_eq!(failure.work.backend_write_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     }
     Ok(())
 }
@@ -509,8 +509,8 @@ async fn visited_capacity_is_admitted_before_tree_access() -> Result<(), Box<dyn
             maximum: observed_maximum,
         }) if observed > 0 && observed_maximum == 0
     ));
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -558,9 +558,9 @@ async fn mutation_peak_budget_refuses_before_writes() -> Result<(), Box<dyn std:
         ),
         "{failure:?}"
     );
-    assert!(failure.work.peak_allocation_bytes <= maximum);
-    assert_eq!(failure.work.backend_write_operations, 0);
-    assert_eq!(failure.work.object_bytes_written, 0);
+    assert!(failure.work.as_deref().unwrap().peak_allocation_bytes <= maximum);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().object_bytes_written, 0);
     Ok(())
 }
 
@@ -649,8 +649,8 @@ async fn unordered_sort_work_is_admitted_before_tree_access()
             maximum: 0,
         })
     ));
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 

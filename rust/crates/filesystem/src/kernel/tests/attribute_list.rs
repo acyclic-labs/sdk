@@ -236,7 +236,7 @@ async fn pre_cancel_and_output_admission_do_no_backend_work()
     .err()
     .ok_or("cancelled listing succeeded")?;
     assert!(matches!(failure.error, DirectoryReadError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
 
     let mut budget = WorkBudget::UNBOUNDED;
     budget.items_returned = 1;
@@ -259,7 +259,7 @@ async fn pre_cancel_and_output_admission_do_no_backend_work()
             ..
         })
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -297,7 +297,7 @@ async fn forged_child_bounds_fail_closed() -> Result<(), Box<dyn std::error::Err
         failure.error,
         DirectoryReadError::ChildBoundsMismatch
     ));
-    assert_eq!(failure.work.page_reads, 2);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 2);
     Ok(())
 }
 
@@ -440,7 +440,7 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
         DirectoryReadError::InvalidLimits
     ));
     for failure in failures {
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
 
     let height = list_attributes(

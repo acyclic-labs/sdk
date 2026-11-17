@@ -132,7 +132,7 @@ async fn precancelled_batch_is_inert() -> Result<(), Box<dyn std::error::Error>>
     .err()
     .ok_or("pre-cancelled async attribute batch succeeded")?;
     assert!(matches!(failure.error, AttributeLookupError::Cancelled));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -160,7 +160,7 @@ async fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries
         failure.error,
         AttributeLookupError::Storage(ObjectStoreError::Missing)
     ));
-    assert_eq!(failure.work.page_reads, 1);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 1);
 
     let malformed = OwnedBytes::from_static(b"not a canonical attribute page");
     let malformed_id = ObjectId {
@@ -187,8 +187,8 @@ async fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries
     .err()
     .ok_or("malformed attribute page decoded")?;
     assert!(matches!(failure.error, AttributeLookupError::Decode(_)));
-    assert_eq!(failure.work.page_reads, 1);
-    assert_eq!(failure.work.backend_read_operations, 1);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 1);
+    assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 1);
 
     let valid = put(&store, &AttributePage::Leaf(vec![entry(1)?]), 8).await?;
     let limits = DecodeLimits {
@@ -211,7 +211,7 @@ async fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries
         failure.error,
         AttributeLookupError::Storage(ObjectStoreError::TooLarge { .. })
     ));
-    assert_eq!(failure.work.page_reads, 1);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 1);
     Ok(())
 }
 
@@ -253,7 +253,7 @@ async fn decoded_attribute_page_is_admitted_before_allocation()
             ..
         })
     ));
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     Ok(())
 }
 
@@ -286,7 +286,7 @@ async fn cancellation_and_forged_bounds_fail_before_unsafe_progress()
         failure.error,
         AttributeLookupError::ChildBoundsMismatch
     ));
-    assert_eq!(failure.work.page_reads, 2);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 2);
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -302,7 +302,7 @@ async fn cancellation_and_forged_bounds_fail_before_unsafe_progress()
     .err()
     .ok_or("cancelled attribute lookup unexpectedly succeeded")?;
     assert!(matches!(cancelled.error, AttributeLookupError::Cancelled));
-    assert_eq!(*cancelled.work, WorkCounters::default());
+    assert_eq!(*cancelled.work().unwrap(), WorkCounters::default());
     Ok(())
 }
 
@@ -328,7 +328,7 @@ async fn validation_and_boundary_queries_are_fail_closed_and_exact()
     .err()
     .ok_or("wrong attribute root kind unexpectedly succeeded")?;
     assert!(matches!(wrong.error, AttributeLookupError::WrongRootKind));
-    assert_eq!(*wrong.work, WorkCounters::default());
+    assert_eq!(*wrong.work().unwrap(), WorkCounters::default());
 
     let invalid_limits = DecodeLimits {
         maximum_page_height: 0,
@@ -346,7 +346,7 @@ async fn validation_and_boundary_queries_are_fail_closed_and_exact()
     .err()
     .ok_or("invalid attribute limits unexpectedly succeeded")?;
     assert!(matches!(invalid.error, AttributeLookupError::InvalidLimits));
-    assert_eq!(*invalid.work, WorkCounters::default());
+    assert_eq!(*invalid.work().unwrap(), WorkCounters::default());
 
     let empty = lookup_attributes(
         &store,
@@ -360,7 +360,7 @@ async fn validation_and_boundary_queries_are_fail_closed_and_exact()
     .err()
     .ok_or("empty attribute batch unexpectedly succeeded")?;
     assert!(matches!(empty.error, AttributeLookupError::EmptyBatch));
-    assert_eq!(*empty.work, WorkCounters::default());
+    assert_eq!(*empty.work().unwrap(), WorkCounters::default());
 
     for (requested, expected) in [
         (1, Some(entry(1)?)),
@@ -447,6 +447,6 @@ async fn inherited_attribute_upper_bounds_reject_forged_leaf_contents()
         failure.error,
         AttributeLookupError::ChildBoundsMismatch
     ));
-    assert_eq!(failure.work.page_reads, 2);
+    assert_eq!(failure.work.as_deref().unwrap().page_reads, 2);
     Ok(())
 }

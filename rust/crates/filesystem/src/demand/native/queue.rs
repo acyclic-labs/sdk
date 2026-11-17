@@ -177,12 +177,12 @@ mod context_custody_tests {
                     context,
                     Err(DemandError::Work(crate::WorkError::BudgetExceeded { .. }))
                 ));
-                assert_eq!(work.live_allocation_bytes(), baseline);
+                assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
             } else {
                 let context = context.unwrap();
-                assert_eq!(work.live_allocation_bytes(), baseline + bytes);
+                assert_eq!(work.live_allocation_bytes().unwrap(), baseline + bytes);
                 drop(context);
-                assert_eq!(work.live_allocation_bytes(), baseline);
+                assert_eq!(work.live_allocation_bytes().unwrap(), baseline);
             }
         }
     }
@@ -201,7 +201,7 @@ mod context_custody_tests {
         let CallbackWork::Ordinary(work) = context.value.as_ref() else {
             panic!("ordinary owner")
         };
-        assert_eq!(work.live_allocation_bytes(), bytes);
+        assert_eq!(work.live_allocation_bytes().unwrap(), bytes);
         let mut accounting = crate::kernel::KernelAccounting::standalone(budget, &stop);
         context.finish(Ok(()), &mut accounting).unwrap();
         let (allocations, work, _, _) = accounting.standalone_parts().unwrap();
@@ -267,29 +267,29 @@ mod context_custody_tests {
         let work =
             crate::NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
         let before = work.receipt();
-        let live = work.live_allocation_bytes();
+        let live = work.live_allocation_bytes().unwrap();
         let failure = source
             .list_page(source.reference(), &path, None, 1, &work, &token)
             .await
             .err()
             .ok_or("closed queue admitted a native request")?;
         assert!(matches!(failure, DemandError::WorkerUnavailable));
-        assert_eq!(work.live_allocation_bytes(), live);
+        assert_eq!(work.live_allocation_bytes().unwrap(), live);
         assert_eq!(
-            work.receipt().allocation_operations - before.allocation_operations,
+            work.receipt().unwrap().allocation_operations - before.unwrap().allocation_operations,
             2
         );
         assert_eq!(
-            work.receipt().bytes_copied - before.bytes_copied,
+            work.receipt().unwrap().bytes_copied - before.unwrap().bytes_copied,
             path.retained_bytes()
         );
         assert_eq!(
-            work.receipt().backend_read_operations,
-            before.backend_read_operations
+            work.receipt().unwrap().backend_read_operations,
+            before.unwrap().backend_read_operations
         );
         assert_eq!(
-            work.receipt().backend_write_operations,
-            before.backend_write_operations
+            work.receipt().unwrap().backend_write_operations,
+            before.unwrap().backend_write_operations
         );
         Ok(())
     }
@@ -331,32 +331,32 @@ mod context_custody_tests {
         )
         .map_err(|(error, _)| error)?;
         let before = work.receipt();
-        let live = work.live_allocation_bytes();
+        let live = work.live_allocation_bytes().unwrap();
         let mut request =
             Box::pin(source.list_page(source.reference(), &path, None, 1, &work, &token));
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         assert!(std::future::Future::poll(request.as_mut(), &mut context).is_pending());
         assert_eq!(
-            work.live_allocation_bytes(),
+            work.live_allocation_bytes().unwrap(),
             live + std::mem::size_of::<CallbackWork>() as u64 + path.retained_bytes()
         );
         drop(request);
-        assert_eq!(work.live_allocation_bytes(), live);
+        assert_eq!(work.live_allocation_bytes().unwrap(), live);
         assert_eq!(
-            work.receipt().allocation_operations - before.allocation_operations,
+            work.receipt().unwrap().allocation_operations - before.unwrap().allocation_operations,
             2
         );
         assert_eq!(
-            work.receipt().bytes_copied - before.bytes_copied,
+            work.receipt().unwrap().bytes_copied - before.unwrap().bytes_copied,
             path.retained_bytes()
         );
         assert_eq!(
-            work.receipt().backend_read_operations,
-            before.backend_read_operations
+            work.receipt().unwrap().backend_read_operations,
+            before.unwrap().backend_read_operations
         );
         assert_eq!(
-            work.receipt().backend_write_operations,
-            before.backend_write_operations
+            work.receipt().unwrap().backend_write_operations,
+            before.unwrap().backend_write_operations
         );
         drop(held);
         Ok(())

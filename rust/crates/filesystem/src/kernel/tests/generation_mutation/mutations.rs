@@ -37,8 +37,8 @@ async fn malformed_file_table_preserves_nested_failure_work()
             failure.error,
             GenerationMutationError::FileRecord(_) | GenerationMutationError::Path(_)
         ));
-        assert!(failure.work.backend_read_operations > 0);
-        assert_eq!(failure.work.backend_write_operations, 0);
+        assert!(failure.work.as_deref().unwrap().backend_read_operations > 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     }
     Ok(())
 }

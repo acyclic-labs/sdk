@@ -1062,7 +1062,7 @@ mod cleanup_credit_tests {
         // PreparedAsciiLeaf already owns validation. Reserve the actual
         // retirement transaction with no remaining name-validation credit.
         let _credit = work.reserve_work(MountDestinationGuard::cleanup_work())?;
-        assert_eq!(work.receipt().items_examined, 0);
+        assert_eq!(work.receipt().unwrap().items_examined, 0);
         Ok(())
     }
 }

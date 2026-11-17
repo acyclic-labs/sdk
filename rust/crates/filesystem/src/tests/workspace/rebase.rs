@@ -184,7 +184,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
         .err()
         .ok_or("cancelled live rebase completed")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+    assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
 
     for reads in [1, 2] {
         let source = crate::workspace::accounting_tests::Prefunded {

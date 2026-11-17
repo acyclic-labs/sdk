@@ -75,7 +75,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                 failure.error,
                 crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
             ));
-            assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+            assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
         } else {
             assert!(matches!(
                 failure.error,
@@ -87,7 +87,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                 ))
             ));
         }
-        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
         assert!(authority.replay_minimum.lock().unwrap().take().is_some());
     }
     let mut workspaces = vec![root];
@@ -307,7 +307,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                         failure.error,
                         crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
                     ));
-                    assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+                    assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
                 } else {
                     assert!(matches!(
                         failure.error,
@@ -319,7 +319,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                         ))
                     ));
                 }
-                assert_eq!(failure.work.backend_read_operations, 0);
+                assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
             }
         }
         let read = child.read("/source", 8, budget, &cancellation).await?;
@@ -369,7 +369,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                 failure.error,
                 crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
             ));
-            assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+            assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
         } else {
             assert!(matches!(
                 failure.error,
@@ -381,7 +381,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                 ))
             ));
         }
-        assert_eq!(failure.work.backend_read_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
         assert!(authority.replay_minimum.lock().unwrap().take().is_some());
     }
     Ok(())
@@ -583,7 +583,7 @@ async fn lineage_resolution_uses_original_name_validation_work()
                     failure.error,
                     crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
                 ));
-                assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+                assert_eq!(*failure.work().unwrap(), crate::WorkCounters::UNCHARGED);
             } else {
                 assert!(matches!(
                     failure.error,
@@ -595,8 +595,8 @@ async fn lineage_resolution_uses_original_name_validation_work()
                     ))
                 ));
             }
-            assert_eq!(failure.work.backend_read_operations, 0);
-            assert_eq!(failure.work.allocation_operations, 0);
+            assert_eq!(failure.work.as_deref().unwrap().backend_read_operations, 0);
+            assert_eq!(failure.work.as_deref().unwrap().allocation_operations, 0);
         }
     }
     // Corrupt a real persisted edge: the fixed-width visited index must end

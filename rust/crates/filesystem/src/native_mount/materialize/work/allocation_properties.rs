@@ -57,12 +57,12 @@ fn generation_index_finds_last_key_with_logarithmic_item_credit() {
             })
             .unwrap();
         let bounded_receipt = GenerationReceipt::from_work(&bounded).unwrap();
-        let before = work.receipt().items_examined;
+        let before = work.receipt().unwrap().items_examined;
         assert_eq!(
             index.get(&key, &bounded_receipt).unwrap().copied(),
             (key < 128).then_some(key * 3)
         );
-        assert!(work.receipt().items_examined - before <= 8);
+        assert!(work.receipt().unwrap().items_examined - before <= 8);
     }
 }
 
@@ -95,10 +95,13 @@ fn generation_index_move_denial_preserves_entries_and_live_custody() {
         );
         assert!(index.valid());
         assert_eq!(work.live_allocation_bytes(), live);
-        assert_eq!(work.receipt().bytes_copied, before.bytes_copied);
         assert_eq!(
-            work.receipt().allocation_operations,
-            before.allocation_operations
+            work.receipt().unwrap().bytes_copied,
+            before.unwrap().bytes_copied
+        );
+        assert_eq!(
+            work.receipt().unwrap().allocation_operations,
+            before.unwrap().allocation_operations
         );
     }
     drop(index);
@@ -150,7 +153,7 @@ fn generation_index_insertion_copy_cost_is_bounded_in_both_orders() {
             assert!(index.insert(key, key, &mut receipt).unwrap());
             assert!(index.valid());
         }
-        let copied = work.receipt().bytes_copied;
+        let copied = work.receipt().unwrap().bytes_copied;
         assert!(copied < 4 * 1024 * 1024);
         for key in 0..2048_u16 {
             assert_eq!(index.get(&key, &receipt).unwrap(), Some(&key));
@@ -158,7 +161,7 @@ fn generation_index_insertion_copy_cost_is_bounded_in_both_orders() {
         // Duplicate admission preserves the first representative and performs
         // no insertion copies or capacity change.
         assert!(!index.insert(1024, 0, &mut receipt).unwrap());
-        assert_eq!(work.receipt().bytes_copied, copied);
+        assert_eq!(work.receipt().unwrap().bytes_copied, copied);
         drop(index);
         drop(receipt);
         assert_eq!(work.live_allocation_bytes(), baseline);

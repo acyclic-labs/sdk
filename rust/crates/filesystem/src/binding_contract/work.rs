@@ -115,19 +115,19 @@ mod tests {
             counters in any::<[u64; 24]>(),
         ) {
             let mut canonical = serde_json::to_value(WorkCounters::default())?;
-            let object = canonical.as_object_mut().ok_or("work receipt is not an object")?;
+            let object = canonical.as_object_mut().expect("work receipt is an object");
             prop_assert_eq!(object.len(), counters.len());
             for (value, number) in object.values_mut().zip(counters) {
                 *value = number.into();
             }
-            check(&serde_json::from_value(canonical.clone())?)?;
+            check(&serde_json::from_value(canonical.clone())?).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
             // Every field, including zero and values not representable by a
             // JavaScript number, traverses the actual codec in each control.
             for number in [0, 9_007_199_254_740_993, u64::MAX] {
-                for value in canonical.as_object_mut().ok_or("work receipt is not an object")?.values_mut() {
+                for value in canonical.as_object_mut().expect("work receipt is an object").values_mut() {
                     *value = number.into();
                 }
-                check(&serde_json::from_value(canonical.clone())?)?;
+                check(&serde_json::from_value(canonical.clone())?).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
             }
         }
     }

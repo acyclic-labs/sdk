@@ -319,7 +319,7 @@ async fn access_policy_storage_preserves_explicit_io_budgets() -> Result<(), Box
         ),
         "finite policy budget lost its typed refusal: {error:?}"
     );
-    assert_eq!(failure.work.backend_write_operations, 0);
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     assert!(!checkout.has_pending_mutations());
 
     // The stored length is authenticated; the original finite read budget
@@ -354,7 +354,7 @@ async fn access_policy_storage_preserves_explicit_io_budgets() -> Result<(), Box
         ),
         "finite policy budget lost its typed refusal: {error:?}"
     );
-    assert!(failure.work.object_bytes_read <= 16_384);
+    assert!(failure.work.as_deref().unwrap().object_bytes_read <= 16_384);
     Ok(())
 }
 

@@ -53,7 +53,7 @@ fn indexed_proof_membership_preserves_order_and_original_custody()
         // One object move per distinct insertion. The old descending sorted
         // vector moves N(N+1)/2 objects and cannot satisfy this linear bound.
         let row_bytes = usize_to_u64(size_of::<(FileId, u64)>());
-        let copied = meter.work().bytes_copied - before.bytes_copied;
+        let copied = meter.work().unwrap().bytes_copied - before.unwrap().bytes_copied;
         assert!(copied <= population * (usize_to_u64(size_of::<ObjectId>()) + 3 * row_bytes));
         if population > 1 {
             let old_moves = population * (population + 1) / 2;
@@ -68,11 +68,14 @@ fn indexed_proof_membership_preserves_order_and_original_custody()
             );
             let after = meter.work();
             assert!(
-                after.items_examined - before.items_examined
+                after.unwrap().items_examined - before.unwrap().items_examined
                     <= (9 * ORDERED_OBJECT_KEY_BYTES + 9 * 16 + 2) as u64
             );
-            assert_eq!(after.allocation_operations, before.allocation_operations);
-            assert_eq!(after.bytes_copied, before.bytes_copied);
+            assert_eq!(
+                after.unwrap().allocation_operations,
+                before.unwrap().allocation_operations
+            );
+            assert_eq!(after.unwrap().bytes_copied, before.unwrap().bytes_copied);
         }
         assert!(!set.insert(object(0))?);
         assert_eq!(set.len(), population as usize);
@@ -105,10 +108,10 @@ fn indexed_proof_membership_preserves_order_and_original_custody()
             let Some(key) = next else { break };
             after = Some(key);
         }
-        let repeated_seek = meter.work().items_examined - before.items_examined;
+        let repeated_seek = meter.work().unwrap().items_examined - before.unwrap().items_examined;
         let before = meter.work();
         let (objects, guard) = set.into_parts()?;
-        let consumed = meter.work().items_examined - before.items_examined;
+        let consumed = meter.work().unwrap().items_examined - before.unwrap().items_examined;
         assert!(consumed <= 6 * population);
         assert!(repeated_seek > 6 * population);
         assert_eq!(objects.len(), population as usize);
@@ -176,7 +179,7 @@ fn indexed_proof_membership_preserves_order_and_original_custody()
     }
     let before = meter.work();
     assert_eq!(map_get(&map, &FileId::from_bytes([0; 16]))?, Some(&1));
-    assert!(meter.work().items_examined - before.items_examined <= 145);
+    assert!(meter.work().unwrap().items_examined - before.unwrap().items_examined <= 145);
     let mut cancelled = ProofSet::new(&meter);
     set_insert(&mut cancelled, object(0))?;
     cancellation.cancel();
@@ -266,12 +269,12 @@ proptest! {
         let cancellation = CancellationToken::new();
         let admitted = ProofMeter::standalone(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
-        let baseline = admitted.work().peak_allocation_bytes;
+        let baseline = admitted.work().unwrap().peak_allocation_bytes;
         let _slot = admitted.with_accounting(|accounting| {
             RetainedArc::new(ProofSlot::<RetainedArc<CachedProof>>::default(), accounting)
         })
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
-        let slot_bytes = admitted.work().peak_allocation_bytes - baseline;
+        let slot_bytes = admitted.work().unwrap().peak_allocation_bytes - baseline;
         let available = slot_bytes.saturating_sub(shortfall);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.peak_allocation_bytes = proof_standalone_control_bytes() + available;

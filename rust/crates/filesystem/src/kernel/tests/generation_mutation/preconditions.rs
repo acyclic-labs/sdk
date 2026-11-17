@@ -37,7 +37,7 @@ async fn semantic_capabilities_and_create_identity_reject_before_backend_work()
         symbolic_failure.error,
         GenerationMutationError::UnsupportedSymbolicLink
     ));
-    assert_eq!(*symbolic_failure.work, WorkCounters::default());
+    assert_eq!(*symbolic_failure.work().unwrap(), WorkCounters::default());
 
     let fifo = FileRecord {
         bindings: None,
@@ -65,7 +65,7 @@ async fn semantic_capabilities_and_create_identity_reject_before_backend_work()
         profile_failure.error,
         GenerationMutationError::UnsupportedFileKind
     ));
-    assert_eq!(*profile_failure.work, WorkCounters::default());
+    assert_eq!(*profile_failure.work().unwrap(), WorkCounters::default());
 
     let mut invalid_links = regular(FileId::from_bytes([32; 16]), fixture.metadata)?;
     invalid_links.link_count = 2;
@@ -87,7 +87,7 @@ async fn semantic_capabilities_and_create_identity_reject_before_backend_work()
         link_failure.error,
         GenerationMutationError::InvalidInitialLinkCount
     ));
-    assert_eq!(*link_failure.work, WorkCounters::default());
+    assert_eq!(*link_failure.work().unwrap(), WorkCounters::default());
 
     let mut invalid_bindings = regular(FileId::from_bytes([32; 16]), fixture.metadata)?;
     invalid_bindings.bindings = Some(ObjectId {
@@ -112,7 +112,7 @@ async fn semantic_capabilities_and_create_identity_reject_before_backend_work()
         binding_failure.error,
         GenerationMutationError::InvalidInitialBindings
     ));
-    assert_eq!(*binding_failure.work, WorkCounters::UNCHARGED);
+    assert_eq!(*binding_failure.work().unwrap(), WorkCounters::UNCHARGED);
 
     let mut dense = config();
     dense.sparse_files = false;
@@ -137,7 +137,7 @@ async fn semantic_capabilities_and_create_identity_reject_before_backend_work()
         sparse_failure.error,
         GenerationMutationError::UnsupportedSparseMutation
     ));
-    assert_eq!(*sparse_failure.work, WorkCounters::default());
+    assert_eq!(*sparse_failure.work().unwrap(), WorkCounters::default());
 
     Ok(())
 }
@@ -171,7 +171,7 @@ async fn removing_directory_after_candidate_child_insert_is_rejected()
         failure.error,
         GenerationMutationError::DirectoryNotEmpty
     ));
-    assert!(failure.work.backend_write_operations > 0);
+    assert!(failure.work.as_deref().unwrap().backend_write_operations > 0);
     assert!(
         lookup_path(
             &store,
@@ -212,7 +212,7 @@ async fn disabled_hard_links_reject_before_work() -> Result<(), Box<dyn std::err
         failure.error,
         GenerationMutationError::UnsupportedHardLink
     ));
-    assert_eq!(*failure.work, WorkCounters::default());
+    assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     assert!(
         lookup_path(
             &store,
@@ -339,8 +339,8 @@ async fn directory_rename_below_itself_is_rejected_without_publication()
         failure.error,
         GenerationMutationError::DirectoryCycle
     ));
-    assert_eq!(failure.work.backend_write_operations, 0);
-    assert_ne!(*failure.work, WorkCounters::default());
+    assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
+    assert_ne!(*failure.work().unwrap(), WorkCounters::default());
     assert!(
         lookup_path(
             &store,
@@ -453,7 +453,7 @@ async fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
             std::mem::discriminant(&failure.error),
             std::mem::discriminant(&expected)
         );
-        assert_eq!(failure.work.backend_write_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     }
 
     let duplicate = apply_generation_mutations(
@@ -563,7 +563,7 @@ async fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
             failure.error,
             GenerationMutationError::InconsistentState
         ));
-        assert_eq!(failure.work.backend_write_operations, 0);
+        assert_eq!(failure.work.as_deref().unwrap().backend_write_operations, 0);
     }
 
     assert_eq!(

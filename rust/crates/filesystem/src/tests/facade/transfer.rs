@@ -100,11 +100,14 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
         .ok_or("invalid manifest unexpectedly restored")?;
         assert!(matches!(failure.error, FsError::InvalidExportManifest));
         assert_eq!(
-            failure.work.backend_read_operations > 0,
+            failure.work.as_deref().unwrap().backend_read_operations > 0,
             expected_backend_reads,
             "unexpected invalid-manifest physical plan for {label}"
         );
-        assert_eq!(failure.work.authority_records_appended, 0);
+        assert_eq!(
+            failure.work.as_deref().unwrap().authority_records_appended,
+            0
+        );
     }
     let restore_operation = OperationId::from_bytes([32; 16]);
     let restored = (destination.restore_volume(&manifest, restore_operation, B, &cancellation))
