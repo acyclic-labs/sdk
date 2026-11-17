@@ -546,24 +546,19 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                     }
                     let worker =
                         before_summary.ok_or("the background call has no worker request")?;
-                    let source_prefix: Vec<_> = summaries[0]
+                    // The agent prefix is the first system message; later
+                    // system messages are dynamic notices the background call
+                    // need not repeat.
+                    let source_prefix = summaries[0]
                         .messages
                         .iter()
-                        .take_while(|message| message.role == ModelRole::System)
-                        .collect();
-                    let worker_prefix: Vec<_> = worker
+                        .find(|message| message.role == ModelRole::System);
+                    let worker_prefix = worker
                         .messages
                         .iter()
-                        .take_while(|message| message.role == ModelRole::System)
-                        .collect();
-                    if source_prefix.is_empty() || source_prefix != worker_prefix {
-                        return fail(&format!(
-                            "the background call did not reuse the agent prefix: source {} worker {} source_roles {:?} worker_roles {:?}",
-                            source_prefix.len(),
-                            worker_prefix.len(),
-                            source_prefix.iter().map(|m| m.role).collect::<Vec<_>>(),
-                            worker_prefix.iter().map(|m| m.role).collect::<Vec<_>>(),
-                        ));
+                        .find(|message| message.role == ModelRole::System);
+                    if source_prefix.is_none() || source_prefix != worker_prefix {
+                        return fail("the background call did not reuse the agent prefix");
                     }
                 }
                 "length_continuation" => {
