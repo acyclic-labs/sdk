@@ -48,9 +48,7 @@ impl HostSession {
         );
         operation.set("acquire initialized FUSE abort control");
         if let Some(connection) = Connection::of(path)? {
-            io.connection
-                .set(connection)
-                .map_err(|_| NativeMountError::ControlPending)?;
+            io.set_connection(connection)?;
         }
         Ok(())
     }
@@ -240,14 +238,10 @@ impl super::packet_workers::PacketWorkers for HostSession {
 
 impl Drop for HostSession {
     fn drop(&mut self) {
+        // `stop` aborts the connection while its device is still open and
+        // releases the control; no abort may follow device closure.
         self.io.stop();
         self.protocol.close();
-        // Every reader has exited: `run` joins them before the session drops.
-        if let Some(connection) = self.io.as_ref().connection.get()
-            && let Err(error) = connection.abort()
-        {
-            tracing::error!(%error, "aborting an unserved FUSE connection failed");
-        }
     }
 }
 
@@ -308,11 +302,7 @@ impl<I: AsRef<HostIo>> PendingReply<I> {
     }
 
     fn abort(&self) {
-        if let Some(connection) = self.io.as_ref().connection.get()
-            && let Err(error) = connection.abort()
-        {
-            tracing::error!(%error, "aborting a failed FUSE reply failed");
-        }
+        self.io.as_ref().abort_connection();
     }
 }
 
