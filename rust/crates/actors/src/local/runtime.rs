@@ -969,17 +969,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         for ready in &self.ready {
             ready.dispatch();
         }
+        // Recovery reads the index from its head: never later than the
+        // current window, so a due alarm armed after its window was consumed
+        // is still found instead of starting behind it.
+        let now = self.clock.now_unix_millis();
+        let head = |dispatcher: &Snapshot| {
+            dispatcher::deadline_cursor(dispatcher).min(scheduling::window(now))
+        };
         let earliest =
             futures::future::try_join_all(self.scheduling_shards.iter().zip(&loaded).map(
-                |(&shard, dispatcher)| {
-                    self.store
-                        .next_window(shard, dispatcher::deadline_cursor(dispatcher))
-                },
+                |(&shard, dispatcher)| self.store.next_window(shard, head(dispatcher)),
             ))
             .await?;
         for ((&shard, dispatcher), next) in self.scheduling_shards.iter().zip(&loaded).zip(earliest)
         {
-            consumed.insert(shard, dispatcher::deadline_cursor(dispatcher));
+            consumed.insert(shard, head(dispatcher));
             windows.extend(next.map(|window| (window, shard)));
         }
         for ((&shard, (store, _)), dispatcher) in
@@ -1210,8 +1214,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     {
                         let handoff = handoffs.remove(&actor);
                         self.due(&actor, !handoff)?;
-                        self.register_alarm(&actor).await?;
                         self.activate(&actor, cursor);
+                        self.register_alarm(&actor).await?;
                     }
                     seen.insert(shard, cursor);
                 }
@@ -1466,12 +1470,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// the shard's next window past it.
     /// Register a recovered actor's persisted alarm through the same function
     /// a resident delivery uses. A due alarm stays in the due index, so the
-    /// next rearm fires it at once; a future one is its wake.
+    /// next rearm fires it at once; a future one is its wake. Recovery reads
+    /// the durable index, never an activation event.
     async fn register_alarm(&self, actor: &ActorReference) -> Result<(), Error> {
         if let Some(slot) = self.slot(actor) {
             let snapshot = self.store.load(actor).await?;
             if let Some(state) = snapshot.state() {
-                slot.registration.update_alarm(state.alarm())?;
+                slot.registration
+                    .update_alarm(state.alarm(), self.clock.now_unix_millis())?;
             }
         }
         Ok(())
@@ -2006,7 +2012,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // time on this host's clock; nothing was published.
                 let remaining = deadline.saturating_sub(*authority_unix_ms).max(1);
                 slot.registration
-                    .defer_alarm(state.alarm(), now.saturating_add(remaining))?;
+                    .defer_alarm(state.alarm(), now.saturating_add(remaining), now)?;
                 inner.observed = None;
                 return Ok(true);
             }

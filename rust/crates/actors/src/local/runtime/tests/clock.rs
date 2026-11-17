@@ -548,6 +548,65 @@ async fn a_recovered_alarm_fires_once_when_the_clock_reaches_it() -> TestResult 
     Ok(())
 }
 
+/// Recovery at exactly the persisted deadline enqueues the alarm at
+/// registration: the controlled clock does not move again, so wake_due never
+/// runs. A deadline one millisecond earlier takes the same path.
+#[tokio::test]
+async fn a_due_recovered_alarm_fires_once_at_or_before_its_deadline() -> TestResult {
+    for now in [150, 151] {
+        let provider = Arc::new(MemoryStream::default());
+        let store = Store::new(Arc::clone(&provider), root()?);
+        let armed = spawn_with(&store, "due-armed", &[b"set 50"]).await?;
+        let shard = store.scheduling_shard(&armed);
+        let host = |now| {
+            let (clock, control) = ControlledClock::new(now);
+            let runtime = Runtime::new(
+                crate::guest::Requests::default(),
+                Store::new(Arc::clone(&provider), root()?),
+                Arc::new(Package::new()?),
+                Arc::new(clock) as Arc<dyn Clock>,
+            )
+            .with_scheduling_shards([shard])?;
+            Ok::<_, Box<dyn std::error::Error>>((runtime, control))
+        };
+        let (first, _control) = host(100)?;
+        let tail = provider.tail(store.scheduling_path(shard)?).await?;
+        let (checkpoint, dispatcher) = first.dispatcher_store(shard)?;
+        {
+            let mut serving = Box::pin(first.run(|_, error| panic!("delivery failed: {error}")));
+            observe_while_running(
+                serving.as_mut(),
+                state_after(&checkpoint, &dispatcher, |state| {
+                    state.cursor("activation") == Some(tail)
+                }),
+            )
+            .await?;
+        }
+        assert_eq!(
+            store
+                .load(&armed)
+                .await?
+                .state()
+                .and_then(|state| state.alarm().pending()),
+            Some(150)
+        );
+        let (replacement, _control) = host(now)?;
+        let mut serving = Box::pin(replacement.run(|_, error| panic!("delivery failed: {error}")));
+        observe_while_running(
+            serving.as_mut(),
+            state_after(&store, &armed, |state| {
+                state.alarm().delivered_generation == Some(1)
+            }),
+        )
+        .await?;
+        assert_eq!(
+            records(&*provider, "out/due-armed").await?,
+            vec![Bytes::from_static(b"a1")]
+        );
+    }
+    Ok(())
+}
+
 struct Authority(AtomicU64);
 
 impl acyclic_stream::UnixMillisClock for Authority {

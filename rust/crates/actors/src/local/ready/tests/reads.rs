@@ -138,7 +138,7 @@ impl World {
                 for actor in self.filed.get(&opened).cloned().unwrap_or_default() {
                     let alarm = self.alarms.get(&actor).cloned().ok_or("no alarm")?;
                     self.host(actor)?
-                        .update_alarm(&alarm)
+                        .update_alarm(&alarm, NOW)
                         .map_err(|error| error.to_string())?;
                 }
                 let next = opened
@@ -158,7 +158,7 @@ impl World {
                 self.alarms.insert(LATE, alarm.clone());
                 self.filed.entry(2).or_default().push(LATE);
                 self.host(LATE)?
-                    .update_alarm(&alarm)
+                    .update_alarm(&alarm, NOW)
                     .map_err(|error| error.to_string())?;
             }
             Op::Deliver(actor) => {
