@@ -1551,4 +1551,4 @@ crate.annotation(
     additive_build_file_content = "exports_files([\"bin/protoc.exe\",\"include\"])\n",
 )
 
-use_repo(crate, "sdk_crates", "sdk_crates__protoc-bin-vendored-linux-x86_64-3.3.0", "sdk_crates__protoc-bin-vendored-macos-aarch_64-3.3.0", "sdk_crates__protoc-bin-vendored-win32-3.3.0")
+use_repo(crate, "sdk_crates", "sdk_crates__async-lock-3.4.2", "sdk_crates__hashbrown-0.17.1", "sdk_crates__protoc-bin-vendored-linux-x86_64-3.3.0", "sdk_crates__protoc-bin-vendored-macos-aarch_64-3.3.0", "sdk_crates__protoc-bin-vendored-win32-3.3.0")

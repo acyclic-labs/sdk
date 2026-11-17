@@ -31,8 +31,8 @@ rust_library(
     lint_config = ":lints",
     deps = [
         "//rust/vendor/rquickjs-sys-0.14.0:rquickjs_sys",
-        "@sdk_crates//async-lock-3.4.2",
-        "@sdk_crates//hashbrown-0.17.1",
+        "@sdk_crates__async-lock-3.4.2//:async_lock",
+        "@sdk_crates__hashbrown-0.17.1//:hashbrown",
     ],
     visibility = ["//visibility:public"],
 )
