@@ -2,10 +2,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 
 rust_library(
     name = "contracts",
-    crate_root = "lib.rs",
-    srcs = [
-        "lib.rs",
-        "//rust/crates/filesystem-base:src/numeric.rs",
-    ],
+    crate_root = "//rust/crates/filesystem-base:src/numeric.rs",
+    srcs = ["//rust/crates/filesystem-base:src/numeric.rs"],
     edition = "2024",
 )
