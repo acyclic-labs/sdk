@@ -701,7 +701,7 @@ mod resolver_tests {
                 if disabled {
                     config = config.compaction(crate::context::CompactionPolicy::Disabled);
                 }
-                let refusals = LocalHarness::doctor(config).await;
+                let refusals = LocalHarness::doctor(config).await.refusals;
                 if disabled {
                     assert!(refusals.is_empty(), "{refusals:?}");
                 } else {
@@ -764,7 +764,7 @@ mod resolver_tests {
                 config =
                     config.home_file("agent.ts", acyclic_stream::OwnedBytes::from_static(home));
             }
-            let refusals = LocalHarness::doctor(config).await;
+            let refusals = LocalHarness::doctor(config).await.refusals;
             if let Some(selection) = expected {
                 assert!(
                     refusals

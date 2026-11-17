@@ -1046,46 +1046,47 @@ async fn doctor_selects_report_mode_from_each_original_terminal_stream() {
     model.close().await;
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum SnapshotEntry {
+    File(Vec<u8>),
+    Link(PathBuf),
+    Node(std::fs::FileType),
+}
+fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, SnapshotEntry> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        result: &mut std::collections::BTreeMap<PathBuf, SnapshotEntry>,
+    ) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let kind = entry.file_type().unwrap();
+            let directory = kind.is_dir();
+            result.insert(
+                path.strip_prefix(root).unwrap().to_owned(),
+                if kind.is_file() {
+                    SnapshotEntry::File(std::fs::read(&path).unwrap())
+                } else if kind.is_symlink() {
+                    SnapshotEntry::Link(std::fs::read_link(&path).unwrap())
+                } else {
+                    SnapshotEntry::Node(kind)
+                },
+            );
+            if directory {
+                visit(root, &path, result);
+            }
+        }
+    }
+    let mut result = std::collections::BTreeMap::new();
+    visit(root, root, &mut result);
+    result
+}
+
 #[tokio::test]
 async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
-    #[derive(Debug, Eq, PartialEq)]
-    enum SnapshotEntry {
-        File(Vec<u8>),
-        Link(PathBuf),
-        Node(std::fs::FileType),
-    }
-    fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, SnapshotEntry> {
-        fn visit(
-            root: &Path,
-            path: &Path,
-            result: &mut std::collections::BTreeMap<PathBuf, SnapshotEntry>,
-        ) {
-            for entry in std::fs::read_dir(path).unwrap() {
-                let entry = entry.unwrap();
-                let path = entry.path();
-                let kind = entry.file_type().unwrap();
-                let directory = kind.is_dir();
-                result.insert(
-                    path.strip_prefix(root).unwrap().to_owned(),
-                    if kind.is_file() {
-                        SnapshotEntry::File(std::fs::read(&path).unwrap())
-                    } else if kind.is_symlink() {
-                        SnapshotEntry::Link(std::fs::read_link(&path).unwrap())
-                    } else {
-                        SnapshotEntry::Node(kind)
-                    },
-                );
-                if directory {
-                    visit(root, &path, result);
-                }
-            }
-        }
-        let mut result = std::collections::BTreeMap::new();
-        visit(root, root, &mut result);
-        result
-    }
     let plugins = task_plugins(&fixture);
     let original = snapshot(fixture._directory.path());
     // Installation pipes both streams and has no prompt or terminal.
@@ -1180,6 +1181,14 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         checkout_original,
         "refused doctor changed checkout"
     );
+    assert_eq!(model.generated(), 1);
+    model.close().await;
+}
+
+#[tokio::test]
+async fn doctor_preserves_producer_causes_without_unrelated_model_repairs() {
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
     // Each aggregated refusal retains the cause its original producer reported.
     let malformed = fixture._directory.path().join("invalid.json");
     std::fs::write(&malformed, b"{").unwrap();
@@ -1228,6 +1237,16 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
                     |reason| reason.starts_with(context) && reason.contains(&expected)
                 )),
             "missing original cause {context} {expected}: {report}"
+        );
+        assert!(
+            report["refusals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|reason| !reason
+                    .as_str()
+                    .is_some_and(|reason| reason.starts_with("model settings:"))),
+            "unrelated producer failure became model repair advice: {report}"
         );
         assert_eq!(
             snapshot(fixture._directory.path()),
@@ -1305,7 +1324,7 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         before,
         "refused doctor changed state"
     );
-    assert_eq!(model.generated(), 1);
+    assert_eq!(model.generated(), 0);
     model.close().await;
 }
 

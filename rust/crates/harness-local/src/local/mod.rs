@@ -75,7 +75,7 @@ const SHARED_VOLUME: &str = "shared";
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub use config::ModelResolver;
 pub use config::{LocalHarnessConfig, WorkspaceMounting};
-pub use open::PreparedLocalHarness;
+pub use open::{PreparedLocalHarness, Readiness};
 
 pub use observer::{Event, Observer};
 pub use tool_output::LiveKind;
@@ -178,7 +178,7 @@ impl LocalHarness {
     /// children. Success does not open storage or probe a credential service.
     pub fn doctor(
         config: LocalHarnessConfig,
-    ) -> acyclic_stream::BoxProviderFuture<'static, Vec<Error>> {
+    ) -> acyclic_stream::BoxProviderFuture<'static, Readiness> {
         Box::pin(open::doctor(config))
     }
 
