@@ -1,4 +1,5 @@
 //! The child process inspects live allocator storage before glibc releases it.
+#![cfg(test)]
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
 
 use super::signed::*;
