@@ -354,3 +354,7 @@ filegroup(
     srcs = glob(["**"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
+
+exports_files([
+        "src/local/host_process/fixtures/claude-code-completed.jsonl",
+])

@@ -94,3 +94,9 @@ filegroup(
     srcs = glob(["**"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
+
+exports_files([
+        "fixtures/conformance/identity/dex/jwks.body",
+        "fixtures/conformance/identity/dex/manifest.json",
+        "fixtures/conformance/identity/dex/token.body",
+])
