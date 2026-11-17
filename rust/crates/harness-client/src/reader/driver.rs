@@ -10,8 +10,8 @@
 
 use super::{Failure, Fetched, HeadObservation, ListedChild, Op, Outcome, Reader};
 use acyclic_stream::{
-    ChildrenPageRequest, PathHead, ReadRequest, Record, RecordStream, StreamCategory, StreamError,
-    StreamPath, StreamProvider,
+    ChildrenPageRequest, PathHead, ReadRequest, Record, RecordStream, StreamError, StreamPath,
+    StreamProvider,
 };
 use acyclic_stream::{StreamProviderExt as _, runtime::ReadySources};
 use futures::Stream;
@@ -835,7 +835,7 @@ mod tests {
             let (_, accepted, record) = source.next().await.unwrap();
             assert_eq!(
                 record.unwrap_err().category(),
-                StreamCategory::InvalidResponse
+                acyclic_stream::StreamCategory::InvalidResponse
             );
             assert_eq!(accepted, u64::MAX);
             assert_eq!(source.position, u64::MAX);
