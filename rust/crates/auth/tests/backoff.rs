@@ -13,9 +13,12 @@ proptest! {
         let mut replay = Backoff::new(base, maximum, seed);
         let mut spread = Backoff::new(base, maximum, seed.wrapping_add(1));
         let mut scenario = Backoff::new(base, maximum, seed);
+        // A constant ceiling advances the same entropy without any resets.
+        let mut entropy = Backoff::new(base.min(maximum), base.min(maximum), seed);
         let mut differs = false;
         for attempt in 0..512 {
             let wait = first.delay_ms();
+            entropy.delay_ms();
             prop_assert_eq!(wait, replay.delay_ms());
             let other = spread.delay_ms();
             differs |= other != wait;
@@ -38,6 +41,11 @@ proptest! {
         replay.reset();
         let reset = first.delay();
         prop_assert_eq!(reset, replay.delay());
+        prop_assert_eq!(reset.as_millis(), u128::from(entropy.delay_ms()));
+        for _ in 0..64 {
+            first.reset();
+            prop_assert_eq!(first.delay_ms(), entropy.delay_ms());
+        }
         prop_assert!(reset.as_millis() <= u128::from(base.min(maximum)));
         prop_assert!(reset.as_millis() >= u128::from(base.min(maximum).div_ceil(2)));
     }
