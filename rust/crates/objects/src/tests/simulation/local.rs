@@ -8,7 +8,7 @@ async fn episode(seed: u64, fault: DurableFault) -> Result<(), Failure> {
     let stable_digest = Digest::of(stable);
     let mut candidate = vec![0; 32];
     let (schedule, mut boundaries) = Schedule::seeded(seed);
-    drive(&schedule, &mut boundaries, async {
+    drive(&schedule, &mut boundaries, |_| {}, async {
         assert!(fill_seeded(&mut candidate));
         let store =
             Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
@@ -40,7 +40,7 @@ async fn episode(seed: u64, fault: DurableFault) -> Result<(), Failure> {
     drop(schedule);
 
     let (recovery, mut boundaries) = Schedule::seeded(seed);
-    drive(&recovery, &mut boundaries, async {
+    drive(&recovery, &mut boundaries, |_| {}, async {
         let store =
             Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
         let blobs = store.account(b"simulation")?;
@@ -75,7 +75,7 @@ async fn episode(seed: u64, fault: DurableFault) -> Result<(), Failure> {
     drop(recovery);
 
     let (reopened, mut boundaries) = Schedule::seeded(seed);
-    drive(&reopened, &mut boundaries, async {
+    drive(&reopened, &mut boundaries, |_| {}, async {
         let store =
             Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
         let blobs = store.account(b"simulation")?;

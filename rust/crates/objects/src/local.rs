@@ -1296,7 +1296,7 @@ mod isolation_tests {
     #[cfg(feature = "test-support")]
     #[tokio::test]
     async fn a_failed_flush_stops_the_root_until_it_recovers() {
-        use acyclic_native_runtime::testing::{DurableFault, Schedule};
+        use acyclic_native_runtime::testing::{DurableFault, Schedule, drive};
         acyclic_native_runtime::initialize_native_io_services().unwrap();
         let root = tempfile::tempdir().unwrap();
         let open =
@@ -1304,19 +1304,11 @@ mod isolation_tests {
         let medium = open().await.unwrap();
         assert!(medium.create("k/a", bytes(b"a")).await.unwrap());
         let (schedule, mut events) = Schedule::new();
-        let driver = tokio::spawn(async move {
-            while let Some(boundary) = events.recv().await {
-                boundary.release();
-            }
-        });
         schedule.cut_at(0, DurableFault::Failed);
         assert!(matches!(
-            schedule.scope(medium.flush(&[])).await,
+            drive(&schedule, &mut events, |_| {}, medium.flush(&[])).await,
             Err(MediumError::Ambiguous(_))
         ));
-        schedule.drained().await;
-        driver.abort();
-        let _ = driver.await;
         assert!(medium.create("k/b", bytes(b"b")).await.is_err());
         assert!(medium.flush(&[]).await.is_err());
         drop(medium);
