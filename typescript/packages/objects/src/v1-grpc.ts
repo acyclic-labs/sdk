@@ -1,13 +1,13 @@
 import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
 import { credentialProvider, type CredentialOptions } from "@acyclic-labs/auth/credential";
 import { rootCertificates } from "node:tls";
-import { createClient, Code, ConnectError } from "@connectrpc/connect";
+import { createClient, ConnectError } from "@connectrpc/connect";
 import { fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { createGrpcTransport, Http2SessionManager, type GrpcTransportOptions } from "@connectrpc/connect-node";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/core/observe";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { BlobsService } from "../generated/proto/objects/v1/objects_pb.js";
-import { ObjectsV1Request as RustRequest } from "../generated/wasm/acyclic_objects_wasm.js";
+import { ObjectsV1Request as RustRequest, objects_v1_grpc_error_code } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 import { ObjectsV1Error, ObjectsV1Provider, objectsV1Error, objectsRequest, objectsStreamRequest, type ObjectsV1Request } from "./v1.js";
 
@@ -27,9 +27,7 @@ function grpcError(error: unknown): ObjectsV1Error {
   const details = error.findDetails(wire.ErrorDetailSchema);
   const detail = details.find(value => value.code in wire.ErrorCode && value.code !== wire.ErrorCode.UNSPECIFIED) ?? details[0];
   if (detail !== undefined && detail.code in wire.ErrorCode && detail.code !== wire.ErrorCode.UNSPECIFIED) return new ObjectsV1Error(detail.code, detail);
-  // The Rust client's classification of a status without a typed detail.
-  const code = error.code === Code.InvalidArgument ? wire.ErrorCode.INVALID_ARGUMENT : error.code === Code.NotFound ? wire.ErrorCode.NOT_FOUND : error.code === Code.PermissionDenied || error.code === Code.Unauthenticated ? wire.ErrorCode.ACCESS_DENIED : error.code === Code.ResourceExhausted ? wire.ErrorCode.QUOTA_EXCEEDED : error.code === Code.OutOfRange ? wire.ErrorCode.RANGE_NOT_SATISFIABLE : error.code === Code.Unimplemented ? wire.ErrorCode.UNSUPPORTED : error.code === Code.DataLoss ? wire.ErrorCode.CORRUPT : error.code === Code.DeadlineExceeded ? wire.ErrorCode.DEADLINE_ELAPSED : wire.ErrorCode.UNAVAILABLE;
-  return new ObjectsV1Error(code, detail);
+  return new ObjectsV1Error(objects_v1_grpc_error_code(error.code) as wire.ErrorCode, detail);
 }
 
 /** The generated Blobs service client over one owned HTTP/2 session. */
@@ -79,7 +77,11 @@ export class GrpcObjectsV1 extends ObjectsV1Provider {
         } catch (error) { throw controller.signal.aborted ? controller.signal.reason : grpcError(error); }
       }, this.timeoutMs);
     }
-    return objectsRequest(input, (bytes, controller) => this.send(route, bytes, controller.signal));
+    return objectsRequest(input, async (bytes, controller) => {
+      const ready = ensureObjectsWasm(controller.signal);
+      if (ready !== undefined) await ready;
+      return this.send(route, bytes, controller.signal);
+    });
   }
   private async send(route: string, input: Uint8Array, signal: AbortSignal): Promise<Uint8Array> {
     const blobs = this.clients.blobs;

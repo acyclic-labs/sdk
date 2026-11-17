@@ -683,6 +683,39 @@ fn original(status: &tonic::Status) -> Original {
     )
 }
 
+#[test]
+fn grpc_status_without_details_uses_the_public_failure_category() {
+    for (status, expected) in [
+        (
+            tonic::Code::InvalidArgument,
+            wire::ErrorCode::InvalidArgument,
+        ),
+        (tonic::Code::NotFound, wire::ErrorCode::NotFound),
+        (tonic::Code::PermissionDenied, wire::ErrorCode::AccessDenied),
+        (tonic::Code::Unauthenticated, wire::ErrorCode::AccessDenied),
+        (
+            tonic::Code::ResourceExhausted,
+            wire::ErrorCode::QuotaExceeded,
+        ),
+        (
+            tonic::Code::OutOfRange,
+            wire::ErrorCode::RangeNotSatisfiable,
+        ),
+        (tonic::Code::Unimplemented, wire::ErrorCode::Unsupported),
+        (tonic::Code::DataLoss, wire::ErrorCode::Corrupt),
+        (
+            tonic::Code::DeadlineExceeded,
+            wire::ErrorCode::DeadlineElapsed,
+        ),
+        (tonic::Code::Internal, wire::ErrorCode::Unavailable),
+    ] {
+        assert_eq!(
+            error_from_status(&tonic::Status::new(status, "remote failure")).code,
+            expected
+        );
+    }
+}
+
 /// Every category, canonical or carrying any member refusal, decodes then
 /// encodes to its original status, and encodes then decodes to itself.
 /// `Unspecified` is not a failure: its detail is indistinguishable from none.

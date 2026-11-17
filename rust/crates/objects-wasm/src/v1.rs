@@ -41,6 +41,13 @@ pub fn objects_v1_http_type(route: &str, output: bool) -> Result<String, JsValue
 pub fn objects_v1_http_error_code(status: u16) -> i32 {
     acyclic_objects::Error::from_http_status(status).code as i32
 }
+/// Classifies a gRPC failure without a recognized error detail.
+#[wasm_bindgen]
+#[must_use]
+pub fn objects_v1_grpc_error_code(status: i32) -> i32 {
+    acyclic_objects::Error::from_grpc_status_code(status).code as i32
+}
+
 /// The BLAKE3-256 digest naming `bytes` as a plain blob.
 #[wasm_bindgen]
 #[must_use]
