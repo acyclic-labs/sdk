@@ -19,7 +19,7 @@ rust_library(
     crate_root = "//rust/crates/sdk-generation:tests/cli_regressions/cache.rs",
     srcs = ["//rust/crates/sdk-generation:tests/cli_regressions/cache.rs"],
     edition = "2021",
-    rustc_flags = ["--check-cfg=cfg(loom)"],
+    rustc_flags = ["--check-cfg=cfg(docsrs,test)", "--check-cfg=cfg(loom)"],
     deps = [":loom_config", "@sdk_crates//loom-0.7.3"],
 )
 
@@ -44,6 +44,6 @@ rust_test(
     ],
     compile_data = ["//rust/crates/sdk-docs/fuzz:corpus/rustdoc_adapter/valid.json"],
     edition = "2021",
-    rustc_flags = ["--check-cfg=cfg(loom)"],
+    rustc_flags = ["--check-cfg=cfg(docsrs,test)", "--check-cfg=cfg(loom)"],
     deps = [":loom_config", ":sdk_fixture_verification", "@sdk_crates//loom-0.7.3"],
 )
