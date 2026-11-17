@@ -379,7 +379,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                     files: &[("marker.txt", "marker\n")],
                     plans: || plans(seed),
                     prompts: vec![vec![("root", tag("c3-reopen-spawn"))]],
-                    window: (1, 2),
+                    window: (1, usize::MAX),
                     mode: oracle::crash_mode("crash_after", seed).ok_or("crash mode")?,
                 };
                 let (crashed, reopened) = crash.recover(recovery).await?;
