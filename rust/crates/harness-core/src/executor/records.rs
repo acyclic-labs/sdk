@@ -47,6 +47,7 @@ impl StockExecution<'_> {
                         ..
                     }
                     | ExecutionEvent::ContextPrepared { step: recorded, .. }
+                    | ExecutionEvent::Prompt { step: recorded, .. }
                     | ExecutionEvent::ContextCompacted { step: recorded, .. } => *recorded == step,
                     ExecutionEvent::Progress { .. }
                     | ExecutionEvent::NativeCapture { .. }
@@ -93,6 +94,7 @@ impl StockExecution<'_> {
                 | ExecutionEvent::ModelStopped { step: event_step, purpose: event_purpose, .. }
                 if *event_step == step && *event_purpose == purpose)
                     || matches!(event, ExecutionEvent::ContextPrepared { step: event_step, .. }
+                    | ExecutionEvent::Prompt { step: event_step, .. }
                     | ExecutionEvent::ContextCompacted { step: event_step, .. }
                     if *event_step == step && purpose == ModelPurpose::Response)
             },

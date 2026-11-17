@@ -5,7 +5,8 @@
 use super::*;
 use acyclic_harness::{
     conversation::{DirectoryTarget, PrivateDirectoryEntryKind},
-    local::WorkspaceMounting,
+    executor::ExecutionRecord,
+    local::{WorkspaceMounting, agent_conversation::Conversation},
     model::{ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall, ToolResultContent},
     test_support::{ScriptedEvent, model_visible_messages},
 };
@@ -210,6 +211,8 @@ pub(super) struct Incarnation {
     /// Durable operations the whole incarnation performed.
     pub durable: usize,
     pub crashed: Option<InjectedStorageFault>,
+    /// The root agent's committed execution records, in journal order.
+    pub records: Vec<ExecutionRecord>,
 }
 
 thread_local! {
@@ -454,10 +457,12 @@ impl World {
                 Box::pin(async { Ok(()) })
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
+            let records = Arc::new(Mutex::new(Vec::new()));
             let directory = self.directory.path();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
+                let records = Arc::clone(&records);
                 entry(async move {
                     let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
                     acyclic_harness::test_support::inject_checkout_identity(
@@ -468,6 +473,7 @@ impl World {
                         directory.join("checkout"),
                         (model, provider.clone()),
                     )?
+                    .feedback_plugin(false)
                     .without_user_settings()
                     .workspace_mounting(WorkspaceMounting::Physical)
                     .source_entropy(source_entropy)
@@ -501,6 +507,12 @@ impl World {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
                     }
+                    let conversation = Conversation::open(Box::pin(harness.connect()).await?);
+                    records
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .extend(conversation.execution_records().await?);
+                    drop(conversation);
                     // Retire every native mount and worker before the next
                     // replay can reuse this world's deterministic path.
                     let harness = Arc::try_unwrap(harness).map_err(|_| {
@@ -528,12 +540,18 @@ impl World {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
+            let records = std::mem::take(
+                &mut *records
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
             Ok(Incarnation {
                 prompts,
                 requests: provider.requests(),
                 dispatched_at,
                 durable: counter.durable_write_count(),
                 crashed,
+                records,
             })
         })
     }

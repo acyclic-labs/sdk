@@ -125,7 +125,7 @@ impl StockExecution<'_> {
             crate::executor::preparation_format(format_args!("context:{step}:prepared"), work)
         })?;
         let _writer = self.journal_writes.lock().await;
-        let (tail, _) = self
+        let (tail, records) = self
             .model_records(journal, input.operation_id, step, ModelPurpose::Response)
             .await?;
         if !journal
@@ -135,7 +135,7 @@ impl StockExecution<'_> {
                 &prepared_key,
                 &ExecutionEvent::ContextPrepared {
                     step,
-                    projection: reference,
+                    projection: reference.clone(),
                     configuration,
                     steering: boundary
                         .map(|boundary| boundary.selection(input.operation_id, step))
@@ -146,6 +146,30 @@ impl StockExecution<'_> {
             .await?
         {
             return Err(Error::Indeterminate(input.operation_id));
+        }
+        if step == 0
+            && !records
+                .iter()
+                .any(|record| matches!(record.event, ExecutionEvent::Prompt { .. }))
+        {
+            let prompt_key = with_history_io(self.io, |work| {
+                preparation_format(format_args!("prompt:{step}"), work)
+            })?;
+            if !journal
+                .append_if_tail(
+                    input.operation_id,
+                    tail + 1,
+                    &prompt_key,
+                    &ExecutionEvent::Prompt {
+                        step,
+                        projection: reference,
+                    },
+                    self.io,
+                )?
+                .await?
+            {
+                return Err(Error::Indeterminate(input.operation_id));
+            }
         }
         Ok((projection, accounting, prepared))
     }
@@ -167,6 +191,50 @@ impl StockExecution<'_> {
             boundary,
         )
         .await
+    }
+
+    /// Publishes the effective system and root prompt once per turn, before
+    /// its first model request. The projection already pins the exact prepared
+    /// context, so this adds no second copy of the prompt bytes.
+    async fn ensure_prompt_record(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        projection: &FileRef,
+    ) -> Result<()> {
+        if step != 0 {
+            return Ok(());
+        }
+        let _writer = self.journal_writes.lock().await;
+        let (tail, records) = self
+            .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+            .await?;
+        if records
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::Prompt { .. }))
+        {
+            return Ok(());
+        }
+        let key = with_history_io(self.io, |work| {
+            preparation_format(format_args!("prompt:{step}"), work)
+        })?;
+        if !journal
+            .append_if_tail(
+                input.operation_id,
+                tail,
+                &key,
+                &ExecutionEvent::Prompt {
+                    step,
+                    projection: projection.clone(),
+                },
+                self.io,
+            )?
+            .await?
+        {
+            return Err(Error::Indeterminate(input.operation_id));
+        }
+        Ok(())
     }
 
     pub(super) async fn prepared_response_history(
@@ -215,6 +283,10 @@ impl StockExecution<'_> {
                     (projection, accounting, prepared)
                 }
             };
+            if let Some(reference) = first {
+                self.ensure_prompt_record(journal, input, step, reference)
+                    .await?;
+            }
             if projection.checkpoint.is_some() {
                 return Err(stock_boundary(
                     self.io,

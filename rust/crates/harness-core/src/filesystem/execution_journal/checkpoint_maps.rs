@@ -263,6 +263,7 @@ where
         load(&mut summary.retries, &reader, roots[0], retry).await?;
         match event {
             ExecutionEvent::ContextPrepared { step, .. }
+            | ExecutionEvent::Prompt { step, .. }
             | ExecutionEvent::ContextCompacted { step, .. } => {
                 load(&mut summary.contexts, &reader, roots[1], *step).await?;
                 for purpose in [
@@ -356,6 +357,7 @@ where
         roots[0] = Some(store(writer, roots[0], retry, value, io).await?);
         match event {
             ExecutionEvent::ContextPrepared { step, .. }
+            | ExecutionEvent::Prompt { step, .. }
             | ExecutionEvent::ContextCompacted { step, .. } => {
                 let value = summary.contexts.get(step, io)?.ok_or_else(|| corrupt(io))?;
                 roots[1] = Some(store(writer, roots[1], step.digest(io)?, value, io).await?);
