@@ -876,6 +876,9 @@ async fn a_late_parked_alarm_moves_into_the_live_registration() -> TestResult {
         Arc::new(Package::new()?),
         Arc::new(clock) as Arc<dyn Clock>,
     );
+    for ready in &runtime.ready {
+        ready.dispatch();
+    }
     let address = actor("late-parked")?;
     runtime.track(address.clone())?;
     let first = runtime.slot(&address).ok_or("missing first slot")?;
