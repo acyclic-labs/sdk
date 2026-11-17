@@ -38,3 +38,33 @@ test('locked version selection distinguishes aliases across incompatible version
   assert.equal(versionMatches('2.5.0', '~2.4.0'), false);
   assert.throws(() => versionMatches('1.0.0', 'not a requirement'), /unsupported/);
 });
+
+test('registry features follow the current dependency declaration', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-features-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  write('Cargo.toml', '[workspace]\nmembers=["app"]\n');
+  write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nserde_json={version="1",features=["preserve_order"]}\n');
+  write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["serde_json"]\n[[package]]\nname="serde_json"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
+  write('cargo-bazel.Cargo.lock', 'version=4\n[[package]]\nname="direct-cargo-bazel-deps"\nversion="0.0.1"\ndependencies=["serde_json"]\n');
+  write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {'serde_json 1.0.0': {targets: [{Library: {crate_name: 'serde_json'}}], common_attrs: {crate_features: ['default']}}}}));
+  const graph = workspaceGraph(root);
+  const registry = graph.packages.find(p => p.name === 'serde_json');
+  assert.ok(graph.resolve.nodes.find(n => n.id === registry.id).features.includes('preserve_order'));
+});
+
+test('registry dependencies are selected from the current Cargo lock', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-new-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  write('Cargo.toml', '[workspace]\nmembers=["app"]\n');
+  write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nnew_crate="1"\n');
+  write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["new_crate"]\n[[package]]\nname="new_crate"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
+  write('cargo-bazel.Cargo.lock', 'version=4\n[[package]]\nname="direct-cargo-bazel-deps"\nversion="0.0.1"\n');
+  write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {}}));
+  const graph = workspaceGraph(root);
+  const app = graph.packages.find(p => p.name === 'app');
+  const registry = graph.packages.find(p => p.name === 'new_crate');
+  assert.ok(registry);
+  assert.equal(graph.resolve.nodes.find(n => n.id === app.id).deps[0].pkg, registry.id);
+});
