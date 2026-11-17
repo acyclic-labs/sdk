@@ -306,7 +306,8 @@ pub fn capture_machine(original: &MachineObservation) -> Result<Vec<u8>, Provide
         "original machine response must retain its producer observation"
     );
     let bytes = value.encode_to_vec();
-    check("acyclic.machines.v1.MachineState", &bytes);
+    check("acyclic.machines.v1.MachineState", &bytes)
+        .map_err(|error| ProviderError::Invalid(error.to_string()))?;
     Ok(bytes)
 }
 
@@ -321,7 +322,7 @@ pub fn capture_event(original: &MachineEvent) -> Vec<u8> {
     );
     let bytes = value.encode_to_vec();
     for end in 0..=bytes.len() {
-        check("acyclic.machines.v1.MachineEvent", &bytes[..end]);
+        assert!(check("acyclic.machines.v1.MachineEvent", &bytes[..end]).is_ok());
     }
     bytes
 }
@@ -337,7 +338,8 @@ pub fn capture_checkpoint(original: &CheckpointObservation) -> Result<Vec<u8>, P
     );
     let bytes = value.encode_to_vec();
     for end in 0..=bytes.len() {
-        check("acyclic.machines.v1.CheckpointState", &bytes[..end]);
+        check("acyclic.machines.v1.CheckpointState", &bytes[..end])
+            .map_err(|error| ProviderError::Invalid(error.to_string()))?;
     }
     Ok(bytes)
 }
@@ -352,7 +354,7 @@ pub fn capture_operation(original: OperationObservation) -> Vec<u8> {
     );
     let bytes = value.encode_to_vec();
     for end in 0..=bytes.len() {
-        check("acyclic.machines.v1.OperationState", &bytes[..end]);
+        assert!(check("acyclic.machines.v1.OperationState", &bytes[..end]).is_ok());
     }
     bytes
 }
@@ -371,7 +373,8 @@ pub fn capture_machine_page(
         "original machine page must retain its producer observations and cursor"
     );
     let bytes = value.encode_to_vec();
-    check("acyclic.machines.v1.MachinePage", &bytes);
+    check("acyclic.machines.v1.MachinePage", &bytes)
+        .map_err(|error| ProviderError::Invalid(error.to_string()))?;
     Ok(bytes)
 }
 
