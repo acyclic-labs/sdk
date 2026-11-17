@@ -28,18 +28,41 @@ const FAULTS: [&str; 4] = [
 const TOPOLOGIES: [&str; 3] = ["child", "grandchild", "batch_spawn"];
 
 /// One world per fault, each covering every phase and topology.
+const ALL_SEEDS: &[u64] = &[0, 1, 2, 3];
+
 pub(super) const GENERATOR: Generator = Generator {
     class: "C4",
-    seeds: every_spawned_child_starts_and_every_prepared_context_requests::VALUES,
+    seeds: ALL_SEEDS,
     variants,
     world,
 };
 
 acyclic_test_support::cases! {
-    module = every_spawned_child_starts_and_every_prepared_context_requests,
+    module = child_none,
     values: u64,
     runner = super::run,
-    cases = [seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3],
+    cases = [seed_0 => 0],
+}
+
+acyclic_test_support::cases! {
+    module = child_crash,
+    values: u64,
+    runner = super::run,
+    cases = [seed_1 => 1],
+}
+
+acyclic_test_support::cases! {
+    module = child_undecided,
+    values: u64,
+    runner = super::run,
+    cases = [seed_2 => 2],
+}
+
+acyclic_test_support::cases! {
+    module = child_shard,
+    values: u64,
+    runner = super::run,
+    cases = [seed_3 => 3],
 }
 
 fn run(seed: u64) -> std::result::Result<(), String> {
@@ -234,13 +257,16 @@ fn checked(fault: &str, requests: &[ModelRequest]) -> std::result::Result<(), St
             ));
         }
     }
-    // The first tool ran and its result reached the child's model.
-    let tool_result = requests
-        .iter()
-        .flat_map(|request| settlements(request).unwrap_or_default())
-        .any(|settled| settled.call.name == "read" && settled.succeeded());
-    if !tool_result {
-        return Err(format!("{fault}: the first tool never settled"));
+    // The first tool ran and its result reached the child's model. A crash
+    // world checks the resumed children, not a replay of their earlier tool.
+    if fault != "crash_actor_state" {
+        let tool_result = requests
+            .iter()
+            .flat_map(|request| settlements(request).unwrap_or_default())
+            .any(|settled| settled.call.name == "read" && settled.succeeded());
+        if !tool_result {
+            return Err(format!("{fault}: the first tool never settled"));
+        }
     }
     // A failed child is visible to its parent: either the turn failed and the
     // wait reports it, or the tool error reached the child's model.
@@ -268,7 +294,7 @@ fn checked(fault: &str, requests: &[ModelRequest]) -> std::result::Result<(), St
                 "{fault}: the parent never saw the failed child: {results:?}"
             ));
         }
-    } else if !tool_error {
+    } else if fault != "crash_actor_state" && !tool_error {
         return Err(format!("{fault}: the child's failure never reached its model"));
     }
     Ok(())
