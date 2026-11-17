@@ -32,9 +32,10 @@ pub fn normalize_identity(kind: &str, value: &str) -> Result<Uuid, IdentityError
     Ok(uuid_from_digest(digest.finalize().into()))
 }
 
-fn uuid_from_digest(digest: [u8; 32]) -> Uuid {
+const fn uuid_from_digest(digest: [u8; 32]) -> Uuid {
+    let (prefix, _) = digest.split_at(16);
     let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
+    bytes.copy_from_slice(prefix);
     uuid::Builder::from_sha1_bytes(bytes).into_uuid()
 }
 
@@ -64,7 +65,7 @@ macro_rules! uuid_identity {
             }
 
             /// Derives a deterministic, never-nil identity from a domain-separated SHA-256 digest: its first 16 bytes stamped as a version-5 UUID.
-            pub fn from_digest(digest: [u8; 32]) -> Self {
+            pub const fn from_digest(digest: [u8; 32]) -> Self {
                 Self(uuid_from_digest(digest))
             }
 
@@ -99,6 +100,14 @@ uuid_identity!(
 uuid_identity!(OperationId, "Address of one admitted operation.");
 uuid_identity!(MachineId, "Stable logical machine identity.");
 uuid_identity!(CheckpointId, "Stable immutable checkpoint identity.");
+
+// Check the revision-one byte vectors at compile time on every target.
+const _: () = {
+    assert!(OperationId::from_digest([0; 32]).0.as_u128() == 0x5000_8000_000000000000);
+    assert!(
+        MachineId::from_digest([0xff; 32]).0.as_u128() == 0xffffffff_ffff_5fff_bfff_ffffffffffff
+    );
+};
 
 impl MachineId {
     /// Global pair retaining this machine's exact 16-byte UUID wire representation.
