@@ -19,20 +19,30 @@ def _deny_test_impl(ctx):
         outputs = [snapshot],
         mnemonic = "CargoDenyWorkspace",
     )
+    advisory_map = ctx.actions.declare_file(ctx.label.name + ".advisory-inputs.json")
+    ctx.actions.write(advisory_map, json.encode([[file.path, _relative_external(file)] for file in ctx.files._advisories]))
+    advisory_tree = ctx.actions.declare_directory(ctx.label.name + ".advisories")
+    ctx.actions.run(
+        executable = ctx.executable._node,
+        arguments = [ctx.file._snapshot.path, advisory_tree.path, advisory_map.path],
+        inputs = depset(ctx.files._advisories + [advisory_map, ctx.file._snapshot]),
+        tools = [ctx.attr._node[DefaultInfo].files_to_run],
+        outputs = [advisory_tree],
+        mnemonic = "CargoDenyAdvisories",
+    )
     cargo = [file for file in ctx.files._cargo if file.short_path.endswith("/bin/cargo")]
     rustc = [file for file in ctx.files._rustc if file.short_path.endswith("/bin/rustc")]
     if len(cargo) != 1 or len(rustc) != 1:
         fail("Rust toolchain must expose exactly one Cargo and rustc binary")
     links = {
         "deny-workspace": snapshot,
+        "deny-advisories": advisory_tree,
         "deny-tool/cargo-deny": ctx.file._deny,
         "deny-compiler/bin/cargo": cargo[0],
         "deny-compiler/bin/rustc": rustc[0],
     }
     for file in ctx.files._registry:
         links["deny-registry/" + _relative_external(file)] = file
-    for file in ctx.files._advisories:
-        links["deny-advisories/" + _relative_external(file)] = file
     for file in ctx.files._rustc_lib:
         links["deny-compiler/" + _relative_external(file)] = file
     runfiles = ctx.runfiles(files = [ctx.file._runner], symlinks = links).merge(ctx.attr._node[DefaultInfo].default_runfiles)

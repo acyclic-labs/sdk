@@ -4,18 +4,12 @@ import {spawnSync} from 'node:child_process';
 
 const root=process.env.TEST_SRCDIR,workspace=process.env.TEST_WORKSPACE,tmp=process.env.TEST_TMPDIR;
 if(!root||!workspace||!tmp)throw Error('Bazel test runfiles are required');
-// Bazel may represent an entire runfiles subtree as directory symlinks. Follow
-// each one explicitly: WalkDir in cargo-deny intentionally does not follow them.
-function copyTree(from,to){
- if(fs.statSync(from).isDirectory()){
-  fs.mkdirSync(to,{recursive:true});
-  for(const name of fs.readdirSync(from))copyTree(path.join(from,name),path.join(to,name));
- }else{fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync(from,to);}
-}
-const input=path.join(root,workspace),source=path.join(input,'deny-workspace'),tree=path.join(tmp,'workspace');
-copyTree(source,tree);
+const input=path.join(root,workspace),tree=path.join(input,'deny-workspace');
 const home=path.join(tmp,'cargo-home'),db=path.join(home,'advisory-dbs','advisory-db-3157b0e258782691');
-fs.mkdirSync(home,{recursive:true});copyTree(path.join(input,'deny-advisories'),db);
+fs.mkdirSync(db,{recursive:true});
+// The root of WalkDir follows this one symlink; its descendants are regular
+// files in Bazel's cached tree artifact, so no per-test database copy is needed.
+fs.symlinkSync(path.join(input,'deny-advisories','crates'),path.join(db,'crates'),'dir');
 const advisories=fs.readdirSync(path.join(db,'crates'),{recursive:true,withFileTypes:true}).filter(entry=>entry.isFile()&&entry.name.endsWith('.md'));
 if(!advisories.length)throw Error('pinned advisory snapshot contains no regular advisory files');
 // The committed snapshot's actual fetch time, not the time this test happened to run.
