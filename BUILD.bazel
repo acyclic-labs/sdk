@@ -399,6 +399,7 @@ node_modules(
     name = "wasm_auth_node_modules",
     packages = {
         ":sdk_typescript_auth": "@acyclic-labs/auth=",
+        ":sdk_typescript_core": "@acyclic-labs/core=",
         "@npm_workspace_connectrpc_connect//:files": "@connectrpc/connect=",
         "@npm_workspace_bufbuild_protobuf//:files": "@bufbuild/protobuf=",
     },
