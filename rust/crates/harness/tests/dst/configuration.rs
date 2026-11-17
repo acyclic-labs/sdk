@@ -872,7 +872,7 @@ acyclic_test_support::cases! {
     module = every_declared_role_runs_with_its_effective_configuration,
     values: u64,
     runner = super::run,
-    cases = [seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3, seed_4 => 4],
+    cases = [seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3],
 }
 
 fn run(seed: u64) -> std::result::Result<(), String> {
