@@ -123,7 +123,7 @@ async function buildWasm() {
     const { selection, artifact, outName, postprocess, targetDirectory, family } = wasmSelection(name);
     let producer, source, revision;
     if (family) {
-      const { createNativeProducer } = await import("./build-native-family.mjs");
+      const { createNativeProducer } = await import("../scripts/build-native-family.mjs");
       producer = createNativeProducer(family);
       // The non-grouped path just ran the memoized generation, which already
       // produced and checked this family's committed provenance.

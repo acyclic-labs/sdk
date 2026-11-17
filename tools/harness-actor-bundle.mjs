@@ -11,12 +11,16 @@ import { parseArgs } from "node:util";
 import { wasmAssetClosure, loadHostedArtifact } from "../scripts/artifact-assets.mjs";
 
 const root = resolve(process.env.BUILD_WORKSPACE_DIRECTORY ?? resolve(dirname(fileURLToPath(import.meta.url)), ".."));
+/** Resolve an owner-supplied path against the workspace, not the Bazel execution directory. */
+export function workspacePath(workspace, value) { return resolve(workspace, value); }
 export async function bundleHarnessActor(configFile, outputDirectory) {
+  const configPath = workspacePath(root, configFile);
+  const outputPath = workspacePath(root, outputDirectory);
   const packages = join(root, "typescript/packages");
   const load = file => import(pathToFileURL(join(packages, "harness-actor/dist", file)).href);
   const { HARNESS_BINDINGS, HARNESS_MODULE } = await load("bindings.js");
   const { harnessManifest } = await load("manifest.js");
-  const { deployment, ...config } = JSON.parse(readFileSync(resolve(configFile), "utf8"));
+  const { deployment, ...config } = JSON.parse(readFileSync(configPath, "utf8"));
   const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 
   const closure = wasmAssetClosure(`bazel run //typescript/packages/harness-actor:bundle --config ${JSON.stringify(configFile)} --out ${JSON.stringify(outputDirectory)}`);
@@ -63,8 +67,8 @@ export async function bundleHarnessActor(configFile, outputDirectory) {
   } finally {
     rmSync(staged, { recursive: true, force: true });
   }
-  write(resolve(outputDirectory), files.keys());
-  console.log(`harness Actor artifact: ${resolve(outputDirectory)} (${HARNESS_MODULE.file} sha256 ${entrySha256}, ${assets.size} module assets)`);
+  write(outputPath, files.keys());
+  console.log(`harness Actor artifact: ${outputPath} (${HARNESS_MODULE.file} sha256 ${entrySha256}, ${assets.size} module assets)`);
 }
 
 if (import.meta.main) {

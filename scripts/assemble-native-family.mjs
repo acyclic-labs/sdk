@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -10,6 +10,18 @@ import { isDeepStrictEqual } from "node:util";
 import { tarEntries } from "./archive-utils.mjs";
 import { createNativeProducer } from "./build-native-family.mjs";
 import { isWasmArtifactPath, wasmArtifactFiles } from "./archive-utils.mjs";
+import { wasmPackages } from "./wasm-packages.mjs";
+
+/** Point compiled package output at the wasm files the package ships beside it. */
+export function rewriteModuleSpecifier(directory, specifier, target) {
+  for (const entry of readdirSync(directory, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || !/\.(?:js|d\.ts)$/u.test(entry.name)) continue;
+    const path = join(entry.parentPath, entry.name);
+    const source = readFileSync(path, "utf8");
+    const rewritten = source.replaceAll(specifier, target);
+    if (rewritten !== source) writeFileSync(path, rewritten);
+  }
+}
 
 /** Shared exact assembly specialized only by immutable Rust-generated family facts. */
 export function createNativeAssembler(family) {
@@ -304,6 +316,8 @@ async function main() {
     // from source rather than depending on a stale or empty dist directory.
     const compiled = join(temporary, "dist");
     run("bun", ["x", "tsc", "-p", packageTsconfig, "--outDir", compiled, "--pretty", "false"]);
+    const wasm = wasmPackages[family.key];
+    if (wasm?.wasmPackage) rewriteModuleSpecifier(compiled, wasm.wasmPackage, `../generated/wasm/${wasm.outName ?? wasm.artifact}.js`);
     const compiledEntrypoint = join(compiled, "index.js");
     try { await readFile(compiledEntrypoint); }
     catch { fail(`TypeScript compilation did not produce ${compiledEntrypoint}`); }

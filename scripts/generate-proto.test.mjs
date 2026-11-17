@@ -28,15 +28,16 @@ function exercise(selected, seed, code = implementation) {
   let writes = 0;
   const context = {
     root, compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, dirname, join, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
+    recordGeneration: () => {},
     process: { platform: process.platform },
     writeFileSync: (path, bytes) => { writes++; writeFileSync(path, bytes); },
-    spawnSync: (_command, args) => {
+    spawnSync: (command, args) => {
       calls++;
-      assert.equal(args[0], "generate");
-      assert.equal(args[1], "--output");
-      assert.deepEqual(Array.from(args.slice(3)), chosen.flatMap(([stem]) => ["--path", sources.get(stem)]));
+      assert.equal(command, "bun");
+      assert.deepEqual(Array.from(args.slice(0, 4)), ["x", "buf", "generate", "--output"]);
+      assert.deepEqual(Array.from(args.slice(5)), chosen.flatMap(([stem]) => ["--path", sources.get(stem)]));
       for (const [stem] of chosen) for (const extension of [".js", ".d.ts"]) {
-        put(join(args[2], "generated/typescript", stem + extension), payload(stem));
+        put(join(args[4], "generated/typescript", stem + extension), payload(stem));
       }
       return { status: 0 };
     },
