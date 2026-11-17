@@ -9012,6 +9012,8 @@ crate_wasm.annotation(
 
 crate_wasm.from_specs(
     name = "sdk_crates_wasm",
+    lockfile = "//:cargo-bazel-wasm-lock.json",
+    cargo_lockfile = "//:cargo-bazel-wasm.Cargo.lock",
     supported_platform_triples = [
         "x86_64-unknown-linux-gnu",
         "aarch64-apple-darwin",
