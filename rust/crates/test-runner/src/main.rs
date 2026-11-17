@@ -354,8 +354,6 @@ const RUNNER_PREFIX: &str = "acyclic-";
 /// it nor stall these steps; another user's directories are left alone. A root's process ids are not unique across
 /// sandboxes, so the directory is named randomly and created exclusively.
 struct RunnerDirectory {
-    #[cfg(unix)]
-    root: PathBuf,
     path: PathBuf,
     #[cfg(unix)]
     _lock: File,
@@ -396,7 +394,6 @@ impl RunnerDirectory {
             lock.lock().map_err(|error| failed("lock", &path, error))?;
             drop(root_lock);
             Ok(Self {
-                root: root.to_path_buf(),
                 path,
                 _lock: lock,
             })
