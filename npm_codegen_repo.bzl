@@ -35,15 +35,10 @@ def _npm_codegen_repository_impl(ctx):
     ctx.patch("connect.patch", strip = 1)
     ctx.file("BUILD.bazel", 'filegroup(name = "packages", srcs = glob(["node_modules/**"]), visibility = ["//visibility:public"])\n')
 
-_npm_codegen_repository = repository_rule(
+npm_codegen_repository = repository_rule(
     implementation = _npm_codegen_repository_impl,
     attrs = {
         "lock": attr.label(default = Label("//:bun.lock"), allow_single_file = True),
         "connect_patch": attr.label(default = Label("//:patches/connect-2.3.0.patch"), allow_single_file = True),
     },
 )
-
-def _npm_codegen_extension_impl(_ctx):
-    _npm_codegen_repository(name = "npm_codegen_packages")
-
-npm_codegen = module_extension(implementation = _npm_codegen_extension_impl)
