@@ -93,17 +93,26 @@ async fn cold_service_retains_owner_through_body_and_terminal_wake() -> io::Resu
 #[test]
 fn a_seeded_world_runs_a_nested_blocking_child_on_its_second_worker() -> io::Result<()> {
     let runtime = crate::testing::seeded_runtime(7)?;
-    let (schedule, _events) = crate::testing::Schedule::seeded(7);
-    runtime.block_on(schedule.scope(async {
-        let outer = crate::run_blocking_io(
-            || {
-                let child = crate::run_blocking_io(|| 41, None)?;
-                crate::testing::host::blocking_on(child)
-                    .map_err(|_| io::Error::other("nested child lost its worker"))
-            },
-            None,
-        )?;
-        assert_eq!(outer.await??, 41);
-        Ok::<_, io::Error>(())
-    }))
+    let (schedule, mut events) = crate::testing::Schedule::seeded(7);
+    runtime.block_on(async {
+        let mut root = Box::pin(schedule.scope(async {
+            let outer = crate::run_blocking_io(
+                || {
+                    let child = crate::run_blocking_io(|| 41, None)?;
+                    crate::testing::host::blocking_on(child)
+                        .map_err(|_| io::Error::other("nested child lost its worker"))
+                },
+                None,
+            )?;
+            assert_eq!(outer.await??, 41);
+            Ok::<_, io::Error>(())
+        }));
+        loop {
+            tokio::select! {
+                biased;
+                output = &mut root => break output,
+                event = events.recv() => event.unwrap().release(),
+            }
+        }
+    })
 }

@@ -738,36 +738,3 @@ fn saturated_native_submission_leaves_the_simulated_driver_available() {
         schedule.drained().await;
     });
 }
-
-/// A seeded world starts enough host workers for a blocking call and the
-/// nested blocking call it waits on. The test runner gives each case its own
-/// process, so this is the first pool initialization in the process.
-#[test]
-fn seeded_nested_blocking_work_completes_in_a_fresh_process() {
-    let (schedule, mut events) = Schedule::seeded(31);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    let result = runtime.block_on(async {
-        let mut root = Box::pin(schedule.scope(async {
-            crate::run_blocking_io(
-                || {
-                    let child = crate::run_blocking_io(|| 7, None).unwrap();
-                    blocking_on(child).unwrap()
-                },
-                None,
-            )
-            .unwrap()
-            .await
-            .unwrap()
-        }));
-        loop {
-            tokio::select! {
-                biased;
-                output = &mut root => break output,
-                event = events.recv() => event.unwrap().release(),
-            }
-        }
-    });
-    assert_eq!(result, 7);
-}
