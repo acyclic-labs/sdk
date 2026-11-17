@@ -97,6 +97,18 @@ where
                 at_least: Default::default(),
             })
             .await?;
+        // A committed closed marker means the parent's closing cascade will
+        // archive every open child. Its asks are answered by that archive, so
+        // review must not read or write their approval journals.
+        let closing = if agent.closed {
+            true
+        } else {
+            match self.stream.tail(agent.path.closed()?).await {
+                Ok(_) => true,
+                Err(error) if error.category() == acyclic_stream::StreamCategory::NotFound => false,
+                Err(error) => return Err(Error::from(error)),
+            }
+        };
         let parent = agent.path.id();
         let principal = format!("parent:{parent}");
         let mut outs = Vec::new();
@@ -143,10 +155,11 @@ where
                 }
                 continue;
             }
-            // An archived parent's closing cascade answers the ask by archiving
-            // the child. Reading or writing the child's approval journal here
-            // cannot be admitted, and a failed write must never re-enter review.
-            if agent.closed {
+            // A closing parent answers each new ask with its archive cascade.
+            // Saved answers above still publish their wakes; no new child
+            // journal write is admitted. The committed closed marker covers a
+            // parent whose archive has not yet been admitted to its actor.
+            if closing {
                 continue;
             }
             let (verdict, reason, action) = match (&review, policy) {
