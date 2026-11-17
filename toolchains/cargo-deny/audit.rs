@@ -1,6 +1,7 @@
 use semver::{Version, VersionReq};
 use serde_json::Value;
 use std::{env, fs};
+mod policy;
 
 fn read(name: &str) -> Value {
     let path = env::var(name).expect("Bazel supplies the input path");
@@ -36,13 +37,35 @@ fn validate_acknowledgement(id: &str, name: &str, advisory: &Value, ack: &Value)
 #[test]
 fn resolved_crates_have_no_unpatched_advisories() {
     let index = read("ADVISORY_INDEX");
+    let identifiers =
+        policy::Identifiers::from_index(&index["spdx"]).expect("pinned SPDX identifiers");
     let lock = read("CRATE_LOCK");
     let acknowledgements = read("ADVISORY_ACKNOWLEDGEMENTS");
     let acknowledgements = acknowledgements.as_object().expect("acknowledgement map");
+    let policy_file = env::var("DENY_POLICY").expect("Bazel supplies the policy path");
+    let policy: toml::Value =
+        toml::from_str(&fs::read_to_string(policy_file).expect("read policy"))
+            .expect("valid policy TOML");
     let crates = lock["crates"].as_object().expect("resolved crate map");
     assert!(!crates.is_empty(), "resolved crate map must not be empty");
     let mut failures = Vec::new();
+    let root = env::var("ROOT_MANIFEST").expect("Bazel supplies root manifest");
+    let manifests = env::var("WORKSPACE_MANIFESTS").expect("Bazel supplies manifests");
+    for file in std::iter::once(root.as_str()).chain(
+        manifests
+            .split_whitespace()
+            .filter(|p| p.ends_with("Cargo.toml")),
+    ) {
+        let text = fs::read_to_string(file).expect("read workspace manifest");
+        failures.extend(
+            policy::check_manifest(file, &text, &policy).expect("valid workspace manifest policy"),
+        );
+    }
     for entry in crates.values() {
+        failures.extend(
+            policy::check(entry, &index["registry"], &policy, &identifiers)
+                .expect("valid, pinned dependency policy inputs"),
+        );
         let Some(url) = entry
             .pointer("/repository/Http/url")
             .and_then(Value::as_str)
@@ -55,7 +78,7 @@ fn resolved_crates_have_no_unpatched_advisories() {
         let name = entry["name"].as_str().expect("crate name");
         let version = Version::parse(entry["version"].as_str().expect("crate version"))
             .expect("valid crate version");
-        if let Some(advisories) = index.get(name) {
+        if let Some(advisories) = index["advisories"].get(name) {
             for advisory in advisories.as_array().expect("advisories are an array") {
                 if !matches_any(&version, &advisory["patched"])
                     && !matches_any(&version, &advisory["unaffected"])
