@@ -207,9 +207,10 @@ fn crash_reopen(point: Cut) -> Result<()> {
             provider.reconciliations(),
             dispatched.into_iter().collect::<Vec<_>>()
         );
+        // Each prompt makes its response request and one follow-up.
         assert_eq!(
             provider.request_count(),
-            1 + usize::from(dispatched.is_none()),
+            3 + usize::from(dispatched.is_none()),
             "the old request was regenerated or the new prompt did not dispatch"
         );
         if let Some(interrupted) = dispatched {
