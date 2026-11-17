@@ -20,7 +20,7 @@ enum Failure {
 #[kani::unwind(4)]
 fn group_selection_failures_are_terminal() {
     let mode: u8 = kani::any();
-    kani::assume(mode < 5);
+    kani::assume(mode < 7);
     let keys: [u8; 3] = kani::any();
     if mode == 3 {
         kani::assume(keys[0] > keys[1]);
@@ -28,18 +28,21 @@ fn group_selection_failures_are_terminal() {
     if mode == 4 {
         kani::assume(keys[0] < keys[1] && keys[1] > keys[2]);
     }
+    if mode == 6 {
+        kani::assume(keys[0] == keys[1] && keys[1] != keys[2]);
+    }
     let mut cursor = production::Groups::new(if mode == 0 { 3..2 } else { 0..3 });
     let select = |cursor: &mut production::Groups| {
         cursor.select(
             |position| {
-                if mode == 1 {
+                if mode == 1 || (mode == 5 && position == 1) {
                     Err(Failure::Missing)
                 } else {
                     keys.get(position).ok_or(Failure::Missing)
                 }
             },
             |left, right| {
-                if mode == 2 {
+                if mode == 2 || (mode == 6 && *right == keys[2]) {
                     Err(Failure::Admission)
                 } else {
                     Ok(left.cmp(right))
@@ -56,8 +59,8 @@ fn group_selection_failures_are_terminal() {
         assert_eq!(
             result,
             Err(match mode {
-                1 => Failure::Missing,
-                2 => Failure::Admission,
+                1 | 5 => Failure::Missing,
+                2 | 6 => Failure::Admission,
                 _ => Failure::Invalid,
             })
         );
