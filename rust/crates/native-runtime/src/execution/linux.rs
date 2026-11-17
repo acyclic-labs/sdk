@@ -997,6 +997,12 @@ const ALLOWED_SYSCALLS: &[libc::c_long] = &[
     libc::SYS_timerfd_create,
     libc::SYS_timerfd_settime,
     libc::SYS_timerfd_gettime,
+    // POSIX timer IDs and notifications are owned by the creating process.
+    libc::SYS_timer_create,
+    libc::SYS_timer_settime,
+    libc::SYS_timer_gettime,
+    libc::SYS_timer_getoverrun,
+    libc::SYS_timer_delete,
     libc::SYS_nanosleep,
     libc::SYS_clock_nanosleep,
     libc::SYS_clock_gettime,
