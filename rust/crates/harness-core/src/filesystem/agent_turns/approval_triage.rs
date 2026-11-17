@@ -130,16 +130,17 @@ where
             // second review, or an ended parent's refusal, would contradict it.
             // This holds even when the parent has since been archived, so the
             // saved answer is checked before the closing cascade's skip.
-            if !child.closed
-                && self
-                    .decided_approval(&child, &request.id, &principal)
-                    .await?
-                    .is_some()
+            if self
+                .decided_approval(&child, &request.id, &principal)
+                .await?
+                .is_some()
             {
-                outs.push(Out::Send {
-                    to: request.child,
-                    record: InboxRecord::Approval(Approval { id: request.id }),
-                });
+                if !child.closed {
+                    outs.push(Out::Send {
+                        to: request.child,
+                        record: InboxRecord::Approval(Approval { id: request.id }),
+                    });
+                }
                 continue;
             }
             // An archived parent's closing cascade answers the ask by archiving
