@@ -1,6 +1,6 @@
 import {workspaceGraph} from './workspace-model.mjs';
 import {readFileSync} from 'node:fs';
-import {evaluateCfg, trackedFiles} from './policy-core.mjs';
+import {evaluateCfg, featureClosure, trackedFiles} from './policy-core.mjs';
 
 // Inspect declarations, not unified enabled features: a dev dependency or
 // another workspace member must not accidentally supply the missing edge.
@@ -18,13 +18,7 @@ export function checkTestSupport(metadata) {
     if (!Object.hasOwn(pkg.features, 'test-support')) continue;
     const node = nodes.get(id);
     if (!node) throw new Error(`missing resolved workspace package ${id}`);
-    const reachable = new Set();
-    const visit = feature => {
-      if (reachable.has(feature)) return;
-      reachable.add(feature);
-      for (const next of pkg.features[feature] ?? []) visit(next);
-    };
-    visit('test-support');
+    const reachable = featureClosure(pkg.features, ['test-support']);
     for (const edge of node.deps) {
       const dependency = packages.get(edge.pkg);
       if (!dependency) throw new Error(`missing resolved dependency ${edge.pkg}`);

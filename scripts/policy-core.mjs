@@ -90,6 +90,15 @@ export function checkFileCopies(root, copies) {
     throw new Error(`packaged source drift: ${copy}`);
 }
 
+// Set iteration visits newly reached features once, including cycles and
+// implicit dependency names that have no declared feature table entry.
+export function featureClosure(features = {}, roots) {
+  const reached = new Set(roots);
+  for (const feature of reached)
+    for (const next of Object.hasOwn(features, feature) ? features[feature] : []) reached.add(next);
+  return reached;
+}
+
 // One cfg grammar, with unknown atoms retained for partial platform knowledge.
 export function evaluateCfg(gate, atom, positiveFeatures = false) {
   const tokens = gate.match(/"[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z_0-9]*|[(),=]/g) ?? [];
@@ -158,13 +167,7 @@ export function testFeatureFindings(root) {
       }
       for (const [path, target] of targets) {
         const source = join(directory, path), text = readUtf8(source);
-        const enabled = new Set(target['required-features'] ?? []), pending = [...enabled];
-        while (pending.length) {
-          const next = pending.pop();
-          for (const feature of data.features?.[next] ?? []) {
-            if (!enabled.has(feature)) { enabled.add(feature); pending.push(feature); }
-          }
-        }
+        const enabled = featureClosure(data.features, target['required-features']);
         for (const [, gate] of text.matchAll(/#!\[cfg\((.*?)\)\]/gs)) {
           try {
             if (!testGateEnabled(gate, enabled)) errors.push(`${source}: add required-features satisfying (${gate}) to its [[test]] in ${manifest}`);
