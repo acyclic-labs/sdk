@@ -764,7 +764,7 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                 .filter(|(id, _)| id.starts_with("d4-warm"))
                 .map(|(_, prompt)| prompt.clone())
                 .collect();
-            let service = d4_service(call, content, warmups, prompt.clone())
+            let service = d4_service(call, content, warmups.clone(), prompt.clone())
                 .with_context_capacity(d4_capacity(capacity));
             let mut world = World::new(base, &files, service).map_err(oracle::failed)?;
             let incarnation = world
