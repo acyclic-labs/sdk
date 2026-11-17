@@ -239,7 +239,7 @@ exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visib
 genrule(
     name = "probe_run",
     outs = ["probe_run.sh.out"],
-    cmd = "printf '#!/usr/bin/env bash\\nset -euo pipefail\\nbun --version\\nnode --version\\n' > $@ && chmod +x $@",
+    cmd = "printf '#!/usr/bin/env bash\\nset -euo pipefail\\nbun x tsc --version\\nbun x buf --version\\n' > $@ && chmod +x $@",
     executable = True,
 )
 
