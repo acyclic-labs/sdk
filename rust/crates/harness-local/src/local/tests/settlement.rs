@@ -60,7 +60,12 @@ async fn stop_checks_writes_from_settlement_continuations() -> Result<()> {
                 },
             ]));
         }
-        let provider = scripted(turns);
+        // The settlement's writes are the feedback retrospective's own reply.
+        let provider = Arc::new(
+            ScriptedModelProvider::new(turns)
+                .with_context_capacity(capacity())
+                .scripting_retrospectives(),
+        );
         let harness = Arc::new(
             LocalHarness::open(
                 checkout_config(&workspace, (model()?, provider.clone()))?
