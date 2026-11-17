@@ -33,6 +33,11 @@ impl<A, O> FilesystemHost<A, O> {
         super::access::access_now_at(self.clock.now_unix_millis())
     }
 
+    /// The one clock every access decision and its recheck read.
+    pub(in crate::filesystem) fn clock(&self) -> &dyn acyclic_stream::UnixMillisClock {
+        self.clock.as_ref()
+    }
+
     pub(in crate::filesystem) fn require(
         &self,
         view: &acyclic_fs::access::PathTrie,

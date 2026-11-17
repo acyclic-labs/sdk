@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::UnixMillisClock as _;
 
 /// The selected data, policy and authenticated identity cannot be replaced or
 /// extracted. A read consumes this observation and fences its returned bytes.
@@ -58,9 +59,9 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
     }
 
     async fn confirm(&self) -> Result<()> {
-        require_current(&self.workspace, &self.view.0, self.io).await?;
+        require_current(&self.workspace, &self.view.0, self.io, self.host.clock()).await?;
         if let Some((workspace, view)) = &self.data_access {
-            require_current(workspace, &view.0, self.io).await?;
+            require_current(workspace, &view.0, self.io, self.host.clock()).await?;
         }
         Ok(())
     }
@@ -116,6 +117,7 @@ pub(in crate::filesystem) async fn require_current<A: AsyncAuthorityStore, O: As
     workspace: &Workspace<A, O>,
     view: &PathTrie,
     io: &PreparationIo,
+    clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<()> {
     crate::conversation::BoundedContentFuture::new(Some(io), || async move {
         // The primitive confirms the selected policy at one committed return
@@ -133,7 +135,7 @@ pub(in crate::filesystem) async fn require_current<A: AsyncAuthorityStore, O: As
                     "filesystem policy or authority epoch changed during observation",
                 )
             })?;
-        let now = access_now()?;
+        let now = clock_now(clock)?;
         if !view.matches_policy_revision(generation, revision)
             || view.valid_until().is_some_and(|end| now >= end)
         {
