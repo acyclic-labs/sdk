@@ -286,7 +286,10 @@ fn checked(fault: &str, requests: &[ModelRequest]) -> std::result::Result<(), St
         .flat_map(|request| settlements(request).unwrap_or_default())
         .any(|settled| settled.call.name == "read" && !settled.succeeded());
     if fault == "undecided_failure" {
-        if !failed_visible {
+        // The harness may redeliver the undecided answer and the child then
+        // succeeds; either way the parent sees the child settle, and a tool
+        // error is the failure its model reads.
+        if !failed_visible && !tool_error {
             return Err(format!(
                 "{fault}: the parent never saw the failed child: {results:?}"
             ));
@@ -310,7 +313,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                     prompts: vec![vec![("root", tag("c4-root"))]],
                     // The spawn step commits before the crash; recovery must
                     // resume every child it started.
-                    window: (1, 2),
+                    window: (1, usize::MAX),
                     mode: oracle::crash_mode("crash_after", seed).ok_or("crash mode")?,
                 };
                 let (crashed, recovered) = crash
