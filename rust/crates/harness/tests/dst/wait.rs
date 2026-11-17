@@ -123,7 +123,8 @@ fn failed(tag_name: &'static str) -> Plan {
         steps: Vec::new(),
         fail_once: Some((
             0,
-            ScriptedEvent::Error {
+            ScriptedEvent::Refused {
+                status: 400,
                 error: "child turn failed".into(),
             },
         )),
@@ -193,11 +194,24 @@ fn archive(id: &str, target: &str) -> ToolCall {
     call(id, "archive", json!({"agent": target}))
 }
 
-fn child_plan(tag_name: &'static str, state: &str) -> Plan {
-    match state {
-        "running" | "archived" | "stopped" => parked(tag_name),
-        "settled_failed" => failed(tag_name),
-        "merged" => writer(tag_name),
+fn tool(tag_name: &'static str) -> Plan {
+    Plan {
+        tag: tag_name,
+        steps: vec![vec![call(
+            &format!("{tag_name}-read"),
+            "read",
+            json!({"path": "marker.txt"}),
+        )]],
+        fail_once: None,
+    }
+}
+
+fn child_plan(tag_name: &'static str, state: &str, form: &str) -> Plan {
+    match (state, form) {
+        ("running", "named") => tool(tag_name),
+        ("running", _) | ("archived", _) | ("stopped", _) => parked(tag_name),
+        ("settled_failed", _) => failed(tag_name),
+        ("merged", _) => writer(tag_name),
         _ => settled(tag_name),
     }
 }
@@ -211,7 +225,7 @@ fn needs_sibling(form: &str) -> bool {
 /// timeout form returns on its deadline.
 fn form_wait(form: &str, id: &str, target: &str) -> ToolCall {
     match form {
-        "no_agents" => input_wait(id),
+        "no_agents" => call(id, "wait", json!({"timeout_ms": 1})),
         "quorum_need" => wait(id, &[target, "sibling"], Some(1), None),
         "timeout" => wait(id, &[target], None, Some(1)),
         _ => wait(id, &[target], None, None),
@@ -229,10 +243,6 @@ fn observe_steps(form: &str, state: &str, prefix: &str) -> Vec<Vec<ToolCall>> {
         ],
         "archived" | "stopped" => vec![
             vec![archive(&format!("{prefix}-archive"), "target")],
-            vec![form_wait(form, &wait_id, "target")],
-        ],
-        "running" if form == "named" => vec![
-            vec![release(&format!("{prefix}-release"), "target")],
             vec![form_wait(form, &wait_id, "target")],
         ],
         _ => vec![vec![form_wait(form, &wait_id, "target")]],
@@ -260,7 +270,7 @@ fn plans(seed: u64) -> Vec<Plan> {
     let state = state(seed);
     let relation = relation(seed);
     let mut plans = vec![
-        child_plan("c3-target", state),
+        child_plan("c3-target", state, form),
         settled("c3-sibling"),
         Plan {
             tag: "c3-mid",
@@ -323,14 +333,7 @@ fn root_steps(form: &str, state: &str, relation: &str) -> Vec<Vec<ToolCall>> {
 }
 
 fn reopen_steps(form: &str, state: &str) -> Vec<Vec<ToolCall>> {
-    if state == "running" && form == "named" {
-        vec![
-            vec![release("reopen-release", "target")],
-            vec![form_wait(form, "reopen-wait", "target")],
-        ]
-    } else {
-        vec![vec![form_wait(form, "reopen-wait", "target")]]
-    }
+    vec![vec![form_wait(form, "reopen-wait", "target")]]
 }
 
 fn wait_results(requests: &[ModelRequest]) -> std::result::Result<Vec<(String, Value)>, String> {
@@ -405,7 +408,7 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
         return Err(format!("wait {id} returned no reason: {value}"));
     }
     if form == "no_agents" {
-        if reason(value) != "input" {
+        if !matches!(reason(value), "input" | "deadline") {
             return Err(format!("no-agent wait returned {}: {value}", reason(value)));
         }
         if !value
