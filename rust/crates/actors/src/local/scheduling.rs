@@ -214,20 +214,15 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 
     /// The unconditioned window append riding in the commit that arms an alarm.
-    /// A deadline already behind the host clock is filed in the current
-    /// window, never behind the consumed index head.
     pub(super) fn deadline(
         &self,
         actor: &ActorReference,
         deadline_unix_ms: u64,
     ) -> Result<CommitEffect, Error> {
-        let filed = self.clock.as_ref().map_or(deadline_unix_ms, |clock| {
-            deadline_unix_ms.max(clock.now_unix_millis())
-        });
         Ok(CommitEffect::hard(
             Vec::new(),
             vec![CommitMutation::Append {
-                path: self.window_path(self.scheduling_shard(actor), window(filed))?,
+                path: self.window_path(self.scheduling_shard(actor), window(deadline_unix_ms))?,
                 records: vec![actor.encode().into()],
             }],
         ))
