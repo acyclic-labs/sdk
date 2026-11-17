@@ -1,5 +1,8 @@
 """A test that runs each libtest case of a Rust test executable in its own process."""
 
+# A label in this file's own repository, whose canonical name is empty in the SDK's workspace.
+_SDK = Label("//:BUILD.bazel")
+
 def _isolated_test_impl(ctx):
     runner = ctx.executable._runner
     extension = "." + runner.extension if runner.extension else ""
@@ -12,6 +15,9 @@ def _isolated_test_impl(ctx):
         "ACYCLIC_TEST_ID": ctx.attr.id,
         "ACYCLIC_TEST_LIMIT_SECONDS": str(ctx.attr.limit_seconds),
         "ACYCLIC_TEST_PACKAGE": ctx.label.package,
+        # This SDK's repository in the runfiles, which source_path resolves SDK files against:
+        # the workspace directory itself only when the SDK is the main repository.
+        "ACYCLIC_TEST_SOURCE": "../" + _SDK.repo_name if _SDK.repo_name else ".",
     }
     if ctx.attr.only:
         environment["ACYCLIC_TEST_ONLY"] = ctx.attr.only

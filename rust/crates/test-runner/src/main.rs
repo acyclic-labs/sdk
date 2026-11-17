@@ -4,7 +4,9 @@
 //! The Bazel `isolated_test` rule supplies, relative to the runfiles workspace directory:
 //! `ACYCLIC_TEST_BINARY` (the libtest executable), `ACYCLIC_TEST_ID` (its nextest binary id),
 //! `ACYCLIC_TEST_PACKAGE` (the Cargo package directory, each case's working directory as under
-//! Cargo) and `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case limit). A nextest profile's cases
+//! Cargo), `ACYCLIC_TEST_SOURCE` (this SDK's own repository in the runfiles, which a consuming
+//! workspace sees as an external repository) and `ACYCLIC_TEST_LIMIT_SECONDS` (the per-case
+//! limit). A nextest profile's cases
 //! select through `ACYCLIC_TEST_ONLY` (run only cases whose name contains it) and
 //! `ACYCLIC_TEST_EXCLUDE` (newline-separated; skip cases whose name contains any), as
 //! nextest's `test(...)` default filters do; a profile whose cases nextest runs under a wrapper
@@ -40,8 +42,9 @@ enum Outcome {
 
 /// One test executable and the limits each of its cases runs under.
 struct Suite {
-    /// The source tree the cases read checked-in files from, given to them as
-    /// `ACYCLIC_TEST_SOURCE_ROOT`: the test's runfiles root.
+    /// The SDK source tree the cases read checked-in SDK files from, given to them as
+    /// `ACYCLIC_TEST_SOURCE_ROOT`: the SDK repository's directory in the runfiles, which is
+    /// the workspace directory only when the SDK is the main workspace.
     source: PathBuf,
     /// Cargo's `CARGO_BIN_EXE_<name>` variables, as absolute paths under the runfiles root.
     executables: Vec<(String, PathBuf)>,
@@ -89,13 +92,14 @@ fn main() -> ExitCode {
 
 /// The runner's own settings, from its rule. Cases never see them: a case may read a variable of
 /// the same name as its own input.
-const SETTINGS: [&str; 7] = [
+const SETTINGS: [&str; 8] = [
     "ACYCLIC_TEST_BINARY",
     "ACYCLIC_TEST_EXCLUDE",
     "ACYCLIC_TEST_ID",
     "ACYCLIC_TEST_LIMIT_SECONDS",
     "ACYCLIC_TEST_ONLY",
     "ACYCLIC_TEST_PACKAGE",
+    "ACYCLIC_TEST_SOURCE",
     "ACYCLIC_TEST_WRAPPER",
 ];
 
@@ -116,7 +120,7 @@ fn run() -> Result<usize, String> {
         })
         .collect();
     let suite = Suite {
-        source: root.clone(),
+        source: root.join(setting("ACYCLIC_TEST_SOURCE")?),
         executables,
         binary: root.join(setting("ACYCLIC_TEST_BINARY")?),
         wrapper: env::var_os("ACYCLIC_TEST_WRAPPER").map(|path| root.join(path)),

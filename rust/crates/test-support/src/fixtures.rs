@@ -72,7 +72,10 @@ macro_rules! cargo_binary {
 ///
 /// Cross-built test executables run against an explicitly supplied source
 /// snapshot: set `ACYCLIC_TEST_SOURCE_ROOT` to its absolute repository root.
-/// Ordinary Cargo tests use the source tree they were compiled from.
+/// A Bazel `isolated_test` sets it to the SDK's repository in the runfiles, in
+/// the SDK's own workspace and in any workspace that depends on the SDK, so a
+/// consumer reads the SDK files it declares as test data. Ordinary Cargo tests
+/// use the source tree they were compiled from.
 ///
 /// # Panics
 ///
