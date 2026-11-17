@@ -6,15 +6,19 @@ struct HeldWake {
 }
 
 impl HeldWake {
-    fn hold(&self) {
-        self.entered.send(()).unwrap();
-        self.released.lock().unwrap().recv().unwrap();
+    fn hold(&self) -> io::Result<()> {
+        self.entered.send(()).map_err(io::Error::other)?;
+        self.released
+            .lock()
+            .map_err(|_| io::Error::other("release lock poisoned"))?
+            .recv()
+            .map_err(io::Error::other)
     }
 }
 
 impl std::task::Wake for HeldWake {
     fn wake(self: Arc<Self>) {
-        self.hold();
+        assert!(self.hold().is_ok(), "wake synchronization failed");
     }
 }
 
@@ -42,7 +46,7 @@ async fn cold_service_retains_owner_through_body_and_terminal_wake() -> io::Resu
             move || {
                 finishing.recv().map_err(io::Error::other)?;
                 if !terminal {
-                    held.hold();
+                    held.hold()?;
                 }
                 Ok(())
             },
