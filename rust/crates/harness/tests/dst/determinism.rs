@@ -75,54 +75,6 @@ fn trace(
     Ok((result?, trace))
 }
 
-fn short(value: &serde_json::Value) -> String {
-    let text = value.to_string();
-    let mut shown: String = text.chars().take(240).collect();
-    if shown.len() < text.len() {
-        shown.push('…');
-    }
-    shown
-}
-
-fn first_difference(left: &serde_json::Value, right: &serde_json::Value) -> String {
-    fn walk(path: &str, left: &serde_json::Value, right: &serde_json::Value) -> String {
-        match (left, right) {
-            (serde_json::Value::Object(left), serde_json::Value::Object(right)) => {
-                let keys = left
-                    .keys()
-                    .chain(right.keys())
-                    .collect::<std::collections::BTreeSet<_>>();
-                for key in keys {
-                    let path = format!("{path}.{key}");
-                    match (left.get(key), right.get(key)) {
-                        (Some(left), Some(right)) if left != right => {
-                            return walk(&path, left, right);
-                        }
-                        (Some(left), None) => {
-                            return format!("{path}: {} != <missing>", short(left));
-                        }
-                        (None, Some(right)) => {
-                            return format!("{path}: <missing> != {}", short(right));
-                        }
-                        _ => {}
-                    }
-                }
-                format!("{path}: objects differ")
-            }
-            (serde_json::Value::Array(left), serde_json::Value::Array(right)) => {
-                for (index, (left, right)) in left.iter().zip(right).enumerate() {
-                    if left != right {
-                        return walk(&format!("{path}[{index}]"), left, right);
-                    }
-                }
-                format!("{path}.len: {} != {}", left.len(), right.len())
-            }
-            _ => format!("{path}: {} != {}", short(left), short(right)),
-        }
-    }
-    walk("trace", left, right)
-}
-
 struct Child {
     reached: bool,
     digest: blake3::Hash,
@@ -201,21 +153,20 @@ fn x1_child() {
 
 fn world(seed: u64) -> std::result::Result<bool, String> {
     let class = class(seed);
-    let seeded = child(seed, false)?;
+    let first = child(seed, false)?;
+    let second = child(seed, false)?;
+    if first.digest != second.digest {
+        return Err(format!(
+            "X1 {class} seed {seed} diverged in a fresh process: {} != {}",
+            first.digest, second.digest,
+        ));
+    }
     let erased = child(seed, true)?;
-    if seeded.digest == erased.digest {
+    if first.digest == erased.digest {
         return Err(format!(
             "X1 {class} seed {seed} entropy erasure did not change the trace"
         ));
     }
-    if seeded.digest != erased.digest {
-        // The two fresh processes are the cross-process comparison. A
-        // difference here is the same failure the in-process replay reports.
-        let _ = first_difference(
-            &serde_json::Value::Array(Vec::new()),
-            &serde_json::Value::Array(Vec::new()),
-        );
-    }
-    println!("DST_X1_DIGEST={class} {}", seeded.digest);
-    Ok(seeded.reached)
+    println!("DST_X1_DIGEST={class} {}", first.digest);
+    Ok(first.reached)
 }
