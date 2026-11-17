@@ -4,6 +4,7 @@
 
 #[doc(hidden)]
 pub mod schema;
+pub mod tokens;
 pub use schema::JsonValueSchema;
 mod literal;
 pub use literal::deserialize as deserialize_literal;

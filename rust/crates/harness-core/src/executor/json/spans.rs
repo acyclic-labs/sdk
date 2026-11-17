@@ -1,6 +1,7 @@
 //! Incremental spans on the codec's lexical pass. The cursor owns only its
 //! bounded nesting stack; strings and skipped values never become allocations.
 use super::*;
+use acyclic_harness_json::tokens::{Atom, StringSyntax};
 use std::cell::RefCell;
 
 #[cfg(test)]
@@ -50,126 +51,6 @@ struct Frame {
     kind: SpanKind,
     start: u64,
     expect: Expect,
-}
-
-#[derive(Clone, Copy)]
-enum Atom {
-    Literal(&'static [u8], usize),
-    Minus,
-    Zero,
-    Integer,
-    Dot,
-    Fraction,
-    Exponent,
-    ExponentSign,
-    ExponentDigits,
-}
-
-impl Atom {
-    fn first(byte: u8) -> Option<Self> {
-        Some(match byte {
-            b'n' => Self::Literal(b"null", 1),
-            b't' => Self::Literal(b"true", 1),
-            b'f' => Self::Literal(b"false", 1),
-            b'-' => Self::Minus,
-            b'0' => Self::Zero,
-            b'1'..=b'9' => Self::Integer,
-            _ => return None,
-        })
-    }
-
-    fn byte(self, byte: u8) -> Option<Self> {
-        use Atom::*;
-        Some(match (self, byte) {
-            (Literal(text, position), byte) if text.get(position) == Some(&byte) => {
-                Literal(text, position + 1)
-            }
-            (Minus, b'0') => Zero,
-            (Minus, b'1'..=b'9') | (Integer, b'0'..=b'9') => Integer,
-            (Zero | Integer, b'.') => Dot,
-            (Dot | Fraction, b'0'..=b'9') => Fraction,
-            (Zero | Integer | Fraction, b'e' | b'E') => Exponent,
-            (Exponent, b'+' | b'-') => ExponentSign,
-            (Exponent | ExponentSign | ExponentDigits, b'0'..=b'9') => ExponentDigits,
-            _ => return None,
-        })
-    }
-
-    fn complete(self) -> bool {
-        match self {
-            Self::Literal(text, position) => text.len() == position,
-            Self::Zero | Self::Integer | Self::Fraction | Self::ExponentDigits => true,
-            _ => false,
-        }
-    }
-}
-
-#[derive(Default)]
-struct StringSyntax {
-    escape: bool,
-    hex_left: u8,
-    utf8_left: u8,
-    lower: u8,
-    upper: u8,
-}
-
-impl StringSyntax {
-    fn byte(&mut self, byte: u8) -> bool {
-        if self.utf8_left != 0 {
-            if byte < self.lower || byte > self.upper {
-                return false;
-            }
-            self.utf8_left -= 1;
-            self.lower = 0x80;
-            self.upper = 0xbf;
-            return true;
-        }
-        if self.hex_left != 0 {
-            if !byte.is_ascii_hexdigit() {
-                return false;
-            }
-            self.hex_left -= 1;
-            return true;
-        }
-        if self.escape {
-            self.escape = false;
-            return match byte {
-                b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => true,
-                b'u' => {
-                    self.hex_left = 4;
-                    true
-                }
-                _ => false,
-            };
-        }
-        match byte {
-            0..=0x1f => false,
-            b'\\' => {
-                self.escape = true;
-                true
-            }
-            0x20..=0x7f => true,
-            0xc2..=0xdf => self.utf8(1, 0x80, 0xbf),
-            0xe0 => self.utf8(2, 0xa0, 0xbf),
-            0xe1..=0xec | 0xee..=0xef => self.utf8(2, 0x80, 0xbf),
-            0xed => self.utf8(2, 0x80, 0x9f),
-            0xf0 => self.utf8(3, 0x90, 0xbf),
-            0xf1..=0xf3 => self.utf8(3, 0x80, 0xbf),
-            0xf4 => self.utf8(3, 0x80, 0x8f),
-            _ => false,
-        }
-    }
-
-    fn utf8(&mut self, count: u8, lower: u8, upper: u8) -> bool {
-        self.utf8_left = count;
-        self.lower = lower;
-        self.upper = upper;
-        true
-    }
-
-    fn complete(&self) -> bool {
-        !self.escape && self.hex_left == 0 && self.utf8_left == 0
-    }
 }
 
 /// Bounded incremental framing, shared by range consumers of ordinary JSON.
