@@ -177,9 +177,10 @@ export function bazelGitPins(root) {
   return pythonJson(`
 import ast, json, re, sys
 pins = []
+repository_rules = {"git_repository", "new_git_repository"}
 for file, source in json.load(sys.stdin).items():
     tree = ast.parse(source, filename=file)
-    names = {"git_override", "git_repository"}
+    names = {"git_override"} | repository_rules
     bindings = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "load":
@@ -191,7 +192,7 @@ for file, source in json.load(sys.stdin).items():
             if isinstance(call.func, ast.Name) and call.func.id == "use_repo_rule":
                 if len(call.args) != 2 or not isinstance(call.args[1], ast.Constant) or not isinstance(call.args[1].value, str):
                     sys.exit(f"{file}:{node.lineno}: Git rules require literal use_repo_rule names")
-                if isinstance(call.args[1], ast.Constant) and call.args[1].value == "git_repository":
+                if isinstance(call.args[1], ast.Constant) and call.args[1].value in repository_rules:
                     for target in node.targets:
                         if not isinstance(target, ast.Name):
                             sys.exit(f"{file}:{node.lineno}: Git rule binding must be a name")
@@ -209,7 +210,7 @@ for file, source in json.load(sys.stdin).items():
         if name == "use_repo_rule":
             if len(call.args) != 2 or not isinstance(call.args[1], ast.Constant) or not isinstance(call.args[1].value, str):
                 sys.exit(f"{location}: Git rules require literal use_repo_rule names")
-            if call.args[1].value == "git_repository" and not isinstance(parents.get(call), ast.Assign):
+            if call.args[1].value in repository_rules and not isinstance(parents.get(call), ast.Assign):
                 sys.exit(f"{location}: Git rules require a named use_repo_rule binding")
             continue
         fields = {keyword.arg: keyword.value for keyword in call.keywords}

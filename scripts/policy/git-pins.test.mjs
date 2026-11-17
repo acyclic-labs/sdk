@@ -29,6 +29,14 @@ test('Static fetches exact pins from each declared remote and rejects unavailabl
   writeFileSync(module, declaration('git_override', unreachable));
   assert.throws(() => checkFetchableGitPins(root), /MODULE\.bazel:1: Git commit 0{40} is not fetchable/);
   assert.equal(spawnSync(process.execPath, [cli], {cwd: root}).status, 1);
+  writeFileSync(module, declaration('git_override'));
+  for (const binding of [
+    'load("@bazel_tools//tools/build_defs/repo:git.bzl", repo = "new_git_repository")',
+    'repo = use_repo_rule("@bazel_tools//tools/build_defs/repo:git.bzl", "new_git_repository")',
+  ]) {
+    writeFileSync(bzl, binding + '\n' + declaration('repo', unreachable));
+    assert.throws(() => checkFetchableGitPins(root), /repos\.bzl:2: Git commit 0{40} is not fetchable/);
+  }
   mkdirSync(resolve(root, 'empty.git'));
   git('init', '--bare', '-q', 'empty.git');
   writeFileSync(module, declaration('git_override'));
