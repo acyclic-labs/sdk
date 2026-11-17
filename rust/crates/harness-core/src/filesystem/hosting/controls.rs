@@ -735,14 +735,24 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         // Close the paused child's inbox before resuming it:
                         // the root's cascade arrives in a later commit, and a
                         // resumed child must not start work in between.
-                        let child_intent = IntentId::try_from(format!("{intent}:{}", child.id()))?;
-                        let activation = self
-                            .store
-                            .activation(&actor)
-                            .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
-                        effects.extend(
-                            crate::agent::archive(&child, by, &child_intent, activation)?.effects,
-                        );
+                        let closed = child.closed()?;
+                        let already_closed = match self.store.provider().tail(closed).await {
+                            Ok(_) => true,
+                            Err(acyclic_stream::StreamError::NotFound) => false,
+                            Err(error) => return Err(Error::Stream(error)),
+                        };
+                        if !already_closed {
+                            let child_intent =
+                                IntentId::try_from(format!("{intent}:{}", child.id()))?;
+                            let activation = self
+                                .store
+                                .activation(&actor)
+                                .map_err(|error| Error::Actor(Box::new(error.into_cause())))?;
+                            effects.extend(
+                                crate::agent::archive(&child, by, &child_intent, activation)?
+                                    .effects,
+                            );
+                        }
                         let key = crate::agent::intent_key(
                             "file-controls",
                             &[root.as_str(), child.as_str(), "stop"],
