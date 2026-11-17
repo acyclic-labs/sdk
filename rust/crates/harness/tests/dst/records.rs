@@ -71,6 +71,7 @@ struct Emitted {
     status: StatusRecord,
     usage: ModelUsageTotals,
     context: Option<ContextUsage>,
+    conversation: Arc<Conversation>,
 }
 
 fn json_round_trip<T>(value: &T) -> std::result::Result<(), String>
@@ -183,9 +184,9 @@ fn recorded(call: &ToolCall) -> RecordedInvocation {
     }
 }
 
-fn reread_output(harness: &Arc<LocalHarness>) -> EntryFuture<'_, Result<TurnOutput>> {
+fn reread_output(emitted: &Emitted) -> EntryFuture<'_, Result<TurnOutput>> {
     entry(async move {
-        let conversation = Conversation::open(entry(harness.connect()).await?);
+        let conversation = &emitted.conversation;
         let tail = entry(conversation.settled()).await?;
         if tail == 0 {
             return Err(Error::NotFound("no settled conversation entry".into()));
@@ -199,10 +200,10 @@ fn reread_output(harness: &Arc<LocalHarness>) -> EntryFuture<'_, Result<TurnOutp
 }
 
 fn reread_inspection(
-    harness: &Arc<LocalHarness>,
+    emitted: &Emitted,
 ) -> EntryFuture<'_, Result<(ModelUsageTotals, Option<ContextUsage>)>> {
     entry(async move {
-        let conversation = Conversation::open(entry(harness.connect()).await?);
+        let conversation = &emitted.conversation;
         let mut inspect = entry(conversation.inspect()).await?;
         while !inspect.snapshot().synchronized {
             entry(inspect.advance()).await?;
@@ -422,6 +423,7 @@ fn emitted(harness: &Arc<LocalHarness>, output: TurnOutput) -> EntryFuture<'_, R
             status,
             usage: snapshot.usage.clone(),
             context: snapshot.context,
+            conversation,
         })
     })
 }
