@@ -75,7 +75,15 @@ impl ManifestBuilder {
             return Err(ErrorCode::OutcomeUnknown.into());
         }
         if self.levels.is_empty() {
-            self.levels.push(Vec::new());
+            let put = blobs.put(Vec::new().into(), Vec::new()).await?;
+            let verified = put.verified().ok_or(ErrorCode::OutcomeUnknown)?;
+            if verified.digest != Digest::of(&[]) || verified.length != 0 {
+                return Err(ErrorCode::Corrupt.into());
+            }
+            return Ok(Part {
+                digest: verified.digest,
+                length: 0,
+            });
         }
         let mut level = 0;
         loop {
@@ -114,6 +122,27 @@ async fn publish<B: Blobs + ?Sized>(blobs: &B, parts: Vec<Part>) -> Result<Part,
 mod tests {
     use super::*;
     use crate::{ByteRange, MemoryObjects, RootId};
+
+    #[tokio::test]
+    async fn empty_body_is_the_empty_blob() -> Result<(), Box<dyn std::error::Error>> {
+        let blobs = MemoryObjects::memory();
+        let root = ManifestBuilder::default().finish(&blobs).await?;
+        assert_eq!(
+            root,
+            Part {
+                digest: Digest::of(&[]),
+                length: 0
+            }
+        );
+        assert!(
+            blobs
+                .get(root.digest, ByteRange::FULL, 0)
+                .await?
+                .body()
+                .is_empty()
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn nested_pages_preserve_order_across_page_boundaries()
