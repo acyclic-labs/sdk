@@ -1076,11 +1076,20 @@ async fn routed_refusals_preserve_the_request_without_revisiting_a_member() -> T
         let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
         let refusing = Arc::clone(&calls[0]);
         let serving = Arc::clone(&calls[1]);
+        let mut refusal = Status::with_details(
+            Code::Unavailable,
+            "not the leader",
+            Bytes::from_static(b"original member details"),
+        );
+        refusal
+            .metadata_mut()
+            .insert("acyclic-member", "first".parse()?);
+        let first_refusal = refusal.clone();
         let route = Arc::new(Members {
             channels: [
                 served_channel(follower.clone(), move |_: Request<()>| {
                     refusing.fetch_add(1, Ordering::SeqCst);
-                    Err::<Request<()>, _>(Status::unavailable("not the leader"))
+                    Err::<Request<()>, _>(first_refusal.clone())
                 }),
                 served_channel(leader.clone(), move |request: Request<()>| {
                     serving.fetch_add(1, Ordering::SeqCst);
@@ -1111,6 +1120,9 @@ async fn routed_refusals_preserve_the_request_without_revisiting_a_member() -> T
         };
         let result = client.append(request.clone()).await;
         assert_eq!(result.is_ok(), serves, "{result:?}");
+        if let Err(error) = &result {
+            assert_eq!(original(&Status::from(error.clone())), original(&refusal));
+        }
         let hits = calls.each_ref().map(|calls| calls.load(Ordering::SeqCst));
         assert_eq!(hits, [1, usize::from(visits_second)]);
         assert_eq!(
