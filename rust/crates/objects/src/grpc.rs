@@ -329,7 +329,7 @@ impl Blobs for GrpcObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let (request, (digest, length)) = convert::put_blob(body, references);
             let reply = call!(self, put_blob, request, self.transfer_timeout)?;
-            Ok(convert::verified_put(&reply.0, digest, length)?.committed_at(reply.1))
+            convert::verified_put(&reply.0, digest, length, reply.1)
         })
         .await
     }
@@ -355,7 +355,7 @@ impl Blobs for GrpcObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let (request, (digest, length)) = convert::put_manifest(&manifest)?;
             let reply = call!(self, put_manifest, request, None)?;
-            Ok(convert::verified_put(&reply.0, digest, length)?.committed_at(reply.1))
+            convert::verified_put(&reply.0, digest, length, reply.1)
         })
         .await
     }

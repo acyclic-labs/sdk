@@ -362,6 +362,7 @@ pub(crate) fn verified_put(
     value: &wire::PutResponse,
     requested: Digest,
     length: u64,
+    revision: Option<Revision>,
 ) -> Result<Put, Error> {
     let put = put(value)?;
     if put
@@ -370,7 +371,7 @@ pub(crate) fn verified_put(
     {
         return Err(wire::ErrorCode::Unavailable.into());
     }
-    Ok(put)
+    Ok(put.committed_at(revision))
 }
 
 /// Lowers a sealed body once, retaining its original bytes and expected receipt.
@@ -417,10 +418,9 @@ pub(crate) fn verified_puts(
         .into_iter()
         .zip(expected)
         .map(|(result, &(digest, length))| match result.outcome {
-            Some(wire::put_result::Outcome::Put(put)) => Ok(Ok(verified_put(
-                &put, digest, length,
-            )?
-            .committed_at(revision.cloned()))),
+            Some(wire::put_result::Outcome::Put(put)) => {
+                Ok(Ok(verified_put(&put, digest, length, revision.cloned())?))
+            }
             Some(wire::put_result::Outcome::Error(detail)) => Error::from_detail(detail)
                 .map(Err)
                 .ok_or_else(|| wire::ErrorCode::Unavailable.into()),

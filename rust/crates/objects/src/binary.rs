@@ -80,9 +80,7 @@ impl<T: Transport> BinaryObjects<T> {
         length: u64,
     ) -> Result<Put, Error> {
         let (reply, revision) = self.call(route, input).await?;
-        Ok(convert::verified_put(&reply, digest, length)
-            .map_err(|_| unavailable())?
-            .committed_at(revision))
+        convert::verified_put(&reply, digest, length, revision).map_err(|_| unavailable())
     }
 }
 
