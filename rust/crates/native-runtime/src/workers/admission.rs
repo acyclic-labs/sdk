@@ -210,8 +210,7 @@ pub(crate) fn poll_submission_with(
         .admission
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let demand = admission.running_jobs + admission.queued_jobs + 1;
-    if let Err(error) = workers.start(&mut admission, demand) {
+    if let Err(error) = workers.start(&mut admission) {
         drop(admission);
         job.set_queued(false);
         job.record_submission_error(&error);

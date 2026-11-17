@@ -40,10 +40,11 @@ impl Drop for Running {
 }
 
 impl NativeWorkers {
-    fn start(&self, admission: &mut AdmissionState, demand: usize) -> io::Result<()> {
+    fn start(&self, admission: &mut AdmissionState) -> io::Result<()> {
         let Some(service) = &self.service else {
             return Ok(());
         };
+        let demand = admission.running_jobs + admission.queued_jobs + 1;
         while admission.started_workers < demand.min(self.threads) {
             let receiver = Arc::clone(&service.receiver);
             let shared_admission = Arc::clone(&self.admission);
@@ -152,7 +153,7 @@ pub fn initialize_native_io_services() -> io::Result<()> {
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        workers.start(&mut admission, workers.threads)?;
+        workers.start(&mut admission)?;
     }
     IO_SERVICES_INITIALIZED.store(true, Ordering::Release);
     Ok(())
