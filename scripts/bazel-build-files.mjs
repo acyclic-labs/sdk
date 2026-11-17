@@ -576,12 +576,12 @@ function buildFile(p) {
   // library, with dev-dependencies. Cargo builds every example and runs those with `test = true`;
   // it builds a bench only when its `test = true`.
   const separate = target => {
-    const crateRoot = local(target.src_path), dir = crateRoot.startsWith("//") ? "." : path.posix.dirname(crateRoot);
-    const extra = extras(target, file => dir === "." || file.startsWith(`${dir}/`));
+    const crateRoot = local(target.src_path);
+    const extra = extras(target, () => false);
     return [
       ["crate_root", q(crateRoot)],
-      ["srcs", plus(glob([dir === "." ? "**/*.rs" : `${dir}/**/*.rs`], []), list(extra.srcs))],
-      ["compile_data", plus(glob([dir === "." ? "**" : `${dir}/**`], ["**/*.rs", "BUILD.bazel"]), list(extra.data))],
+      ["srcs", list(extra.srcs)],
+      ["compile_data", list(extra.data)],
       ...common(target),
       ...deps([null, "dev"], [...ownLib, ...ownDeps], ownMacro),
     ];
