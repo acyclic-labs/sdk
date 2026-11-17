@@ -4,7 +4,7 @@ import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {toml, trackedFiles} from '../policy-core.mjs';
+import {checkManifestFields, toml, trackedFiles} from '../policy-core.mjs';
 
 test('Git inventory preserves path bytes, pathspecs, and missing tracked files', t => {
   const root = mkdtempSync(join(tmpdir(), 'policy-core-'));
@@ -20,4 +20,17 @@ test('Git inventory preserves path bytes, pathspecs, and missing tracked files',
   assert.deepEqual(trackedFiles(root, ['*.rs', ':!tab*']).sort(), paths.filter(path => path.endsWith('.rs') && !path.startsWith('tab')));
   assert.equal(toml(root, 'Cargo.toml').package.name, 'literal#value');
   assert.throws(() => toml(root, 'absent.toml'));
+});
+
+test('manifest policy checks the declared table and every dependency identity', t => {
+  const root = mkdtempSync(join(tmpdir(), 'policy-manifests-'));
+  t.after(() => rmSync(root, {recursive: true, force: true}));
+  writeFileSync(join(root, 'Cargo.toml'), '[package]\nversion = "1.0.0"\n[workspace.package]\nversion = "2.0.0"\n');
+  writeFileSync(join(root, 'package.json'), JSON.stringify({dependencies: {'@acyclic-labs/stream': '3.0.0'}}));
+  const checks = [['Cargo.toml', ['package', 'version'], '1.0.0'], ['package.json', ['dependencies', '@acyclic-labs/stream'], '3.0.0']];
+  checkManifestFields(root, checks);
+  for (const [file, keys] of checks) {
+    assert.throws(() => checkManifestFields(root, [[file, keys, '2.0.0']]), /must be/);
+    assert.throws(() => checkManifestFields(root, [[file, [...keys, 'missing'], '1.0.0']]), /found undefined/);
+  }
 });

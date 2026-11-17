@@ -1,4 +1,5 @@
 import {execFileSync} from 'node:child_process';
+import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -17,4 +18,13 @@ export function toml(root, file) {
   if (!manifests.has(key)) manifests.set(key, JSON.parse(execFileSync('python3', ['-I', '-c',
     "import json, sys, tomllib; json.dump(tomllib.load(open(sys.argv[1], 'rb')), sys.stdout)", key], {encoding: 'utf8'})));
   return manifests.get(key);
+}
+
+// Expectations name actual parsed fields, independently of manifest formatting.
+export function checkManifestFields(root, expectations) {
+  for (const [file, keys, expected] of expectations) {
+    const document = file.endsWith('.toml') ? toml(root, file) : JSON.parse(readFileSync(resolve(root, file), 'utf8'));
+    const actual = keys.reduce((value, key) => value?.[key], document);
+    if (actual !== expected) throw new Error(`${file}: ${keys.join('.')} must be ${JSON.stringify(expected)}; found ${JSON.stringify(actual)}`);
+  }
 }
