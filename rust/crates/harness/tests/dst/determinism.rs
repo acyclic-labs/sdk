@@ -153,14 +153,15 @@ struct Replay {
 }
 
 async fn trace(
-    seed: u64,
+    world_seed: u64,
+    variation: u64,
     class: &'static str,
     erase_entropy: bool,
 ) -> std::result::Result<Replay, String> {
     let mut world = if erase_entropy {
-        World::without_entropy(seed, &FILES, service(plans(class, seed)))
+        World::without_entropy(world_seed, &FILES, service(plans(class, variation)))
     } else {
-        World::new(seed, &FILES, service(plans(class, seed)))
+        World::new(world_seed, &FILES, service(plans(class, variation)))
     }
     .map_err(failed)?;
     let prompts = [vec![(class, tag(class))]];
@@ -228,10 +229,11 @@ fn first_difference(left: &serde_json::Value, right: &serde_json::Value) -> Stri
 
 fn world(seed: u64) -> std::result::Result<bool, String> {
     let class = class(seed);
+    let world_seed = seed % WORLDS.len() as u64;
     oracle::simulate(seed, || {
         entry(async move {
-            let first = trace(seed, class, false).await?;
-            let second = trace(seed, class, false).await?;
+            let first = trace(world_seed, seed, class, false).await?;
+            let second = trace(world_seed, seed, class, false).await?;
             if first.digest != second.digest {
                 return Err(format!(
                     "X1 {class} seed {seed} diverged in-process at {}: {} != {}",
@@ -240,7 +242,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                     second.digest,
                 ));
             }
-            let erased = trace(seed, class, true).await?;
+            let erased = trace(world_seed, seed, class, true).await?;
             if first.digest == erased.digest {
                 return Err(format!(
                     "X1 {class} seed {seed} entropy erasure did not change the trace"
