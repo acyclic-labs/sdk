@@ -138,6 +138,7 @@ isolated_test(
     id = "acyclic-plugin",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["no-sandbox"],
 )
 
@@ -149,6 +150,7 @@ isolated_test(
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["manual","no-sandbox"],
 )
 
@@ -299,6 +301,7 @@ isolated_test(
     id = "acyclic-plugin::bin/acyclic",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["no-sandbox"],
 )
 
@@ -310,6 +313,7 @@ isolated_test(
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["manual","no-sandbox"],
 )
 
@@ -458,6 +462,7 @@ isolated_test(
     id = "acyclic-plugin::bin/graphcoder",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["no-sandbox"],
 )
 
@@ -469,6 +474,7 @@ isolated_test(
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["manual","no-sandbox"],
 )
 
@@ -584,6 +590,7 @@ isolated_test(
     id = "acyclic-plugin::main",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["no-sandbox"],
 )
 
@@ -596,6 +603,7 @@ isolated_test(
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["manual","no-sandbox"],
 )
 
@@ -707,6 +715,7 @@ isolated_test(
     id = "acyclic-plugin::cli",
     exclude = ["::full_cloud::"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["no-sandbox"],
 )
 
@@ -719,6 +728,7 @@ isolated_test(
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     limit_seconds = 10,
+    env_inherit = ["PATH"],
     tags = ["manual","no-sandbox"],
 )
 
