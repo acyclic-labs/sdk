@@ -51,6 +51,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -288,6 +289,7 @@ rust_library(
 rust_test(
     name = "acyclic_harness_test_cases",
     crate = ":acyclic_harness",
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -357,6 +359,7 @@ rust_binary(
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/filesystem:fixtures/fuse/linux-kernel-packets.json",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -599,6 +602,7 @@ rust_test(
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/crates/filesystem:fixtures/fuse/linux-kernel-packets.json",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -1041,6 +1045,7 @@ rust_test(
         "tests/local_cloud_actors/poison.mjs",
         "tests/scenarios/core/text.json",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -1349,6 +1354,7 @@ rust_test(
         "tests/native_receipt.rs",
         "tests/support/native_receipt.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -1640,6 +1646,7 @@ rust_binary(
     srcs = [
         "examples/authority-id-contract.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -1907,6 +1914,7 @@ rust_binary(
     srcs = [
         "examples/component-label-contract.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -2174,6 +2182,7 @@ rust_binary(
     srcs = [
         "examples/conversation-page-contract.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -2441,6 +2450,7 @@ rust_binary(
     srcs = [
         "examples/custom_executor.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -2708,6 +2718,7 @@ rust_binary(
     srcs = [
         "examples/explicit-image-conversion.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -2976,6 +2987,7 @@ rust_binary(
         "examples/file-tools-contract.rs",
         "tests/file_tools_contract.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -3243,6 +3255,7 @@ rust_binary(
     srcs = [
         "examples/limits-contract.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -3510,6 +3523,7 @@ rust_binary(
     srcs = [
         "examples/model-contract-fixtures.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -3777,6 +3791,7 @@ rust_binary(
     srcs = [
         "examples/native-process-approval.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -4044,6 +4059,7 @@ rust_binary(
     srcs = [
         "examples/private-directory-page-contract.rs",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
