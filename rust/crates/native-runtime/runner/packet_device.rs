@@ -1006,9 +1006,7 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                 ptr::drop_in_place(garbage);
                 sys::unmap(garbage.cast(), core::mem::size_of::<Session>());
                 // Receipt follows physical device closure and buffer destruction.
-                if let Err(error) = send_receipt(control, Receipt::Retired) {
-                    trace_host("receipt", error.0);
-                }
+                let _ = send_receipt(control, Receipt::Retired);
                 sys::close(control);
                 garbage = next;
             }
