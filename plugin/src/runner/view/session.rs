@@ -445,9 +445,9 @@ pub(super) fn title(snapshot: &acyclic_harness::client_files::FilePreviews) -> S
         .unwrap_or_default()
 }
 
-pub(super) fn follow_title(
+pub(super) fn read_title(
     conversation: Arc<Conversation>,
-    after: acyclic_harness::resources::GenerationRef,
+    after: Option<acyclic_harness::resources::GenerationRef>,
 ) -> futures::future::LocalBoxFuture<
     'static,
     acyclic_harness::Result<acyclic_harness::client_files::FilePreviews>,
@@ -456,7 +456,7 @@ pub(super) fn follow_title(
         conversation
             .agent_file_previews(
                 vec!["ui/title".into()],
-                Some(after),
+                after,
                 acyclic_harness::client::MAX_READ_BYTES,
             )
             .await

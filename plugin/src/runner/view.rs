@@ -972,16 +972,10 @@ async fn run_current(
     terminal: Option<Tty>,
     price_file: Option<String>,
 ) -> Result<Next, Failure> {
-    let title = conversation
-        .agent_file_previews(
-            vec!["ui/title".into()],
-            None,
-            acyclic_harness::client::MAX_READ_BYTES,
-        )
-        .await?;
-    let mut title_future = std::pin::pin!(session::follow_title(
+    let title = session::read_title(Arc::clone(&conversation), None).await?;
+    let mut title_future = std::pin::pin!(session::read_title(
         Arc::clone(&conversation),
-        title.generation.clone()
+        Some(title.generation.clone())
     ));
     let root = Arc::clone(&conversation);
     let mut settlement_queries = futures::stream::FuturesUnordered::new();
@@ -1363,7 +1357,7 @@ async fn run_current(
             title = &mut title_future => {
                 let title = title?;
                 view.title = session::title(&title);
-                title_future.set(session::follow_title(Arc::clone(&conversation), title.generation));
+                title_future.set(session::read_title(Arc::clone(&conversation), Some(title.generation)));
             }
             snapshot = &mut files_future => {
                 let snapshot = snapshot?;
@@ -1545,7 +1539,7 @@ async fn run_current(
                                 let from = selected.settled().await?.saturating_sub(1);
                                 let (events, phase) = selected.observe_with_phase(Some(from)).await?;
                                 let session = session::Session::open(&selected).await?;
-                                let title = selected.agent_file_previews(vec!["ui/title".into()], None, acyclic_harness::client::MAX_READ_BYTES).await?;
+                                let title = session::read_title(Arc::clone(&selected), None).await?;
                                 let mut view = View { title: session::title(&title), top: events.seen(), floor: 0, pending_dirty: true, tail_dirty: true, ..View::default() };
                                 view.restore_phase(&selected, phase).await?;
                                 if view.busy() {
@@ -1566,7 +1560,7 @@ async fn run_current(
                             events.watch_inputs()?;
                             conversation = selected;
                             view = selected_view;
-                            title_future.set(session::follow_title(Arc::clone(&conversation), title.generation));
+                            title_future.set(session::read_title(Arc::clone(&conversation), Some(title.generation)));
                             ui = session;
                             queries.close(query_future.as_mut());
                             overlay = None;
