@@ -236,6 +236,11 @@ filegroup(
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
+sh_binary(
+    name = "probe_run",
+    srcs = ["probe_run.sh"],
+)
+
 genrule(
     name = "probe_tools",
     outs = ["probe_tools.txt"],
