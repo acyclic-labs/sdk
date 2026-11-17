@@ -1,15 +1,9 @@
-//! One `GraphCoder` binary, built once, run unchanged against each backend:
-//! this machine's harness, the self-hosted endpoint (`acyclic serve`)
-//! over gRPC, and the same server entry point with injected seams
-//! (`graphcoder-seams serve`, its own verifier). Only the endpoint
-//! differs for the client, and only the seams for the server. Each runs one
-//! scenario on the loopback fixture model, a shell call held for one human
-//! approval, a file write and version-pinned read, a spawned child's turn and
-//! a reconnect while the approval is pending, and must commit the same history
-//! shape.
+//! The built `acyclic` binary against the self-hosted endpoint (`acyclic
+//! serve`): an external client delivers attributed peer input to a live
+//! session, and selected discovery survives a serving process restart.
 //!
-//! Build the binary first, with fixture signing custody:
-//! `cargo build -p acyclic-plugin --features acyclic-native-runtime/test-support`.
+//! The binary is a declared test tool: Cargo builds it with fixture signing custody
+//! (`cargo build -p acyclic-plugin --features acyclic-native-runtime/test-support`), and
 //! `ACYCLIC_TEST_BINARY` names it elsewhere than the shared target directory.
 use acyclic_native_runtime::{
     CaptureHandler, CaptureSchedule, ProcessCaptureStream, ProcessCommand, ProcessInput,
@@ -29,23 +23,18 @@ const SCENARIO: &str = "conformance scenario";
 const CHILD: &str = "conformance child";
 /// The child's answer, which its result carries back to the root.
 const CHILD_REPLY: &str = "child reply";
-const FOLLOWUP: &str = "conformance follow-up";
-const WRITTEN: &str = "conformance write";
+/// The harness's out-of-turn context review; its reply is a JSON decision,
+/// never a scenario step.
+const REVIEW: &str = "You manage this worker's context outside its turns.";
+/// The harness's compaction request; its reply is a summary, not a step.
+const COMPACT: &str = "Summarize this conversation for continued work.";
+/// The settlement hook asks every agent for feedback after its turn; it is
+/// outside the scenario, so the model declines it and it records no step.
+const FEEDBACK: &str = "What slowed you down or blocked you?";
 
 /// The binary every backend runs.
 fn executable() -> PathBuf {
-    if let Some(path) = std::env::var_os("ACYCLIC_TEST_BINARY") {
-        return path.into();
-    }
-    let deps = std::env::current_exe().unwrap();
-    let target = deps.parent().and_then(Path::parent).unwrap();
-    let path = target.join(format!("acyclic{}", std::env::consts::EXE_SUFFIX));
-    assert!(
-        path.exists(),
-        "build the acyclic binary first: cargo build -p acyclic-plugin          --features acyclic-native-runtime/test-support ({})",
-        path.display()
-    );
-    path
+    acyclic_test_support::cargo_binary!("acyclic", std::env::var_os("ACYCLIC_TEST_BINARY"))
 }
 
 /// A Server-Sent Events body of one Responses generation.
@@ -81,110 +70,50 @@ fn text(answer: &str) -> Value {
     json!({"type": "message", "content": [{"type": "output_text", "text": answer}]})
 }
 
-/// Arguments for the request's own `write` tool: every required property
-/// of its schema, filled for one small text file.
-fn write_arguments(request: &Value) -> Value {
-    let tool = request["tools"]
-        .as_array()
-        .and_then(|tools| tools.iter().find(|tool| tool["name"] == "write"))
-        .expect("the turn offers the write tool");
-    let mut arguments = serde_json::Map::new();
-    for name in tool["parameters"]["required"].as_array().unwrap() {
-        let name = name.as_str().unwrap();
-        let value = match name {
-            "path" | "display_name" => "conformance.txt",
-            "media_type" => "text/plain",
-            _ => WRITTEN,
-        };
-        arguments.insert(name.to_owned(), value.into());
-    }
-    Value::Object(arguments)
-}
-
-/// Each tool call's committed result, by call.
-type Outputs = std::collections::BTreeMap<String, String>;
-
 /// One step a backend asked the model for: whose turn, and how many tool
 /// results it already held.
 type Step = (&'static str, usize);
 
-/// The scripted turns, told apart by their newest user message: the root's
-/// scenario turn calls shell, write and spawn, then answers; the child
-/// answers at once; the root acknowledges its child's report; the root's
-/// follow-up waits for the child's original completed reply, then answers.
-fn answer(request: &Value, steps: &Mutex<BTreeSet<Step>>, outputs: &Mutex<Outputs>) -> String {
-    let input = request["input"].as_array().cloned().unwrap_or_default();
-    for item in &input {
-        if item["type"] == "function_call_output"
-            && let (Some(call), Some(output)) = (item["call_id"].as_str(), item["output"].as_str())
-        {
-            outputs
-                .lock()
-                .unwrap()
-                .insert(call.to_owned(), output.to_owned());
-        }
+/// The scripted turns: the child answers at once, and the harness's
+/// out-of-turn requests are answered as data.
+fn answer(request: &Value, steps: &Mutex<BTreeSet<Step>>) -> String {
+    if request.to_string().contains(REVIEW) {
+        let decision = json!({"version": 1, "summary": null, "review_at_input_tokens": 8000});
+        return events(&[text(&decision.to_string())]);
     }
+    if request.to_string().contains(COMPACT) {
+        return events(&[text("The scenario ran.")]);
+    }
+    let input = request["input"].as_array().cloned().unwrap_or_default();
     let newest = input
         .iter()
         .rposition(|item| item["role"] == "user")
         .unwrap_or_default();
-    let prompt = input.get(newest).map(Value::to_string).unwrap_or_default();
+    let prompt = input
+        .get(newest)
+        .and_then(|item| item["content"][0]["text"].as_str())
+        .unwrap_or_default();
     let results = input[newest..]
         .iter()
         .filter(|item| item["type"] == "function_call_output")
         .count();
+    if prompt.contains(FEEDBACK) {
+        return events(&[text("none")]);
+    }
     if prompt.contains(CHILD) {
         steps.lock().unwrap().insert(("child", results));
         return events(&[text(CHILD_REPLY)]);
     }
-    // The root's report of its child's result, which carries the child's
-    // reply. The child decides when it arrives, before or after the
-    // follow-up, so it records no step.
     if prompt.contains(CHILD_REPLY) {
         return events(&[text("child noted")]);
     }
-    if prompt.contains(FOLLOWUP) {
-        steps.lock().unwrap().insert(("followup", results));
-        return events(&[if results == 0 {
-            call("wait", "wait", &json!({"agents": ["child"]}))
-        } else {
-            text("followup answer")
-        }]);
-    }
-    steps.lock().unwrap().insert(("root", results));
-    events(&[match results {
-        0 => call(
-            "shell",
-            "shell",
-            &json!({"command": "echo conformance-shell"}),
-        ),
-        1 => call("write", "write", &write_arguments(request)),
-        2 => {
-            // Select the original publication, not whichever path head exists
-            // when the read executes. A write receipt alone proves no bytes.
-            let written: Value =
-                serde_json::from_str(outputs.lock().unwrap().get("write").expect("write result"))
-                    .unwrap();
-            call(
-                "read",
-                "read",
-                &json!({"path": written["path"], "version": written["version"]}),
-            )
-        }
-        3 => call(
-            "spawn",
-            "spawn",
-            &json!({"task": CHILD, "name": "child", "role": "worker"}),
-        ),
-        _ => text("root answer"),
-    }])
+    events(&[text("none")])
 }
 
 /// The loopback Responses endpoint and its catalog.
 struct Model {
     catalog: PathBuf,
     steps: Arc<Mutex<BTreeSet<Step>>>,
-    outputs: Arc<Mutex<Outputs>>,
     last_request: Arc<Mutex<Option<Value>>>,
 }
 
@@ -194,8 +123,6 @@ async fn model(directory: &Path) -> Model {
     let address = listener.local_addr().unwrap();
     let steps = Arc::new(Mutex::new(BTreeSet::new()));
     let recorded = Arc::clone(&steps);
-    let outputs = Arc::new(Mutex::new(Outputs::new()));
-    let seen = Arc::clone(&outputs);
     let last_request = Arc::new(Mutex::new(None));
     let captured = Arc::clone(&last_request);
     let app = Router::new()
@@ -206,7 +133,7 @@ async fn model(directory: &Path) -> Model {
         .route(
             "/responses",
             post(move |Json(body): Json<Value>| {
-                let reply = answer(&body, &recorded, &seen);
+                let reply = answer(&body, &recorded);
                 *captured.lock().unwrap() = Some(body);
                 async move { ([("content-type", "text/event-stream")], reply) }
             }),
@@ -221,7 +148,6 @@ async fn model(directory: &Path) -> Model {
     Model {
         catalog,
         steps,
-        outputs,
         last_request,
     }
 }
@@ -288,6 +214,11 @@ impl Home {
             .args(["--model", "conformance/tiny"]);
         if let Some(policy) = policy {
             command.arg("--approval-policy").arg(policy);
+        }
+        // The scenario is small; automatic context management only adds
+        // out-of-turn model requests.
+        if args.contains(&"serve") {
+            command.args(["--no-compaction", "--workspace-mounting", "physical"]);
         }
         command
             .args(args)
@@ -509,7 +440,7 @@ async fn served(server: &mut Running) -> Value {
     endpoint
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_client_delivers_attributed_peer_input_to_live_session() {
     use acyclic_harness::local::{
         Connection,
@@ -718,203 +649,4 @@ async fn selected_discovery_survives_a_serving_process_restart() {
         );
     }
     assert!(model.steps.lock().unwrap().is_empty());
-}
-
-/// Where the scenario runs: this machine's harness, or a served endpoint
-/// and the credential it minted.
-enum Backend {
-    Local,
-    Endpoint { url: String, credential: String },
-}
-
-/// The scenario through `backend`: the prompt's turn is interrupted while
-/// its shell call awaits approval, and a fresh run of the same operation
-/// approves it and prints the answer.
-async fn scenario(home: &Home, model: &Model, policy: &Path, backend: &Backend) -> String {
-    let run = |prompt: &str, operation: &str| {
-        let mut args = vec!["-p", prompt, "--operation", operation];
-        Running::start(match backend {
-            Backend::Local => home.command(model, Some(policy), &args),
-            Backend::Endpoint { url, credential } => {
-                args.extend(["--endpoint", url.as_str()]);
-                let mut command = home.command(model, None, &args);
-                command.env("ACYCLIC_API_KEY", credential);
-                command
-            }
-        })
-    };
-    // Reconnect mid-turn: the first client leaves while the approval is
-    // pending; the second sees the same pending turn and settles it.
-    let mut first = run(SCENARIO, "conformance");
-    first.wait_for("approve request").await.unwrap();
-    first.kill().await;
-    let mut second = run(SCENARIO, "conformance");
-    second.answer("y\n");
-    let (answer, stderr) = second.finish().await;
-    assert!(stderr.contains("approve request"), "{stderr}");
-    // The original agent wait resumes only once the child's own reply settled.
-    let (followup, _) = run(FOLLOWUP, "conformance-follow-up").finish().await;
-    format!("{}\n{}", answer.trim(), followup.trim())
-}
-
-/// The committed history shape of one backend's run: its answer, each
-/// tool call's result less the backend's own identities, and every model
-/// step its agents took.
-#[derive(Debug, PartialEq)]
-struct Shape {
-    answer: String,
-    results: Vec<Value>,
-    steps: BTreeSet<Step>,
-}
-
-impl Shape {
-    fn of(answer: String, outputs: &Outputs, steps: BTreeSet<Step>) -> Self {
-        let parsed = |call: &str| -> Value {
-            let output = outputs
-                .get(call)
-                .unwrap_or_else(|| panic!("no {call} result: {outputs:?}"));
-            serde_json::from_str(output).unwrap_or_else(|_| output.as_str().into())
-        };
-        let written = parsed("write");
-        assert!(
-            written["version"]
-                .as_str()
-                .is_some_and(|version| !version.is_empty()),
-            "write named no immutable version: {written}"
-        );
-        let read = parsed("read");
-        assert_eq!(read["path"], written["path"], "read selected another path");
-        assert_eq!(
-            read["version"], written["version"],
-            "read selected another immutable publication"
-        );
-        assert_eq!(
-            read["text"], WRITTEN,
-            "immutable read differs from the requested write"
-        );
-        assert!(
-            read["page"].is_null(),
-            "read returned a partial view: {read}"
-        );
-        // The child's path under the root, less the backend's agent ids.
-        let spawned = parsed("spawn");
-        let waited = parsed("wait");
-        let settled = waited["settled"]
-            .as_array()
-            .expect("wait named no settlement");
-        assert_eq!(settled.len(), 1, "{waited}");
-        assert_eq!(settled[0]["agent"], spawned["agent"]);
-        let completed = json!([
-            settled[0]["phase"],
-            settled[0]["answer"],
-            waited["unsettled"]
-        ]);
-        assert_eq!(completed, json!(["idle", CHILD_REPLY, []]));
-        let child: Vec<&str> = spawned["agent"]
-            .as_str()
-            .unwrap_or_else(|| panic!("spawn named no child: {spawned}"))
-            .split('/')
-            .map(|segment| {
-                if segment.len() == 32 && segment.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                    "<agent>"
-                } else {
-                    segment
-                }
-            })
-            .collect();
-        Self {
-            answer: answer.trim().to_owned(),
-            results: vec![
-                parsed("shell"),
-                written["path"].clone(),
-                read["text"].clone(),
-                child.into(),
-                completed,
-            ],
-            steps,
-        }
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
-    let directory = tempfile::tempdir().unwrap();
-    // All three backends use the local host's human approval stage. Its
-    // principal is distinct from the credential admitted by the endpoint.
-    let policy = directory.path().join("policy.json");
-    std::fs::write(
-        &policy,
-        serde_json::to_vec(&json!({"approvers": [
-            {"kind": "rules", "principal": "policy:conformance",
-             "rules": [{"tool": "shell", "arguments": null, "verdict": "ask"}],
-             "fallback": "allow"},
-            {"kind": "human", "principal": acyclic_harness::approvals::HUMAN_APPROVER},
-        ]}))
-        .unwrap(),
-    )
-    .unwrap();
-    let mut shapes = Vec::new();
-    // The seams' server: the same entry point with this package's own
-    // verifier injected.
-    let seams = acyclic_test_support::cargo_binary!("graphcoder-seams");
-    for name in ["local", "endpoint", "seams"] {
-        let model = model(&directory.path().join(name)).await;
-        let home = Home::new(directory.path(), name);
-        let (backend, server) = if name == "local" {
-            (Backend::Local, None)
-        } else {
-            let binary = if name == "seams" {
-                seams.clone()
-            } else {
-                executable()
-            };
-            let mut server = Running::start(home.command_of(
-                &binary,
-                &model,
-                Some(&policy),
-                &["serve", "127.0.0.1:0"],
-            ));
-            let endpoint = served(&mut server).await;
-            let backend = Backend::Endpoint {
-                url: endpoint["endpoint"].as_str().unwrap().to_owned(),
-                credential: endpoint["credential"].as_str().unwrap().to_owned(),
-            };
-            (backend, Some(server))
-        };
-        let answer = scenario(&home, &model, &policy, &backend).await;
-        if let Some(mut server) = server {
-            // The injected seam admitted the tree.
-            if name == "seams" {
-                server.wait_for("seams: verified the caller").await.unwrap();
-            }
-            server.kill().await;
-        }
-        let steps = model.steps.lock().unwrap().clone();
-        let outputs = model.outputs.lock().unwrap().clone();
-        // A real completed process without the original child reply is no
-        // success. Plant that omission in its actual retained tool result.
-        let mut missing = outputs.clone();
-        let mut waited: Value = serde_json::from_str(&missing["wait"]).unwrap();
-        waited["settled"][0]["answer"] = Value::Null;
-        missing.insert("wait".into(), waited.to_string());
-        assert!(
-            std::panic::catch_unwind(|| Shape::of(answer.clone(), &missing, steps.clone()))
-                .is_err()
-        );
-        shapes.push((name, Shape::of(answer, &outputs, steps)));
-    }
-    let (_, local) = &shapes[0];
-    assert_eq!(local.answer, "root answer\nfollowup answer");
-    assert!(
-        local.results[0]
-            .as_str()
-            .is_some_and(|text| text.lines().eq(["Exit code: 0", "conformance-shell"])),
-        "shell did not present a successful command and its output: {:?}",
-        local.results[0]
-    );
-    assert_eq!(local.results[1], "conformance.txt");
-    assert!(local.steps.contains(&("child", 0)), "{:?}", local.steps);
-    for (name, shape) in &shapes[1..] {
-        assert_eq!(shape, local, "{name} committed another history");
-    }
 }

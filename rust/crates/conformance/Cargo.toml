@@ -10,6 +10,12 @@ publish = false
 description = "Internal black-box conformance suites for Acyclic service providers"
 readme = "README.md"
 
+[package.metadata.bazel]
+test-workers = 1
+
+[package.metadata.bazel.test-tools.graphcoder_backends]
+acyclic = "//plugin:acyclic"
+
 [features]
 local-hotpath = []
 local-hotpath-proofs = ["local-hotpath", "acyclic-stream/test-support"]
@@ -20,9 +26,8 @@ storage-backends = ["acyclic-fs/conformance", "dep:acyclic-harness-client", "dep
 harness-accounting = []
 local-runner = ["dep:tempfile", "dep:rusqlite", "dep:notify"]
 s3-fixture = ["local-runner", "dep:async-trait", "dep:axum", "dep:s3s"]
-# Drives a built `graphcoder` binary against the local harness, its
-# self-hosted endpoint, and the same server through injected seams
-# (`graphcoder-seams`; see tests/graphcoder_backends.rs).
+# Drives the built `acyclic` binary against its self-hosted endpoint
+# (see tests/graphcoder_backends.rs).
 graphcoder-backends = ["dep:acyclic-auth", "dep:axum", "dep:tempfile", "dep:acyclic-plugin", "acyclic-native-runtime/test-support"]
 
 [dependencies]
@@ -61,12 +66,6 @@ s3s = { workspace = true, optional = true }
 [[test]]
 name = "graphcoder_backends"
 path = "tests/graphcoder_backends.rs"
-required-features = ["graphcoder-backends"]
-
-[[bin]]
-name = "graphcoder-seams"
-test = false
-path = "src/bin/graphcoder_seams.rs"
 required-features = ["graphcoder-backends"]
 
 [[bin]]
