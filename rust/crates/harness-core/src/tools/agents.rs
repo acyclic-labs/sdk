@@ -402,11 +402,10 @@ impl AgentTool {
                         value: json!({"error": format!("tool execution failed: forced topology permits at most {limit} total spawns")}),
                     });
                 }
-                if let Some(limit) = topology.and_then(|topology| topology.max_children())
+                if let Some(topology) = topology
+                    && let Some(limit) = topology.max_children()
                     && !pending.contains(&intent)
-                    && usize::try_from(limit).is_ok_and(|limit| {
-                        turn.children.len().saturating_add(pending.len()) >= limit
-                    })
+                    && !topology.admits_children(turn.children.len().saturating_add(pending.len()))
                 {
                     return Ok(ToolResult {
                         value: json!({"error": format!("tool execution failed: forced topology permits at most {limit} open children")}),

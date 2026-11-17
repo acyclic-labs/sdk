@@ -127,6 +127,13 @@ impl Topology {
         }
     }
 
+    /// Whether `open` children stay within the configured width cap.
+    #[must_use]
+    pub fn admits_children(&self, open: usize) -> bool {
+        self.max_children()
+            .is_none_or(|limit| usize::try_from(limit).map_or(true, |limit| open < limit))
+    }
+
     /// Selects the unbounded-or-explicit child and depth caps.
     #[must_use]
     pub fn with_limits(mut self, max_children: Option<u64>, max_depth: Option<u64>) -> Self {
@@ -267,6 +274,10 @@ mod tests {
         assert!(capped.offers_tool("spawn", 1));
         assert!(!capped.offers_tool("spawn", 2));
         assert!(capped.offers_tool("send", 2));
+        let width = Topology::select("swarm")?.with_limits(Some(2), None);
+        assert!(width.admits_children(1));
+        assert!(!width.admits_children(2));
+        assert!(Topology::select("swarm")?.admits_children(usize::MAX));
         let single = Topology::select("single")?;
         assert!(!single.offers_spawn(0));
         assert!(!single.offers_tool("spawn", 0));
