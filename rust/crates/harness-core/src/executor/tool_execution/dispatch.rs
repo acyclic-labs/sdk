@@ -322,7 +322,12 @@ impl<'io> StockExecution<'io> {
                         cancellation,
                         acyclic_native_runtime::cost::operation(
                             tool_operation_name(&invocation.name),
-                            self.call_tool_executor(tool, context, invocation, claimed || reexecuted),
+                            self.call_tool_executor(
+                                tool,
+                                context,
+                                invocation,
+                                claimed || reexecuted,
+                            ),
                         ),
                     )
                     .await?
