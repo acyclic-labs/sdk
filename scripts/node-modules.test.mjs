@@ -37,6 +37,9 @@ local_path_override(module_name = "dependency", path = "dependency")
     run("build", "@dependency//:runtime");
     const output = run("cquery", "@dependency//:runtime", "--output=files").trim();
     const executionRoot = run("info", "execution_root").trim();
+    assert.deepEqual(readdirSync(join(executionRoot, output), { recursive: true }).sort(), [
+      "@scope", "@scope/pkg", "@scope/pkg/package.json", "@scope/pkg/src", "@scope/pkg/src/index.ts",
+    ].sort());
     for (const file of ["package.json", "src/index.ts"]) {
       assert.equal(readFileSync(join(executionRoot, output, "@scope/pkg", file), "utf8"), readFileSync(join(dependency, "pkg", file), "utf8"));
     }
