@@ -15,15 +15,10 @@ pub type Client = wire::actors_service_client::ActorsServiceClient<
 pub type TracedChannel =
     acyclic_grpc_observability::TracedChannel<acyclic_auth::channel::CredentialChannel>;
 
-/// Encodes a semantic failure with its producer's original optional attribution.
-///
-/// The status message retains the canonical protocol name. Overload retry hints
-/// belong to the admission producer and are not inferred from semantic codes.
-#[must_use]
-pub fn error_status(error: wire::ErrorCode, cause: Option<acyclic_auth::refusal::Cause>) -> Status {
+fn projection(error: wire::ErrorCode) -> (tonic::Code, &'static str) {
     use tonic::Code;
     use wire::ErrorCode as E;
-    let (code, name) = match error {
+    match error {
         E::Unspecified => (Code::Internal, "ERROR_CODE_UNSPECIFIED"),
         E::InvalidArgument => (Code::InvalidArgument, "ERROR_CODE_INVALID_ARGUMENT"),
         E::CapabilityDenied => (Code::PermissionDenied, "ERROR_CODE_CAPABILITY_DENIED"),
@@ -36,7 +31,16 @@ pub fn error_status(error: wire::ErrorCode, cause: Option<acyclic_auth::refusal:
         E::CheckpointFailed => (Code::Aborted, "ERROR_CODE_CHECKPOINT_FAILED"),
         E::DependencyUnavailable => (Code::Unavailable, "ERROR_CODE_DEPENDENCY_UNAVAILABLE"),
         E::Failed => (Code::FailedPrecondition, "ERROR_CODE_FAILED"),
-    };
+    }
+}
+
+/// Encodes a semantic failure with its producer's original optional attribution.
+///
+/// The status message retains the canonical protocol name. Overload retry hints
+/// belong to the admission producer and are not inferred from semantic codes.
+#[must_use]
+pub fn error_status(error: wire::ErrorCode, cause: Option<acyclic_auth::refusal::Cause>) -> Status {
+    let (code, name) = projection(error);
     let mut detail = crate::domain::ServiceError::new(error, name.into());
     if let Some(cause) = cause {
         detail = detail.with_cause(cause);
@@ -53,28 +57,13 @@ pub fn error_status(error: wire::ErrorCode, cause: Option<acyclic_auth::refusal:
 #[must_use]
 pub fn retryable(status: &Status) -> bool {
     use wire::ErrorCode as E;
-    let Some(code) = wire::Error::decode(status.details())
-        .ok()
-        .and_then(|detail| E::try_from(detail.code).ok())
-    else {
+    let Some(code) = error_detail(status).and_then(|detail| E::try_from(detail.code).ok()) else {
         return false;
     };
-    if error_status(code, None).code() != status.code() {
+    if projection(code).0 != status.code() {
         return false;
     }
-    match code {
-        E::Conflict | E::DependencyUnavailable => true,
-        E::Unspecified
-        | E::InvalidArgument
-        | E::CapabilityDenied
-        | E::CapabilityExpired
-        | E::ActorNotFound
-        | E::SubscriptionNotFound
-        | E::IdempotencyMismatch
-        | E::AdmissionDenied
-        | E::CheckpointFailed
-        | E::Failed => false,
-    }
+    matches!(code, E::Conflict | E::DependencyUnavailable)
 }
 
 /// Statically named actors RPC span factory.
