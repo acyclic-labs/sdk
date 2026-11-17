@@ -1,0 +1,15 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+
+rust_library(
+    name = "disabled",
+    srcs = ["//rust/crates/markdown-work:src/lib.rs"],
+    crate_root = "//rust/crates/markdown-work:src/lib.rs",
+    edition = "2024",
+)
+
+rust_binary(
+    name = "argument_elision",
+    srcs = ["argument_elision.rs"],
+    edition = "2024",
+    deps = [":disabled"],
+)
