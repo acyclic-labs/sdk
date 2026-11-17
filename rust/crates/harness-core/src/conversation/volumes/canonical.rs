@@ -212,7 +212,7 @@ mod tests {
                 crate::filesystem::PreparationIo::from_native_work(&work)?,
             );
             assert_eq!(labels(&volume, &mut Some(&mut io))?, expected);
-            let bytes = 3 * crate::contract::canonical_json_bytes(&volume)?.len()
+            let bytes = 4 * crate::contract::canonical_json_bytes(&volume)?.len()
                 + crate::contract::canonical_json_bytes(&(&volume, ""))?.len();
             assert_eq!(work.receipt().bytes_hashed, bytes as u64);
             assert_eq!(work.receipt().bytes_copied, budget.bytes_copied);
