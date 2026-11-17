@@ -203,11 +203,24 @@ fn relocate_metadata(value: &mut serde_json::Value, old: &str, root: &str) {
                 };
             } else if let Some(id) = normalized.strip_prefix("path+file://") {
                 if let Some((path, suffix)) = id.split_once('#') {
+                    let path = if windows
+                        && path.starts_with('/')
+                        && path.as_bytes().get(2) == Some(&b':')
+                    {
+                        &path[1..]
+                    } else {
+                        path
+                    };
                     if let Some(rebased) = crate::path_identity::rebase(path, &old, marker, windows)
                     {
                         let suffix_path = rebased.strip_prefix(marker).unwrap();
+                        let slash = if root.as_bytes().get(1) == Some(&b':') {
+                            "/"
+                        } else {
+                            ""
+                        };
                         *text = format!(
-                            "path+file://{}{}#{suffix}",
+                            "path+file://{slash}{}{}#{suffix}",
                             root.trim_end_matches('/'),
                             suffix_path
                         );

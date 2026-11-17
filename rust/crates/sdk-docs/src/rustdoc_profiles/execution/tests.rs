@@ -72,6 +72,16 @@ fn workspace_metadata_relocates_windows_path_components() {
             .as_str(),
         "C:/build/sdk-other"
     );
+    metadata["workspace_root"] = "Q:/sdk".into();
+    metadata["packages"][0]["id"] =
+        "path+file:///Q:/sdk/examples/sdk-services#sdk-service-examples@0.0.0".into();
+    let metadata: Metadata = serde_json::from_value(metadata).unwrap();
+    let encoded: serde_json::Value =
+        serde_json::from_slice(&workspace_metadata_bytes(&metadata).unwrap()).unwrap();
+    assert_eq!(
+        encoded["packages"][0]["id"],
+        "path+file://./examples/sdk-services#sdk-service-examples@0.0.0"
+    );
 
     let mut posix = serde_json::json!({"manifest": r"/source/back\slash/Cargo.toml"});
     relocate_metadata(&mut posix, "/source", r"/destination/back\slash");
@@ -88,6 +98,12 @@ fn workspace_metadata_relocates_windows_path_components() {
     assert_eq!(
         ids["outside"],
         "path+file:///archive/work/sdk/dep#dep@1.0.0"
+    );
+    let mut windows_id = serde_json::json!("path+file:///Q:/sdk/examples/pkg#pkg@1.0.0");
+    relocate_metadata(&mut windows_id, "Q:/sdk", "D:/checkout");
+    assert_eq!(
+        windows_id,
+        "path+file:///D:/checkout/examples/pkg#pkg@1.0.0"
     );
 }
 proptest! {
