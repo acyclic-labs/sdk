@@ -141,6 +141,24 @@ test('retained lock reaches transitive patches without making patches workspace 
   assert.deepEqual(workspaceProfileMetadata(root, options).packages.map(p => p.name), ['app', 'direct', 'transitive']);
 });
 
+test('a patch discovered before its path edge gains its workspace test dependencies', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-late-member-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
+  write('Cargo.toml', '[workspace]\nmembers=["app"]\n[patch.crates-io]\npatched={path="patched"}\n');
+  write('app/Cargo.toml', '[package]\nname="app"\nversion="1.0.0"\n[dependencies]\nmiddle={path="../middle"}\n');
+  write('middle/Cargo.toml', '[package]\nname="middle"\nversion="1.0.0"\n[dependencies]\npatched={path="../patched"}\n');
+  write('patched/Cargo.toml', '[package]\nname="patched"\nversion="1.0.0"\n[dev-dependencies]\nhelper={path="../helper"}\n');
+  write('helper/Cargo.toml', '[package]\nname="helper"\nversion="1.0.0"\n');
+  for (const name of ['app', 'middle', 'patched', 'helper']) write(`${name}/src/lib.rs`, '');
+  write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="1.0.0"\ndependencies=["middle"]\n[[package]]\nname="middle"\nversion="1.0.0"\ndependencies=["patched"]\n[[package]]\nname="patched"\nversion="1.0.0"\ndependencies=["helper"]\n[[package]]\nname="helper"\nversion="1.0.0"\n');
+  write('cargo-bazel-lock.json', JSON.stringify({conditions:{}, crates:{}}));
+  const graph = workspaceGraph(root);
+  assert.deepEqual(graph.packages.filter(p => p.workspace_member).map(p => p.name), ['app', 'helper', 'middle', 'patched']);
+  const patched = graph.packages.find(p => p.name === 'patched');
+  assert.deepEqual(graph.resolve.nodes.find(n => n.id === patched.id).deps.map(d => d.name), ['helper']);
+});
+
 test('workspace discovery includes implicit path members and respects excluded subtrees', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-members-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
