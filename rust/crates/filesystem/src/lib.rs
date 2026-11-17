@@ -110,9 +110,6 @@ pub mod lineage;
 mod lock_order;
 pub mod materializer;
 #[cfg(test)]
-#[path = "tests/measured_creation.rs"]
-mod measured_creation;
-#[cfg(test)]
 pub mod memory;
 pub mod merge_driver;
 pub mod model;
