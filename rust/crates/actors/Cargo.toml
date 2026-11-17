@@ -18,7 +18,7 @@ test = false
 [features]
 conformance = ["acyclic-stream/conformance"]
 model-checking = ["dep:loom", "acyclic-stream/model-checking"]
-test-support = ["acyclic-observability/test-support", 
+test-support = ["acyclic-observability/test-support",
     "acyclic-auth/test-support",
     "acyclic-grpc-observability/test-support",
     "acyclic-native-runtime/test-support",
