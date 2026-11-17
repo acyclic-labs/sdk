@@ -6,6 +6,47 @@ type Failure = Box<dyn std::error::Error>;
 
 mod local;
 
+#[tokio::test]
+async fn deep_manifests_select_whole_and_partial_bytes_without_recursive_frames()
+-> Result<(), Failure> {
+    let store = Store::new(MemoryMedium::default());
+    let blobs = store.account(b"deep-selection")?;
+    let mut head = blobs
+        .put(OwnedBytes::from_static(b"abcdefgh"), Vec::new())
+        .await?
+        .verified()
+        .ok_or("leaf publication is known")?
+        .clone();
+    for _ in 0..4096 {
+        head = blobs
+            .put_manifest(Manifest {
+                parts: vec![crate::Part {
+                    digest: head.digest,
+                    length: head.length,
+                }],
+                edges: Vec::new(),
+            })
+            .await?
+            .verified()
+            .ok_or("manifest publication is known")?
+            .clone();
+    }
+    for (range, expected) in [
+        (ByteRange::FULL, b"abcdefgh".as_slice()),
+        (ByteRange::new(3, 6), b"def".as_slice()),
+    ] {
+        assert_eq!(
+            blobs
+                .get(head.digest, range, u64::MAX)
+                .await?
+                .body()
+                .as_ref(),
+            expected
+        );
+    }
+    Ok(())
+}
+
 async fn history() -> Result<(), Failure> {
     let store = Store::new(MemoryMedium::default());
     let blobs = store.account(b"simulation")?;
