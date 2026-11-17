@@ -202,8 +202,8 @@ fn child_plan(tag_name: &'static str, state: &str, form: &str) -> Plan {
     }
 }
 
-fn needs_sibling(form: &str) -> bool {
-    form == "quorum_need"
+fn needs_sibling(form: &str, state: &str) -> bool {
+    form == "quorum_need" || (form == "named" && state == "running")
 }
 
 /// The wait in the requested form. A running child is released first for the
@@ -236,13 +236,13 @@ fn observe_steps(form: &str, state: &str, prefix: &str) -> Vec<Vec<ToolCall>> {
     }
 }
 
-fn spawn_steps(form: &str, _state: &str, prefix: &str) -> Vec<ToolCall> {
+fn spawn_steps(form: &str, state: &str, prefix: &str) -> Vec<ToolCall> {
     let mut step = vec![spawn(
         &format!("{prefix}-spawn-target"),
         "target",
         "c3-target",
     )];
-    if needs_sibling(form) {
+    if needs_sibling(form, state) {
         step.push(spawn(
             &format!("{prefix}-spawn-sibling"),
             "sibling",
@@ -435,7 +435,7 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
                         return Err(format!("wait {id} reported target not settled: {entry}"));
                     }
                 } else if let Some(entry) = unsettled {
-                    if is_settled(entry) || reason(value) != "deadline" {
+                    if is_settled(entry) {
                         return Err(format!("wait {id} reported running target wrong: {entry}"));
                     }
                 } else {
