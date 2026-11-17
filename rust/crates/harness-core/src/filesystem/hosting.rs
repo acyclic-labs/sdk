@@ -981,6 +981,13 @@ where
                 self.volumes.file_generation(file, None).map_err(turn)?;
                 std::slice::from_ref(file)
             }
+            (None, Some(file))
+                if file.volume().is_agent_journal() && state.adoption_grant(file).is_empty() =>
+            {
+                return Err(Error::Record(
+                    "journal file requires its selected agent or committed conversation proof",
+                ));
+            }
             (None, file) => file.map_or(&[][..], |file| state.adoption_grant(file)),
         };
         let authority = agent_authority(
