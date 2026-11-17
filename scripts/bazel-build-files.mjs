@@ -1232,8 +1232,8 @@ function moduleFile() {
     rule("crate_wasm.from_specs", [
       ["name", q(WASM_HUB)],
       // The wasm universe's own lockfile freezes the build dependencies its specs do not name.
+      // It resolves against the committed workspace Cargo.lock, so no separate copy is written.
       ["lockfile", q("//:cargo-bazel-wasm-lock.json")],
-      ["cargo_lockfile", q("//:cargo-bazel-wasm.Cargo.lock")],
       ["supported_platform_triples", list([...TRIPLES, WASM_TRIPLE])],
     ]),
     `use_repo(crate_wasm, ${q(WASM_HUB)})\n`,
