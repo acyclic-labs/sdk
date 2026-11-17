@@ -1,11 +1,10 @@
+import { repositoryRoot as root } from "./policy-core.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const configuration = readFileSync(join(root, ".cargo/config.toml"), "utf8");
 const workspaceEnvironment = configuration.match(/^\[env\]\r?\n[\s\S]*?(?=^\[|(?![\s\S]))/m)?.[0] ?? "";
 assert.match(workspaceEnvironment, /^ACYCLIC_BUILD_SOURCE_ROOT\s*=/m,

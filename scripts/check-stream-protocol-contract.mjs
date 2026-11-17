@@ -1,11 +1,10 @@
+import { repositoryRoot as root } from "./policy-core.mjs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const buf = join(root, "node_modules", ".bin", process.platform === "win32" ? "buf.exe" : "buf");
 const temporary = mkdtempSync(join(tmpdir(), "acyclic-stream-protocol-"));
 

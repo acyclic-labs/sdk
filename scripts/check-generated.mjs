@@ -1,8 +1,7 @@
+import { repositoryRoot as root } from "./policy-core.mjs";
 import { spawnSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const quick = process.argv[2] === "--no-compile";
 if (process.argv.length > (quick ? 3 : 2)) {
   throw new Error("STEP_FAILED generated-selection: expected --no-compile or no arguments; recovery: node scripts/check-generated.mjs");

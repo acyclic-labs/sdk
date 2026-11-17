@@ -1,12 +1,11 @@
+import { repositoryRoot as root } from "./policy-core.mjs";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { generatedReadmes, services } from "./generate-sdk-readmes.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
 import { writeChanged } from "./generated-bindings.mjs";
-
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export function examples(source, language) {
   source = source.replaceAll("\r\n", "\n");
