@@ -93,7 +93,7 @@ fn main() -> ExitCode {
 
 /// The runner's own settings, from its rule. Cases never see them: a case may read a variable of
 /// the same name as its own input.
-const SETTINGS: [&str; 8] = [
+const SETTINGS: [&str; 9] = [
     "ACYCLIC_TEST_BINARY",
     "ACYCLIC_TEST_EXCLUDE",
     "ACYCLIC_TEST_ID",
