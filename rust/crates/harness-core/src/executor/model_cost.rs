@@ -516,7 +516,7 @@ impl UsageTotal {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelUsageTotals {
-    /// Aggregate projection format, currently three.
+    /// Aggregate projection format, currently four.
     pub version: u32,
     /// One explicitly selected currency, or unknown. No conversion or automatic
     /// selection from incoming rows is inferred.
@@ -524,7 +524,8 @@ pub struct ModelUsageTotals {
     /// Selected original calls, including admitted calls without completion.
     pub calls: u64,
     /// Every transport attempt those calls made, including abandoned attempts.
-    pub attempts: u64,
+    /// `unknown` counts calls whose attempt count is not terminal yet.
+    pub attempts: UsageTotal,
     /// Calls with an original committed terminal observation.
     pub completed: u64,
     /// Output streamed by attempts that restarted before the completed one.
@@ -543,9 +544,27 @@ pub struct ModelUsageTotals {
     pub token_nano_units: UsageTotal,
 }
 
+/// One call's attempt contribution: known only after its terminal observation,
+/// which carries the abandoned-attempt count. A failed or pending call has no
+/// terminal observation, so its attempt count is unknown, never one.
+fn attempts_of(usage: &ModelUsageRecord) -> Result<UsageTotal, ModelPriceError> {
+    Ok(match (usage.completed, usage.abandoned) {
+        (true, Some(abandoned)) => UsageTotal {
+            known: 1u64
+                .checked_add(abandoned.attempts)
+                .ok_or(ModelPriceError::Overflow)?,
+            unknown: 0,
+        },
+        _ => UsageTotal {
+            known: 0,
+            unknown: 1,
+        },
+    })
+}
+
 impl ModelUsageTotals {
     /// The single layout accepted by incremental and range projections.
-    pub const VERSION: u32 = 3;
+    pub const VERSION: u32 = 4;
 
     /// Starts an empty query projection, taking ownership of its currency label.
     pub fn new(currency: String) -> Result<Self, ModelPriceError> {
@@ -566,7 +585,7 @@ impl ModelUsageTotals {
             version: Self::VERSION,
             currency: None,
             calls: 0,
-            attempts: 0,
+            attempts: UsageTotal::default(),
             completed: 0,
             abandoned: ModelAbandonedOutput::default(),
             input: UsageTotal::default(),
@@ -614,10 +633,7 @@ impl ModelUsageTotals {
             .calls
             .checked_add(other.calls)
             .ok_or(ModelPriceError::Overflow)?;
-        let attempts = self
-            .attempts
-            .checked_add(other.attempts)
-            .ok_or(ModelPriceError::Overflow)?;
+        let attempts = self.attempts.combine(other.attempts)?;
         let completed = self
             .completed
             .checked_add(other.completed)
@@ -663,9 +679,14 @@ impl ModelUsageTotals {
     pub fn validate(&self) -> Result<(), ModelPriceError> {
         self.validate_header()?;
         if self.completed > self.calls
-            || self.attempts
+            || self.attempts.unknown
                 != self
                     .calls
+                    .checked_sub(self.completed)
+                    .ok_or(ModelPriceError::Overflow)?
+            || self.attempts.known
+                != self
+                    .completed
                     .checked_add(self.abandoned.attempts)
                     .ok_or(ModelPriceError::Overflow)?
             || (self.currency.is_none()
@@ -767,9 +788,27 @@ impl ModelUsageTotals {
                 .and_then(|count| count.checked_add(new_abandoned.reasoning_bytes))
                 .ok_or(ModelPriceError::Overflow)?,
         };
-        let attempts = calls
-            .checked_add(abandoned.attempts)
-            .ok_or(ModelPriceError::Overflow)?;
+        let old_attempts = previous
+            .map(|row| attempts_of(&row.usage))
+            .transpose()?
+            .unwrap_or_default();
+        let new_attempts = attempts_of(&row.usage)?;
+        let attempts = UsageTotal {
+            known: self
+                .attempts
+                .known
+                .checked_sub(old_attempts.known)
+                .ok_or(ModelPriceError::Overflow)?
+                .checked_add(new_attempts.known)
+                .ok_or(ModelPriceError::Overflow)?,
+            unknown: self
+                .attempts
+                .unknown
+                .checked_sub(old_attempts.unknown)
+                .ok_or(ModelPriceError::Overflow)?
+                .checked_add(new_attempts.unknown)
+                .ok_or(ModelPriceError::Overflow)?,
+        };
         let priced = self.currency.is_some();
         let (tokens, cost) = row.contribution(priced);
         let old = previous.map(|row| row.contribution(priced));
@@ -984,6 +1023,16 @@ mod tests {
             prop_assert_eq!(reference.input.value(), if completed.iter().all(|v| *v) && known.iter().all(|v| *v) {
                 Some(units.iter().sum())
             } else { None });
+            // A non-completed call has no terminal attempt count: it is unknown,
+            // never one. A completed call made exactly one attempt here.
+            prop_assert_eq!(
+                reference.attempts.unknown,
+                completed.iter().filter(|done| !**done).count() as u64
+            );
+            prop_assert_eq!(
+                reference.attempts.known,
+                completed.iter().filter(|done| **done).count() as u64
+            );
 
             // Generated arithmetic operands force a known positive charge and
             // an unknown charge in every selection, not merely by chance.
@@ -1036,7 +1085,7 @@ mod tests {
             // A late counter overflow must not install earlier field additions.
             let mut maximum = ModelUsageTotals::new("USD".into()).unwrap();
             maximum.calls = 1;
-            maximum.attempts = 1;
+            maximum.attempts = UsageTotal { known: 1, unknown: 0 };
             maximum.completed = 1;
             maximum.token_nano_units.known = u64::MAX;
             let mut one = maximum.clone();
@@ -1047,7 +1096,7 @@ mod tests {
             for calls in [1, 100, 100_000] {
                 let mut target = ModelUsageTotals::unpriced();
                 target.calls = calls;
-                target.attempts = calls;
+                target.attempts = UsageTotal { known: calls, unknown: 0 };
                 target.completed = calls;
                 target.token_nano_units.unknown = calls;
                 let allocations = acyclic_test_support::measure(|| target.merge(&parts[0]).unwrap());
