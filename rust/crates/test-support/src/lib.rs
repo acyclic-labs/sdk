@@ -79,13 +79,19 @@ pub struct AllocationInfo {
     pub bytes_max: u64,
 }
 impl std::ops::AddAssign for AllocationInfo {
+    /// Appends a measurement relative to this scope's current live storage.
     fn add_assign(&mut self, other: Self) {
+        let peak = |live: i64, next: u64| (live + next as i64).max(0) as u64;
+        self.count_max = self
+            .count_max
+            .max(peak(self.count_current, other.count_max));
+        self.bytes_max = self
+            .bytes_max
+            .max(peak(self.bytes_current, other.bytes_max));
         self.count_total += other.count_total;
         self.count_current += other.count_current;
-        self.count_max += other.count_max;
         self.bytes_total += other.bytes_total;
         self.bytes_current += other.bytes_current;
-        self.bytes_max += other.bytes_max;
     }
 }
 thread_local! {
@@ -118,17 +124,7 @@ struct Scope(Option<AllocationInfo>);
 impl Drop for Scope {
     fn drop(&mut self) {
         if let Some(parent) = &mut self.0 {
-            let child = COUNTER.get().unwrap_or_default();
-            let peak = |live: i64, child: u64| (live + child as i64).max(0) as u64;
-            let count_max = parent
-                .count_max
-                .max(peak(parent.count_current, child.count_max));
-            let bytes_max = parent
-                .bytes_max
-                .max(peak(parent.bytes_current, child.bytes_max));
-            *parent += child;
-            parent.count_max = count_max;
-            parent.bytes_max = bytes_max;
+            *parent += COUNTER.get().unwrap_or_default();
         }
         COUNTER.set(self.0);
     }

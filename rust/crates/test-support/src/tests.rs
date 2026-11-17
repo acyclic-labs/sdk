@@ -195,25 +195,6 @@ fn nested_scopes_accumulate_and_restore_the_parent() {
     assert_eq!(COUNTER.get(), None);
 }
 
-#[test]
-fn summing_nonoverlapping_peaks_fails_the_lifetime_oracle() {
-    use std::hint::black_box;
-    let broken = measure(|| {
-        drop(black_box(Box::new([0u8; 7])));
-        let previous = COUNTER.replace(Some(AllocationInfo::default()));
-        drop(black_box(Box::new([0u8; 11])));
-        let child = COUNTER.replace(previous).unwrap();
-        // The former Scope::drop: add peaks, despite no overlapping lifetimes.
-        let mut parent = COUNTER.get().unwrap();
-        parent += child;
-        COUNTER.set(Some(parent));
-        drop(black_box(Box::new([0u8; 13])));
-    });
-    assert_eq!((broken.count_max, broken.bytes_max), (2, 18));
-    let matches_lifetimes = |info: AllocationInfo| (info.count_max, info.bytes_max) == (1, 13);
-    assert!(!matches_lifetimes(broken));
-}
-
 fn nested(depth: u8, run: &mut dyn FnMut()) {
     if depth == 0 {
         run();
