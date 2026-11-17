@@ -560,33 +560,77 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     }
                     None => &[],
                 };
-                let (listing, allocation) = checkout
-                    .list_named_attributes_with_accounting(
-                        &path,
-                        None,
-                        u32::MAX,
-                        None,
-                        accounting,
-                        cancellation,
-                    )
-                    .await?;
-                let listing_bytes = crate::foundation::usize_to_u64(
-                    listing
-                        .entries
-                        .capacity()
-                        .checked_mul(std::mem::size_of::<crate::kernel::AttributeEntry>())
-                        .ok_or(WorkError::Overflow)?,
-                );
-                let listing = crate::kernel::Owned::new(listing, allocation, listing_bytes);
-                if listing.value.entries.len() != requested.len() {
-                    listing.retire(accounting)?;
-                    return Ok(false);
-                }
-                for (entry, key) in listing.value.entries.iter().zip(requested) {
-                    if &entry.name != key.name {
-                        listing.retire(accounting)?;
-                        return Ok(false);
+                let mut after: Option<crate::kernel::Owned<AttributeName>> = None;
+                let mut requested_index = 0;
+                let mut matched = true;
+                loop {
+                    let (listing, allocation) = checkout
+                        .list_named_attributes_with_accounting(
+                            &path,
+                            after.as_ref().map(|name| &name.value),
+                            AttributePageSize::new(ATTRIBUTE_PAGE_ENTRIES),
+                            None,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                    let listing_bytes = crate::foundation::usize_to_u64(
+                        listing
+                            .entries
+                            .capacity()
+                            .checked_mul(std::mem::size_of::<crate::kernel::AttributeEntry>())
+                            .ok_or(WorkError::Overflow)?,
+                    );
+                    let listing = crate::kernel::Owned::new(listing, allocation, listing_bytes);
+                    for entry in &listing.value.entries {
+                        accounting.charge(WorkCounters {
+                            items_examined: 1,
+                            ..WorkCounters::UNCHARGED
+                        })?;
+                        let Some(key) = requested.get(requested_index) else {
+                            matched = false;
+                            break;
+                        };
+                        if &entry.name != key.name {
+                            matched = false;
+                            break;
+                        }
+                        requested_index += 1;
                     }
+                    if !matched {
+                        listing.retire(accounting)?;
+                        break;
+                    }
+                    let has_more = listing.value.has_more;
+                    let next = match listing.value.entries.last() {
+                        Some(entry) => {
+                            let (name, allocation) = crate::kernel::decode_owned(
+                                accounting,
+                                |observe| entry.name.try_clone(&mut |step| observe(step)),
+                            )?;
+                            let bytes = crate::foundation::usize_to_u64(name.retained_bytes());
+                            Some(crate::kernel::Owned::new(name, allocation, bytes))
+                        }
+                        None => None,
+                    };
+                    listing.retire(accounting)?;
+                    if let Some(previous) = after.take() {
+                        previous.retire(accounting)?;
+                    }
+                    after = next;
+                    if !has_more {
+                        break;
+                    }
+                    if after.is_none() {
+                        matched = false;
+                        break;
+                    }
+                }
+                if let Some(previous) = after.take() {
+                    previous.retire(accounting)?;
+                }
+                if !matched || requested_index != requested.len() {
+                    return Ok(false);
                 }
                 for key in requested {
                     let attribute = attributes
@@ -604,11 +648,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     if actual.map(|chunk| chunk.bytes).as_deref()
                         != Some(attribute.value.as_ref())
                     {
-                        listing.retire(accounting)?;
                         return Ok(false);
                     }
                 }
-                listing.retire(accounting)?;
                 accounting.charge(WorkCounters {
                     bytes_copied: std::mem::size_of::<NamespacePath>() as u64,
                     ..WorkCounters::UNCHARGED
