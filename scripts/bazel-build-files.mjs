@@ -160,6 +160,68 @@ function closure(crateDir, rootFile) {
   }
   return seen;
 }
+// A `test` atom in a #[cfg] expression counts only when no enclosing `not(...)` negates it.
+function cfgHasTest(expr) {
+  let i = 0, notDepth = 0, pendingNot = false;
+  const stack = [];
+  while (i < expr.length) {
+    const c = expr[i];
+    if (c === "(") {
+      stack.push(notDepth);
+      if (pendingNot) notDepth++;
+      pendingNot = false;
+      i++;
+      continue;
+    }
+    if (c === ")") {
+      notDepth = stack.pop() ?? 0;
+      pendingNot = false;
+      i++;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      const start = i;
+      while (i < expr.length && /[A-Za-z0-9_]/.test(expr[i])) i++;
+      const word = expr.slice(start, i);
+      if (word === "not") pendingNot = true;
+      else {
+        if (word === "test" && notDepth === 0) return true;
+        pendingNot = false;
+      }
+      continue;
+    }
+    if (!/\s/.test(c)) pendingNot = false;
+    i++;
+  }
+  return false;
+}
+// The crate's own unit tests, from the #[cfg] expressions its library root reaches. Only such a
+// crate needs a test-config compile of its library; a crate whose tests all live under tests/
+// links the library's rlib instead and never compiles the library twice.
+const unitTests = new Map();
+function hasUnitTests(crateDir, rootFile) {
+  const key = `${crateDir} ${rootFile}`;
+  if (unitTests.has(key)) return unitTests.get(key);
+  let found = false;
+  for (const file of closure(crateDir, rootFile)) {
+    if (!file.endsWith(".rs")) continue;
+    const text = fs.readFileSync(path.join(root, file), "utf8");
+    for (let at = text.indexOf("#[cfg("); at >= 0; at = text.indexOf("#[cfg(", at + 1)) {
+      let i = at + "#[cfg(".length, depth = 1;
+      for (; i < text.length && depth; i++) {
+        if (text[i] === "(") depth++;
+        else if (text[i] === ")") depth--;
+      }
+      if (cfgHasTest(text.slice(at + "#[cfg(".length, i - 1))) {
+        found = true;
+        break;
+      }
+    }
+    if (found) break;
+  }
+  unitTests.set(key, found);
+  return found;
+}
 // What a test reads at run time, from the string literals of a module closure: a literal naming
 // a tracked file, or a directory holding tracked files, either repository-relative (test-support's
 // source_path) or relative to the crate that spells it (crate_path!, CARGO_MANIFEST_DIR joins).
@@ -439,6 +501,7 @@ function buildFile(p) {
   };
   const opt = packageOpt(p.name);
   const repoRelative = target => path.relative(root, target.src_path).replaceAll("\\", "/");
+  const libUnitTests = lib !== undefined && workspace.has(p.id) && hasUnitTests(dir(p), repoRelative(lib));
   // Library and binary globs: the package's files outside its test, bench and example trees.
   const libCovered = file => !TEST_DIRS.test(file) && file !== "build.rs";
   const extras = (target, covered) => extraInputs(dir(p), repoRelative(target), covered);
@@ -571,8 +634,10 @@ function buildFile(p) {
       ...deps([null], ownDeps),
       ["visibility", q(["//visibility:public"])],
     ]]);
-    // The crate's tests compile its sources again; rust_test does not inherit compile_data.
-    if (lib.test && workspace.has(p.id)) covered.add(`test ${lib.kind[0]} ${lib.name}`), test(`${crateName(lib)}_test`, [
+    // A crate with unit tests compiles its library again in test configuration; a crate whose
+    // tests are all integration tests only links the library's rlib. rust_test does not inherit
+    // compile_data.
+    if (lib.test && libUnitTests) covered.add(`test ${lib.kind[0]} ${lib.name}`), test(`${crateName(lib)}_test`, [
       ["crate", q(`:${crateName(lib)}`)],
       ["compile_data", list(extras(lib, libCovered).data)],
       ...common(lib).filter(([k]) => k !== "rustc_env"),
@@ -831,7 +896,8 @@ for (const id of members) {
   for (const t of workspace.has(id) ? p.targets : [libOf(p)].filter(Boolean)) {
     // Each output kind of a target is its own rendered rule; one that is not rendered fails the check.
     if (!t.kind.some(k => k === "test" || k === "bench" || k === "custom-build")) for (const kind of t.kind) expected.add(`build ${kind} ${t.name}`);
-    if (t.test && workspace.has(id) && (t.kind.some(k => ["bin", "test", "example", "bench"].includes(k)) || t === libOf(p))) expected.add(`test ${t.kind[0]} ${t.name}`);
+    const unitTestedLib = t === libOf(p) && hasUnitTests(dir(p), path.relative(root, t.src_path).replaceAll("\\", "/"));
+    if (t.test && workspace.has(id) && (t.kind.some(k => ["bin", "test", "example", "bench"].includes(k)) || unitTestedLib)) expected.add(`test ${t.kind[0]} ${t.name}`);
   }
   const have = rendered.get(id);
   const missing = [...expected].filter(t => !have.has(t)), extra = [...have].filter(t => !expected.has(t));
