@@ -36,6 +36,10 @@ def _wasm_package_impl(ctx):
         inputs = depset(transitive = [inputs, depset([package_json, index_js, index_dts])])
         arguments.extend([package_json.path, index_js.path, index_dts.path])
         command += " && cp \"$3\" \"$1/package.json\" && cp \"$4\" \"$1/index.js\" && cp \"$5\" \"$1/index.d.ts\""
+    if ctx.attr.strip_closure_shims:
+        # wasm-bindgen's closure shims are not part of the public surface. Drop the declarations
+        # exactly as the Cargo build did, so the package is identical whichever path produced it.
+        command += " && for f in \"$1/%s.d.ts\" \"$1/%s_bg.wasm.d.ts\"; do sed -E '/^[[:space:]]*(readonly |export const )?wasm_bindgen_([0-9a-f]*)_+convert__closures_+invoke_[^:[:space:]]*:.*$/d' \"$f\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"; done" % (ctx.attr.entry, ctx.attr.entry)
     ctx.actions.run_shell(
         inputs = inputs,
         outputs = [output],
@@ -52,5 +56,6 @@ wasm_package = rule(
         "out_dir": attr.string(mandatory = True),
         "package_name": attr.string(),
         "entry": attr.string(),
+        "strip_closure_shims": attr.bool(default = False),
     },
 )

@@ -52,6 +52,7 @@ const LOADS = {
   rust_test: "@rules_rust//rust:defs.bzl",
   rust_wasm_bindgen: "@rules_rust_wasm_bindgen//:defs.bzl",
   rust_wasm_bindgen_test: "@rules_rust_wasm_bindgen//:defs.bzl",
+  wasm_package: "//:wasm_package.bzl",
 };
 const q = JSON.stringify;
 
@@ -97,7 +98,7 @@ const nodes = runs.map(run => new Map(run.resolve.nodes.map(node => [node.id, no
 // wasm variant with the features the wasm roots actually enable.
 const { wasmPackages, wasmSelection, wasmTestPackages, wasmTestConsumers } = await import("./wasm-packages.mjs");
 const wasmSelections = Object.keys(wasmPackages).map(name => {
-  const { selection, artifact, outName, outputPackage, wasmPackage } = wasmSelection(name);
+  const { selection, artifact, outName, outputPackage, wasmPackage, bazelTarget, stripClosureShims } = wasmSelection(name);
   const packageName = selection[selection.indexOf("-p") + 1];
   const features = [];
   let noDefault = false;
@@ -105,7 +106,7 @@ const wasmSelections = Object.keys(wasmPackages).map(name => {
     if (selection[index] === "--no-default-features") noDefault = true;
     if (selection[index] === "--features") features.push(...selection[index + 1].split(","));
   }
-  return { name, packageName, features, noDefault, artifact, outName, outputPackage, wasmPackage };
+  return { name, packageName, features, noDefault, artifact, outName, outputPackage, wasmPackage, bazelTarget, stripClosureShims };
 }).filter(selection => base.packages.some(p => p.name === selection.packageName));
 const wasmArtifacts = new Map(wasmSelections.map(selection => [selection.packageName, selection.outName ?? selection.artifact]));
 const wasmRoots = new Set(wasmSelections.map(selection => base.packages.find(p => p.name === selection.packageName).id));
@@ -173,6 +174,9 @@ const wasmGenerated = wasmSelections.map(selection => {
     outDir: `typescript/packages/${selection.outputPackage ?? selection.name}/generated/wasm`,
     packageName: selection.wasmPackage,
     entry: wasmArtifacts.get(selection.packageName),
+    bazelTarget: selection.bazelTarget,
+    packageDir: dir(p),
+    stripClosureShims: selection.stripClosureShims,
   };
 });
 const wasmGeneratedTarget = name => `//:wasm_${name}_generated`;
@@ -814,6 +818,19 @@ function buildFile(p) {
       ["bindgen_flags", list(["--remove-name-section", "--remove-producers-section"])],
       ["visibility", q(["//visibility:public"])],
     ]]);
+    const generated = wasmGenerated.find(g => g.bindgen === `${label(p)}:${crateName(lib)}_wasm_bindgen`);
+    if (generated?.bazelTarget) {
+      // The published package belongs to the crate that produces it, so a consumer builds one
+      // label and gets the bindings and their placement together.
+      rules.push(["wasm_package", [
+        ["name", q(generated.bazelTarget)],
+        ["bindgen", q(`:${crateName(lib)}_wasm_bindgen`)],
+        ["out_dir", q(generated.outDir)],
+        ["entry", q(generated.entry)],
+        ["strip_closure_shims", generated.stripClosureShims ? "True" : undefined],
+        ["visibility", q(["//visibility:public"])],
+      ]]);
+    }
   }
   const loads = Map.groupBy([...new Set(rules.map(([kind]) => kind))].sort(), kind => LOADS[kind]);
   const header = [
@@ -1130,14 +1147,20 @@ ${rule("toolchain", [["name", q("wasm_bindgen_toolchain_registration")], ["toolc
 ${rule("filegroup", [["name", q("wasm_clang")], ["srcs", q(["@llvm_toolchain_llvm//:bin/clang"])], ["visibility", q(["//visibility:public"])]])}
 ${rule("filegroup", [["name", q("wasm_ar")], ["srcs", q(["@llvm_toolchain_llvm//:bin/llvm-ar"])], ["visibility", q(["//visibility:public"])]])}
 ` : "";
-const wasmGeneratedRules = wasmGenerated.map(g => rule("wasm_package", [
-  ["name", q(g.name)],
-  ["bindgen", q(g.bindgen)],
-  ["out_dir", q(g.outDir)],
-  ["package_name", g.packageName ? q(g.packageName) : undefined],
-  ["entry", g.entry ? q(g.entry) : undefined],
-  ["visibility", q(["//visibility:public"])],
-])).join("\n");
+const wasmGeneratedRules = wasmGenerated.map(g => g.bazelTarget
+  ? rule("alias", [
+      ["name", q(g.name)],
+      ["actual", q(`//${g.packageDir}:${g.bazelTarget}`)],
+      ["visibility", q(["//visibility:public"])],
+    ])
+  : rule("wasm_package", [
+      ["name", q(g.name)],
+      ["bindgen", q(g.bindgen)],
+      ["out_dir", q(g.outDir)],
+      ["package_name", g.packageName ? q(g.packageName) : undefined],
+      ["entry", g.entry ? q(g.entry) : undefined],
+      ["visibility", q(["//visibility:public"])],
+    ])).join("\n");
 const wasmNodeModulesRules = wasmSelections.filter(selection => selection.wasmPackage).map(selection => {
   const generated = wasmGenerated.find(g => g.name === `wasm_${selection.name}_generated`);
   const deps = wasmNodeModules.get(selection.name) ?? [];

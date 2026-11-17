@@ -5,13 +5,15 @@ export const wasmPackages = {
   filesystem: { selection: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
   stream: { selection: ["-p", "acyclic-stream", "--no-default-features", "--features", "wasm"], artifact: "acyclic_stream", outName: "acyclic_stream_wasm", wasmPackage: "@acyclic/stream-wasm" },
   objects: { selection: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
-  manifest: { selection: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers" },
+  manifest: { selection: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers", bazelTarget: "acyclic_manifest_wasm" },
   machines: { selection: ["-p", "acyclic-machines-wasm"], artifact: "acyclic_machines_wasm" },
   inference: { selection: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm" },
   harness: {
     selection: ["-p", "acyclic-harness-providers", "--features", "wasm-journal"],
     artifact: "acyclic_harness_providers",
     outName: "acyclic_harness_wasm",
+    bazelTarget: "acyclic_harness_wasm",
+    stripClosureShims: true,
   },
 };
 
