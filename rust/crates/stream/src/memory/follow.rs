@@ -41,6 +41,35 @@ pub(crate) struct FollowWindow {
 }
 
 impl MemoryStream {
+    /// Refreshes either follow projection from the same checked history cut.
+    async fn refresh_follow(
+        &self,
+        path: &StreamPath,
+        cursor: &mut HistoryCursor,
+        anchor: Option<CommitId>,
+    ) -> Result<bool, StreamError> {
+        if cursor.end.is_some() {
+            return Ok(true);
+        }
+        let state = self.state.read().await;
+        let snapshot = cursor.observe(|| state.paths.get(path).cloned())?;
+        drop(state);
+        let path = snapshot.as_ref();
+        if !cursor.observe_creation(path, anchor).await? {
+            return Ok(false);
+        }
+        let path = path.ok_or(if anchor.is_some() {
+            StreamError::PrefixNotRetained
+        } else {
+            StreamError::NotFound
+        })?;
+        if let Some(anchor) = anchor {
+            cursor.check_anchor(path, anchor).await?;
+        }
+        cursor.sync(path);
+        Ok(true)
+    }
+
     pub(crate) async fn prepare_follow(
         &self,
         path: &StreamPath,
@@ -95,23 +124,8 @@ impl MemoryStream {
         anchor: &mut Option<CommitId>,
         filter: &crate::FollowFilter,
     ) -> Result<Option<Record>, StreamError> {
-        if cursor.end.is_none() {
-            let state = self.state.read().await;
-            let snapshot = cursor.observe(|| state.paths.get(path).cloned())?;
-            drop(state);
-            let path = snapshot.as_ref();
-            if !cursor.observe_creation(path, *anchor).await? {
-                return Ok(None);
-            }
-            let path = path.ok_or(if anchor.is_some() {
-                StreamError::PrefixNotRetained
-            } else {
-                StreamError::NotFound
-            })?;
-            if let Some(anchor) = anchor {
-                cursor.check_anchor(path, *anchor).await?;
-            }
-            cursor.sync(path);
+        if !self.refresh_follow(path, cursor, *anchor).await? {
+            return Ok(None);
         }
         let mut examined = 0;
         while let Some(record) = cursor.next_record().await? {

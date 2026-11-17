@@ -50,26 +50,11 @@ impl MemoryStream {
         anchor: &mut Option<CommitId>,
         filter: &crate::FollowFilter,
     ) -> Result<Option<crate::FollowUpdate>, StreamError> {
-        if cursor.end.is_none() {
-            let state = self.state.read().await;
-            let snapshot = state.paths.get(path).cloned();
-            drop(state);
-            let path = snapshot.as_ref();
-            if !cursor.observe_creation(path, *anchor).await? {
-                return Ok(cursor
-                    .opening_tail
-                    .take()
-                    .map(|tail| crate::FollowUpdate::Opening { tail }));
-            }
-            let path = path.ok_or(if anchor.is_some() {
-                StreamError::PrefixNotRetained
-            } else {
-                StreamError::NotFound
-            })?;
-            if let Some(anchor) = anchor {
-                cursor.check_anchor(path, *anchor).await?;
-            }
-            cursor.sync(path);
+        if !self.refresh_follow(path, cursor, *anchor).await? {
+            return Ok(cursor
+                .opening_tail
+                .take()
+                .map(|tail| crate::FollowUpdate::Opening { tail }));
         }
         if let Some(tail) = cursor.opening_tail.take() {
             return Ok(Some(crate::FollowUpdate::Opening { tail }));
