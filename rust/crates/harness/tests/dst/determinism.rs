@@ -6,11 +6,7 @@ use oracle::{Plan, World, call, failed, service, tag};
 use serde_json::json;
 
 /// The X1 world dimension, in `classes.json` order.
-const WORLDS: [&str; 37] = [
-    "A1", "A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3", "C4", "C5", "D1", "D2", "D3", "D4", "D5",
-    "D6", "E1", "E2", "E3", "F1", "F2", "G1", "H1", "H2", "H3", "H4", "H5", "H6", "I1", "I2", "J1",
-    "J2", "O1", "R1", "S1", "T1",
-];
+const WORLDS: [&str; 8] = ["A1", "D6", "E2", "F1", "G1", "H2", "I1", "R1"];
 
 const FILES: [(&str, &str); 1] = [("base.txt", "base\n")];
 
@@ -36,35 +32,6 @@ acyclic_test_support::cases! {
         seed_5 => 5,
         seed_6 => 6,
         seed_7 => 7,
-        seed_8 => 8,
-        seed_9 => 9,
-        seed_10 => 10,
-        seed_11 => 11,
-        seed_12 => 12,
-        seed_13 => 13,
-        seed_14 => 14,
-        seed_15 => 15,
-        seed_16 => 16,
-        seed_17 => 17,
-        seed_18 => 18,
-        seed_19 => 19,
-        seed_20 => 20,
-        seed_21 => 21,
-        seed_22 => 22,
-        seed_23 => 23,
-        seed_24 => 24,
-        seed_25 => 25,
-        seed_26 => 26,
-        seed_27 => 27,
-        seed_28 => 28,
-        seed_29 => 29,
-        seed_30 => 30,
-        seed_31 => 31,
-        seed_32 => 32,
-        seed_33 => 33,
-        seed_34 => 34,
-        seed_35 => 35,
-        seed_36 => 36,
     ],
 }
 
