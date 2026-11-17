@@ -54,7 +54,7 @@ fn node_process_bridge_owns_real_input_output_and_descendant_cancellation() {
         );
     }
     let script = acyclic_test_support::source_path("typescript/packages/sdk/test/process.test.mjs");
-    let status = std::process::Command::new(acyclic_test_support::cargo_binary!("node"))
+    let status = std::process::Command::new(acyclic_test_support::host_tool!("node"))
         .arg(script)
         .env("ACYCLIC_PROCESS_HOST", acyclic_test_support::cargo_binary!("acyclic-process-host"))
         .status()

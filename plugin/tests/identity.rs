@@ -4,7 +4,7 @@ use super::binary;
 
 #[test]
 fn identity_processes() -> Result<(), Box<dyn std::error::Error>> {
-    let status = std::process::Command::new("node")
+    let status = std::process::Command::new(acyclic_test_support::host_tool!("node"))
         .arg("--test")
         .arg("tests/identity.test.mjs")
         .arg("tests/identity-mcp.test.mjs")
