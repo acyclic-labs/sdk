@@ -941,6 +941,14 @@ where
     ) -> Result<Arc<super::FilesystemContentVerifier<StreamAuthorityStore<P>, O>>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
+        let own_journal = file.is_some_and(|file| {
+            file.volume().is_agent_journal()
+                && file.volume().provider() == &self.volumes.provider
+                && file.volume().owner()
+                    == &crate::conversation::VolumeOwner::Agent(crate::AgentId::from_bytes(
+                        agent.id_bytes(),
+                    ))
+        });
         let external = match (sequence, file) {
             (Some(sequence), Some(file)) if sequence < state.conversation_tail => {
                 let entry = crate::agent::conversation_entry(
@@ -962,12 +970,7 @@ where
                 ));
             }
             (None, Some(file))
-                if file.volume().is_agent_journal()
-                    && file.volume().provider() == &self.volumes.provider
-                    && file.volume().owner()
-                        == &crate::conversation::VolumeOwner::Agent(
-                            crate::AgentId::from_bytes(agent.id_bytes()),
-                        )
+                if own_journal
                     && [
                         super::InternalContentClass::Conversation,
                         super::InternalContentClass::ToolOutput,
@@ -983,10 +986,7 @@ where
             }
             (None, Some(file))
                 if file.volume().is_agent_journal()
-                    && file.volume().owner()
-                        != &crate::conversation::VolumeOwner::Agent(
-                            crate::AgentId::from_bytes(agent.id_bytes()),
-                        )
+                    && !own_journal
                     && state.adoption_grant(file).is_empty() =>
             {
                 return Err(Error::Record(
