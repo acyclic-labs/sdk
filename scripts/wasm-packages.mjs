@@ -14,17 +14,17 @@ const stripHarnessClosureShims = output => {
 
 /** Every published WASM package. Building and checking both read this one table. */
 export const wasmPackages = {
-  auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm" },
-  actors: { family: true },
+  auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm", runtime: true, build: true },
+  actors: { family: true, runtime: true, build: true },
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
-  stream: { family: true, runtime: true },
+  stream: { family: true, runtime: true, runtimeDirectory: "node_modules" },
   objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
   manifest: { cargo: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers" },
   machines: {
     cargo: ["-p", "acyclic-machines-wasm"],
     artifact: "acyclic_machines_wasm",
   },
-  inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm" },
+  inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm", runtime: true, build: true },
   harness: {
     cargo: ["-p", "acyclic-harness-providers", "--features", "wasm-journal"],
     artifact: "acyclic_harness_providers",

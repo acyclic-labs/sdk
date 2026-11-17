@@ -1,0 +1,39 @@
+load(":toolchain.bzl", "javascript_tools")
+
+package(default_visibility = ["//visibility:public"])
+
+toolchain_type(name = "toolchain_type")
+
+[
+    javascript_tools(
+        name = name + "_tools",
+        buf = "@buf_" + name + "//:files",
+        typescript = "@ts_" + name + "//:files",
+        typescript_package = "@typescript/typescript-" + npm_platform,
+    )
+    for name, _, _, npm_platform in [
+        ("linux_x64", "linux", "x86_64", "linux-x64"),
+        ("linux_arm64", "linux", "aarch64", "linux-arm64"),
+        ("macos_x64", "macos", "x86_64", "darwin-x64"),
+        ("macos_arm64", "macos", "aarch64", "darwin-arm64"),
+        ("windows_x64", "windows", "x86_64", "win32-x64"),
+        ("windows_arm64", "windows", "aarch64", "win32-arm64"),
+    ]
+]
+
+[
+    toolchain(
+        name = name,
+        exec_compatible_with = ["@platforms//os:" + os, "@platforms//cpu:" + cpu],
+        toolchain = ":" + name + "_tools",
+        toolchain_type = ":toolchain_type",
+    )
+    for name, os, cpu in [
+        ("linux_x64", "linux", "x86_64"),
+        ("linux_arm64", "linux", "aarch64"),
+        ("macos_x64", "macos", "x86_64"),
+        ("macos_arm64", "macos", "aarch64"),
+        ("windows_x64", "windows", "x86_64"),
+        ("windows_arm64", "windows", "aarch64"),
+    ]
+]

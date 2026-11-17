@@ -103,7 +103,7 @@ async function wasmResolution() {
   const {wasmPackages, wasmSelection, wasmTestConsumers} = await import(pathToFileURL(producer).href);
   const {hostedActorsWasm} = await import(pathToFileURL(path.join(root, "scripts/build-hosted-actors-conformance.mjs")).href);
   const modules = [...Object.keys(wasmPackages).map(name => ({name, ...wasmSelection(name),
-    outputPackage:wasmPackages[name].outputPackage ?? name, runtime:wasmPackages[name].runtime,
+    outputPackage:wasmPackages[name].outputPackage ?? name, runtime:wasmPackages[name].runtime, build:wasmPackages[name].build, runtimeDirectory:wasmPackages[name].runtimeDirectory,
     directory:`typescript/packages/${wasmPackages[name].outputPackage ?? name}/generated/wasm`})), {...hostedActorsWasm, outputPackage:undefined}];
   const selected = modules.map(module => module.selection);
   return {run: workspaceBrowserGraph(root, selected), roots:new Set(selected.map(args => args[args.indexOf("-p") + 1])), modules, testConsumers:wasmTestConsumers};
@@ -1085,10 +1085,17 @@ function moduleFile() {
 }
 
 const harnessTools = new Set();
+const runtimeTools = new Set();
 if (wasm) {
   const {packageClosure} = await import(pathToFileURL(path.join(root,"scripts/package-closure.mjs")).href);
   const {bindingTools} = await import(pathToFileURL(path.join(root,"scripts/project-bindings.mjs")).href);
   for (const tool of await bindingTools(packageClosure(root,"harness-actor"))) harnessTools.add(tool);
+  for (const selection of wasmSelections.filter(selection => selection.build)) {
+    for (const tool of await bindingTools(packageClosure(root, selection.outputPackage))) {
+      runtimeTools.add(tool);
+      harnessTools.add(tool);
+    }
+  }
 }
 
 // Bodies first: rendering them records every file another package takes by label.
@@ -1149,30 +1156,59 @@ ${rule("filegroup", [
     ["visibility", q(["//visibility:public"])],
   ])}
 `;
-const wasmNodeModulesRules = wasmSelections.filter(selection => selection.runtime).map(selection => {
-  const deps = wasmNodeModules.get(selection.name) ?? [];
-  const filegroups = deps.filter(dep => dep.dir).map(dep => {
+const runtimeSelections = wasmSelections.filter(selection => selection.runtime);
+const workspaceRuntimeDeps = new Map([...wasmNodeModules.values()].flat().filter(dep => dep.dir).map(dep => [dep.name, dep]));
+const runtimeFilegroups = [...workspaceRuntimeDeps.values()].map(dep => {
     const contractOutputs = streamTokenOutputs.filter(file => file.startsWith(`${dep.dir}/`));
+    const bindings = packagedTypeScriptBindings.filter(([, names]) => names.includes(dep.dir.split("/").at(-1)));
     return rule("filegroup", [
     ["name", q(workspaceTargetName(dep.name))],
-    // Pin and name runtime protobuf projections: absent files must fail analysis.
     ["srcs", glob([`${dep.dir}/**`], [`${dep.dir}/generated/wasm/**`, `${dep.dir}/generated/proto/**`, ...contractOutputs]) + " + " + list(
-      packagedTypeScriptBindings.filter(([, names]) => names.includes(dep.dir.split("/").at(-1)))
-        .map(([stem]) => fileLabel(`${dep.dir}/generated/proto/${stem}.js`))
-        .concat(contractOutputs.map(fileLabel)))],
+      contractOutputs.map(fileLabel))],
     ["visibility", q(["//visibility:public"])],
-    ]);
-  }).join("\n");
-  const packages = deps.map(dep => [dep.dir ? `:${workspaceTargetName(dep.name)}` : `@${dep.repository}//:files`, `${dep.name}=${dep.dir ?? ""}`]);
-  for (const dep of deps.filter(dep => dep.dir)) {
+    ]) + (bindings.length ? `\n${rule("proto_js", [
+      ["name", q(`${workspaceTargetName(dep.name)}_proto`)],
+      ["schemas", starlarkDict(bindings.map(([stem, , owner]) => {
+        const schema = `${owner ?? `rust/crates/${stem.split("/")[0]}`}/proto/${stem.replace(/_pb$/, ".proto")}`;
+        return [fileLabel(schema), schema];
+      }))],
+    ])}` : "");
+}).join("\n");
+const builtRuntimeDeps = new Map(wasmSelections.filter(selection => selection.build)
+  .flatMap(selection => wasmNodeModules.get(selection.name) ?? []).filter(dep => dep.dir).map(dep => [dep.name, dep]));
+const runtimePackageNames = [...builtRuntimeDeps.values()].map(dep => dep.dir.split("/").at(-1));
+const runtimeBuild = runtimePackageNames.length ? `\n${rule("typescript_packages", [
+  ["name", q("sdk_typescript_packages")],
+  ["packages", list(runtimePackageNames)],
+  ["srcs", glob(["scripts/*.mjs", "scripts/vendor/**", "typescript/packages/*/package.json"], []) + " + " + list(["//:package.json", "//:tsconfig.base.json", ...[...builtRuntimeDeps.values()].map(dep => `:${workspaceTargetName(dep.name)}`)])],
+  ["protos", starlarkDict([...builtRuntimeDeps.values()].filter(dep => packagedTypeScriptBindings.some(([, names]) => names.includes(dep.dir.split("/").at(-1))))
+    .map(dep => [`:${workspaceTargetName(dep.name)}_proto`, dep.dir.split("/").at(-1)]))],
+  ["wasms", starlarkDict([...builtRuntimeDeps.values()].flatMap(dep => {
     const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
-    if (generated) packages.push([generated.name, `${dep.name}/generated/wasm=`]);
+    return generated ? [[generated.name, dep.dir.split("/").at(-1)]] : [];
+  }))],
+  ["tools", starlarkDict([...runtimeTools].sort().map(label => [label, label]))],
+])}` + runtimePackageNames.map(name => `\n${rule("filegroup", [
+  ["name", q(`sdk_typescript_${name}`)],
+  ["srcs", list([":sdk_typescript_packages"])],
+  ["output_group", q(name)],
+])}`).join("") : "";
+const wasmNodeModulesRules = runtimeFilegroups + (runtimeSelections.length ? "\n" : "") + runtimeSelections.map(selection => {
+  const deps = wasmNodeModules.get(selection.name) ?? [];
+  const packages = deps.map(dep => [dep.dir ? (builtRuntimeDeps.has(dep.name) ? `:sdk_typescript_${dep.dir.split("/").at(-1)}` : `:${workspaceTargetName(dep.name)}`) : `@${dep.repository}//:files`, `${dep.name}=${dep.dir && !builtRuntimeDeps.has(dep.name) ? dep.dir : ""}`]);
+  for (const dep of deps.filter(dep => dep.dir)) {
+    if (!builtRuntimeDeps.has(dep.name) && packagedTypeScriptBindings.some(([, names]) => names.includes(dep.dir.split("/").at(-1)))) {
+      packages.push([`:${workspaceTargetName(dep.name)}_proto`, `${dep.name}/generated/proto=`]);
+    }
+    const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
+    if (generated && !builtRuntimeDeps.has(dep.name)) packages.push([generated.name, `${dep.name}/generated/wasm=`]);
   }
-  return `${filegroups}\n${rule("node_modules", [
+  return rule("node_modules", [
     ["name", q(`wasm_${selection.name}_node_modules`)],
+    ["directory", selection.runtimeDirectory ? q(selection.runtimeDirectory) : undefined],
     ["packages", starlarkDict(packages)],
     ["visibility", q(["//visibility:public"])],
-  ])}`;
+  ]);
 }).join("\n");
 /** @type {Map<string,string|null>} */
 const files = new Map([
@@ -1180,7 +1216,7 @@ const files = new Map([
   ["rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json", workspaceMetadata],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
-${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\n' : ""}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${wasmNodeModulesRules}${sourcesRule}${exportsRule("")}`],
+${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:proto_js.bzl", "proto_js")\nload("//:typescript_packages.bzl", "typescript_packages")\n' : ""}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${runtimeFilegroups}${runtimeBuild}${wasmNodeModulesRules.slice(runtimeFilegroups.length)}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}
