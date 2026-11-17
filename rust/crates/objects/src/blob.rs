@@ -153,6 +153,35 @@ impl DecodeAllocation for () {
     }
 }
 
+/// One admission and capacity reconciliation for engine-owned vectors.
+pub(crate) fn reserve_admitted<T>(
+    values: &mut Vec<T>,
+    additional: usize,
+    allocation: &impl DecodeAllocation,
+) -> Result<(), Error> {
+    let needed = values
+        .len()
+        .checked_add(additional)
+        .ok_or(Error::from(ErrorCode::QuotaExceeded))?;
+    if needed <= values.capacity() {
+        return Ok(());
+    }
+    let width = std::mem::size_of::<T>();
+    let admitted = needed
+        .checked_mul(width)
+        .ok_or(Error::from(ErrorCode::QuotaExceeded))?;
+    let held = admitted
+        .checked_add(values.capacity() * width)
+        .ok_or(Error::from(ErrorCode::QuotaExceeded))?;
+    allocation.admit(admitted)?;
+    values
+        .try_reserve_exact(additional)
+        .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
+    // Both backings stay funded through reallocation; only the replacement
+    // remains live once it succeeds.
+    allocation.capacity(held, values.capacity() * width)
+}
+
 impl Manifest {
     /// Total logical length of the parts.
     pub fn length(&self) -> Result<u64, Error> {
@@ -384,18 +413,8 @@ impl<'a> Reader<'a> {
     ) -> Result<Vec<T>, Error> {
         // Validate the complete fixed-width body before admitting an allocation.
         let bytes = self.take(count.checked_mul(width).ok_or_else(corrupt)?)?;
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-        let admitted = count
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(corrupt)?;
-        allocation.admit(admitted)?;
         let mut values = Vec::new();
-        values
-            .try_reserve_exact(count)
-            .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
-        allocation.capacity(admitted, values.capacity() * std::mem::size_of::<T>())?;
+        reserve_admitted(&mut values, count, allocation)?;
         let mut reader = Reader(bytes);
         for _ in 0..count {
             values.push(decode(&mut reader)?);
