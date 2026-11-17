@@ -248,6 +248,8 @@ fn crash_reopen(point: Cut) -> Result<()> {
             "a settlement skipped or repeated its retrospective"
         );
         if let Some(interrupted) = dispatched {
+            // The reconciled prompt's follow-up keeps its turn's operation;
+            // the new prompt's own request is the next dispatch.
             assert_ne!(
                 interrupted.operation_id, work[0].1.operation_id,
                 "the new prompt reused the interrupted operation"
