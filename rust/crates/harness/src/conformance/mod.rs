@@ -40,30 +40,30 @@ pub use crate::agent_conformance_suite as suite;
 /// case's time and failure are its own vector's.
 #[macro_export]
 macro_rules! agent_conformance_suite {
-    // The factory is named from the caller's module, never shadowed by a case
-    // of the same name.
-    (@factory ($($factory:tt)+)) => {
-        super::$($factory)+()
-    };
-    (@cases $factory:tt; $($case:ident $vector:ident),*) => {$(
+    (@cases $name:ident; $($case:ident $vector:ident),*) => {$(
         #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
         #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
         async fn $case() -> $crate::conformance::Result {
-            let backend = $crate::agent_conformance_suite!(@factory $factory).await?;
+            let backend = super::$name().await?;
             $crate::conformance::verify_vector(&backend, $crate::conformance::Vector::$vector).await
         }
     )*};
-    ($name:ident, $($factory:tt)+) => {
+    ($name:ident, $factory:path) => {
+        // The factory resolves in the caller's scope, through a function that
+        // shares the module's name, so no case can shadow any part of its path.
+        async fn $name() -> $crate::conformance::Result<impl $crate::conformance::Backend> {
+            Ok($factory().await?)
+        }
         mod $name {
-            $crate::agent_conformance_suite!(@cases ($($factory)+);
+            $crate::agent_conformance_suite!(@cases $name;
                 controls Controls, spawn Spawn, reply Reply, publication Publication,
                 admission Admission, identity Identity, roots Roots, approvals Approvals,
                 guest_wire GuestWire, interrupt Interrupt, activation_checkpoint ActivationCheckpoint,
                 restart Restart, serving_protocol ServingProtocol);
         }
     };
-    ($($factory:tt)+) => {
-        $crate::agent_conformance_suite!(agent_conformance, $($factory)+);
+    ($factory:path) => {
+        $crate::agent_conformance_suite!(agent_conformance, $factory);
     };
 }
 

@@ -60,7 +60,7 @@ async fn guest_wire() -> Result<Local> {
     Ok(Local { wire: true })
 }
 
-acyclic_agent_host_conformance::suite!(local_native, native);
+acyclic_agent_host_conformance::suite!(local_native, crate::local::native);
 acyclic_agent_host_conformance::suite!(local_guest_wire, guest_wire);
 
 #[tokio::test]
