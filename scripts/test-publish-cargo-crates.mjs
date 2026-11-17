@@ -10,14 +10,10 @@ import { publicationDependencyErrors, readmeErrors, registryArchiveMatches } fro
 
 test("publication check rejects a newly publishable workspace crate until its inventory is updated", () => {
   const repository = mkdtempSync(join(tmpdir(), "acyclic-cargo-inventory-"));
-  const cargo = args => {
-    const result = spawnSync("cargo", args, { cwd: repository, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-  };
   const workspace = members => {
     writeFileSync(join(repository, "Cargo.toml"),
       `[workspace]\nmembers = ${JSON.stringify(members)}\nresolver = "3"\n`);
-    cargo(["generate-lockfile", "--offline"]);
+
   };
   const crate = name => {
     mkdirSync(join(repository, name, "src"), { recursive: true });
@@ -31,7 +27,7 @@ test("publication check rejects a newly publishable workspace crate until its in
   try {
     mkdirSync(join(repository, "scripts"));
     mkdirSync(join(repository, "release"));
-    for (const name of ["publish-cargo-crates.mjs", "registry-publication.mjs", "policy-core.mjs"]) {
+    for (const name of ["publish-cargo-crates.mjs", "registry-publication.mjs", "policy-core.mjs", "workspace-model.mjs"]) {
       copyFileSync(resolve("scripts", name), join(repository, "scripts", name));
     }
     writeFileSync(join(repository, "release", "cargo-equivalent-archives.json"), "{}");
@@ -40,7 +36,7 @@ test("publication check rejects a newly publishable workspace crate until its in
     inventory(["alpha"]);
     assert.equal(check().status, 0);
 
-    // Real Cargo discovers the added publishable crate without a Rust build.
+    // The manifest inventory discovers a newly publishable crate without a resolver.
     crate("beta");
     workspace(["alpha", "beta"]);
     const missing = check();

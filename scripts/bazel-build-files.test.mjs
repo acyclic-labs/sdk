@@ -11,6 +11,7 @@ function fixture() {
   mkdirSync(join(root, "scripts"));
   cpSync("scripts/bazel-build-files.mjs", join(root, "scripts/bazel-build-files.mjs"));
   cpSync("scripts/policy-core.mjs", join(root, "scripts/policy-core.mjs"));
+  cpSync("scripts/workspace-model.mjs", join(root, "scripts/workspace-model.mjs"));
   cpSync("rust-toolchain.toml", join(root, "rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));
   writeFileSync(join(root, ".cargo/config.toml"), '[target.x86_64-unknown-linux-gnu]\nlinker = "scripts/mold-linker.sh"\n\n[env]\n');
@@ -22,7 +23,9 @@ function fixture() {
   mkdirSync(join(root, "local/src"), { recursive: true });
   writeFileSync(join(root, "local/Cargo.toml"), '[package]\nname = "local"\nversion = "0.1.0"\nedition = "2024"\n');
   writeFileSync(join(root, "local/src/lib.rs"), "pub fn two() -> u8 {\n    2\n}\n");
-  execFileSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, stdio: "ignore" });
+  writeFileSync(join(root, "Cargo.lock"), 'version = 4\n\n[[package]]\nname = "local"\nversion = "0.1.0"\n\n[[package]]\nname = "member"\nversion = "0.1.0"\ndependencies = ["local"]\n');
+  writeFileSync(join(root, "cargo-bazel.Cargo.lock"), 'version = 4\n\n[[package]]\nname = "direct-cargo-bazel-deps"\nversion = "0.0.1"\n');
+  writeFileSync(join(root, "cargo-bazel-lock.json"), '{"crates":{},"conditions":{}}');
   execFileSync("git", ["init", "-q"], { cwd: root });
   execFileSync("git", ["add", "-A"], { cwd: root });
   const run = mode => spawnSync(process.execPath, ["scripts/bazel-build-files.mjs", mode], { cwd: root, encoding: "utf8" });

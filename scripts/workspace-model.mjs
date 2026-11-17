@@ -112,11 +112,12 @@ export function workspacePackages(root) {
       const declared = manifest[kind] ?? [];
       for (const item of declared) target(kind, item, kind === 'bin' && item.name === own.name && exists(path.join(directory, 'src/main.rs')) ? 'src/main.rs' : `${folder}/${item.name}.rs`, item.name);
       if (own[`auto${plural}`] === false) continue;
-      if (kind === 'bin' && !declared.some(item => item.name === own.name)) target(kind, {}, 'src/main.rs', own.name);
+      if (kind === 'bin' && !targets.some(t => t.src_path === path.join(directory, 'src/main.rs'))) target(kind, {}, 'src/main.rs', own.name);
       if (exists(path.join(directory, folder))) for (const entry of fs.readdirSync(path.join(directory, folder), {withFileTypes: true})) {
         if (!entry.isDirectory() && !entry.name.endsWith('.rs')) continue;
         const name = entry.name.replace(/\.rs$/, '');
-        if (!declared.some(item => item.name === name)) target(kind, {}, `${folder}/${entry.name}${entry.isDirectory() ? '/main.rs' : ''}`, name);
+        const candidate = `${folder}/${entry.name}${entry.isDirectory() ? '/main.rs' : ''}`;
+        if (!declared.some(item => item.name === name) && !targets.some(t => t.src_path === path.resolve(directory, candidate))) target(kind, {}, candidate, name);
       }
     }
     if (own.build !== false) target('custom-build', {}, typeof own.build === 'string' ? own.build : 'build.rs', 'build-script-build');

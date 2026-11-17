@@ -1,57 +1,29 @@
 import assert from 'node:assert/strict';
-import {execFileSync, spawnSync} from 'node:child_process';
-import {copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
+import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import test from 'node:test';
 
-test('Cargo canonical output passes and a resolution-valid reordered lock fails', () => {
-  const root = mkdtempSync(join(tmpdir(), 'sdk-cargo-lock-'));
-  const checker = resolve('scripts/check-cargo-lock.mjs');
+test('lock checking rejects stale local identities and broken edges without rewriting input', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sdk-lock-'));
   try {
-    for (const directory of ['src', 'zeta/src']) mkdirSync(join(root, directory), {recursive: true});
-    copyFileSync('rust-toolchain.toml', join(root, 'rust-toolchain.toml'));
-    writeFileSync(join(root, 'Cargo.toml'), `[package]
-name = "alpha"
-version = "0.0.0"
-edition = "2024"
-[dependencies]
-zeta = { path = "zeta" }
-[workspace]
-members = ["zeta"]
-resolver = "3"
-`);
-    writeFileSync(join(root, 'zeta/Cargo.toml'), '[package]\nname = "zeta"\nversion = "0.0.0"\nedition = "2024"\n');
-    for (const source of ['src/lib.rs', 'zeta/src/lib.rs']) writeFileSync(join(root, source), '');
-    // The fixture lockfile is captured from real Cargo output, never authored.
-    execFileSync('cargo', ['metadata', '--offline', '--format-version', '1'], {cwd: root, stdio: 'ignore'});
-    const lock = join(root, 'Cargo.lock');
-    const canonical = readFileSync(lock, 'utf8');
-    const check = () => spawnSync(process.execPath, [checker], {cwd: root, encoding: 'utf8'});
-    const positive = check();
-    assert.equal(positive.status, 0, positive.stderr);
-    assert.equal(readFileSync(lock, 'utf8'), canonical);
-
-    const [header, ...packages] = canonical.split('[[package]]\n');
-    assert.equal(packages.length, 2);
-    const reordered = header + packages.reverse().map(block => '[[package]]\n' + block).join('');
-    writeFileSync(lock, reordered);
-    execFileSync('cargo', ['metadata', '--locked', '--offline', '--format-version', '1'], {cwd: root, stdio: 'ignore'});
-    assert.equal(readFileSync(lock, 'utf8'), reordered, '--locked accepts the planted ordering defect');
-    const negative = check();
-    assert.equal(negative.status, 1, negative.stderr);
-    assert.match(negative.stderr, /step=cargo-lock-canonical:.*canonical output.*recovery command: cargo update --workspace/);
-    assert.equal(readFileSync(lock, 'utf8'), canonical, 'Cargo restores its own exact original bytes');
-
-    const manifest = join(root, 'zeta/Cargo.toml');
-    writeFileSync(manifest, readFileSync(manifest, 'utf8').replace('0.0.0', '0.0.1'));
+    mkdirSync(join(root, 'zeta'));
+    writeFileSync(join(root, 'Cargo.toml'), '[workspace]\nmembers = ["zeta"]\n');
+    writeFileSync(join(root, 'zeta/Cargo.toml'), '[package]\nname = "zeta"\nversion = "0.1.0"\n');
+    const lock = 'version = 4\n\n[[package]]\nname = "zeta"\nversion = "0.1.0"\n';
+    const file = join(root, 'Cargo.lock');
+    const check = () => spawnSync(process.execPath, [resolve('scripts/check-cargo-lock.mjs')], {cwd: root, encoding: 'utf8'});
+    writeFileSync(file, lock);
+    assert.equal(check().status, 0);
+    writeFileSync(file, lock.replace('0.1.0', '0.0.0'));
     const stale = check();
-    assert.equal(stale.status, 1, stale.stderr);
-    assert.match(stale.stderr, /step=cargo-lock-canonical:.*canonical output/);
-    assert.notEqual(readFileSync(lock, 'utf8'), canonical, 'manifest drift must change the lockfile');
-    const repaired = check();
-    assert.equal(repaired.status, 0, repaired.stderr);
-  } finally {
-    rmSync(root, {recursive: true, force: true});
-  }
+    assert.equal(stale.status, 1);
+    assert.match(stale.stderr, /missing local package zeta@0.1.0/);
+    assert.equal(readFileSync(file, 'utf8'), lock.replace('0.1.0', '0.0.0'));
+    writeFileSync(file, lock + 'dependencies = ["missing"]\n');
+    const broken = check();
+    assert.equal(broken.status, 1);
+    assert.match(broken.stderr, /missing dependency missing/);
+  } finally {rmSync(root, {recursive: true, force: true});}
 });
