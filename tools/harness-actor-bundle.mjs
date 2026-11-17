@@ -91,6 +91,12 @@ if (import.meta.main) {
     const [source, destination] = spec.split("=");
     place(source, destination);
   }
+  // The workspace package that re-exports the stream bindings resolves by name, as it does in an
+  // installed workspace; the checkout has no node_modules tree of its own.
+  const streamWasm = join(root, "node_modules/@acyclic/stream-wasm");
+  mkdirSync(dirname(streamWasm), { recursive: true });
+  rmSync(streamWasm, { recursive: true, force: true });
+  cpSync(join(root, "typescript/packages/@acyclic/stream-wasm"), streamWasm, { recursive: true });
   step("typescript", "bun", ["x", "tsc", "-b", "typescript/packages/harness-actor"]);
   await bundleHarnessActor(values.config, values.out);
 }
