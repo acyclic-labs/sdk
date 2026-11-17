@@ -168,6 +168,7 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
                     .any(|part| matches!(part, ModelContentPart::ToolCall(_)))
             })
             .count();
+        eprintln!("DST service: plan {} at message {} step {}", plan.tag, index, step);
         let Some(calls) = plan.steps.get(step) else {
             return ScriptedTurn::Text(done(plan.tag));
         };
