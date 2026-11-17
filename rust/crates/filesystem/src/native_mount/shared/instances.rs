@@ -190,7 +190,7 @@ mod tests {
     pub(super) fn before_wait() {
         WAITING.with(|waiting| {
             if let Some(waiting) = waiting.borrow_mut().take() {
-                waiting.send(()).expect("wait observer is present");
+                assert!(waiting.send(()).is_ok(), "wait observer is present");
             }
         });
     }
@@ -217,13 +217,12 @@ mod tests {
 
     impl Drop for Counted {
         fn drop(&mut self) {
-            let slots = INSTANCES
-                .slots
-                .try_lock()
-                .expect("native cleanup must run outside the registry mutex");
+            let slots = INSTANCES.slots.try_lock();
             assert!(
-                slots.contains_key(&self.root),
-                "registration released the root before native cleanup"
+                slots
+                    .as_ref()
+                    .is_ok_and(|slots| slots.contains_key(&self.root)),
+                "native cleanup must run outside the registry mutex while registered"
             );
             drop(slots);
             STARTS.fetch_sub(1, Ordering::SeqCst);

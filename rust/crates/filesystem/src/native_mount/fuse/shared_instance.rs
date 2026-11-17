@@ -402,11 +402,14 @@ mod tests {
         let host = io.host_id().ok_or("host absent")?;
         // Bind the original live host's lifetime before signalling it. This
         // isolated namespace has no other owner's host to disrupt.
+        // SAFETY: pidfd_open takes the observed process ID and zero flags.
         let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, host, 0) };
         if pidfd < 0 {
             return Err(std::io::Error::last_os_error().into());
         }
+        // SAFETY: pidfd_open returned this new, owned descriptor.
         let pidfd = unsafe { OwnedFd::from_raw_fd(i32::try_from(pidfd)?) };
+        // SAFETY: pidfd owns the target and the signal call has no payload.
         if unsafe {
             libc::syscall(
                 libc::SYS_pidfd_send_signal,

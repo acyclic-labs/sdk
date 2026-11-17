@@ -29,9 +29,9 @@ impl Drop for Restore {
 
 fn real_helper_spawn_never_forks_at_n_and_two_n_and_pre_exec_fails_that_bound() -> io::Result<()> {
     static REGISTERED: OnceLock<i32> = OnceLock::new();
-    // SAFETY: the parent-side callback only touches constant-initialized TLS.
-    // No child callback, shared mutable state or allocator is involved.
     assert_eq!(
+        // SAFETY: the parent callback touches only constant-initialized TLS;
+        // there is no child callback, shared mutable state, or allocator.
         *REGISTERED.get_or_init(|| unsafe { libc::pthread_atfork(Some(before_fork), None, None) }),
         0
     );
