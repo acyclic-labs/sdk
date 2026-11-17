@@ -87,7 +87,7 @@ const workspaceMetadata = (() => {
   // them stable across worktrees.
   const stableId = id => id.replaceAll(base.workspace_root, ".");
   return JSON.stringify({
-    packages: base.packages.filter(p => members.has(p.id)).map(p => ({
+    packages: base.packages.filter(p => members.has(p.id)).map(({workspace_member, ...p}) => ({
       ...p,
       id: stableId(p.id),
       manifest_path: relative(p.manifest_path),
