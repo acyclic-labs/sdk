@@ -547,34 +547,6 @@ impl<K: Ord + Clone> ReadySet<K> {
         index.due.first().map(|&(deadline, _, _)| deadline)
     }
 
-    /// Earliest wake of a parked alarm, which only re-registering its key
-    /// delivers.
-    pub fn next_parked_wake(&self) -> Option<u64> {
-        let index = self
-            .core
-            .index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        index.parked_wakes.first().map(|&(at, _)| at)
-    }
-
-    /// At most `limit` keys whose parked alarm wakes by `now_unix_ms`. Their
-    /// tokens stay parked until each key registers again.
-    pub fn parked_due(&self, now_unix_ms: u64, limit: usize) -> Vec<K> {
-        let index = self
-            .core
-            .index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        index
-            .parked_wakes
-            .iter()
-            .take_while(|&&(at, _)| at <= now_unix_ms)
-            .take(limit)
-            .map(|(_, key)| key.clone())
-            .collect()
-    }
-
     /// The deadline window `group`'s watermark may not pass at `now_unix_ms`:
     /// the current window, or the earliest original deadline's window of any
     /// of the group's alarm tokens, resident or parked, however late its wake
