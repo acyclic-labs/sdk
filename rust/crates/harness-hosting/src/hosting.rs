@@ -20,8 +20,6 @@
 //! within the admitted tree. The session carrier, not this module, owns
 //! admission, credit and fragmentation; no backend-specific route exists.
 
-// The core's items keep their `crate::` paths here, as in the facade.
-use acyclic_harness_core::*;
 use acyclic_harness_client as client;
 
 pub use acyclic_harness_core::filesystem::{
