@@ -144,7 +144,7 @@ async fn a_claim_returns_its_timestamp_when_storage_stalls_after_commit() -> Res
         started_at_micros: None,
     };
     storage.armed.store(true, Ordering::SeqCst);
-    let claim = journal.claim_if_tail(operation, 1, "claim", &mut event, None)?;;
+    let claim = journal.claim_if_tail(operation, 1, "claim", &mut event, None)?;
     match futures::future::select(claim, attempted).await {
         futures::future::Either::Left((timestamp, _)) => assert_eq!(timestamp?, Some(100_000)),
         futures::future::Either::Right(_) => {
