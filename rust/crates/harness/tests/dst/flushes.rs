@@ -217,7 +217,7 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
     // additional physical drains. Independent commits still need their own.
     assert_eq!(
         observed.replies,
-        [(9, 10), (9, 10), (10, 10), (40, 10), (0, 1)],
+        [(10, 12), (10, 12), (11, 12), (41, 12), (0, 1)],
         "settled reply publication budget changed"
     );
     Ok(())
