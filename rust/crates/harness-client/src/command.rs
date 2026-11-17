@@ -1268,6 +1268,7 @@ use crate::AgentReply;
 use acyclic_harness_core::agent::Error as AgentError;
 use acyclic_stream::StreamError;
 
+/// The canonical wire byte length of one page value.
 pub fn page_json_bytes(value: &impl serde::Serialize) -> Result<u64, AgentError> {
     crate::executor::json::json_byte_length(value, None, &mut None)
         .map_err(|_| AgentError::Record("agent page encoding failed"))
@@ -1284,6 +1285,7 @@ pub struct PageCredit {
 }
 
 impl PageCredit {
+    /// Credit for `page`, reserving the empty and continued envelopes.
     pub fn new(
         page: &AgentPageRequest,
         empty: impl Fn(Option<String>) -> AgentReply,
@@ -1291,6 +1293,7 @@ impl PageCredit {
         Self::from_envelopes(page, &empty(None), &empty(Some(String::new())))
     }
 
+    /// Credit for `page` with explicit end and continuation envelopes.
     pub fn from_envelopes<C>(
         page: &AgentPageRequest<C>,
         end: &impl serde::Serialize,
@@ -1312,6 +1315,7 @@ impl PageCredit {
         })
     }
 
+    /// Accepts `item` when it fits, returning whether it was admitted.
     pub fn accept(
         &mut self,
         item: &impl serde::Serialize,
@@ -1329,9 +1333,11 @@ impl PageCredit {
         Ok(true)
     }
 
+    /// Rows accepted so far.
     pub fn items(&self) -> usize {
         self.items
     }
+    /// Whether the page boundary fits with `next_bytes` of continuation.
     pub fn accept_boundary(&self, next_bytes: Option<u64>) -> Result<bool, AgentError> {
         let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
         let accepted = crate::encoded_agent_reply_size(self.bytes + envelope)
