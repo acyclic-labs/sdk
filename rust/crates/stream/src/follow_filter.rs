@@ -718,7 +718,10 @@ mod tests {
                 let projected = projected.as_ref();
                 assert_eq!(matched, projected.is_some());
                 assert_eq!(
-                    preservation.map_err(|error| error.category()),
+                    preservation
+                        .as_ref()
+                        .map(|value| *value)
+                        .map_err(|error| error.category()),
                     Ok(projected == Some(record))
                 );
                 if let Some(projected) = projected {

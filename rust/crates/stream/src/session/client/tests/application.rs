@@ -212,7 +212,8 @@ async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> T
         let (result, [temporary, direct]) = acyclic_test_support::differential(
             || {
                 // Restore the original unused owner as the negative control.
-                wire_codec::read_key_from_wire(owned.key.clone())?;
+                wire_codec::read_key_from_wire(owned.key.clone())
+                    .map_err(|error| error.category())?;
                 wire_codec::session::validate_follow(&owned, &resume)
                     .map_err(|error| error.category())
             },

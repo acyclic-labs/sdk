@@ -1,4 +1,4 @@
-use crate::{StreamError, StreamWatermarks, wire};
+use crate::{StreamCategory, StreamError, StreamWatermarks, wire};
 
 /// Decodes an explicit accepted observation, rejecting legacy peers and
 /// impossible persistence claims instead of inferring durability from acceptance.

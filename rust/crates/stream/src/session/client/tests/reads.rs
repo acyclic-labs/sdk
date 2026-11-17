@@ -1065,14 +1065,23 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
         for (index, record) in records.iter().enumerate() {
             let preserved = filter.preserves(record);
             assert_eq!(
-                preserved.map_err(|error| error.category()),
+                preserved
+                    .as_ref()
+                    .map(|value| *value)
+                    .map_err(|error| error.category()),
                 filter
                     .project(record.clone())
                     .map(|projected| projected == Some(record.clone()))
                     .map_err(|error| error.category())
             );
             if index == 0 {
-                assert_eq!(preserved.map_err(|error| error.category()), Ok(complete));
+                assert_eq!(
+                    preserved
+                        .as_ref()
+                        .map(|value| *value)
+                        .map_err(|error| error.category()),
+                    Ok(complete)
+                );
             } else if index >= 2 {
                 assert_eq!(
                     preserved.map_err(|error| error.category()),
