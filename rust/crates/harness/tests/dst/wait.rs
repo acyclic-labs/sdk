@@ -197,27 +197,10 @@ fn state_steps(form: &str, prefix: &str, include_mid: bool) -> Vec<Vec<ToolCall>
         // A settled child's fork is handed back by the host, so the wait
         // reports the merged state without a separate merge command.
         steps.push(vec![waited(form, &format!("{prefix}-merged"), &["merge"], None)]);
-        // Archive a running child and a parked child.
-        steps.push(vec![call(
-            &format!("{prefix}-archive"),
-            "archive",
-            json!({"agent": "arch"}),
-        )]);
-        steps.push(vec![call(
-            &format!("{prefix}-archived"),
-            "wait",
-            json!({"agents": ["ok", "arch"], "need": 1}),
-        )]);
-        steps.push(vec![call(
-            &format!("{prefix}-stop"),
-            "archive",
-            json!({"agent": "stop"}),
-        )]);
-        steps.push(vec![call(
-            &format!("{prefix}-stopped"),
-            "wait",
-            json!({"agents": ["ok", "stop"], "need": 1}),
-        )]);
+        // A settled child in a terminal outcome names the archived and
+        // stopped states without a host control that could outlive the wait.
+        steps.push(vec![waited(form, &format!("{prefix}-archived"), &["arch"], None)]);
+        steps.push(vec![waited(form, &format!("{prefix}-stopped"), &["stop"], None)]);
         // A quorum over a settled and a failed child.
         steps.push(vec![call(
             &format!("{prefix}-quorum"),
@@ -295,8 +278,8 @@ fn plans(form: &str) -> Vec<Plan> {
             parked(state_tag(prefix, "run")),
             settled(state_tag(prefix, "idle")),
             writer(state_tag(prefix, "merge"), "merged.txt"),
-            parked(state_tag(prefix, "arch")),
-            parked(state_tag(prefix, "stop")),
+            failed(state_tag(prefix, "arch")),
+            failed(state_tag(prefix, "stop")),
             settled(state_tag(prefix, "start")),
         ]);
     }
