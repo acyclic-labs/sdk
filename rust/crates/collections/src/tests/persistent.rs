@@ -32,7 +32,7 @@ fn persistent_generated_histories() -> Result<(), &'static str> {
                     let mut expected = expected.clone();
                     let view = if let Some(cut) = cut {
                         expected.retain(|key, _| *key < cut);
-                        original.prefix(cut.to_be_bytes(), &mut work)?
+                        original.prefix(cut.to_be_bytes(), &mut work).map_err(TestCaseError::fail)?
                     } else {
                         original.clone()
                     };
