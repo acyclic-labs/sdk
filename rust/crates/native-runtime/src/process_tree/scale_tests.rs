@@ -38,27 +38,33 @@ pub(super) fn blocked() -> io::Result<Blocked> {
     })
 }
 
+// Shared services grow to their CPU width on demand. Account for those fixed
+// process-wide owners separately from any thread retained by a waiting child.
 fn threads() -> io::Result<u64> {
-    Ok(crate::resources::process_resources()?.threads)
-}
-
-fn service_counts() -> io::Result<Vec<(&'static str, usize)>> {
-    [
-        ("native", &crate::workers::NATIVE_WORKERS),
-        ("host", &crate::workers::BLOCKING_WORKERS),
-        ("persistence", &crate::workers::PERSISTENCE_WORKERS),
-        ("process", &crate::workers::PROCESS_WORKERS),
-        ("output", &crate::workers::OUTPUT_WORKERS),
+    let shared = [
+        &crate::workers::NATIVE_WORKERS,
+        &crate::workers::BLOCKING_WORKERS,
+        &crate::workers::PERSISTENCE_WORKERS,
+        &crate::workers::PROCESS_WORKERS,
+        &crate::workers::OUTPUT_WORKERS,
     ]
     .into_iter()
-    .map(|(name, slot)| {
+    .try_fold(0, |total, slot| -> io::Result<u64> {
         let workers = crate::workers(slot, false)?;
         let started = workers.admission.lock().unwrap().started_workers;
-        Ok((name, started))
-    })
-    .collect()
+        assert!(
+            started <= workers.threads,
+            "shared service exceeded its original width"
+        );
+        Ok(total + u64::try_from(started).map_err(io::Error::other)?)
+    })?;
+    crate::resources::process_resources()?
+        .threads
+        .checked_sub(shared)
+        .ok_or_else(|| {
+            io::Error::other("shared native owners exceed the original process thread count")
+        })
 }
-
 pub(super) struct Quiet;
 
 impl CaptureHandler for Quiet {
@@ -83,8 +89,8 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
     crate::initialize_native_io_services()?;
     let pool = crate::workers(&crate::BLOCKING_WORKERS, false)?.exclusive_threads();
     let runtime = runtime()?;
-    // One finished capture starts the pool and the readiness hub, so the
-    // baseline already holds every thread a capture needs.
+    // One finished capture starts the shared readiness hub; its remaining
+    // wait owners are independent of the number of quiet children.
     let warm = blocked()?;
     drop(warm.release);
     let outcome = runtime.block_on(async move {
@@ -99,7 +105,6 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
             .await
     })?;
     assert!(outcome.result.is_ok_and(|output| output.status.success()));
-    eprintln!("services before: {:?}", service_counts()?);
     let baseline = threads()?;
     // The assertion needs more than four times the pool width, not a
     // population proportional to the machine's descriptor or process limits.
@@ -143,8 +148,9 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
         "every child owns one readiness wait"
     );
     let outstanding = threads()?;
-    eprintln!("services armed: {:?}", service_counts()?);
-    println!("{count} outstanding waits: {baseline} threads before, {outstanding} with all armed");
+    println!(
+        "{count} outstanding waits: {baseline} threads outside bounded services before, {outstanding} with all armed"
+    );
     assert!(
         outstanding <= baseline + 1,
         "{count} outstanding waits grew the process from {baseline} to {outstanding} threads"
