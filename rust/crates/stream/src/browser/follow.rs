@@ -18,14 +18,7 @@ impl BrowserStream {
         let (snapshot, selection, _, cursor) = self
             .with_provider(async |memory| {
                 memory
-                    .prepare_progress(
-                        &path,
-                        from,
-                        anchor,
-                        when_absent,
-                        window.bootstrap_head,
-                        window.until,
-                    )
+                    .prepare_progress(&path, from, anchor, when_absent, window)
                     .await
             })
             .await?;
@@ -86,14 +79,7 @@ impl BrowserStream {
         let (snapshot, selection, changed, cursor, registration) = self
             .with_provider(async |memory| {
                 let (snapshot, selection, _, cursor) = memory
-                    .prepare_progress(
-                        &path,
-                        from,
-                        anchor,
-                        when_absent,
-                        window.bootstrap_head,
-                        window.until,
-                    )
+                    .prepare_progress(&path, from, anchor, when_absent, window)
                     .await?;
                 let registration = self.inner.publications.follow_index(&path)?;
                 let index = registration.value();

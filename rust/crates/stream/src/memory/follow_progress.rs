@@ -5,20 +5,11 @@ impl MemoryStream {
         from: u64,
         anchor: Option<CommitId>,
         when_absent: crate::WhenAbsent,
-        bootstrap_head: bool,
-        until: Option<u64>,
+        window: FollowWindow,
     ) -> Result<PreparedFollow<crate::change::Subscription>, StreamError> {
-        self.prepare_cursor(
-            path,
-            from,
-            anchor,
-            when_absent,
-            FollowWindow {
-                bootstrap_head,
-                until,
-            },
-            |signals, _| signals.changed.subscribe(),
-        )
+        self.prepare_cursor(path, from, anchor, when_absent, window, |signals, _| {
+            signals.changed.subscribe()
+        })
         .await
     }
 
@@ -85,14 +76,7 @@ impl MemoryStream {
         window: FollowWindow,
     ) -> Result<crate::FollowStream, StreamError> {
         let (snapshot, selection, changed, cursor) = self
-            .prepare_progress(
-                &path,
-                from,
-                anchor,
-                when_absent,
-                window.bootstrap_head,
-                window.until,
-            )
+            .prepare_progress(&path, from, anchor, when_absent, window)
             .await?;
         let anchor = selection.preceding;
         let state = Box::new(MemoryProgress {

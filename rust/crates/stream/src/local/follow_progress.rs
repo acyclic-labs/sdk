@@ -19,8 +19,10 @@ impl LocalStream {
                     from,
                     anchor,
                     when_absent,
-                    bootstrap_head,
-                    until,
+                    crate::memory::FollowWindow {
+                        bootstrap_head,
+                        until,
+                    },
                 )
             })
             .await??;
