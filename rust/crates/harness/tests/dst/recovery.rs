@@ -168,7 +168,10 @@ fn crash_reopen(point: Cut) -> Result<()> {
         let mut recovery = Driver::new(seed.recovery_scheduler, None);
         let schedule = recovery.schedule.clone();
         let provider = Arc::new(
+            // Each prompt makes its response request and one follow-up.
             ScriptedModelProvider::new([
+                ScriptedTurn::Text(seed.response.clone()),
+                ScriptedTurn::Text(seed.response.clone()),
                 ScriptedTurn::Text(seed.response.clone()),
                 ScriptedTurn::Text(seed.response.clone()),
             ])
