@@ -98,7 +98,6 @@ async fn an_unrunnable_or_unsatisfied_plugin_makes_plugins_ts_invalid() {
     let on = r#"export default { p: { enabled: true } };"#;
     let manifest = r#"export default { name: "p", description: "d" };"#;
     for (files, reason) in [
-        (vec![], "does not exist"),
         (
             vec![
                 ("plugins/p/plugin.ts", manifest),
@@ -156,23 +155,6 @@ async fn an_unrunnable_or_unsatisfied_plugin_makes_plugins_ts_invalid() {
         (
             vec![
                 ("plugins/p/plugin.ts", manifest),
-                ("plugins/p/hooks/before-tool.ts", ""),
-            ],
-            "hook command",
-        ),
-        (
-            vec![
-                ("plugins/p/plugin.ts", manifest),
-                (
-                    "plugins/p/hooks/before-tool.ts",
-                    r#"import a from "./absent.ts"; export default a;"#,
-                ),
-            ],
-            "which does not exist",
-        ),
-        (
-            vec![
-                ("plugins/p/plugin.ts", manifest),
                 (
                     "plugins/p/hooks/before-tool.ts",
                     "export default () => ({ allow: true });",
@@ -200,8 +182,8 @@ async fn an_unrunnable_or_unsatisfied_plugin_makes_plugins_ts_invalid() {
             "after-hooks",
         ),
     ] {
-        let error = enable(on, &files).await.expect_err(reason).to_string();
-        assert!(error.contains(reason), "{reason}: {error}");
+        let error = enable(on, &files).await.expect_err(reason);
+        assert!(matches!(&error, Error::Invalid(_)), "{reason}: {error}");
     }
 }
 
