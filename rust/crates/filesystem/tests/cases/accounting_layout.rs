@@ -179,7 +179,8 @@ fn denied_resource_does_not_allocate_its_arc_or_spend_work() {
 
 fn assert_name_layout(name: &str, native: bool) -> Result<u64, Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)?;
+    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
     let before = original.live_allocation_bytes()?;
     let (value, receipt, allocations) = if native {
         let (value, allocations) = measured(|| WorkspaceName::new(name, &&original, &cancellation));
