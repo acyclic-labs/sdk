@@ -29,10 +29,6 @@ common --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
 # `--config=check` is `cargo check`: each requested crate is type-checked to its metadata, with no code
 # generation or link for it. Its dependencies are their ordinary outputs, shared with every other build.
 build:check --aspects=@rules_rust//rust:defs.bzl%rust_check_aspect --output_groups=rust_check
-# Tests that start host tools (node, bun, tsc, cargo, rustup) find them, and rustup its installed
-# toolchains, as `cargo test` does, from the invoking environment. Only test actions see it;
-# compile keys stay host independent.
-test --test_env=PATH --test_env=RUSTUP_HOME --test_env=CARGO_HOME
 # macOS Seatbelt sandboxes do not nest, and the native execution boundary confines the
 # processes it starts with Seatbelt: under darwin-sandbox every such test is refused
 # ("Operation not permitted"). Tests on macOS therefore run outside it, as under Cargo.

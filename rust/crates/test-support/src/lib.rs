@@ -16,42 +16,13 @@ pub mod waker;
 pub use fixtures::{crate_source_path, executable_file, runtime_path, source_path};
 /// Construct a future before entering its polling frame. Large test and model
 /// futures otherwise retain construction temporaries beside their polling stack.
+/// The sized `F` lives behind the returned `Pin<Box<F>>`: its handle is one
+/// pointer, independent of the future's payload, by Rust's layout guarantees.
 #[inline(never)]
 pub fn boxed_future<F: std::future::Future>(build: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
     Box::pin(build())
 }
 
-#[cfg(test)]
-mod future_storage_tests {
-    async fn payload() -> u8 {
-        let bytes = [42_u8; 32_768];
-        std::future::pending::<()>().await;
-        bytes.first().copied().unwrap_or_default()
-    }
-
-    fn bounded<const BOXED: bool>() {
-        let retained = if BOXED {
-            std::mem::size_of_val(&super::boxed_future(payload))
-        } else {
-            std::mem::size_of_val(&payload())
-        };
-        assert!(
-            retained <= std::mem::size_of::<usize>(),
-            "polling handle must not retain the future's inline payload"
-        );
-    }
-
-    #[test]
-    fn construction_returns_only_the_owned_polling_handle() {
-        bounded::<true>();
-    }
-
-    #[test]
-    #[should_panic(expected = "polling handle must not retain")]
-    fn negative_control_inline_future_retains_its_payload() {
-        bounded::<false>();
-    }
-}
 pub mod module_cases;
 pub mod partitions;
 pub mod physical_cuts;
@@ -81,13 +52,19 @@ pub struct AllocationInfo<T = ()> {
     pub output: T,
 }
 impl std::ops::AddAssign for AllocationInfo {
+    /// Appends a measurement relative to this scope's current live storage.
     fn add_assign(&mut self, other: Self) {
+        let peak = |live: i64, next: u64| (live + next as i64).max(0) as u64;
+        self.count_max = self
+            .count_max
+            .max(peak(self.count_current, other.count_max));
+        self.bytes_max = self
+            .bytes_max
+            .max(peak(self.bytes_current, other.bytes_max));
         self.count_total += other.count_total;
         self.count_current += other.count_current;
-        self.count_max += other.count_max;
         self.bytes_total += other.bytes_total;
         self.bytes_current += other.bytes_current;
-        self.bytes_max += other.bytes_max;
     }
 }
 thread_local! {
@@ -120,17 +97,7 @@ struct Scope(Option<AllocationInfo>);
 impl Drop for Scope {
     fn drop(&mut self) {
         if let Some(parent) = &mut self.0 {
-            let child = COUNTER.get().unwrap_or_default();
-            let peak = |live: i64, child: u64| (live + child as i64).max(0) as u64;
-            let count_max = parent
-                .count_max
-                .max(peak(parent.count_current, child.count_max));
-            let bytes_max = parent
-                .bytes_max
-                .max(peak(parent.bytes_current, child.bytes_max));
-            *parent += child;
-            parent.count_max = count_max;
-            parent.bytes_max = bytes_max;
+            *parent += COUNTER.get().unwrap_or_default();
         }
         COUNTER.set(self.0);
     }

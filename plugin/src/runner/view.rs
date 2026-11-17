@@ -1033,7 +1033,6 @@ async fn run_current(
     let mut older_future = std::pin::pin!(None);
     let mut output_rows = Vec::new();
     let mut input = PromptInput::default();
-    input.use_history_query();
     let mut prompt_history = prompt_history::History::new(Arc::clone(&conversation));
     ui.config
         .apply(&mut input, &profile)
@@ -1579,7 +1578,7 @@ async fn run_current(
                             usage_future.set(Some(usage(conversation.usage_query_with_prices(Arc::clone(&usage_prices)))));
                             sidebar.focused = false;
                             input.editor = Editor::default();
-                            input.use_history_query();
+                            input.reset_history_source();
                             prompt_history = prompt_history::History::new(Arc::clone(&conversation));
                             unsent = None;
                             files_changed = true;

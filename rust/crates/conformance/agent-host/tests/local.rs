@@ -4,7 +4,7 @@
 use acyclic_actors::guest::Handler;
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
 use acyclic_stream::{
-    BoxProviderFuture, LocalStream, LocalStreamLimits, StreamError, StreamPath,
+    BoxProviderFuture, LocalStream, LocalStreamLimits, StreamCategory, StreamPath,
     StreamProviderExt as _, testing::Counted,
 };
 use std::sync::Arc;
@@ -78,15 +78,21 @@ async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
     let absent = StreamPath::new("scale-negative-absent")?;
     let one = ledger.start_sample();
     assert_eq!(
-        provider.tail(absent.clone()).await,
-        Err(StreamError::NotFound)
+        provider
+            .tail(absent.clone())
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     let one = one.finish();
     let extra = ledger.start_sample();
     for _ in 0..2 {
         assert_eq!(
-            provider.tail(absent.clone()).await,
-            Err(StreamError::NotFound)
+            provider
+                .tail(absent.clone())
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
     }
     let extra = extra.finish();

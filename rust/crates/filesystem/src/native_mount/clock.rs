@@ -76,7 +76,7 @@ pub fn capture_mount_clock_callbacks()
             |_| Ok::<_, crate::FsError>(()),
             |_| crate::FsError::from(crate::kernel::CanonicalDecodeError::AllocationFailed),
         )
-        .expect("canonical metadata trace");
+        .map_err(super::MountSourceError::Filesystem)?;
         #[cfg(target_os = "linux")]
         for timestamp in root_times {
             // Check the original shared-session constructor, before callbacks
@@ -84,15 +84,13 @@ pub fn capture_mount_clock_callbacks()
             assert_eq!(timestamp, clock.now(), "shared root escaped its clock");
             bytes.extend_from_slice(
                 &super::system_time_ns(timestamp)
-                    .expect("canonical shared root time")
+                    .map_err(|error| {
+                        super::MountSourceError::Io(std::io::Error::from_raw_os_error(error), None)
+                    })?
                     .to_le_bytes(),
             );
         }
-        bytes.extend_from_slice(
-            &super::adapter::content_change_time(&clock)
-                .unwrap()
-                .to_le_bytes(),
-        );
+        bytes.extend_from_slice(&super::adapter::content_change_time(&clock)?.to_le_bytes());
         // The mutant restores only one callback's host source. It is stable
         // within a run, so ordinary in-process repetition cannot hide it.
         let callback_clock = if restore_host_callback {
@@ -101,16 +99,24 @@ pub fn capture_mount_clock_callbacks()
             clock
         };
         #[cfg(target_os = "linux")]
-        let timestamp =
-            super::fuse::time_or_now_ns(&callback_clock, fuser::TimeOrNow::Now).unwrap();
+        let timestamp = super::fuse::time_or_now_ns(&callback_clock, fuser::TimeOrNow::Now)
+            .map_err(|error| {
+                super::MountSourceError::Io(std::io::Error::from_raw_os_error(error), None)
+            })?;
         #[cfg(target_os = "macos")]
         let timestamp = {
             let mut field = crate::kernel::MetadataField::Unavailable;
             super::darwin_mount::update_time(&callback_clock, &mut field, 0, libc::UTIME_NOW)
-                .unwrap();
+                .map_err(|error| {
+                    super::MountSourceError::Io(std::io::Error::from_raw_os_error(error), None)
+                })?;
             match field {
                 crate::kernel::MetadataField::Value(value) => value,
-                _ => unreachable!(),
+                _ => {
+                    return Err(super::MountSourceError::Invalid(
+                        "timestamp was not supplied".into(),
+                    ));
+                }
             }
         };
         bytes.extend_from_slice(&timestamp.to_le_bytes());

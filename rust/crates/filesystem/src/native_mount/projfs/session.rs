@@ -349,7 +349,7 @@ impl ProjFsSession {
             runtime.callbacks.close_admission();
             lock_recover(&runtime.projector.state).stopping = true;
             runtime.projector.signal_changed();
-            view.quiesce();
+            view.quiesce()?;
         }
         runtime.callbacks.drain();
         if runtime.writable && self.context.is_some() && !self.capture_attempted {

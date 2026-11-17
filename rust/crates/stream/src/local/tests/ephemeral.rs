@@ -585,7 +585,10 @@ async fn saved_commit_retries_keep_their_original_scope_after_conditions_change(
             provider.append(append(&base, 1)?).await?;
             let before_retry = journal.as_ref().map(frames).transpose()?;
             assert_eq!(
-                provider.commit(request.clone()).await,
+                provider
+                    .commit(request.clone())
+                    .await
+                    .map_err(|error| error.category()),
                 Ok(original.clone()),
                 "saved success must not recheck current conditions"
             );

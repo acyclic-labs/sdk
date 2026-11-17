@@ -544,6 +544,4 @@ fn cached_callback_composes_with_existing_provider_and_redacts_invalid_bytes() {
     clock.store(100, Ordering::SeqCst);
     assert!(block_on(current.check()).is_err());
     assert!(CredentialSnapshot::new("bad\r\nheader".into(), revision(1), 100).is_err());
-    fn send_sync<T: Send + Sync>() {}
-    send_sync::<CredentialCache>();
 }

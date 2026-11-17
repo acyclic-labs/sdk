@@ -255,8 +255,7 @@ with `conformance::suite!(MyBackend::fresh)`. The backend retains disposable
 storage, a running host loaded with the shared `Package`, its clock, completion
 and pause/restart controls, and a `RequestLedger` instrumenting the actual provider dispatch.
 `verify(&backend)` drives the same ordered delivery, alarm, pause and restart
-vectors for every implementation. Existing `Target` implementations use the
-same trait through its compatibility alias.
+vectors for every implementation. Hosts implement `Backend` directly.
 
 `Backend::complete` joins the original actor's activation and delivery work at
 the current host time. The verifier reads one finite output prefix, including

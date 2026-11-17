@@ -6,6 +6,10 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[package.metadata.bazel]
+# The model driver starts the host Bun runtime.
+test-env-inherit = ["PATH", "BUN_INSTALL", "HOME"]
+
 [lints]
 workspace = true
 

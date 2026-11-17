@@ -270,33 +270,33 @@ impl Index {
         Ok(offset)
     }
 
-    fn occupy_spill(&mut self, offset: u64, length: u64) {
+    fn occupy_spill(&mut self, offset: u64, length: u64) -> Result<(), ObjectStoreError> {
         if length == 0 {
-            return;
+            return Ok(());
         }
         let end = offset
             .checked_add(length)
-            .expect("spill range checked before physical write");
+            .ok_or(crate::WorkError::Overflow)?;
         if offset >= self.spill_end {
             if offset > self.spill_end {
                 self.free.insert((offset - self.spill_end, self.spill_end));
             }
             self.spill_end = end;
-            return;
+            return Ok(());
         }
         let &(available, start) = self
             .free
             .range((length, 0)..)
             .next()
-            .expect("exclusive spill lease retains the selected free span");
-        assert_eq!(
-            start, offset,
-            "selected spill span changed before completion"
-        );
+            .ok_or(ObjectStoreError::Corrupt)?;
+        if start != offset {
+            return Err(ObjectStoreError::Corrupt);
+        }
         self.free.remove(&(available, start));
         if available > length {
             self.free.insert((available - length, end));
         }
+        Ok(())
     }
 
     /// Neighboring live extents identify both bordering holes, so a second
@@ -343,8 +343,8 @@ impl Index {
         victims: &[(ObjectId, OwnedBytes)],
         mut offset: u64,
         length: u64,
-    ) {
-        self.occupy_spill(offset, length);
+    ) -> Result<(), ObjectStoreError> {
+        self.occupy_spill(offset, length)?;
         for (object_id, bytes) in victims {
             let stored_length = byte_length(bytes);
             if let Some(staged) = self.objects.get_mut(object_id) {
@@ -365,6 +365,7 @@ impl Index {
             }
             offset = offset.saturating_add(stored_length);
         }
+        Ok(())
     }
 
     /// Forgets one object the durable provider has acknowledged, and
@@ -411,7 +412,7 @@ fn free_range_collection_finishes_while_a_producer_keeps_coalescing_holes() {
             index.admit_resident(object).unwrap();
         }
         index.order.clear();
-        index.mark_spilled(&victims, 0, medium.len() as u64);
+        assert!(index.mark_spilled(&victims, 0, medium.len() as u64).is_ok());
         index.remove(victims[0].0);
         let mut pages = index.free_pages();
         let initial_work = pages.remaining;
@@ -529,7 +530,7 @@ fn spill_range_simulation_preserves_bytes_across_reuse_and_promotion() {
             medium.resize(medium.len().max(end), 0);
             medium[offset as usize..end].copy_from_slice(&bytes);
             let length = byte_length(&bytes);
-            index.mark_spilled(&[(id, bytes)], offset, length);
+            assert!(index.mark_spilled(&[(id, bytes)], offset, length).is_ok());
         }
         for object in &live {
             let id = object.object_id();

@@ -108,7 +108,7 @@ impl<S> StagedObjects<S> {
                 })?;
                 let bytes = staged_owned_bytes(
                     buffer,
-                    buffer_allocation.expect("native spill buffer is funded"),
+                    buffer_allocation.ok_or(ObjectStoreError::Corrupt)?,
                     native,
                 )?;
                 self.spill_file(selection.spill, Some(native))
@@ -119,7 +119,12 @@ impl<S> StagedObjects<S> {
                                 file,
                                 offset,
                                 &bytes,
-                                Some((meter.expect("metered control"), true)),
+                                Some((
+                                    meter.ok_or_else(|| {
+                                        std::io::Error::other("missing native control meter")
+                                    })?,
+                                    true,
+                                )),
                             )
                         },
                         Some(native.runtime_meter()),
@@ -160,7 +165,7 @@ impl<S> StagedObjects<S> {
         .await;
         result?;
         self.index_mut()
-            .mark_spilled(&victims.value, offset, spilled);
+            .mark_spilled(&victims.value, offset, spilled)?;
         selection.committed = true;
         Ok(())
     }

@@ -10,7 +10,7 @@ mod error_code_tests {
                 StreamError::InvalidArgument.with_source("invalid".parse::<u64>().unwrap_err()),
             );
             let cloned = original.clone();
-            assert_eq!(original, cloned);
+            assert_eq!(original.category(), cloned.category());
             drop(original);
             assert_eq!(cloned.category(), category.category());
             assert_eq!(cloned.code(), category.code());
@@ -28,7 +28,7 @@ mod error_code_tests {
                 let encoded = serde_json::to_value(&cloned).unwrap();
                 assert_eq!(encoded, serde_json::to_value(&category).unwrap());
                 let decoded: StreamError = serde_json::from_value(encoded).unwrap();
-                assert_eq!(decoded, category);
+                assert_eq!(decoded.category(), category.category());
                 assert!(decoded.source().is_none());
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -58,7 +58,7 @@ mod error_code_tests {
                 original.source().unwrap().source().unwrap(),
                 cloned.source().unwrap().source().unwrap(),
             ));
-            assert_eq!(original, cloned);
+            assert_eq!(original.category(), cloned.category());
             drop(original);
             let cause = cloned
                 .source()
@@ -105,19 +105,24 @@ mod error_code_tests {
             ]
         );
         for error in StreamCategory::ALL.map(StreamError::from) {
-            assert_eq!(StreamError::from_code(error.code()), Some(error.clone()));
+            assert_eq!(
+                StreamError::from_code(error.code()).map(|error| error.category()),
+                Some(error.category())
+            );
             #[cfg(feature = "serde")]
             {
                 let encoded = serde_json::to_value(&error).unwrap();
                 assert_eq!(encoded, error.code());
                 // An owning envelope is not necessarily a borrowed JSON slice.
                 assert_eq!(
-                    serde_json::from_value::<StreamError>(encoded).unwrap(),
-                    error
+                    serde_json::from_value::<StreamError>(encoded)
+                        .unwrap()
+                        .category(),
+                    error.category()
                 );
             }
         }
-        assert_eq!(StreamError::from_code("stream_not_found"), None);
+        assert!(StreamError::from_code("stream_not_found").is_none());
         #[cfg(feature = "serde")]
         for invalid in [
             serde_json::json!("stream_not_found"),
@@ -132,7 +137,10 @@ mod error_code_tests {
     #[test]
     fn session_close_codes_keep_refusals_typed() {
         for error in StreamCategory::ALL.map(StreamError::from) {
-            assert_eq!(StreamError::from_session_close(error.code()), error);
+            assert_eq!(
+                StreamError::from_session_close(error.code()).category(),
+                error.category()
+            );
         }
         for (code, error) in [
             ("unimplemented", StreamError::Unsupported),
@@ -146,7 +154,11 @@ mod error_code_tests {
             ("invalid_argument", StreamError::InvalidArgument),
             ("not_found", StreamError::NotFound),
         ] {
-            assert_eq!(StreamError::from_session_close(code), error, "{code}");
+            assert_eq!(
+                StreamError::from_session_close(code).category(),
+                error.category(),
+                "{code}"
+            );
         }
         // Negative control: only an unknown code is unavailability.
         for code in ["internal", "unknown", "", "stream_not_found"] {
@@ -481,8 +493,8 @@ mod replay_tests {
                 .await;
             match expected {
                 Some(expected) => assert_eq!(
-                    result.err(),
-                    Some(expected),
+                    result.err().map(|error| error.category()),
+                    Some(expected.category()),
                     "point read ignored an extra record or a late cursor error"
                 ),
                 None => assert_eq!(result.unwrap().map(|record| record.sequence), Some(0)),

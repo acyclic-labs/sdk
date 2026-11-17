@@ -52,7 +52,7 @@ async fn temporary_state_retires_signing_custody_after_its_resources() -> Result
     let allocations = crate::local::config::TEMPORARY_STATES.get();
     let refusals = configured()?.preflight();
     assert!(refusals.is_empty(), "{refusals:?}");
-    let refusals = LocalHarness::doctor(configured()?).await;
+    let refusals = LocalHarness::doctor(configured()?).await.refusals;
     assert!(refusals.is_empty(), "{refusals:?}");
     assert_eq!(crate::local::config::TEMPORARY_STATES.get(), allocations);
     let config = configured()?.prepare_state()?;

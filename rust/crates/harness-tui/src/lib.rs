@@ -94,7 +94,6 @@ pub use editor::{Editor, Motion};
 pub use editor_args::{editor_command, unix_editor_command, windows_editor_command};
 #[cfg(not(target_arch = "wasm32"))]
 pub use editor_io::{ClipboardContent, edit_external, prepare_image, prepare_image_with_settings};
-pub use history::PromptHistory;
 #[cfg(not(target_arch = "wasm32"))]
 pub use input_keymap::InputKeymap;
 #[cfg(not(target_arch = "wasm32"))]

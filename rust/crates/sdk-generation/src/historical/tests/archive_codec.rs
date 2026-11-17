@@ -1,5 +1,20 @@
 use super::*;
 
+proptest::proptest! {
+    #[test]
+    fn fixture_archive_preserves_binary_source_without_host_tools(
+        source in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512),
+    ) {
+        let fixture = Fixture::new();
+        fs::write(fixture.path().join("src/lib.rs"), &source).unwrap();
+        let (_, archive) = fixture.archive(&"a".repeat(40), "");
+        let members = decode_archive_members(
+            &fs::read(archive).unwrap(), "historical-fixture", "0.1.0",
+        ).unwrap();
+        proptest::prop_assert_eq!(members.get("src/lib.rs"), Some(&source));
+    }
+}
+
 fn encode(members: &BTreeMap<String, Vec<u8>>, compressed: bool) -> Vec<u8> {
     let mut archive = tar::Builder::new(Vec::new());
     for (name, bytes) in members {

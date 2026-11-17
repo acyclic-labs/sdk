@@ -413,6 +413,7 @@ isolated_test(
 isolated_test(
     name = "acyclic_fs_test_full-cloud",
     binary = ":acyclic_fs_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -757,6 +758,7 @@ isolated_test(
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -1015,6 +1017,7 @@ isolated_test(
 isolated_test(
     name = "native_source_full-cloud",
     binary = ":native_source_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::native_source",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -1267,6 +1270,7 @@ isolated_test(
 isolated_test(
     name = "creation_full-cloud",
     binary = ":creation_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::creation",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -1518,6 +1522,7 @@ isolated_test(
 isolated_test(
     name = "operation_claim_full-cloud",
     binary = ":operation_claim_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::operation_claim",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -1772,6 +1777,7 @@ isolated_test(
 isolated_test(
     name = "browser_commit_full-cloud",
     binary = ":browser_commit_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::browser_commit",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -2023,6 +2029,7 @@ isolated_test(
 isolated_test(
     name = "browser_blob_custody_full-cloud",
     binary = ":browser_blob_custody_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs::browser_blob_custody",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

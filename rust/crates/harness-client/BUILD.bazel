@@ -135,6 +135,7 @@ isolated_test(
 isolated_test(
     name = "acyclic_harness_client_test_full-cloud",
     binary = ":acyclic_harness_client_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-harness-client",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -206,6 +207,7 @@ isolated_test(
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-harness-client::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

@@ -115,20 +115,13 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
     if anchors > 1 {
         return Err(ContractError::InvalidArgument);
     }
-    names.clear();
-    for item in &request.bindings {
-        if domain::Binding::try_from(item.clone()).is_err()
-            || (item.state_transaction && request.worker_limits.is_some())
-        {
-            return Err(ContractError::InvalidArgument);
-        }
-        if !names.insert(&item.name) {
-            return Err(ContractError::DuplicateName);
-        }
-    }
-    validate_secret_selections(&request.secrets, &request.bindings)?;
-    validate_fetch_selection(request.fetch.as_ref(), &request.secrets, &request.bindings)?;
-    Ok(())
+    drop(names);
+    validate_configuration(
+        &request.bindings,
+        &request.secrets,
+        request.fetch.as_ref(),
+        request.worker_limits.is_some(),
+    )
 }
 
 /// Validates a full compare-and-replace Actor configuration mutation.
@@ -147,46 +140,42 @@ pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), Con
     {
         return Err(ContractError::InvalidArgument);
     }
-    let mut names = HashSet::new();
-    for item in &request.bindings {
-        if domain::Binding::try_from(item.clone()).is_err() {
+    validate_configuration(
+        &request.bindings,
+        &request.secrets,
+        request.fetch.as_ref(),
+        false,
+    )
+}
+
+fn validate_configuration(
+    bindings: &[wire::Binding],
+    secrets: &[wire::SecretSelection],
+    fetch: Option<&wire::FetchBinding>,
+    worker: bool,
+) -> Result<(), ContractError> {
+    let mut names = HashSet::with_capacity(bindings.len() + secrets.len());
+    for binding in bindings {
+        if domain::Binding::try_from(binding.clone()).is_err()
+            || (worker && binding.state_transaction)
+        {
             return Err(ContractError::InvalidArgument);
         }
-        if !names.insert(&item.name) {
+        if !names.insert(binding.name.as_str()) {
             return Err(ContractError::DuplicateName);
         }
     }
-    validate_secret_selections(&request.secrets, &request.bindings)?;
-    validate_fetch_selection(request.fetch.as_ref(), &request.secrets, &request.bindings)?;
-    Ok(())
-}
-
-fn validate_fetch_selection(
-    fetch: Option<&wire::FetchBinding>,
-    secrets: &[wire::SecretSelection],
-    bindings: &[wire::Binding],
-) -> Result<(), ContractError> {
-    if let Some(fetch) = fetch {
-        domain::FetchBinding::try_from(fetch.clone())
-            .map_err(|_| ContractError::InvalidArgument)?;
-        if secrets.iter().any(|secret| secret.name == fetch.name)
-            || bindings.iter().any(|binding| binding.name == fetch.name)
-        {
-            return Err(ContractError::DuplicateName);
-        }
-    }
-    Ok(())
-}
-
-fn validate_secret_selections(
-    secrets: &[wire::SecretSelection],
-    bindings: &[wire::Binding],
-) -> Result<(), ContractError> {
-    let mut names: HashSet<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
     for secret in secrets {
         domain::SecretSelection::try_from(secret.clone())
             .map_err(|_| ContractError::InvalidArgument)?;
-        if !names.insert(&secret.name) {
+        if !names.insert(secret.name.as_str()) {
+            return Err(ContractError::DuplicateName);
+        }
+    }
+    if let Some(fetch) = fetch {
+        domain::FetchBinding::try_from(fetch.clone())
+            .map_err(|_| ContractError::InvalidArgument)?;
+        if names.contains(fetch.name.as_str()) {
             return Err(ContractError::DuplicateName);
         }
     }

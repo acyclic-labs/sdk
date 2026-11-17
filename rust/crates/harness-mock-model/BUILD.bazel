@@ -81,6 +81,7 @@ isolated_test(
 isolated_test(
     name = "harness_mock_model_test_full-cloud",
     binary = ":harness_mock_model_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "harness-mock-model",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -173,6 +174,7 @@ isolated_test(
 isolated_test(
     name = "harness_filesystem_fixture_test_full-cloud",
     binary = ":harness_filesystem_fixture_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "harness-mock-model::bin/harness-filesystem-fixture",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -265,6 +267,7 @@ isolated_test(
 isolated_test(
     name = "harness_hook_fixture_test_full-cloud",
     binary = ":harness_hook_fixture_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "harness-mock-model::bin/harness-hook-fixture",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -357,6 +360,7 @@ isolated_test(
 isolated_test(
     name = "harness_mock_model_bin_test_full-cloud",
     binary = ":harness_mock_model_bin_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "harness-mock-model::bin/harness-mock-model",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -423,7 +427,7 @@ isolated_test(
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
-    binaries = {":harness-filesystem-fixture":"harness-filesystem-fixture",":harness-hook-fixture":"harness-hook-fixture",":harness-mock-model":"harness-mock-model"},
+    binaries = {":harness-filesystem-fixture":"harness-filesystem-fixture",":harness-hook-fixture":"harness-hook-fixture",":harness-mock-model":"harness-mock-model","@nodejs//:node":"node"},
     id = "harness-mock-model::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

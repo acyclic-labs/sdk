@@ -35,7 +35,8 @@ fn journal_stream_boundary_retains_original_io_cause_and_classification()
             .and_then(|source| source.downcast_ref::<StreamError>())
             .ok_or("journal boundary discarded the original Stream error")?;
         assert_eq!(
-            stream, &retained,
+            stream.category(),
+            retained.category(),
             "journal boundary replaced source identity"
         );
         let mut source = stream.source();

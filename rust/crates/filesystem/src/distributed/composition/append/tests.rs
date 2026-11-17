@@ -328,8 +328,11 @@ async fn append_group_remains_required_when_the_callers_soft_prefix_is_skipped()
             "required authority records were skipped"
         );
         assert_eq!(
-            provider.tail(absent).await,
-            Err(acyclic_stream::StreamError::NotFound)
+            provider
+                .tail(absent)
+                .await
+                .map_err(|error| error.category()),
+            Err(acyclic_stream::StreamCategory::NotFound)
         );
         let AppendGroupOutcome::Published { receipts, .. } =
             prepared.confirm(&store, &outcome, &mut work).await?

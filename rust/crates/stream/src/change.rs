@@ -265,14 +265,13 @@ mod tests {
         let Poll::Ready(Err(retired)) = waiting.as_mut().poll(&mut context) else {
             panic!("retirement must settle the waiting subscriber");
         };
+        let expected = StreamError::unavailable(acyclic_auth::refusal::Cause::new(
+            "stream.change",
+            "producer_retired",
+        ));
         assert_eq!(retired.category(), StreamCategory::Unavailable);
-        assert_eq!(
-            retired,
-            StreamError::unavailable(acyclic_auth::refusal::Cause::new(
-                "stream.change",
-                "producer_retired"
-            ))
-        );
+        assert_eq!(retired.category(), expected.category());
+        assert_eq!(retired.member_refusal(), expected.member_refusal());
     }
 }
 

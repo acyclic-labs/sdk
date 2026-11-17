@@ -253,9 +253,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     .await
                     .map_err(|e| native.runtime_error(e))?;
             } else {
-                file.set_len_async(0, None)
-                    .expect("unmetered unit construction cannot fail")
-                    .await?;
+                file.set_len_async(0, None)?.await?;
             }
             self.index_mut().reset_spill();
         }

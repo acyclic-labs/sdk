@@ -108,6 +108,7 @@ isolated_test(
 isolated_test(
     name = "manifest_contract_full-cloud",
     binary = ":manifest_contract_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-manifest::manifest_contract",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

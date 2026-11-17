@@ -1,0 +1,10 @@
+load("//toolchains/kani:defs.bzl", "kani_test")
+
+kani_test(
+    name = "admission",
+    src = "proof.rs",
+    srcs = ["//rust/crates/test-support:src/scale/ordered.rs"],
+    harness = "scale_inputs_admit_exactly_positive_increasing_pairs",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    size = "small",
+)

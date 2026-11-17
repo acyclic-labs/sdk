@@ -97,7 +97,7 @@ impl MemoryStream {
         if request.from > path.tail {
             return Err(StreamError::OutOfRange);
         }
-        let cursor = FiniteRead::new(path, request);
+        let cursor = FiniteRead::new(path, request, &mut HistoryIndexWork(self))?;
         let snapshot = self.revisions.at(state.decision);
         let selection = cursor.selection();
         drop(state);
@@ -533,7 +533,9 @@ fn last_record_with<E>(
     if let Some(window) = stream.prefix_window(from, stream.tail) {
         return retain(&window.records, window.start);
     }
-    let mut history = PinnedHistory::new(stream, stream.tail);
+    let Ok(mut history) = PinnedHistory::new(stream, stream.tail, &mut ReadOnlyWork) else {
+        unreachable!("a read-only cut cannot refuse")
+    };
     let window = history.page(from, 1, examine)?;
     match window {
         Some(window) => retain(&window.records, window.start),
@@ -1234,7 +1236,11 @@ impl MemoryStream {
         // Only the immutable pin and one inline page survive opening.
         // History traversal and key selection belong to cursor pulls.
         meter.admit_examination(1, 0)?;
-        let cursor = FiniteRead::new(path, request);
+        let work = crate::native::Work::new(meter.clone())?;
+        let cursor = match FiniteRead::new(path, request, &mut MeterWork(&work)) {
+            Ok(cursor) => cursor,
+            Err(error) => return work.finish(Err(error)),
+        };
         meter.record_examination(1, 0)?;
         let snapshot = self.revisions.at(state.decision);
         let selection = cursor.selection();

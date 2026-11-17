@@ -936,7 +936,8 @@ mod tests {
         assert_eq!(
             binding
                 .matches_with(&facts, |_| Err::<(), _>(StreamError::LimitExceeded))
-                .map_err(|error| error.category()),
+                .map_err(|error| error.category())
+                .map(|result| result.map_err(|error| error.category())),
             Err(crate::StreamCategory::LimitExceeded)
         );
         let crate::CommittedMutation::Append(append) = &mut facts.mutations[0] else {

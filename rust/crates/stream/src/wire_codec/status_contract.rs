@@ -132,7 +132,7 @@ fn check_with(input: &[u8], decode: impl Fn(&Status) -> StreamError) -> Result<(
     for (code, message, error) in CONTRACT {
         let wire = Status::new(*code, *message);
         check_decoded(&wire, &decode(&wire))?;
-        if decode(&Status::from(error)) != *error {
+        if decode(&Status::from(error)).category() != error.category() {
             return Err("canonical status round trip");
         }
     }
@@ -157,7 +157,7 @@ fn check_with(input: &[u8], decode: impl Fn(&Status) -> StreamError) -> Result<(
         let actual = decode(&wire);
         check_decoded(&wire, &actual)?;
         let encoded = Status::from(&actual);
-        if decode(&encoded) != actual {
+        if decode(&encoded).category() != actual.category() {
             return Err("canonical status round trip");
         }
     }
@@ -222,7 +222,7 @@ mod tests {
             let symmetric = |wire: &Status| swap(wire_codec::status(wire));
             for error in StreamCategory::ALL.map(StreamError::from) {
                 let encoded = Status::from(&swap(error.clone()));
-                proptest::prop_assert_eq!(symmetric(&encoded), error);
+                proptest::prop_assert_eq!(symmetric(&encoded).category(), error.category());
             }
             proptest::prop_assert!(check_with(&input, symmetric).is_err());
         }
@@ -234,9 +234,12 @@ mod tests {
         assert_eq!(wire.code(), Code::FailedPrecondition);
         assert_eq!(wire.message(), "failed");
         let decoded = wire_codec::status(&wire);
-        assert_eq!(decoded, StreamError::Failed);
+        assert_eq!(decoded.category(), StreamError::Failed.category());
         assert!(!decoded.uncertain());
-        assert_eq!(StreamError::from_code("failed"), Some(StreamError::Failed));
+        assert_eq!(
+            StreamError::from_code("failed").map(|error| error.category()),
+            Some(StreamError::Failed.category())
+        );
         // Negative control: the decoder as it was, falling back to Unavailable
         // for this row, violates the contract on the same input.
         let fallback = |wire: &Status| match wire_codec::status(wire) {

@@ -177,16 +177,16 @@ impl<'io> StockExecution<'io> {
                     }
                 };
                 let preparation = self
-                    .observe_tool_cancellation(
-                        journal,
-                        identity,
-                        &invocation.call_id,
-                        true,
-                        None,
-                        preparation,
-                    )
+                    .observe_tool_cancellation(journal, true, None, preparation)
                     .await;
                 let (preparation, custody) = match preparation {
+                    Err(
+                        error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+                    ) => {
+                        return self
+                            .interrupted(journal, identity, &invocation.call_id, error)
+                            .await;
+                    }
                     Err(error) => return Err(error),
                     Ok(Err(error)) if error.settles_tool_call() => {
                         return self
@@ -286,17 +286,19 @@ impl<'io> StockExecution<'io> {
             // an effect that never landed runs again.
             let landed = if reexecuted {
                 let mut observed = context.clone();
-                match self
+                let observed = match self
                     .observe_tool_cancellation(
                         journal,
-                        identity,
-                        &invocation.call_id,
                         tool.executor.cancellable_on_drop(),
                         None,
                         self.call_tool_executor(tool, &mut observed, invocation, false),
                     )
-                    .await?
+                    .await
                 {
+                    Ok(result) => result,
+                    Err(error) => Err(error),
+                };
+                match observed {
                     Ok(None) | Err(Error::Indeterminate(_)) => None,
                     reconciled => Some(reconciled),
                 }
@@ -311,15 +313,23 @@ impl<'io> StockExecution<'io> {
                         context.as_ref(),
                         self.native_work(),
                     )?;
-                    self.observe_tool_cancellation(
-                        journal,
-                        identity,
-                        &invocation.call_id,
-                        tool.executor.cancellable_on_drop(),
-                        cancellation,
-                        self.call_tool_executor(tool, context, invocation, claimed || reexecuted),
-                    )
-                    .await?
+                    match self
+                        .observe_tool_cancellation(
+                            journal,
+                            tool.executor.cancellable_on_drop(),
+                            cancellation,
+                            self.call_tool_executor(
+                                tool,
+                                context,
+                                invocation,
+                                claimed || reexecuted,
+                            ),
+                        )
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(error) => Err(error),
+                    }
                 }
             }
         };
@@ -517,7 +527,8 @@ impl<'io> StockExecution<'io> {
     /// A call whose run ended without a recorded outcome is the model's
     /// failed result, never the turn's: the model learns the effect may have
     /// run, and the turn continues. When the turn's own stop has fired, the
-    /// failure is recorded and the turn ends before another call can start.
+    /// turn loop settles this call, ends the turn, and keeps the settlement in
+    /// the transcript the next turn sees; no later call starts.
     async fn interrupted(
         &self,
         journal: &dyn ExecutionJournal,
@@ -525,7 +536,6 @@ impl<'io> StockExecution<'io> {
         call_id: &str,
         error: Error,
     ) -> Result<ToolInvocationOutcome<'io>> {
-        use futures::FutureExt as _;
         let content = self
             .reject_tool_call(
                 journal,
@@ -536,19 +546,12 @@ impl<'io> StockExecution<'io> {
                 error,
             )
             .await?;
-        match journal.model_cancellation().now_or_never() {
-            Some(stopped) => stopped.and(Err(Error::InteractionRejected(
-                crate::InteractionRejection::Cancelled,
-            ))),
-            None => Ok(ToolInvocationOutcome::Settled(content, None)),
-        }
+        Ok(ToolInvocationOutcome::Settled(content, None))
     }
 
     async fn observe_tool_cancellation<T>(
         &self,
         journal: &dyn ExecutionJournal,
-        identity: (OperationId, u32),
-        call_id: &str,
         cancellable: bool,
         cancellation: Option<BoxFuture<'static, Result<()>>>,
         execution: impl std::future::Future<Output = T>,
@@ -561,15 +564,6 @@ impl<'io> StockExecution<'io> {
         {
             return Ok(result);
         }
-        self.reject_tool_call(
-            journal,
-            identity.0,
-            identity.1,
-            call_id,
-            ToolFailureKind::Interrupted,
-            Error::InteractionRejected(crate::InteractionRejection::Cancelled),
-        )
-        .await?;
         Err(Error::InteractionRejected(
             crate::InteractionRejection::Cancelled,
         ))

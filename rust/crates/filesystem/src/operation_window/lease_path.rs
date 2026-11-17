@@ -27,7 +27,8 @@ pub(crate) fn encode<const N: usize>(
         expires_at_millis,
         length,
         text,
-    );
+    )
+    .map_err(|_| crate::AuthorityStoreError::CorruptStatic("lease path identity encoding"))?;
     if let Some(work) = work {
         work.charge(writes)?;
     }

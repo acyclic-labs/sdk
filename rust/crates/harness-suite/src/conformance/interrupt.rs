@@ -64,7 +64,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     if !matches!(
         error.downcast_ref::<acyclic_actors::local::Error>(),
         Some(acyclic_actors::local::Error::Stream(error))
-            if error.as_ref() == &acyclic_stream::StreamError::Unavailable
+            if error.category() == acyclic_stream::StreamCategory::Unavailable
     ) {
         return Err(format!("pre-turn provider loss changed its original cause: {error}").into());
     }

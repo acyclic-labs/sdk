@@ -3,6 +3,7 @@ use crate::conformance::Failure;
 use crate::conformance::sockets::{self as conformance, Peer, SocketBackend, SocketPackage};
 use crate::local::{Runtime, SystemClock};
 use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
+use acyclic_stream::StreamCategory;
 use acyclic_stream::runtime::PlatformExecutor;
 use acyclic_stream::session::{ActorSocket, Client, testing};
 use acyclic_stream::{BoxProviderFuture, CommitOutcome, LocalStream, MemoryStream};
@@ -552,7 +553,7 @@ async fn native_socket_admission_rechecks_the_retained_target_before_installing(
     assert!(sockets.is_empty());
     assert!(matches!(
         records(&sockets.shared.store, &sockets.shared.layout.segment(1)?).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound
+        Err(Error::Stream(error)) if error.category() == StreamCategory::NotFound
     ));
     Ok(())
 }
@@ -617,14 +618,17 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     }
     assert!(matches!(
         records(&sockets.shared.store, &ledger).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound
+        Err(Error::Stream(error)) if error.category() == StreamCategory::NotFound
     ));
     let before = decode_work();
     let refused = match client.actor_socket(encoded.clone(), 0).await {
         Err(error) => Some(error),
         Ok(mut socket) => socket.next().await.err(),
     };
-    assert_eq!(refused, Some(StreamError::AccessDenied));
+    assert_eq!(
+        refused.map(|error| error.category()),
+        Some(StreamCategory::AccessDenied)
+    );
     assert_eq!(decode_work(), (before.0 + 1, before.1 + encoded.len()));
     assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next);
     assert!(sockets.is_empty());
@@ -638,7 +642,7 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     );
     assert!(matches!(
         records(&sockets.shared.store, &ledger).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound
+        Err(Error::Stream(error)) if error.category() == StreamCategory::NotFound
     ));
 
     // The same signed credential admits its own account's namespace. Actor
@@ -664,7 +668,10 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
         Err(error) => Some(error),
         Ok(mut socket) => socket.next().await.err(),
     };
-    assert_eq!(refused, Some(StreamError::AccessDenied));
+    assert_eq!(
+        refused.map(|error| error.category()),
+        Some(StreamCategory::AccessDenied)
+    );
     assert_eq!(decode_work(), (before.0 + 1, before.1 + encoded.len()));
     assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next + 1);
     Ok(())
@@ -930,8 +937,8 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
                 assert_eq!(records.len(), 2);
                 assert_eq!(crate::sockets::input_kind(&records[1]), Some("close"));
             }
-            Err(Error::Stream(error)) if error.as_ref() == &StreamError::NotFound && !committed => {
-            }
+            Err(Error::Stream(error))
+                if error.category() == StreamCategory::NotFound && !committed => {}
             _ => return Err("recovery lost an Open or delivered a refused Open".into()),
         }
     }
@@ -1740,7 +1747,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     drop(executor.take()?); // Drop the actual close future before its first poll.
     assert!(matches!(
         waiting.await,
-        Err(error) if matches!(error.as_ref(), Error::Stream(error) if error.as_ref() == &StreamError::Unavailable)
+        Err(error) if matches!(error.as_ref(), Error::Stream(error) if error.category() == StreamCategory::Unavailable)
     ));
     let terminal = pin
         .completion()
@@ -1748,7 +1755,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         .expect_err("original producer loss must remain terminal");
     assert!(matches!(
         terminal.downcast_ref::<Error>(),
-        Some(Error::Stream(error)) if error.as_ref() == &StreamError::Unavailable
+        Some(Error::Stream(error)) if error.category() == StreamCategory::Unavailable
     ));
     assert!(
         last.await.is_err(),
@@ -1883,7 +1890,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         if lose_producer {
             drop(opening);
             assert!(
-                matches!(later.await, Err(error) if matches!(error.as_ref(), Error::Stream(error) if error.as_ref() == &StreamError::Unavailable))
+                matches!(later.await, Err(error) if matches!(error.as_ref(), Error::Stream(error) if error.category() == StreamCategory::Unavailable))
             );
             assert!(last.await.is_err());
             assert!(matches!(
@@ -1934,7 +1941,10 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     })
     .encode();
     assert!(frame.len() <= maximum);
-    assert_eq!(inbound.receive(frame), Err(StreamError::InvalidArgument));
+    assert_eq!(
+        inbound.receive(frame).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
+    );
     let reason = "x".repeat(maximum - 32);
     let frame = SocketFrame::Close {
         code: 1000,
@@ -1943,7 +1953,10 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     }
     .encode();
     assert!(frame.len() <= maximum);
-    assert_eq!(inbound.receive(frame), Err(StreamError::InvalidArgument));
+    assert_eq!(
+        inbound.receive(frame).map_err(|error| error.category()),
+        Err(StreamCategory::InvalidArgument)
+    );
     let actor = shared
         .lock(&connection)
         .sockets

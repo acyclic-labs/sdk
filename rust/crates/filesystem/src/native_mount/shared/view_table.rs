@@ -219,8 +219,8 @@ pub(crate) struct RetiringView<C> {
 }
 
 impl<C> RetiringView<C> {
-    pub(crate) fn finish(mut self) -> C {
-        self.drain().expect("retirement drains every lease")
+    pub(crate) fn finish(mut self) -> Result<C, &'static str> {
+        self.drain().ok_or("retirement did not return its core")
     }
 
     fn drain(&mut self) -> Option<C> {
@@ -427,7 +427,7 @@ mod tests {
         let a = ViewTable::insert(&table, core(1, &drops)).unwrap();
         let b = ViewTable::insert(&table, core(2, &drops)).unwrap();
         let lease_b = table.enter(b.serial().get()).unwrap();
-        assert_eq!(a.begin_retirement(|| {}).finish().id, 1);
+        assert!(matches!(a.begin_retirement(|| {}).finish(), Ok(core) if core.id == 1));
         assert_eq!(lease_b.id, 2);
         assert_eq!(table.len(), 1);
         drop(lease_b);

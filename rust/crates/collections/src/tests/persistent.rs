@@ -32,7 +32,9 @@ fn persistent_generated_histories() -> Result<(), &'static str> {
                     let mut expected = expected.clone();
                     let view = if let Some(cut) = cut {
                         expected.retain(|key, _| *key < cut);
-                        original.prefix(cut.to_be_bytes())
+                        original
+                            .prefix(cut.to_be_bytes(), &mut work)
+                            .map_err(TestCaseError::fail)?
                     } else {
                         original.clone()
                     };
@@ -108,7 +110,7 @@ fn persistent_physical_retirement() -> Result<(), &'static str> {
                 );
             }
             let original = history.clone();
-            history = history.prefix(128_u64.to_be_bytes());
+            history = history.prefix(128_u64.to_be_bytes(), &mut work)?;
             let live = work.live.get();
             for claims in 0..=8 {
                 work.maximum_claims = Some(work.claims + claims);
@@ -177,6 +179,8 @@ fn spine<const N: usize>(height: usize) -> Result<usize, &'static str> {
 
 #[test]
 fn insertion_and_retirement_stack_is_independent_of_width_and_height() {
+    // A view is a root handle and a shared cut, never a copy of the key width.
+    assert!(std::mem::size_of::<PersistentIndex<usize, Allocation, 1032>>() <= 64);
     // Far below one 8 * N word array for the record-key width (66 KiB).
     std::thread::Builder::new()
         .stack_size(64 * 1024)

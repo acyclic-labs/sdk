@@ -54,6 +54,7 @@ isolated_test(
 isolated_test(
     name = "lock_order_full-cloud",
     binary = ":lock_order_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-fs-lock-order-tests::lock_order",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

@@ -110,7 +110,16 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
                     socket.next().await.unwrap_err()
                 }
             };
-            assert_eq!(actual, original, "local socket lost its original refusal");
+            assert_eq!(
+                actual.category(),
+                original.category(),
+                "local socket lost its original refusal"
+            );
+            assert_eq!(
+                actual.member_refusal(),
+                original.member_refusal(),
+                "local socket lost the original refusal details"
+            );
         }
         // Hold both credits at zero so the terminal must retain the same error
         // while earlier accepted data owns the queue. Drive the actual queue and
@@ -146,9 +155,14 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
         assert_eq!(closed.code, original.code());
         assert_eq!(closed.message, expected);
         assert_eq!(
-            retained,
-            Some(original),
+            retained.as_ref().map(|error| error.category()),
+            Some(original.category()),
             "queued terminal lost the original refusal"
+        );
+        assert_eq!(
+            retained.as_ref().and_then(|error| error.member_refusal()),
+            original.member_refusal(),
+            "queued terminal lost the original refusal details"
         );
         assert!(session.channels.is_empty());
         assert!(session.controls.is_empty());

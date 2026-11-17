@@ -175,10 +175,11 @@ pub(crate) fn waiting_now<F>(
     (wait, context)
 }
 
-/// Whether the current subscriber would record a [`waiting`] span. This asks
-/// about the span's own callsite and metadata, exactly as creating the span
-/// does. A producer that would allocate to wrap a wait asks this first, so an
-/// unreported wait costs only the check.
+/// Whether tracing admits a [`waiting`] span for the current subscriber.
+/// This asks about the span's own callsite and metadata, exactly as creating
+/// the span does. A producer that would allocate to wrap a wait asks this first.
+/// Like tracing's enabled checks, this is conservative: a subscriber's
+/// per-layer filters can still exclude the admitted span from every layer.
 #[must_use]
 pub fn waits_reported() -> bool {
     if Level::INFO > STATIC_MAX_LEVEL || Level::INFO > LevelFilter::current() {

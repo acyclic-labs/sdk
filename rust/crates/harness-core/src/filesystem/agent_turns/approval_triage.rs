@@ -122,18 +122,14 @@ where
                     "review source is not a direct child".into(),
                 ));
             }
-            // An archived parent's closing cascade answers the ask by archiving
-            // the child. Reading or writing the child's approval journal here
-            // cannot be admitted, and a failed write must never re-enter review.
-            if agent.closed {
-                continue;
-            }
             let child = crate::agent::observe_state(&self.stream, &self.within, &request.child)
                 .await
                 .map_err(Error::from)?;
             // A page interrupted after this answer was saved, before its wake
             // was published, keeps that answer and only repairs the wake: a
             // second review, or an ended parent's refusal, would contradict it.
+            // This holds even when the parent has since been archived, so the
+            // saved answer is checked before the closing cascade's skip.
             if self
                 .decided_approval(&child, &request.id, &principal)
                 .await?
@@ -145,6 +141,12 @@ where
                         record: InboxRecord::Approval(Approval { id: request.id }),
                     });
                 }
+                continue;
+            }
+            // An archived parent's closing cascade answers the ask by archiving
+            // the child. Reading or writing the child's approval journal here
+            // cannot be admitted, and a failed write must never re-enter review.
+            if agent.closed {
                 continue;
             }
             let (verdict, reason, action) = match (&review, policy) {

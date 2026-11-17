@@ -137,11 +137,19 @@ mod tests {
             };
             let encoded = context.encode();
             let bytes = encoded.as_ref();
-            assert_eq!(PublicationContext::from_bytes(bytes), Ok(context));
-            assert_eq!(context.exclusive_end(11), Ok(14));
             assert_eq!(
-                context.exclusive_end(u64::MAX - 1),
-                Err(acyclic_stream::StreamError::OutOfRange)
+                PublicationContext::from_bytes(bytes).map_err(|error| error.category()),
+                Ok(context)
+            );
+            assert_eq!(
+                context.exclusive_end(11).map_err(|error| error.category()),
+                Ok(14)
+            );
+            assert_eq!(
+                context
+                    .exclusive_end(u64::MAX - 1)
+                    .map_err(|error| error.category()),
+                Err(acyclic_stream::StreamCategory::OutOfRange)
             );
             for end in 0..bytes.len() {
                 assert!(PublicationContext::from_bytes(&bytes[..end]).is_err());
@@ -174,7 +182,8 @@ mod tests {
                 };
                 assert_ne!(plain.encode().as_ref(), encoded.as_ref());
                 assert_ne!(
-                    PublicationContext::from_bytes(plain.encode().as_ref()),
+                    PublicationContext::from_bytes(plain.encode().as_ref())
+                        .map_err(|error| error.category()),
                     Ok(context)
                 );
             }

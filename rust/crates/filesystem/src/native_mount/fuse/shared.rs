@@ -143,25 +143,31 @@ impl SharedViewEntry {
     }
 
     /// Retires the view; returns whether this call retired it.
-    pub(super) fn retire(&mut self) -> bool {
+    pub(super) fn retire(&mut self) -> Result<bool, NativeMountError> {
         // Close admission, then stop queued and blocked requests before
         // waiting for every request already admitted.
         let core = &self.core;
-        let Some((name, _)) = self.view.retire_after(|| core.stop()) else {
-            return false;
+        let Some((name, _)) = self
+            .view
+            .retire_after(|| core.stop())
+            .map_err(|error| NativeMountError::Driver(error.into()))?
+        else {
+            return Ok(false);
         };
         if let Some(wake) = core.shared_wake.get() {
             // Retire admission before queueing the name. The existing notifier
             // owns the physical write; a request/cleanup caller never does.
             wake.retire(&self.views, name);
         }
-        true
+        Ok(true)
     }
 }
 
 impl Drop for SharedViewEntry {
     fn drop(&mut self) {
-        self.retire();
+        if let Err(error) = self.retire() {
+            tracing::error!(%error, "shared view retirement failed during drop");
+        }
     }
 }
 

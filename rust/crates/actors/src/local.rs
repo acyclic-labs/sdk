@@ -1088,7 +1088,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 if matches!(&error, Error::Conflict | Error::Unknown { .. })
                     || matches!(
                         &error,
-                        Error::Stream(source) if source.as_ref() == &StreamError::IdempotencyMismatch
+                        Error::Stream(source) if source.category() == StreamCategory::IdempotencyMismatch
                     ) =>
             {
                 match self.fork_replay(&key, &parent_path, &child_path).await {

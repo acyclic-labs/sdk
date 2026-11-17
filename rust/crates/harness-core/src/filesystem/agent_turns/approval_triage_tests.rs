@@ -736,6 +736,37 @@ async fn an_archive_between_saved_decisions_and_their_wakes_keeps_the_answers() 
 }
 
 #[tokio::test]
+async fn an_archived_parent_reuses_saved_decisions_and_repairs_their_wakes() -> TestResult {
+    let (bound, parent, children, reviewer) = family(["allow", "deny"]).await?;
+    let turns = bound.turns();
+    let (parent_before, delivered, _child_tails, request_id) =
+        decided_without_wakes(&bound, &parent, &children).await?;
+    assert_eq!(reviewer.request_count(), 2);
+    let selected = turns
+        .select_approval_page(&parent_before, delivered[0], delivered[1] + 1)
+        .await?;
+    let mut archived = parent_before;
+    archived.closed = true;
+    let replayed = turns.review_approval_page(&archived, &selected).await?;
+    assert!(replayed.summary.is_none());
+    assert_eq!(
+        replayed.outs.len(),
+        2,
+        "the archived parent dropped its saved answers"
+    );
+    for out in &replayed.outs {
+        assert!(matches!(
+            out,
+            Out::Send {
+                record: InboxRecord::Approval(Approval { id }),
+                ..
+            } if id == &request_id
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_review() -> TestResult
 {
     use crate::{

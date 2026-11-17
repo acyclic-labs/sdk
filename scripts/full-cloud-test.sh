@@ -14,7 +14,7 @@ result=$(mktemp -d "$SDK_ARTIFACT_DIR/full-cloud.XXXXXX") || {
 }
 # Nextest supplies this exact test binary and its arguments. The shared producer
 # owns readiness, endpoint injection and teardown for this one fresh topology.
-node "$(dirname -- "${BASH_SOURCE[0]}")/local-cloud.mjs" \
+"${CARGO_BIN_EXE_node:-node}" "$(dirname -- "${BASH_SOURCE[0]}")/local-cloud.mjs" \
   --cloud "$CLOUD_SOURCE" --binaries "$CLOUD_BINARIES" \
   --out "$result/topology" --topology full -- "$@" || {
   status=$?

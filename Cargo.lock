@@ -847,6 +847,8 @@ dependencies = [
 name = "acyclic-harness-json"
 version = "0.2.0"
 dependencies = [
+ "arrayvec",
+ "proptest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

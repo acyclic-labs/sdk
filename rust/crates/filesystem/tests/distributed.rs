@@ -20,7 +20,8 @@ use acyclic_objects::MemoryObjects;
 use acyclic_stream::OwnedBytes;
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    AppendRequest, MemoryStream, ReadRequest, StreamError, StreamPath, StreamProvider,
+    AppendRequest, MemoryStream, ReadRequest, StreamCategory, StreamError, StreamPath,
+    StreamProvider,
 };
 use futures::StreamExt;
 use std::sync::Arc;
@@ -760,8 +761,9 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
     assert_eq!(
         streams
             .tail(StreamPath::new(format!("{prefix}/lineage"))?)
-            .await,
-        Err(StreamError::NotFound)
+            .await
+            .map_err(|error| error.category()),
+        Err(StreamCategory::NotFound)
     );
     Ok(())
 }

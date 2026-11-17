@@ -22,6 +22,7 @@ rust_library(
         "//rust/crates/sdk-generation/fuzz:git_layout.rs",
         "//rust/crates/sdk-generation/fuzz:identity_record.rs",
         "//rust/crates/sdk-generation/fuzz:source_identities.rs",
+        "tests/support/archive.rs",
     ],
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//:rust-toolchain.toml",
@@ -120,18 +121,20 @@ isolated_test(
     exclude = ["::full_cloud::"],
     workers = 1,
     limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
 )
 
 isolated_test(
     name = "sdk_generation_test_full-cloud",
     binary = ":sdk_generation_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@nodejs//:node":"node"},
     id = "sdk-generation",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     workers = 1,
     limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
     tags = ["manual"],
 )
 
@@ -216,6 +219,7 @@ rust_test(
         "tests/cli_regressions/runtime.rs",
         "tests/main.rs",
         "tests/profile_planner.rs",
+        "tests/support/archive.rs",
     ],
     edition = "2021",
     version = "0.1.0",
@@ -289,18 +293,20 @@ isolated_test(
     exclude = ["::full_cloud::"],
     workers = 1,
     limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
 )
 
 isolated_test(
     name = "main_full-cloud",
     binary = ":main_cases",
-    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
+    binaries = {":registry-transport-fixture":"registry-transport-fixture",":sdk-generation":"sdk-generation","//:toolchain_cargo":"CARGO","//:rustc":"rustc","@nodejs//:node":"node"},
     id = "sdk-generation::main",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     workers = 1,
     limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
     tags = ["manual"],
 )
 

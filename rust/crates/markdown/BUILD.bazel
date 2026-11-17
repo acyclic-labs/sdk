@@ -94,6 +94,7 @@ isolated_test(
 isolated_test(
     name = "acyclic_markdown_test_full-cloud",
     binary = ":acyclic_markdown_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-markdown",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -156,6 +157,7 @@ isolated_test(
 isolated_test(
     name = "streaming_full-cloud",
     binary = ":streaming_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-markdown::streaming",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -217,6 +219,7 @@ isolated_test(
 isolated_test(
     name = "streaming_properties_full-cloud",
     binary = ":streaming_properties_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-markdown::streaming_properties",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

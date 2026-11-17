@@ -420,9 +420,15 @@ fn probe() {
     // even our own PID requires the authority denied to named-process queries.
     // SAFETY: these queries take only integer identifiers and no pointers.
     let group = unsafe { libc::getpgid(0) };
-    assert!(group > 0, "self group: {}", io::Error::last_os_error());
+    // A leader outside the caller's PID namespace has the visible ID zero.
+    assert!(group >= 0, "self group: {}", io::Error::last_os_error());
     // SAFETY: zero selects this process's session without mutation.
-    assert!(unsafe { libc::getsid(0) } > 0);
+    let session = unsafe { libc::getsid(0) };
+    assert!(
+        session >= 0,
+        "self session: {session}, {}",
+        io::Error::last_os_error()
+    );
     #[cfg(target_arch = "x86_64")]
     // SAFETY: getpgrp has no arguments and only reads the caller's identity.
     assert_eq!(unsafe { libc::getpgrp() }, group);
@@ -433,7 +439,7 @@ fn probe() {
         let queried = unsafe { libc::syscall(call, own_pid) };
         if allowed {
             assert!(
-                queried > 0,
+                queried >= 0,
                 "unrestricted query: {}",
                 io::Error::last_os_error()
             );

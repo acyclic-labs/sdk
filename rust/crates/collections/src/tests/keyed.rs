@@ -140,7 +140,7 @@ fn keyed_global_cut_negative() -> Result<(), &'static str> {
     };
     let old = PersistentIndex::default().insert(&composite(0, 9), 9, &mut work)?;
     assert!(
-        old.prefix(composite(1, 5))
+        old.prefix(composite(1, 5), &mut work)?
             .predecessor(composite(0, 9), &mut work)?
             .is_some()
     );

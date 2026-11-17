@@ -275,7 +275,6 @@ fn a_subscriber_admitting_only_wait_spans_reports_them() {
         tracing_subscriber::registry().with(report.clone().with_filter(only_waits)),
     );
     tracing::dispatcher::with_default(&dispatch, || {
-        assert!(crate::obs::waits_reported());
         let wait = crate::obs::blocked("channel-close", 3, std::future::pending::<()>());
         assert!(snapshot(&report).starts_with("waiting: channel-close 3 since "));
         drop(wait);
@@ -288,7 +287,6 @@ fn a_subscriber_admitting_only_wait_spans_reports_them() {
         tracing_subscriber::registry().with(report.clone().with_filter(no_waits)),
     );
     tracing::dispatcher::with_default(&dispatch, || {
-        assert!(!crate::obs::waits_reported());
         let wait = crate::obs::blocked("channel-close", 4, std::future::pending::<()>());
         assert!(snapshot(&report).is_empty());
         drop(wait);

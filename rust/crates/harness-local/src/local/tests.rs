@@ -373,7 +373,7 @@ async fn defaults_are_additive_and_opt_out_retains_custom_tools() -> Result<()> 
         let allocations = super::config::TEMPORARY_STATES.get();
         let refusals = configured()?.preflight();
         assert!(refusals.is_empty(), "{refusals:?}");
-        let refusals = LocalHarness::doctor(configured()?).await;
+        let refusals = LocalHarness::doctor(configured()?).await.refusals;
         assert!(refusals.is_empty(), "{refusals:?}");
         assert_eq!(super::config::TEMPORARY_STATES.get(), allocations);
         assert!(

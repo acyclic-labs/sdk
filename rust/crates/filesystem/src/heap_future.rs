@@ -84,6 +84,7 @@ impl<F: Future, A> OwnedFuture<F, A> {
     pub(crate) fn erase_send<'a>(self) -> OwnedFuture<dyn Future<Output = F::Output> + Send + 'a, A>
     where
         F: Send + 'a,
+        A: Send,
     {
         OwnedFuture {
             future: self.future,
@@ -105,6 +106,7 @@ impl<F: Future, A> OwnedFuture<F, A> {
     pub(crate) fn erase_task<'a>(self) -> OwnedFuture<TaskFuture<'a, F::Output>, A>
     where
         F: Send + 'a,
+        A: Send,
     {
         self.erase_send()
     }

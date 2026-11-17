@@ -5552,6 +5552,79 @@ async fn archive_reactivates_paused_roots_and_open_descendants_for_closing() -> 
     Ok(())
 }
 
+/// A file stop on a node closes exactly its subtree; the root's own stop must
+/// not leave an open child running after the stop is acknowledged.
+#[tokio::test]
+async fn file_stop_closes_the_whole_subtree() -> Result<()> {
+    use crate::agent::{Delivered, InboxRecord, IntentId, Sender, SpawnOutcome, SpawnRequest};
+    use crate::client_files::{ClientFileChange, FileRoot};
+    use crate::supervision::Lifecycle;
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted(std::iter::empty::<super::ScriptedTurn>());
+    let harness = Arc::new(
+        super::open_scripted(
+            volume_config(directory.path(), project, provider.clone())?.without_default_tools(),
+        )
+        .await?,
+    );
+    let (agents, root) = harness.agents().await?;
+    let connection = harness.connect().await?;
+    let profile = harness
+        .agents
+        .get()
+        .ok_or_else(|| Error::Invalid("missing host".into()))?
+        .server()
+        .bound()
+        .child_profile(root, "worker")
+        .await
+        .map_err(agent)?;
+    let by = Sender::User {
+        principal: "file-stop-subtree".into(),
+    };
+    let record = InboxRecord::Spawn(SpawnRequest {
+        by: by.clone(),
+        id: IntentId::try_from("stop-child").map_err(agent)?,
+        brief: None,
+        profile,
+        history: None,
+    });
+    let Delivered::Committed { inbox } = agents.send(root, &by, &record).await.map_err(agent)?
+    else {
+        return Err(Error::Invalid("parent was closed".into()));
+    };
+    let (intent, _) = crate::agent::requested_child(root, inbox).map_err(agent)?;
+    let SpawnOutcome::Spawned { child } =
+        agents.spawned(root, inbox, &intent).await.map_err(agent)?
+    else {
+        return Err(Error::Invalid("child was refused".into()));
+    };
+    assert!(!agents.state(&child).await.map_err(agent)?.closed);
+    let conversation = Conversation::open(connection.clone());
+    let mut events = conversation.connection().supervision_own().await?;
+    conversation
+        .publish_files(
+            FileRoot::Private {},
+            crate::OperationId::new(),
+            vec![ClientFileChange {
+                path: "control/stop".into(),
+                expected: None,
+                text: Some(String::new()),
+            }],
+        )
+        .await?;
+    loop {
+        if matches!(events.next().await?.event, Lifecycle::Stopped { .. }) {
+            break;
+        }
+    }
+    assert!(
+        agents.state(&child).await.map_err(agent)?.closed,
+        "the root acknowledged stop while its child stayed open"
+    );
+    Ok(())
+}
+
 /// Editing AGENTS.md between turns keeps the cached span (system block and
 /// tools) of the first request byte-identical in the second, and appends the
 /// edit as a notice the second request carries. Its host-only delivery
