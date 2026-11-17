@@ -66,27 +66,33 @@ fn settled_calls(requests: &[acyclic_harness::model::ModelRequest]) -> Vec<oracl
     seen.into_values().collect()
 }
 
-/// Durable bytes between each pair of ordinary model dispatches. Summary
-/// requests are not work steps, so they do not open or close an interval.
+/// Durable bytes between each pair of ordinary model dispatches, and whether
+/// that interval contains a one-time compaction. Summary requests are not work
+/// steps, so they do not open or close an interval.
 fn per_step(
     writes: &[DurableWrite],
     dispatched_at: &[usize],
     requests: &[acyclic_harness::model::ModelRequest],
-) -> Vec<usize> {
-    let ordinary: Vec<usize> = requests
+) -> Vec<(usize, bool)> {
+    let ordinary: Vec<(usize, usize)> = requests
         .iter()
+        .enumerate()
         .zip(dispatched_at)
-        .filter(|(request, _)| !request.summary)
-        .map(|(_, &at)| at)
+        .filter(|((_, request), _)| !request.summary)
+        .map(|((index, _), &at)| (index, at))
         .collect();
     ordinary
         .windows(2)
         .map(|window| {
-            let (start, end) = (window[0], window[1]);
-            writes[start..end]
+            let ((start_index, start), (end_index, end)) = (window[0], window[1]);
+            let bytes = writes[start..end]
                 .iter()
                 .map(|write| write.requested)
-                .sum()
+                .sum();
+            let compacted = requests[start_index + 1..=end_index]
+                .iter()
+                .any(|request| request.summary);
+            (bytes, compacted)
         })
         .collect()
 }
@@ -142,13 +148,19 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 ));
             }
             // Skip the first interval's setup. Every later step writes the same
-            // bytes, so its durable work must not grow with the step index.
+            // bytes, so its durable work must not grow with the step index. A
+            // one-time compaction may rewrite the history; the steps after it
+            // must return to the flat delta.
             let steady = &steps[1..];
-            let first = steady.first().copied().unwrap_or(0);
+            let first = steady.first().map(|(bytes, _)| *bytes).unwrap_or(0);
             let bound = first.saturating_mul(2).saturating_add(64 * 1024);
-            if let Some((index, step)) = steady.iter().enumerate().find(|(_, step)| **step > bound) {
+            if let Some((index, (bytes, _))) = steady
+                .iter()
+                .enumerate()
+                .find(|(_, (bytes, compacted))| !compacted && *bytes > bound)
+            {
                 return Err(format!(
-                    "durable bytes per step grew with history: step {index}, first {first}, step {step}, all {steps:?}"
+                    "durable bytes per step grew with history: step {index}, first {first}, bytes {bytes}, all {steps:?}"
                 ));
             }
             Ok(true)
