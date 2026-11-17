@@ -222,7 +222,7 @@ fn invalid_feature_fails_before_cargo_runs() {
     );
 }
 
-    #[test]
+#[test]
 fn private_binding_keeps_binding_receipt_and_resolves_published_owner() {
     let value = serde_json::json!({
         "packages": [
