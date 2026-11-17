@@ -932,3 +932,37 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
     assert_eq!(records(&*provider, "out/released").await?.len(), 1);
     Ok(())
 }
+
+/// Recovery finds the index head with one bounded child page, however many
+/// non-due alarms it holds: the page cost does not grow with the population.
+#[tokio::test]
+async fn the_alarm_index_head_is_one_page_for_any_future_population() -> TestResult {
+    use acyclic_stream::testing::{Counted, RequestClass};
+    let mut pages = Vec::new();
+    for count in [1_u64, 128] {
+        let provider = Arc::new(Counted::new(MemoryStream::default()));
+        let (clock, _control) = ControlledClock::new(100);
+        let clock = Arc::new(clock);
+        let store = Store::new(Arc::clone(&provider), root()?)
+            .with_scheduling_shards(std::num::NonZeroU16::MIN)
+            .with_clock(clock.clone());
+        let earlier = Runtime::new(
+            crate::guest::Requests::default(),
+            store.clone(),
+            Arc::new(Package::new()?),
+            clock as Arc<dyn Clock>,
+        );
+        for index in 0..count {
+            let actor = spawn_with(&store, &format!("future-{index}"), &[b"set 60000"]).await?;
+            earlier.track(actor.clone())?;
+            earlier.drain_actor(&actor).await?;
+        }
+        let before = provider.requests();
+        assert_eq!(store.next_window(0, 0).await?, Some(1));
+        let page = provider.requests().since(before);
+        assert_eq!(page.class(RequestClass::List), 1);
+        pages.push(page.class(RequestClass::Data));
+    }
+    assert_eq!(pages, [0, 0], "reading the head opened a due window");
+    Ok(())
+}

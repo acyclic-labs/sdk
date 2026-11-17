@@ -344,7 +344,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             ready: std::array::from_fn(|_| {
                 ReadySet::grouped(move |actor| scheduling::shard(shards, actor))
             }),
-            store,
+            store: store.with_clock(clock.clone()),
             scope: None,
             handler,
             clock,

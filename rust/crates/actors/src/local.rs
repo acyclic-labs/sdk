@@ -903,6 +903,9 @@ pub struct Store<P: StreamProvider + ?Sized> {
     provider: Arc<P>,
     root: StreamPath,
     composer: Option<Arc<dyn Composer>>,
+    /// The host clock that floors a filed alarm at the current window, so a
+    /// late-armed due alarm never lands behind the consumed index head.
+    clock: Option<Arc<dyn Clock>>,
     scheduling_shards: std::num::NonZeroU16,
     /// Each actor state stream whose latest committed custody this owner
     /// process settled, by that state record's commit. Hot-path accounting:
@@ -924,6 +927,7 @@ impl<P: StreamProvider + ?Sized> Clone for Store<P> {
             provider: Arc::clone(&self.provider),
             root: self.root.clone(),
             composer: self.composer.clone(),
+            clock: self.clock.clone(),
             scheduling_shards: self.scheduling_shards,
             settled: Arc::clone(&self.settled),
         }
@@ -937,6 +941,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             provider,
             root,
             composer: None,
+            clock: None,
             scheduling_shards: DEFAULT_SCHEDULING_SHARDS,
             settled: Arc::default(),
         }
@@ -947,6 +952,15 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     #[must_use]
     pub fn with_composer(mut self, composer: Arc<dyn Composer>) -> Self {
         self.composer = Some(composer);
+        self
+    }
+
+    /// File each alarm at the later of its deadline and this host clock's
+    /// current window. A due alarm armed after its window was consumed must
+    /// stay in the alarm index's unconsumed head, not behind it.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = Some(clock);
         self
     }
 
