@@ -10,7 +10,7 @@ description = "Attached devices behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-devices"
 
 [features]
-test-support = ["acyclic-harness-core/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support"]
+test-support = ["acyclic-harness-core/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-auth/test-support", "acyclic-fs/test-support", "acyclic-machines/test-support",]
 
 [dependencies]
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
