@@ -1,6 +1,6 @@
 import { HeadProjection, ReadOrder, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence, wasmUrl as streamWasmUrl } from "@acyclic/stream-wasm";
+import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "@acyclic/stream-wasm";
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitEffectSchema, CommitMutationSchema, CommitRequestSchema,
@@ -14,6 +14,7 @@ import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, Ide
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 import type { HttpRoute } from "./http-contract.js";
 
+const streamWasmUrl = new URL("../generated/wasm/acyclic_stream_wasm_bg.wasm", import.meta.url);
 let wasmReady: Promise<void> | undefined;
 export async function ensureStreamWasm(): Promise<void> {
   wasmReady ??= (async () => {

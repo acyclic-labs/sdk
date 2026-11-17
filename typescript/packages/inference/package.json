@@ -31,8 +31,8 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "bun run generate && bun run build:wasm && tsc -b",
-    "test": "bun run generate && bun run build:wasm && tsc -b --pretty false && tsc -p tsconfig.type-tests.json --pretty false && bun test test",
+    "build": "bun run generate && bun ../../../tools/build-wasm.mjs inference && tsc -b",
+    "test": "bun run generate && bun ../../../tools/build-wasm.mjs inference && tsc -b --pretty false && tsc -p tsconfig.type-tests.json --pretty false && bun test test",
     "pack:dry": "bun pm pack --dry-run",
     "generate": "bun ../../../scripts/generate.mjs inference",
     "prepack": "bun run generate"

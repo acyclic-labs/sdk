@@ -60,7 +60,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "bun run generate && bun run build:wasm && tsc -b",
+    "build": "bun run generate && bun ../../../tools/build-wasm.mjs objects && tsc -b",
     "test": "bun run generate && bun run build && bun test test",
     "generate": "bun ../../../scripts/generate.mjs objects",
     "prepack": "bun run generate"

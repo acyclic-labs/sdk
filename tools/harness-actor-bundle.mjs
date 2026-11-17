@@ -73,7 +73,7 @@ export async function bundleHarnessActor(configFile, outputDirectory) {
 
 if (import.meta.main) {
   const { values } = parseArgs({ options: {
-    config: { type: "string" }, out: { type: "string" }, proto: { type: "string" },
+    config: { type: "string" }, out: { type: "string" },
     wasm: { type: "string", multiple: true },
   } });
   if (!values.config || !values.out) throw new Error("usage: bun tools/harness-actor-bundle.mjs --config OWNER.json --out DIRECTORY");
@@ -82,7 +82,7 @@ if (import.meta.main) {
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`STEP ${name} failed (exit ${result.status}); recovery: bun tools/harness-actor-bundle.mjs`);
   };
-  if (values.proto) step("proto", resolve(values.proto), []);
+  step("generate", "bun", ["scripts/generate.mjs", "harness-actor"]);
   const place = (source, destination) => {
     if (!source) return;
     const target = join(root, destination);

@@ -16,32 +16,32 @@ if [[ "$bun_platform" == win32 ]] && command -v cargo.exe >/dev/null 2>&1; then
 fi
 "$BASH" "$root/scripts/ensure-rust-target.sh" wasm32-unknown-unknown "$rustup_bin" "$rustc_bin" >&2
 
-if [[ "$("$bindgen_bin" --version 2>/dev/null || true)" != 'wasm-bindgen 0.2.117' ]]; then
+if [[ "$("$bindgen_bin" --version 2>/dev/null || true)" != 'wasm-bindgen 0.2.121' ]]; then
   if [[ "$bun_platform" != win32 && "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]]; then
     tools_dir="${TOOLS_DIR:-${TMPDIR:-/tmp}/acyclic-sdk-tools}"
-    archive="$tools_dir/wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz"
-    executable="$tools_dir/wasm-bindgen-0.2.117/wasm-bindgen"
+    archive="$tools_dir/wasm-bindgen-0.2.121-x86_64-unknown-linux-musl.tar.gz"
+    executable="$tools_dir/wasm-bindgen-0.2.121/wasm-bindgen"
     mkdir -p "$tools_dir"
     if [[ ! -f "$archive" ]] ||
-      ! echo "97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240  $archive" | sha256sum --check --status; then
+      ! echo "3039f38f65fe237b640cf06a140c919ca8d717ec5012146d145d3f27bb4d6b28  $archive" | sha256sum --check --status; then
       temporary_archive="$(mktemp "${archive}.XXXXXXXX")"
-      url=https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.117/wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz
+      url=https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.121/wasm-bindgen-0.2.121-x86_64-unknown-linux-musl.tar.gz
       if ! {
         if [[ -n "${PINNED_ASSET_FETCHER:-}" ]]; then
-          "$PINNED_ASSET_FETCHER" 97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240 "$url" "$temporary_archive" >&2
+          "$PINNED_ASSET_FETCHER" 3039f38f65fe237b640cf06a140c919ca8d717ec5012146d145d3f27bb4d6b28 "$url" "$temporary_archive" >&2
         else
           curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
             --max-time 30 "$url" --output "$temporary_archive"
         fi
       } ||
-        ! echo "97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240  $temporary_archive" | sha256sum --check --status; then
+        ! echo "3039f38f65fe237b640cf06a140c919ca8d717ec5012146d145d3f27bb4d6b28  $temporary_archive" | sha256sum --check --status; then
         rm -f -- "$temporary_archive"
         printf 'step=fetch pinned wasm-bindgen: %s; recovery: bash scripts/ensure-wasm-bindgen.sh\n' "$url" >&2
         exit 1
       fi
       mv -- "$temporary_archive" "$archive"
     fi
-    if [[ "$("$executable" --version 2>/dev/null || true)" != 'wasm-bindgen 0.2.117' ]]; then
+    if [[ "$("$executable" --version 2>/dev/null || true)" != 'wasm-bindgen 0.2.121' ]]; then
       mkdir -p "$(dirname "$executable")"
       tar --extract --gzip --file "$archive" --directory "$(dirname "$executable")" --strip-components=1
     fi
@@ -55,12 +55,12 @@ if [[ "$("$bindgen_bin" --version 2>/dev/null || true)" != 'wasm-bindgen 0.2.117
     elif [[ "$bun_platform" == win32 ]] && command -v wslpath >/dev/null 2>&1; then
       cargo_root_arg="$(wslpath -w "$cargo_root")"
     fi
-    "$cargo_bin" install --locked wasm-bindgen-cli --version 0.2.117 --root "$cargo_root_arg" >&2
+    "$cargo_bin" install --locked wasm-bindgen-cli --version 0.2.121 --root "$cargo_root_arg" >&2
     bindgen_bin="$cargo_root/bin/wasm-bindgen"
     [[ "$bun_platform" == win32 ]] && bindgen_bin="${bindgen_bin}.exe"
   fi
 fi
-[[ "$("$bindgen_bin" --version)" == 'wasm-bindgen 0.2.117' ]]
+[[ "$("$bindgen_bin" --version)" == 'wasm-bindgen 0.2.121' ]]
 if [[ "$bun_platform" == win32 && "$bindgen_bin" == /* ]]; then
   if command -v cygpath >/dev/null 2>&1; then
     bindgen_bin="$(cygpath -w "$bindgen_bin")"

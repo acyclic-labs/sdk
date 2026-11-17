@@ -44,7 +44,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "bun run generate && bun run build:wasm && tsc -b",
+    "build": "bun run generate && bun ../../../tools/build-wasm.mjs machines && tsc -b",
     "test": "bun run generate && bun run build && bun test test",
     "pack:dry": "bun pm pack --dry-run",
     "generate": "bun ../../../scripts/generate.mjs machines",

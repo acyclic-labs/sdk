@@ -68,7 +68,7 @@ function compileExamples(guide) {
   }, null, 2));
   const compiler = resolve(root, "node_modules/typescript/bin/tsc");
   const result = spawnSync(process.execPath, [compiler, "-p", resolve(directory, "tsconfig.json"), "--pretty", "false"], { cwd: root, stdio: "inherit" });
-  if (result.error || result.status !== 0) throw new Error(`STEP_FAILED README TypeScript compilation (${result.error?.message ?? result.status}); recovery: bun run generate && bun run build:wasm && bun run check:docs`);
+  if (result.error || result.status !== 0) throw new Error(`STEP_FAILED README TypeScript compilation (${result.error?.message ?? result.status}); recovery: bun run generate && bun tools/build-wasm.mjs && bun run check:docs`);
   console.log(`${services.length} TypeScript README/llms.txt examples compiled; ${services.length} generated Rust doctests inventoried`);
 }
 

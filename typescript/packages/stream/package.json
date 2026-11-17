@@ -49,7 +49,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "bun run build:wasm && tsc -b",
+    "build": "bun ../../../tools/build-wasm.mjs stream && tsc -b",
     "build:native": "node ../../../scripts/build-stream-native.mjs build",
     "stage:native": "node ../../../scripts/build-stream-native.mjs stage",
     "check:native": "node ../../../scripts/build-stream-native.mjs check",

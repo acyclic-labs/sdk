@@ -41,13 +41,13 @@
   ],
   "scripts": {
     "check:types": "tsc -p tsconfig.type-tests.json --pretty false",
-    "build": "bun run generate && bun run generate:client && bun run build:wasm && tsc -b",
+    "build": "bun run generate && bun run generate:client && bun ../../../tools/build-wasm.mjs actors && tsc -b",
     "generate:client": "node ../../../scripts/generate-actors.mjs write",
     "build:native": "node ../../../scripts/build-actors-native.mjs build",
     "stage:native": "node ../../../scripts/build-actors-native.mjs stage",
     "check:native": "node ../../../scripts/build-actors-native.mjs check",
     "assemble:native": "node ../../../scripts/assemble-actors-native-package.mjs",
-    "test": "bun run generate && bun run build:wasm && tsc -b --pretty false",
+    "test": "bun run generate && bun ../../../tools/build-wasm.mjs actors && tsc -b --pretty false",
     "pack:dry": "bun pm pack --dry-run",
     "generate": "bun ../../../scripts/generate.mjs actors",
     "prepack": "bun run generate"

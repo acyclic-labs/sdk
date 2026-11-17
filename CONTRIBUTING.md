@@ -160,7 +160,7 @@ cargo nextest run --locked -p acyclic-stream-typescript-models
 ```
 
 For `cargo test` or fuzzing, first run
-`bun run --filter '@acyclic-labs/stream' build:wasm` to prepare the same
+`bun tools/build-wasm.mjs stream` to prepare the same
 artifacts. The model drivers import the sources directly and never generate
 substitutes.
 

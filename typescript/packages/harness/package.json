@@ -51,8 +51,8 @@
     }
   },
   "scripts": {
-    "build": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json",
-    "check": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json --pretty false",
+    "build": "bun run generate && bun ../../../tools/build-wasm.mjs harness && bun x tsc -b tsconfig.json",
+    "check": "bun run generate && bun ../../../tools/build-wasm.mjs harness && bun x tsc -b tsconfig.json --pretty false",
     "check:types": "bun x tsc -p tsconfig.type-tests.json",
     "test": "bun run generate && bun run build && bazel run //typescript/packages/harness-actor:proto && bash ../../../scripts/build-host-fixture.sh && bun test test",
     "test:browser:mcp": "node test/mcp-http-fixture.mjs",

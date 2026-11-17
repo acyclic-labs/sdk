@@ -19,7 +19,7 @@
     "test:artifact-cache": "node --test scripts/web-docs-cache.integration.mjs",
     "test:prepare": "node scripts/generate-sdk-readmes.mjs check && bun run build && bash scripts/build-host-fixture.sh",
     "test": "bun run test:node && tsc -p scripts --pretty false && bun run check:docs && bun run check:types && bun run --filter '@acyclic-labs/fs' test:composition && bun run test:contracts && bun run --filter '@acyclic-labs/harness-actor' test",
-    "test:contracts:browser": "bun run --filter '@acyclic-labs/actors' build:wasm && bun run --filter '@acyclic-labs/objects' build:wasm && bun run --filter '@acyclic-labs/stream' build:wasm && tsc -b typescript/packages/actors typescript/packages/workers typescript/packages/objects typescript/packages/stream && node typescript/packages/actors/test/browser-http-conformance.mjs",
+    "test:contracts:browser": "bun tools/build-wasm.mjs actors && bun tools/build-wasm.mjs objects && bun tools/build-wasm.mjs stream && tsc -b typescript/packages/actors typescript/packages/workers typescript/packages/objects typescript/packages/stream && node typescript/packages/actors/test/browser-http-conformance.mjs",
     "licenses": "bun test scripts/check-js-licenses.test.mjs && bun scripts/check-js-licenses.mjs",
     "check:no-polling": "node scripts/check-no-polling.mjs",
     "check:docs": "node --test scripts/check-sdk-readmes.test.mjs && node scripts/web-docs-build.mjs readmes",

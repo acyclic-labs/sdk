@@ -33,8 +33,8 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "bun run generate && bun run build:wasm && tsc -b",
-    "test": "bun run generate && bun run build:wasm && tsc -b --pretty false",
+    "build": "bun run generate && bun ../../../tools/build-wasm.mjs sdk && tsc -b",
+    "test": "bun run generate && bun ../../../tools/build-wasm.mjs sdk && tsc -b --pretty false",
     "test:process-admission": "node --test test/process-admission.test.mjs",
     "test:process-completion": "node --test --experimental-test-coverage test/process-completion.test.mjs",
     "pack:dry": "bun pm pack --dry-run",

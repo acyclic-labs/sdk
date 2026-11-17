@@ -13,7 +13,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  */
 export function webDocsCommands(operation, selected) {
   const generate = ["bun", "run", "generate"];
-  const wasm = ["bun", "scripts/build-wasm-groups.mjs"];
+  const wasm = ["bun", "tools/build-wasm.mjs"];
   const compile = ["node", "node_modules/typescript/bin/tsc", "-b", "--force", "--pretty", "false"];
   const typescript = [wasm, compile];
   if (operation === "typescript") return typescript;

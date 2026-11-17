@@ -67,7 +67,7 @@
     "@bufbuild/protobuf": "2.17.0"
   },
   "scripts": {
-    "build": "bun run generate && bun run build:wasm && tsc -b",
+    "build": "bun run generate && bun ../../../tools/build-wasm.mjs auth && tsc -b",
     "generate": "bun ../../../scripts/generate.mjs auth",
     "test": "bun run generate",
     "prepack": "bun run generate"
