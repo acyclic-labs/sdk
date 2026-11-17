@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-/// Serial-keyed ready work with constant-time scheduling and retirement.
+/// Serial-keyed ready work with linked scheduling and immediate retirement.
 pub struct ReadyViews<V> {
     views: HashMap<u64, View<V>>,
     first: Option<u64>,
