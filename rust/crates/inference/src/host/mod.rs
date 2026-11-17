@@ -6,7 +6,7 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 use zeroize::Zeroize;
 
 use crate::MAXIMUM_MESSAGE_BYTES;
-use crate::contract;
+use crate::contract::{self, fixed, nonzero};
 use crate::obs;
 use crate::wire;
 
@@ -63,6 +63,12 @@ pub enum Error {
     /// A failed observation never proves an admitted mutation was absent.
     #[error("customer operation observation failed: {0}")]
     Observation(#[from] tonic::Status),
+}
+
+impl From<contract::Error> for Error {
+    fn from(error: contract::Error) -> Self {
+        Self::Invalid(error.message())
+    }
 }
 
 impl Error {
@@ -163,7 +169,7 @@ impl Inference {
             if !receipt.retained {
                 return Err(Error::Invalid("creation did not retain a revision"));
             }
-            fixed(&receipt.revision)
+            fixed(&receipt.revision).map_err(Error::from)
         })
     }
 
@@ -497,7 +503,7 @@ impl Inference {
                 .into_inner();
             contract::validate_retain_response(&view, request)
                 .map_err(|error| Error::Invalid(error.message()))?;
-            fixed(&view.commitment)
+            fixed(&view.commitment).map_err(Error::from)
         })
     }
 

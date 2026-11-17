@@ -29,14 +29,14 @@ impl Error {
     }
 }
 
-fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), Error> {
+pub(crate) fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), Error> {
     if *value == [0; N] {
         return Err(Error::Invalid("zero identity"));
     }
     Ok(())
 }
 
-fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
+pub(crate) fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
     let bytes = value
         .try_into()
         .map_err(|_| Error::Invalid("identity length differs"))?;
