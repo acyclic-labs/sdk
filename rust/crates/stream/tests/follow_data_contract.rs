@@ -278,7 +278,11 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
         assert_eq!(check(delivery, 0, &data, Fault::None), Ok(()));
     }
     for ((name, seed), confirmation, expected) in [
-        (seed!("opened-empty"), vec![], Err(StreamCategory::Unsupported)),
+        (
+            seed!("opened-empty"),
+            vec![],
+            Err(StreamCategory::Unsupported),
+        ),
         (
             seed!("opened-foreign"),
             vec![9; 32],
