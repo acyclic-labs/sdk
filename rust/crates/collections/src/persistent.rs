@@ -289,6 +289,9 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
     }
 
     fn cut<W: IndexWork<Allocation = A>>(&self, before: K, work: &mut W) -> Result<Self, W::Error> {
+        if self.root.is_none() {
+            return Ok(self.clone());
+        }
         match &self.before {
             Some(prior) if prior.key <= before => Ok(self.clone()),
             _ => {
