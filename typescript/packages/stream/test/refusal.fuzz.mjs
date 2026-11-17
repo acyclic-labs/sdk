@@ -6,9 +6,10 @@ import { producer } from "../../objects/test/refusal.fuzz.mjs";
 import { HeadsRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import init, { WasmSession, grpcErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 
+const wasmUrl = new URL("../generated/wasm/acyclic_stream_wasm_bg.wasm", import.meta.url);
 let ready;
 async function initialize() {
-  ready ??= (async () => init({ module_or_path: await readFile(new URL("../generated/wasm/acyclic_stream_wasm_bg.wasm", import.meta.url)) }))();
+  ready ??= (async () => init({ module_or_path: await readFile(wasmUrl) }))();
   await ready;
 }
 

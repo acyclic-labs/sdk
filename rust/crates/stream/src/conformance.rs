@@ -1135,20 +1135,21 @@ mod tests {
                 })
                 .await?;
         }
-        let Err(Failure::Cases(failures)) = super::verify(&backend).await else {
+        let Err(Failure::Cases(mut failures)) = super::verify(&backend).await else {
             return Err(Failure::Invariant("suite lost its independent failures"));
         };
+        failures.sort_unstable_by_key(|(name, _)| *name);
         // The seeded atomic child also contradicts the contract child set.
         assert!(
             matches!(
                 failures.as_slice(),
                 [
                     ("absence", Failure::Invariant(_)),
-                    ("key_seek", Failure::Invariant(_)),
-                    ("contract", Failure::Invariant(_)),
                     ("append_retry", Failure::History(_)),
-                    ("record_origin", Failure::History(_)),
                     ("atomic", Failure::Invariant(_)),
+                    ("contract", Failure::Invariant(_)),
+                    ("key_seek", Failure::Invariant(_)),
+                    ("record_origin", Failure::History(_)),
                 ]
             ),
             "unexpected collected failures: {failures:?}"

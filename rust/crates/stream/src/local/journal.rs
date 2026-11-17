@@ -78,33 +78,15 @@ impl Journal {
             #[cfg(feature = "test-support")]
             flushed: 0,
         };
-        let header_bytes =
-            u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
         // Recovery reads by position, so it holds one descriptor throughout.
         let lease = journal.file.lease()?;
         let length = lease.file().metadata()?.len();
-        let mut header = [0; HEADER_BYTES];
-        let found = if length < header_bytes {
-            None
-        } else {
-            lease
-                .file()
-                .read_exact(&mut header)
-                .map_err(|_| LocalStreamError::Corrupt)?;
-            Some(decode_header(&header, limits)?)
-        };
+        let found = read_header(lease.file(), length, limits, epoch)?;
         match found {
             // Every frame follows a whole header, so a journal holding less
             // than a valid header never acknowledged one: its creation or
             // restart was torn, and it starts again.
             None => {
-                let partial = header
-                    .get_mut(..usize::try_from(length).map_err(|_| LocalStreamError::Corrupt)?)
-                    .ok_or(LocalStreamError::Corrupt)?;
-                lease.file().read_exact(partial)?;
-                if !encode_header(limits, epoch)?.starts_with(partial) {
-                    return Err(LocalStreamError::Corrupt);
-                }
                 if !validate_recovery(recovered)? {
                     return Ok(journal);
                 }
