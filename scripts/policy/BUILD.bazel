@@ -94,6 +94,7 @@ node_test(
         "//:scripts/check-cargo-callers.mjs",
         "//:scripts/fixtures/cargo-callers/recorded-log.txt",
         "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-manifests.mjs",
         "//:scripts/check-js-licenses.mjs",
         "//:scripts/check-js-licenses.fuzz.mjs",
         "//:scripts/test-support/license-graphs.mjs",

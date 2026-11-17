@@ -2,7 +2,7 @@
 // Cargo.toml and, for each, its package name and the path dependencies it declares, of every kind and for every
 // target. A TOML file is parsed by a real TOML parser (Python's tomllib), so values keep their exact form.
 import path from "node:path";
-import { toml } from "./policy-core.mjs";
+import { toml, tomlFiles } from "./policy-core.mjs";
 
 const KINDS = [["dependencies", "normal"], ["dev-dependencies", "dev"], ["build-dependencies", "build"]];
 
@@ -15,8 +15,8 @@ const KINDS = [["dependencies", "normal"], ["dev-dependencies", "dev"], ["build-
 export function workspaceMembers(root) {
   const workspace = toml(root, "Cargo.toml").workspace ?? {};
   const crates = new Map();
-  for (const directory of workspace.members ?? []) {
-    const manifest = toml(root, `${directory}/Cargo.toml`);
+  for (const [file, manifest] of Object.entries(tomlFiles(root, (workspace.members ?? []).map(directory => `${directory}/Cargo.toml`)))) {
+    const directory = file.slice(0, -"/Cargo.toml".length);
     const tables = [manifest, ...Object.values(manifest.target ?? {})];
     // An inherited dependency's path is relative to the workspace root.
     const located = (name, spec) => spec?.workspace === true
