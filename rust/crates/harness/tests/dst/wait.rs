@@ -23,7 +23,6 @@ const STATES: [&str; 8] = [
 ];
 const RELATIONS: [&str; 3] = ["child", "grandchild", "same_parent_other_runtime"];
 
-/// One world per variant: 4 forms x 8 states x 3 relations.
 const ALL_SEEDS: &[u64] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
     26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
@@ -99,7 +98,7 @@ fn state(seed: u64) -> &'static str {
 }
 
 fn relation(seed: u64) -> &'static str {
-    RELATIONS[usize::try_from(seed / 32).unwrap_or(0)]
+    RELATIONS[usize::try_from((seed / 32) % 3).unwrap_or(0)]
 }
 
 fn variants(seed: u64) -> Vec<Variant> {
@@ -124,8 +123,7 @@ fn failed(tag_name: &'static str) -> Plan {
         steps: Vec::new(),
         fail_once: Some((
             0,
-            ScriptedEvent::Refused {
-                status: 400,
+            ScriptedEvent::Error {
                 error: "child turn failed".into(),
             },
         )),
@@ -139,6 +137,18 @@ fn parked(tag_name: &'static str) -> Plan {
             &format!("{tag_name}-park"),
             "wait",
             json!({"input": true, "timeout_ms": 100000}),
+        )]],
+        fail_once: None,
+    }
+}
+
+fn writer(tag_name: &'static str) -> Plan {
+    Plan {
+        tag: tag_name,
+        steps: vec![vec![call(
+            &format!("{tag_name}-write"),
+            "write",
+            json!({"path": "merged.txt", "content": "merged\n", "ifVersion": "absent"}),
         )]],
         fail_once: None,
     }
@@ -167,63 +177,97 @@ fn input_wait(id: &str) -> ToolCall {
     call(id, "wait", json!({"input": true}))
 }
 
-/// The child plan for `state`.
+fn release(id: &str, target: &str) -> ToolCall {
+    call(id, "send", json!({"agent": target, "message": "release"}))
+}
+
+fn merge(id: &str, target: &str) -> ToolCall {
+    call(
+        id,
+        "fs",
+        json!({"command": format!("merge agents/{target}")}),
+    )
+}
+
+fn archive(id: &str, target: &str) -> ToolCall {
+    call(id, "archive", json!({"agent": target}))
+}
+
 fn child_plan(tag_name: &'static str, state: &str) -> Plan {
     match state {
-        "running" => parked(tag_name),
-        "settled_failed" | "archived" | "stopped" => failed(tag_name),
+        "running" | "archived" | "stopped" => parked(tag_name),
+        "settled_failed" => failed(tag_name),
+        "merged" => writer(tag_name),
         _ => settled(tag_name),
     }
 }
 
-/// The wait that observes `state` in `form`. A running or starting child is
-/// observed through a settled sibling's quorum, so no timer is needed.
-fn state_wait(form: &str, id: &str, state: &str, target: &str, sibling: &str) -> ToolCall {
-    match (form, state) {
-        ("no_agents", _) => input_wait(id),
-        (_, "running" | "starting") => wait(id, &[sibling, target], Some(1), None),
-        ("quorum_need", _) => wait(id, &[target], Some(1), None),
-        ("timeout", _) => wait(id, &[target], None, Some(1)),
+fn needs_sibling(form: &str) -> bool {
+    form == "quorum_need"
+}
+
+/// The wait in the requested form. A running child is released first for the
+/// named form; the quorum form observes it through a settled sibling, and the
+/// timeout form returns on its deadline.
+fn form_wait(form: &str, id: &str, target: &str) -> ToolCall {
+    match form {
+        "no_agents" => input_wait(id),
+        "quorum_need" => wait(id, &[target, "sibling"], Some(1), None),
+        "timeout" => wait(id, &[target], None, Some(1)),
         _ => wait(id, &[target], None, None),
     }
 }
 
-/// The reopened host's wait. The no-agent form's inbox wake is not used
-/// across a reopen; the same child is observed by name instead.
-fn reopen_wait(form: &str, id: &str, state: &str, target: &str, sibling: &str) -> ToolCall {
-    if form == "no_agents" {
-        if needs_sibling(state) {
-            wait(id, &[sibling, target], Some(1), None)
-        } else {
-            wait(id, &[target], None, None)
-        }
-    } else {
-        state_wait(form, id, state, target, sibling)
+/// The steps after the target and its optional sibling are spawned.
+fn observe_steps(form: &str, state: &str, prefix: &str) -> Vec<Vec<ToolCall>> {
+    let wait_id = format!("{prefix}-wait");
+    match state {
+        "merged" => vec![
+            vec![wait(&format!("{prefix}-settle"), &["target"], None, None)],
+            vec![merge(&format!("{prefix}-merge"), "target")],
+            vec![form_wait(form, &wait_id, "target")],
+        ],
+        "archived" | "stopped" => vec![
+            vec![archive(&format!("{prefix}-archive"), "target")],
+            vec![form_wait(form, &wait_id, "target")],
+        ],
+        "running" if form == "named" => vec![
+            vec![release(&format!("{prefix}-release"), "target")],
+            vec![form_wait(form, &wait_id, "target")],
+        ],
+        _ => vec![vec![form_wait(form, &wait_id, "target")]],
     }
 }
 
-fn needs_sibling(state: &str) -> bool {
-    matches!(state, "running" | "starting")
+fn spawn_steps(form: &str, state: &str, prefix: &str) -> Vec<ToolCall> {
+    let mut step = vec![spawn(
+        &format!("{prefix}-spawn-target"),
+        "target",
+        "c3-target",
+    )];
+    if needs_sibling(form) {
+        step.push(spawn(
+            &format!("{prefix}-spawn-sibling"),
+            "sibling",
+            "c3-sibling",
+        ));
+    }
+    step
 }
 
 fn plans(seed: u64) -> Vec<Plan> {
     let form = form(seed);
     let state = state(seed);
     let relation = relation(seed);
-    let plans = vec![
+    let mut plans = vec![
         child_plan("c3-target", state),
         settled("c3-sibling"),
         Plan {
             tag: "c3-mid",
             steps: {
-                let mut spawns = vec![spawn("mid-spawn-target", "target", "c3-target")];
-                if needs_sibling(state) {
-                    spawns.push(spawn("mid-spawn-sibling", "sibling", "c3-sibling"));
-                }
-                vec![
-                    spawns,
-                    vec![state_wait(form, "mid-wait", state, "target", "sibling")],
-                ]
+                let mut steps = vec![spawn_steps(form, state, "mid")];
+                steps.extend(observe_steps(form, state, "mid"));
+                steps
             },
             fail_once: None,
         },
@@ -234,30 +278,27 @@ fn plans(seed: u64) -> Vec<Plan> {
         },
         Plan {
             tag: "c3-reopen",
-            steps: vec![vec![reopen_wait(
-                form,
-                "reopen-wait",
-                state,
-                "target",
-                "sibling",
-            )]],
+            steps: reopen_steps(form, state),
             fail_once: None,
         },
         Plan {
             tag: "c3-reopen-spawn",
             steps: {
-                let mut spawns = vec![spawn("reopen-spawn-target", "target", "c3-target")];
-                if needs_sibling(state) {
-                    spawns.push(spawn("reopen-spawn-sibling", "sibling", "c3-sibling"));
+                let mut steps = vec![spawn_steps(form, state, "reopen")];
+                if relation == "same_parent_other_runtime" && state != "running" {
+                    steps.extend(observe_steps(form, state, "reopen"));
                 }
-                vec![
-                    spawns,
-                    vec![call("reopen-read", "read", json!({"path": "marker.txt"}))],
-                ]
+                steps.push(vec![call(
+                    "reopen-read",
+                    "read",
+                    json!({"path": "marker.txt"}),
+                )]);
+                steps
             },
             fail_once: None,
         },
     ];
+    plans.push(settled("c3-sibling"));
     plans
 }
 
@@ -272,20 +313,23 @@ fn root_steps(form: &str, state: &str, relation: &str) -> Vec<Vec<ToolCall>> {
             )],
             vec![wait("root-join-mid", &["mid"], None, None)],
         ],
-        "same_parent_other_runtime" => vec![vec![
-            spawn("root-spawn-target", "target", "c3-target"),
-            spawn("root-spawn-sibling", "sibling", "c3-sibling"),
-        ]],
+        "same_parent_other_runtime" => vec![spawn_steps(form, state, "root")],
         _ => {
-            let mut step = vec![spawn("root-spawn-target", "target", "c3-target")];
-            if needs_sibling(state) {
-                step.push(spawn("root-spawn-sibling", "sibling", "c3-sibling"));
-            }
-            vec![
-                step,
-                vec![state_wait(form, "root-wait", state, "target", "sibling")],
-            ]
+            let mut steps = vec![spawn_steps(form, state, "root")];
+            steps.extend(observe_steps(form, state, "root"));
+            steps
         }
+    }
+}
+
+fn reopen_steps(form: &str, state: &str) -> Vec<Vec<ToolCall>> {
+    if state == "running" && form == "named" {
+        vec![
+            vec![release("reopen-release", "target")],
+            vec![form_wait(form, "reopen-wait", "target")],
+        ]
+    } else {
+        vec![vec![form_wait(form, "reopen-wait", "target")]]
     }
 }
 
@@ -342,6 +386,10 @@ fn is_settled(entry: &Value) -> bool {
     }
 }
 
+fn outcome(entry: &Value) -> Option<&str> {
+    entry.get("phase")?.get("done")?.get("outcome")?.as_str()
+}
+
 fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), String> {
     let form = form(seed);
     let state = state(seed);
@@ -356,7 +404,7 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
     if reason(value).is_empty() {
         return Err(format!("wait {id} returned no reason: {value}"));
     }
-    if form == "no_agents" && relation != "same_parent_other_runtime" {
+    if form == "no_agents" {
         if reason(value) != "input" {
             return Err(format!("no-agent wait returned {}: {value}", reason(value)));
         }
@@ -369,39 +417,83 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
         }
         return Ok(());
     }
+    let settled = field_entry(value, "settled", "target");
+    let unsettled = field_entry(value, "unsettled", "target");
     match state {
-        "starting" if relation != "same_parent_other_runtime" => {
-            if let Some(entry) = field_entry(value, "unsettled", "target") {
+        "starting" => {
+            if let Some(entry) = unsettled {
                 if entry.get("phase").and_then(Value::as_str) != Some("spawning") {
                     return Err(format!("wait {id} did not report spawning: {entry}"));
                 }
-            } else if field_entry(value, "settled", "target").is_none() {
+            } else if settled.is_none() {
                 return Err(format!(
                     "wait {id} reported neither spawning nor settled: {value}"
                 ));
             }
         }
-        "running" => {
-            let entry = field_entry(value, "unsettled", "target")
-                .ok_or_else(|| format!("wait {id} settled a running child: {value}"))?;
-            if is_settled(entry) {
-                return Err(format!("wait {id} reported running target done: {entry}"));
+        "running" => match form {
+            "timeout" | "quorum_need" => {
+                let entry = unsettled
+                    .ok_or_else(|| format!("wait {id} settled a running child: {value}"))?;
+                if is_settled(entry) {
+                    return Err(format!("wait {id} reported running target done: {entry}"));
+                }
+            }
+            _ => {
+                let entry = settled
+                    .ok_or_else(|| format!("wait {id} did not settle released target: {value}"))?;
+                if !is_settled(entry) {
+                    return Err(format!("wait {id} reported target not settled: {entry}"));
+                }
+            }
+        },
+        "settled_failed" => {
+            let entry =
+                settled.ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
+            if !is_settled(entry) || entry.get("failed").is_none() {
+                return Err(format!("wait {id} hid target's failure: {entry}"));
             }
         }
-        "settled_failed" | "archived" | "stopped" => {
-            let entry = field_entry(value, "settled", "target")
-                .ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
-            if !is_settled(entry) {
+        "merged" => {
+            let entry =
+                settled.ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
+            if !is_settled(entry) || entry.get("failed").is_some() {
+                return Err(format!("wait {id} reported target wrong: {entry}"));
+            }
+            let merged = requests
+                .iter()
+                .flat_map(|request| settlements(request).unwrap_or_default())
+                .any(|settled| {
+                    settled.call.name == "fs"
+                        && settled.succeeded()
+                        && settled
+                            .call
+                            .arguments
+                            .get("command")
+                            .and_then(Value::as_str)
+                            .is_some_and(|command| command.starts_with("merge "))
+                });
+            if !merged {
+                return Err(format!("wait {id} never merged the target"));
+            }
+        }
+        "archived" | "stopped" => {
+            let entry =
+                settled.ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
+            if !is_settled(entry) || outcome(entry) != Some("archived") {
                 return Err(format!(
-                    "wait {id} did not report a terminal target: {entry}"
+                    "wait {id} did not report an archived target: {entry}"
                 ));
             }
         }
         _ => {
-            let entry = field_entry(value, "settled", "target")
-                .ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
+            let entry =
+                settled.ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
             if !is_settled(entry) || entry.get("failed").is_some() {
                 return Err(format!("wait {id} reported target wrong: {entry}"));
+            }
+            if entry.get("answer").and_then(Value::as_str) != Some(done("c3-target").as_str()) {
+                return Err(format!("wait {id} reported the wrong answer: {entry}"));
             }
         }
     }
@@ -432,7 +524,10 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                         spawned.prompts
                     ));
                 }
-                let recovery = vec![vec![("reopen", tag("c3-reopen"))]];
+                let mut recovery = vec![vec![("reopen", tag("c3-reopen"))]];
+                if form == "no_agents" {
+                    recovery[0].push(("wake", "wake".to_owned()));
+                }
                 let reopened = world
                     .incarnation(None, &recovery)
                     .await
