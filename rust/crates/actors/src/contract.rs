@@ -2,7 +2,7 @@
 use crate::wire;
 use std::collections::HashSet;
 
-fn valid_idempotency_key(value: &str) -> bool {
+pub(super) fn valid_idempotency_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256
 }
 
