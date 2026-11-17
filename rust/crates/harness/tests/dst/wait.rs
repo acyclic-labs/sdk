@@ -300,9 +300,9 @@ fn plans(seed: u64) -> Vec<Plan> {
         Plan {
             tag: "c3-reopen-spawn",
             steps: {
-                let mut steps = vec![spawn_steps(form, state, "reopen")];
+                let mut steps = vec![spawn_steps(form, state, "reopen-spawn")];
                 if relation == "same_parent_other_runtime" && state != "running" {
-                    steps.extend(observe_steps(form, state, "reopen"));
+                    steps.extend(observe_steps(form, state, "reopen-spawn"));
                 }
                 steps.push(vec![call(
                     "reopen-read",
