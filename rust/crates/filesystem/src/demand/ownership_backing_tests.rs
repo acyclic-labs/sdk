@@ -91,7 +91,7 @@ fn mount_backing_is_fully_funded_and_cloning_is_free() {
 }
 
 fn final_backing(expose_weak: bool) {
-    let mut original = NativeMaterializationWork::new(
+    let original = NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
@@ -99,10 +99,16 @@ fn final_backing(expose_weak: bool) {
     let baseline = original.live_allocation_bytes();
     let mut weak = None;
     let heap = measure(|| {
-        let custody = NativeMountAllocationCustody::new(&mut original).unwrap();
+        let (value, bytes) = original
+            .with_original_leaf(|work| crate::native_host::buffer::<u8, _>(31, work))
+            .unwrap();
+        let (value, custody) =
+            NativeMountAllocationCustody::adopt(value, bytes, &original).unwrap();
+        let custody = custody.unwrap();
         if expose_weak {
             weak = Some(crate::sync::Arc::downgrade(&custody.0));
         }
+        drop(value);
         drop(custody);
         original.charge(WorkCounters::UNCHARGED).unwrap();
     });

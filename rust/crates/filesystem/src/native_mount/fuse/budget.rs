@@ -1,7 +1,7 @@
 use super::{MountPath, NativeMountError};
 use crate::demand::NativeMountAllocationCustody;
 use crate::materializer::NativeResourceCredit::{Copy, Items};
-use crate::{NativeMaterializationWork, WorkCounters, WorkError};
+use crate::{NativeMaterializationWork, WorkError};
 
 pub(super) struct FuseOwned<T> {
     value: T,
@@ -59,30 +59,8 @@ impl<T> FuseOwned<T> {
         bytes: u64,
         work: &NativeMaterializationWork,
     ) -> Result<Self, crate::native_mount::NativeMountStartupAdmissionError> {
-        if bytes == 0 {
-            work.admit(WorkCounters::UNCHARGED)?;
-            return Ok(Self::empty(value));
-        }
-        let admitted = (|| {
-            let custody = NativeMountAllocationCustody::new(&mut work.clone())?;
-            work.with_original_leaf(|work| {
-                work.check()?;
-                custody.retain(bytes, work)?;
-                Ok::<_, crate::DemandError>(())
-            })?;
-            Ok::<_, crate::DemandError>(custody)
-        })();
-        match admitted {
-            Ok(custody) => Ok(Self {
-                value,
-                custody: Some(custody),
-            }),
-            Err(error) => {
-                drop(value);
-                work.with_original_leaf(|work| work.release(bytes))?;
-                Err(error.into())
-            }
-        }
+        let (value, custody) = NativeMountAllocationCustody::adopt(value, bytes, work)?;
+        Ok(Self { value, custody })
     }
 }
 
