@@ -319,8 +319,12 @@ fn parks_only_on_a_reachable_condition(kernel: Kernel) {
         Wait::Await {
             deadline: waited,
             input: wakes,
-        } => assert!(parks && waited == deadline && wakes == input),
-        Wait::Continue => assert!(!parks),
+        } => {
+            assert!(parks && waited == deadline && wakes == input);
+        }
+        Wait::Continue => {
+            assert!(!parks);
+        }
         _ => panic!("a condition wait only parks or continues"),
     }
 }
