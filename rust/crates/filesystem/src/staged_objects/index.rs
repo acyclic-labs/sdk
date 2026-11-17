@@ -399,6 +399,48 @@ impl Index {
 
 #[cfg(test)]
 #[test]
+fn invalid_spill_ranges_leave_the_index_unchanged() {
+    let mut index = Index::default();
+    let first = HashedObject::new(crate::ObjectKind::BlobChunk, vec![1; 64].into());
+    let second = HashedObject::new(crate::ObjectKind::BlobChunk, vec![2; 64].into());
+    let pending = HashedObject::new(crate::ObjectKind::BlobChunk, vec![3; 8].into());
+    let victims = [
+        (first.object_id(), first.stored_bytes().clone()),
+        (second.object_id(), second.stored_bytes().clone()),
+    ];
+    index.admit_resident(first.clone()).unwrap();
+    index.admit_resident(second).unwrap();
+    index.mark_spilled(&victims, 0, 128).unwrap();
+    index.remove(first.object_id());
+    index.admit_resident(pending.clone()).unwrap();
+    let free = index.free.clone();
+    let spilled = index.spilled.clone();
+    let order = index.order.clone();
+    let resident_bytes = index.resident_bytes;
+    let spill_end = index.spill_end;
+    for (offset, length) in [(1, 128), (1, 8)] {
+        assert!(matches!(
+            index.mark_spilled(
+                &[(pending.object_id(), pending.stored_bytes().clone())],
+                offset,
+                length
+            ),
+            Err(ObjectStoreError::Corrupt)
+        ));
+        assert_eq!(index.free, free);
+        assert_eq!(index.spilled, spilled);
+        assert_eq!(index.order, order);
+        assert_eq!(index.resident_bytes, resident_bytes);
+        assert_eq!(index.spill_end, spill_end);
+        assert!(matches!(
+            index.objects.get(&pending.object_id()),
+            Some(Staged::Resident { .. })
+        ));
+    }
+}
+
+#[cfg(test)]
+#[test]
 fn free_range_collection_finishes_while_a_producer_keeps_coalescing_holes() {
     for erase_budget in [false, true] {
         let mut index = Index::default();
