@@ -45,7 +45,7 @@ export async function serviceGenerate(family, directory, output) {
   await rm(names);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   if (![undefined, "write", "rust"].includes(process.argv[2])) throw new Error("usage: generate-actors.mjs [write]");
   await write();
 }

@@ -1,7 +1,6 @@
 import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
 
 // Failed-job retries can retain successful lanes from an earlier attempt of
 // this same release run. Freeze their explicit names after all lanes pass.
@@ -23,7 +22,7 @@ export function selectArtifacts(artifacts, run, attempt) {
   return selected;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const {GITHUB_REPOSITORY: repo, GITHUB_RUN_ID: run, GITHUB_RUN_ATTEMPT: attempt, GITHUB_OUTPUT: output} = process.env;
   if (!output) throw new Error('GITHUB_OUTPUT is required for qualification artifact outputs');
   const pages = JSON.parse(execFileSync('gh', ['api', '--paginate', '--slurp',

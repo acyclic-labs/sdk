@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 function fail(message) {
   throw new Error(message);
@@ -125,7 +123,7 @@ export function verifyNativeImage(bytes, target) {
   return target;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const [target, path, ...extra] = process.argv.slice(2);
   if (!target || !path || extra.length) fail("usage: verify-release-binary.mjs TARGET|--native BINARY");
   verifyNativeImage(readFileSync(path), target === "--native" ? undefined : target);

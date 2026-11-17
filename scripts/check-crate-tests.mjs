@@ -1,7 +1,7 @@
 // Each Cargo invocation selects exactly one workspace member, so another
 // member's features cannot make its tests compile. Each worker owns a stable
 // target directory so Cargo and target-store leases permit actual overlap.
-import { isMain, repositoryRoot as root } from "./policy-core.mjs";
+import { repositoryRoot as root } from "./policy-core.mjs";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { workspaceDefaults } from "./workspace-defaults.mjs";
@@ -37,7 +37,7 @@ export async function checkCrateTests(packages, workers, target, run, selection 
   return failures.sort();
 }
 
-if (isMain(import.meta.url)) {
+if (import.meta.main) {
   const metadata = JSON.parse(execFileSync("cargo",
     ["metadata", "--locked", "--no-deps", "--format-version", "1"], { encoding: "utf8" }));
   const packages = workspacePackages(metadata);

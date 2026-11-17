@@ -1,4 +1,3 @@
-import { isMain } from "./policy-core.mjs";
 import { readFileSync } from "node:fs";
 import { localCargoPackages } from "./publish-cargo-crates.mjs";
 
@@ -24,7 +23,7 @@ export function checkCloudNativeFeatures(packages) {
   }
 }
 
-if (isMain(import.meta.url)) {
+if (import.meta.main) {
   checkCloudNativeFeatures(localCargoPackages());
   console.log("Cloud native feature policy: PASS");
 }

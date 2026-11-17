@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { isMain, repositoryRoot as root, trackedFiles } from "./policy-core.mjs";
+import { repositoryRoot as root, trackedFiles } from "./policy-core.mjs";
 
 import { assertByteSnapshotBoundary } from "./wasm-source-policy.mjs";
 
@@ -67,4 +67,4 @@ async function main() {
   if (failures.length) { console.error(failures.join("\n")); process.exitCode = 1; }
 }
 
-if (isMain(import.meta.url)) await main();
+if (import.meta.main) await main();

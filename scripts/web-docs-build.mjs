@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { globSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { packageClosure, workspaceManifests } from "./package-closure.mjs";
 import { releaseBuild } from "./release-build.mjs";
 
@@ -81,4 +81,4 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main();
+if (import.meta.main) await main();

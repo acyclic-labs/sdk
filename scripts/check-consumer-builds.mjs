@@ -2,7 +2,7 @@
 // Code generation is a separate boundary from `cargo check`: async layout
 // queries can overflow only when a downstream executable is monomorphized.
 // One package per invocation keeps unrelated workspace features out of it.
-import { isMain, repositoryRoot as root } from "./policy-core.mjs";
+import { repositoryRoot as root } from "./policy-core.mjs";
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -85,4 +85,4 @@ export async function main(args = process.argv.slice(2)) {
   if (failures.length) process.exitCode = 1;
 }
 
-if (isMain(import.meta.url)) await main();
+if (import.meta.main) await main();

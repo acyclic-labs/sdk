@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { generate } from "./proto-codegen.mjs";
 import { resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { projectGenerated } from "./generated-bindings.mjs";
 
 const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -33,7 +33,7 @@ export function nativeFamily(key) {
   return immutable(value);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   if (!["write", "check"].includes(process.argv[2]) || process.argv.length !== 3) {
     throw new Error("STEP_FAILED native-family-generation: expected write|check; recovery: node scripts/native-family.mjs write");
   }

@@ -1,8 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { loomModelPackages } from "./check-test-support.mjs";
 
 /** @typedef {(command: string, args: string[], options: {
@@ -732,7 +730,7 @@ export function qualificationMain(args, run = runCommand) {
   } else dispatch(args, run);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const started = performance.now();
   const args = process.argv.slice(2);
   let status = "FAIL";

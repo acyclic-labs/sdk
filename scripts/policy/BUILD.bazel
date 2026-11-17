@@ -29,6 +29,8 @@ node_test(
     name = "core_test",
     srcs = [
         "core.test.mjs",
+        "//:scripts/check-cargo-callers.mjs",
+        "//:scripts/fixtures/cargo-callers/recorded-log.txt",
         "//:scripts/policy-core.mjs",
         "//:scripts/check-js-licenses.mjs",
         "//:scripts/check-js-licenses.fuzz.mjs",

@@ -1,6 +1,6 @@
 import {spawn} from 'node:child_process';
 import {readFileSync} from 'node:fs';
-import {isMain, trackedFiles} from './policy-core.mjs';
+import { trackedFiles } from './policy-core.mjs';
 
 // Inspect declarations, not unified enabled features: a dev dependency or
 // another workspace member must not accidentally supply the missing edge.
@@ -240,7 +240,7 @@ export function checkTestSupportExports(sources) {
   return exports.length;
 }
 
-if (isMain(import.meta.url)) {
+if (import.meta.main) {
   // Resolve every optional and target-specific edge, including registry crates.
   const child = spawn('cargo', ['metadata', '--locked', '--all-features', '--format-version', '1'],
     {stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true});

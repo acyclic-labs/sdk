@@ -139,6 +139,6 @@ async function publishExact(name, version, archive, sourceSha) {
   );
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   await main();
 }

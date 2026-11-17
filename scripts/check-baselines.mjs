@@ -1,4 +1,4 @@
-import { isMain, repositoryRoot as root } from "./policy-core.mjs";
+import { repositoryRoot as root } from "./policy-core.mjs";
 import "./check-compatibility-digests.mjs";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,4 +33,4 @@ if (JSON.stringify(nativeWasmCase?.vector) !== JSON.stringify(vector)) {
   throw new Error("native/WASM fixture is not bound into the Harness suite");
 }
 
-if (isMain(import.meta.url) && process.argv[2] !== "--no-compile") checkDescriptors();
+if (import.meta.main && process.argv[2] !== "--no-compile") checkDescriptors();

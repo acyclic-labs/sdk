@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { readBoundedGzip, sha256, tarEntries } from "./archive-utils.mjs";
 
 const MAX_ARCHIVE_BYTES = 104_857_600;
@@ -83,7 +81,7 @@ export function validateArchive(archive, name, version, directory) {
   return sha256(compressed);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   if (process.argv.length !== 6) fail("usage: validate-npm-package.mjs ARCHIVE NAME VERSION DIRECTORY");
   console.log(validateArchive(...process.argv.slice(2)));
 }

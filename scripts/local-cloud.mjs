@@ -376,7 +376,7 @@ async function main(options) {
   return outcome.passed ? 0 : 1;
 }
 
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) {
+if (import.meta.main) {
   const [command, ...rest] = process.argv.slice(2);
   process.exitCode = await (command === "hook" ? hook(rest[0]) : main(parseArgs(process.argv.slice(2))));
 }

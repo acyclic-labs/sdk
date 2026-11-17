@@ -66,7 +66,7 @@ export function environment(settings, inherited = process.env) {
 
 // Cross-language callers use the same native owner, OS launcher and isolated
 // profile as JavaScript fixtures. Unrelated inherited values stay outside it.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const [mode, settings, ...extra] = process.argv.slice(2);
   try {
     assert.ok(mode === "profile" && settings && isAbsolute(settings) && !extra.length,

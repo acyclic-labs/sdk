@@ -74,4 +74,4 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) generateProto();
+if (import.meta.main) generateProto();
