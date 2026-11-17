@@ -39,7 +39,7 @@ def _deny_test_impl(ctx):
     script = ctx.actions.declare_file(ctx.label.name + ".sh")
     ctx.actions.write(
         script,
-        "#!/bin/sh\ncd \"$TEST_SRCDIR/$TEST_WORKSPACE\" || exit 1\nexec \"%s\" \"%s\"\n" % (ctx.executable._node.short_path, ctx.file._runner.short_path),
+        "#!/bin/sh\ncd \"$TEST_SRCDIR/$TEST_WORKSPACE\" || exit 1\nexec \"%s\" \"%s\" \"$TEST_SRCDIR/$TEST_WORKSPACE/deny-compiler/bin/cargo\"\n" % (ctx.executable._node.short_path, ctx.file._runner.short_path),
         is_executable = True,
     )
     return [DefaultInfo(executable = script, runfiles = runfiles)]
