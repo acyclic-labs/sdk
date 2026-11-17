@@ -98,7 +98,7 @@ pub(super) fn lock(file: &MountLockFile) -> io::Result<()> {
         }
         match file.1.try_lock(file, file.2) {
             Ok(()) => return Ok(()),
-            Err(error) if super::lock_is_contended(&error) => {
+            Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
                 file.1.wait_for_unlock(file, file.2);
             }
             Err(error) => return Err(error),
