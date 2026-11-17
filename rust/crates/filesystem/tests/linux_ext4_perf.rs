@@ -21,7 +21,7 @@ fn component(value: &str) -> Vec<u8> {
 }
 
 /// Serializes real FUSE mounts across the test runner's per-case processes.
-struct MountSerial(std::fs::File);
+struct MountSerial(_file: std::fs::File);
 
 impl MountSerial {
     fn acquire() -> Result<Self, Box<dyn std::error::Error>> {
