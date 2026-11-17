@@ -105,7 +105,7 @@ fn checked(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         drop(header);
         assert_eq!(retained.as_bytes(), encoded.as_ref());
     }
-    #[cfg(all(not(target_arch = "wasm32"), feature = "grpc-metadata"))]
+    #[cfg(feature = "grpc-metadata")]
     {
         let metadata = acyclic_auth::credential::bearer_metadata(value);
         let expected =

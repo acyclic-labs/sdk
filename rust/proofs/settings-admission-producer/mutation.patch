@@ -1,13 +1,13 @@
-diff --git a/rust/crates/harness/src/local/agent_settings.rs b/rust/crates/harness/src/local/agent_settings.rs
---- a/rust/crates/harness/src/local/agent_settings.rs
-+++ b/rust/crates/harness/src/local/agent_settings.rs
-@@ -319,7 +319,8 @@ async fn settle(
+diff --git a/rust/crates/harness-local/src/local/agent_settings.rs b/rust/crates/harness-local/src/local/agent_settings.rs
+--- a/rust/crates/harness-local/src/local/agent_settings.rs
++++ b/rust/crates/harness-local/src/local/agent_settings.rs
+@@ -506,7 +506,8 @@ async fn settle(
          tree,
-         serde_json::json!({ "model": selection }),
+         model_base(base, input.as_ref())?,
      )
 -    .await?
 +    .await
 +    .unwrap_or_else(Err)
      .map_err(Refused::evaluated)?;
-     let settings: AgentConfig = serde_json::from_value(value)
-         .map_err(|error| invalid(format!("{}: {error}", config::AGENT)))?;
+     let settings = value.decode::<AgentConfig>().map_err(Refused::decoded)?;
+     let rejected = |reason: &str| {

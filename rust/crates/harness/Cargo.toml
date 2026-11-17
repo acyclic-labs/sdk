@@ -41,8 +41,8 @@ consumer-features = [{ features = ["browser"], target = "wasm32-unknown-unknown"
 
 [features]
 research = ["acyclic-harness-core/research"]
-conformance = ["acyclic-fs/conformance", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/test-support", "acyclic-harness-core/test-support", "dep:ed25519-dalek"]
-test-support = ["acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support", "acyclic-harness-devices/test-support", "acyclic-harness-mcp/test-support", "acyclic-harness-native-settings/test-support"]
+conformance = ["acyclic-fs/conformance", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/test-support", "acyclic-harness-core/test-support", "dep:ed25519-dalek", "dep:acyclic-harness-suite"]
+test-support = ["acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support", "acyclic-harness-devices/test-support", "acyclic-harness-mcp/test-support", "acyclic-harness-native-settings/test-support", "acyclic-harness-hosting/test-support", "acyclic-harness-local/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
 browser = ["wasm", "acyclic-objects/javascript", "acyclic-fs/browser", "acyclic-harness-core/browser"]
 wasm-journal = ["browser", "acyclic-stream/wasm-journal"]
@@ -61,6 +61,9 @@ acyclic-harness-experiments = { version = "=0.2.0", path = "../harness-experimen
 acyclic-harness-objects = { version = "=0.2.0", path = "../harness-objects" }
 acyclic-harness-oidc = { version = "=0.2.0", path = "../harness-oidc" }
 acyclic-harness-mcp = { version = "=0.2.0", path = "../harness-mcp" }
+acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
+acyclic-harness-local = { version = "=0.2.0", path = "../harness-local", default-features = false }
+acyclic-harness-suite = { version = "=0.2.0", path = "../harness-suite", optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
@@ -132,11 +135,9 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal", "i
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { workspace = true, features = ["fs"] }
 
-[build-dependencies]
-serde_json.workspace = true
-
 [dev-dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
+acyclic-harness-local = { version = "=0.2.0", path = "../harness-local", features = ["test-support"] }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 proc-macro2 = "=1.0.107"

@@ -6,7 +6,7 @@ import { copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { publicationDependencyErrors, registryArchiveMatches } from "./publish-cargo-crates.mjs";
+import { publicationDependencyErrors, readmeErrors, registryArchiveMatches } from "./publish-cargo-crates.mjs";
 
 test("publication check rejects a newly publishable workspace crate until its inventory is updated", () => {
   const repository = mkdtempSync(join(tmpdir(), "acyclic-cargo-inventory-"));
@@ -31,7 +31,7 @@ test("publication check rejects a newly publishable workspace crate until its in
   try {
     mkdirSync(join(repository, "scripts"));
     mkdirSync(join(repository, "release"));
-    for (const name of ["publish-cargo-crates.mjs", "registry-publication.mjs"]) {
+    for (const name of ["publish-cargo-crates.mjs", "registry-publication.mjs", "policy-core.mjs"]) {
       copyFileSync(resolve("scripts", name), join(repository, "scripts", name));
     }
     writeFileSync(join(repository, "release", "cargo-equivalent-archives.json"), "{}");
@@ -46,9 +46,26 @@ test("publication check rejects a newly publishable workspace crate until its in
     const missing = check();
     assert.equal(missing.status, 1);
     assert.match(missing.stderr, /must contain every publishable local crate exactly once/);
-    inventory(["alpha", "beta"]);
+    const generated = spawnSync(process.execPath, ["scripts/publish-cargo-crates.mjs", "generate"],
+      { cwd: repository, encoding: "utf8" });
+    assert.equal(generated.status, 0, generated.stderr);
     const repaired = check();
     assert.equal(repaired.status, 0, repaired.stderr);
+  } finally {
+    rmSync(repository, { recursive: true, force: true });
+  }
+});
+
+test("publication check rejects a declared readme that is not in the crate", () => {
+  const repository = mkdtempSync(join(tmpdir(), "acyclic-cargo-readme-"));
+  try {
+    const manifest = join(repository, "crate", "Cargo.toml");
+    mkdirSync(dirname(manifest), { recursive: true });
+    const item = { name: "crate", manifest_path: manifest, readme: "README.md" };
+    assert.deepEqual(readmeErrors([item]), ["crate declares missing readme README.md"]);
+    writeFileSync(join(repository, "crate", "README.md"), "# crate\n");
+    assert.deepEqual(readmeErrors([item]), []);
+    assert.deepEqual(readmeErrors([{ ...item, readme: null }]), []);
   } finally {
     rmSync(repository, { recursive: true, force: true });
   }

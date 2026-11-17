@@ -49,7 +49,8 @@ use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use acyclic_harness_client::{
     AgentBinding, AgentCall, AgentCommand, AgentPageRequest, AgentReply, ChildAgent,
-    MAX_AGENT_COMMAND_BYTES, MAX_READ_BYTES, PendingApproval, ReadTarget,
+    MAX_AGENT_COMMAND_BYTES, MAX_READ_BYTES, PageCredit, PendingApproval, ReadTarget,
+    page_json_bytes,
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
@@ -111,7 +112,7 @@ pub trait Platform: ProviderPlatform + 'static {
         &'a self,
         principal: &'a Principal,
         command: &'a AgentCommand,
-    ) -> BoxProviderFuture<'a, Result<PolicyDecision, StreamError>>;
+    ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>>;
 
     /// Whether this platform runs the children a spawn creates. One that runs
     /// none refuses every spawn command before it stages or commits anything.
@@ -122,7 +123,7 @@ pub trait Platform: ProviderPlatform + 'static {
     /// Durable wake admission, after both credential and current policy allow
     /// dispatch, and before any command effect. Native continuous runtimes need
     /// no additional wake; event platforms retain their recovery alarm here.
-    fn admitted(&self) -> BoxProviderFuture<'_, Result<(), StreamError>> {
+    fn admitted(&self) -> BoxProviderFuture<'_, std::result::Result<(), StreamError>> {
         Box::pin(async { Ok(()) })
     }
 
@@ -259,7 +260,7 @@ where
     ///
     /// # Errors
     /// As [`serve`].
-    pub async fn resubmit(self) -> Result<Serving<P, O>, Error> {
+    pub async fn resubmit(self) -> std::result::Result<Serving<P, O>, Error> {
         settle(self.bound, self.platform, self.prepared).await
     }
 }
@@ -275,7 +276,7 @@ pub async fn serve<P, O>(
     platform: Arc<dyn Platform>,
     intent: &IntentId,
     root: RootRequest,
-) -> Result<Serving<P, O>, Error>
+) -> std::result::Result<Serving<P, O>, Error>
 where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
@@ -289,7 +290,7 @@ async fn settle<P, O>(
     bound: Bound<P, O>,
     platform: Arc<dyn Platform>,
     prepared: Prepared,
-) -> Result<Serving<P, O>, Error>
+) -> std::result::Result<Serving<P, O>, Error>
 where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
@@ -319,7 +320,7 @@ pub async fn reopen<P, O>(
     bound: Bound<P, O>,
     platform: Arc<dyn Platform>,
     root: AgentPath,
-) -> Result<Arc<Server<P, O>>, Error>
+) -> std::result::Result<Arc<Server<P, O>>, Error>
 where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
@@ -335,7 +336,7 @@ fn server<P, O>(
     bound: Bound<P, O>,
     platform: Arc<dyn Platform>,
     root: AgentPath,
-) -> Result<Arc<Server<P, O>>, Error>
+) -> std::result::Result<Arc<Server<P, O>>, Error>
 where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
@@ -378,7 +379,7 @@ where
     /// Delivers one explicitly placed agent to quiescence. Returns its
     /// committed undelivered alarm for an event host's native alarm primitive.
     /// An unsettled publication retains its runtime slot and cannot be released.
-    pub async fn drain(&self, agent: &AgentPath) -> Result<Option<u64>, Error> {
+    pub async fn drain(&self, agent: &AgentPath) -> std::result::Result<Option<u64>, Error> {
         let agent = self.within_tree(agent)?;
         self.bound.agents().drain_event(agent).await
     }
@@ -412,7 +413,7 @@ where
     }
 
     /// Decodes `invocation` and checks it routes to this server, with no IO.
-    fn admit(&self, invocation: &[u8]) -> Result<AgentCall, StreamError> {
+    fn admit(&self, invocation: &[u8]) -> std::result::Result<AgentCall, StreamError> {
         let call = AgentCall::decode(invocation).map_err(|_| StreamError::InvalidArgument)?;
         let within = self.bound.within();
         let routed = call.invocation();
@@ -434,7 +435,7 @@ where
     }
 
     /// `agent` when it is the root or one of its descendants.
-    fn within_tree<'a>(&self, agent: &'a AgentPath) -> Result<&'a AgentPath, Error> {
+    fn within_tree<'a>(&self, agent: &'a AgentPath) -> std::result::Result<&'a AgentPath, Error> {
         (self.root.contains(agent) || self.platform.sessions())
             .then_some(agent)
             .ok_or(Error::NoSuchAgent)
@@ -498,7 +499,7 @@ where
         command: &AgentCommand,
         attributes: &acyclic_auth::contract::RecordAttributes,
         policy: PolicyDecision,
-    ) -> Result<(), StreamError> {
+    ) -> std::result::Result<(), StreamError> {
         authorization.authorize(&self.resource, &[], attributes, policy)?;
         if let AgentCommand::Sessions {
             scope: acyclic_harness_client::SessionsScope::Peers,
@@ -541,7 +542,7 @@ where
         by: &Sender,
         id: &IntentId,
         action: ContextAction,
-    ) -> Result<AgentReply, Error> {
+    ) -> std::result::Result<AgentReply, Error> {
         let record = InboxRecord::Context(ContextRequest {
             by: by.clone(),
             id: id.clone(),
@@ -559,7 +560,7 @@ where
         command: &'a AgentCommand,
         by: &'a Sender,
         approver: &'a str,
-    ) -> BoxProviderFuture<'a, Result<AgentReply, Error>> {
+    ) -> BoxProviderFuture<'a, std::result::Result<AgentReply, Error>> {
         // Construct this operation before entering its poll graph. The session
         // carrier keeps the admitted command; its caller retains one owner.
         Box::pin(self.dispatch_inner(command, by, approver))
@@ -570,7 +571,7 @@ where
         command: &AgentCommand,
         by: &Sender,
         approver: &str,
-    ) -> Result<AgentReply, Error> {
+    ) -> std::result::Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
             AgentCommand::Bind { agent } => {
@@ -983,9 +984,9 @@ where
                         break;
                     }
                 }
-                let next = if credit.items < items.len() {
+                let next = if credit.items() < items.len() {
                     Some(
-                        items[credit.items - 1]
+                        items[credit.items() - 1]
                             .status
                             .checked_add(1)
                             .ok_or(Error::Record("completion status overflow"))?
@@ -994,7 +995,7 @@ where
                 } else {
                     None
                 };
-                items.truncate(credit.items);
+                items.truncate(credit.items());
                 Ok(AgentReply::ChildWakes { items, next })
             }
             AgentCommand::Directory {
@@ -1368,7 +1369,7 @@ where
                     }
                     before = cursor.before;
                 }
-                items.truncate(credit.items);
+                items.truncate(credit.items());
                 cursor.before = before;
                 let next = history_cursor(&cursor)?;
                 Ok(AgentReply::History { items, next })
@@ -1607,9 +1608,9 @@ where
                         break;
                     }
                 }
-                let all_fit = credit.items == items.len();
+                let all_fit = credit.items() == items.len();
                 let continued = !all_fit || listed.next_after.is_some();
-                items.truncate(credit.items);
+                items.truncate(credit.items());
                 let next = if continued {
                     let last = if all_fit {
                         last_scanned.as_ref().ok_or(Error::Record(
@@ -1842,7 +1843,7 @@ where
         digest: &str,
         parts: u32,
         bytes: u64,
-    ) -> Result<Vec<u8>, Error> {
+    ) -> std::result::Result<Vec<u8>, Error> {
         let agent = self.within_tree(agent)?;
         let mut whole = Vec::new();
         let mut hasher = blake3::Hasher::new();
@@ -1875,7 +1876,7 @@ where
     }
 
     /// The tail of stream `path`; an absent stream holds nothing.
-    async fn tail(&self, path: StreamPath) -> Result<u64, Error> {
+    async fn tail(&self, path: StreamPath) -> std::result::Result<u64, Error> {
         match self.bound.agents().provider().tail(path).await {
             Ok(tail) => Ok(tail),
             Err(error) if error.category() == StreamCategory::NotFound => Ok(0),
@@ -1889,11 +1890,11 @@ where
 const STAGED_PART: &str = "command-part";
 
 /// The intent one part of the command staged under `digest` is held under.
-fn part_intent(digest: &str, part: u32) -> Result<IntentId, Error> {
+fn part_intent(digest: &str, part: u32) -> std::result::Result<IntentId, Error> {
     IntentId::try_from(format!("{digest}.{part}"))
 }
 
-fn text(content: &ModelContent) -> Result<&str, Error> {
+fn text(content: &ModelContent) -> std::result::Result<&str, Error> {
     match content {
         ModelContent::Text(text) => Ok(text.as_str()),
         _ => Err(Error::Record("agent input must be text")),
@@ -1920,93 +1921,6 @@ fn children_cursor(version: &CommitId, after: &str) -> String {
     cursor
 }
 
-fn page_json_bytes(value: &impl serde::Serialize) -> Result<u64, Error> {
-    crate::executor::json::json_byte_length(value, None, &mut None)
-        .map_err(|_| Error::Record("agent page encoding failed"))
-}
-
-/// Count each bounded row once, then reserve its actual canonical wire envelope.
-/// Cursor content is counted separately from its quotes in the empty envelope.
-struct PageCredit {
-    end_envelope: u64,
-    next_envelope: u64,
-    bytes: u64,
-    items: usize,
-    maximum: u64,
-}
-
-impl PageCredit {
-    fn new(
-        page: &AgentPageRequest,
-        empty: impl Fn(Option<String>) -> AgentReply,
-    ) -> Result<Self, Error> {
-        Self::from_envelopes(page, &empty(None), &empty(Some(String::new())))
-    }
-
-    fn from_envelopes<C>(
-        page: &AgentPageRequest<C>,
-        end: &impl serde::Serialize,
-        next: &impl serde::Serialize,
-    ) -> Result<Self, Error> {
-        let end_envelope = page_json_bytes(end)?;
-        let maximum = u64::from(page.bytes());
-        if !acyclic_harness_client::encoded_agent_reply_size(end_envelope)
-            .is_ok_and(|encoded| encoded <= maximum)
-        {
-            return Err(Error::Stream(StreamError::Capacity));
-        }
-        Ok(Self {
-            end_envelope,
-            next_envelope: page_json_bytes(next)?,
-            bytes: 0,
-            items: 0,
-            maximum,
-        })
-    }
-
-    fn accept(
-        &mut self,
-        item: &impl serde::Serialize,
-        next_bytes: Option<u64>,
-    ) -> Result<bool, Error> {
-        let Some(bytes) = self.admits(item, next_bytes)? else {
-            return if self.items == 0 {
-                Err(Error::Stream(StreamError::Capacity))
-            } else {
-                Ok(false)
-            };
-        };
-        self.bytes = bytes;
-        self.items += 1;
-        Ok(true)
-    }
-
-    fn accept_boundary(&self, next_bytes: Option<u64>) -> Result<bool, Error> {
-        let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
-        let accepted = acyclic_harness_client::encoded_agent_reply_size(self.bytes + envelope)
-            .is_ok_and(|encoded| encoded <= self.maximum);
-        if !accepted && self.items == 0 {
-            return Err(Error::Stream(StreamError::Capacity));
-        }
-        Ok(accepted)
-    }
-    /// The page's row bytes with `item` appended, or `None` when it would
-    /// exceed the requested credit.
-    fn admits(
-        &self,
-        item: &impl serde::Serialize,
-        next_bytes: Option<u64>,
-    ) -> Result<Option<u64>, Error> {
-        let bytes = self.bytes + page_json_bytes(item)? + u64::from(self.items != 0);
-        let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
-        Ok(
-            acyclic_harness_client::encoded_agent_reply_size(bytes + envelope)
-                .is_ok_and(|encoded| encoded <= self.maximum)
-                .then_some(bytes),
-        )
-    }
-}
-
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HistoryCursor {
@@ -2016,7 +1930,7 @@ struct HistoryCursor {
     tail: u64,
 }
 
-fn history_cursor(cursor: &HistoryCursor) -> Result<Option<String>, Error> {
+fn history_cursor(cursor: &HistoryCursor) -> std::result::Result<Option<String>, Error> {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     (cursor.before != 0)
         .then(|| {
@@ -2028,7 +1942,7 @@ fn history_cursor(cursor: &HistoryCursor) -> Result<Option<String>, Error> {
 }
 
 /// The hierarchy version and last path [`children_cursor`] encoded.
-fn parse_children_cursor(cursor: &str) -> Result<(CommitId, StreamPath), Error> {
+fn parse_children_cursor(cursor: &str) -> std::result::Result<(CommitId, StreamPath), Error> {
     let invalid = || Error::Stream(StreamError::InvalidArgument);
     let (version, after) = cursor.split_once(':').ok_or_else(invalid)?;
     if version.len() != 64 {
@@ -2100,7 +2014,7 @@ where
     fn target(
         &self,
         invocation: &[u8],
-    ) -> Result<acyclic_stream::session::CallTarget, StreamError> {
+    ) -> std::result::Result<acyclic_stream::session::CallTarget, StreamError> {
         self.admit(invocation)?;
         acyclic_stream::session::CallTarget::new(self.resource.clone(), "actors/invoke")
     }
@@ -2109,7 +2023,7 @@ where
         &self,
         invocation: Bytes,
         authorization: CallAuthorization,
-    ) -> BoxProviderFuture<'static, Result<Bytes, StreamError>> {
+    ) -> BoxProviderFuture<'static, std::result::Result<Bytes, StreamError>> {
         let admitted = self.admit(&invocation);
         let server = self.this.upgrade();
         Box::pin(async move {
@@ -2231,8 +2145,8 @@ where
 // Record only the command kind and stable codec failure, never command bodies.
 fn reply(
     call: &acyclic_harness_client::AgentCall,
-    result: &Result<AgentReply, Error>,
-) -> Result<Bytes, StreamError> {
+    result: &std::result::Result<AgentReply, Error>,
+) -> std::result::Result<Bytes, StreamError> {
     call.reply(result).map_err(|error| {
         tracing::error!(
             command = ?call.command().kind(),

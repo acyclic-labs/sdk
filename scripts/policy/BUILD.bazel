@@ -1,0 +1,19 @@
+load(":node_test.bzl", "node_test")
+
+node_test(
+    name = "core_test",
+    srcs = ["core.test.mjs", "//:scripts/policy-core.mjs"],
+    entry = "scripts/policy/core.test.mjs",
+)
+
+node_test(
+    name = "rustfmt_test",
+    srcs = [
+        "//:rust-toolchain.toml",
+        "//:rustfmt.toml",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/qualify-rustfmt.mjs",
+        "//:scripts/qualify-rustfmt.test.mjs",
+    ],
+    entry = "scripts/qualify-rustfmt.test.mjs",
+)

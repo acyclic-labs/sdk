@@ -1,6 +1,6 @@
-diff --git a/rust/crates/harness/src/local/agent_conversation.rs b/rust/crates/harness/src/local/agent_conversation.rs
---- a/rust/crates/harness/src/local/agent_conversation.rs
-+++ b/rust/crates/harness/src/local/agent_conversation.rs
+diff --git a/rust/crates/harness-local/src/local/agent_conversation.rs b/rust/crates/harness-local/src/local/agent_conversation.rs
+--- a/rust/crates/harness-local/src/local/agent_conversation.rs
++++ b/rust/crates/harness-local/src/local/agent_conversation.rs
 @@ -528,8 +528,8 @@
      pub async fn observe(&self, from: Option<u64>) -> Result<super::Observer> {
 -        let (settled, statuses, _) = self.settlement().await?;

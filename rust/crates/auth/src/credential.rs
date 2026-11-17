@@ -57,8 +57,8 @@ pub enum CredentialError {
     /// The credential cannot be represented as an HTTP header.
     #[error("invalid credential header")]
     Header(#[source] http::header::InvalidHeaderValue),
-    /// The credential cannot be represented as native gRPC metadata.
-    #[cfg(all(not(target_arch = "wasm32"), feature = "grpc-metadata"))]
+    /// The credential cannot be represented as gRPC metadata.
+    #[cfg(feature = "grpc-metadata")]
     #[error("invalid credential metadata")]
     Metadata(#[source] tonic::metadata::errors::InvalidMetadataValueBytes),
     /// The provider names the channel's own transport identity and has no
@@ -74,7 +74,7 @@ impl CredentialError {
     pub const fn denial_cause(&self) -> Option<crate::DenialCause> {
         match self {
             Self::Invalid | Self::Header(_) => Some(crate::DenialCause::Malformed),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "grpc-metadata"))]
+            #[cfg(feature = "grpc-metadata")]
             Self::Metadata(_) => Some(crate::DenialCause::Malformed),
             Self::Cache { cause, .. } => *cause,
             Self::Provider(_) | Self::TransportIdentity => None,
@@ -431,12 +431,12 @@ pub fn bearer_header(value: &str) -> Result<http::HeaderValue, CredentialError> 
     Ok(header)
 }
 
-/// Construct sensitive native gRPC authorization over the same protected bytes.
+/// Construct sensitive gRPC authorization over the same protected bytes.
 /// This checks representation, not the authority or freshness of a credential.
 ///
 /// # Errors
 /// Malformed credentials retain their original metadata parser failure when present.
-#[cfg(all(not(target_arch = "wasm32"), feature = "grpc-metadata"))]
+#[cfg(feature = "grpc-metadata")]
 pub fn bearer_metadata(
     value: &str,
 ) -> Result<tonic::metadata::MetadataValue<tonic::metadata::Ascii>, CredentialError> {

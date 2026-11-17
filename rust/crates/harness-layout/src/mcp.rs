@@ -1,5 +1,5 @@
 //! Heap layouts of the rmcp model types MCP responses and requests decode.
-use crate::heap_layout::{Alloc, HeapLayout, JsonLayout};
+use crate::{Alloc, HeapLayout, JsonLayout};
 use rmcp::model::{
     Annotations, AudioContent, CacheScope, CallToolRequestParams, CallToolResult, ContentBlock,
     EmbeddedResource, GetPromptRequestParams, GetPromptResult, Icon, IconTheme, ImageContent,

@@ -1,6 +1,7 @@
-//! Shared bounded paging of one authorized file projection.
-use super::{AgentPageRequest, AgentReply, Error, PageCredit};
-use crate::client::{DiffCursor, DiffFilePage, DiffView};
+//! Bounded paging of one authorized file projection.
+use super::{DiffCursor, DiffFilePage, DiffView};
+use crate::{AgentPageRequest, AgentReply, PageCredit, Result};
+use acyclic_harness_core::agent::Error as AgentError;
 use acyclic_stream::StreamError;
 
 /// Endpoint bytes admitted for one file comparison; larger files are explicit omissions.
@@ -18,7 +19,7 @@ impl DiffView {
         &self,
         cursor: Option<&DiffCursor>,
         page: &AgentPageRequest,
-    ) -> crate::Result<Vec<DiffFilePage>> {
+    ) -> Result<Vec<DiffFilePage>> {
         let mut credit = PageCredit::new(page, |_| AgentReply::Diff { items: Vec::new() })
             .map_err(credit_error)?;
         let mut rows = page.items() as usize;
@@ -35,7 +36,7 @@ impl DiffView {
                 // Keep the accepted prefix and its continuation. Shrinking another
                 // fragment must never discard rows already funded by this page.
                 Ok(false) => break,
-                Err(Error::Stream(StreamError::Capacity))
+                Err(AgentError::Stream(StreamError::Capacity))
                     if scalar_bytes != 0 && scalar_bytes < fragment.patch.len() =>
                 {
                     // The smallest retry must still contain the next scalar. A
@@ -60,13 +61,10 @@ impl DiffView {
     }
 }
 
-fn credit_error(error: Error) -> crate::Error {
+#[doc(hidden)]
+pub fn credit_error(error: AgentError) -> crate::Error {
     match error {
-        Error::Stream(error) => error.into(),
+        AgentError::Stream(error) => error.into(),
         error => crate::Error::Invalid(error.to_string()),
     }
 }
-
-mod source;
-pub use source::DiffSource;
-pub(in crate::hosting) use source::frame;

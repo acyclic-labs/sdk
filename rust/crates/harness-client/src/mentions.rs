@@ -34,7 +34,8 @@ pub async fn resolve_file_mentions(
 
 /// [`resolve_file_mentions`], reading each mentioned path where `locate`
 /// places it below `root`.
-pub(crate) async fn resolve_file_mentions_at(
+#[doc(hidden)]
+pub async fn resolve_file_mentions_at(
     input: &str,
     root: &ContextRoot,
     generation: &GenerationRef,
@@ -74,7 +75,8 @@ pub(crate) async fn resolve_file_mentions_at(
 
 /// Parse once before checkout capture and again against the captured revision.
 /// Both routes use precisely the same ranges and path validation.
-pub(crate) fn file_mention_paths(input: &str) -> Result<Vec<(usize, usize, &str)>> {
+#[doc(hidden)]
+pub fn file_mention_paths(input: &str) -> Result<Vec<(usize, usize, &str)>> {
     let mut result = Vec::new();
     let mut offset = 0;
     while offset < input.len() {

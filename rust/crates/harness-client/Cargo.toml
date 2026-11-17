@@ -7,9 +7,13 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Bounded client state shared by native and WASM harness adapters"
+build = "build.rs"
 
 [features]
 wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:tsify", "dep:wasm-bindgen"]
+
+[build-dependencies]
+serde_json.workspace = true
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
@@ -28,6 +32,9 @@ thiserror = { workspace = true }
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 url = "=2.5.8"
+
+[dev-dependencies]
+proptest.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-markdown = { path = "../markdown" }

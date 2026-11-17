@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/owner/exclusion.rs
-+++ b/rust/crates/harness/src/local/owner/exclusion.rs
+--- a/rust/crates/harness-local/src/local/owner/exclusion.rs
++++ b/rust/crates/harness-local/src/local/owner/exclusion.rs
 @@ -355,6 +355,7 @@
  /// The anchored Git exclusion rule for `path`, as raw filename bytes: Git
  /// matches paths as bytes on Unix, and records them as UTF-8 on Windows.

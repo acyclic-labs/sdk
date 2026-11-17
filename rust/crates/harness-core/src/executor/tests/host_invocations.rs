@@ -283,11 +283,15 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
                     .await
                     .is_err()
             );
+            // The executor judges the canonical capability, not the alias's
+            // public declaration, so the request identity must use the same
+            // adapted invocation and capability definition.
+            let canonical = binding.executor.canonical(&call, None)?;
             let ((approval, _), _hold) = tool_approval_request(
                 TaskId::from_bytes(parent.into_bytes()),
                 &policy.identity(),
-                &binding.definition,
-                &call,
+                &capability.definition,
+                canonical.as_deref().unwrap_or(&call),
                 ("approve this write".into(), None),
                 None,
                 (crate::interaction::ApprovalRoute::Policy, None),
@@ -369,5 +373,205 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
         }
         assert!(model.requests().is_empty());
     }
+    Ok(())
+}
+
+struct StaleReplay<'a>(&'a Journal, AtomicUsize);
+
+impl ExecutionJournal for StaleReplay<'_> {
+    fn supports_deferred_durability(&self) -> bool {
+        self.0.supports_deferred_durability()
+    }
+
+    fn durability_barrier<'a>(
+        &'a self,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        self.0.durability_barrier(io)
+    }
+
+    fn acquire_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&PreparationIo>,
+    ) -> Result<crate::executor::ExecutionAttempt<'a>> {
+        self.0.acquire_execution(operation, io)
+    }
+
+    fn replay<'a>(
+        &'a self,
+        operation: OperationId,
+        after: u64,
+        maximum: u32,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        if self
+            .1
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |stale| {
+                stale.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return crate::conversation::BoundedContentFuture::new(io, || async { Ok(Vec::new()) });
+        }
+        self.0.replay(operation, after, maximum, io)
+    }
+
+    fn append<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        self.0.append(operation, key, event, io)
+    }
+
+    fn append_if_tail<'a>(
+        &'a self,
+        operation: OperationId,
+        tail: u64,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        self.0.append_if_tail(operation, tail, key, event, io)
+    }
+
+    fn stage<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        bytes: &'a [u8],
+        media: &'static str,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+        self.0.stage(operation, key, bytes, media, io)
+    }
+
+    fn load<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
+        self.0.load(reference, io)
+    }
+
+    fn supports_native_execution(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<bool> {
+        self.0.supports_native_execution(work)
+    }
+
+    fn open_interaction<'a>(
+        &'a self,
+        id: InteractionId,
+        interaction: &'a Interaction,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        self.0.open_interaction(id, interaction, io)
+    }
+
+    fn interaction_outcome<'a>(
+        &'a self,
+        id: InteractionId,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>> {
+        self.0.interaction_outcome(id, io)
+    }
+}
+
+/// Two host calls may both observe an empty parent journal. They must append
+/// the same parent start, not race two invocation-specific identities.
+#[tokio::test]
+async fn concurrent_host_starts_share_one_parent_binding() -> Result<()> {
+    let journal = StaleReplay(&Journal::default(), AtomicUsize::new(2));
+    let executor = uncompacted_executor(
+        Model::new("test".into(), "host-start".into(), "1".into())?,
+        Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let execution = StockExecution::ordinary(&executor);
+    let parent = OperationId::new();
+    let first = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "first".into(),
+        name: "write".into(),
+        arguments: json!({"path":"first.txt"}),
+    };
+    let second = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "second".into(),
+        name: "write".into(),
+        arguments: json!({"path":"second.txt"}),
+    };
+    execution
+        .ensure_host_started(&journal, parent, &first)
+        .await?;
+    execution
+        .ensure_host_started(&journal, parent, &second)
+        .await?;
+    let records = journal.0.replay(parent, 0, 64, None)?.await?;
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record.event, ExecutionEvent::Started { .. }))
+            .count(),
+        1
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn host_start_replay_releases_its_records() -> Result<()> {
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let parent = OperationId::new();
+    journal
+        .append(
+            parent,
+            "execution:started",
+            &ExecutionEvent::Started {
+                request_digest: [7; 32],
+            },
+            None,
+        )?
+        .await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let before = io.owned_bytes()?;
+    let executor = uncompacted_executor(
+        Model::new("test".into(), "host-start".into(), "1".into())?,
+        Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let execution = StockExecution {
+        io: Some(&io),
+        ..StockExecution::ordinary(&executor)
+    };
+    let invocation = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "first".into(),
+        name: "write".into(),
+        arguments: json!({"path":"first.txt"}),
+    };
+    execution
+        .ensure_host_started(journal.as_ref(), parent, &invocation)
+        .await?;
+    assert_eq!(
+        io.owned_bytes()?,
+        before,
+        "the replay records kept their preparation charges"
+    );
     Ok(())
 }

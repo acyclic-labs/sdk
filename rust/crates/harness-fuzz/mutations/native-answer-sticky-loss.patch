@@ -1,6 +1,6 @@
-diff --git a/rust/crates/harness/src/local/host_process/children/answer.rs b/rust/crates/harness/src/local/host_process/children/answer.rs
---- a/rust/crates/harness/src/local/host_process/children/answer.rs
-+++ b/rust/crates/harness/src/local/host_process/children/answer.rs
+diff --git a/rust/crates/harness-local/src/local/host_process/children/answer.rs b/rust/crates/harness-local/src/local/host_process/children/answer.rs
+--- a/rust/crates/harness-local/src/local/host_process/children/answer.rs
++++ b/rust/crates/harness-local/src/local/host_process/children/answer.rs
 @@ -35,2 +35,5 @@
      pub(super) fn record(&mut self, event: &Value) {
 +        if self.omitted && event.get("type").and_then(Value::as_str) != Some("turn.started") {

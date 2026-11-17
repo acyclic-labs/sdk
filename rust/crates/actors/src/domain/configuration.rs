@@ -30,7 +30,7 @@ impl Header {
 }
 
 /// Resource binding admitted by the canonical create/update validators.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = Binding::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = Binding::validate_admission)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Binding.ts")]
 #[ts(rename_all = "camelCase")]
@@ -138,11 +138,6 @@ impl Binding {
             (Some(_), Some(_)) => return Err(DomainError::InvalidBinding),
         }
         Ok(())
-    }
-
-    /// Re-checks a value admitted from an untrusted protobuf wire message
-    fn validate_from_proto(&self) -> Result<(), DomainError> {
-        self.validate_admission()
     }
 
     /// Returns the binding name.
@@ -431,7 +426,7 @@ impl SubscriptionStart {
 }
 
 /// A subscription admitted by `validate_deployment` or `validate_add_subscription`.
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = SubscriptionSpec::validate_from_proto)]
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = SubscriptionSpec::validate_admission)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionSpec.ts")]
 #[ts(rename_all = "camelCase")]
@@ -465,19 +460,10 @@ impl SubscriptionSpec {
     }
 
     fn validate_admission(&self) -> Result<(), DomainError> {
-        if self.subscription_id.is_empty()
-            || self.stream_path.is_empty()
-            || (self.start.cursor_value().is_none()
-                && self.start.current_head_value() != Some(true))
-        {
+        if self.subscription_id.is_empty() || self.stream_path.is_empty() {
             return Err(DomainError::InvalidSubscription);
         }
         Ok(())
-    }
-
-    /// Re-checks a value admitted from an untrusted protobuf wire message
-    fn validate_from_proto(&self) -> Result<(), DomainError> {
-        self.validate_admission()
     }
 
     /// Returns the subscription identifier.

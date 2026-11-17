@@ -1,6 +1,6 @@
 The `native_answer` target calls the shared oracle through
 `acyclic_harness::test_support::native_answer`. The oracle lives beside the shipping
-`harness/src/local/host_process/children/answer.rs` reducer and uses its
+`harness-local/src/local/host_process/children/answer.rs` reducer and uses its
 original `Outcome` type and complete answer. Input uses the production `LineBuffer`
 and complete-line policy used by `children::output`. The same semantic oracle compares
 fragmented pipe reads with full pages, including malformed and incomplete frames;
@@ -19,7 +19,7 @@ No alternate framer or transition implementation is used.
 The three `*-completed.jsonl` / `pi-assistant-error.jsonl` corpus files are
 byte-for-byte copies of the existing recorded host fixtures. Their capture
 versions, source revisions, provenance and SHA-256 values are retained in
-[`fixtures/README.md`](../harness/src/local/host_process/fixtures/README.md).
+[`fixtures/README.md`](../harness-local/src/local/host_process/fixtures/README.md).
 The sources were installed native hosts; the model endpoint used during capture
 was a loopback fixture. These inputs qualify the reply reducer, not live provider
 interoperability.

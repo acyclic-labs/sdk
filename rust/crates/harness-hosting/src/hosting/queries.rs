@@ -15,7 +15,7 @@ struct PreparedQuery<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStor
 struct ReadOnly;
 
 impl SocketInbound for ReadOnly {
-    fn receive(&self, _: Bytes) -> Result<(), StreamError> {
+    fn receive(&self, _: Bytes) -> std::result::Result<(), StreamError> {
         Err(StreamError::InvalidArgument)
     }
 }
@@ -25,7 +25,10 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn prepare(self: Arc<Self>, open: Bytes) -> Result<Box<dyn PreparedSocketOpen>, StreamError> {
+    fn prepare(
+        self: Arc<Self>,
+        open: Bytes,
+    ) -> std::result::Result<Box<dyn PreparedSocketOpen>, StreamError> {
         let (projection, invocation) =
             QueryProjection::decode_open(&open).map_err(|_| StreamError::InvalidArgument)?;
         let call = self.admit(invocation)?;
@@ -69,7 +72,7 @@ where
     fn open(
         self: Box<Self>,
         authorization: &dyn SocketAuthorization,
-    ) -> Result<SocketChannel, StreamError> {
+    ) -> std::result::Result<SocketChannel, StreamError> {
         // Queries authorize the command against the original principal and
         // product policy, so only this Session's own admission can open one.
         let authorization = authorization
@@ -171,7 +174,7 @@ fn refusal(
     command: &AgentCommand,
     page: &AgentPageRequest,
     error: crate::Error,
-) -> Result<Bytes, StreamError> {
+) -> std::result::Result<Bytes, StreamError> {
     let body =
         acyclic_harness_client::encode_agent_reply(&Err(Error::Turn(Box::new(error))), command)
             .map_err(|_| StreamError::InvalidResponse)?;

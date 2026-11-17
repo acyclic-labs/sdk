@@ -1,0 +1,56 @@
+[package]
+include = ["clippy.toml", "Cargo.toml", "src/**"]
+name = "acyclic-harness-hosting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The admitted agent-tree server behind the acyclic-harness facade"
+documentation = "https://docs.rs/acyclic-harness-hosting"
+
+[features]
+test-support = [
+    "acyclic-actors/test-support",
+    "acyclic-auth/test-support",
+    "acyclic-fs/test-support",
+    "acyclic-harness-core/test-support",
+    "acyclic-machines/test-support",
+    "acyclic-native-runtime/test-support",
+    "acyclic-stream/test-support"]
+
+[dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+async-stream = "=0.3.6"
+base64 = "=0.23.1"
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+prost.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
+tracing.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+
+[dev-dependencies]
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["test-util", "process", "io-util", "net"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
+
+[lints]
+workspace = true

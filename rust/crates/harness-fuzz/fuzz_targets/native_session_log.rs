@@ -8,8 +8,9 @@ use serde_json::Value;
 fuzz_target!(|bytes: &[u8]| {
     // The unchanged native capture keeps the acceptance branch reachable;
     // refusing every resume id cannot satisfy a metamorphic oracle alone.
-    let original =
-        include_bytes!("../../harness/src/local/host_process/fixtures/claude-code-completed.jsonl");
+    let original = include_bytes!(
+        "../../harness-local/src/local/host_process/fixtures/claude-code-completed.jsonl"
+    );
     assert_eq!(
         logged_session_id(original).as_deref(),
         Some("a14f2590-4397-48a1-a076-1f2dac2d5349")

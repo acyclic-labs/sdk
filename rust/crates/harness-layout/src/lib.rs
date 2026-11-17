@@ -1,4 +1,5 @@
 //! Heap layout of typed records, described by JSON position.
+//! One layout walk accounts for both byte decoding and resident-value decoding.
 //!
 //! Every type a bounded decode produces implements [`HeapLayout`], usually
 //! through `#[derive(HeapLayout)]` beside its serde derive. The layout names,
@@ -12,6 +13,7 @@
 //! only the `Content` an enclosing buffer holds. A container of a kind no
 //! candidate type accepts at a typed position is refused: the decode would
 //! reject it, and no bound is claimed for shapes the type does not describe.
+// Callers supply document traversal; this engine owns its allocation accounting.
 use serde::__private229::de::Content;
 use std::cell::RefCell;
 
@@ -375,7 +377,7 @@ fn flattened_cost(node: &'static JsonLayout, entries: u64, depth: u32) -> Flatte
 /// sibling's are made, so the peak holds the kept bytes, one tagged subtree's
 /// buffers, and one moving buffer.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct LayoutCost {
+pub struct LayoutCost {
     /// Collections, boxes and trees the decoded value keeps.
     kept: u64,
     /// Decoded string and owned map key bytes.
@@ -394,14 +396,16 @@ pub(crate) struct LayoutCost {
     buffered: u64,
     /// Largest buffer held while one container is built.
     moving: u64,
-    /// Containers at positions the type ignores.
-    pub(crate) undescribed: u64,
     /// The document has a shape the layout does not bound.
-    pub(crate) refused: bool,
+    refused: bool,
 }
 impl LayoutCost {
+    /// Whether the walk encountered a shape its layout does not bound.
+    pub const fn is_refused(self) -> bool {
+        self.refused
+    }
     /// Maximum heap bytes of the typed decode.
-    pub(crate) fn bytes(self) -> u64 {
+    pub fn bytes(self) -> u64 {
         // Escaped strings decode through one scratch vector that grows by
         // doubling and is reused for every later string.
         self.kept
@@ -416,7 +420,7 @@ impl LayoutCost {
             .saturating_add(self.moving)
     }
     /// Longest decoded string or key.
-    pub(crate) const fn longest(self) -> u64 {
+    pub const fn longest(self) -> u64 {
         self.longest
     }
     fn string(&mut self, text: &[u8], owned: bool, scale: u64) {
@@ -445,7 +449,6 @@ impl LayoutCost {
         let tagged = candidates.buffers();
         let mut kept = 0;
         if candidates.is_empty() {
-            self.undescribed += 1;
             self.skipped_depth = self.skipped_depth.max(u64::from(placement.depth) + 1);
         } else {
             let mut accepted = false;
@@ -563,7 +566,7 @@ fn content_bytes(map: bool, entries: u64, copies: u64) -> u64 {
 
 /// One position in an admission walk.
 #[derive(Clone, Copy)]
-pub(super) struct Placement<'a> {
+pub struct Placement<'a> {
     candidates: Candidates,
     /// Enclosing `Content` buffers that hold this value.
     buffers: u64,
@@ -594,7 +597,8 @@ impl<'a> Placement<'a> {
             cost,
         }
     }
-    pub(super) fn root(layout: &'static JsonLayout, cost: &'a RefCell<LayoutCost>) -> Self {
+    /// Starts a typed walk, accumulating every decoded allocation in cost.
+    pub fn root(layout: &'static JsonLayout, cost: &'a RefCell<LayoutCost>) -> Self {
         let mut candidates = Candidates::NONE;
         candidates.add(layout, 0, 0);
         Self::new(candidates, 0, 1, 0, cost)
@@ -603,14 +607,14 @@ impl<'a> Placement<'a> {
     /// its type nests around it before choosing a variant.
     fn copies(&self) -> u64 {
         let copies = self.buffers.saturating_add(self.candidates.buffers);
-        #[cfg(test)]
-        let copies = copies.min(tests::COPY_CAP.get());
+        #[cfg(any(test, feature = "test-support"))]
+        let copies = copies.min(test_support::COPY_CAP.get());
         copies
     }
     /// A string value. Enum labels and identifiers own no bytes, but a string
     /// is charged at every position as though it decodes to a `String`, and
     /// an `escaped` one is also owned by every buffer holding it.
-    pub(super) fn string(self, text: &[u8], escaped: bool) {
+    pub fn string(self, text: &[u8], escaped: bool) {
         let mut cost = self.cost.borrow_mut();
         let raw = self
             .candidates
@@ -627,14 +631,14 @@ impl<'a> Placement<'a> {
         }
     }
     /// A `serde_json::Value` decodes here, which expands a raw JSON member.
-    pub(super) fn decodes_value(self) -> bool {
+    pub fn decodes_value(self) -> bool {
         let value = <serde_json::Value as HeapLayout>::LAYOUT;
         self.candidates
             .nodes()
             .any(|node| std::ptr::eq(node, value))
     }
     /// No candidate decodes this subtree, and no surrounding enum buffers it.
-    pub(super) fn opaque(self, maximum_depth: u32) -> bool {
+    pub fn opaque(self, maximum_depth: u32) -> bool {
         let opaque = self.copies() == 0
             && !self.candidates.owns_strings
             && self
@@ -648,20 +652,22 @@ impl<'a> Placement<'a> {
         opaque
     }
     /// The same position, for a raw JSON document a `Value` expands in place.
-    pub(super) fn expanded(self) -> Self {
+    pub fn expanded(self) -> Self {
         let mut candidates = Candidates::NONE;
         candidates.add(<serde_json::Value as HeapLayout>::LAYOUT, 0, 0);
         Self::new(candidates, self.buffers, self.scale, self.depth, self.cost)
     }
 }
 /// Counts one container's entries and charges it however its visit ends.
-pub(super) struct Entries<'a> {
+pub struct Entries<'a> {
     placement: Option<Placement<'a>>,
     map: bool,
-    pub(super) count: u64,
+    /// Entries visited in this container.
+    pub count: u64,
 }
 impl<'a> Entries<'a> {
-    pub(super) fn new(placement: Option<Placement<'a>>, map: bool) -> Self {
+    /// Starts counting one array or object at an optional typed position.
+    pub fn new(placement: Option<Placement<'a>>, map: bool) -> Self {
         Self {
             placement,
             map,
@@ -671,7 +677,7 @@ impl<'a> Entries<'a> {
     /// An object key. Map keys own their bytes, and an `escaped` key is also
     /// owned by every buffer holding its object; struct field names only
     /// select a field. The object's own visit closes its buffered subtree.
-    pub(super) fn key(&self, key: &[u8], escaped: bool) {
+    pub fn key(&self, key: &[u8], escaped: bool) {
         if let Some(placement) = self.placement {
             let candidates = &placement.candidates;
             let owned = candidates.nodes().any(|node| {
@@ -685,7 +691,8 @@ impl<'a> Entries<'a> {
             }
         }
     }
-    pub(super) fn child(&self, key: Option<&[u8]>, index: usize) -> Option<Placement<'a>> {
+    /// Resolves an object member or array element at this position.
+    pub fn child(&self, key: Option<&[u8]>, index: usize) -> Option<Placement<'a>> {
         self.placement.map(|placement| {
             let mut children = Candidates::NONE;
             match key {
@@ -713,38 +720,42 @@ impl Drop for Entries<'_> {
     }
 }
 
+mod mcp;
+mod render;
 mod std_layouts;
 pub use std_layouts::markers;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn flattened_counted() -> bool {
-    tests::FLATTENED.get()
+    test_support::FLATTENED.get()
 }
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 const fn flattened_counted() -> bool {
     true
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn messages_counted() -> bool {
-    tests::MESSAGES.get()
+    test_support::MESSAGES.get()
 }
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 const fn messages_counted() -> bool {
     true
 }
 
-#[cfg(test)]
-pub(super) mod tests {
+/// Mutation controls for the codec's allocation properties.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support {
     use std::cell::Cell;
     thread_local! {
         /// Most `Content` buffers counted at one position; a negative control
         /// lowers it to reproduce a model that counts too few copies.
-        pub(in crate::executor::json) static COPY_CAP: Cell<u64> = const { Cell::new(u64::MAX) };
+        pub static COPY_CAP: Cell<u64> = const { Cell::new(u64::MAX) };
         /// Whether rejected strings' error messages are reserved; a negative
         /// control clears it.
-        pub(in crate::executor::json) static MESSAGES: Cell<bool> = const { Cell::new(true) };
+        pub static MESSAGES: Cell<bool> = const { Cell::new(true) };
         /// Whether flattened collections are reserved; a negative control
         /// clears it.
-        pub(in crate::executor::json) static FLATTENED: Cell<bool> = const { Cell::new(true) };
+        pub static FLATTENED: Cell<bool> = const { Cell::new(true) };
     }
 }
