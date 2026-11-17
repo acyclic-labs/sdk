@@ -1,6 +1,5 @@
+import { isMain } from "./policy-core.mjs";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { localCargoPackages } from "./publish-cargo-crates.mjs";
 
 // The inventory is derived from Cloud's working-tree manifests, including its
@@ -25,7 +24,7 @@ export function checkCloudNativeFeatures(packages) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   checkCloudNativeFeatures(localCargoPackages());
   console.log("Cloud native feature policy: PASS");
 }

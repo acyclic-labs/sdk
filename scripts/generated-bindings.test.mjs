@@ -44,6 +44,7 @@ test("inventory policy rejects ignored copies in exports and checkouts independe
   writeFileSync(join(parent, ".gitignore"), "/export/\n");
   mkdirSync(root);
   mkdirSync(join(root, "scripts"));
+  writeFileSync(join(root, "scripts/policy-core.mjs"), readFileSync(new URL("./policy-core.mjs", import.meta.url)));
   symlinkSync(resolve("node_modules"), join(root, "node_modules"), "junction");
   writeFileSync(join(root, ".gitignore"), "/generated/*\n!/generated/pinned.json\n/nested/*.json\n/blocked/\n");
   mkdirSync(join(root, "nested"));

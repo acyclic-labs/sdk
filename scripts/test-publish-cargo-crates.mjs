@@ -31,7 +31,7 @@ test("publication check rejects a newly publishable workspace crate until its in
   try {
     mkdirSync(join(repository, "scripts"));
     mkdirSync(join(repository, "release"));
-    for (const name of ["publish-cargo-crates.mjs", "registry-publication.mjs"]) {
+    for (const name of ["publish-cargo-crates.mjs", "registry-publication.mjs", "policy-core.mjs"]) {
       copyFileSync(resolve("scripts", name), join(repository, "scripts", name));
     }
     writeFileSync(join(repository, "release", "cargo-equivalent-archives.json"), "{}");

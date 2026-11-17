@@ -12,6 +12,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
 
 // The workspace this generator describes. It defaults to the repository that holds this
 // script, and --root points the same generator at another Cargo workspace (Cloud).
@@ -53,20 +54,12 @@ const LOADS = {
 };
 const q = JSON.stringify;
 
-// A TOML file, parsed by a real TOML parser (Python's tomllib): strings, arrays and inline tables
-// keep their exact values, whatever quotes or nesting they use.
-const parsed = new Map();
-function toml(file) {
-  if (!parsed.has(file)) parsed.set(file, JSON.parse(execFileSync("python3", ["-I", "-c", "import json, sys, tomllib; json.dump(tomllib.load(open(sys.argv[1], 'rb')), sys.stdout)", path.join(root, file)], { encoding: "utf8" })));
-  return parsed.get(file);
-}
-
 // Cargo's [lints.rust] check-cfg entries. rules_rust's extract_cargo_lints carries the lint
 // levels into its lint files but not these, so they are emitted as rustc flags on every target
 // of the package. A member that inherits its lints reads the workspace table.
 function checkCfgFlags(manifest, features) {
-  const own = toml(manifest);
-  const table = own.lints?.workspace === true ? toml("Cargo.toml").workspace?.lints?.rust ?? {} : own.lints?.rust ?? {};
+  const own = toml(root, manifest);
+  const table = own.lints?.workspace === true ? toml(root, "Cargo.toml").workspace?.lints?.rust ?? {} : own.lints?.rust ?? {};
   // Cargo itself always passes these two for a manifest build, before the [lints.rust] table: the
   // package's declared features are the feature values it expects.
   return ["--check-cfg=cfg(docsrs,test)", `--check-cfg=cfg(feature, values(${features.map(f => q(f)).join(", ")}))`,
@@ -75,7 +68,7 @@ function checkCfgFlags(manifest, features) {
 
 // .cargo/config.toml's [env], as Cargo gives it to every compile and build script. A relative
 // value is resolved against the repository root, which is the execution root of a Bazel action.
-const configEnv = Object.fromEntries(Object.entries(toml(".cargo/config.toml").env ?? {}).map(([name, entry]) => {
+const configEnv = Object.fromEntries(Object.entries(toml(root, ".cargo/config.toml").env ?? {}).map(([name, entry]) => {
   if (typeof entry === "string") return [name, entry];
   const relative = path.posix.normalize(entry.value);
   // rules_rust's process wrapper replaces ${pwd} with the execution root; $$ escapes make expansion.
@@ -91,6 +84,7 @@ const workspace = new Set(runs.flatMap(run => run.workspace_members));
 const members = new Set(workspace);
 const nodes = runs.map(run => new Map(run.resolve.nodes.map(node => [node.id, node])));
 const dir = p => path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/");
+tomlFiles(root, [...new Set(["Cargo.toml", "rust-toolchain.toml", ...base.packages.filter(p => p.source === null).map(p => path.relative(root, p.manifest_path))])]);
 // Local path crates are first-party: their BUILD files are generated here, so the
 // crate universe must not carry them as local path dependencies. Cargo tests only the
 // workspace, so a path crate renders its library and build script alone.
@@ -100,7 +94,7 @@ const libOf = p => p.targets.find(t => t.kind.some(k => k === "lib" || k === "rl
 const crateName = target => target.name.replaceAll("-", "_");
 
 // Every tracked file belongs to the innermost member directory, or to the root package, as in Bazel.
-const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 }).split("\0").filter(Boolean);
+const tracked = trackedFiles(root);
 const memberDirs = [...members].map(id => dir(packages.get(id))).sort((a, b) => b.length - a.length);
 const ownerOf = file => memberDirs.find(d => file.startsWith(`${d}/`)) ?? "";
 const within = (owner, file) => (owner ? file.slice(owner.length + 1) : file);
@@ -192,7 +186,7 @@ const cargoConfigInputs = (() => {
     } else if (Array.isArray(value)) value.forEach(visit);
     else if (value && typeof value === "object") Object.values(value).forEach(visit);
   };
-  visit(toml(".cargo/config.toml"));
+  visit(toml(root, ".cargo/config.toml"));
   return found;
 })();
 // A directory's tracked files, as one filegroup in each package that owns some of them: a glob
@@ -307,7 +301,7 @@ const exportsRule = owner => `\nexports_files(${glob(["**"], ["BUILD.bazel"])}, 
 // .config/nextest.toml's capability profiles, `[package(=<name>) & ]test(<pattern>)`: under nextest the default
 // profile filters their cases out and each profile runs only its own. Each test target leaves them to a manual
 // `<target>_<profile>` target that runs them alone; any other filter shape is refused, never guessed.
-const nextest = fs.existsSync(path.join(root, ".config/nextest.toml")) ? toml(".config/nextest.toml") : {};
+const nextest = fs.existsSync(path.join(root, ".config/nextest.toml")) ? toml(root, ".config/nextest.toml") : {};
 const PROFILES = Object.entries(nextest.profile ?? {}).flatMap(([profile, settings]) => {
   const filter = settings["default-filter"];
   if (profile === "default" || filter === undefined) return [];
@@ -333,7 +327,7 @@ function profileWrapper(profile, settings, filter, refuse) {
   for (const file of siblings) if (!trackedSet.has(file)) refuse(`run-wrapper ${name} runs ${file}, which is not tracked; recovery: track it or stop running it`);
   return { wrapper: line, wrapperData: [...new Set(siblings)].sort() };
 }
-const cargo = toml("Cargo.toml");
+const cargo = toml(root, "Cargo.toml");
 const dev = cargo.profile?.dev ?? {};
 // rules_rust (patched) builds fastbuild and dbg as Cargo's dev profile, with debug assertions and overflow checks
 // on at every opt-level, and opt as its release profile, with both off: Cargo's defaults. A profile that changes
@@ -411,7 +405,7 @@ function edges(p, kinds) {
 function buildFile(p) {
   const lib = libOf(p), script = p.targets.find(t => t.kind.includes("custom-build"));
   const manifest = path.relative(root, p.manifest_path).replaceAll("\\", "/");
-  const inheritedLints = toml(manifest).lints?.workspace === true;
+  const inheritedLints = toml(root, manifest).lints?.workspace === true;
   const checkCfg = checkCfgFlags(manifest, Object.keys(p.features).sort());
   const features = nodes.map(byId => [...(byId.get(p.id)?.features ?? [])].sort());
   // A source path relative to the package, or the label of a file another package owns.
@@ -710,13 +704,13 @@ ${rule("cc_toolchain", [
 }
 
 function rustcFlags() {
-  const rustflags = toml(".cargo/config.toml").target?.["cfg(all())"]?.rustflags ?? [];
+  const rustflags = toml(root, ".cargo/config.toml").target?.["cfg(all())"]?.rustflags ?? [];
   return [...rustflags, ...(dev["codegen-units"] ? [`-Ccodegen-units=${dev["codegen-units"]}`] : []), ...(dev.lto === "off" ? ["-Clto=off"] : [])];
 }
 
 function moduleFile() {
   const flags = rustcFlags();
-  const channel = toml("rust-toolchain.toml").toolchain.channel;
+  const channel = toml(root, "rust-toolchain.toml").toolchain.channel;
   const channelName = /^(beta|nightly)/.test(channel) ? channel.split("/")[0] : "stable";
   const thirdParty = Object.keys(dev.package ?? {}).flatMap(name =>
     ![...members].some(id => packages.get(id).name === name) && packageOpt(name) !== undefined ? [[name, packageOpt(name)]] : []);
@@ -828,7 +822,7 @@ for (const [owner, body] of bodies) files.set(`${owner}/BUILD.bazel`, body + exp
 // Every file ends in exactly one newline, cut once here; check then fails on any other ending.
 for (const [file, text] of files) files.set(file, text.replace(/\n*$/, "\n"));
 // A generated file whose package left the workspace is stale.
-for (const file of execFileSync("git", ["ls-files", "*BUILD.bazel"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean)) {
+for (const file of trackedFiles(root, ["*BUILD.bazel"])) {
   if (!files.has(file) && fs.readFileSync(path.join(root, file), "utf8").startsWith(HEADER)) files.set(file, null);
 }
 const stale = [];

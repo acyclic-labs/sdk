@@ -1,16 +1,8 @@
 // The workspace as its checked-in manifests declare it, read without running Cargo: the members of the root
 // Cargo.toml and, for each, its package name and the path dependencies it declares, of every kind and for every
 // target. A TOML file is parsed by a real TOML parser (Python's tomllib), so values keep their exact form.
-import { execFileSync } from "node:child_process";
 import path from "node:path";
-
-const parsed = new Map();
-/** @param {string} root @param {string} file repository-relative */
-export function toml(root, file) {
-  const key = path.join(root, file);
-  if (!parsed.has(key)) parsed.set(key, JSON.parse(execFileSync("python3", ["-I", "-c", "import json, sys, tomllib; json.dump(tomllib.load(open(sys.argv[1], 'rb')), sys.stdout)", key], { encoding: "utf8" })));
-  return parsed.get(key);
-}
+import { toml } from "./policy-core.mjs";
 
 const KINDS = [["dependencies", "normal"], ["dev-dependencies", "dev"], ["build-dependencies", "build"]];
 
