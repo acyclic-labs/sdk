@@ -23,8 +23,12 @@ export function trackedFiles(root = process.cwd(), paths = [], {untracked = fals
 }
 
 const manifests = new Map();
+// Parsed tables are dictionaries: undeclared names never resolve through the
+// JavaScript object prototype, including implicit Cargo feature identities.
+export const parseJson = text => JSON.parse(text, (_, value) => value && typeof value === 'object' && !Array.isArray(value)
+  ? Object.setPrototypeOf(value, null) : value);
 export function parseToml(texts) {
-  return JSON.parse(execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-I', '-c', `
+  return parseJson(execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-I', '-c', `
 import datetime, json, math, sys, tomllib
 def encode(value):
     if isinstance(value, dict):
@@ -63,7 +67,7 @@ export const toml = (root, file) => tomlFiles(root, [file])[file];
 export function checkManifestFields(root, expectations) {
   const files = [...new Set(expectations.map(([file]) => file))];
   const parsed = tomlFiles(root, files.filter(file => file.endsWith('.toml')));
-  for (const file of files.filter(file => !file.endsWith('.toml'))) parsed[file] = JSON.parse(readUtf8(resolve(root, file)));
+  for (const file of files.filter(file => !file.endsWith('.toml'))) parsed[file] = parseJson(readUtf8(resolve(root, file)));
   for (const [file, keys, expected] of expectations) {
     const actual = keys.reduce((value, key) => value?.[key], parsed[file]);
     if (actual !== expected) throw new Error(`${file}: ${keys.join('.')} must be ${JSON.stringify(expected)}; found ${JSON.stringify(actual)}`);

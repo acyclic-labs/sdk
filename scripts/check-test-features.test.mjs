@@ -24,6 +24,7 @@ test('real Cargo targets retain feature closure, alternatives, platform independ
   for (const [manifest, source, count] of [
     ['', undefined, 1], ['[[test]]\nname="case"\n', undefined, 1], ['autotests=false\n', undefined, 0],
     [declared(['backend']) + '[features]\nbackend=["local"]\nlocal=["backend"]\n', undefined, 0],
+    [declared(['constructor']) + '[features]\nother=[]\n[dependencies]\nconstructor={version="1",optional=true}\n', '#![cfg(feature="constructor")]', 0],
     ['', '#![cfg(all(not(target_arch="wasm32"),feature="local"))]', 1], ['', '#![cfg(target_os="linux")]', 0],
     ...['loom', 'kani'].flatMap(model => [['', `#![cfg(${model})]`, 1], [declared(['model-checking']), `#![cfg(${model})]`, 0]]),
     ...['local', 'remote'].map(feature => [declared([feature]), '#![cfg(any(feature="local",feature="remote"))]', 0]),
