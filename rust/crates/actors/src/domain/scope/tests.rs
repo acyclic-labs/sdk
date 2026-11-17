@@ -65,14 +65,18 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
         check!(InvokeActorRequest, method: "POST".into(), url: "/call".into(), body: vec![0, 0xff]);
         check!(ActorObservation, code_sha256: vec![1; 32], state: 1);
 
-        let fork = ForkActorRequest::try_from(wire::ForkActorRequest {
+        let raw = wire::ForkActorRequest {
             actor_id: "parent".into(),
             child_actor_id: "child".into(),
             namespace: Some("Class_One".into()),
             account_id: account,
             idempotency_key: "fork".into(),
             ..Default::default()
-        })?;
+        };
+        let mut invalid_child = raw.clone();
+        invalid_child.child_actor_id = "invalid/child".into();
+        assert!(crate::contract::validate_fork(&invalid_child).is_err());
+        let fork = ForkActorRequest::try_from(raw)?;
         let parent = fork.reference(b"wrong-account")?;
         let child = fork.child_reference(b"wrong-account")?;
         assert_eq!(parent.account(), child.account());
