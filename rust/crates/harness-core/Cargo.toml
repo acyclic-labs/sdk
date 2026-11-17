@@ -113,16 +113,11 @@ blake3.workspace = true
 prost-build.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-harness-modules = { version = "=0.2.0", path = "../harness-modules" }
 notify.workspace = true
 acyclic-mcp = { version = "=0.2.0", path = "../mcp", features = ["stdio"] }
 rmcp = { workspace = true, features = ["auth", "reqwest-tls-no-provider"] }
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "futures", "parallel"] }
-oxc_allocator = "=0.156.0"
-oxc_codegen = { version = "=0.156.0", default-features = false }
-oxc_parser = { version = "=0.156.0", default-features = false }
-oxc_semantic = { version = "=0.156.0", default-features = false }
-oxc_span = "=0.156.0"
-oxc_transformer = { version = "=0.156.0", default-features = false }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 dirs = { workspace = true }
 tempfile = { version = "3.27.0" }

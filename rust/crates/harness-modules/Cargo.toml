@@ -1,0 +1,22 @@
+[package]
+name = "acyclic-harness-modules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Static settings-module compilation and effective-tree import resolution"
+documentation = "https://docs.rs/acyclic-harness-modules"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+oxc_allocator = "=0.156.0"
+oxc_codegen = { version = "=0.156.0", default-features = false }
+oxc_parser = { version = "=0.156.0", default-features = false }
+oxc_semantic = { version = "=0.156.0", default-features = false }
+oxc_span = "=0.156.0"
+oxc_transformer = { version = "=0.156.0", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
