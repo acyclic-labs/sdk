@@ -10,7 +10,7 @@ import { compatibilityArtifacts, writeChanged } from "./generated-bindings.mjs";
 import { packagedTypeScriptBindings, retiredTypeScriptBindingPackages } from "./protobuf-bindings.mjs";
 
 const source = readFileSync(new URL("./generate-proto.mjs", import.meta.url), "utf8");
-const implementation = source.slice(source.indexOf("export function"), source.lastIndexOf("\nif (process.argv"))
+const implementation = source.slice(source.indexOf("export function"), source.lastIndexOf("\nif (import.meta.main)"))
   .replace("export function", "function");
 const names = [...new Set([...packagedTypeScriptBindings.flatMap(([, names]) => names), ...retiredTypeScriptBindingPackages]), "workers"];
 const sources = new Map(packagedTypeScriptBindings.map(([stem, , sourceRoot]) => [stem,
@@ -108,7 +108,7 @@ os.execv(sys.argv[1], sys.argv[1:])
 `;
   try {
     for (const file of [".gitignore", "buf.yaml", "buf.lock", "buf.gen.yaml", "package.json",
-      "scripts/generate-proto.mjs", "scripts/generated-bindings.mjs"]) {
+      "scripts/generate-proto.mjs", "scripts/generated-bindings.mjs", "scripts/protobuf-bindings.mjs", "scripts/policy-core.mjs"]) {
       mkdirSync(dirname(join(root, file)), { recursive: true });
       cpSync(file, join(root, file));
     }
