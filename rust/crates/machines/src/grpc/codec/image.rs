@@ -40,13 +40,8 @@ pub(in super::super) fn decode_image(value: Option<&wire::Image>) -> Result<Imag
             let digest: [u8; 32] = digest.as_slice().try_into().map_err(|_| {
                 ProviderError::Rejected("custom image digest width is invalid".into())
             })?;
-            if digest == [0; 32] {
-                return Err(ProviderError::Rejected(
-                    "custom image digest is zero".into(),
-                ));
-            }
             Image::custom(digest)
-                .map_err(|_| ProviderError::Rejected("custom image digest is invalid".into()))
+                .map_err(|_| ProviderError::Rejected("custom image digest is zero".into()))
         }
         (wire::ImageKind::Checkpoint, Some(ImmutableReference::Checkpoint(id))) => {
             decode_checkpoint(Some(id)).map(Image::Checkpoint)
