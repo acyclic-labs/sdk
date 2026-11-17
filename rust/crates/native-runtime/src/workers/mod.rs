@@ -1,5 +1,4 @@
 use crate::sync::{Mutex as QueueMutex, mpsc};
-use std::sync::atomic::AtomicUsize;
 use crate::*;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use admission::poll_submission_with;
@@ -9,6 +8,7 @@ pub(crate) use admission::{
 };
 pub(crate) use job::DeferredPoll;
 pub(crate) use job::NativeJob;
+use std::sync::atomic::AtomicUsize;
 
 mod admission;
 mod job;
