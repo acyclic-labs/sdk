@@ -2,6 +2,55 @@ use super::*;
 use proptest::prelude::*;
 use std::cell::Cell;
 
+#[test]
+fn declared_workspace_metadata_round_trips_to_a_new_root() {
+    let source = acyclic_test_support::source_path(
+        "rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json",
+    );
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let metadata = load_workspace_metadata(first.path(), &source).unwrap();
+    let serialized = workspace_metadata_bytes(&metadata).unwrap();
+    let graph = first.path().join("graph.json");
+    fs::write(&graph, serialized).unwrap();
+    let relocated = load_workspace_metadata(second.path(), &graph).unwrap();
+    assert_eq!(metadata.packages.len(), relocated.packages.len());
+    for (before, after) in metadata.packages.iter().zip(&relocated.packages) {
+        assert_eq!(before.id, after.id);
+        assert_eq!(
+            before
+                .manifest_path
+                .as_std_path()
+                .strip_prefix(first.path())
+                .unwrap(),
+            after
+                .manifest_path
+                .as_std_path()
+                .strip_prefix(second.path())
+                .unwrap(),
+        );
+    }
+}
+
+#[test]
+fn workspace_metadata_relocates_windows_path_components() {
+    let mut graph = serde_json::json!({
+        "manifest": r"\\?\C:\BUILD\SDK\crate\Cargo.toml",
+        "target": "c:/build/sdk/crate/src/lib.rs",
+        "sibling": "C:/build/sdk-other/Cargo.toml",
+    });
+    relocate_metadata(&mut graph, r"C:\build\sdk", ".");
+    assert_eq!(graph["manifest"], "./crate/Cargo.toml");
+    assert_eq!(graph["target"], "./crate/src/lib.rs");
+    assert_eq!(graph["sibling"], "C:/build/sdk-other/Cargo.toml");
+
+    let mut posix = serde_json::json!({"manifest": r"/source/back\slash/Cargo.toml"});
+    relocate_metadata(&mut posix, "/source", r"/destination/back\slash");
+    assert_eq!(
+        posix["manifest"],
+        r"/destination/back\slash/back\slash/Cargo.toml"
+    );
+}
 proptest! {
     #[test]
     fn producer_snapshots_follow_each_environment_and_end_with_the_operation(

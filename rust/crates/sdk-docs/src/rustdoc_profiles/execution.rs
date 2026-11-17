@@ -105,21 +105,111 @@ pub fn load_metadata(
 /// Reads the workspace metadata the build generator writes, rebasing its relative manifest
 /// paths onto `root`. The generator records the workspace members only, so no Cargo runs.
 pub fn load_workspace_metadata(root: &Path, path: &Path) -> Result<Metadata, ProfileError> {
-    let mut metadata: Metadata =
+    let mut value: serde_json::Value =
         serde_json::from_slice(&fs::read(path).map_err(|error| {
             ProfileError::InvalidRustdoc(format!("workspace metadata: {error}"))
         })?)
+        .map_err(|error| ProfileError::InvalidRustdoc(format!("workspace metadata: {error}")))?;
+    // Cargo exports absolute source paths and package IDs. A build output can
+    // be consumed in another sandbox without retaining its producer's paths.
+    let original = value["workspace_root"].as_str().unwrap_or("").to_owned();
+    if crate::path_identity::components(&original, true)
+        .is_some_and(|parts| matches!(parts[0].as_str(), "root" | "drive-root" | "unc"))
+    {
+        relocate_metadata(&mut value, &original, &root.to_string_lossy());
+    }
+    let mut metadata: Metadata = serde_json::from_value(value)
         .map_err(|error| ProfileError::InvalidRustdoc(format!("workspace metadata: {error}")))?;
     for package in &mut metadata.packages {
         package.manifest_path = cargo_metadata::camino::Utf8PathBuf::from_path_buf(
             root.join(package.manifest_path.as_std_path()),
         )
         .map_err(|_| ProfileError::InvalidRustdoc("workspace metadata path is not UTF-8".into()))?;
+        for target in &mut package.targets {
+            target.src_path = root
+                .join(target.src_path.as_std_path())
+                .try_into()
+                .map_err(|_| {
+                    ProfileError::InvalidRustdoc("workspace target path is not UTF-8".into())
+                })?;
+        }
+        for dependency in &mut package.dependencies {
+            if let Some(path) = &mut dependency.path {
+                *path = root.join(path.as_std_path()).try_into().map_err(|_| {
+                    ProfileError::InvalidRustdoc("workspace dependency path is not UTF-8".into())
+                })?;
+            }
+        }
     }
     metadata.workspace_root =
         cargo_metadata::camino::Utf8PathBuf::from_path_buf(root.to_owned())
             .map_err(|_| ProfileError::InvalidRustdoc("workspace root is not UTF-8".into()))?;
+    metadata.target_directory = root
+        .join(metadata.target_directory.as_std_path())
+        .try_into()
+        .map_err(|_| ProfileError::InvalidRustdoc("workspace target path is not UTF-8".into()))?;
     Ok(metadata)
+}
+
+fn relocate_metadata(value: &mut serde_json::Value, old: &str, root: &str) {
+    match value {
+        serde_json::Value::String(text) => {
+            let windows = old.as_bytes().get(1) == Some(&b':')
+                || old.starts_with("//")
+                || old.starts_with(r"\\");
+            let old = if windows {
+                old.replace('\\', "/")
+            } else {
+                old.to_owned()
+            };
+            let normalized = if windows {
+                text.replace('\\', "/")
+            } else {
+                text.clone()
+            };
+            let root = if root.as_bytes().get(1) == Some(&b':') || root.starts_with(r"\\") {
+                root.replace('\\', "/")
+            } else {
+                root.to_owned()
+            };
+            // The destination keeps its own path flavor, including backslashes
+            // that are ordinary POSIX characters.
+            let marker = "/__workspace__";
+            if let Some(rebased) = crate::path_identity::rebase(&normalized, &old, marker, windows)
+            {
+                let suffix = rebased.strip_prefix(marker).unwrap();
+                *text = if suffix.is_empty() {
+                    root.clone()
+                } else {
+                    format!("{}{suffix}", root.trim_end_matches('/'))
+                };
+            } else if normalized.starts_with("path+file://") {
+                *text = normalized
+                    .replace(&format!("{old}#"), &format!("{root}#"))
+                    .replace(&format!("{old}/"), &format!("{root}/"));
+            }
+        }
+        serde_json::Value::Array(values) => {
+            values
+                .iter_mut()
+                .for_each(|value| relocate_metadata(value, old, root));
+        }
+        serde_json::Value::Object(values) => {
+            values
+                .values_mut()
+                .for_each(|value| relocate_metadata(value, old, root));
+        }
+        _ => {}
+    }
+}
+
+/// Retains the build graph with source paths and package identities relative to
+/// its workspace, so drift checks consume the same graph after relocation.
+pub fn workspace_metadata_bytes(metadata: &Metadata) -> Result<Vec<u8>, ProfileError> {
+    let mut value = serde_json::to_value(metadata)
+        .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
+    relocate_metadata(&mut value, metadata.workspace_root.as_str(), ".");
+    serde_json::to_vec(&value).map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))
 }
 
 const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-07-01";
