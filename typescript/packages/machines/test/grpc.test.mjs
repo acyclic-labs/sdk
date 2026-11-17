@@ -6,6 +6,7 @@ import { after, test } from "node:test";
 import { createHook } from "node:async_hooks";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { CredentialCache, CredentialSnapshot } from "@acyclic-labs/auth/credential";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { createMachinesGrpcClient, createMachinesGrpcTransport, MAX_OUTPUT_READ_BYTES } from "../dist/grpc.js";
 import { createMachinesClient, createMachinesRpcTransport } from "../dist/transport.js";
@@ -51,6 +52,42 @@ async function fixture(t, implementation, rawExec = false) {
   t.after(async () => { raw.close(); client.close(); await closeServer(); });
   return { ...client, options, transport: raw.transport, rpc: createMachinesRpcTransport(raw.transport) };
 }
+
+test("RPC bridge distinguishes server refusal from expired response custody", async t => {
+  let now = 0;
+  let calls = 0;
+  const cache = new CredentialCache(
+    async () => new CredentialSnapshot("fixture", "original", 10),
+    () => ({ revision: "original", nowUnixSeconds: now }),
+  );
+  const { options } = await fixture(t, {
+    create(_request, context) {
+      authenticate(context);
+      if (++calls === 1) throw new ConnectError("server denied", Code.PermissionDenied);
+      now = 10;
+      return {};
+    },
+  });
+  const raw = createMachinesGrpcTransport({ ...options, credential: cache.provider });
+  t.after(() => raw.close());
+  const open = createMachinesRpcTransport(raw.transport);
+  const bytes = toBinary(wire.CreateMachineRequestSchema, create(wire.CreateMachineRequestSchema));
+  const request = () => {
+    let sent = false;
+    return open("create", async () => {
+      if (sent) return undefined;
+      sent = true;
+      return bytes;
+    });
+  };
+  const denied = request();
+  await assert.rejects(denied.ready, error => error.code === Code.PermissionDenied && error.responseCredentialAdmission !== true);
+  denied.cancel();
+  const expired = request();
+  await assert.rejects(expired.ready, error => error.code === Code.PermissionDenied && error.responseCredentialAdmission === true);
+  expired.cancel();
+  assert.equal(calls, 2);
+});
 
 function authenticate(context) {
   if (context.requestHeader.get("authorization") !== "Bearer fixture") throw new ConnectError("missing bearer", Code.Unauthenticated);

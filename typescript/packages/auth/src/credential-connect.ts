@@ -1,6 +1,15 @@
 import { Code, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { credentialStream, resolveCredential, watchCredential, type CredentialProvider, type CredentialRequest } from "./credential.js";
 
+/** Local credential refusal after the transport acquired the request. */
+export class ResponseCredentialError extends ConnectError {
+  constructor(message: string) { super(message, Code.PermissionDenied); }
+}
+
+class CredentialAdmissionError extends ConnectError {
+  constructor(message: string) { super(message, Code.PermissionDenied); }
+}
+
 /** One exact credential attempt across unary and duplex Connect transports.
  * Source changes stop the original HTTP owner; they never replay the request.
  * Only an authenticated rejection invalidates the attempt's exact lease. */
@@ -13,8 +22,14 @@ export function credentialInterceptor(credential: CredentialProvider): Intercept
     const signal = watch?.signal ?? request.signal;
     const cleanup = () => watch?.close();
     const rejected = (error: unknown) => error instanceof ConnectError && error.code === Code.Unauthenticated;
-    const failure = (error: unknown) => !rejected(error) && watch?.changed.aborted && !request.signal.aborted
-      ? new ConnectError("credential source changed or unavailable", Code.PermissionDenied) : error;
+    let dispatched = false;
+    const failure = (error: unknown) => {
+      if (rejected(error)) return error;
+      const changed = watch?.changed.aborted && !request.signal.aborted;
+      if (!changed && !(error instanceof CredentialAdmissionError)) return error;
+      const message = error instanceof CredentialAdmissionError ? error.rawMessage : "credential source changed or unavailable";
+      return dispatched ? new ResponseCredentialError(message) : new ConnectError(message, Code.PermissionDenied);
+    };
     let retained = false;
     let lease: CredentialRequest | undefined;
     try {
@@ -23,10 +38,11 @@ export function credentialInterceptor(credential: CredentialProvider): Intercept
       const custody = { ...admitted, check() {
         signal.throwIfAborted();
         try { admitted.check(); }
-        catch { throw new ConnectError("credential source changed or expired", Code.PermissionDenied); }
+        catch { throw new CredentialAdmissionError("credential source changed or expired"); }
       } };
       request.header.set("authorization", `Bearer ${admitted.token()}`);
       custody.check();
+      dispatched = true;
       const response = await next(request.stream
         ? { ...request, signal, message: credentialStream(request.message, custody, () => false) }
         : { ...request, signal });
