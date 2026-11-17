@@ -125,8 +125,8 @@ fn class(seed: u64) -> &'static str {
     }
 }
 
-fn plans(class: &'static str, seed: u64) -> Vec<Plan> {
-    let content = format!("{class}:{seed}\n");
+fn plans(class: &'static str) -> Vec<Plan> {
+    let content = format!("{class}\n");
     vec![Plan {
         tag: class,
         steps: vec![vec![
@@ -159,12 +159,12 @@ async fn trace(
     erase_entropy: bool,
 ) -> std::result::Result<Replay, String> {
     let mut world = if erase_entropy {
-        World::without_entropy(world_seed, &FILES, service(plans(class, variation)))
+        World::without_entropy(world_seed, &FILES, service(plans(class)))
     } else {
-        World::new(world_seed, &FILES, service(plans(class, variation)))
+        World::new(world_seed, &FILES, service(plans(class)))
     }
     .map_err(failed)?;
-    let prompts = [vec![(class, tag(class))]];
+    let prompts = [vec![(class, format!("{} seed:{variation}", tag(class)))]];
     let incarnation = world
         .incarnation(None, &prompts)
         .await
