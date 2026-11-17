@@ -1153,20 +1153,27 @@ const runtimeSelections = wasmSelections.filter(selection => selection.runtime);
 const workspaceRuntimeDeps = new Map([...wasmNodeModules.values()].flat().filter(dep => dep.dir).map(dep => [dep.name, dep]));
 const runtimeFilegroups = [...workspaceRuntimeDeps.values()].map(dep => {
     const contractOutputs = streamTokenOutputs.filter(file => file.startsWith(`${dep.dir}/`));
+    const bindings = packagedTypeScriptBindings.filter(([, names]) => names.includes(dep.dir.split("/").at(-1)));
     return rule("filegroup", [
     ["name", q(workspaceTargetName(dep.name))],
-    // Pin and name runtime protobuf projections: absent files must fail analysis.
     ["srcs", glob([`${dep.dir}/**`], [`${dep.dir}/generated/wasm/**`, `${dep.dir}/generated/proto/**`, ...contractOutputs]) + " + " + list(
-      packagedTypeScriptBindings.filter(([, names]) => names.includes(dep.dir.split("/").at(-1)))
-        .map(([stem]) => fileLabel(`${dep.dir}/generated/proto/${stem}.js`))
-        .concat(contractOutputs.map(fileLabel)))],
+      contractOutputs.map(fileLabel))],
     ["visibility", q(["//visibility:public"])],
-    ]);
+    ]) + (bindings.length ? `\n${rule("proto_js", [
+      ["name", q(`${workspaceTargetName(dep.name)}_proto`)],
+      ["schemas", starlarkDict(bindings.map(([stem, , owner]) => {
+        const schema = `${owner ?? `rust/crates/${stem.split("/")[0]}`}/proto/${stem.replace(/_pb$/, ".proto")}`;
+        return [fileLabel(schema), schema];
+      }))],
+    ])}` : "");
 }).join("\n");
 const wasmNodeModulesRules = runtimeFilegroups + (runtimeSelections.length ? "\n" : "") + runtimeSelections.map(selection => {
   const deps = wasmNodeModules.get(selection.name) ?? [];
   const packages = deps.map(dep => [dep.dir ? `:${workspaceTargetName(dep.name)}` : `@${dep.repository}//:files`, `${dep.name}=${dep.dir ?? ""}`]);
   for (const dep of deps.filter(dep => dep.dir)) {
+    if (packagedTypeScriptBindings.some(([, names]) => names.includes(dep.dir.split("/").at(-1)))) {
+      packages.push([`:${workspaceTargetName(dep.name)}_proto`, `${dep.name}/generated/proto=`]);
+    }
     const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
     if (generated) packages.push([generated.name, `${dep.name}/generated/wasm=`]);
   }
@@ -1183,7 +1190,7 @@ const files = new Map([
   ["rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json", workspaceMetadata],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
-${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\n' : ""}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${wasmNodeModulesRules}${sourcesRule}${exportsRule("")}`],
+${wasmNodeModulesRules ? 'load("//:node_modules.bzl", "node_modules")\nload("//:proto_js.bzl", "proto_js")\n' : ""}${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${wasmPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${wasmNodeModulesRules}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}

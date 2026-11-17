@@ -48,14 +48,16 @@ register_toolchains("@musl_toolchains_hub//:all", dev_dependency = True)
 
 register_toolchains("@llvm_toolchain//:all", dev_dependency = True)
 
-# The Node.js runtime tests start, from the official release for the host platform. It is this
-# module's own test setup, so a module that depends on this one fetches no Node.js.
-node = use_extension("//:node_repo.bzl", "node", dev_dependency = True)
+# The pinned JavaScript toolchain is also used to build the published package trees.
+node = use_extension("//:node_repo.bzl", "node")
 node.node(version = "24.22.2")
 use_repo(node, "nodejs")
 
-bun = use_extension("//:bun_repo.bzl", "bun", dev_dependency = True)
+bun = use_extension("//:bun_repo.bzl", "bun")
 use_repo(bun, "bunjs")
+
+npm_codegen = use_extension("//:npm_codegen_repo.bzl", "npm_codegen")
+use_repo(npm_codegen, "npm_codegen_packages")
 
 # Standalone production proofs use the verifier's own pinned compiler.
 kani = use_extension("//toolchains/kani:repositories.bzl", "kani", dev_dependency = True)
