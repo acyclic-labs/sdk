@@ -428,10 +428,12 @@ impl StockExecution<'_> {
                 }
                 stock_retire_text(text, self.io)?;
                 stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
-                let calls: Vec<_> = stock_into_iter(calls, self.io)?.collect();
                 unanswered.clear();
-                unanswered.extend(calls.iter().map(|(_, index)| *index));
-                for (invocation, invocation_index) in calls {
+                for (_, index) in &calls {
+                    stock_vec_push(&mut unanswered, *index, self.io)?;
+                }
+                let mut calls = stock_into_iter(calls, self.io)?;
+                while let Some((invocation, invocation_index)) = calls.next() {
                     match self
                         .resolve_tool_call(
                             journal,
