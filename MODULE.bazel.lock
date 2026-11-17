@@ -225,6 +225,19 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
+    "//:bun_repo.bzl%bun": {
+      "general": {
+        "bzlTransitiveDigest": "qkf+U4Cju5AbD9e8aUJZ8Sxju8JveZW2AksBzF5ySz0=",
+        "usagesDigest": "sHdR1MR3ZsEDIcKZVBm2clqzax6StY4bMjycRmaIQQg=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "bunjs": {
+            "repoRuleId": "@@//:bun_repo.bzl%_bun_repository",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "//:node_repo.bzl%node": {
       "general": {
         "bzlTransitiveDigest": "F9czdKVmcL8GN7NLDdlDiERNVWsr+UwRauYFkmtOUng=",
