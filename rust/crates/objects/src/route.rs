@@ -109,6 +109,12 @@ pub async fn put_blobs(
             })?);
         }
     }
+    if published.next().is_some() {
+        return Err(Error::caused(
+            wire::ErrorCode::Unavailable,
+            acyclic_auth::refusal::Cause::new("objects.route", "batch_result_surplus"),
+        ));
+    }
     let outcomes: Vec<_> = outcomes.into_iter().flatten().collect();
     let revision = covering(outcomes.iter().flatten());
     let results = outcomes
