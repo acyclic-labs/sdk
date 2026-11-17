@@ -12,15 +12,17 @@ fn measured_write_copy_refusal_precedes_the_real_source_write()
     let cancellation = crate::CancellationToken::new();
     let mut budget = BOUNDARY_BUDGET;
     budget.bytes_copied = 3;
-    let failure = crate::native_mount::run_native_mount_handler(budget, &cancellation, |work| {
+    let work = capture_meter(budget, &cancellation)?;
+    crate::native_mount::run_native_mount_handler_on_meter(&work, |work| {
         let bytes = crate::native_mount::shared::input::source_chunk(b"replacement", work)?;
         opened
             .write_range_with_meter(0, bytes, false, work)
             .map_err(crate::NativeMountError::Source)
     })
     .expect_err("insufficient copied-byte authority must refuse the whole packet before copying");
-    assert_eq!(failure.1.bytes_copied, 0);
-    assert_eq!(failure.1.backend_write_operations, 0);
+    let spent = work.receipt();
+    assert_eq!(spent.bytes_copied, 0);
+    assert_eq!(spent.backend_write_operations, 0);
     assert_eq!(opened.read_range(0, 8)?.as_ref(), b"original");
     Ok(())
 }
