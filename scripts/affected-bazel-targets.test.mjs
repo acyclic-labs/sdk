@@ -17,7 +17,7 @@ const put = (root, path, content = "") => {
 };
 
 test("build inputs every target reads select every test", () => {
-  for (const path of ["MODULE.bazel", "cargo.MODULE.bazel", "REPO.bazel", ".bazelrc", "BUILD.bazel",
+  for (const path of ["MODULE.bazel", "cargo.MODULE.bazel", "REPO.bazel", ".bazelrc", ".bazelversion", "BUILD.bazel",
     "rust/crates/a/BUILD.bazel", "toolchains/windows/BUILD.bazel", "windows_paths.bzl",
     "scripts/bazel-build-files.mjs", "rust/vendor/napi-3.15.0/BUILD.bazel", "patches/foo.patch",
     "cargo-bazel-lock.json", "cargo-bazel.Cargo.lock"]) {
