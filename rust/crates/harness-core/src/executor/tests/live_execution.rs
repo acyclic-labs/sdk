@@ -88,12 +88,16 @@ async fn a_live_model_retry_is_rejected_before_replay_or_dispatch() -> Result<()
 
 #[cfg(not(target_arch = "wasm32"))]
 struct PendingTool {
+    retire_on_drop: bool,
     calls: AtomicUsize,
     result: Mutex<Option<ToolResult>>,
     accepted: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::tool::ToolExecutor for PendingTool {
+    fn cancellable_on_drop(&self) -> bool {
+        self.retire_on_drop
+    }
     fn execute<'a>(
         &'a self,
         _: ToolInvocation,
@@ -121,6 +125,7 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
     let provider = Arc::new(scripted_model());
     let (accepted, acceptance) = tokio::sync::oneshot::channel();
     let tool = Arc::new(PendingTool {
+        retire_on_drop: false,
         calls: AtomicUsize::new(0),
         result: Mutex::new(None),
         accepted: Mutex::new(Some(accepted)),
@@ -214,6 +219,7 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 async fn fenced_pending_call(
     dispatched: bool,
+    retire_on_drop: bool,
 ) -> Result<(
     Journal,
     Arc<PendingTool>,
@@ -225,6 +231,7 @@ async fn fenced_pending_call(
     let provider = Arc::new(scripted_model());
     let (accepted, acceptance) = tokio::sync::oneshot::channel();
     let tool = Arc::new(PendingTool {
+        retire_on_drop,
         calls: AtomicUsize::new(0),
         result: Mutex::new(None),
         accepted: Mutex::new(Some(accepted)),
@@ -256,7 +263,11 @@ async fn fenced_pending_call(
     }
     // The incarnation dies with its producer; the next one reopens the cut.
     drop(first);
-    let reopened = journal.reopen_before_tool_completion("call-1");
+    let reopened = if retire_on_drop {
+        journal
+    } else {
+        journal.reopen_before_tool_completion("call-1")
+    };
     if dispatched {
         for record in reopened.0.lock().unwrap().iter_mut() {
             if let ExecutionEvent::ToolStarted { publication, .. } = &mut record.event {
@@ -271,10 +282,10 @@ async fn fenced_pending_call(
 /// dead owner can no longer settle, so an inconclusive reconciliation is the
 /// model's interrupted failure, the effect never runs again, and the turn
 /// continues instead of staying indeterminate.
-#[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-async fn a_fenced_started_call_settles_interrupted_and_the_turn_continues() -> Result<()> {
-    let (reopened, tool, provider, executor, input) = fenced_pending_call(false).await?;
+async fn pending_redelivery(retire_on_drop: bool) -> Result<()> {
+    let (reopened, tool, provider, executor, input) =
+        fenced_pending_call(false, retire_on_drop).await?;
     let settled = executor.execute(input.clone(), &reopened).await?;
     assert_eq!(settled.text, "done");
     let text = super::tools_1::tool_error_text(&provider.requests()[1].messages, "call-1")
@@ -297,13 +308,50 @@ async fn a_fenced_started_call_settles_interrupted_and_the_turn_continues() -> R
     Ok(())
 }
 
+/// Replay a still-pending outcome on the same owner and after a restart.
+/// The real journal, claim and stock settlement engine run under seeded I/O
+/// scheduling; no uncertain tool effect is executed a second time.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn seeded_pending_redelivery_settles_without_failing_the_turn() -> std::result::Result<(), String> {
+    use acyclic_native_runtime::testing::{
+        Schedule, seeded_runtime,
+        sweep::{seeds, sweep},
+    };
+    sweep("harness-pending-redelivery", seeds(0..8)?, |seed| {
+        seeded_runtime(seed).map_err(|error| error.to_string())?.block_on(async {
+            let (schedule, mut boundaries) = Schedule::seeded(seed);
+            let history = async {
+                pending_redelivery(false).await?;
+                pending_redelivery(true).await
+            };
+            let mut execution = Box::pin(schedule.scope(history));
+            let result = loop {
+                tokio::select! {
+                    result = &mut execution => break result,
+                    boundary = boundaries.recv() => boundary.expect("schedule boundary").release(),
+                }
+            };
+            drop(execution);
+            loop {
+                tokio::select! {
+                    () = schedule.drained() => break,
+                    boundary = boundaries.recv() => boundary.expect("drain boundary").release(),
+                }
+            }
+            result.map_err(|error| error.to_string())
+        })
+    })?;
+    Ok(())
+}
+
 /// A call dispatched to another host outlives its fenced owner: it stays
 /// retained, with nothing recorded and nothing run again, until that host's
 /// own settlement decides it.
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn a_fenced_dispatched_call_waits_for_its_host_to_settle_it() -> Result<()> {
-    let (reopened, tool, _, executor, input) = fenced_pending_call(true).await?;
+    let (reopened, tool, _, executor, input) = fenced_pending_call(true, false).await?;
     let retained = executor.execute(input.clone(), &reopened).await;
     assert!(
         matches!(&retained, Err(Error::Indeterminate(id)) if *id == input.operation_id),

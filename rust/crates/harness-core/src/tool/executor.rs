@@ -318,6 +318,8 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// The stock journal records interruption before settling the turn, and
     /// never retries an interrupted invocation. Other executors retain their
     /// existing reconciliation and effect-fencing behavior.
+    /// On redelivery, exclusive invocation custody proves the prior future
+    /// retired; this guarantee fences its I/O without restarting the owner.
     fn cancellable_on_drop(&self) -> bool {
         false
     }

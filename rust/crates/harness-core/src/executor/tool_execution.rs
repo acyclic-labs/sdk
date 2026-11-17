@@ -845,7 +845,18 @@ impl<'io> StockExecution<'io> {
                         },
                         tool,
                         &mut context,
-                        (started, fenced),
+                        // The exclusive invocation claim proves its predecessor
+                        // future retired. A drop-cancellable executor fenced all
+                        // its I/O too, even without a provider-owner restart.
+                        (
+                            started,
+                            fenced.or_else(|| {
+                                (started
+                                    && !self.stock.reconciliation_only
+                                    && tool.executor.cancellable_on_drop())
+                                .then_some(records.as_slice())
+                            }),
+                        ),
                         original_started_at,
                         _hook_context,
                     )
