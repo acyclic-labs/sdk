@@ -363,45 +363,55 @@ impl LocalHarness {
             "volume:///shared belongs to this session tree and is shared with its descendants; condition edits on the exact version you read.".into(),
         );
         #[cfg(any(test, not(target_arch = "wasm32")))]
-        if let Some(workspace) = &binding.workspace {
-            manifest
-                .conventions
-                .push(workspace.context_line().to_owned());
-            if self.checkout_context {
-                let (selected, _) = workspace.selected_view().await?;
-                // A selected branch can use a separate physical mount. Reuse
-                // that admitted handle; never report the base mount for it.
-                let selected_mount = if let Some(view) = &selected
-                    && workspace.mounted.is_some()
-                {
-                    workspace
-                        .state
-                        .lock()
-                        .await
-                        .workspace
-                        .as_ref()
-                        .filter(|(id, _)| *id == view.workspace().id())
-                        .map(|(_, mounted)| Arc::clone(mounted))
-                } else {
+        {
+            let cwd = if let Some(workspace) = &binding.workspace {
+                manifest
+                    .conventions
+                    .push(workspace.context_line().to_owned());
+                if !super::open::uses_native_execution(&self.tools)? {
                     None
-                };
-                let cwd = if !super::open::uses_native_execution(&self.tools)? {
-                    None
-                } else if selected.is_none() || workspace.mounted.is_none() {
-                    workspace.native_cwd()?
+                } else if self.checkout_context {
+                    let (selected, _) = workspace.selected_view().await?;
+                    // A selected branch can use a separate physical mount. Reuse
+                    // that admitted handle; never report the base mount for it.
+                    let selected_mount = if let Some(view) = &selected
+                        && workspace.mounted.is_some()
+                    {
+                        workspace
+                            .state
+                            .lock()
+                            .await
+                            .workspace
+                            .as_ref()
+                            .filter(|(id, _)| *id == view.workspace().id())
+                            .map(|(_, mounted)| Arc::clone(mounted))
+                    } else {
+                        None
+                    };
+                    if selected.is_none() || workspace.mounted.is_none() {
+                        workspace.native_cwd()?.map(std::path::Path::to_path_buf)
+                    } else {
+                        selected_mount
+                            .as_ref()
+                            .map(|mounted| mounted.native_cwd())
+                            .transpose()?
+                            .flatten()
+                            .map(std::path::Path::to_path_buf)
+                    }
                 } else {
-                    selected_mount
-                        .as_ref()
-                        .map(|mounted| mounted.native_cwd())
-                        .transpose()?
-                        .flatten()
-                };
-                manifest.environment = Some(environment::gather(
-                    cwd,
-                    self.clock.now_unix_millis(),
-                    &self.environment_platform,
-                )?);
-            }
+                    // A configured volume has an admitted native directory too;
+                    // executable discovery needs it even though the model sees
+                    // the task-relative `.` everywhere.
+                    workspace.native_cwd()?.map(std::path::Path::to_path_buf)
+                }
+            } else {
+                None
+            };
+            manifest.environment = Some(environment::gather(
+                cwd.as_deref(),
+                self.clock.now_unix_millis(),
+                &self.environment_platform,
+            )?);
         }
         Ok(manifest)
     }

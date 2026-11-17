@@ -310,11 +310,14 @@ pub(crate) async fn directive(
     let text = std::str::from_utf8(&source[body..])
         .map_err(|_| Error::Invalid("template directive is not UTF-8".into()))?
         .trim();
-    let text = if !capabilities.may_spawn.is_empty()
+    // The delegation policy is the root's: a role template renders only its
+    // own directive, so a child never inherits an instruction to re-split.
+    let text = if creation.template.is_none()
+        && !capabilities.may_spawn.is_empty()
         && creation
             .topology
             .as_ref()
-            .is_none_or(|policy| policy.offers_spawn(creation.template.is_none()))
+            .is_none_or(|policy| policy.offers_spawn(true))
     {
         format!("{text}\n\n{}", include_str!("seed/delegation.md").trim())
     } else {
