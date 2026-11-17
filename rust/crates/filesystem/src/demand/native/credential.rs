@@ -413,7 +413,8 @@ impl NativeCredentialSource {
                                             .map_err(error)?;
                                     NativeHostWork::check(&work).map_err(error)?;
                                     let content = fixture_content(&metadata, |hasher| {
-                                        std::io::copy(&mut &file, hasher).map(|_| ())
+                                        let mut file = file.as_file();
+                                        std::io::copy(&mut file, hasher).map(|_| ())
                                     });
                                     Ok::<_, CredentialError>((
                                         file,
