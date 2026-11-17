@@ -236,9 +236,11 @@ filegroup(
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
-sh_binary(
+genrule(
     name = "probe_run",
-    srcs = ["probe_run.sh"],
+    outs = ["probe_run.sh.out"],
+    cmd = "printf '#!/usr/bin/env bash\\nset -euo pipefail\\nbun --version\\nnode --version\\n' > $@ && chmod +x $@",
+    executable = True,
 )
 
 genrule(
