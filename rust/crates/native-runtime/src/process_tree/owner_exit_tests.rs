@@ -166,8 +166,8 @@ impl Watch {
         let fd = libc::c_long::from(unsafe { libc::kqueue() });
         let fd = libc::c_int::try_from(fd).expect("descriptor");
         assert!(fd >= 0, "watch: {}", std::io::Error::last_os_error());
-        // SAFETY: the descriptor the call above just returned.
         let watch = Self {
+            // SAFETY: the descriptor the call above just returned.
             fd: unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) },
             pid,
         };

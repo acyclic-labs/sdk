@@ -208,8 +208,8 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
         killed.call_once(|| {
             // The program leads no group: the tree's group, which the unreaped
             // warden's PID reserves, holds the program and never the warden.
-            // SAFETY: a signal to the tree's own process group.
             assert_eq!(
+                // SAFETY: a signal to the tree's own process group.
                 unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) },
                 0
             );
