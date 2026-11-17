@@ -35,7 +35,7 @@ test('policy entrypoints reject violations through symlinks and stay inert on im
   mkdirSync(join(root, 'scripts'));
   for (const name of ['check-cargo-callers.mjs', 'policy-core.mjs']) copyFileSync(new URL(`../${name}`, import.meta.url), join(root, 'scripts', name));
   writeFileSync(join(root, 'scripts/cargo-callers.json'), '[]');
-  writeFileSync(join(root, 'scripts/violation.sh'), 'car' + 'go build\n');
+  copyFileSync(new URL('../fixtures/cargo-callers/recorded-log.txt', import.meta.url), join(root, 'scripts/violation.sh'));
   execFileSync('git', ['init', '-q', root]);
   execFileSync('git', ['add', '.'], {cwd: root});
   symlinkSync(join(root, 'scripts/check-cargo-callers.mjs'), join(root, 'check.mjs'));
