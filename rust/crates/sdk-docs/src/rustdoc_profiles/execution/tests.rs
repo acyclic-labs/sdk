@@ -46,7 +46,7 @@ fn scoped_rustup_homes_select_their_own_commands_targets_and_cfgs() {
         for name in ["a", "b", "a"] {
             let home = fixture.join(name);
             let mut command = Command::new(&rustup);
-            command.env("RUSTUP_HOME", &home);
+            command.env("PATH", &fixture).env("RUSTUP_HOME", &home);
             crate::with_command_environment(&command, || {
                 let host = format!("fixture-{name}");
                 assert_eq!(rustdoc_host().unwrap(), host);
@@ -84,7 +84,7 @@ fn a_new_operation_refreshes_installed_targets_in_the_same_home() {
         .unwrap();
     std::fs::write(home.path().join("targets"), "fixture-a\nfixture-added\n").unwrap();
     let mut command = Command::new(fixtures.join("rustup"));
-    command.env("RUSTUP_HOME", home.path());
+    command.env("PATH", &fixtures).env("RUSTUP_HOME", home.path());
     crate::with_command_environment(&command, || {
         crate::with_rustdoc_cache(|| {
             assert!(rustdoc_targets(&["fixture-added"]).is_ok());
