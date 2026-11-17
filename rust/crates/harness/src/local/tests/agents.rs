@@ -5585,7 +5585,7 @@ async fn file_stop_closes_the_whole_subtree() -> Result<()> {
         by: by.clone(),
         id: IntentId::try_from("stop-child").map_err(agent)?,
         brief: None,
-        profile,
+        profile: profile.clone(),
         history: None,
     });
     let Delivered::Committed { inbox } = agents.send(root, &by, &record).await.map_err(agent)?
@@ -5598,7 +5598,25 @@ async fn file_stop_closes_the_whole_subtree() -> Result<()> {
     else {
         return Err(Error::Invalid("child was refused".into()));
     };
+    let record = InboxRecord::Spawn(SpawnRequest {
+        by: by.clone(),
+        id: IntentId::try_from("stop-grandchild").map_err(agent)?,
+        brief: None,
+        profile,
+        history: None,
+    });
+    let Delivered::Committed { inbox } = agents.send(&child, &by, &record).await.map_err(agent)?
+    else {
+        return Err(Error::Invalid("child was closed".into()));
+    };
+    let (intent, _) = crate::agent::requested_child(&child, inbox).map_err(agent)?;
+    let SpawnOutcome::Spawned { child: grandchild } =
+        agents.spawned(&child, inbox, &intent).await.map_err(agent)?
+    else {
+        return Err(Error::Invalid("grandchild was refused".into()));
+    };
     assert!(!agents.state(&child).await.map_err(agent)?.closed);
+    assert!(!agents.state(&grandchild).await.map_err(agent)?.closed);
     let conversation = Conversation::open(connection.clone());
     let mut events = conversation.connection().supervision_own().await?;
     conversation
@@ -5620,6 +5638,10 @@ async fn file_stop_closes_the_whole_subtree() -> Result<()> {
     assert!(
         agents.state(&child).await.map_err(agent)?.closed,
         "the root acknowledged stop while its child stayed open"
+    );
+    assert!(
+        agents.state(&grandchild).await.map_err(agent)?.closed,
+        "the root acknowledged stop while its grandchild stayed open"
     );
     Ok(())
 }

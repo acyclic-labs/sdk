@@ -38,8 +38,8 @@ fn until_on_deadline(
 }
 
 /// Archive reports even when the agent already reported its completion.
-fn cascade_unguarded(control: Control, pending: usize) -> Cascade {
-    let mut cascade = production::cascade(control, pending);
+fn cascade_unguarded(control: Control, pending: usize, open: usize) -> Cascade {
+    let mut cascade = production::cascade(control, pending, open);
     if pending <= MAX_FANOUT {
         cascade.report = true;
     }
@@ -56,9 +56,9 @@ fn admit_keeps_turn(control: Control, kind: Admit) -> Admitted {
 }
 
 /// Reports the archive before every child has been archived.
-fn cascade_reports_early(control: Control, pending: usize) -> Cascade {
-    let mut cascade = production::cascade(control, pending);
-    if !control.reported && pending > MAX_FANOUT {
+fn cascade_reports_early(control: Control, pending: usize, open: usize) -> Cascade {
+    let mut cascade = production::cascade(control, pending, open);
+    if !control.reported && open > 0 {
         let (next, report) = production::report(cascade.control);
         cascade.control = next;
         cascade.report = report;

@@ -596,11 +596,13 @@ fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvide
         if request.summary {
             return Ok(length_stop(content, "dst"));
         }
-        if request_tag(
+        // The newest relevant prompt decides the answer. A later request
+        // still carries the warmup in its history, so matching any older
+        // warmup tag would answer the selected case with the warmup.
+        if let Some(found) = request_tag(
             request,
-            &["d4-warm-0", "d4-warm-1", "d4-warm-2", "d4-warm-3"],
-        )
-        .is_some()
+            &["d4-warm-0", "d4-warm-1", "d4-warm-2", "d4-warm-3", "d4"],
+        ) && found != "d4"
         {
             return Ok(ScriptedTurn::Text(done("d4-warm")));
         }
@@ -751,7 +753,7 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     if summary_requests.is_empty() {
                         return fail("the length-cut context review was never requested");
                     }
-                    if incarnation.prompts.first().map(|(outcome, _)| outcome)
+                    if incarnation.prompts.last().map(|(outcome, _)| outcome)
                         != Some(&Prompted::Settled(done("d4")))
                     {
                         return fail("a length-cut context review ended the worker");

@@ -17,7 +17,7 @@ struct Kernel {
     pick: fn(Control, bool, bool, bool) -> Pick,
     settle: fn(Control, Wait) -> (Control, bool),
     report: fn(Control) -> (Control, bool),
-    cascade: fn(Control, usize) -> Cascade,
+    cascade: fn(Control, usize, usize) -> Cascade,
     alarm: fn(Control, bool, bool, usize) -> Option<u64>,
     satisfy: fn(Control) -> Control,
     until: fn(u32, usize, bool, Option<u64>, bool) -> Wait,
@@ -40,6 +40,7 @@ struct Model {
     queued: u8,
     approval_queued: bool,
     pending: usize,
+    open: usize,
     reports: u8,
     /// Children's asks accepted and not yet answered by a review step.
     asks: u8,
@@ -90,6 +91,7 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
         }
         if kind == Admit::Archive && !closed {
             model.pending = open_children;
+            model.open = open_children;
         }
         if kind == Admit::Ask {
             model.asks = model.asks.saturating_add(1);
@@ -112,13 +114,19 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
             }
         }
     }
+    if model.control.closed && model.open > 0 && kani::any::<bool>() {
+        // A child may report `ChildDone` before or after its archive request.
+        let done = 1 + kani::any::<usize>() % model.open;
+        model.open -= done;
+        model.pending -= done.min(model.pending);
+    }
     if model.control.closed {
-        let cascade = (kernel.cascade)(model.control, model.pending);
+        let cascade = (kernel.cascade)(model.control, model.pending, model.open);
         assert!(cascade.archive <= MAX_FANOUT && cascade.archive <= model.pending);
         model.pending -= cascade.archive;
         if cascade.report {
             assert!(
-                model.pending == 0,
+                model.pending == 0 && model.open == 0,
                 "archive reported before every child was archived"
             );
         }
@@ -231,6 +239,7 @@ fn exactly_once_and_never_loses_a_wake(kernel: Kernel) {
         queued: kani::any::<u8>() % 2,
         approval_queued: false,
         pending: 0,
+        open: 0,
         reports: 0,
         asks: 0,
     };
@@ -256,7 +265,7 @@ fn exactly_once_and_never_loses_a_wake(kernel: Kernel) {
             }
         }
         if model.control.archive_refused {
-            let stopped = (kernel.cascade)(model.control, model.pending);
+            let stopped = (kernel.cascade)(model.control, model.pending, model.open);
             assert_eq!(stopped.archive, 0, "a refused cascade retried");
             assert!(!stopped.report, "a refused cascade reported twice");
         }
@@ -285,12 +294,17 @@ fn archive_drains_and_reports_exactly_once(kernel: Kernel) {
         queued: 0,
         approval_queued: false,
         pending: 0,
+        open: 0,
         reports: 0,
         asks: 0,
     };
     step(kernel, &mut model, Some(Admit::Archive), open_children);
-    // Only the alarm wakes an archived agent that receives no further input.
+    // Only the alarm wakes an archived agent that receives no further input;
+    // each child's `ChildDone` is an inbox record that drains the open set.
     for _ in 0..(MAX_CHILDREN / MAX_FANOUT + 1) {
+        while model.open > 0 {
+            step(kernel, &mut model, Some(Admit::Input), open_children);
+        }
         if (kernel.alarm)(model.control, false, false, model.pending).is_none() {
             break;
         }

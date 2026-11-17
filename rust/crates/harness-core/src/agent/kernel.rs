@@ -299,9 +299,10 @@ pub struct Cascade {
     pub report: bool,
 }
 
-/// Archives at most [`MAX_FANOUT`] children; reports once none remain.
+/// Archives at most [`MAX_FANOUT`] children; reports once every child has
+/// reported `ChildDone`, so a parent's `Archived` status covers its subtree.
 #[must_use]
-pub const fn cascade(control: Control, pending: usize) -> Cascade {
+pub const fn cascade(control: Control, pending: usize, open: usize) -> Cascade {
     if control.archive_refused {
         return Cascade {
             control,
@@ -314,7 +315,7 @@ pub const fn cascade(control: Control, pending: usize) -> Cascade {
     } else {
         MAX_FANOUT
     };
-    if pending > archive || control.reported {
+    if pending > archive || control.reported || open > 0 {
         return Cascade {
             control,
             archive,
@@ -372,5 +373,25 @@ pub const fn alarm(
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cascade_reports_only_after_every_open_child_has_reported() {
+        let closed = Control {
+            closed: true,
+            mode: Mode::Done,
+            ..Control::ADOPTED
+        };
+        // Sending an archive request does not close its child: a request that
+        // is still outstanding keeps the cascade open.
+        assert_eq!(cascade(closed, 2, 2).archive, 2);
+        assert!(!cascade(closed, 2, 2).report);
+        assert!(!cascade(closed, 0, 1).report);
+        assert!(cascade(closed, 0, 0).report);
     }
 }

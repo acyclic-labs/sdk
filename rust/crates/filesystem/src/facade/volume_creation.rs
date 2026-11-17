@@ -83,6 +83,16 @@ impl From<OperationId> for CreationOperation<'_> {
     }
 }
 
+/// Whether every creation attribute names a file this creation publishes.
+fn attributes_belong_to_files(
+    files: &[(&str, acyclic_stream::OwnedBytes)],
+    attributes: &[CreationAttribute],
+) -> bool {
+    attributes
+        .iter()
+        .all(|attribute| files.iter().any(|(path, _)| *path == attribute.path))
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Creates a fresh volume and its authenticated empty generation using
     /// the supplied standalone budget or original native invocation.
@@ -476,6 +486,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<bool, FsError> {
+        // Every attribute belongs to a file the creation names. A retry with
+        // an attribute for any other path is not this creation, just as a
+        // fresh creation rejects it before writing.
+        if !attributes_belong_to_files(files, attributes) {
+            return Ok(false);
+        }
         let volume = Volume {
             fs: self.clone(),
             id: volume_id,
@@ -543,6 +559,56 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 offset += length;
             }
+            // The creation's attributes are exactly the file's complete
+            // attribute set. Listing checks every recorded attribute and
+            // rejects an unrequested one, so omitting or adding metadata on a
+            // retry cannot adopt a different creation.
+            let expected = attributes
+                .iter()
+                .filter(|attribute| attribute.path == *name)
+                .count();
+            let mut listed = 0usize;
+            let mut after = None;
+            loop {
+                let (listing, mut allocation) = checkout
+                    .list_named_attributes_with_accounting(
+                        &path,
+                        after.as_ref(),
+                        256,
+                        None,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                let retired = listing
+                    .entries
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<crate::kernel::AttributeEntry>())
+                    .and_then(|bytes| u64::try_from(bytes).ok())
+                    .ok_or(WorkError::Overflow)?;
+                for entry in &listing.entries {
+                    if !attributes.iter().any(|attribute| {
+                        attribute.path == *name
+                            && attribute.name == entry.name
+                            && u64::try_from(attribute.value.len()).ok() == Some(entry.value_bytes)
+                    }) {
+                        drop(listing);
+                        accounting.release_owned(&mut allocation, retired)?;
+                        return Ok(false);
+                    }
+                    listed += 1;
+                }
+                after = listing.entries.last().map(|entry| entry.name.clone());
+                let has_more = listing.has_more;
+                drop(listing);
+                accounting.release_owned(&mut allocation, retired)?;
+                if !has_more {
+                    break;
+                }
+            }
+            if listed != expected {
+                return Ok(false);
+            }
             for attribute in attributes
                 .iter()
                 .filter(|attribute| attribute.path == *name)
@@ -599,10 +665,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             id: volume_id,
             config,
         };
-        for attribute in &attributes {
-            if !files.iter().any(|(path, _)| *path == attribute.path) {
-                return Err(FsError::CreationRejected);
-            }
+        if !attributes_belong_to_files(files, &attributes) {
+            return Err(FsError::CreationRejected);
         }
         let mut checkout = volume
             .unpublished_checkout(empty, accounting, cancellation)

@@ -213,12 +213,8 @@ impl StockExecution<'_> {
             session.manager_material(context, start..end, previous, None)?;
         // The request replaces the source's leading system messages with the
         // recorded worker prefix, so its message count is the prefix plus the
-        // source after those leading messages.
-        let leading = source
-            .messages
-            .iter()
-            .take_while(|message| message.role == crate::model::ModelRole::System)
-            .count();
+        // source after those leading messages. An empty prefix replaces none.
+        let leading = super::summary::replaced_leading(&source, &prefix);
         let supplied = prefix
             .len()
             .checked_add(

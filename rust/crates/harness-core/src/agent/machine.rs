@@ -2091,10 +2091,11 @@ fn begin_archive(state: &mut AgentState, through: u64) {
 /// Archive cascade: bounded fan-out to open children, then one report upward.
 async fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Error> {
     let pending = state.archive_pending.len();
+    let open = state.open_children.len();
     let before = control(state);
-    let step = kernel::cascade(before, pending);
+    let step = kernel::cascade(before, pending, open);
     #[cfg(feature = "test-support")]
-    control_trace::record(state, Decision::Cascade(before, pending, step));
+    control_trace::record(state, Decision::Cascade(before, pending, open, step));
     let id = IntentId::try_from(format!("cascade:{}", state.path.id()))?;
     for _ in 0..step.archive {
         let Some(child_id) = state.archive_pending.first().await? else {
