@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {toml, tomlFiles} from './policy-core.mjs';
+import {manifestDependencies, toml, tomlFiles} from './policy-core.mjs';
 
 const slash = value => value.replaceAll('\\', '/');
 const exists = file => fs.existsSync(file);
@@ -137,49 +137,44 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
       [key, value?.workspace === true ? workspace.package?.[key] : value]));
     enqueueLockedPatches(own.name, own.version);
     const dependencies = [];
-    const declarations = (tables, target = null) => {
-      for (const [table, kind] of [['dependencies', null], ['dev-dependencies', 'dev'], ['build-dependencies', 'build']])
-        for (const [alias, value] of Object.entries(tables[table] ?? {})) {
-          let declaration = typeof value === 'string' ? {version: value} : value;
-          let base = directory;
-          if (declaration.workspace) {
-            const inherited = workspace.dependencies?.[alias];
-            if (!inherited) throw Error(`${file}: missing workspace dependency ${alias}`);
-            const entry = typeof inherited === 'string' ? {version: inherited} : inherited;
-            declaration = {...entry, ...declaration, features: [...(entry.features ?? []), ...(declaration.features ?? [])]};
-            base = workspaceDirectory;
+    for (const {target, kind, alias, value} of manifestDependencies(manifest)) {
+      let declaration = typeof value === 'string' ? {version: value} : value;
+      let base = directory;
+      if (declaration.workspace) {
+        const inherited = workspace.dependencies?.[alias];
+        if (!inherited) throw Error(`${file}: missing workspace dependency ${alias}`);
+        const entry = typeof inherited === 'string' ? {version: inherited} : inherited;
+        declaration = {...entry, ...declaration, features: [...(entry.features ?? []), ...(declaration.features ?? [])]};
+        base = workspaceDirectory;
+      }
+      const patched = declaration.path ? [] : patches.filter(patch => {
+        if (patch.name !== (declaration.package ?? alias)) return false;
+        const packageManifest = toml(root, slash(path.relative(root, path.join(patch.directory, 'Cargo.toml')))).package;
+        if (!packageManifest || typeof packageManifest.version !== 'string') throw Error(`patch ${patch.name} lacks an explicit version`);
+        if (!versionMatches(packageManifest.version, requirement(declaration.version))) return false;
+        return !lock || (lock.package ?? []).some(item => item.name === patch.name && item.version === packageManifest.version && !item.source);
+      });
+      if (patched.length > 1) throw Error(`${file}: ambiguous local patch for ${declaration.package ?? alias}`);
+      const local = declaration.path ? path.resolve(base, declaration.path) : patched[0]?.directory ?? null;
+      if (local) {
+        const next = slash(path.relative(root, path.join(local, 'Cargo.toml')));
+        if (!withinSource(local)) throw Error(`workspace dependency escapes source root: ${next}`);
+        const selected = kind !== 'dev' || members.has(file);
+        if (selected && !manifests.has(next)) {manifests.add(next); pending.push(next);}
+        if (selected && declaration.path && rootManifest.workspace && !next.startsWith('../') && !path.isAbsolute(next) && !excluded(next)) {
+          const dependency = toml(root, next);
+          const explicitWorkspace = dependency.package?.workspace && path.resolve(local, dependency.package.workspace);
+          if (!dependency.workspace && (!explicitWorkspace || explicitWorkspace === root) && !members.has(next)) {
+            members.add(next);
+            if (packages.has(next)) pending.push(next);
           }
-          const patched = declaration.path ? [] : patches.filter(patch => {
-            if (patch.name !== (declaration.package ?? alias)) return false;
-            const packageManifest = toml(root, slash(path.relative(root, path.join(patch.directory, 'Cargo.toml')))).package;
-            if (!packageManifest || typeof packageManifest.version !== 'string') throw Error(`patch ${patch.name} lacks an explicit version`);
-            if (!versionMatches(packageManifest.version, requirement(declaration.version))) return false;
-            return !lock || (lock.package ?? []).some(item => item.name === patch.name && item.version === packageManifest.version && !item.source);
-          });
-          if (patched.length > 1) throw Error(`${file}: ambiguous local patch for ${declaration.package ?? alias}`);
-          const local = declaration.path ? path.resolve(base, declaration.path) : patched[0]?.directory ?? null;
-          if (local) {
-            const next = slash(path.relative(root, path.join(local, 'Cargo.toml')));
-            if (!withinSource(local)) throw Error(`workspace dependency escapes source root: ${next}`);
-            const selected = kind !== 'dev' || members.has(file);
-            if (selected && !manifests.has(next)) {manifests.add(next); pending.push(next);}
-            if (selected && declaration.path && rootManifest.workspace && !next.startsWith('../') && !path.isAbsolute(next) && !excluded(next)) {
-              const dependency = toml(root, next);
-              const explicitWorkspace = dependency.package?.workspace && path.resolve(local, dependency.package.workspace);
-              if (!dependency.workspace && (!explicitWorkspace || explicitWorkspace === root) && !members.has(next)) {
-                members.add(next);
-                if (packages.has(next)) pending.push(next);
-              }
-            }
-          }
-          dependencies.push({name: declaration.package ?? alias, rename: declaration.package ? alias : null,
-            req: requirement(declaration.version), kind, target, optional: declaration.optional ?? false,
-            uses_default_features: declaration['default-features'] ?? true, features: declaration.features ?? [],
-            source: declaration.path ? null : 'registry+https://github.com/rust-lang/crates.io-index', ...(local ? {resolved_path: local} : {}), ...(declaration.path ? {path: local} : {})});
         }
-    };
-    declarations(manifest);
-    for (const [target, tables] of Object.entries(manifest.target ?? {})) declarations(tables, target);
+      }
+      dependencies.push({name: declaration.package ?? alias, rename: declaration.package ? alias : null,
+        req: requirement(declaration.version), kind, target, optional: declaration.optional ?? false,
+        uses_default_features: declaration['default-features'] ?? true, features: declaration.features ?? [],
+        source: declaration.path ? null : 'registry+https://github.com/rust-lang/crates.io-index', ...(local ? {resolved_path: local} : {}), ...(declaration.path ? {path: local} : {})});
+    }
     const features = {...manifest.features};
     const explicit = new Set(Object.values(features).flat().filter(value => value.startsWith('dep:')).map(value => value.slice(4)));
     for (const dep of dependencies) {

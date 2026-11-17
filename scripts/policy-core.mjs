@@ -10,6 +10,13 @@ import {fileURLToPath} from 'node:url';
 export const repositoryUrl = new URL('../', import.meta.url).href;
 export const repositoryRoot = resolve(fileURLToPath(repositoryUrl));
 
+export function* manifestDependencies(manifest) {
+  for (const [target, tables] of [[null, manifest], ...Object.entries(manifest.target ?? {})])
+    for (const [table, kind] of [['dependencies', null], ['dev-dependencies', 'dev'], ['build-dependencies', 'build']])
+      for (const [alias, value] of Object.entries(tables[table] ?? {}))
+        yield {target, kind, alias, value};
+}
+
 export function selectionWorker(name, flags, workers) {
   return createHash('sha256').update([name, ...flags].join('\0')).digest().readUInt32LE(0) % workers;
 }
