@@ -3,7 +3,7 @@ use acyclic_stream::{StreamProvider, WriteOutcome, WriteRequest};
 use futures::{FutureExt as _, channel::oneshot};
 use std::sync::{
     Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 struct Clock;
