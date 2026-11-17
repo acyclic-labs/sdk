@@ -646,6 +646,7 @@ function windowsToolchain() {
 ${rule("cc_toolchain_config", [
     ["name", q("windows_cc_config")],
     ["visibility", q(["//:__pkg__"])],
+    ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
     // x64_windows with clang-cl selects the MSVC actions: lld-link links and llvm-lib archives.
     ["cpu", q("x64_windows")],
     ["compiler", q("clang-cl")],
@@ -675,6 +676,7 @@ ${rule("cc_toolchain_config", [
 ${rule("filegroup", [
     ["name", q("windows_cc_files")],
     ["visibility", q(["//:__pkg__"])],
+    ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
     ["srcs", q(["@xwin//:sysroot", "@llvm_toolchain_llvm//:bin"])],
 ])}
 ${rule("toolchain", [
@@ -697,6 +699,7 @@ function windowsCcToolchain() {
 ${rule("cc_toolchain", [
     ["name", q("windows_cc_toolchain")],
     ["toolchain_config", q(`//${WINDOWS_TOOLCHAIN_PACKAGE}:windows_cc_config`)],
+    ["target_compatible_with", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])],
     ...["all", "ar", "compiler", "linker", "dwp", "objcopy", "strip"].map(kind => [`${kind}_files`, q(files)]),
     ["visibility", q([`//${WINDOWS_TOOLCHAIN_PACKAGE}:__pkg__`])],
 ])}
@@ -799,6 +802,7 @@ for (const id of members) {
 const WINDOWS_TOOLCHAIN_PACKAGE = "toolchains/windows";
 const windowsLoads = `load("@rules_cc//cc/private/toolchain:windows_cc_toolchain_config.bzl", "cc_toolchain_config")\nload("//:windows_paths.bzl", "WINDOWS_LLVM", "WINDOWS_XWIN")\n`;
 const windowsPlatform = rule("platform", [["name", q("windows")], ["constraint_values", list(["@platforms//os:windows", "@platforms//cpu:x86_64"])]]);
+const macosPlatform = rule("platform", [["name", q("macos_aarch64")], ["constraint_values", list(["@platforms//os:macos", "@platforms//cpu:aarch64"])]]);
 const libcConstraints = `
 ${rule("constraint_setting", [["name", q("libc")], ["visibility", q(["//visibility:public"])]])}
 ${rule("constraint_value", [["name", q("libc_musl")], ["constraint_setting", q(":libc")], ["visibility", q(["//visibility:public"])]])}
@@ -812,7 +816,7 @@ const files = new Map([
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 exports_files(${list(["Cargo.lock", "Cargo.toml", ...(fs.existsSync(path.join(root, "clippy.toml")) ? ["clippy.toml"] : [])])})
-${libcConstraints}${platformRules}${windowsPlatform}${linuxMusl}${windowsCcToolchain()}${sourcesRule}${exportsRule("")}`],
+${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${linuxMusl}${windowsCcToolchain()}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}
