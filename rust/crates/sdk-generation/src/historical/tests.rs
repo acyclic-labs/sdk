@@ -754,7 +754,40 @@ fn cargo() -> PathBuf {
     // The fixtures' debug information is never read; skipping it keeps a real Cargo build
     // inside the per-case limit.
     std::env::set_var("CARGO_PROFILE_DEV_DEBUG", "0");
-    PathBuf::from(acyclic_test_support::host_tool!("CARGO"))
+    crate::fixture_tools::resolve(PathBuf::from(acyclic_test_support::host_tool!("CARGO")))
+}
+
+fn with_compiler_tools<T>(operation: impl FnOnce() -> T) -> T {
+    let Some(rustup) = std::env::var_os("CARGO_BIN_EXE_rustup") else {
+        return operation();
+    };
+    let rustup = crate::fixture_tools::resolve(PathBuf::from(rustup));
+    let rustc =
+        crate::fixture_tools::resolve(PathBuf::from(acyclic_test_support::host_tool!("rustc")));
+    let path = std::env::join_paths(
+        [
+            rustup.parent().unwrap().to_owned(),
+            rustc.parent().unwrap().to_owned(),
+        ]
+        .into_iter()
+        .chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )),
+    )
+    .unwrap();
+    let mut environment = Command::new(&rustup);
+    environment.env("PATH", path).env("RUSTC", rustc).env(
+        "RUSTUP_HOME",
+        rustup
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("rustup"),
+    );
+    sdk_docs::with_command_environment(&environment, operation)
 }
 #[test]
 fn dependency_archive_initial_import_uses_verified_registry_facts() {

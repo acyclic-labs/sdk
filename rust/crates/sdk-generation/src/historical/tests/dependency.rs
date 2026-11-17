@@ -2,6 +2,10 @@ use super::*;
 
 #[test]
 fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates() {
+    with_compiler_tools(actual_cargo_archived_dependency_resolution);
+}
+
+fn actual_cargo_archived_dependency_resolution() {
     let fixture = Fixture::new();
     let root = fixture.path().canonicalize().unwrap();
     let directory = "historical-fixture-0.1.0";

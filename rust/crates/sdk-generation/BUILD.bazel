@@ -116,7 +116,7 @@ rust_test(
 isolated_test(
     name = "sdk_generation_test",
     binary = ":sdk_generation_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc"},
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup"},
     id = "sdk-generation",
     exclude = ["::full_cloud::"],
     workers = 1,
@@ -127,7 +127,7 @@ isolated_test(
 isolated_test(
     name = "sdk_generation_test_full-cloud",
     binary = ":sdk_generation_test_cases",
-    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@nodejs//:node":"node"},
+    binaries = {"//:toolchain_cargo":"CARGO","//:rustc":"rustc","@sdk_compilers//:rustup":"rustup","@nodejs//:node":"node"},
     id = "sdk-generation",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -206,6 +206,7 @@ rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
     srcs = [
+        "src/fixture_tools.rs",
         "tests/cli_regressions.rs",
         "tests/cli_regressions/archives.rs",
         "tests/cli_regressions/cache.rs",

@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+#[path = "../src/fixture_tools.rs"]
+mod fixture_tools;
+
 struct Fixture {
     directory: Arc<tempfile::TempDir>,
     root: PathBuf,
