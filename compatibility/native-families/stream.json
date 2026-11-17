@@ -38,6 +38,7 @@
     "rust/vendor/tonic-web-wasm-client-0.9.2",
     "rust/vendor/ts-rs-macros-12.0.1",
     "scripts",
+    "tools",
     "tsconfig.base.json",
     "typescript/packages/stream/generated/proto",
     "typescript/packages/stream/package.json",

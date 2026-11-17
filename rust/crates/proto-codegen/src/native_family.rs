@@ -223,6 +223,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         "buf.gen.yaml",
         "rust/crates/proto-codegen",
         "scripts",
+        "tools",
     ] {
         roots.insert(path.to_owned());
     }

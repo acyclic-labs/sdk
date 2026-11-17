@@ -157,13 +157,13 @@ test("native source roots cover the generators' transitive script imports", () =
       ...contractModules([...packageClosure(process.cwd(), family)]).map(name => "scripts/" + name)];
     check(sourceRoots, generators);
     assert.throws(() => check(sourceRoots.filter(path => path !== "scripts"), generators), /imports unattested scripts\//);
-    check(["scripts"], generators);
+    check(["scripts", "tools"], generators);
     const changed = new Map([["scripts/package-closure.mjs", 'import "../unattested-generator-helper.mjs";']]);
-    assert.throws(() => check(["scripts"], generators, changed), /imports unattested unattested-generator-helper\.mjs/);
+    assert.throws(() => check(["scripts", "tools"], generators, changed), /imports unattested unattested-generator-helper\.mjs/);
     changed.set("scripts/package-closure.mjs", 'await import("../unattested-generator-helper.mjs");');
-    assert.throws(() => check(["scripts"], generators, changed), /imports unattested unattested-generator-helper\.mjs/);
+    assert.throws(() => check(["scripts", "tools"], generators, changed), /imports unattested unattested-generator-helper\.mjs/);
     changed.set("scripts/package-closure.mjs", 'const name = "../unattested-generator-helper.mjs"; await import(name);');
-    assert.throws(() => check(["scripts"], generators, changed), /uncovered computed import/);
+    assert.throws(() => check(["scripts", "tools"], generators, changed), /uncovered computed import/);
   }
 });
 
