@@ -197,7 +197,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let context = evidence
                     .map(|(evidence, _)| publication_context(evidence, io))
                     .transpose()?;
-                Self::commit_contextual_publication(transaction, io, publication, context, now)?.await
+                Self::commit_contextual_publication(transaction, io, publication, context, now)?
+                    .await
             };
             match root_cut {
                 Some(cut) => futures::future::Either::Left(cut.scope(operation)),

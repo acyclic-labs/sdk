@@ -331,8 +331,8 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             object_cache,
             clock,
         } = options;
-        let clock = clock
-            .unwrap_or_else(|| std::sync::Arc::new(acyclic_stream::SystemUnixMillisClock));
+        let clock =
+            clock.unwrap_or_else(|| std::sync::Arc::new(acyclic_stream::SystemUnixMillisClock));
         let objects = acyclic_objects::local::LocalObjectsLimits {
             durability: publication_object_durability(&root, lifecycle.clone()).await?,
         };

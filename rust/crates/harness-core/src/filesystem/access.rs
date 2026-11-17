@@ -338,10 +338,7 @@ pub(crate) async fn bound_access_view<'a, A: AsyncAuthorityStore, O: AsyncObject
                         reference,
                         facts: acyclic_fs::access::AuthenticatedFacts::IdentityAndRoles,
                         generation,
-                        context: Context {
-                            now,
-                            approvals: 0,
-                        },
+                        context: Context { now, approvals: 0 },
                     },
                     io,
                     io.cancellation(),
