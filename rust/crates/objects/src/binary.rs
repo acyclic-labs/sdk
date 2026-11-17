@@ -179,25 +179,14 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
         let (reply, revision): (wire::RetainResponse, _) = self
-            .call(
-                "blobs/retain",
-                wire::RetainRequest {
-                    root: root.as_bytes().to_vec(),
-                    references: convert::wire_digests(&references),
-                },
-            )
+            .call("blobs/retain", convert::retain_request(root, &references))
             .await?;
         Ok(convert::retained(&reply, revision))
     }
 
     async fn release(&self, root: &RootId) -> Result<Released, Error> {
         let (reply, revision): (wire::ReleaseResponse, _) = self
-            .call(
-                "blobs/release",
-                wire::ReleaseRequest {
-                    root: root.as_bytes().to_vec(),
-                },
-            )
+            .call("blobs/release", convert::release_request(root))
             .await?;
         Ok(Released {
             existed: reply.existed,
@@ -214,11 +203,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
         let (reply, revision): (wire::RetainResponse, _) = self
             .call(
                 "blobs/retain-fenced",
-                wire::RetainFencedRequest {
-                    root: root.as_bytes().to_vec(),
-                    references: convert::wire_digests(&references),
-                    fence,
-                },
+                convert::retain_fenced_request(root, fence, &references),
             )
             .await?;
         Ok(convert::retained(&reply, revision))
@@ -228,10 +213,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
         let (reply, revision): (wire::ReleaseResponse, _) = self
             .call(
                 "blobs/release-terminal",
-                wire::ReleaseTerminalRequest {
-                    root: root.as_bytes().to_vec(),
-                    fence,
-                },
+                convert::release_terminal_request(root, fence),
             )
             .await?;
         Ok(Released {

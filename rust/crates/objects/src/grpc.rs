@@ -434,10 +434,7 @@ impl Blobs for GrpcObjects {
             let reply = call!(
                 self,
                 retain,
-                wire::RetainRequest {
-                    root: root.as_bytes().to_vec(),
-                    references: convert::wire_digests(&references),
-                },
+                convert::retain_request(root, &references),
                 None
             )?;
             Ok(convert::retained(&reply.0, reply.1))
@@ -447,14 +444,7 @@ impl Blobs for GrpcObjects {
 
     async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
         crate::operation::admit(self.context.as_ref(), async {
-            let reply = call!(
-                self,
-                release,
-                wire::ReleaseRequest {
-                    root: root.as_bytes().to_vec(),
-                },
-                None
-            )?;
+            let reply = call!(self, release, convert::release_request(root), None)?;
             Ok(crate::Released {
                 existed: reply.0.existed,
                 revision: reply.1,
@@ -473,11 +463,7 @@ impl Blobs for GrpcObjects {
             let reply = call!(
                 self,
                 retain_fenced,
-                wire::RetainFencedRequest {
-                    root: root.as_bytes().to_vec(),
-                    references: convert::wire_digests(&references),
-                    fence,
-                },
+                convert::retain_fenced_request(root, fence, &references),
                 None
             )?;
             Ok(convert::retained(&reply.0, reply.1))
@@ -490,10 +476,7 @@ impl Blobs for GrpcObjects {
             let reply = call!(
                 self,
                 release_terminal,
-                wire::ReleaseTerminalRequest {
-                    root: root.as_bytes().to_vec(),
-                    fence,
-                },
+                convert::release_terminal_request(root, fence),
                 None
             )?;
             Ok(crate::Released {

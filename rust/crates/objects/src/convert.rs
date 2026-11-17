@@ -7,6 +7,7 @@ use crate::{
 };
 
 use crate::{Retained, Usage};
+use acyclic_stream::Revision;
 
 impl From<Digest> for wire::Digest {
     fn from(digest: Digest) -> Self {
@@ -54,6 +55,44 @@ pub(crate) fn list_request(after: Option<Digest>, limit: u32) -> wire::ListBlobs
         after: after.map(Into::into),
         limit,
     }
+}
+
+/// Lowers a root retention for every transport.
+pub(crate) fn retain_request(root: &crate::RootId, references: &[Digest]) -> wire::RetainRequest {
+    wire::RetainRequest {
+        root: root.as_bytes().to_vec(),
+        references: wire_digests(references),
+    }
+}
+
+/// Lowers a fenced retention through the same root and reference mapping.
+pub(crate) fn retain_fenced_request(
+    root: &crate::RootId,
+    fence: u64,
+    references: &[Digest],
+) -> wire::RetainFencedRequest {
+    let wire::RetainRequest { root, references } = retain_request(root, references);
+    wire::RetainFencedRequest {
+        root,
+        references,
+        fence,
+    }
+}
+
+/// Lowers a root release for every transport.
+pub(crate) fn release_request(root: &crate::RootId) -> wire::ReleaseRequest {
+    wire::ReleaseRequest {
+        root: root.as_bytes().to_vec(),
+    }
+}
+
+/// Lowers a terminal release through the same root mapping.
+pub(crate) fn release_terminal_request(
+    root: &crate::RootId,
+    fence: u64,
+) -> wire::ReleaseTerminalRequest {
+    let wire::ReleaseRequest { root } = release_request(root);
+    wire::ReleaseTerminalRequest { root, fence }
 }
 
 pub(crate) fn from_range(range: Option<&wire::ByteRange>) -> ByteRange {
@@ -155,10 +194,7 @@ pub(crate) fn wire_put(value: &Put) -> wire::PutResponse {
     }
 }
 
-pub(crate) fn head(
-    value: &wire::BlobInfo,
-    revision: Option<acyclic_stream::Revision>,
-) -> Result<Head, Error> {
+pub(crate) fn head(value: &wire::BlobInfo, revision: Option<Revision>) -> Result<Head, Error> {
     if value.kind == wire::Kind::Blob as i32 && value.sha256.is_some() {
         return Err(invalid());
     }
@@ -195,7 +231,7 @@ pub(crate) fn wire_head(value: &Head) -> wire::BlobInfo {
 
 pub(crate) fn delete(
     value: &wire::DeleteBlobResponse,
-    revision: Option<acyclic_stream::Revision>,
+    revision: Option<Revision>,
 ) -> Result<crate::Deletion, Error> {
     let outcome = match wire::DeleteStatus::try_from(value.status).map_err(|_| invalid())? {
         wire::DeleteStatus::Deleted => Delete::Deleted,
@@ -226,7 +262,7 @@ pub(crate) fn wire_delete(value: crate::Deletion) -> wire::DeleteBlobResponse {
 
 pub(crate) fn page(
     value: &wire::ListBlobsResponse,
-    revision: Option<acyclic_stream::Revision>,
+    revision: Option<Revision>,
 ) -> Result<Page, Error> {
     let page = Page {
         digests: digests(&value.digests)?,
@@ -257,20 +293,14 @@ pub(crate) fn wire_page(value: &Page) -> wire::ListBlobsResponse {
     }
 }
 
-pub(crate) fn retained(
-    value: &wire::RetainResponse,
-    revision: Option<acyclic_stream::Revision>,
-) -> Retained {
+pub(crate) fn retained(value: &wire::RetainResponse, revision: Option<Revision>) -> Retained {
     Retained {
         references: value.references,
         revision,
     }
 }
 
-pub(crate) fn collection(
-    value: &wire::CollectResponse,
-    revision: Option<acyclic_stream::Revision>,
-) -> Collection {
+pub(crate) fn collection(value: &wire::CollectResponse, revision: Option<Revision>) -> Collection {
     Collection {
         epoch: value.epoch,
         marked: value.marked,
@@ -302,7 +332,7 @@ pub(crate) fn object(
     requested: Digest,
     selection: ByteRange,
     maximum: u64,
-    revision: Option<acyclic_stream::Revision>,
+    revision: Option<Revision>,
 ) -> Result<crate::Object, Error> {
     let head = head(value.info.as_ref().ok_or_else(invalid)?, revision)?;
     let selected = selection.resolve(head.length)?;
@@ -370,7 +400,7 @@ pub(crate) fn put_blobs(
 pub(crate) fn verified_puts(
     value: wire::PutBlobsResponse,
     expected: &[(Digest, u64)],
-    revision: Option<&acyclic_stream::Revision>,
+    revision: Option<&Revision>,
 ) -> Result<Vec<Result<Put, Error>>, Error> {
     if value.results.len() != expected.len() {
         return Err(wire::ErrorCode::Unavailable.into());
@@ -396,7 +426,7 @@ pub(crate) fn verified_puts(
 pub(crate) fn headed(
     value: &wire::BlobInfo,
     requested: Digest,
-    revision: Option<acyclic_stream::Revision>,
+    revision: Option<Revision>,
 ) -> Result<Head, Error> {
     let head = head(value, revision)?;
     if head.digest != requested {
@@ -410,7 +440,7 @@ pub(crate) fn listed(
     value: &wire::ListBlobsResponse,
     after: Option<Digest>,
     limit: u32,
-    revision: Option<acyclic_stream::Revision>,
+    revision: Option<Revision>,
 ) -> Result<Page, Error> {
     let page = page(value, revision)?;
     if page.digests.len() > limit as usize
