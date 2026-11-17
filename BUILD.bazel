@@ -239,6 +239,6 @@ exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visib
 genrule(
     name = "probe_tools",
     outs = ["probe_tools.txt"],
-    cmd = "test -e node_modules/.bin/tsc && test -e node_modules/.bin/buf && test -e node_modules/typescript/bin/tsc && echo present > $@",
+    cmd = "test -x /home/var/.bun/bin/bun && /home/var/.bun/bin/bun --version > $@ && test -x /home/var/tools/node24/node-v24.22.2-linux-x64/bin/node && /home/var/tools/node24/node-v24.22.2-linux-x64/bin/node --version >> $@",
     local = 1,
 )
