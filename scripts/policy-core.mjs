@@ -7,8 +7,8 @@ export const isMain = url => Boolean(process.argv[1]) && resolve(process.argv[1]
 // Git paths are NUL-delimited, including names with newlines or quoting characters.
 // Each policy owns its pathspecs; discovery never silently drops missing files.
 export function trackedFiles(root = process.cwd(), paths = [], options = {}) {
-  return execFileSync('git', ['ls-files', '--', ...paths],
-    {...options, cwd: root, encoding: 'utf8', maxBuffer: Infinity}).split('\n').filter(Boolean);
+  return execFileSync('git', ['ls-files', '-z', '--', ...paths],
+    {...options, cwd: root, encoding: 'utf8', maxBuffer: Infinity}).split('\0').filter(Boolean);
 }
 
 const manifests = new Map();
