@@ -32,15 +32,15 @@ async fn native_root_admission_denies_owned_memory_before_native_io() -> TestRes
         .err()
         .ok_or("native root ignored its owned allocation bound")?;
         assert!(matches!(failure.error, DemandError::Work(_)));
-        assert_eq!(failure.work.backend_read_operations, 0);
-        assert_eq!(failure.work.allocation_operations, 0);
+        assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+        assert_eq!(failure.work().unwrap().allocation_operations, 0);
         assert_eq!(
-            failure.work.peak_allocation_bytes,
+            failure.work().unwrap().peak_allocation_bytes,
             if memory_denial { 0 } else { input_bytes }
         );
-        assert_eq!(failure.work.source_entries_visited, 0);
-        assert_eq!(failure.work.source_bytes_read, 0);
-        failure.work.verify(budget)?;
+        assert_eq!(failure.work().unwrap().source_entries_visited, 0);
+        assert_eq!(failure.work().unwrap().source_bytes_read, 0);
+        failure.work().unwrap().verify(budget)?;
     }
     let opened = NativeDemandSource::open(
         std::borrow::Cow::Owned(directory.path().to_path_buf()),

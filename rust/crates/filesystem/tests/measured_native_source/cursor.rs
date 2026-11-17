@@ -39,8 +39,8 @@ async fn native_continuation_replays_consumed_entries_after_budget_denial() -> T
         .err()
         .ok_or("cursor advanced beyond its source-item allowance")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.source_entries_visited, 0);
-    failure.work.verify(limited)?;
+    assert_eq!(failure.work().unwrap().source_entries_visited, 0);
+    failure.work().unwrap().verify(limited)?;
     let mut names = first
         .value
         .entries
@@ -136,10 +136,10 @@ async fn filtered_page_reserves_comparisons_before_committing_native_cursor() ->
         .err()
         .ok_or("filter advanced native cursor without projection allowance")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.source_entries_visited, 0);
-    assert_eq!(failure.work.allocation_operations, 0);
-    failure.work.verify(denied)?;
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work().unwrap().source_entries_visited, 0);
+    assert_eq!(failure.work().unwrap().allocation_operations, 0);
+    failure.work().unwrap().verify(denied)?;
     let mut next = source
         .list_page(source.reference(), &root, Some(cursor), 8, budget, &token)
         .await?;
@@ -314,9 +314,9 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         } else {
             assert!(matches!(failure.error, DemandError::Work(_)));
         }
-        assert_eq!(failure.work.backend_read_operations, 0);
-        assert_eq!(failure.work.allocation_operations, 0);
-        failure.work.verify(remaining)?;
+        assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+        assert_eq!(failure.work().unwrap().allocation_operations, 0);
+        failure.work().unwrap().verify(remaining)?;
         // The original source receipt remains observable after late projection failure.
         assert!(page.work.backend_read_operations > 0);
         let mut cleanup_budget = page.work.remaining(budget)?;
@@ -334,7 +334,7 @@ async fn native_late_publication_cancellation_and_cleanup_denial_preserve_retry(
         aborted.work.verify(cleanup_budget)?;
         let retained = page
             .work
-            .checked_add(*failure.work)?
+            .checked_add(*failure.work().unwrap())?
             .checked_add(aborted.work)?;
         retained.verify(budget)?;
         let mut retry = source
@@ -438,10 +438,10 @@ async fn request_transport_copy_denial_retires_and_reports_its_completed_prefix(
         .err()
         .ok_or("path copy was not denied")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.bytes_copied, 0);
-    assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.backend_write_operations, 0);
-    failure.work.verify(budget)?;
+    assert_eq!(failure.work().unwrap().bytes_copied, 0);
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+    assert_eq!(failure.work().unwrap().backend_write_operations, 0);
+    failure.work().unwrap().verify(budget)?;
     let work =
         acyclic_fs::NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
     let before = work.receipt().unwrap();

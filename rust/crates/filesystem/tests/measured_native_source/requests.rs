@@ -22,8 +22,8 @@ async fn native_request_denials_precede_real_io_and_buffer_allocation() -> TestR
         .err()
         .ok_or("zero IO was not enforced")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.backend_read_operations, 0);
-    failure.work.verify(no_io)?;
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+    failure.work().unwrap().verify(no_io)?;
 
     let mut no_memory = budget;
     no_memory.allocation_operations = 0;
@@ -33,9 +33,9 @@ async fn native_request_denials_precede_real_io_and_buffer_allocation() -> TestR
         .err()
         .ok_or("path clone exceeded allowance")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.allocation_operations, 0);
-    assert_eq!(failure.work.backend_read_operations, 0);
-    failure.work.verify(no_memory)?;
+    assert_eq!(failure.work().unwrap().allocation_operations, 0);
+    assert_eq!(failure.work().unwrap().backend_read_operations, 0);
+    failure.work().unwrap().verify(no_memory)?;
 
     let mut no_output = budget;
     no_output.output_bytes = 0;
@@ -53,9 +53,9 @@ async fn native_request_denials_precede_real_io_and_buffer_allocation() -> TestR
         .err()
         .ok_or("range output allowance was ignored")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.source_bytes_read, 0);
-    assert_eq!(failure.work.output_bytes, 0);
-    failure.work.verify(no_output)?;
+    assert_eq!(failure.work().unwrap().source_bytes_read, 0);
+    assert_eq!(failure.work().unwrap().output_bytes, 0);
+    failure.work().unwrap().verify(no_output)?;
 
     token.cancel();
     let lookup = source
@@ -88,7 +88,7 @@ async fn native_request_denials_precede_real_io_and_buffer_allocation() -> TestR
         .ok_or("cancelled page succeeded")?;
     for failure in [lookup, read, opened, page] {
         assert!(matches!(failure.error, DemandError::Cancelled));
-        assert_eq!(*failure.work, WorkCounters::default());
+        assert_eq!(*failure.work().unwrap(), WorkCounters::default());
     }
     Ok(())
 }
@@ -139,9 +139,9 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
         .err()
         .ok_or("current-proof IO exceeded allowance")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.source_bytes_read, 6);
-    assert_eq!(failure.work.output_bytes, 0);
-    failure.work.verify(limited)?;
+    assert_eq!(failure.work().unwrap().source_bytes_read, 6);
+    assert_eq!(failure.work().unwrap().output_bytes, 0);
+    failure.work().unwrap().verify(limited)?;
 
     let file = source
         .open_file(source.reference(), &path, node.version, budget, &token)
@@ -169,8 +169,8 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
     .err()
     .ok_or("held file ignored native IO limit")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
-    assert_eq!(failure.work.source_bytes_read, 6);
-    assert_eq!(failure.work.output_bytes, 0);
-    failure.work.verify(limited)?;
+    assert_eq!(failure.work().unwrap().source_bytes_read, 6);
+    assert_eq!(failure.work().unwrap().output_bytes, 0);
+    failure.work().unwrap().verify(limited)?;
     Ok(())
 }
