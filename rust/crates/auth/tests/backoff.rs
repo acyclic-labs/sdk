@@ -24,8 +24,7 @@ proptest! {
             // An owner selecting the final jitter choice gets the public
             // exponential ceiling, including saturation over long outages.
             let ceiling = u64::from(base.min(maximum))
-                .checked_shl(attempt)
-                .unwrap_or(u64::MAX)
+                .saturating_mul(2_u64.saturating_pow(attempt))
                 .min(u64::from(maximum));
             prop_assert_eq!(scenario.delay_with(|choices| choices - 1).as_millis(), u128::from(ceiling));
             if attempt > 32 {
