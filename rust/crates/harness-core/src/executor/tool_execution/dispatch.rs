@@ -657,10 +657,11 @@ impl<'io> StockExecution<'io> {
                 call_id: stock_string_copy(&invocation.call_id, self.io)?,
                 invocation: reference,
                 publication: None,
+                started_at_micros: None,
             };
             if timestamped {
                 let started_at = journal
-                    .claim_if_tail(operation_id, tail, &key, &event, self.io)?
+                    .claim_if_tail(operation_id, tail, &key, &mut event, self.io)?
                     .await?;
                 return started_at
                     .map(|at| (true, Some(at)))

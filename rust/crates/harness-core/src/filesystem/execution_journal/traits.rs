@@ -544,25 +544,36 @@ where
         operation: OperationId,
         expected_tail: u64,
         key: &'a str,
-        event: &'a ExecutionEvent,
+        event: &'a mut ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<u64>>> {
         // The journal's clock owns every deadline measured from this claim.
-        // A provider's frame time may be on another clock, so keep the
-        // original claim timestamp on the same clock as the actor alarm.
-        let clock = self.clock.clone();
+        // A provider's frame time may be on another clock, so stamp the claim
+        // on the journal's clock and persist that same value for resume.
+        let started_at = self.clock.as_deref().map(|clock| {
+            acyclic_stream::UnixMillisClock::now_unix_millis(clock).saturating_mul(1000)
+        });
+        let ExecutionEvent::ToolStarted { started_at_micros, .. } = event else {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "a timestamped claim requires its tool start",
+            ));
+        };
+        *started_at_micros = started_at;
         self.append_projected(
             operation,
             Some(expected_tail),
             key,
-            event,
+            &*event,
             &[],
             None,
             io,
             move |receipt| {
-                Ok(clock.as_deref().map_or(receipt.committed_at_micros, |clock| {
-                    Some(acyclic_stream::UnixMillisClock::now_unix_millis(clock).saturating_mul(1000))
-                }))
+                if !receipt.accepted {
+                    return Ok(None);
+                }
+                Ok(started_at.or(receipt.committed_at_micros))
             },
         )
     }

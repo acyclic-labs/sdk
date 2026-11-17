@@ -72,6 +72,7 @@ async fn ui_agent_override_and_turn_receipts_ignore_old_asks() -> Result<()> {
                 call_id: "write-ui".into(),
                 invocation,
                 publication: None,
+                started_at_micros: None,
             },
             None,
         )?

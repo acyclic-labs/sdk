@@ -278,6 +278,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
             call_id: "a".into(),
             invocation: file.clone(),
             publication: None,
+            started_at_micros: None,
         },
         ToolCompleted {
             step: 1,

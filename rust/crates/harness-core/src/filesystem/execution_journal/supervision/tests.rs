@@ -598,6 +598,7 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 call_id: call_id.clone(),
                 invocation,
                 publication: None,
+                started_at_micros: None,
             };
             if index == 0 && same_turn && exact_command && changed_input.is_none() {
                 // Quiet work cannot invent an ambient clock. Restoring the
@@ -822,6 +823,7 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
                         call_id: call_id.clone(),
                         invocation,
                         publication: None,
+                        started_at_micros: None,
                     },
                     None,
                 )?

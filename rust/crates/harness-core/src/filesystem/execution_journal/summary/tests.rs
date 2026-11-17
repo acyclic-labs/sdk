@@ -141,7 +141,7 @@ proptest! {
         let other = ExecutionEvent::ModelStopped { step: step ^ 1, purpose, worker_paused: false };
         prop_assert!(state.require_next(&other, None).is_err());
         if tool {
-            accept(&mut state, ExecutionEvent::ToolStarted { step, call_id: "tool".into(), invocation: request , publication: None,}).unwrap();
+            accept(&mut state, ExecutionEvent::ToolStarted { step, call_id: "tool".into(), invocation: request , publication: None, started_at_micros: None,}).unwrap();
         }
         prop_assert!(state.require_next(&stopped, None).is_ok());
         accept(&mut state, stopped.clone()).unwrap();

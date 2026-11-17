@@ -424,6 +424,7 @@ async fn committed_archive_fences_dispatch_before_its_actor_consumes_the_control
             call_id: "after-archive".into(),
             invocation: request,
             publication: None,
+            started_at_micros: None,
         };
         let tool_result = journal
             .append(operation, "tool:after-archive", &tool, None)?
@@ -577,6 +578,7 @@ async fn ancestor_pause_fences_original_dispatch_and_resume_without_changing_chi
             call_id: "paused-tool".into(),
             invocation: request,
             publication: None,
+            started_at_micros: None,
         };
         let tool_result = journal.append(operation, "tool", &tool, None)?.await;
         if stopped {

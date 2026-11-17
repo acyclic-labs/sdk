@@ -191,11 +191,13 @@ impl ExecutionEvent {
                 call_id,
                 invocation,
                 publication,
+                started_at_micros,
             } => ToolStarted {
                 step: *step,
                 call_id: text(call_id)?,
                 invocation: file(invocation)?,
                 publication: *publication,
+                started_at_micros: *started_at_micros,
             },
             ToolCompleted {
                 step,

@@ -1272,9 +1272,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             .flat_map(|ready| ready.parked_due(now, self.limits.work))
                         {
                             self.track(actor.clone())?;
-                            if let Some(slot) = self.slot(&actor) {
-                                slot.registration.adopt_parked();
-                            }
                             self.wake(&actor);
                         }
                     }

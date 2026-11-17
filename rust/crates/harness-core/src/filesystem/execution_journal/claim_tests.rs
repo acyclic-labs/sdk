@@ -125,14 +125,15 @@ async fn a_claim_returns_its_timestamp_when_storage_stalls_after_commit() -> Res
     let invocation = journal
         .stage_with_io(operation, "invocation", b"{}", "application/json", None)
         .await?;
-    let event = ExecutionEvent::ToolStarted {
+    let mut event = ExecutionEvent::ToolStarted {
         step: 0,
         call_id: "call".into(),
         invocation,
         publication: None,
+        started_at_micros: None,
     };
     storage.armed.store(true, Ordering::SeqCst);
-    let claim = journal.claim_if_tail(operation, 1, "claim", &event, None)?;
+    let claim = journal.claim_if_tail(operation, 1, "claim", &mut event, None)?;;
     match futures::future::select(claim, attempted).await {
         futures::future::Either::Left((timestamp, _)) => assert_eq!(timestamp?, Some(100_000)),
         futures::future::Either::Right(_) => {
@@ -156,10 +157,162 @@ async fn a_claim_returns_its_timestamp_when_storage_stalls_after_commit() -> Res
     );
     assert_eq!(
         journal
-            .claim_if_tail(operation, 1, "claim", &event, None)?
+            .claim_if_tail(operation, 1, "claim", &mut event, None)?
             .await?,
         None,
         "an accepted claim cannot be acquired twice"
+    );
+    Ok(())
+}
+
+struct ProviderClock;
+impl acyclic_stream::UnixMillisClock for ProviderClock {
+    fn now_unix_millis(&self) -> u64 {
+        200
+    }
+}
+
+struct JournalClock;
+impl acyclic_stream::UnixMillisClock for JournalClock {
+    fn now_unix_millis(&self) -> u64 {
+        100
+    }
+}
+impl acyclic_actors::local::Clock for JournalClock {
+    fn sleep_until(
+        &self,
+        _: u64,
+    ) -> acyclic_stream::BoxProviderFuture<
+        'static,
+        std::result::Result<(), acyclic_actors::local::ClockError>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A claim stamps its start on the journal's clock and persists that same
+/// value, so a resumed timed tool measures its deadline from the original
+/// claim rather than the provider's frame time.
+#[tokio::test]
+async fn a_claim_persists_its_journal_clock_timestamp_for_resume() -> Result<()> {
+    let storage = Arc::new(Storage {
+        inner: acyclic_stream::MemoryStream::new_with_clock(
+            Default::default(),
+            Arc::new(ProviderClock),
+        ),
+        armed: AtomicBool::new(false),
+        stalled: AtomicBool::new(false),
+        observed: Mutex::new(None),
+    });
+    let (mut journal, _issuer) =
+        test_support::journal_with_backends(storage, acyclic_fs::Fs::memory()).await?;
+    journal.clock = Some(Arc::new(JournalClock));
+    let operation = OperationId::new();
+    journal
+        .append(
+            operation,
+            "start",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    let invocation = journal
+        .stage_with_io(operation, "invocation", b"{}", "application/json", None)
+        .await?;
+    let mut event = ExecutionEvent::ToolStarted {
+        step: 0,
+        call_id: "call".into(),
+        invocation,
+        publication: None,
+        started_at_micros: None,
+    };
+    assert_eq!(
+        journal
+            .claim_if_tail(operation, 1, "claim", &mut event, None)?
+            .await?,
+        Some(100_000)
+    );
+    let records = journal.replay(operation, 0, 8, None)?.await?;
+    let started = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ToolStarted { .. } => {
+                Some(serde_json::to_value(&record.event).expect("tool start JSON"))
+            }
+            _ => None,
+        })
+        .expect("the claim is replayed");
+    assert_eq!(started["started_at_micros"], 100_000);
+    assert_eq!(
+        records.last().and_then(|record| record.committed_at_micros),
+        Some(200_000),
+        "the provider's frame time is not the claim's journal-clock time"
+    );
+    Ok(())
+}
+
+/// A claim that loses the expected tail is refused, and a refused claim
+/// returns no timestamp: its caller must not run a tool it never claimed.
+#[tokio::test]
+async fn a_refused_claim_returns_no_timestamp() -> Result<()> {
+    let storage = Arc::new(Storage {
+        inner: acyclic_stream::MemoryStream::new_with_clock(
+            Default::default(),
+            Arc::new(ProviderClock),
+        ),
+        armed: AtomicBool::new(false),
+        stalled: AtomicBool::new(false),
+        observed: Mutex::new(None),
+    });
+    let (mut journal, _issuer) =
+        test_support::journal_with_backends(storage, acyclic_fs::Fs::memory()).await?;
+    journal.clock = Some(Arc::new(JournalClock));
+    let operation = OperationId::new();
+    journal
+        .append(
+            operation,
+            "start",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    let invocation = journal
+        .stage_with_io(operation, "invocation", b"{}", "application/json", None)
+        .await?;
+    let competing = journal
+        .stage_with_io(operation, "competing", b"{}", "application/json", None)
+        .await?;
+    journal
+        .append(
+            operation,
+            "other",
+            &ExecutionEvent::ToolStarted {
+                step: 0,
+                call_id: "other".into(),
+                invocation: competing,
+                publication: None,
+                started_at_micros: None,
+            },
+            None,
+        )?
+        .await?;
+    let mut event = ExecutionEvent::ToolStarted {
+        step: 0,
+        call_id: "claim".into(),
+        invocation,
+        publication: None,
+        started_at_micros: None,
+    };
+    assert_eq!(
+        journal
+            .claim_if_tail(operation, 1, "claim", &mut event, None)?
+            .await?,
+        None,
+        "a claim that lost the expected tail must not report a timestamp"
     );
     Ok(())
 }
