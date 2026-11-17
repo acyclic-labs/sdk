@@ -1225,7 +1225,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         let handoff = handoffs.remove(&actor);
                         self.due(&actor, !handoff)?;
                         self.activate(&actor, cursor);
-                        self.register_alarm(&actor).await?;
                     }
                     seen.insert(shard, cursor);
                 }
@@ -1304,7 +1303,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                 slot.registration
                                     .claim_alarm(scheduling::window_start(window));
                             }
-                            self.register_alarm(&actor).await?;
                             self.wake(&actor);
                         }
                     }
