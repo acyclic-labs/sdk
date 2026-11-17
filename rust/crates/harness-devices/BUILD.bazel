@@ -20,6 +20,7 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -54,6 +55,7 @@ rust_library(
 rust_test(
     name = "acyclic_harness_devices_test_cases",
     crate = ":acyclic_harness_devices",
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -100,8 +102,11 @@ isolated_test(
 rust_test(
     name = "machine_workspace_device_cases",
     crate_root = "tests/machine_workspace_device.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/machine_workspace_device.rs",
+        "tests/support.rs",
+    ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -161,8 +166,10 @@ isolated_test(
 rust_test(
     name = "support_cases",
     crate_root = "tests/support.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/support.rs",
+    ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

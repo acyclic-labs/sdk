@@ -85,7 +85,9 @@ impl Drop for TimerFixture {
 async fn deadline_timers_are_cancelled_and_long_waits_never_overflow() {
     for millis in [1, i32::MAX as u64, i32::MAX as u64 + 1, u32::MAX as u64] {
         let fixture = TimerFixture(timer_fixture("working"));
-        let mut delay = Box::pin(acyclic_harness_core::clock::delay(std::time::Duration::from_millis(millis)));
+        let mut delay = Box::pin(acyclic_harness_core::clock::delay(
+            std::time::Duration::from_millis(millis),
+        ));
         let mut elapsed = false;
         while !elapsed {
             assert!(futures::poll!(&mut delay).is_pending());
@@ -114,7 +116,9 @@ async fn deadline_timers_are_cancelled_and_long_waits_never_overflow() {
         assert_eq!(fixture.call("active").as_f64(), Some(0.0));
     }
     let fixture = TimerFixture(timer_fixture("working"));
-    let mut delay = Box::pin(acyclic_harness_core::clock::delay(std::time::Duration::from_secs(3600)));
+    let mut delay = Box::pin(acyclic_harness_core::clock::delay(
+        std::time::Duration::from_secs(3600),
+    ));
     assert!(futures::poll!(&mut delay).is_pending());
     drop(delay);
     assert_eq!(fixture.call("active").as_f64(), Some(0.0));

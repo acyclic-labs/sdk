@@ -1,7 +1,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 //! Host input invalidation over the shared native directory watch service.
-use acyclic_harness_core::{Error, Result};
 use acyclic_auth::credential::{CredentialCacheError, CredentialValidity, CredentialWatch};
+use acyclic_harness_core::{Error, Result};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},

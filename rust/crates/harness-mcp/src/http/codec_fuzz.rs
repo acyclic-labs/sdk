@@ -72,9 +72,10 @@ pub fn check(input: &[u8]) {
         }
     }
     if let Ok(value) = acyclic_harness_core::contract::json_from_slice::<Value>(input) {
-        let encoded = acyclic_harness_core::contract::canonical_json_bytes(&value).expect("JSON value encodes");
-        let replay =
-            acyclic_harness_core::contract::json_from_slice::<Value>(&encoded).expect("JSON output decodes");
+        let encoded = acyclic_harness_core::contract::canonical_json_bytes(&value)
+            .expect("JSON value encodes");
+        let replay = acyclic_harness_core::contract::json_from_slice::<Value>(&encoded)
+            .expect("JSON output decodes");
         assert_eq!(
             rpc::initialization(&value, None).map_err(|error| error_observation(&error)),
             rpc::initialization(&replay, None).map_err(|error| error_observation(&error))

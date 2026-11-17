@@ -1,5 +1,5 @@
-use super::*;
 pub(crate) use super::test_support::{ChangingContextSource, Journal, OnceStage};
+use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 mod code_mode;
 mod context_review;
@@ -25,7 +25,6 @@ mod original_preparation;
 mod preparation_differential;
 
 #[cfg(not(target_arch = "wasm32"))]
-
 use serde_json::json;
 
 fn uncompacted_executor(
@@ -325,7 +324,6 @@ impl crate::tool::ToolProjection for Projection {
         ))
     }
 }
-
 
 mod compaction;
 #[cfg(not(target_arch = "wasm32"))]

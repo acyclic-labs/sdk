@@ -23,6 +23,7 @@ rust_library(
     compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
         "//rust/codec-fuzz:corpus/harness_codecs/mcp-http-invalid-utf8-frontier",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -75,6 +76,7 @@ rust_test(
     compile_data = [
         "//rust/codec-fuzz:corpus/harness_codecs/mcp-http-invalid-utf8-frontier",
     ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -123,8 +125,10 @@ isolated_test(
 rust_test(
     name = "executor_sampling_cases",
     crate_root = "tests/executor_sampling.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/executor_sampling.rs",
+    ],
+    clippy_config = "clippy.toml",
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

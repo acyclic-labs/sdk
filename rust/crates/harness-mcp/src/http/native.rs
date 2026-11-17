@@ -665,7 +665,10 @@ mod tests {
                 assert_eq!(result?.content, [rmcp::model::ContentBlock::text(expected)]);
             } else {
                 let error = result.expect_err("the original POST reply was lost");
-                assert_eq!(error.code(), acyclic_harness_core::wire::ErrorCode::Indeterminate);
+                assert_eq!(
+                    error.code(),
+                    acyclic_harness_core::wire::ErrorCode::Indeterminate
+                );
                 assert_eq!(error.operation_id(), Some(operation));
                 assert!(error.leaves_effect_uncertain());
             }

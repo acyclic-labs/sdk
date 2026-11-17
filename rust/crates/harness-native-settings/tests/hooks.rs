@@ -8,7 +8,6 @@ use acyclic_harness_core::{
 use acyclic_harness_native_settings::{NativeSettings, SettingsConfig};
 use serde_json::{Value, json};
 
-
 fn command(hook: &HookSpec) -> &str {
     match &hook.run {
         HookRun::Executable { executable, .. } => executable,
@@ -123,7 +122,8 @@ exit 2
     )
     .await?
     .hooks;
-    let input = json!({"tool_name":acyclic_harness_core::tools::shell::PLATFORM.name,"session_id":"test"});
+    let input =
+        json!({"tool_name":acyclic_harness_core::tools::shell::PLATFORM.name,"session_id":"test"});
     assert_eq!(
         hooks
             .run(HookEvent::Stop, &workspace, &cwd, &input, &registry)

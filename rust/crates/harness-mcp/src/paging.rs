@@ -47,8 +47,11 @@ impl McpDiscoveryLimits {
 
     pub(super) fn admit_bytes<T: Serialize + ?Sized>(&mut self, page: &T) -> Result<()> {
         if let Some(bytes) = self.bytes {
-            let length =
-                acyclic_harness_core::executor::json::json_byte_length(page, Some(u64::from(bytes)), &mut None)?;
+            let length = acyclic_harness_core::executor::json::json_byte_length(
+                page,
+                Some(u64::from(bytes)),
+                &mut None,
+            )?;
             Self::consume(
                 &mut self.bytes,
                 length,

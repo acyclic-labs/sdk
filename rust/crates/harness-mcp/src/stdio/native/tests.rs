@@ -492,7 +492,9 @@ async fn lost_invalid_oversize_and_late_responses_never_redispatch() -> Result<(
 
 #[test]
 fn frame_limits_apply_both_directions_without_retaining_a_partial_request() -> Result<()> {
-    let mut codec = BoundedCodec::<Value>::new(acyclic_harness_core::sync::Arc::new(FrameBytePolicy::new(16)));
+    let mut codec = BoundedCodec::<Value>::new(acyclic_harness_core::sync::Arc::new(
+        FrameBytePolicy::new(16),
+    ));
     let mut bytes = BytesMut::from(b"prior\n".as_slice());
     assert!(codec.encode(json!("x".repeat(32)), &mut bytes).is_err());
     assert_eq!(bytes.as_ref(), b"prior\n");
@@ -602,7 +604,9 @@ async fn invalid_bounds_and_spawn_failures_are_explicit() -> Result<()> {
     let command = ProcessCommand::new(directory.path().join("nonexistent-mcp-server"));
     assert!(matches!(
         StdioMcpTransport::spawn(command, None, 4096, 5_000).await,
-        Err(Error::Process(acyclic_harness_core::ProcessError::NotFound { .. }))
+        Err(Error::Process(
+            acyclic_harness_core::ProcessError::NotFound { .. }
+        ))
     ));
     // Ordinary MCP permits inherited environment. Supplying a grant must
     // preserve its definitive admission refusal, even on unsupported platforms.

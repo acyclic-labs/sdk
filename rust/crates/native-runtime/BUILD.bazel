@@ -525,8 +525,11 @@ isolated_test(
 rust_test(
     name = "observability_cases",
     crate_root = "tests/observability.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/observability.rs",
+        "tests/observability/operations.rs",
+        "tests/observability/output.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

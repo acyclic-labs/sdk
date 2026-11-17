@@ -7,9 +7,7 @@ use std::fmt;
 pub struct JsonObject<S>(pub S);
 
 /// Decode one complete typed object without a JSON tree or trailing input.
-pub fn decode_object<'de, T: serde::Deserialize<'de>>(
-    bytes: &'de [u8],
-) -> serde_json::Result<T> {
+pub fn decode_object<'de, T: serde::Deserialize<'de>>(bytes: &'de [u8]) -> serde_json::Result<T> {
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     let value = deserialize_object(&mut decoder)?;
     decoder.end()?;

@@ -96,8 +96,6 @@ rust_test(
     srcs = [
         "tests/intervals.rs",
         "tests/main.rs",
-        "tests/operations.rs",
-        "tests/output.rs",
     ],
     edition = "2024",
     version = "0.2.0",

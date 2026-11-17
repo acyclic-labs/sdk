@@ -243,7 +243,9 @@ impl NativeSettings {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
-    pub async fn load_hooks(config: std::sync::Arc<SettingsConfig>) -> Result<acyclic_harness_core::hooks::Hooks> {
+    pub async fn load_hooks(
+        config: std::sync::Arc<SettingsConfig>,
+    ) -> Result<acyclic_harness_core::hooks::Hooks> {
         Ok(Self::snapshot(config, false, true).await?.hooks)
     }
 
@@ -444,13 +446,13 @@ impl NativeSettings {
             if !disabled {
                 hook_documents.sort_unstable_by_key(|(order, _)| *order);
                 for (_, hooks) in hook_documents {
-                    snapshot
-                        .hooks
-                        .add_document(acyclic_harness_core::hooks::imports::Document {
+                    snapshot.hooks.add_document(
+                        acyclic_harness_core::hooks::imports::Document {
                             hooks: serde_json::from_value(hooks).map_err(|error| {
                                 Error::Invalid(format!("settings hooks: {error}"))
                             })?,
-                        })?;
+                        },
+                    )?;
                 }
             }
         }

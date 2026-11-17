@@ -53,7 +53,10 @@ impl ContentPublisher for ObjectContentStore {
     ) -> Result<
         acyclic_harness_core::conversation::BoundedContentFuture<
             'a,
-            (FileRef, Option<acyclic_harness_core::conversation::ContentHold<'a>>),
+            (
+                FileRef,
+                Option<acyclic_harness_core::conversation::ContentHold<'a>>,
+            ),
         >,
     > {
         let acyclic_harness_core::conversation::ContentAccess { ceiling, io } = access;

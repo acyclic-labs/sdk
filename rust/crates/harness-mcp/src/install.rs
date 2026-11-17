@@ -19,8 +19,8 @@ mod live;
 mod live_tests;
 mod native;
 mod watched;
-pub use watched::McpConfigWatchExt;
 use cancellation::CancelOnDrop;
+pub use watched::McpConfigWatchExt;
 
 /// Host-selected initialization credit and independent per-message bounds.
 #[derive(Clone, Copy, Default)]
@@ -250,19 +250,20 @@ fn register(
         tools: std::mem::take(&mut connected.tools),
     };
     catalog.tools.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-    let revision = blake3::Hash::from_bytes(acyclic_harness_core::executor::json::canonical_json_digest(
-        &(
-            "harness/mcp-install/v1",
-            connected.binding,
-            server.tool_timeout_ms,
-            limits.tool_bytes,
-            &catalog,
-        ),
-        None,
-        &mut None,
-    )?)
-    .to_hex()
-    .to_string();
+    let revision =
+        blake3::Hash::from_bytes(acyclic_harness_core::executor::json::canonical_json_digest(
+            &(
+                "harness/mcp-install/v1",
+                connected.binding,
+                server.tool_timeout_ms,
+                limits.tool_bytes,
+                &catalog,
+            ),
+            None,
+            &mut None,
+        )?)
+        .to_hex()
+        .to_string();
     catalog.revision = format!(
         "{}{}",
         recovery_binding(connected.binding, server, limits)?,

@@ -123,7 +123,10 @@ impl McpStdioExchange {
                 let value = rpc_result(message, self.operation, work)?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(guard) = frame_custody.as_mut() {
-                    let retained = acyclic_harness_core::executor::json::json_value_logical_owned_bytes(&value)?;
+                    let retained =
+                        acyclic_harness_core::executor::json::json_value_logical_owned_bytes(
+                            &value,
+                        )?;
                     guard
                         .release(guard.bytes().checked_sub(retained).ok_or(
                             acyclic_fs::NativeTreeMaterializationError::Work(

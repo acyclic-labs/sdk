@@ -179,7 +179,8 @@ fn admitted_deep_json_and_crlf_bom_survive_stream_cuts() {
     let (init, op) = ids();
     let nested = format!("{}0{}", "[".repeat(192), "]".repeat(192));
     let result = format!("{{\"tools\":[],\"_meta\":{{\"nested\":{nested}}}}}");
-    let expected: Value = acyclic_harness_core::contract::json_from_slice(result.as_bytes()).unwrap();
+    let expected: Value =
+        acyclic_harness_core::contract::json_from_slice(result.as_bytes()).unwrap();
     let mut transcript = initialized(init);
     transcript.extend_from_slice(
         format!("\u{feff}{{\"jsonrpc\":\"2.0\",\"id\":\"{op}\",\"result\":{result}}}\r\n")

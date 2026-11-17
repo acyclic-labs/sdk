@@ -15,7 +15,8 @@ pub(crate) fn tool_result(value: Value) -> Result<rmcp::model::CallToolResult> {
             "invalid MCP tool result envelope".into(),
         ));
     }
-    serde_json::from_value(value).map_err(|error| acyclic_harness_core::Error::Invalid(error.to_string()))
+    serde_json::from_value(value)
+        .map_err(|error| acyclic_harness_core::Error::Invalid(error.to_string()))
 }
 
 /// Validates service input on the supplied work ledger.

@@ -110,9 +110,8 @@ pub use native_access::{
 };
 pub use native_contract::{
     McpStdioRequest, NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult,
-    NativeProcessStop,
-    NativeProcessStopKind, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
-    NativeVolumeNamespace,
+    NativeProcessStop, NativeProcessStopKind, NativeViewManifest, NativeViewOptions,
+    NativeVolumeMapping, NativeVolumeNamespace,
 };
 mod config;
 use config::*;

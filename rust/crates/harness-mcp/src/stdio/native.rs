@@ -1,5 +1,5 @@
-use acyclic_harness_core::sync::Arc;
 use crate::McpToolTransport;
+use acyclic_harness_core::sync::Arc;
 use acyclic_harness_core::{Error, OperationId, Result, runtime::ToolContext};
 use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree, run_blocking_io};
 use acyclic_stream::BoxProviderFuture;
@@ -186,7 +186,10 @@ impl StdioMcpTransport {
         );
         let client = ClientConfig::new(
             Default::default(),
-            Implementation::new("acyclic-harness", acyclic_harness_core::build_metadata::PACKAGE_VERSION),
+            Implementation::new(
+                "acyclic-harness",
+                acyclic_harness_core::build_metadata::PACKAGE_VERSION,
+            ),
         )
         .with_protocol_version(ProtocolVersion::V_2025_11_25);
         let service = client
