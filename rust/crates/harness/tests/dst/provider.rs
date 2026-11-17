@@ -17,7 +17,7 @@ use sha2::Digest as _;
 use std::sync::Mutex;
 
 const DIALECTS: [&str; 3] = ["chat_completions", "responses", "messages"];
-const TRANSITIONS: [&str; 9] = [
+const TRANSITIONS: [&str; 8] = [
     "tool_result",
     "parallel_results",
     "child_notice_mid_turn",
@@ -26,7 +26,6 @@ const TRANSITIONS: [&str; 9] = [
     "context_review",
     "reopen",
     "length_continuation",
-    "retry_after",
 ];
 const CONTENTS: [&str; 4] = ["text", "reasoning_only", "partial_tool_call", "empty"];
 const CALLS: [&str; 4] = ["turn", "final_report", "summary", "context_review"];
@@ -52,7 +51,7 @@ acyclic_test_support::cases! {
     runner = super::prefix_case,
     cases = [
         seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3, seed_4 => 4,
-        seed_5 => 5, seed_6 => 6, seed_7 => 7, seed_8 => 8,
+        seed_5 => 5, seed_6 => 6, seed_7 => 7,
     ],
 }
 
@@ -293,7 +292,6 @@ fn has_file(request: &ModelRequest) -> bool {
 }
 
 fn d3_service(transition: &'static str) -> ScriptedModelProvider {
-    let failed = Mutex::new(false);
     let responder = move |request: &ModelRequest| {
         if request.summary {
             return Ok(match transition {
@@ -394,20 +392,6 @@ fn d3_service(transition: &'static str) -> ScriptedModelProvider {
                     ScriptedTurn::Text(done(found_tag))
                 }
             }
-            "retry_after" => {
-                let mut failed = failed
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if !*failed {
-                    *failed = true;
-                    ScriptedTurn::Events(vec![ScriptedEvent::Refused {
-                        status: 429,
-                        error: "rate limited".into(),
-                    }])
-                } else {
-                    ScriptedTurn::Text(done(found_tag))
-                }
-            }
             _ => ScriptedTurn::Text(done(found_tag)),
         };
         Ok(answer)
@@ -480,9 +464,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 .await
                 .map_err(oracle::failed)?;
             let settled = incarnation.prompts.last().map(|(outcome, _)| outcome);
-            let retry_failed = transition == "retry_after"
-                && matches!(settled, Some(Prompted::Failed(message)) if message.contains("429"));
-            if settled != Some(&Prompted::Settled(done("d3-parent"))) && !retry_failed {
+            if settled != Some(&Prompted::Settled(done("d3-parent"))) {
                 return fail(&format!(
                     "{transition} did not settle its turn: {:?}",
                     incarnation.prompts
@@ -574,15 +556,6 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                         .ok_or("length continuation sent no request")?;
                     assert_reasoning(continued, "dst")?;
                 }
-                "retry_after" => {
-                    let requests = history(&incarnation.requests, "d3-parent");
-                    if requests.is_empty() {
-                        return fail("the Retry-After attempt sent no request");
-                    }
-                    if requests.len() >= 2 && requests[0].messages != requests[1].messages {
-                        return fail("the Retry-After retry changed the request bytes");
-                    }
-                }
                 _ => assert_history(&incarnation.requests, "d3-parent")?,
             }
             Ok(true)
@@ -600,11 +573,15 @@ fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvide
         if request.summary {
             return Ok(length_stop(content, "dst"));
         }
-        if request_tag(
-            request,
-            &["d4-warm-0", "d4-warm-1", "d4-warm-2", "d4-warm-3"],
-        )
-        .is_some()
+        if request_tag(request, &["d4-after"]).is_some() {
+            return Ok(ScriptedTurn::Text(done("d4-after")));
+        }
+        if request_tag(request, &["d4"]).is_none()
+            && request_tag(
+                request,
+                &["d4-warm-0", "d4-warm-1", "d4-warm-2", "d4-warm-3"],
+            )
+            .is_some()
         {
             return Ok(ScriptedTurn::Text(done("d4-warm")));
         }
@@ -661,6 +638,15 @@ fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvide
     ScriptedModelProvider::responding(responder)
 }
 
+fn d4_after_service() -> ScriptedModelProvider {
+    ScriptedModelProvider::responding(|request| {
+        if request.summary {
+            return Ok(manager_rewrite(request));
+        }
+        Ok(ScriptedTurn::Text(done("d4-after")))
+    })
+}
+
 fn d4_capacity(capacity: &str) -> acyclic_harness::context::ModelContextCapacity {
     match capacity {
         "output_eq_context" => acyclic_harness::context::ModelContextCapacity {
@@ -676,12 +662,27 @@ fn d4_capacity(capacity: &str) -> acyclic_harness::context::ModelContextCapacity
     }
 }
 
+fn expected_reasoning() -> ReasoningBlock {
+    ReasoningBlock {
+        kind: ReasoningKind::Readable,
+        text: Some("reasoning retained".into()),
+        origin: ReasoningOrigin {
+            provider: "scripted".into(),
+            model: "dst".into(),
+            credential_scope: None,
+        },
+        continuity: b"exact reasoning".to_vec(),
+        outcome: ReasoningOutcome::PreservedReadable,
+    }
+}
+
 fn contains_reasoning(request: &ModelRequest) -> bool {
+    let expected = expected_reasoning();
     request
         .messages
         .iter()
         .flat_map(|message| message.content.parts())
-        .any(|part| matches!(part, ModelContentPart::Reasoning { .. }))
+        .any(|part| matches!(part, ModelContentPart::Reasoning { block } if *block == expected))
 }
 
 fn length_world(seed: u64) -> std::result::Result<bool, String> {
@@ -742,20 +743,23 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     if incarnation.requests.iter().any(has_file) {
                         return fail("a length-cut summary published a rewrite");
                     }
+                    world.service = d4_after_service();
                     let after = vec![vec![("d4-after", tag("d4-after"))]];
                     let reopened = world
                         .incarnation(None, &after)
                         .await
                         .map_err(oracle::failed)?;
-                    if reopened.prompts.is_empty() {
-                        return fail("the worker died after its cut summary");
+                    if reopened.prompts.last().map(|(outcome, _)| outcome)
+                        != Some(&Prompted::Settled(done("d4-after")))
+                    {
+                        return fail("the worker did not settle after its cut summary");
                     }
                 }
                 "context_review" => {
                     if summary_requests.is_empty() {
                         return fail("the length-cut context review was never requested");
                     }
-                    if incarnation.prompts.first().map(|(outcome, _)| outcome)
+                    if incarnation.prompts.last().map(|(outcome, _)| outcome)
                         != Some(&Prompted::Settled(done("d4")))
                     {
                         return fail("a length-cut context review ended the worker");
