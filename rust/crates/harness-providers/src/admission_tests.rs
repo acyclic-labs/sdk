@@ -167,6 +167,7 @@ fn rate_refusal_paces_its_waiters_across_the_provider_window() -> Result<()> {
                 refused.next().now_or_never(),
                 Some(Some(Ok(ModelEvent::Wait(ModelWait::Started { .. }))))
             ));
+            assert!(refused.next().now_or_never().is_none());
             let mut queued: Vec<_> = (0..WAITERS)
                 .map(|_| provider.generate(&request, dispatch))
                 .collect();
@@ -186,9 +187,9 @@ fn rate_refusal_paces_its_waiters_across_the_provider_window() -> Result<()> {
             tokio::time::advance(Duration::from_nanos(1)).await;
             let event = loop {
                 match refused.next().now_or_never() {
-                    Some(Some(Ok(ModelEvent::Wait(ModelWait::AdmissionChanged { .. })))) => {
-                        continue;
-                    }
+                    Some(Some(Ok(ModelEvent::Wait(
+                        ModelWait::AdmissionChanged { .. } | ModelWait::Finished { .. },
+                    )))) => continue,
                     event => break event,
                 }
             };
@@ -255,6 +256,7 @@ fn a_refusal_without_a_delay_keeps_the_paced_queue_spaced() -> Result<()> {
             refused.next().now_or_never(),
             Some(Some(Ok(ModelEvent::Wait(ModelWait::Started { .. }))))
         ));
+        assert!(refused.next().now_or_never().is_none());
         let mut queued: Vec<_> = (0..3)
             .map(|_| provider.generate(&request, dispatch))
             .collect();
@@ -267,8 +269,16 @@ fn a_refusal_without_a_delay_keeps_the_paced_queue_spaced() -> Result<()> {
             ));
         }
         tokio::time::advance(RETRY_AFTER + Duration::from_nanos(1)).await;
+        let event = loop {
+            match refused.next().now_or_never() {
+                Some(Some(Ok(ModelEvent::Wait(
+                    ModelWait::AdmissionChanged { .. } | ModelWait::Finished { .. },
+                )))) => continue,
+                event => break event,
+            }
+        };
         assert!(matches!(
-            refused.next().now_or_never(),
+            event,
             Some(Some(Ok(ModelEvent::Wait(
                 ModelWait::AdmissionFinished { .. }
             ))))
