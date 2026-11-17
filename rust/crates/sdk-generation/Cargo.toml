@@ -17,6 +17,7 @@ test-env-inherit = ["PATH", "RUSTUP_HOME", "CARGO_HOME"]
 [package.metadata.bazel.test-tools.sdk_generation_test]
 CARGO = "//:toolchain_cargo"
 rustc = "//:rustc"
+rustup = "@sdk_compilers//:rustup"
 
 [package.metadata.bazel.test-tools.main]
 CARGO = "//:toolchain_cargo"
