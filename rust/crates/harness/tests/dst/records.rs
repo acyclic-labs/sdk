@@ -235,7 +235,7 @@ fn check_record<'a>(
                     "inspect" => json_round_trip(usage)?,
                     "json_output" => json_round_trip(usage)?,
                     _ => {
-                        let (restored, _) = entry(reread_inspection(harness))
+                        let (restored, _) = entry(reread_inspection(emitted))
                             .await
                             .map_err(oracle::failed)?;
                         if restored != *usage {
@@ -263,7 +263,7 @@ fn check_record<'a>(
                     "inspect" => json_round_trip(&context)?,
                     "json_output" => json_round_trip(&context)?,
                     _ => {
-                        let (_, restored) = entry(reread_inspection(harness))
+                        let (_, restored) = entry(reread_inspection(emitted))
                             .await
                             .map_err(oracle::failed)?;
                         if restored != emitted.context {
@@ -279,7 +279,7 @@ fn check_record<'a>(
                     "inspect" => json_round_trip(&event)?,
                     "json_output" => json_round_trip(&event)?,
                     _ => {
-                        let restored = entry(reread_output(harness))
+                        let restored = entry(reread_output(emitted))
                             .await
                             .map_err(oracle::failed)?;
                         if restored.text != emitted.output.text {
@@ -303,7 +303,7 @@ fn check_record<'a>(
                     "inspect" => json_round_trip(&call)?,
                     "json_output" => json_round_trip(&call)?,
                     _ => {
-                        let restored = entry(reread_output(harness))
+                        let restored = entry(reread_output(emitted))
                             .await
                             .map_err(oracle::failed)?;
                         if tool_call(&restored)? != call {
@@ -328,7 +328,7 @@ fn check_record<'a>(
                     "inspect" => json_round_trip(&value)?,
                     "json_output" => json_round_trip(&value)?,
                     _ => {
-                        let restored = entry(reread_output(harness))
+                        let restored = entry(reread_output(emitted))
                             .await
                             .map_err(oracle::failed)?;
                         if !same_json(&recorded(&tool_call(&restored)?), &value) {
@@ -352,7 +352,7 @@ fn check_record<'a>(
                     "inspect" => json_round_trip(&value)?,
                     "json_output" => json_round_trip(&value)?,
                     _ => {
-                        let restored = entry(reread_output(harness))
+                        let restored = entry(reread_output(emitted))
                             .await
                             .map_err(oracle::failed)?;
                         if settlement(&restored)? != value {
