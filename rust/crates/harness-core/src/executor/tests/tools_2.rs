@@ -444,7 +444,10 @@ async fn refused_calls_survive_an_interruption_after_the_next_context_is_prepare
 #[tokio::test]
 async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_stays_strict()
 -> Result<()> {
-    struct Rejected(bool);
+    struct Rejected {
+        broken: bool,
+        authorizations: AtomicUsize,
+    }
     impl ToolExecutor for Rejected {
         fn authorize(
             &self,
@@ -453,7 +456,8 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
             _: &ToolInvocation,
             _: acyclic_fs::NativeWork<'_>,
         ) -> Result<()> {
-            Err(if self.0 {
+            self.authorizations.fetch_add(1, Ordering::SeqCst);
+            Err(if self.broken {
                 Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "invalid selection",
@@ -478,8 +482,12 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
         }
     }
     for broken in [false, true] {
+        let rejected = Arc::new(Rejected {
+            broken,
+            authorizations: AtomicUsize::new(0),
+        });
         let tools = echo_tools(
-            Arc::new(Rejected(broken)),
+            rejected.clone(),
             json!({"type":"object"}),
             json!({}),
             crate::tool::json_projection_schema(json!({})),
@@ -541,6 +549,11 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
             assert!(matches!(replay?, ExecutionProgress::Ready(None)));
         }
         assert_eq!(messages, replayed);
+        assert_eq!(
+            rejected.authorizations.load(Ordering::SeqCst),
+            if broken { 2 } else { 1 },
+            "settled semantic refusal must replay without fresh authorization",
+        );
     }
     Ok(())
 }
