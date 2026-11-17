@@ -31,7 +31,7 @@ pub(crate) fn fixture_times(
         created_ns: nanos(metadata.birth_time().and_then(system_time_nanos)),
         modified_ns: nanos(metadata.modified().ok().and_then(system_time_nanos)),
         accessed_ns: nanos(metadata.accessed().ok().and_then(system_time_nanos)),
-        changed_ns: nanos(source_metadata(metadata).changed_ns),
+        changed_ns: nanos(raw_changed_ns(metadata)),
     };
     capture_native_times(NativeMetadataInput {
         device: identity.device,
@@ -251,10 +251,7 @@ fn source_metadata(metadata: &HostStat) -> SourceMetadata {
         result.posix_mode = Some(metadata.raw.st_mode as u32);
         result.posix_uid = Some(metadata.raw.st_uid as u32);
         result.posix_gid = Some(metadata.raw.st_gid as u32);
-        result.changed_ns = Some(
-            i128::from(metadata.raw.st_ctime as i64) * 1_000_000_000
-                + i128::from(metadata.raw.st_ctime_nsec as i64),
-        );
+        result.changed_ns = raw_changed_ns(metadata);
     }
     #[cfg(windows)]
     {
@@ -270,6 +267,23 @@ fn source_metadata(metadata: &HostStat) -> SourceMetadata {
         result.changed_ns = times.changed_ns.map(i128::from);
     }
     result
+}
+
+/// The host's metadata-change time, without going through the saved metadata
+/// (the fixture path and `source_metadata` both need it, and must not recurse).
+fn raw_changed_ns(metadata: &HostStat) -> Option<i128> {
+    #[cfg(unix)]
+    {
+        Some(
+            i128::from(metadata.raw.st_ctime as i64) * 1_000_000_000
+                + i128::from(metadata.raw.st_ctime_nsec as i64),
+        )
+    }
+    #[cfg(windows)]
+    {
+        let _ = metadata;
+        None
+    }
 }
 
 fn system_time_nanos(time: cap_std::time::SystemTime) -> Option<i128> {
