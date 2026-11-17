@@ -243,7 +243,8 @@ fn erasing_entropy() -> bool {
 
 fn record_incarnation(incarnation: &Incarnation, directory: &Path) {
     RECORDING.with(|recording| {
-        let Some(trace) = recording.borrow_mut().as_mut() else {
+        let mut recording = recording.borrow_mut();
+        let Some(trace) = recording.as_mut() else {
             return;
         };
         let mut value = serde_json::json!({
