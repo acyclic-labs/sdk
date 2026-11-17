@@ -84,13 +84,13 @@ impl AssignmentPlan {
 mod proofs {
     #[kani::proof]
     fn assignment_indices_are_bijective_within_the_declared_population() {
-        let arms: u64 = kani::any();
-        let replicates: u64 = kani::any();
+        let arms = u64::from(kani::any::<u8>());
+        let replicates = u64::from(kani::any::<u8>());
         kani::assume((1..=4).contains(&arms));
         kani::assume((1..=4).contains(&replicates));
         let plan = super::AssignmentPlan::new(arms, replicates).unwrap();
-        let first: u64 = kani::any();
-        let second: u64 = kani::any();
+        let first = u64::from(kani::any::<u8>());
+        let second = u64::from(kani::any::<u8>());
         kani::assume(first < plan.trials());
         kani::assume(second < plan.trials());
         let a = plan.assignment(first).unwrap();
@@ -98,9 +98,11 @@ mod proofs {
         assert!(a.arm < arms && a.replicate < replicates);
         assert!(b.arm < arms && b.replicate < replicates);
         assert_eq!(a == b, first == second);
+        // Invert the declared rotation, including its original zero position.
+        assert_eq!((a.arm + arms - a.replicate % arms) % arms, first % arms);
         assert_eq!(plan.assignment(plan.trials()), None);
 
-        let position: u64 = kani::any();
+        let position = u64::from(kani::any::<u8>());
         kani::assume(position < arms);
         let block = super::AssignmentPlan::new(arms, arms).unwrap();
         let first_replicate = first % arms;
