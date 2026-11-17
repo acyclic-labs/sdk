@@ -137,7 +137,6 @@ cargo_build_script(
 )
 
 rust_library(
-    name = "acyclic_mcp_wasm",
     crate_name = "acyclic_mcp",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),

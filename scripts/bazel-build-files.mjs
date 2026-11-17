@@ -180,6 +180,14 @@ const wasmGenerated = wasmSelections.map(selection => {
   };
 });
 const wasmGeneratedTarget = name => `//:wasm_${name}_generated`;
+// A crate target that also names a wasm package keeps its rlib under a distinct label, so the
+// package label can name the complete published output.
+const wasmLibraryNames = new Map(wasmSelections.map(selection => {
+  const p = base.packages.find(p => p.name === selection.packageName);
+  const lib = libOf(p);
+  const natural = `${crateName(lib)}_wasm`;
+  return [p.id, selection.bazelTarget === natural ? `${natural}_lib` : natural];
+}));
 const wasmNodeModulesTarget = name => `//:wasm_${name}_node_modules`;
 const workspaceTargetName = name => `workspace_${name.replaceAll("@", "").replaceAll("/", "_").replaceAll("-", "_")}`;
 const starlarkDict = entries => `{\n${entries.map(([key, value]) => `        ${q(key)}: ${q(value)},\n`).join("")}    }`;
@@ -532,7 +540,7 @@ function wasmEdges(p) {
     if (!lib) continue;
     const macro = lib.kind.includes("proc-macro");
     const name = members.has(dep)
-      ? `${label(target)}:${crateName(lib)}${macro ? "" : "_wasm"}`
+      ? `${label(target)}:${macro ? crateName(lib) : wasmLibraryNames.get(dep) ?? `${crateName(lib)}_wasm`}`
       : macro ? hubLabel(dep) : wasmHubLabel(dep);
     const declaration = p.dependencies.find(entry => entry.name === target.name);
     const alias = declaration?.rename?.replaceAll("-", "_") ?? crateName(lib);
@@ -789,7 +797,7 @@ function buildFile(p) {
     ["visibility", q(["//visibility:public"])],
   ];
   if (lib && !lib.kind.includes("proc-macro")) {
-    rules.push(["rust_library", [["name", q(`${crateName(lib)}_wasm`)], ...wasmAttrs(lib)]]);
+    rules.push(["rust_library", [["name", q(wasmLibraryNames.get(p.id))], ...wasmAttrs(lib)]]);
   }
   if (shared) {
     rules.push(["rust_shared_library", [["name", q(`${crateName(shared)}_wasm_cdylib`)], ...wasmAttrs(shared)]]);

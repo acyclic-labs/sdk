@@ -73,7 +73,6 @@ isolated_test(
 )
 
 rust_library(
-    name = "acyclic_auth_action_wasm",
     crate_name = "acyclic_auth_action",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),

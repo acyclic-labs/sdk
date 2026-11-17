@@ -204,7 +204,7 @@ rust_binary(
 )
 
 rust_library(
-    name = "acyclic_manifest_wasm",
+    name = "acyclic_manifest_wasm_lib",
     crate_name = "acyclic_manifest",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),

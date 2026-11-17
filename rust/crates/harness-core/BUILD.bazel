@@ -1108,7 +1108,6 @@ cargo_build_script(
 )
 
 rust_library(
-    name = "acyclic_harness_core_wasm",
     crate_name = "acyclic_harness_core",
     crate_root = "src/lib.rs",
     srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True) + [
