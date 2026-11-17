@@ -13,6 +13,7 @@
 //! only the `Content` an enclosing buffer holds. A container of a kind no
 //! candidate type accepts at a typed position is refused: the decode would
 //! reject it, and no bound is claimed for shapes the type does not describe.
+// Callers supply document traversal; this engine owns its allocation accounting.
 use serde::__private229::de::Content;
 use std::cell::RefCell;
 
