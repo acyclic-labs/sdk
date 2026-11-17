@@ -173,11 +173,9 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
             if calls.is_empty() {
                 // An empty step is one model answer with no calls. A one-shot
                 // failure on it must be emitted before the plan advances.
-                if plan
-                    .fail_once
-                    .as_ref()
-                    .is_some_and(|(at, _)| *at == step && !failed.contains(&plan.tag))
-                {
+                if plan.fail_once.as_ref().is_some_and(|(at, _)| {
+                    *at == usize::MAX || (*at == step && !failed.contains(&plan.tag))
+                }) {
                     break;
                 }
                 step += 1;
@@ -196,12 +194,14 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
             .iter()
             .map(|call| ScriptedEvent::Event(ModelEvent::ToolCall(call.clone())))
             .collect();
-        if let Some((_, failure)) = plan
+        if let Some((at, failure)) = plan
             .fail_once
             .as_ref()
-            .filter(|(at, _)| *at == step && !failed.contains(&plan.tag))
+            .filter(|(at, _)| *at == usize::MAX || (*at == step && !failed.contains(&plan.tag)))
         {
-            failed.push(plan.tag);
+            if *at != usize::MAX {
+                failed.push(plan.tag);
+            }
             events.push(failure.clone());
         } else {
             events.push(ScriptedEvent::Event(ModelEvent::Completed {

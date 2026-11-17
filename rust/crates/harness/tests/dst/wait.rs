@@ -122,7 +122,7 @@ fn failed(tag_name: &'static str) -> Plan {
         tag: tag_name,
         steps: Vec::new(),
         fail_once: Some((
-            0,
+            usize::MAX,
             ScriptedEvent::Interrupted {
                 error: "child turn failed".into(),
             },
