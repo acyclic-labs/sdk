@@ -273,11 +273,7 @@ impl FiniteRead {
         }
     }
 
-    fn new(
-        path: &PathState,
-        request: ReadRequest,
-        work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
-    ) -> Result<Self, StreamError> {
+    fn new(path: &PathState, request: ReadRequest) -> Self {
         let tail = request.key.as_ref().map_or_else(
             || {
                 path.tail
@@ -285,20 +281,17 @@ impl FiniteRead {
             },
             |key| key.before.min(path.tail),
         );
-        Ok(Self {
+        Self {
             history: PinnedHistory::new(path, tail),
             window: request
                 .key
                 .is_none()
                 .then(|| path.prefix_window(request.from, tail))
                 .flatten(),
-            key: request
-                .key
-                .map(|key| path.keys.key_pin(path.tail, work).map(|pin| (key, pin)))
-                .transpose()?,
+            key: request.key.map(|key| (key, path.keys.key_pin(path.tail))),
             next: request.from,
             remaining: request.limit,
-        })
+        }
     }
 
     fn peek<E>(

@@ -97,7 +97,7 @@ impl MemoryStream {
         if request.from > path.tail {
             return Err(StreamError::OutOfRange);
         }
-        let cursor = FiniteRead::new(path, request, &mut HistoryIndexWork(self))?;
+        let cursor = FiniteRead::new(path, request);
         let snapshot = self.revisions.at(state.decision);
         let selection = cursor.selection();
         drop(state);
@@ -1234,11 +1234,7 @@ impl MemoryStream {
         // Only the immutable pin and one inline page survive opening.
         // History traversal and key selection belong to cursor pulls.
         meter.admit_examination(1, 0)?;
-        let work = crate::native::Work::new(meter.clone())?;
-        let cursor = match FiniteRead::new(path, request, &mut MeterWork(&work)) {
-            Ok(cursor) => cursor,
-            Err(error) => return work.finish(Err(error)),
-        };
+        let cursor = FiniteRead::new(path, request);
         meter.record_examination(1, 0)?;
         let snapshot = self.revisions.at(state.decision);
         let selection = cursor.selection();
