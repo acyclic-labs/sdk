@@ -6,7 +6,7 @@ use family::{Generator, Variant};
 use oracle::{Plan, World, call, done, service, settlements, simulate, tag};
 
 const STEPS: usize = 8;
-const FILE_BYTES: usize = 8 * 1024;
+const FILE_BYTES: usize = 7 * 1024;
 
 pub(super) const GENERATOR: Generator = Generator {
     class: "J1",
@@ -107,9 +107,10 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 .last()
                 .ok_or("the scale world sent no request")?;
             let settled = settlements(last)?;
-            if settled.len() < STEPS {
+            let expected_writes = STEPS + 1;
+            if settled.len() < expected_writes {
                 return Err(format!(
-                    "the scale world settled {} of {STEPS} writes",
+                    "the scale world settled {} of {expected_writes} writes",
                     settled.len()
                 ));
             }
