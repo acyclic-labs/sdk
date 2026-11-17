@@ -348,12 +348,9 @@ const RUNNER_PREFIX: &str = "acyclic-";
 /// it removes what its cases left. So on Unix the runner holds an exclusive `flock` on its
 /// directory for its whole life, which the kernel releases however the process ends, and every
 /// new runner reclaims each runner directory of its own user whose lock it can take: that runner
-/// is gone. Claiming, reclaiming and removal all run under its user's lock file in a directory
-/// only that user can write, so a scan never sees a directory between its creation and its
-/// owner's lock or while it is removed. The lock file is the user's own and readable by no one
-/// else, so another user can neither hold it nor stall these steps; another user's directories
-/// are left alone. A root's process ids are not unique across sandboxes, so the directory is
-/// named randomly and created exclusively.
+/// is gone. The directory is created exclusively under a random name, then locked; a reclaimer
+/// that takes it before its owner locks it removes it, and the owner sees the unlinked inode and
+/// retries. Another user's directories are left alone.
 struct RunnerDirectory {
     path: PathBuf,
     #[cfg(unix)]
@@ -369,41 +366,62 @@ impl RunnerDirectory {
         // Abandoned directories go before this runner needs a new one: they may hold the very
         // space or inodes its creation needs.
         #[cfg(unix)]
-        let root_lock = {
-            let user = acyclic_native_runtime::private_file::effective_user();
-            let lock = lock_user(&lock_directory()?)?;
-            reclaim(root, user)?;
-            lock
-        };
+        reclaim(root, acyclic_native_runtime::private_file::effective_user())?;
         let mut attempt = 0_u64;
-        let path = loop {
+        loop {
             let name = std::collections::hash_map::RandomState::new()
                 .hash_one((std::process::id(), attempt))
                 .to_le_bytes();
             let name = u32::from_le_bytes([name[0], name[1], name[2], name[3]]);
             let path = root.join(format!("{RUNNER_PREFIX}{name:08x}"));
             match fs::create_dir(&path) {
-                Ok(()) => break path,
+                Ok(()) => {}
                 // A live runner already has this name; take another.
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => attempt += 1,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    attempt += 1;
+                    continue;
+                }
                 Err(error) => return Err(failed("create", &path, error)),
             }
-        };
-        #[cfg(unix)]
-        {
-            let lock = File::open(&path).map_err(|error| failed("open", &path, error))?;
-            lock.lock().map_err(|error| failed("lock", &path, error))?;
-            drop(root_lock);
-            Ok(Self { path, _lock: lock })
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                let lock = match File::open(&path) {
+                    Ok(lock) => lock,
+                    // A reclaimer took the still-unlocked directory first.
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        attempt += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(failed("open", &path, error)),
+                };
+                lock.lock().map_err(|error| failed("lock", &path, error))?;
+                let held = lock
+                    .metadata()
+                    .map_err(|error| failed("inspect", &path, error))?;
+                match fs::symlink_metadata(&path) {
+                    Ok(visible) if (visible.dev(), visible.ino()) == (held.dev(), held.ino()) => {
+                        return Ok(Self { path, _lock: lock });
+                    }
+                    // The directory this runner locked is no longer the one at its path.
+                    Ok(_) => {
+                        attempt += 1;
+                        continue;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        attempt += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(failed("inspect", &path, error)),
+                }
+            }
+            #[cfg(not(unix))]
+            return Ok(Self { path });
         }
-        #[cfg(not(unix))]
-        Ok(Self { path })
     }
 
     /// Removes the directory once every case has ended.
     fn release(&self) -> Result<(), String> {
-        #[cfg(unix)]
-        let _user = lock_user(&lock_directory()?)?;
         remove(&self.path)
     }
 }
@@ -414,14 +432,23 @@ impl RunnerDirectory {
 fn remove(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     restore_access(path)?;
-    fs::remove_dir_all(path).map_err(|error| failed("remove", path, error))
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        // A reclaimer may have removed the same directory first.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(failed("remove", path, error)),
+    }
 }
 
 /// Gives the owner full access to `path` and every directory under it, following no link.
 #[cfg(unix)]
 fn restore_access(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt as _;
-    let metadata = fs::symlink_metadata(path).map_err(|error| failed("inspect", path, error))?;
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(failed("inspect", path, error)),
+    };
     if !metadata.is_dir() {
         return Ok(());
     }
@@ -435,72 +462,6 @@ fn restore_access(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The directory holding this user's runner lock. It must be a directory only this user can
-/// write, so another local user cannot pre-create the lock file. The OS per-user runtime
-/// directory is preferred; the account home is the fallback.
-#[cfg(unix)]
-fn lock_directory() -> Result<PathBuf, String> {
-    let user = acyclic_native_runtime::private_file::effective_user();
-    let mut candidates = vec![PathBuf::from(format!("/run/user/{user}"))];
-    if let Some(home) = env::var_os("HOME") {
-        candidates.push(PathBuf::from(home));
-    }
-    let mut errors = Vec::new();
-    for root in candidates {
-        match private_lock_directory(&root) {
-            Ok(directory) => return Ok(directory),
-            Err(error) => errors.push(error),
-        }
-    }
-    Err(format!(
-        "no private per-user directory for the runner lock: {}",
-        errors.join("; ")
-    ))
-}
-
-/// The runner's lock directory under `root`, created privately if it is missing. `root` itself
-/// must already belong to this user and exclude changes by other users, so a name under it
-/// cannot be reserved by someone else before this user's first run.
-#[cfg(unix)]
-fn private_lock_directory(root: &Path) -> Result<PathBuf, String> {
-    use std::os::unix::fs::MetadataExt as _;
-    let user = acyclic_native_runtime::private_file::effective_user();
-    let metadata = fs::symlink_metadata(root).map_err(|error| failed("inspect", root, error))?;
-    if !metadata.is_dir() || metadata.uid() != user || metadata.mode() & 0o022 != 0 {
-        return Err(format!(
-            "{} is not a private directory of user {user}",
-            root.display()
-        ));
-    }
-    let directory = root.join(".acyclic-test-runner");
-    match acyclic_native_runtime::private_file::validate_directory(&directory) {
-        Ok(()) => return Ok(directory),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(failed("inspect", &directory, error)),
-    }
-    match acyclic_native_runtime::private_file::create_directory(&directory) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(failed("create", &directory, error)),
-    }
-    acyclic_native_runtime::private_file::validate_directory(&directory)
-        .map_err(|error| failed("inspect", &directory, error))?;
-    Ok(directory)
-}
-
-/// Takes this user's lock file in `directory`, which serializes that user's runners' claim,
-/// reclaim and removal. The file is created readable only by its owner; an entry there that is
-/// not a private file of this user is refused rather than locked.
-#[cfg(unix)]
-fn lock_user(directory: &Path) -> Result<File, String> {
-    let user = acyclic_native_runtime::private_file::effective_user();
-    let path = directory.join(format!("{RUNNER_PREFIX}{user}.lock"));
-    let lock = acyclic_native_runtime::private_file::open_or_create(&path)
-        .map_err(|error| failed("open", &path, error))?;
-    lock.lock().map_err(|error| failed("lock", &path, error))?;
-    Ok(lock)
-}
-
 /// Removes every runner directory of `user` under `root` whose lock is free.
 #[cfg(unix)]
 fn reclaim(root: &Path, user: u32) -> Result<(), String> {
@@ -511,13 +472,19 @@ fn reclaim(root: &Path, user: u32) -> Result<(), String> {
         if !entry.file_name().to_str().is_some_and(is_runner_name) {
             continue;
         }
-        let metadata = entry
-            .metadata()
-            .map_err(|error| failed("inspect", &path, error))?;
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(failed("inspect", &path, error)),
+        };
         if !metadata.is_dir() || metadata.uid() != user {
             continue;
         }
-        let abandoned = File::open(&path).map_err(|error| failed("open", &path, error))?;
+        let abandoned = match File::open(&path) {
+            Ok(abandoned) => abandoned,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(failed("open", &path, error)),
+        };
         match abandoned.try_lock() {
             Ok(()) => remove(&path)?,
             Err(fs::TryLockError::WouldBlock) => {}
@@ -816,35 +783,6 @@ mod tests {
             assert!(runner.path.is_dir());
             runner.release().unwrap();
         }
-    }
-
-    /// A lock file that is not private is refused, so a pre-created public entry cannot be used.
-    #[cfg(unix)]
-    #[test]
-    fn a_public_lock_file_is_refused() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let directory =
-            env::temp_dir().join(format!("acyclic-lock-private-{}", std::process::id()));
-        fs::create_dir(&directory).unwrap();
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
-        let user = acyclic_native_runtime::private_file::effective_user();
-        let path = directory.join(format!("{RUNNER_PREFIX}{user}.lock"));
-        fs::write(&path, "").unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(lock_user(&directory).is_err());
-        fs::remove_dir_all(&directory).unwrap();
-    }
-
-    /// A shared root cannot hold the lock directory, even if a name there is free.
-    #[cfg(unix)]
-    #[test]
-    fn a_shared_root_cannot_hold_the_lock_directory() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let root = env::temp_dir().join(format!("acyclic-lock-shared-{}", std::process::id()));
-        fs::create_dir(&root).unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(private_lock_directory(&root).is_err());
-        fs::remove_dir_all(&root).unwrap();
     }
 
     /// The innermost mount decides, and only its own `noexec` refuses execution.
