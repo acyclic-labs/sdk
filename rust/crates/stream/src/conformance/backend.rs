@@ -123,12 +123,12 @@ pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
         "selected",
         super::selected::verify(provider).await,
     );
+    // Pinned hierarchy pages also require a stable provider-wide generation.
+    failures.extend(contract_history(provider).await);
     // Histories own disjoint subtrees and keys. Overlap their I/O so a local
     // provider can group durability, and remote providers overlap transport.
-    // The checks sharing `conformance/*` remain ordered below; request-budget
-    // accounting runs after every history has completed.
-    let (contract, independent, histories) = futures::join!(
-        contract_history(provider),
+    // Request-budget accounting runs after every history has completed.
+    let (independent, histories) = futures::join!(
         async {
             macro_rules! checks {
                 ($($name:ident => $future:expr),+ $(,)?) => {{
@@ -156,7 +156,6 @@ pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
             }
         })),
     );
-    failures.extend(contract);
     failures.extend(independent);
     for (name, result) in histories {
         record(&mut failures, name, result);
