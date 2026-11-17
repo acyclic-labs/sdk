@@ -69,6 +69,9 @@ impl ExecutionSummary {
                 usage,
                 ..
             } => self.tail > 0 && usage.is_none(),
+            ExecutionEvent::Prompt { step, .. } => {
+                self.tail > 0 && self.contexts.contains_key(step, io)?
+            }
             ExecutionEvent::ContextPrepared { step, .. } => {
                 self.tail > 0
                     && !self.contexts.contains_key(step, io)?
@@ -450,7 +453,8 @@ impl ExecutionSummary {
             ExecutionEvent::Started { .. }
             | ExecutionEvent::ConversationItem { .. }
             | ExecutionEvent::Progress { .. }
-            | ExecutionEvent::NativeCapture { .. } => {}
+            | ExecutionEvent::NativeCapture { .. }
+            | ExecutionEvent::Prompt { .. } => {}
         }
         self.retries.insert(key, (sequence, digest), io)?;
         if !matches!(

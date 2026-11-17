@@ -5,7 +5,8 @@
 use super::*;
 use acyclic_harness::{
     conversation::{DirectoryTarget, PrivateDirectoryEntryKind},
-    local::WorkspaceMounting,
+    executor::{ExecutionEvent, ExecutionPayloadField, ExecutionRecord},
+    local::{WorkspaceMounting, agent_conversation::Conversation},
     model::{ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall, ToolResultContent},
     test_support::{ScriptedEvent, model_visible_messages},
 };
@@ -210,6 +211,10 @@ pub(super) struct Incarnation {
     /// Durable operations the whole incarnation performed.
     pub durable: usize,
     pub crashed: Option<InjectedStorageFault>,
+    /// The root agent's committed execution records, in journal order.
+    pub records: Vec<ExecutionRecord>,
+    /// The prepared context the first prompt record points at.
+    pub prompt_projection: Option<Vec<u8>>,
 }
 
 /// A seeded world on disk. Incarnations share only its files and the model
@@ -270,10 +275,14 @@ impl World {
                 Box::pin(async { Ok(()) })
             }));
             let results = Arc::new(Mutex::new(Vec::new()));
+            let records = Arc::new(Mutex::new(Vec::new()));
+            let prompt_projection = Arc::new(Mutex::new(None));
             let directory = self.directory.path();
             let run = {
                 let provider = Arc::clone(&provider);
                 let results = Arc::clone(&results);
+                let records = Arc::clone(&records);
+                let prompt_projection = Arc::clone(&prompt_projection);
                 entry(async move {
                     let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
                     let config = local_harness_config(
@@ -312,6 +321,44 @@ impl World {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(outcomes.into_iter().map(|outcome| (outcome, requests)));
                     }
+                    let (agents, _) = entry(harness.agents()).await?;
+                    entry(agents.runtime().complete()).await.map_err(storage)?;
+                    let conversation = Conversation::open(Box::pin(harness.connect()).await?);
+                    for (input, record) in conversation.execution_records().await? {
+                        if prompt_projection
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .is_none()
+                            && matches!(&record.event, ExecutionEvent::Prompt { step: 0, .. })
+                        {
+                            let mut bytes = Vec::new();
+                            let mut offset = 0;
+                            loop {
+                                let (chunk, length) = conversation
+                                    .execution_payload(
+                                        input,
+                                        record.sequence,
+                                        ExecutionPayloadField::Projection,
+                                        offset,
+                                    )
+                                    .await?;
+                                bytes.extend_from_slice(&chunk);
+                                offset = offset.checked_add(chunk.len() as u64).ok_or_else(|| {
+                                    Error::Invalid("prompt projection offset overflows".into())
+                                })?;
+                                if offset >= length {
+                                    break;
+                                }
+                            }
+                            *prompt_projection
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bytes);
+                        }
+                        records
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(record);
+                    }
                     Ok::<_, Error>(())
                 })
             };
@@ -332,12 +379,24 @@ impl World {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
+            let records = std::mem::take(
+                &mut *records
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            let prompt_projection = std::mem::take(
+                &mut *prompt_projection
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
             Ok(Incarnation {
                 prompts,
                 requests: provider.requests(),
                 dispatched_at,
                 durable: counter.durable_write_count(),
                 crashed,
+                records,
+                prompt_projection,
             })
         })
     }

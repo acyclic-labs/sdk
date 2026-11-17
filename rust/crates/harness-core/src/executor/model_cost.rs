@@ -1,5 +1,5 @@
 //! A price-selected estimate over the original committed usage, never an invoice.
-use super::{ModelTokenUsage, ModelUsageRecord};
+use super::{ModelAbandonedOutput, ModelTokenUsage, ModelUsageRecord};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, collections::BTreeMap};
 
@@ -516,15 +516,19 @@ impl UsageTotal {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelUsageTotals {
-    /// Aggregate projection format, currently two.
+    /// Aggregate projection format, currently three.
     pub version: u32,
     /// One explicitly selected currency, or unknown. No conversion or automatic
     /// selection from incoming rows is inferred.
     pub currency: Option<String>,
     /// Selected original calls, including admitted calls without completion.
     pub calls: u64,
+    /// Every transport attempt those calls made, including abandoned attempts.
+    pub attempts: u64,
     /// Calls with an original committed terminal observation.
     pub completed: u64,
+    /// Output streamed by attempts that restarted before the completed one.
+    pub abandoned: ModelAbandonedOutput,
     /// Original input units; retain the provider's inclusive/exclusive convention.
     pub input: UsageTotal,
     /// Reported cache-read units, without adding them to input again.
@@ -541,7 +545,7 @@ pub struct ModelUsageTotals {
 
 impl ModelUsageTotals {
     /// The single layout accepted by incremental and range projections.
-    pub const VERSION: u32 = 2;
+    pub const VERSION: u32 = 3;
 
     /// Starts an empty query projection, taking ownership of its currency label.
     pub fn new(currency: String) -> Result<Self, ModelPriceError> {
@@ -562,7 +566,9 @@ impl ModelUsageTotals {
             version: Self::VERSION,
             currency: None,
             calls: 0,
+            attempts: 0,
             completed: 0,
+            abandoned: ModelAbandonedOutput::default(),
             input: UsageTotal::default(),
             cached: UsageTotal::default(),
             cache_write: UsageTotal::default(),
@@ -608,10 +614,31 @@ impl ModelUsageTotals {
             .calls
             .checked_add(other.calls)
             .ok_or(ModelPriceError::Overflow)?;
+        let attempts = self
+            .attempts
+            .checked_add(other.attempts)
+            .ok_or(ModelPriceError::Overflow)?;
         let completed = self
             .completed
             .checked_add(other.completed)
             .ok_or(ModelPriceError::Overflow)?;
+        let abandoned = ModelAbandonedOutput {
+            attempts: self
+                .abandoned
+                .attempts
+                .checked_add(other.abandoned.attempts)
+                .ok_or(ModelPriceError::Overflow)?,
+            content_bytes: self
+                .abandoned
+                .content_bytes
+                .checked_add(other.abandoned.content_bytes)
+                .ok_or(ModelPriceError::Overflow)?,
+            reasoning_bytes: self
+                .abandoned
+                .reasoning_bytes
+                .checked_add(other.abandoned.reasoning_bytes)
+                .ok_or(ModelPriceError::Overflow)?,
+        };
         let input = self.input.combine(other.input)?;
         let cached = self.cached.combine(other.cached)?;
         let cache_write = self.cache_write.combine(other.cache_write)?;
@@ -619,7 +646,9 @@ impl ModelUsageTotals {
         let reasoning = self.reasoning.combine(other.reasoning)?;
         let token_nano_units = self.token_nano_units.combine(other.token_nano_units)?;
         self.calls = calls;
+        self.attempts = attempts;
         self.completed = completed;
+        self.abandoned = abandoned;
         self.input = input;
         self.cached = cached;
         self.cache_write = cache_write;
@@ -634,6 +663,11 @@ impl ModelUsageTotals {
     pub fn validate(&self) -> Result<(), ModelPriceError> {
         self.validate_header()?;
         if self.completed > self.calls
+            || self.attempts
+                != self
+                    .calls
+                    .checked_add(self.abandoned.attempts)
+                    .ok_or(ModelPriceError::Overflow)?
             || (self.currency.is_none()
                 && (self.token_nano_units.known != 0
                     || self.token_nano_units.unknown != self.calls))
@@ -709,6 +743,33 @@ impl ModelUsageTotals {
             .checked_sub(u64::from(previous.is_some_and(|old| old.usage.completed)))
             .and_then(|count| count.checked_add(u64::from(row.usage.completed)))
             .ok_or(ModelPriceError::Overflow)?;
+        let old_abandoned = previous
+            .and_then(|row| row.usage.abandoned)
+            .unwrap_or_default();
+        let new_abandoned = row.usage.abandoned.unwrap_or_default();
+        let abandoned = ModelAbandonedOutput {
+            attempts: self
+                .abandoned
+                .attempts
+                .checked_sub(old_abandoned.attempts)
+                .and_then(|count| count.checked_add(new_abandoned.attempts))
+                .ok_or(ModelPriceError::Overflow)?,
+            content_bytes: self
+                .abandoned
+                .content_bytes
+                .checked_sub(old_abandoned.content_bytes)
+                .and_then(|count| count.checked_add(new_abandoned.content_bytes))
+                .ok_or(ModelPriceError::Overflow)?,
+            reasoning_bytes: self
+                .abandoned
+                .reasoning_bytes
+                .checked_sub(old_abandoned.reasoning_bytes)
+                .and_then(|count| count.checked_add(new_abandoned.reasoning_bytes))
+                .ok_or(ModelPriceError::Overflow)?,
+        };
+        let attempts = calls
+            .checked_add(abandoned.attempts)
+            .ok_or(ModelPriceError::Overflow)?;
         let priced = self.currency.is_some();
         let (tokens, cost) = row.contribution(priced);
         let old = previous.map(|row| row.contribution(priced));
@@ -733,7 +794,9 @@ impl ModelUsageTotals {
             .token_nano_units
             .update(old.map(|(_, cost)| cost), cost)?;
         self.calls = calls;
+        self.attempts = attempts;
         self.completed = completed;
+        self.abandoned = abandoned;
         self.input = input;
         self.cached = cached;
         self.cache_write = cache_write;
@@ -973,6 +1036,7 @@ mod tests {
             // A late counter overflow must not install earlier field additions.
             let mut maximum = ModelUsageTotals::new("USD".into()).unwrap();
             maximum.calls = 1;
+            maximum.attempts = 1;
             maximum.completed = 1;
             maximum.token_nano_units.known = u64::MAX;
             let mut one = maximum.clone();
@@ -983,6 +1047,7 @@ mod tests {
             for calls in [1, 100, 100_000] {
                 let mut target = ModelUsageTotals::unpriced();
                 target.calls = calls;
+                target.attempts = calls;
                 target.completed = calls;
                 target.token_nano_units.unknown = calls;
                 let allocations = acyclic_test_support::measure(|| target.merge(&parts[0]).unwrap());

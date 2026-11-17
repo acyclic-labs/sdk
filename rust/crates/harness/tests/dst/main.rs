@@ -24,6 +24,7 @@ mod driver;
 mod family;
 mod flushes;
 mod grants;
+mod observability;
 mod oracle;
 mod protective;
 mod publication;

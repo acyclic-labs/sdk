@@ -1140,6 +1140,22 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
     assert_eq!(output.text, "answer");
     assert_eq!(output.steps, 1);
     let records = journal.0.lock().unwrap().clone();
+    let prompt = records
+        .iter()
+        .position(|record| matches!(record.event, ExecutionEvent::Prompt { step: 0, .. }))
+        .expect("the effective prompt is a run record");
+    let prepared = records
+        .iter()
+        .position(|record| matches!(record.event, ExecutionEvent::ContextPrepared { step: 0, .. }))
+        .expect("the prepared context is a run record");
+    let started = records
+        .iter()
+        .position(|record| matches!(record.event, ExecutionEvent::ModelStarted { step: 0, .. }))
+        .expect("the model admission is a run record");
+    assert!(
+        prepared < prompt && prompt < started,
+        "the prompt is pinned after its context and before the model request"
+    );
     let waits = futures::executor::block_on(async {
         let mut waits = Vec::new();
         for record in &records {
@@ -1213,6 +1229,16 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
         )
         .is_ok()
     );
+    let mut totals = super::super::ModelUsageTotals::unpriced();
+    let estimate = usage
+        .estimate(None)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    totals
+        .push(&estimate)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(totals.calls, 1);
+    assert_eq!(totals.attempts, 2, "the restarted attempt is counted");
+    assert_eq!(totals.abandoned, usage.abandoned.expect("abandoned attempt"));
     let replay = futures::executor::block_on(executor.execute(input, &journal))?;
     assert_eq!(replay, output);
     assert_eq!(provider.requests().len(), 1);

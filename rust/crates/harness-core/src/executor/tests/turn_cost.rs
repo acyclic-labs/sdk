@@ -359,6 +359,75 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn compacted_step_reads_every_record_at_the_model_event_bound() -> Result<()> {
+    let mut executor = lookup_executor()?;
+    executor.limits.model_events_per_step = Some(
+        std::num::NonZeroUsize::new(2).ok_or_else(|| Error::Invalid("non-zero bound".into()))?,
+    );
+    let execution = StockExecution::ordinary(&executor);
+    let journal = Journal::default();
+    let operation = OperationId::new();
+    let file = journal
+        .stage(operation, "file", b"{}", "application/json", None)?
+        .await?;
+    use ExecutionEvent::*;
+    let events = [
+        ContextPrepared {
+            step: 0,
+            projection: file.clone(),
+            configuration: None,
+            steering: None,
+        },
+        Prompt {
+            step: 0,
+            projection: file.clone(),
+        },
+        ContextCompacted {
+            step: 0,
+            projection: file.clone(),
+            compaction: file.clone(),
+        },
+        ModelStarted {
+            step: 0,
+            purpose: ModelPurpose::Response,
+            request_digest: [1; 32],
+            request: file.clone(),
+            context: None,
+        },
+        Model {
+            step: 0,
+            purpose: ModelPurpose::Response,
+            event: file.clone(),
+            usage: None,
+        },
+        Model {
+            step: 0,
+            purpose: ModelPurpose::Response,
+            event: file.clone(),
+            usage: None,
+        },
+    ];
+    for (index, event) in events.into_iter().enumerate() {
+        journal.0.lock().unwrap().push(ExecutionRecord {
+            committed_at_micros: None,
+            operation_id: operation,
+            sequence: index as u64 + 1,
+            idempotency_key: format!("record:{index}"),
+            event,
+        });
+    }
+    let (_, records) = execution
+        .model_records(&journal, operation, 0, ModelPurpose::Response)
+        .await?;
+    assert_eq!(
+        records.len(),
+        6,
+        "the prompt record stays inside the compacted step bound"
+    );
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -> Result<()> {
