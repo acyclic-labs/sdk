@@ -161,8 +161,9 @@ export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFil
           if (local) {
             const next = slash(path.relative(root, path.join(local, 'Cargo.toml')));
             if (!withinSource(local)) throw Error(`workspace dependency escapes source root: ${next}`);
-            if (!manifests.has(next)) {manifests.add(next); pending.push(next);}
-            if (declaration.path && rootManifest.workspace && !next.startsWith('../') && !path.isAbsolute(next) && !excluded(next)) {
+            const selected = kind !== 'dev' || members.has(file);
+            if (selected && !manifests.has(next)) {manifests.add(next); pending.push(next);}
+            if (selected && declaration.path && rootManifest.workspace && !next.startsWith('../') && !path.isAbsolute(next) && !excluded(next)) {
               const dependency = toml(root, next);
               const explicitWorkspace = dependency.package?.workspace && path.resolve(local, dependency.package.workspace);
               if (!dependency.workspace && (!explicitWorkspace || explicitWorkspace === root)) members.add(next);
