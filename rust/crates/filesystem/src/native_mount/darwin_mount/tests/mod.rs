@@ -467,7 +467,7 @@ fn named_attribute_probes_need_no_source_call_without_attributes() -> TestResult
     source.write_attribute(
         &path,
         b"com.apple.provenance",
-        copy_bytes(&work, b"origin")?,
+        source_chunk(b"origin", &work)?,
         MountAttributeWriteMode::Upsert,
         &work,
     )?;

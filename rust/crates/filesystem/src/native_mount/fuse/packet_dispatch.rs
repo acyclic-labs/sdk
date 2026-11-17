@@ -439,7 +439,7 @@ impl FuseProjection {
                     inode,
                     name,
                     |path, work| {
-                        let target = fuse_source_chunk(target.as_bytes(), work)?;
+                        let target = source_chunk(target.as_bytes(), work)?;
                         Ok(self
                             .core
                             .source

@@ -165,7 +165,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_write(
             // SAFETY: the bridge retains this readable length-byte input through the callback.
             unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), length as usize) }
         };
-        let bytes = copy_bytes(work, input)?;
+        let bytes = source_chunk(input, work)?;
         context.mutate_file(
             &*mount_path(path, work)?,
             handle,

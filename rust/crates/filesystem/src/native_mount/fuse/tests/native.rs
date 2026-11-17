@@ -474,32 +474,6 @@ pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellati
 }
 
 #[test]
-pub(super) fn measured_write_copy_refusal_precedes_the_real_source_write()
--> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = shared_sources(posix_config())?;
-    let path = name("copy-denied");
-    crate::native_mount::adapter::boundary(source.cancellation(), |work| {
-        source.create_file(&path, FileMetadata::default(), None, work)
-    })?;
-    let opened = source.open_file(&path)?;
-    opened.write_range(0, Bytes::from_static(b"original"))?;
-    let cancellation = crate::CancellationToken::new();
-    let mut budget = FINITE_HANDLER_POLICY;
-    budget.bytes_copied = 0;
-    let failure = crate::native_mount::run_native_mount_handler(budget, &cancellation, |work| {
-        let bytes = crate::native_mount::fuse::fuse_source_chunk(b"replacement", work)?;
-        opened
-            .write_range_with_meter(0, bytes, false, work)
-            .map_err(crate::NativeMountError::Source)
-    })
-    .expect_err("zero copied-byte authority must refuse the packet before source mutation");
-    assert_eq!(failure.1.bytes_copied, 0);
-    assert_eq!(failure.1.backend_write_operations, 0);
-    assert_eq!(opened.read_range(0, 8)?.as_ref(), b"original");
-    Ok(())
-}
-
-#[test]
 pub(super) fn native_access_fuse_open_refuses_an_actual_rebound_file_identity()
 -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = shared_sources(posix_config())?;

@@ -29,7 +29,7 @@ impl FuseProjection {
             state.admit_write()?;
             state.attribute_target(inode, work)?
         };
-        let value = fuse_source_chunk(value, work)?;
+        let value = source_chunk(value, work)?;
         self.source_write(work, || {
             match target {
                 AttributeTarget::Handle(open_file) => {

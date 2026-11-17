@@ -138,8 +138,6 @@ pub(super) fn retained_file(
     }
 }
 
-use acyclic_stream::OwnedBytes;
-
 pub(super) fn source_bytes(
     chunk: crate::kernel::OwnedSourceChunk,
     work: &Work,
@@ -162,30 +160,4 @@ pub(super) fn source_bytes(
             panic: Mutex::new(panic),
         }),
     }
-}
-
-pub(super) fn copy_bytes(
-    work: &Work,
-    bytes: &[u8],
-) -> Result<crate::kernel::OwnedSourceChunk, NativeMountError> {
-    work.admit(copy_work(bytes.len() as u64))?;
-    if bytes.is_empty() {
-        return Ok(crate::kernel::OwnedSourceChunk::intrinsic(
-            OwnedBytes::new(),
-            0,
-        ));
-    }
-    let (value, allocation) = work.copy_bytes(bytes)?;
-    let retained = allocation.bytes();
-    let bytes = OwnedBytes::from_vec_with_guard(value, allocation, work.runtime_meter()).map_err(
-        |failure| match failure.into_error() {
-            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                NativeMountError::from(work.runtime_error(error))
-            }
-            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-                unreachable!("initialized vector")
-            }
-        },
-    )?;
-    Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, retained))
 }
