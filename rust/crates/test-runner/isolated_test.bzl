@@ -21,6 +21,8 @@ def _isolated_test_impl(ctx):
     }
     if ctx.attr.only:
         environment["ACYCLIC_TEST_ONLY"] = ctx.attr.only
+    if ctx.attr.workers:
+        environment["ACYCLIC_TEST_WORKERS"] = str(ctx.attr.workers)
     if ctx.attr.exclude:
         environment["ACYCLIC_TEST_EXCLUDE"] = "\n".join(ctx.attr.exclude)
     if ctx.file.wrapper:
@@ -59,6 +61,9 @@ isolated_test = rule(
         # The profile's nextest run wrapper, which runs each case as `<wrapper> <binary> <arguments>`,
         # and the files it runs beside it.
         "wrapper": attr.label(allow_single_file = True),
+        # Cases to run at once; zero uses the host's parallelism. A suite whose cases each start
+        # Cargo sets this so they do not contend for the same cores.
+        "workers": attr.int(default = 0),
         "wrapper_data": attr.label_list(allow_files = True),
         "limit_seconds": attr.int(mandatory = True),
         "_runner": attr.label(

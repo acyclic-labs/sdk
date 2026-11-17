@@ -111,6 +111,7 @@ isolated_test(
     binaries = {"//:cargo":"cargo","//:rustc":"rustc"},
     id = "sdk-docs",
     exclude = ["::full_cloud::"],
+    workers = 4,
     limit_seconds = 10,
 )
 
@@ -122,6 +123,7 @@ isolated_test(
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
     wrapper_data = ["//:scripts/local-cloud.mjs"],
+    workers = 4,
     limit_seconds = 10,
     tags = ["manual"],
 )

@@ -101,6 +101,7 @@ const SETTINGS: [&str; 8] = [
     "ACYCLIC_TEST_ONLY",
     "ACYCLIC_TEST_PACKAGE",
     "ACYCLIC_TEST_SOURCE",
+    "ACYCLIC_TEST_WORKERS",
     "ACYCLIC_TEST_WRAPPER",
 ];
 
@@ -204,8 +205,11 @@ fn run_suite(suite: &Suite, selection: &[OsString], out: &mut dyn Write) -> Resu
     let custody = ProcessCustody::acquire(&suite.logs.join("processes"))
         .map_err(|error| format!("process custody: {error}"))?;
     let queue = Mutex::new(cases.iter().enumerate());
-    let workers = thread::available_parallelism()
-        .map_or(1, NonZero::get)
+    let workers = env::var("ACYCLIC_TEST_WORKERS")
+        .ok()
+        .and_then(|workers| workers.parse().ok())
+        .filter(|workers: &usize| *workers > 0)
+        .unwrap_or_else(|| thread::available_parallelism().map_or(1, NonZero::get))
         .min(cases.len());
     let (sender, results) = mpsc::channel();
     thread::scope(|scope| {
