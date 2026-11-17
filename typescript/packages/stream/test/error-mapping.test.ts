@@ -21,14 +21,16 @@ const cases = [
 
 test.each(cases)("%s in %s maps to %s through native and WASM", async (code, operation, expected) => {
   await ensureStreamWasm();
-  const failure = code === undefined ? { message: "original" } : { code, message: "original", refusal };
+  const metadata = code === undefined ? {} : { code, refusal };
+  const failure = { message: "original", ...metadata };
+  const wasmFailure = Object.assign(new Error("original"), metadata);
   const native = Reflect.construct(NativeStreamProvider, [{
     tailResult: async () => ({ error: failure }),
     readCommitResult: async () => ({ error: failure }),
     commitResult: async () => ({ error: failure }),
   }, {}]) as NativeStreamProvider;
   const wasm = new MemoryStreamProvider();
-  const dispatch = spyOn(WasmStream.prototype, "dispatch").mockImplementation(async () => { throw failure; });
+  const dispatch = spyOn(WasmStream.prototype, "dispatch").mockImplementation(async () => { throw wasmFailure; });
   const call = (provider: StreamProvider) => operation === "read_commit"
     ? provider.readCommit(commitId(new Uint8Array(32)))
     : operation === "commit"
