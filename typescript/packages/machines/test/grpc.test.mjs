@@ -80,10 +80,11 @@ test("RPC bridge distinguishes server refusal from expired response custody", as
       return bytes;
     });
   };
-  const unavailable = createMachinesGrpcTransport({ ...options, credential: () => { throw new Error("unavailable"); } });
+  const cause = new Error("credential callback failed");
+  const unavailable = createMachinesGrpcTransport({ ...options, credential: () => { throw cause; } });
   t.after(() => unavailable.close());
   const before = createMachinesRpcTransport(unavailable.transport)("create", async () => bytes);
-  await assert.rejects(before.ready, error => error.code === Code.Unavailable && error.requestCredentialAdmission === true);
+  await assert.rejects(before.ready, error => error.code === Code.Unavailable && error.requestCredentialAdmission === true && error.cause === cause);
   before.cancel();
   assert.equal(calls, 0);
   const denied = request();
