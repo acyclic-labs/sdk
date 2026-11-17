@@ -1,6 +1,6 @@
 import { HeadProjection, ReadOrder, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
+import initStreamWasm, { decodeHttpResponse as decodeHttpResponseWasm, decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitEffectSchema, CommitMutationSchema, CommitRequestSchema,
@@ -12,7 +12,13 @@ import {
 import type { ReadResponse, Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
 import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitEffect, ProviderCommitRequest, Revision } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
-import type { HttpRoute } from "./http-contract.js";
+import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
+
+/** Decode a Rust-validated response using its route-specific result type. */
+export function decodeHttpResponseFor<Route extends HttpRoute>(route: Route, responseJson: string, followed?: string): HttpResponseFor<Route>;
+export function decodeHttpResponseFor(route: string, responseJson: string, followed?: string): unknown {
+  return decodeHttpResponseWasm(route, responseJson, followed);
+}
 
 let wasmReady: Promise<void> | undefined;
 export async function ensureStreamWasm(): Promise<void> {
