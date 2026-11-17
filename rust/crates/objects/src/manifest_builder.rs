@@ -95,6 +95,9 @@ impl ManifestBuilder {
             if verified.digest != Digest::of(&[]) || verified.length != 0 {
                 return Err(ErrorCode::Corrupt.into());
             }
+            root.parts
+                .try_reserve(1)
+                .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
             root.parts.push(Part {
                 digest: verified.digest,
                 length: 0,
@@ -132,13 +135,15 @@ impl ManifestBuilder {
 
 async fn publish<B: Blobs + ?Sized>(blobs: &B, manifest: Manifest) -> Result<Part, Error> {
     let length = manifest.length()?;
-    let digest = Digest::of(&manifest.encode()?);
     let put = blobs.put_manifest(manifest).await?;
     let verified = put.verified().ok_or(ErrorCode::OutcomeUnknown)?;
-    if verified.digest != digest || verified.length != length {
+    if verified.length != length {
         return Err(ErrorCode::Corrupt.into());
     }
-    Ok(Part { digest, length })
+    Ok(Part {
+        digest: verified.digest,
+        length,
+    })
 }
 
 #[cfg(test)]
