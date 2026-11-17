@@ -289,7 +289,7 @@ fn registry_policy_fails_closed_on_sources_yanks_bans_and_license() {
     let mut bad_license = entry.clone();
     bad_license["license"] = "GPL-3.0-only".into();
     assert!(check(&bad_license, &registry, &policy).unwrap()[0].contains("disallowed license"));
-    let banned_policy: toml::Value =
-        toml::from_str(&policy.to_string().replace("blocked", "demo")).unwrap();
+    let mut banned_policy = policy.clone();
+    banned_policy["bans"]["deny"][0]["crate"] = toml::Value::String("demo".into());
     assert!(check(&entry, &registry, &banned_policy).unwrap()[0].contains("banned dependency"));
 }
