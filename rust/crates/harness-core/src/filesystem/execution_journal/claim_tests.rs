@@ -12,6 +12,17 @@ impl acyclic_stream::UnixMillisClock for Clock {
         100
     }
 }
+impl acyclic_actors::local::Clock for Clock {
+    fn sleep_until(
+        &self,
+        _: u64,
+    ) -> acyclic_stream::BoxProviderFuture<
+        'static,
+        std::result::Result<(), acyclic_actors::local::ClockError>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+}
 
 struct Storage {
     inner: acyclic_stream::MemoryStream,
@@ -172,24 +183,6 @@ impl acyclic_stream::UnixMillisClock for ProviderClock {
     }
 }
 
-struct JournalClock;
-impl acyclic_stream::UnixMillisClock for JournalClock {
-    fn now_unix_millis(&self) -> u64 {
-        100
-    }
-}
-impl acyclic_actors::local::Clock for JournalClock {
-    fn sleep_until(
-        &self,
-        _: u64,
-    ) -> acyclic_stream::BoxProviderFuture<
-        'static,
-        std::result::Result<(), acyclic_actors::local::ClockError>,
-    > {
-        Box::pin(async { Ok(()) })
-    }
-}
-
 /// A claim stamps its start on the journal's clock and persists that same
 /// value, so a resumed timed tool measures its deadline from the original
 /// claim rather than the provider's frame time.
@@ -206,7 +199,7 @@ async fn a_claim_persists_its_journal_clock_timestamp_for_resume() -> Result<()>
     });
     let (mut journal, _issuer) =
         test_support::journal_with_backends(storage, acyclic_fs::Fs::memory()).await?;
-    journal.clock = Some(Arc::new(JournalClock));
+    journal.clock = Some(Arc::new(Clock));
     let operation = OperationId::new();
     journal
         .append(
@@ -268,7 +261,7 @@ async fn a_refused_claim_returns_no_timestamp() -> Result<()> {
     });
     let (mut journal, _issuer) =
         test_support::journal_with_backends(storage, acyclic_fs::Fs::memory()).await?;
-    journal.clock = Some(Arc::new(JournalClock));
+    journal.clock = Some(Arc::new(Clock));
     let operation = OperationId::new();
     journal
         .append(
