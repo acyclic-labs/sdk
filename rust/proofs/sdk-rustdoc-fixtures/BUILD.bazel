@@ -1,0 +1,26 @@
+load(":fixture.bzl", "rustdoc_fixture")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_binary(
+    name = "producer",
+    srcs = ["producer.rs"],
+    edition = "2021",
+)
+
+_INPUTS = [
+    "//rust/crates/sdk-generation:tests/fixtures/feature-profile/Cargo.lock",
+    "//rust/crates/sdk-generation:tests/fixtures/feature-profile/Cargo.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust-toolchain.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust/crates/demo/Cargo.toml",
+    "//rust/crates/sdk-generation:tests/fixtures/feature-profile/rust/crates/demo/src/lib.rs",
+]
+
+rustdoc_fixture(name = "feature_default", srcs = _INPUTS)
+rustdoc_fixture(name = "feature_no_default", srcs = _INPUTS, cargo_flags = ["--no-default-features"])
+rustdoc_fixture(name = "feature_base", srcs = _INPUTS, cargo_flags = ["--no-default-features", "--features", "base"])
+rustdoc_fixture(name = "feature_extra", srcs = _INPUTS, cargo_flags = ["--no-default-features", "--features", "extra"])
+rustdoc_fixture(name = "feature_all", srcs = _INPUTS, cargo_flags = ["--features", "base,extra"])
+
+filegroup(name = "feature_profiles", srcs = [":feature_default", ":feature_no_default", ":feature_base", ":feature_extra", ":feature_all"])
