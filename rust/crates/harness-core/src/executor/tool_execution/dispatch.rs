@@ -181,9 +181,7 @@ impl<'io> StockExecution<'io> {
                     .await;
                 let (preparation, custody) = match preparation {
                     Err(
-                        error @ Error::InteractionRejected(
-                            crate::InteractionRejection::Cancelled,
-                        ),
+                        error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled),
                     ) => {
                         return self
                             .interrupted(journal, identity, &invocation.call_id, error)
