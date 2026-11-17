@@ -44,7 +44,9 @@ def _isolated_test_impl(ctx):
         runfiles = runfiles.merge(ctx.runfiles(files = files))
     return [
         DefaultInfo(executable = executable, runfiles = runfiles),
-        RunEnvironmentInfo(environment = environment),
+        # Only the variables this target declares reach it from the invoking environment, so a
+        # host fact one test needs never enters every other test's action key.
+        RunEnvironmentInfo(environment = environment, inherited_environment = ctx.attr.env_inherit),
     ]
 
 isolated_test = rule(
@@ -66,6 +68,9 @@ isolated_test = rule(
         "workers": attr.int(default = 0),
         "wrapper_data": attr.label_list(allow_files = True),
         "limit_seconds": attr.int(mandatory = True),
+        # Variables this test reads from the invoking environment (a host fact such as a scratch
+        # directory on a filesystem with a required feature); the value is part of its action key.
+        "env_inherit": attr.string_list(),
         "_runner": attr.label(
             default = "//rust/crates/test-runner:acyclic-test-runner",
             executable = True,

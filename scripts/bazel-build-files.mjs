@@ -520,7 +520,10 @@ function buildFile(p) {
     names.add(name).add(`${name}_cases`);
     for (const { profile } of profiles) names.add(`${name}_${profile}`);
     const tags = reachesMount(p.id, [null, "dev"]) ? ["no-sandbox"] : [];
-    const isolated = (target, selection, extra) => ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(tools).length ? q(tools) : undefined], ["id", q(id)], ...selection, ["workers", workers ? String(workers) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
+    // Host variables a package's tests read, from [package.metadata.bazel] test-env-inherit =
+    // ["NAME"]: only those tests inherit them, so one test's host fact never keys every other test.
+    const envInherit = p.metadata?.bazel?.["test-env-inherit"] ?? [];
+    const isolated = (target, selection, extra) => ["isolated_test", [["name", q(target)], ["binary", q(`:${name}_cases`)], ["binaries", Object.keys(tools).length ? q(tools) : undefined], ["id", q(id)], ...selection, ["workers", workers ? String(workers) : undefined], ["limit_seconds", String(CASE_LIMIT_SECONDS)], ["env_inherit", envInherit.length ? q(envInherit) : undefined], ["tags", tags.length || extra.length ? q([...extra, ...tags]) : undefined]]];
     rules.push(
       ["rust_test", [["name", q(`${name}_cases`)], ...attrs, ["data", plus(glob(["**"], ["**/*.rs", "BUILD.bazel"]), list(reads))], ["tags", q(["manual"])]]],
       isolated(name, [["exclude", profiles.length ? q(profiles.map(({ pattern }) => pattern)) : undefined]], []),
