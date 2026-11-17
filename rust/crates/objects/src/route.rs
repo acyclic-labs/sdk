@@ -438,10 +438,10 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
                 .transpose()?;
             convert::listed(&reply(output)?, after, request.limit).map(drop)
         }
-        "blobs/retain" => reply::<wire::RetainResponse>(output).map(drop),
-        "blobs/release" => reply::<wire::ReleaseResponse>(output).map(drop),
-        "blobs/retain-fenced" => reply::<wire::RetainResponse>(output).map(drop),
-        "blobs/release-terminal" => reply::<wire::ReleaseResponse>(output).map(drop),
+        "blobs/retain" | "blobs/retain-fenced" => reply::<wire::RetainResponse>(output).map(drop),
+        "blobs/release" | "blobs/release-terminal" => {
+            reply::<wire::ReleaseResponse>(output).map(drop)
+        }
         "blobs/collect" => reply::<wire::CollectResponse>(output).map(drop),
         "blobs/usage" => reply::<wire::UsageResponse>(output).map(drop),
         _ => return Err(wire::ErrorCode::InvalidArgument.into()),
