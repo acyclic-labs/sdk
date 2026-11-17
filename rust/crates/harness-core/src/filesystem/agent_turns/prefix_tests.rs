@@ -436,3 +436,69 @@ async fn inherited_turns_keep_the_original_receiver_authority() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_failed_turn_without_a_completed_step_is_not_replayed() -> Result<()> {
+    use crate::agent::{IntentId, Sender, TurnInput};
+    let (host, root) = fixture().await?;
+    let (_, bindings, _) = host
+        .journal(host.admit(&root)?, &[], &[], None, None)
+        .await?;
+    let (body, _) = bindings
+        .content
+        .writer
+        .as_ref()
+        .unwrap()
+        .stage_once(
+            OperationId::new(),
+            "message.txt",
+            b"same prompt",
+            "text/plain",
+            "message.txt",
+            Default::default(),
+        )?
+        .await?;
+    let turn = OperationId::new();
+    let output = crate::agent::TurnOutputs::stage(
+        bindings.journal.files.as_ref(),
+        turn,
+        &crate::contract::canonical_json_bytes(&crate::executor::TurnOutput::new(
+            "partial reply".into(),
+            serde_json::Value::Null,
+            1,
+        ))?,
+    )
+    .await?;
+    let entry = ConversationEntry {
+        observed_through: 0,
+        steering: None,
+        inbox: 0,
+        input: TurnInput::Message {
+            from: Sender::User {
+                principal: "user".into(),
+            },
+            id: IntentId::try_from("failed").map_err(Error::from)?,
+            re: None,
+            body: Box::new(body),
+            attachments: None,
+        },
+        output,
+        outcome: TurnOutcome::Failed {
+            message: "provider stopped".into(),
+        },
+        goal: None,
+        announcements: Vec::new(),
+        tool_results: None,
+        notices: None,
+    };
+    let input = ModelContent::Text("same prompt".into());
+    let mut context = TurnContext::new(&root, vec![(0, entry)], OperationId::new(), &input)?;
+    context
+        .expand_inputs(bindings.content.reader.as_ref().unwrap())
+        .await?;
+    assert!(
+        context.settled.is_empty(),
+        "a failed turn with no completed step is not history"
+    );
+    Ok(())
+}
