@@ -40,6 +40,8 @@ test('Static fetches exact pins from each declared remote and rejects unavailabl
     'git_override(remote = "somewhere", commit = SHA)',
     'git_repository(**kwargs)',
     'alias = git_repository',
+    'factory = use_repo_rule',
+    'repo = use_repo_rule("git.bzl", rule_name)',
     declaration('git_override', 'f4f972e06c32'),
     'load("git.bzl", repo = "git_repository")\nrepo(remote = URL, commit = SHA)',
   ]) {

@@ -29,13 +29,15 @@ const manifests = new Map();
 // JavaScript object prototype, including implicit Cargo feature identities.
 export const parseJson = text => JSON.parse(text, (_, value) => value && typeof value === 'object' && !Array.isArray(value)
   ? Object.setPrototypeOf(value, null) : value);
-export function parseToml(texts) {
-  return parseJson(execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-I', '-c', `
+function pythonJson(source, input) {
+  try {
+    return parseJson(execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-I', '-c', source],
+      {input: JSON.stringify(input), encoding: 'utf8', maxBuffer: Infinity, stdio: ['pipe', 'pipe', 'pipe']}));
+  } catch (error) {
+    if (error.stderr?.length) throw new Error(error.stderr.toString().trim());
+    throw error;
+  }
 }
-
-const pythonJson = (source, input) => parseJson(execFileSync(
-  process.platform === 'win32' ? 'python' : 'python3', ['-I', '-c', source],
-  {input: JSON.stringify(input), encoding: 'utf8', maxBuffer: Infinity}));
 
 export function parseToml(texts) {
   return pythonJson(`
@@ -186,7 +188,9 @@ for file, source in json.load(sys.stdin).items():
                     names.add(keyword.arg)
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
             call = node.value
-            if isinstance(call.func, ast.Name) and call.func.id == "use_repo_rule" and len(call.args) > 1:
+            if isinstance(call.func, ast.Name) and call.func.id == "use_repo_rule":
+                if len(call.args) != 2 or not isinstance(call.args[1], ast.Constant) or not isinstance(call.args[1].value, str):
+                    sys.exit(f"{file}:{node.lineno}: Git rules require literal use_repo_rule names")
                 if isinstance(call.args[1], ast.Constant) and call.args[1].value == "git_repository":
                     for target in node.targets:
                         if not isinstance(target, ast.Name):
@@ -196,12 +200,18 @@ for file, source in json.load(sys.stdin).items():
     parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
     for node in ast.walk(tree):
         name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
-        if name not in names or node in bindings:
+        if name not in names | {"use_repo_rule"} or node in bindings:
             continue
         call = parents.get(node)
         location = f"{file}:{node.lineno}"
         if not isinstance(call, ast.Call) or call.func is not node:
             sys.exit(f"{location}: Git rules must be called directly, not passed or aliased")
+        if name == "use_repo_rule":
+            if len(call.args) != 2 or not isinstance(call.args[1], ast.Constant) or not isinstance(call.args[1].value, str):
+                sys.exit(f"{location}: Git rules require literal use_repo_rule names")
+            if call.args[1].value == "git_repository" and not isinstance(parents.get(call), ast.Assign):
+                sys.exit(f"{location}: Git rules require a named use_repo_rule binding")
+            continue
         fields = {keyword.arg: keyword.value for keyword in call.keywords}
         if call.args or None in fields or len(fields) != len(call.keywords):
             sys.exit(f"{location}: Git rules require explicit keyword arguments")
