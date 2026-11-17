@@ -245,16 +245,12 @@ fn declared_rustdoc(command: &Command) -> std::io::Result<Option<Output>> {
         {
             continue;
         }
-        let fixture_root = metadata["fixture_root"].as_str().unwrap();
         let sources = metadata["sources"].as_array().unwrap();
         let mut relative_sources = Vec::new();
         let mut matches = true;
         for source in sources {
-            let source = source.as_str().unwrap();
-            let Some(relative) = source.strip_prefix(fixture_root) else {
-                matches = false;
-                break;
-            };
+            let relative = source["relative"].as_str().unwrap();
+            let source = source["file"].as_str().unwrap();
             let expected = fs::read(acyclic_test_support::source_path(source))?;
             if fs::read(root.join(relative)).ok().as_deref() != Some(expected.as_slice()) {
                 matches = false;

@@ -230,6 +230,7 @@ rust_test(
         "tests/fixtures/feature-profile/release/cargo-crates.json",
         "tests/fixtures/feature-profile/rust-toolchain.toml",
         "tests/fixtures/feature-profile/rust/crates/demo/Cargo.toml",
+        "tests/fixtures/feature-profile/rust/crates/demo/long-features.toml",
     ],
     edition = "2021",
     version = "0.1.0",

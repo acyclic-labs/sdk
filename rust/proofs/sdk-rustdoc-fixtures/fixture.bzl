@@ -21,12 +21,20 @@ def _rustdoc_fixture_impl(ctx):
     output = ctx.actions.declare_file(ctx.label.name + ".json")
     metadata = ctx.actions.declare_file(ctx.label.name + ".fixture.json")
     toolchain = _declared_toolchain(ctx.attr._rustup)
+    sources = []
+    for file in ctx.files.srcs:
+        path = _repository_path(file.short_path)
+        if not path.startswith(ctx.attr.fixture_root):
+            fail("fixture input is outside its declared root: " + path)
+        sources.append((file, path[len(ctx.attr.fixture_root):]))
+    if ctx.file.override:
+        sources = [(file, relative) for file, relative in sources if relative != ctx.attr.override_path]
+        sources.append((ctx.file.override, ctx.attr.override_path))
     ctx.actions.write(metadata, json.encode({
-        "fixture_root": ctx.attr.fixture_root,
         "package": ctx.attr.package,
         "toolchain": toolchain,
         "cargo_flags": ctx.attr.cargo_flags,
-        "sources": [_repository_path(file.short_path) for file in ctx.files.srcs],
+        "sources": [{"file": _repository_path(file.short_path), "relative": relative} for file, relative in sources],
         "output": _repository_path(output.short_path),
     }))
     args = ctx.actions.args()
@@ -34,19 +42,16 @@ def _rustdoc_fixture_impl(ctx):
     args.add(ctx.file._rustup)
     args.add(toolchain)
     args.add(ctx.attr.package)
-    for file in ctx.files.srcs:
-        path = _repository_path(file.short_path)
-        if not path.startswith(ctx.attr.fixture_root):
-            fail("fixture input is outside its declared root: " + path)
+    for file, relative in sources:
         args.add(file)
-        args.add(path[len(ctx.attr.fixture_root):])
+        args.add(relative)
     args.add("--")
     args.add_all(ctx.attr.cargo_flags)
     compiler = ctx.attr._rustup[DefaultInfo]
     ctx.actions.run(
         executable = ctx.executable._producer,
         arguments = [args],
-        inputs = depset(ctx.files.srcs + [ctx.file._rustup], transitive = [compiler.data_runfiles.files]),
+        inputs = depset([file for file, _ in sources] + [ctx.file._rustup], transitive = [compiler.data_runfiles.files]),
         outputs = [output],
         mnemonic = "FixtureRustdoc",
         progress_message = "Building Rustdoc fixture %{label}",
@@ -58,6 +63,8 @@ rustdoc_fixture = rule(
     attrs = {
         "srcs": attr.label_list(allow_files = True, mandatory = True),
         "fixture_root": attr.string(mandatory = True),
+        "override": attr.label(allow_single_file = True),
+        "override_path": attr.string(),
         "package": attr.string(mandatory = True),
         "cargo_flags": attr.string_list(),
         "_producer": attr.label(default = ":producer", executable = True, cfg = "exec"),
@@ -65,12 +72,14 @@ rustdoc_fixture = rule(
     },
 )
 
-def rustdoc_fixture_set(srcs, fixture_root, package, profiles):
+def rustdoc_fixture_set(srcs, fixture_root, package, profiles, override = None, override_path = ""):
     for name, flags in profiles.items():
         rustdoc_fixture(
             name = name,
             srcs = srcs,
             fixture_root = fixture_root,
             package = package,
+            override = override,
+            override_path = override_path,
             cargo_flags = flags,
         )
