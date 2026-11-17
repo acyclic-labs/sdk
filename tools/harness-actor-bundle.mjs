@@ -70,7 +70,7 @@ export async function bundleHarnessActor(configFile, outputDirectory) {
 if (import.meta.main) {
   const { values } = parseArgs({ options: {
     config: { type: "string" }, out: { type: "string" }, proto: { type: "string" },
-    "harness-wasm": { type: "string" }, "manifest-wasm": { type: "string" },
+    wasm: { type: "string", multiple: true },
   } });
   if (!values.config || !values.out) throw new Error("usage: bun tools/harness-actor-bundle.mjs --config OWNER.json --out DIRECTORY");
   const step = (name, command, args) => {
@@ -85,8 +85,10 @@ if (import.meta.main) {
     mkdirSync(join(root, destination), { recursive: true });
     cpSync(resolve(source), join(root, destination), { recursive: true });
   };
-  place(values["harness-wasm"], "typescript/packages/harness/generated/wasm");
-  place(values["manifest-wasm"], "typescript/packages/workers/generated/wasm");
+  for (const spec of values.wasm ?? []) {
+    const [source, destination] = spec.split("=");
+    place(source, destination);
+  }
   step("typescript", "bun", ["x", "tsc", "-b", "typescript/packages/harness-actor"]);
   await bundleHarnessActor(values.config, values.out);
 }
