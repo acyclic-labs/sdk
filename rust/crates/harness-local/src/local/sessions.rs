@@ -296,18 +296,19 @@ pub async fn page_scoped(
     let items =
         futures::future::try_join_all(items.into_iter().filter(|item| filter.metadata(item)).map(
             |item| async move {
+                let mut session = Session {
+                    agent: item.agent,
+                    title: None,
+                    status: item.status,
+                    created_at_micros: item.created_at_micros,
+                    updated_at_micros: item.updated_at_micros,
+                };
                 if scope == acyclic_harness_client::SessionsScope::Peers {
-                    return Ok(Session {
-                        agent: item.agent,
-                        title: None,
-                        status: item.status,
-                        created_at_micros: item.created_at_micros,
-                        updated_at_micros: item.updated_at_micros,
-                    });
+                    return Ok(session);
                 }
                 let AgentReply::FilePreviews { snapshot } = connection
                     .execute(&AgentCommand::AgentFilePreviews {
-                        agent: item.agent.clone(),
+                        agent: session.agent.clone(),
                         paths: vec!["ui/title".into()],
                         after: None,
                         bytes: crate::client::MAX_READ_BYTES,
@@ -316,25 +317,25 @@ pub async fn page_scoped(
                 else {
                     return Err(unexpected());
                 };
-                let mut title = snapshot
+                session.title = snapshot
                     .files
                     .get("ui/title")
                     .and_then(Option::as_ref)
                     .cloned();
-                if title.is_none()
-                    && item
+                if session.title.is_none()
+                    && session
                         .status
                         .as_ref()
                         .is_some_and(|status| status.conversation > 0)
                 {
-                    let selected = connection.select(item.agent.clone()).await?;
+                    let selected = connection.select(session.agent.clone()).await?;
                     let conversation = Conversation::open(selected);
                     if let Some(entry) = conversation.entries(0, 1).await?.first()
                         && let TurnInput::Message { body, .. } = &entry.input
                     {
                         let (bytes, _) = Conversation::read_at(
                             connection,
-                            &item.agent,
+                            &session.agent,
                             ReadTarget::Conversation {
                                 sequence: 0,
                                 file: *body.clone(),
@@ -342,16 +343,10 @@ pub async fn page_scoped(
                             0,
                         )
                         .await?;
-                        title = Some(String::from_utf8_lossy(&bytes).into_owned());
+                        session.title = Some(String::from_utf8_lossy(&bytes).into_owned());
                     }
                 }
-                Ok(Session {
-                    agent: item.agent,
-                    title,
-                    status: item.status,
-                    created_at_micros: item.created_at_micros,
-                    updated_at_micros: item.updated_at_micros,
-                })
+                Ok(session)
             },
         ))
         .await?;
