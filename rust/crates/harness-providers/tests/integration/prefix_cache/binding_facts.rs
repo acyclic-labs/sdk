@@ -20,9 +20,9 @@ async fn binding_facts_follow_shared_bytes_across_turns_and_forks() -> TestResul
         (Adapter::Gemini, "models/model:streamGenerateContent"),
     ] {
         let transport = Arc::new(Scripted {
-            summaries: false,
             path,
             state: Mutex::new(("parent", VecDeque::new(), Vec::new())),
+            context: Mutex::default(),
             cache: Mutex::new(harness_mock_model::PromptCache::default().with_implicit_chat()),
         });
         let provider = resolve(adapter, PromptCache::Native, transport.clone())?;

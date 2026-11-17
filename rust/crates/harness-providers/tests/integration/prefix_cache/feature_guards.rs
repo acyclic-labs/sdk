@@ -46,8 +46,8 @@ fn selected(messages: Vec<ModelMessage>) -> SelectedModelContext {
 fn transport(path: &'static str) -> Arc<Scripted> {
     Arc::new(Scripted {
         path,
-        summaries: false,
         state: Mutex::new(("agent", VecDeque::new(), Vec::new())),
+        context: Mutex::default(),
         cache: Mutex::new(harness_mock_model::PromptCache::default().with_implicit_chat()),
     })
 }
@@ -346,11 +346,6 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
             storage = storage.with_bound_selection(selected.clone())?;
             let journal = storage.journal();
             let input = TurnInput::from_selected_context(op, selected)?;
-            if turn == 1 {
-                transport.state.lock().unwrap().1.push_back(text(
-                    r#"{"version":1,"drop_through":2,"summary":"retained summary"}"#,
-                ));
-            }
             let output = executor.execute(input.clone(), journal.as_ref()).await?;
             let count = transport.state.lock().unwrap().2.len();
             let replay = executor.execute(input, journal.as_ref()).await?;
@@ -365,13 +360,16 @@ async fn compaction_summaries_preserve_prefix() -> TestResult {
             history.push(message(ModelRole::Assistant, output.text));
         }
         let sent = transport.state.lock().unwrap();
-        assert_eq!(sent.2.len(), 3);
-        let before = &sent.2[0];
-        let after = &sent.2[2];
-        assert!(holds(&sent.2[1].body, b"Source count:"));
+        let context = transport.context.lock().unwrap();
+        assert_eq!(sent.2.len(), 2);
+        let [summary] = &context[..] else {
+            return Err(format!("{} context calls", context.len()).into());
+        };
+        let (before, after) = (&sent.2[0], &sent.2[1]);
+        assert!(holds(&summary.body, b"Source count:"));
         assert_eq!(header(path, &before.body)?, header(path, &after.body)?);
         assert!(after.cached.read > 0, "compaction lost the cached header");
-        assert!(holds(&after.body, b"retained summary"));
+        assert!(holds(&after.body, BACKSTOP.as_bytes()));
         assert!(!holds(&after.body, b"older-0:"));
     }
     Ok(())
