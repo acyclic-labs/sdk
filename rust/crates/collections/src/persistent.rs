@@ -542,9 +542,7 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
                     let upper = high.visible_body(work)?;
                     work.examine(2 * N as u64)?;
                     if let Some(upper) = upper.filter(|upper| {
-                        before
-                            .as_ref()
-                            .is_none_or(|cut| upper.minimum < *cut.key())
+                        before.as_ref().is_none_or(|cut| upper.minimum < *cut.key())
                     }) {
                         if upper.minimum <= key {
                             cursor = high;
