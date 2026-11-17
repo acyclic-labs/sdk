@@ -139,8 +139,14 @@ rust_binary(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    srcs = [
+        "tests/case_tasks.rs",
+        "tests/execution_budget.rs",
+        "tests/main.rs",
+        "tests/policy_owner/mod.rs",
+        "tests/scenarios.rs",
+    ],
+    compile_data = [
         "//rust/crates/harness:tests/scenarios/core/text.json",
     ],
     edition = "2024",
@@ -206,8 +212,9 @@ isolated_test(
 rust_binary(
     name = "shared_provider_layout_example",
     crate_root = "examples/shared_provider_layout.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/shared_provider_layout.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

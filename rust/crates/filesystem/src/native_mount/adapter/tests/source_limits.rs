@@ -1,3 +1,32 @@
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn measured_write_copy_refusal_precedes_the_real_source_write()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = source(FilesystemProfile::Posix)?;
+    let path = native_test_path("copy-denied");
+    crate::native_mount::adapter::boundary(source.cancellation(), |work| {
+        source.create_file(&path, FileMetadata::default(), None, work)
+    })?;
+    let opened = source.open_file(&path)?;
+    opened.write_range(0, Bytes::from_static(b"original"))?;
+    let cancellation = crate::CancellationToken::new();
+    let mut budget = BOUNDARY_BUDGET;
+    budget.bytes_copied = 3;
+    let work = capture_meter(budget, &cancellation)?;
+    crate::native_mount::run_native_mount_handler_on_meter(&work, |work| {
+        let bytes = crate::native_mount::shared::input::source_chunk(b"replacement", work)?;
+        opened
+            .write_range_with_meter(0, bytes, false, work)
+            .map_err(crate::NativeMountError::Source)
+    })
+    .expect_err("insufficient copied-byte authority must refuse the whole packet before copying");
+    let spent = work.receipt();
+    assert_eq!(spent.bytes_copied, 0);
+    assert_eq!(spent.backend_write_operations, 0);
+    assert_eq!(opened.read_range(0, 8)?.as_ref(), b"original");
+    Ok(())
+}
+
 #[test]
 fn native_namespace_guard_cases() -> Result<(), Box<dyn std::error::Error>> {
     let borrowed = source(FilesystemProfile::Portable)?;

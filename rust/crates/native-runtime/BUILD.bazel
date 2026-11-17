@@ -326,10 +326,31 @@ rust_binary(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "src/claim/record.rs",
+        "tests/cached_flush.rs",
+        "tests/claim_codec/oracle.rs",
+        "tests/main.rs",
+        "tests/native_claim_record.rs",
+        "tests/native_owner_record.rs",
+        "tests/native_report_port.rs",
+        "tests/node_process.rs",
+        "tests/owner_codec/oracle.rs",
+        "tests/report_port/oracle.rs",
+        "tests/seeded_runtime.rs",
+        "tests/signing_custody.rs",
+        "tests/signing_reference/oracle.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    compile_data = [
+        "tests/claim_codec/corpus/at-bound",
+        "tests/claim_codec/corpus/empty-record",
+        "tests/claim_codec/corpus/native-bytes",
+        "tests/claim_codec/corpus/past-bound",
+        "tests/owner_codec/corpus/binary",
+        "tests/owner_codec/corpus/minimal",
+        "tests/owner_codec/corpus/text",
+        "tests/report_port/corpus/request",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -482,13 +503,13 @@ isolated_test(
 rust_test(
     name = "wake_loom_cases",
     crate_root = "tests/wake_loom.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "src/sync/inline.rs",
         "src/sync/locks.rs",
         "src/sync/portable.rs",
         "src/wake.rs",
+        "tests/wake_loom.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -640,10 +661,10 @@ isolated_test(
 rust_test(
     name = "retained_submission_loom_cases",
     crate_root = "tests/retained_submission_loom.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "src/task/submission.rs",
+        "tests/retained_submission_loom.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -795,13 +816,13 @@ isolated_test(
 rust_test(
     name = "device_flush_loom_cases",
     crate_root = "tests/device_flush_loom.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "src/device_flush.rs",
         "src/sync/inline.rs",
         "src/sync/locks.rs",
         "src/sync/portable.rs",
+        "tests/device_flush_loom.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -953,15 +974,15 @@ isolated_test(
 rust_test(
     name = "process_signal_loom_cases",
     crate_root = "tests/process_signal_loom.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "src/process_tree/events/outcome.rs",
         "src/process_tree/events/signal.rs",
         "src/sync/inline.rs",
         "src/sync/locks.rs",
         "src/sync/portable.rs",
         "src/wake.rs",
+        "tests/process_signal_loom.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -1113,11 +1134,11 @@ isolated_test(
 rust_test(
     name = "owner_count_loom_cases",
     crate_root = "tests/owner_count_loom.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
         "src/health/owners.rs",
         "src/health/owners/model.rs",
+        "tests/owner_count_loom.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -1269,10 +1290,10 @@ isolated_test(
 rust_binary(
     name = "capture_owner_record_example",
     crate_root = "examples/capture_owner_record.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True) + [
+    srcs = [
+        "examples/capture_owner_record.rs",
         "tests/owner_codec/oracle.rs",
     ],
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -1398,8 +1419,9 @@ rust_binary(
 rust_binary(
     name = "executor-perf_example",
     crate_root = "examples/executor-perf.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/executor-perf.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -1525,8 +1547,9 @@ rust_binary(
 rust_binary(
     name = "native-runtime-positional-io_example",
     crate_root = "examples/native-runtime-positional-io.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/native-runtime-positional-io.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

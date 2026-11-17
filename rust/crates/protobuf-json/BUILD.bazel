@@ -83,8 +83,9 @@ isolated_test(
 rust_test(
     name = "codec_cases",
     crate_root = "tests/codec.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/codec.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

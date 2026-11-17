@@ -1,7 +1,7 @@
 use super::{MountPath, NativeMountError};
 use crate::demand::NativeMountAllocationCustody;
 use crate::materializer::NativeResourceCredit::{Copy, Items};
-use crate::{NativeMaterializationWork, WorkCounters, WorkError};
+use crate::{NativeMaterializationWork, WorkError};
 
 pub(super) struct FuseOwned<T> {
     value: T,
@@ -59,30 +59,8 @@ impl<T> FuseOwned<T> {
         bytes: u64,
         work: &NativeMaterializationWork,
     ) -> Result<Self, crate::native_mount::NativeMountStartupAdmissionError> {
-        if bytes == 0 {
-            work.admit(WorkCounters::UNCHARGED)?;
-            return Ok(Self::empty(value));
-        }
-        let admitted = (|| {
-            let custody = NativeMountAllocationCustody::new(&mut work.clone())?;
-            work.with_original_leaf(|work| {
-                work.check()?;
-                custody.retain(bytes, work)?;
-                Ok::<_, crate::DemandError>(())
-            })?;
-            Ok::<_, crate::DemandError>(custody)
-        })();
-        match admitted {
-            Ok(custody) => Ok(Self {
-                value,
-                custody: Some(custody),
-            }),
-            Err(error) => {
-                drop(value);
-                work.with_original_leaf(|work| work.release(bytes))?;
-                Err(error.into())
-            }
-        }
+        let (value, custody) = NativeMountAllocationCustody::adopt(value, bytes, work)?;
+        Ok(Self { value, custody })
     }
 }
 
@@ -184,31 +162,6 @@ pub(super) fn fuse_copy_bytes(
     copied.extend_from_slice(bytes);
     work.record_admitted(Copy.delta(bytes.len() as u64))?;
     Ok(copied)
-}
-
-pub(super) fn fuse_source_chunk(
-    bytes: &[u8],
-    work: &NativeMaterializationWork,
-) -> Result<crate::kernel::OwnedSourceChunk, NativeMountError> {
-    let copied = fuse_copy_bytes(bytes, work)?;
-    let logical_owned_bytes = copied.capacity() as u64;
-    let owned = acyclic_stream::OwnedBytes::from_vec_with_guard(
-        copied.value,
-        copied.custody,
-        work.runtime_meter(),
-    )
-    .map_err(|failure| match failure.into_error() {
-        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-            NativeMountError::from(work.runtime_error(error))
-        }
-        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-            unreachable!("initialized vector")
-        }
-    })?;
-    Ok(crate::kernel::OwnedSourceChunk::intrinsic(
-        owned,
-        logical_owned_bytes,
-    ))
 }
 
 pub(super) fn fuse_path<'a>(

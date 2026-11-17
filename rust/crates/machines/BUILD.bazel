@@ -208,8 +208,11 @@ rust_binary(
 rust_test(
     name = "main_cases",
     crate_root = "tests/main.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "tests/fork_uniform.rs",
+        "tests/http_results.rs",
+        "tests/main.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -290,8 +293,9 @@ isolated_test(
 rust_binary(
     name = "machines-authorization_example",
     crate_root = "examples/machines-authorization.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/machines-authorization.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -349,8 +353,9 @@ rust_binary(
 rust_binary(
     name = "machines-typescript-consumer_example",
     crate_root = "examples/machines-typescript-consumer.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/machines-typescript-consumer.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

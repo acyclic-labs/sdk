@@ -1,24 +1,15 @@
 //! Public named-creation work bounds and failure receipts.
 use acyclic_stream::StreamProviderExt as _;
 #[macro_use]
-#[path = "../../tests/support/unbounded.rs"]
+#[path = "support/unbounded.rs"]
 mod unbounded;
 
-use crate as acyclic_fs;
 use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::{
     CancellationToken, Fs, IdempotencyKey, OperationId, WorkBudget, WorkCounters, WorkspaceError,
 };
 
-fn finite_budget() -> Result<WorkBudget, serde_json::Error> {
-    let mut value = serde_json::to_value(WorkBudget::UNBOUNDED)?;
-    if let serde_json::Value::Object(fields) = &mut value {
-        for allowance in fields.values_mut() {
-            *allowance = serde_json::json!(100_000_000_u64);
-        }
-    }
-    serde_json::from_value(value)
-}
+const FINITE_BUDGET: WorkBudget = acyclic_fs::performance::work_budget(100_000_000, 100_000_000);
 
 #[tokio::test]
 async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
@@ -32,7 +23,7 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
     workspace.write_text("/later.txt", "later head").await?;
     let current = unbounded!(workspace, head())?.id();
     assert_ne!(original, current);
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     for select_head in [false, true] {
         let read = |allowance, token: CancellationToken| {
             let workspace = workspace.clone();
@@ -90,7 +81,7 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
 #[tokio::test]
 async fn named_creation_retains_finite_success_and_spent_exhaustion()
 -> Result<(), Box<dyn std::error::Error>> {
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     assert!(budget.has_finite_allowances());
     let fs = Fs::memory();
     let created = fs
@@ -134,7 +125,7 @@ async fn cancelled_creation_spends_nothing_and_does_not_publish()
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let failed = fs
-        .create_workspace("cancelled-create", finite_budget()?, &cancelled)
+        .create_workspace("cancelled-create", FINITE_BUDGET, &cancelled)
         .await;
     let failure = failed.err().ok_or("pre-cancelled creation succeeded")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
@@ -148,7 +139,7 @@ async fn named_open_retains_cumulative_work_and_original_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let created = unbounded!(fs, create_workspace("measured-open"))?;
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     let opened = fs
         .open_workspace("measured-open", budget, &CancellationToken::new())
         .await?;
@@ -198,7 +189,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let operation = OperationId::new();
-    let budget = finite_budget()?;
+    let budget = FINITE_BUDGET;
     let created = fs
         .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             "measured-recovery",
@@ -381,7 +372,7 @@ mod source_bound_lost_ack {
     #[tokio::test]
     async fn lost_stream_creation_ack_reopens_same_source_bound_allocation()
     -> Result<(), Box<dyn std::error::Error>> {
-        let budget = finite_budget()?;
+        let budget = FINITE_BUDGET;
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let operation = OperationId::new();
         let cancellation = CancellationToken::new();

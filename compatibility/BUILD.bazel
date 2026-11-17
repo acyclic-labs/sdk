@@ -119,6 +119,7 @@ rust_test(
         "//rust/crates/differential:tree",
         "//rust/crates/filesystem-base:tree",
         "//rust/crates/filesystem-napi:tree",
+        "//rust/crates/filesystem-native-core-tests:tree",
         "//rust/crates/filesystem-wasm:tree",
         "//rust/crates/filesystem-wire:tree",
         "//rust/crates/filesystem/fuzz:tree",
@@ -208,8 +209,9 @@ isolated_test(
 rust_binary(
     name = "capture_descriptors_example",
     crate_root = "examples/capture_descriptors.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/capture_descriptors.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

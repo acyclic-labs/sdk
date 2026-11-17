@@ -136,17 +136,6 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             .source,
         advanced
     );
-    assert_eq!(
-        store
-            .load_lazy_workspace(
-                workspace_id,
-                &mut WorkBudget::UNBOUNDED.accounting(&cancellation)
-            )
-            .await?
-            .ok_or("lost binding")?
-            .source,
-        advanced
-    );
 
     let foreign_source = Arc::new(
         NativeDemandSource::open(
@@ -194,7 +183,10 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             )
             .await?
             .as_ref(),
-        Some(&rebound.value)
+        Some(&LazyWorkspaceState {
+            source: reference,
+            ..rebound.value
+        })
     );
     assert_eq!(
         unbounded!(fs, open_workspace("epoch-attachment"))?

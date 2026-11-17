@@ -114,8 +114,9 @@ isolated_test(
 rust_binary(
     name = "inference-typescript-http-routes_example",
     crate_root = "examples/inference-typescript-http-routes.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/inference-typescript-http-routes.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -144,8 +145,9 @@ rust_binary(
 rust_binary(
     name = "inference-typescript-terminal-metadata_example",
     crate_root = "examples/inference-typescript-terminal-metadata.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/inference-typescript-terminal-metadata.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,
@@ -174,8 +176,9 @@ rust_binary(
 rust_binary(
     name = "inference-typescript-widths_example",
     crate_root = "examples/inference-typescript-widths.rs",
-    srcs = glob(["examples/**/*.rs"], allow_empty = True),
-    compile_data = glob(["examples/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
+    srcs = [
+        "examples/inference-typescript-widths.rs",
+    ],
     edition = "2024",
     version = "0.2.0",
     crate_features = FEATURES,

@@ -921,14 +921,15 @@ rust_binary(
 rust_test(
     name = "model_cases",
     crate_root = "tests/model.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True) + [
+    srcs = [
+        "tests/model.rs",
+        "tests/retry.rs",
         "//rust/crates/filesystem:src/access/projection.rs",
         "//rust/crates/filesystem:src/access/projection/registry.rs",
         "//rust/crates/filesystem:src/access/projection/registry/tests.rs",
         "//rust/crates/filesystem:src/access/retry.rs",
         "//rust/crates/filesystem:src/native_mount/adapter/folded_cache.rs",
     ],
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     edition = "2024",
     version = "0.0.0",
     crate_features = FEATURES,
@@ -1018,8 +1019,10 @@ isolated_test(
 rust_test(
     name = "window_state_test_cases",
     crate_root = "tests/window_state.rs",
-    srcs = glob(["tests/**/*.rs"], allow_empty = True),
-    compile_data = glob(["tests/**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    srcs = [
+        "tests/window_state.rs",
+    ],
+    compile_data = [
         "corpus/window_state/active",
         "corpus/window_state/active-edit",
         "corpus/window_state/blank-owner",

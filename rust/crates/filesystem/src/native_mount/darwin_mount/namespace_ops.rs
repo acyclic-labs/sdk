@@ -123,7 +123,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
         0,
         true,
         |context, destination, work| {
-            let target = copy_bytes(work, c_bytes(target, work)?)?;
+            let target = source_chunk(c_bytes(target, work)?, work)?;
             let destination = mount_path(destination, work)?;
             context.mutate(
                 || {

@@ -99,7 +99,7 @@ isolated_test(
 rust_test(
     name = "fixture-model_cases",
     crate_root = "model.rs",
-    srcs = glob(["**/*.rs"], allow_empty = True) + [
+    srcs = [
         "//rust/crates/sdk-docs:src/concrete_versions.rs",
         "//rust/crates/sdk-docs:src/concrete_versions/tests.rs",
         "//rust/crates/sdk-docs:src/projection.rs",
@@ -112,8 +112,9 @@ rust_test(
         "//rust/crates/sdk-docs:src/tests/scratch.rs",
         "//rust/crates/sdk-generation:src/parallel.rs",
         "//rust/crates/sdk-generation:src/shared_cache.rs",
+        "model.rs",
     ],
-    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True) + [
+    compile_data = [
         "//rust/crates/sdk-docs/fuzz:corpus/rustdoc_adapter/valid.json",
     ],
     edition = "2021",
