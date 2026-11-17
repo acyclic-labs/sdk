@@ -83,11 +83,10 @@ impl Error {
             })
     }
 
-    pub(crate) fn canonical_status<'a>(
-        &self,
-        details: &'a [u8],
-    ) -> acyclic_auth::refusal::Canonical<'a> {
-        let code = match self.code {
+    /// Canonical gRPC status code, independent of retained refusal diagnostics.
+    #[must_use]
+    pub fn status_code(&self) -> i32 {
+        match self.code {
             wire::ErrorCode::InvalidArgument
             | wire::ErrorCode::DigestMismatch
             | wire::ErrorCode::Unspecified => 3,
@@ -104,9 +103,15 @@ impl Error {
             wire::ErrorCode::RangeNotSatisfiable => 11,
             wire::ErrorCode::Corrupt => 15,
             wire::ErrorCode::Unavailable | wire::ErrorCode::OutcomeUnknown => 14,
-        };
+        }
+    }
+
+    pub(crate) fn canonical_status<'a>(
+        &self,
+        details: &'a [u8],
+    ) -> acyclic_auth::refusal::Canonical<'a> {
         acyclic_auth::refusal::Canonical {
-            code,
+            code: self.status_code(),
             message: "objects operation failed",
             details,
             owned: OWNED,
