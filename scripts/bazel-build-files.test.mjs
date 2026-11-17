@@ -4,6 +4,15 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parseJsonc } from "./jsonc.mjs";
+
+test("lockfile comments preserve quoted syntax and cannot join adjacent tokens", () => {
+  const values = ['https://registry.example/a//b', '/* literal */', 'escaped \\" quote', ',}', ',]'];
+  const expected = { packages: values };
+  const text = `\uFEFF// lockfile\n{ "packages": [${values.map(JSON.stringify).join(", /* package */\n")},], /* end */ }`;
+  assert.deepEqual(parseJsonc(text), expected);
+  assert.throws(() => parseJsonc('{"version": 1/* comment */2}'), SyntaxError);
+});
 
 // A one-member workspace with a local path crate and the repository's own toolchain and config inputs.
 function fixture() {
@@ -12,6 +21,7 @@ function fixture() {
   cpSync("scripts/bazel-build-files.mjs", join(root, "scripts/bazel-build-files.mjs"));
   cpSync("scripts/policy-core.mjs", join(root, "scripts/policy-core.mjs"));
   cpSync("scripts/wasm-packages.mjs", join(root, "scripts/wasm-packages.mjs"));
+  cpSync("scripts/jsonc.mjs", join(root, "scripts/jsonc.mjs"));
   cpSync("rust-toolchain.toml", join(root, "rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));
   writeFileSync(join(root, ".cargo/config.toml"), '[target.x86_64-unknown-linux-gnu]\nlinker = "scripts/mold-linker.sh"\n\n[env]\n');

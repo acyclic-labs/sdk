@@ -6,6 +6,7 @@ import "./check-compatibility-digests.mjs";
 import { packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 import { sha256File } from "./file-digest.mjs";
 import { retiredRuntimeFindings } from "./retired-runtime.mjs";
+import { parseJsonc } from "./jsonc.mjs";
 
 const root = new URL("..", import.meta.url);
 const load = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
@@ -57,7 +58,7 @@ for (const item of await load("release/npm-packages.json")) {
   }
 }
 const lock = /** @type {{ workspaces: Record<string, { name: string, version?: string }> }} */ (
-  Bun.JSONC.parse(await readFile(new URL("bun.lock", root), "utf8"))
+  parseJsonc(await readFile(new URL("bun.lock", root), "utf8"))
 );
 for (const [path, locked] of Object.entries(lock.workspaces)) {
   const manifest = await load(path ? `${path}/package.json` : "package.json");

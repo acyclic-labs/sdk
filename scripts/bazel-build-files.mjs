@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { toml, tomlFiles, trackedFiles } from "./policy-core.mjs";
+import { parseJsonc } from "./jsonc.mjs";
 
 // The workspace this generator describes. It defaults to the repository that holds this
 // script, and --root points the same generator at another Cargo workspace (Cloud).
@@ -185,8 +186,7 @@ for (const file of execFileSync("git", ["ls-files", "typescript/packages/*/packa
 // Assemble the complete locked runtime closure, including the consumer itself.
 // Its sources and generated artifacts then share one physical package directory.
 const npmLock = wasmSelections.some(selection => selection.wasmPackage)
-  ? JSON.parse(execFileSync("bun", ["-e", "process.stdout.write(JSON.stringify(Bun.JSONC.parse(await Bun.stdin.text())))"],
-    { input: fs.readFileSync(path.join(root, "bun.lock")), encoding: "utf8" })) : undefined;
+  ? parseJsonc(fs.readFileSync(path.join(root, "bun.lock"), "utf8")) : undefined;
 const npmRepositories = new Map();
 const wasmNodeModules = new Map();
 for (const selection of wasmSelections) {
@@ -206,7 +206,7 @@ for (const selection of wasmSelections) {
       const resolved = locked[0], at = resolved.lastIndexOf("@");
       const packageName = resolved.slice(0, at), version = resolved.slice(at + 1);
       const repository = `npm_${workspaceTargetName(name)}`;
-      npmRepositories.set(repository, { name: packageName, version, integrity: locked[3] });
+      npmRepositories.set(repository, { name: packageName, version, integrity: locked[3], patch: npmLock.patchedDependencies?.[resolved] });
       closure.set(name, { name, repository });
       dependencies = locked[2];
     }
@@ -999,6 +999,8 @@ function moduleFile() {
       ["urls", list([`https://registry.npmjs.org/${pkg.name}/-/${pkg.name.split("/").at(-1)}-${pkg.version}.tgz`])],
       ["integrity", q(pkg.integrity)],
       ["strip_prefix", q("package")],
+      ["patches", pkg.patch ? list([fileLabel(pkg.patch)]) : undefined],
+      ["patch_args", pkg.patch ? list(["-p1"]) : undefined],
       ["build_file_content", q('filegroup(name = "files", srcs = glob(["**"], exclude = ["BUILD.bazel"]), visibility = ["//visibility:public"])\n')],
     ])),
     `rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")\n`,
