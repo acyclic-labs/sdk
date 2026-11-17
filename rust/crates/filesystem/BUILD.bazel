@@ -253,7 +253,6 @@ rust_library(
         "@sdk_crates//strum-0.28.0",
         "@sdk_crates//subtle-2.6.1",
         "@sdk_crates//sync_wrapper-1.0.2",
-        "@sdk_crates//tempfile-3.27.0",
         "@sdk_crates//thiserror_2_0_21-2.0.21",
         "@sdk_crates//time-0.3.55",
         "@sdk_crates//tokio-1.54.1",

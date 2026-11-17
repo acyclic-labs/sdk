@@ -33,7 +33,6 @@ rust_library(
         "//rust/vendor/rquickjs-sys-0.14.0:rquickjs_sys",
         "@sdk_crates//async-lock-3.4.2",
         "@sdk_crates//hashbrown_0_17_1-0.17.1",
-        "@sdk_crates//relative-path-2.0.3",
     ],
     visibility = ["//visibility:public"],
 )

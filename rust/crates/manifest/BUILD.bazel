@@ -36,7 +36,6 @@ rust_library(
         "//rust/crates/auth:acyclic_auth",
         "//rust/crates/objects:acyclic_objects",
         "//rust/crates/stream:acyclic_stream",
-        "@sdk_crates//futures-0.3.34",
         "@sdk_crates//hex-0.4.3",
         "@sdk_crates//prost-0.14.4",
         "@sdk_crates//prost-reflect-0.16.5",

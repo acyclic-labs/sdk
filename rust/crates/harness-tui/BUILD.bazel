@@ -172,7 +172,6 @@ rust_test(
         "@rules_rust//rust/platform:x86_64-pc-windows-msvc": [
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//alacritty_terminal-0.26.0",
-        "@sdk_crates//futures-0.3.34",
         "@sdk_crates//proptest-1.12.0",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
