@@ -250,7 +250,7 @@ impl Prepared {
 // three admitted standard streams before calling this final exec hook.
 pub(crate) struct SealedExec {
     attributes: libc::posix_spawnattr_t,
-    actions: Option<libc::posix_spawn_file_actions_t>,
+    actions: SpawnActions,
     program: std::ffi::CString,
     _arguments: Vec<std::ffi::CString>,
     _environment: Vec<std::ffi::CString>,
@@ -265,6 +265,25 @@ pub(crate) struct SealedExec {
         *const *mut libc::c_char,
         *const *mut libc::c_char,
     ) -> libc::c_int,
+}
+
+struct SpawnActions(libc::posix_spawn_file_actions_t);
+
+impl SpawnActions {
+    fn new() -> io::Result<Self> {
+        let mut actions = std::mem::MaybeUninit::uninit();
+        // SAFETY: initialization receives writable native action storage.
+        status(unsafe { libc::posix_spawn_file_actions_init(actions.as_mut_ptr()) })?;
+        // SAFETY: initialization succeeded; this owner destroys the actions.
+        Ok(Self(unsafe { actions.assume_init() }))
+    }
+}
+
+impl Drop for SpawnActions {
+    fn drop(&mut self) {
+        // SAFETY: this owner contains initialized actions and destroys them once.
+        unsafe { libc::posix_spawn_file_actions_destroy(&raw mut self.0) };
+    }
 }
 
 // SAFETY: owned buffers and native objects stay immutable in the parent. Only
@@ -311,13 +330,14 @@ impl SealedExec {
                 .chain(std::iter::once(std::ptr::null_mut()))
                 .collect()
         };
+        let actions = SpawnActions::new()?;
         let mut attributes = std::mem::MaybeUninit::uninit();
         // SAFETY: initialization receives writable storage of the native type.
         status(unsafe { libc::posix_spawnattr_init(attributes.as_mut_ptr()) })?;
         let mut result = Self {
             // SAFETY: initialization succeeded.
             attributes: unsafe { attributes.assume_init() },
-            actions: None,
+            actions,
             program,
             argv: pointers(&arguments),
             envp: pointers(&environment),
@@ -328,11 +348,6 @@ impl SealedExec {
             _arguments: arguments,
             _environment: environment,
         };
-        let mut actions = std::mem::MaybeUninit::uninit();
-        // SAFETY: writable native action storage.
-        status(unsafe { libc::posix_spawn_file_actions_init(actions.as_mut_ptr()) })?;
-        // SAFETY: initialization succeeded; RAII now owns the actions.
-        result.actions = Some(unsafe { actions.assume_init() });
         let flags = libc::POSIX_SPAWN_SETEXEC | libc::POSIX_SPAWN_CLOEXEC_DEFAULT;
         // SAFETY: initialized, exclusively held attribute object.
         status(unsafe {
@@ -342,7 +357,7 @@ impl SealedExec {
             // SAFETY: live action object and standard descriptors, which std
             // establishes before the exec hook; no ambient FD is inherited.
             status(unsafe {
-                posix_spawn_file_actions_addinherit_np(result.actions.as_mut().unwrap(), descriptor)
+                posix_spawn_file_actions_addinherit_np(&raw mut result.actions.0, descriptor)
             })?;
         }
         Ok(result)
@@ -368,7 +383,7 @@ impl SealedExec {
             let code = (self.spawn)(
                 std::ptr::null_mut(),
                 self.program.as_ptr(),
-                self.actions.as_ref().unwrap(),
+                &raw const self.actions.0,
                 &raw const self.attributes,
                 self.argv.as_ptr(),
                 self.envp.as_ptr(),
@@ -382,11 +397,8 @@ impl SealedExec {
 
 impl Drop for SealedExec {
     fn drop(&mut self) {
-        // SAFETY: each initialized native object is destroyed exactly once.
+        // SAFETY: this owner contains initialized attributes and destroys them once.
         unsafe {
-            if let Some(actions) = &mut self.actions {
-                libc::posix_spawn_file_actions_destroy(actions);
-            }
             libc::posix_spawnattr_destroy(&raw mut self.attributes);
         }
     }
