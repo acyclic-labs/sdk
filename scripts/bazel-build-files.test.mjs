@@ -70,10 +70,11 @@ test("only a package that declares test-env-inherit gives its tests those host v
   const manifest = join(root, "member/Cargo.toml");
   const undeclared = readFileSync(manifest, "utf8");
   try {
-    writeFileSync(manifest, undeclared.replace("\n[dependencies]", '\n[package.metadata.bazel]\ntest-env-inherit = ["SCRATCH"]\n\n[dependencies]'));
+    writeFileSync(manifest, undeclared.replace("\n[dependencies]", '\n[package.metadata.bazel]\ntest-env-inherit = ["SCRATCH"]\ntest-workers = 2\n\n[dependencies]'));
     assert.equal(run("write").status, 0);
     const declared = readFileSync(join(root, "member/BUILD.bazel"), "utf8");
     assert.match(declared, /name = "member_test",[^)]*env_inherit = \["SCRATCH"\],/s);
+    assert.match(declared, /name = "member_test",[^)]*workers = 2,/s);
     // Negative control: without the declaration no test inherits anything, so no host value keys its action.
     writeFileSync(manifest, undeclared);
     assert.equal(run("write").status, 0);
