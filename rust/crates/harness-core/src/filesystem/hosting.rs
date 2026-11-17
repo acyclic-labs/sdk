@@ -982,7 +982,12 @@ where
                 std::slice::from_ref(file)
             }
             (None, Some(file))
-                if file.volume().is_agent_journal() && state.adoption_grant(file).is_empty() =>
+                if file.volume().is_agent_journal()
+                    && file.volume().owner()
+                        != &crate::conversation::VolumeOwner::Agent(
+                            crate::AgentId::from_bytes(agent.id_bytes()),
+                        )
+                    && state.adoption_grant(file).is_empty() =>
             {
                 return Err(Error::Record(
                     "journal file requires its selected agent or committed conversation proof",
