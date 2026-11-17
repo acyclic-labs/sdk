@@ -428,23 +428,7 @@ fn d3_service(transition: &'static str, _dialect: &'static str) -> ScriptedModel
         };
         Ok(answer)
     };
-    // The summary worlds need their smaller warmups to cross the window;
-    // the remaining transitions keep a generous window.
-    let context_tokens = if matches!(
-        transition,
-        "compaction_applied" | "background_summary" | "context_review"
-    ) {
-        65_536
-    } else {
-        131_072
-    };
-    ScriptedModelProvider::responding(responder).with_context_capacity(
-        acyclic_harness::context::ModelContextCapacity {
-            context_tokens,
-            output_tokens: Some(4_096),
-            output_shares_context: false,
-        },
-    )
+    ScriptedModelProvider::responding(responder)
 }
 
 fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
@@ -490,7 +474,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                             let id = ["d3-warm-0", "d3-warm-1"][index];
                             vec![(
                                 id,
-                                format!("{} large context {}", tag(id), "x".repeat(30_000)),
+                                format!("{} large context {}", tag(id), "x".repeat(60_000)),
                             )]
                         })
                         .collect();
@@ -500,7 +484,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                     vec![
                         vec![(
                             "d3-warm-0",
-                            format!("{} history {}", tag("d3-warm-0"), "x".repeat(30_000)),
+                            format!("{} history {}", tag("d3-warm-0"), "x".repeat(20_000)),
                         )],
                         vec![("d3-parent", prompt)],
                     ]
@@ -768,7 +752,7 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                 vec![
                     vec![(
                         "d4-warm-0",
-                        format!("{} history {}", tag("d4-warm-0"), "x".repeat(30_000)),
+                        format!("{} history {}", tag("d4-warm-0"), "x".repeat(20_000)),
                     )],
                     vec![("d4", prompt.clone())],
                 ]
