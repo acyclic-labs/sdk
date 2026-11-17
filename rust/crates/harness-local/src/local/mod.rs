@@ -260,3 +260,5 @@ fn storage(error: impl std::fmt::Display) -> Error {
 // Baseline measurement anchor for the harness split.
 
 // Baseline measurement anchor two.
+
+// After-split measurement anchor.
