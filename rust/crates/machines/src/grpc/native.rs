@@ -41,8 +41,9 @@ impl Interceptor for BearerAuth {
     }
 }
 
+/// Native RPC owner retaining the original credential through dispatch and reply.
 #[derive(Clone)]
-pub(super) struct Client {
+pub struct Client {
     pub(super) inner: wire::machines_service_client::MachinesServiceClient<
         InterceptedService<channel::CredentialChannel, BearerAuth>,
     >,
