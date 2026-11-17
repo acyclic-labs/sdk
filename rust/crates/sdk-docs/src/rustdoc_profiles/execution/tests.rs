@@ -84,7 +84,9 @@ fn a_new_operation_refreshes_installed_targets_in_the_same_home() {
         .unwrap();
     std::fs::write(home.path().join("targets"), "fixture-a\nfixture-added\n").unwrap();
     let mut command = Command::new(fixtures.join("rustup"));
-    command.env("PATH", &fixtures).env("RUSTUP_HOME", home.path());
+    command
+        .env("PATH", &fixtures)
+        .env("RUSTUP_HOME", home.path());
     crate::with_command_environment(&command, || {
         crate::with_rustdoc_cache(|| {
             assert!(rustdoc_targets(&["fixture-added"]).is_ok());
