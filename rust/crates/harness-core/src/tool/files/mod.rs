@@ -58,7 +58,8 @@ mod inputs;
 mod record;
 pub use record::{RecordResult, WriteResult};
 mod source;
-pub use directory::{DirectoryEntry, DirectoryEntryKind, DirectoryReadResult, ReadResult};
+pub use crate::conversation::DirectoryEntryKind;
+pub use directory::{DirectoryEntry, DirectoryReadResult, ReadResult};
 pub(crate) use inputs::FileView;
 pub use inputs::{
     EditFileInput, FileResult, NotebookCell, NotebookEdit, NotebookOutput, PatchFileInput,

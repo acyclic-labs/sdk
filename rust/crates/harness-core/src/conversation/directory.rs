@@ -51,10 +51,20 @@ pub struct DirectoryRead<'a> {
 }
 
 /// A discovered name's kind at its pinned namespace generation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    crate::HeapLayout,
+)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub enum PrivateDirectoryEntryKind {
+pub enum DirectoryEntryKind {
     /// A named regular file; resolve its current immutable ref by path.
     File,
     /// A named child directory.
@@ -85,7 +95,7 @@ pub struct PrivateDirectoryEntry {
     /// One normalized child name relative to the listed directory.
     pub name: String,
     /// Whether the name resolves to a regular file or another directory.
-    pub kind: PrivateDirectoryEntryKind,
+    pub kind: DirectoryEntryKind,
 }
 
 /// A bounded page from one exact owner-private generation.

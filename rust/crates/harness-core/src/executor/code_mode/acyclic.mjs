@@ -97,7 +97,7 @@ export async function remove(path, ifVersion) {
     await bind('remove', {path, ifVersion});
 }
 
-// A continuation is the last delivered entry's original namespace version.
+// Only the reader issues continuations, including positions inside a page.
 // Closing the iterator drops its page without reading ahead.
 export function list(path, after) {
     if (path.endsWith('.jsonl')) throw new DeniedError('Log iteration requires its admitted log reader');
@@ -109,8 +109,8 @@ export function list(path, after) {
             if (page.next != null && page.next === next) throw new Error('Directory read did not advance');
             next = page.next;
             for (const entry of page.entries) {
-                if (entry.version === cursor) throw new Error('Directory cursor did not advance');
-                cursor = entry.version;
+                if (entry.cursor === cursor) throw new Error('Directory cursor did not advance');
+                cursor = entry.cursor;
                 yield Object.freeze(entry);
             }
         } while (next != null);

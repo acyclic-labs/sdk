@@ -525,11 +525,6 @@ impl LocalHarnessConfig {
         self.approval_policy = preset.approval_policy.clone();
         self
     }
-    pub(super) fn preset_value(&self) -> crate::preset::Preset {
-        crate::preset::Preset {
-            approval_policy: self.approval_policy.clone(),
-        }
-    }
     /// Fix the question plugin selection before this session starts. Later UI
     /// attachments do not change its tool catalog. Web and IDE hosts opt in here.
     #[must_use]
