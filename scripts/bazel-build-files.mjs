@@ -768,7 +768,11 @@ function moduleFile() {
       ["extra_rustc_flags", list(flags)],
       ["extra_exec_rustc_flags", list(flags)],
     ]),
-    `use_repo(rust, "rust_toolchains")\n\n`,
+    `use_repo(rust, "rust_toolchains", ${[
+      `rust_linux_x86_64__${LINUX_GNU_TRIPLE}__${channelName}_tools`,
+      `rust_macos_aarch64__aarch64-apple-darwin__${channelName}_tools`,
+      "rust_windows_x86_64_tools",
+    ].map(q).join(", ")})\n\n`,
     `xwin = use_repo_rule("//:xwin_repo.bzl", "xwin_repository")\n`,
     `xwin(name = "xwin")\n\n`,
     // The musl toolchain is registered before the hub so it wins over the gnu toolchain, which

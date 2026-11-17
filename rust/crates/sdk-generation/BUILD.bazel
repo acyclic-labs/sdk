@@ -256,6 +256,7 @@ rust_test(
         "//plugin:scripts/package.mjs",
         "//plugin:src/main.rs",
         "//plugin:tree/src",
+        "//rust/crates/sdk-docs:tests/fixtures/workspace-metadata.json",
         "//rust/crates/sdk-generation/fuzz:tree",
         "//rust/crates/sdk-generation:tree",
         "//rust/crates/stream:conformance/stream.json",
