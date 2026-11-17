@@ -388,16 +388,6 @@ impl World {
         Self::with_entropy(seed, files, service, true)
     }
 
-    /// The same world with the scheduler's entropy source erased, so a trace
-    /// that still matches the seeded one proves the seed never reached it.
-    pub fn without_entropy(
-        seed: u64,
-        files: &[(&str, &str)],
-        service: ScriptedModelProvider,
-    ) -> Result<Self> {
-        Self::with_entropy(seed, files, service, false)
-    }
-
     fn with_entropy(
         seed: u64,
         files: &[(&str, &str)],
