@@ -1,14 +1,14 @@
 pub(crate) fn cached_binding_decision<Binding: Copy, Lease, Error>(
     binding: Option<Binding>,
     lease: impl FnOnce() -> Result<Lease, Error>,
-    current: impl FnOnce(Binding) -> bool,
-    unchanged: impl FnOnce(Binding) -> bool,
+    current: impl FnOnce(Binding, &Lease) -> bool,
+    unchanged: impl FnOnce(Binding, &Lease) -> bool,
 ) -> Result<bool, Error> {
     let Some(binding) = binding else {
         return Ok(false);
     };
-    let _lease = lease()?;
-    Ok(current(binding) || unchanged(binding))
+    let held = lease()?;
+    Ok(current(binding, &held) || unchanged(binding, &held))
 }
 
 #[cfg(kani)]
@@ -30,12 +30,12 @@ mod proofs {
                 lease_calls.set(lease_calls.get() + 1);
                 if admitted { Ok(()) } else { Err(error) }
             },
-            |value| {
+            |value, _lease| {
                 kani::assert(value == binding, "current receives the original binding");
                 current_calls.set(current_calls.get() + 1);
                 current
             },
-            |value| {
+            |value, _lease| {
                 kani::assert(value == binding, "fallback receives the original binding");
                 fallback_calls.set(fallback_calls.get() + 1);
                 unchanged
@@ -84,11 +84,11 @@ mod proofs {
                     Err(())
                 }
             },
-            |()| {
+            |(), _lease| {
                 kani::assert(live.get(), "lease covers current binding check");
                 current
             },
-            |()| {
+            |(), _lease| {
                 kani::assert(live.get(), "lease covers fallback binding check");
                 unchanged
             },
