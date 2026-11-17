@@ -79,6 +79,12 @@ impl Error {
         .into()
     }
 
+    /// Classifies a gRPC status when no usable typed detail is present.
+    #[must_use]
+    pub fn from_grpc_status_code(code: i32) -> Self {
+        Self::decode_status(code, &[])
+    }
+
     pub(crate) fn decode_status(code: i32, details: &[u8]) -> Self {
         wire::ErrorDetail::decode(details)
             .ok()
