@@ -1,3 +1,5 @@
+//! Assignment population planning.
+
 use std::num::NonZeroU64;
 
 /// A declaration that cannot name a finite assignment population.
