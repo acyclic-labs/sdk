@@ -1297,17 +1297,7 @@ filegroup(
 )
 
 
-exports_files([
-        "benches/local_hotpath/options.rs",
-        "benches/local_hotpath/quantiles.rs",
-        "fixtures/inference/llamacpp/auth.body",
-        "fixtures/inference/llamacpp/context.body",
-        "fixtures/inference/llamacpp/manifest.json",
-        "fixtures/inference/llamacpp/rate.body",
-        "fixtures/inference/llamacpp/text.body",
-        "fixtures/inference/llamacpp/tool.body",
-        "tests/support/inference_manifest.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

@@ -291,12 +291,7 @@ filegroup(
 )
 
 
-exports_files([
-        "src/parallel.rs",
-        "src/shared_cache.rs",
-        "src/source_selection.rs",
-        "tests/cli_regressions/cache.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

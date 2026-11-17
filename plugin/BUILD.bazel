@@ -906,26 +906,7 @@ filegroup(
 )
 
 
-exports_files([
-        ".agents/plugins/marketplace.json",
-        ".codex-plugin/plugin.json",
-        ".mcp.json",
-        "bin/acyclic",
-        "bin/install.js",
-        "bin/targets.json",
-        "claude/.claude-plugin/plugin.json",
-        "hooks/hooks.json",
-        "package.json",
-        "plugin.json",
-        "scripts/package.mjs",
-        "src/main.rs",
-        "tests/hosts/fixtures/native-completion.json",
-        "tests/hosts/fixtures/native-pair-initialization.json",
-        "tests/hosts/fixtures/native-pi-fixture-request.json",
-        "tests/hosts/fixtures/native/codex.jsonl",
-        "tests/hosts/fixtures/native/pi.jsonl",
-        "tests/support/native_os.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

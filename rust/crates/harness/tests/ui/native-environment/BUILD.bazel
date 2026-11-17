@@ -50,9 +50,7 @@ filegroup(
 )
 
 
-exports_files([
-        "src/lib.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

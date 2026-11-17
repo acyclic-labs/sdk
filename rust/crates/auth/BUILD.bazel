@@ -566,14 +566,7 @@ filegroup(
 )
 
 
-exports_files([
-        "proto/auth/v1/auth.proto",
-        "tests/common/mod.rs",
-        "tests/common/signed.rs",
-        "tests/common/trust.rs",
-        "tests/common/trust_record.rs",
-        "tests/fixtures/resource-identity-v1.json",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

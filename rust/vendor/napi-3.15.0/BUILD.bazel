@@ -113,3 +113,6 @@ filegroup(
     srcs = glob(["**/*.rs"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
+
+
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])

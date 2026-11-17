@@ -603,16 +603,7 @@ filegroup(
 )
 
 
-exports_files([
-        "data/theme.schema.json",
-        "tests/support/completion_deltas.rs",
-        "tests/support/completion_sequences.rs",
-        "tests/support/config_sequences.rs",
-        "tests/support/input_sequences.rs",
-        "tests/support/negotiation.rs",
-        "tests/support/sequences.rs",
-        "tests/support/terminal_keys.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

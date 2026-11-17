@@ -412,10 +412,7 @@ filegroup(
 )
 
 
-exports_files([
-        "examples/machines-typescript-consumer.rs",
-        "proto/machines/v1/machines.proto",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

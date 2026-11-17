@@ -552,9 +552,7 @@ filegroup(
 )
 
 
-exports_files([
-        "tests/integration/provider_case.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",
