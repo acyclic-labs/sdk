@@ -98,6 +98,13 @@ fn wide(fields: &[u8], start: usize) -> [u8; 16] {
     bytes
 }
 
+fn changed(mut bytes: Vec<u8>, edits: &[(usize, u8)]) -> Option<Vec<u8>> {
+    for &(offset, value) in edits {
+        *bytes.get_mut(offset)? = value;
+    }
+    Some(bytes)
+}
+
 fn check_codec<T: PartialEq>(
     bytes: &[u8],
     magic: &[u8],
@@ -367,25 +374,35 @@ pub fn check(bytes: &[u8]) -> bool {
     let Some(envelope_tag) = encoded.len().checked_sub(74) else {
         return false;
     };
-    let mut invalid_manifest_tag = manifest_bytes.clone();
-    invalid_manifest_tag[manifest_tag] = 2;
-    let mut nonzero_absent_manifest = manifest_bytes.clone();
-    nonzero_absent_manifest[manifest_tag] = 0;
-    nonzero_absent_manifest[manifest_tag + 1] = 1;
+    let Some(invalid_manifest_tag) = changed(manifest_bytes.clone(), &[(manifest_tag, 2)]) else {
+        return false;
+    };
+    let Some(nonzero_absent_manifest) = changed(
+        manifest_bytes.clone(),
+        &[(manifest_tag, 0), (manifest_tag + 1, 1)],
+    ) else {
+        return false;
+    };
     if ![invalid_manifest_tag, nonzero_absent_manifest]
         .iter()
         .all(|bytes| Manifest::decode(bytes).is_err_and(|error| error.code == ErrorCode::Corrupt))
     {
         return false;
     }
-    let mut invalid_envelope_tag = encoded.clone();
-    invalid_envelope_tag[envelope_tag] = 2;
-    let mut nonzero_absent_envelope = encoded.clone();
-    nonzero_absent_envelope[envelope_tag] = 0;
-    nonzero_absent_envelope[envelope_tag + 1] = 1;
-    let mut checksum_on_blob = encoded.clone();
-    checksum_on_blob[ENVELOPE_MAGIC.len()] = 1;
-    checksum_on_blob[envelope_tag] = 1;
+    let Some(invalid_envelope_tag) = changed(encoded.clone(), &[(envelope_tag, 2)]) else {
+        return false;
+    };
+    let Some(nonzero_absent_envelope) =
+        changed(encoded.clone(), &[(envelope_tag, 0), (envelope_tag + 1, 1)])
+    else {
+        return false;
+    };
+    let Some(checksum_on_blob) = changed(
+        encoded.clone(),
+        &[(ENVELOPE_MAGIC.len(), 1), (envelope_tag, 1)],
+    ) else {
+        return false;
+    };
     if ![
         invalid_envelope_tag,
         nonzero_absent_envelope,
