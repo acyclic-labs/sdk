@@ -1,7 +1,6 @@
 """The actual pinned Cargo/Rustdoc tools used by SDK artifact conformance."""
 
 _RUSTUP = "1.28.2"
-_RUSTDOC_TOOLCHAIN = "nightly-2026-07-01"
 _HOSTS = {
     "linux-x86_64": ("x86_64-unknown-linux-gnu", "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c"),
     "macos-aarch64": ("aarch64-apple-darwin", "20ef5516c31b1ac2290084199ba77dbbcaa1406c45c1d978ca68558ef5964ef5"),
@@ -36,7 +35,7 @@ def _repository_impl(ctx):
     if result.return_code:
         fail("private rustup initialization failed: " + result.stderr)
     rustup = "tools/bin/rustup" + suffix
-    for toolchain in ["1.98.1", _RUSTDOC_TOOLCHAIN]:
+    for toolchain in ["1.98.1", "nightly-2026-07-01"]:
         arguments = [str(ctx.path(rustup)), "toolchain", "install", toolchain, "--profile", "minimal", "--no-self-update"]
         if toolchain.startswith("nightly"):
             arguments.extend(["--target", "wasm32-unknown-unknown"])
@@ -53,12 +52,7 @@ filegroup(
     srcs = [%r],
     data = glob(["tools/**", "rustup/**"]),
 )
-filegroup(
-    name = %r,
-    srcs = [%r],
-    data = glob(["tools/**", "rustup/**"]),
-)
-""" % (rustup, _RUSTDOC_TOOLCHAIN, rustup))
+""" % rustup)
 
 _repository = repository_rule(implementation = _repository_impl)
 

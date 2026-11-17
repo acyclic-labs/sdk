@@ -3,13 +3,28 @@
 def _repository_path(path):
     return path.split("/", 2)[2] if path.startswith("../") else path
 
+def _declared_toolchain(target):
+    versions = {}
+    for file in target[DefaultInfo].data_runfiles.files.to_list():
+        parts = file.short_path.split("/rustup/toolchains/", 1)
+        if len(parts) != 2:
+            continue
+        name = parts[1].split("/", 1)[0]
+        if name.startswith("nightly-"):
+            version = "-".join(name.split("-")[:4])
+            versions[version] = True
+    if len(versions) != 1:
+        fail("the declared Rustup target must contain exactly one dated nightly")
+    return versions.keys()[0]
+
 def _rustdoc_fixture_impl(ctx):
     output = ctx.actions.declare_file(ctx.label.name + ".json")
     metadata = ctx.actions.declare_file(ctx.label.name + ".fixture.json")
+    toolchain = _declared_toolchain(ctx.attr._rustup)
     ctx.actions.write(metadata, json.encode({
         "fixture_root": ctx.attr.fixture_root,
         "package": ctx.attr.package,
-        "toolchain": ctx.attr._rustup.label.name,
+        "toolchain": toolchain,
         "cargo_flags": ctx.attr.cargo_flags,
         "sources": [_repository_path(file.short_path) for file in ctx.files.srcs],
         "output": _repository_path(output.short_path),
@@ -17,7 +32,7 @@ def _rustdoc_fixture_impl(ctx):
     args = ctx.actions.args()
     args.add(output)
     args.add(ctx.file._rustup)
-    args.add(ctx.attr._rustup.label.name)
+    args.add(toolchain)
     args.add(ctx.attr.package)
     for file in ctx.files.srcs:
         path = _repository_path(file.short_path)
@@ -46,7 +61,7 @@ rustdoc_fixture = rule(
         "package": attr.string(mandatory = True),
         "cargo_flags": attr.string_list(),
         "_producer": attr.label(default = ":producer", executable = True, cfg = "exec"),
-        "_rustup": attr.label(default = "@sdk_compilers//:nightly-2026-07-01", allow_single_file = True, cfg = "exec"),
+        "_rustup": attr.label(default = "@sdk_compilers//:rustup", allow_single_file = True, cfg = "exec"),
     },
 )
 
