@@ -36,7 +36,7 @@ rust_library(
         "//rust/crates/harness-core:acyclic_harness_core",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//thiserror_2_0_21-2.0.21",
+        "@sdk_crates//thiserror-2.0.21",
     ],
     visibility = ["//visibility:public"],
 )
@@ -111,7 +111,7 @@ rust_binary(
         "//rust/crates/test-support:acyclic_test_support",
         "@sdk_crates//serde-1.0.229",
         "@sdk_crates//serde_json-1.0.154",
-        "@sdk_crates//thiserror_2_0_21-2.0.21",
+        "@sdk_crates//thiserror-2.0.21",
     ],
 )
 
