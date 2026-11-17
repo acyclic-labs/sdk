@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Real Machine execution over the same authenticated Actor socket and journal.
 mod support;
 

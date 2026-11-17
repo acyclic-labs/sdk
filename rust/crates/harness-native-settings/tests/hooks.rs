@@ -1,4 +1,5 @@
 #![cfg(feature = "test-support")]
+#![cfg(not(target_arch = "wasm32"))]
 //! Native hook trust and project-settings admission over the shared script.
 use acyclic_harness_core::{
     Error, Result,

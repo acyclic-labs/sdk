@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! MCP sampling over the ordinary executor and model boundary.
 acyclic_test_support::counting_allocator!();
 
