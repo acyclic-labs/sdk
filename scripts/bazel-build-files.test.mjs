@@ -13,6 +13,7 @@ function fixture({ module = false } = {}) {
   mkdirSync(join(root, "scripts"));
   cpSync("scripts/bazel-build-files.mjs", join(root, "scripts/bazel-build-files.mjs"));
   cpSync("scripts/bazel-executables.mjs", join(root, "scripts/bazel-executables.mjs"));
+  cpSync("scripts/check-bazel-lockfile.mjs", join(root, "scripts/check-bazel-lockfile.mjs"));
   cpSync("scripts/policy-core.mjs", join(root, "scripts/policy-core.mjs"));
   if (module) writeFileSync(join(root, "MODULE.bazel"), 'module(name = "fixture")\n');
   cpSync("rust-toolchain.toml", join(root, "rust-toolchain.toml"));
@@ -156,25 +157,32 @@ test("a profile's run wrapper starts each of its target's cases, with the siblin
   }
 });
 
-test("a write refreshes the module lockfile through the selected Bazel, a check never starts Bazel, and a failed refresh fails", () => {
-  const { root, run } = fixture({ module: true });
-  try {
-    const log = join(root, "bazel-args.log");
-    // Windows cannot execute a shebang script, so the selected Bazel is this Node executable running a
-    // recorder that answers only the `mod` invocation: the fixture runs on every platform.
-    const recorder = join(root, "fake-bazel.mjs");
-    writeFileSync(recorder, `import { appendFileSync } from "node:fs";
+// Windows cannot execute a shebang script, so the selected Bazel is this Node executable running a recorder
+// that answers only the `mod` invocation: the same fake Bazel runs on every platform.
+function fakeBazel(root) {
+  const log = join(root, "bazel-args.log");
+  const recorder = join(root, "fake-bazel.mjs");
+  writeFileSync(recorder, `import { appendFileSync } from "node:fs";
 import { basename } from "node:path";
 if (basename(process.argv[1]) === "mod" && process.argv[2] === "deps") {
   appendFileSync(process.env.FIXTURE_LOG, JSON.stringify([basename(process.argv[1]), ...process.argv.slice(2)]) + "\\n");
   process.exit(Number(process.env.FIXTURE_STATUS ?? 0));
 }
 `);
-    const env = {
+  return {
+    log,
+    env: {
       ACYCLIC_BAZEL: process.execPath,
       FIXTURE_LOG: log,
       NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(recorder).href}`].filter(Boolean).join(" "),
-    };
+    },
+  };
+}
+
+test("a write refreshes the module lockfile through the selected Bazel, a check never starts Bazel, and a failed refresh fails", () => {
+  const { root, run } = fixture({ module: true });
+  try {
+    const { log, env } = fakeBazel(root);
     const written = run("write", env);
     assert.equal(written.status, 0, written.stderr);
     assert.deepEqual(readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line)), [["mod", "deps", "--lockfile_mode=update"]]);
@@ -186,6 +194,22 @@ if (basename(process.argv[1]) === "mod" && process.argv[2] === "deps") {
     // A lockfile the selected Bazel cannot refresh fails the write instead of passing with a stale one.
     const failed = run("write", { ...env, FIXTURE_STATUS: "7" });
     assert.notEqual(failed.status, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the lockfile check runs the selected Bazel in error mode and fails when it refuses", () => {
+  const { root } = fixture({ module: true });
+  try {
+    const { log, env } = fakeBazel(root);
+    const check = checkEnv => spawnSync(process.execPath, ["scripts/check-bazel-lockfile.mjs"], { cwd: root, encoding: "utf8", env: { ...process.env, ...checkEnv } });
+    const current = check(env);
+    assert.equal(current.status, 0, current.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(log, "utf8").trim()), ["mod", "deps", "--lockfile_mode=error"]);
+    // A stale lockfile makes the selected Bazel refuse, and the check propagates that failure.
+    const stale = check({ ...env, FIXTURE_STATUS: "7" });
+    assert.notEqual(stale.status, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
