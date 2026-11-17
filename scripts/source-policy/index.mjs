@@ -70,8 +70,8 @@ function constantString(expression) {
  return pieces.join('');
 }
 
-function scriptTokens(file, source) {
- ts ??= require('typescript-parser');
+function scriptTokens(file, source, parser) {
+ ts ??= parser ?? require('typescript-parser');
  const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
  // Both snapshots share a virtual root; no host filesystem lookup participates
  // in resolving a source binding, and the dependency pass reuses this AST.
@@ -248,8 +248,8 @@ function nativeTokens(source, file) {
  return out;
 }
 
-export function pollingUnit(file, source) {
- const parsed = /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file) ? scriptTokens(file, source) : undefined;
+export function pollingUnit(file, source, parser = undefined) {
+ const parsed = /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file) ? scriptTokens(file, source, parser) : undefined;
  const stream = parsed?.stream ?? nativeTokens(source, file);
  // A direct Rust Future::poll advances one state machine. Other poll/select
  // spellings remain conservative candidates, including native imports/aliases.

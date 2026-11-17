@@ -109,7 +109,7 @@ export function projectPollingSites(sources, {historical = false} = {}) {
  for (const [file, source] of sources) {
   let unit;
   try {
-   unit = pollingUnit(file, source);
+   unit = pollingUnit(file, source, ts);
    if (/(?:^|\/)package\.json$/.test(file)) {
     let manifest;
     try { manifest = JSON.parse(source); }

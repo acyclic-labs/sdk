@@ -49,6 +49,27 @@ node_test(
 )
 
 node_test(
+    name = "source_policy_consumer_test",
+    srcs = [
+        "//:scripts/source-policy/index.mjs",
+        "//:scripts/source-policy/project.mjs",
+        "//:scripts/source-policy/consumer.test.mjs",
+        "//:scripts/no-polling.fuzz.mjs",
+        "//:scripts/fixtures/no-polling/actor-project.json",
+        "//:scripts/fixtures/no-polling/powershell-comments.json",
+        "//:scripts/fixtures/no-polling/yaml-comments.json",
+        "//:scripts/fixtures/no-polling/yaml-scripts.json",
+        "//:scripts/fixtures/no-polling/shell-words.json",
+    ],
+    preserve_symlinks = True,
+    links = {
+        "@typescript_parser//:package.json": "node_modules/typescript-parser/package.json",
+        "@typescript_parser//:lib/typescript.js": "node_modules/typescript-parser/lib/typescript.js",
+    },
+    entry = "scripts/source-policy/consumer.test.mjs",
+)
+
+node_test(
     name = "bazel_build_files_test",
     srcs = [
         "//:rust-toolchain.toml",

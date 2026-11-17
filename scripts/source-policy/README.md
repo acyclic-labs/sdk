@@ -7,6 +7,12 @@ an exact disposition records why a caller deadline, transport backoff, finite
 operation or producer event is valid. Changing the source or its dependencies
 reopens that decision. This is a source review rule, not a liveness proof.
 
+Project analysis supplies its already imported parser to `pollingUnit`. A closed
+bundle of the project entry therefore needs no runtime package lookup. Direct
+lexer consumers still load the parser only when they inspect executable script;
+native-only analysis never loads it. Both paths use the same lexer and pinned
+parser implementation.
+
 From an SDK checkout at a pinned revision, run
 `npm pack ./scripts/source-policy --ignore-scripts` and install the resulting
 archive in the consuming Node project. The package declares its parser runtime
