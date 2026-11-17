@@ -1,10 +1,10 @@
-import { isMain, repositoryUrl as root } from "./policy-core.mjs";
+import { repositoryUrl as root } from "./policy-core.mjs";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { compatibilityArtifacts } from "./generated-bindings.mjs";
 
 // Writing is explicit: ordinary imports and checks never bless changed inputs.
-const write = isMain(import.meta.url) && process.argv[2] === "write";
+const write = import.meta.main && process.argv[2] === "write";
 const manifest = JSON.parse(readFileSync(new URL("compatibility/manifest.json", root), "utf8"));
 for (const [family, artifacts] of Object.entries(compatibilityArtifacts)) {
   for (const [field, path] of Object.entries(artifacts)) {

@@ -1,4 +1,4 @@
-import { isMain, repositoryRoot as root } from "./policy-core.mjs";
+import { repositoryRoot as root } from "./policy-core.mjs";
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 const manifest = 'rust/crates/harness/tests/ui/native-environment/Cargo.toml';
@@ -28,4 +28,4 @@ for (const {negative, args} of hermeticCompilerPlans()) {
 }
 
 }
-if (isMain(import.meta.url)) qualifyHermeticCompiler();
+if (import.meta.main) qualifyHermeticCompiler();

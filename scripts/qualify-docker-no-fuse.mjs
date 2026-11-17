@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
 import { Processes } from "./graphcoder-e2e/process.mjs";
@@ -182,7 +182,7 @@ async function outside(image, binary, mock, output, ...requested) {
   } finally { cancellation.dispose(); }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   assert.equal(process.platform, "linux", "docker-no-fuse is Linux acceptance");
   const [mode, ...args] = process.argv.slice(2);
   try {

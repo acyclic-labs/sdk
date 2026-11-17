@@ -3,7 +3,7 @@
 // the persistent checkout and target.
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 
 /** @param {{id: string, command: string, args: string[], cwd: string,
  * env?: NodeJS.ProcessEnv, output?: string, outputs?: string[], context?: string,
@@ -31,7 +31,7 @@ export async function releaseBuild({ id, command, args, cwd, env = process.env, 
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const [id, output, separator, command, ...args] = process.argv.slice(2);
   if (!id || !output || separator !== "--" || !command) {
     throw new Error("usage: release-build.mjs ID OUTPUT -- COMMAND [ARG...]");

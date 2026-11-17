@@ -215,6 +215,6 @@ async function buildWasm() {
   }
 }
 
-if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   await buildWasm();
 }

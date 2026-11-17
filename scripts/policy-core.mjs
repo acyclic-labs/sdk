@@ -3,7 +3,6 @@ import {existsSync, lstatSync, readFileSync, readdirSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-export const isMain = url => Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(url);
 
 export const repositoryUrl = new URL('../', import.meta.url).href;
 export const repositoryRoot = resolve(fileURLToPath(repositoryUrl));

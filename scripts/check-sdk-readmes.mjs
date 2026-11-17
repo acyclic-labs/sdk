@@ -2,7 +2,6 @@ import { repositoryRoot as root } from "./policy-core.mjs";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { generatedReadmes, services } from "./generate-sdk-readmes.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
 import { writeChanged } from "./generated-bindings.mjs";
@@ -71,7 +70,7 @@ function compileExamples(guide) {
   console.log(`${services.length} TypeScript README/llms.txt examples compiled; ${services.length} generated Rust doctests inventoried`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const mode = process.argv.slice(2);
   if (mode.length > 1 || (mode.length === 1 && mode[0] !== "compile")) throw new Error("STEP_FAILED README mode: expected no arguments or compile; recovery: node scripts/check-sdk-readmes.mjs");
   const started = performance.now();

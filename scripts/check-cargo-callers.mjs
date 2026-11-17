@@ -5,7 +5,7 @@
 // evidence and vendored code are not tooling.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isMain, repositoryRoot as root, trackedFiles } from "./policy-core.mjs";
+import { repositoryRoot as root, trackedFiles } from "./policy-core.mjs";
 
 export const RECORD = "scripts/cargo-callers.json";
 const TOOLING = /(?:\.(?:mjs|cjs|js|mts|ts|sh|ps1|py|ya?ml|bzl|bazel)|(?:^|\/)package\.json|(?:^|\/)\.bazelrc)$/;
@@ -34,7 +34,7 @@ export function cargoCallerFindings(root, recorded) {
   ];
 }
 
-if (isMain(import.meta.url)) {
+if (import.meta.main) {
   const findings = cargoCallerFindings(root, JSON.parse(readFileSync(join(root, RECORD), "utf8")));
   if (findings.length) {
     console.error(findings.map(finding => `STEP_FAILED cargo-callers: ${finding}`).join("\n"));

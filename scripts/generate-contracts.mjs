@@ -1,6 +1,6 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildContractTargets, captureContractCommand, contractTargetOutputs } from "./contract-targets.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
 import { checkGenerated, projectGenerated } from "./generated-bindings.mjs";
@@ -140,7 +140,7 @@ export async function generateContracts(mode = "write", families = [], { native 
 
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const args = process.argv.slice(3);
   await generateContracts(process.argv[2] ?? "write", args.filter(arg => arg !== "--native"), { native: args.includes("--native") });
 }

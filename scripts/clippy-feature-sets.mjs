@@ -145,4 +145,4 @@ async function main() {
   process.exitCode = failed;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+if (import.meta.main) await main();

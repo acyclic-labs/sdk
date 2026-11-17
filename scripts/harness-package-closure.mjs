@@ -36,6 +36,6 @@ export function packageClosure(metadata, order, selected) {
   return order.filter(name => closure.has(name)).map(name => ({ name, version: packages.get(name).version }));
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   for (const item of harnessPackageClosure(process.argv[2])) process.stdout.write(`${item.name}\t${item.version}\n`);
 }

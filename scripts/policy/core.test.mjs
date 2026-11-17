@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
-import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {execFileSync, spawnSync} from 'node:child_process';
+import {copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
@@ -27,6 +27,23 @@ test('Git inventory preserves path bytes, pathspecs, and missing tracked files',
   assert.deepEqual(trackedFiles(root, ['*.rs'], {untracked: true}).sort(), [...paths.filter(path => path.endsWith('.rs')), 'untracked.rs'].sort());
   assert.equal(toml(root, 'Cargo.toml').package.name, 'literal#value');
   assert.throws(() => toml(root, 'absent.toml'));
+});
+
+test('policy entrypoints reject violations through symlinks and stay inert on import', t => {
+  const root = mkdtempSync(join(tmpdir(), 'policy-entry-'));
+  t.after(() => rmSync(root, {recursive: true, force: true}));
+  mkdirSync(join(root, 'scripts'));
+  for (const name of ['check-cargo-callers.mjs', 'policy-core.mjs']) copyFileSync(new URL(`../${name}`, import.meta.url), join(root, 'scripts', name));
+  writeFileSync(join(root, 'scripts/cargo-callers.json'), '[]');
+  writeFileSync(join(root, 'scripts/violation.sh'), 'car' + 'go build\n');
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['add', '.'], {cwd: root});
+  symlinkSync(join(root, 'scripts/check-cargo-callers.mjs'), join(root, 'check.mjs'));
+  const result = spawnSync(process.execPath, ['check.mjs'], {cwd: root, encoding: 'utf8'});
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /scripts\/violation.sh invokes Cargo/);
+  const imported = spawnSync(process.execPath, ['--input-type=module', '-e', 'await import("./scripts/check-cargo-callers.mjs")'], {cwd: root, encoding: 'utf8'});
+  assert.equal(imported.status, 0, imported.stderr);
 });
 
 test('manifest policy checks the declared table and every dependency identity', t => {

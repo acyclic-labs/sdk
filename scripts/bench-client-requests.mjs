@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 
 export const cargoArgs = [
   "test", "--locked", "-p", "acyclic-objects", "-p", "acyclic-stream",
@@ -42,7 +41,7 @@ export function benchClientRequests(run = spawnSync) {
   return measurements(`${result.stdout}\n${result.stderr}`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.main) {
   const args = process.argv.slice(2);
   if (args.length && (args.length !== 2 || args[0] !== "--output")) {
     throw new Error("usage: node scripts/bench-client-requests.mjs [--output report.json]");

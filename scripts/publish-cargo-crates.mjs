@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { isMain, repositoryRoot as root } from "./policy-core.mjs";
+import { repositoryRoot as root } from "./policy-core.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -222,7 +222,7 @@ async function publish(sourceSha, releaseVersion) {
   }
 }
 
-if (isMain(import.meta.url)) {
+if (import.meta.main) {
   const [command, sourceSha, releaseVersion] = process.argv.slice(2);
   if (command === "generate" && sourceSha === undefined && releaseVersion === undefined) generate();
   else if (command === "check" && sourceSha === undefined && releaseVersion === undefined) metadata();

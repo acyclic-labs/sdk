@@ -3,7 +3,6 @@
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
 import { verifyExactTests } from './test-support/libtest.mjs';
 
 export function cargoArguments(entry) {
@@ -152,6 +151,6 @@ export async function main(selected = process.argv.slice(2)) {
   if (failures.length) throw new Error(`${failures.length} debt qualifications failed`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   main().catch(error => { console.error(error); process.exitCode = 1; });
 }
