@@ -13,4 +13,3 @@ export function nativeFamily(key) {
   if (value.schema !== "acyclic.native-family.v1" || value.key !== key) throw new Error("Rust native family identity differs");
   return immutable(value);
 }
-

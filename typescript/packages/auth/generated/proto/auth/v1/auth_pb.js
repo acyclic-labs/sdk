@@ -590,4 +590,3 @@ export const SecretKindSchema = /*@__PURE__*/
  */
 export const SecretKind = /*@__PURE__*/
   tsEnum(SecretKindSchema);
-

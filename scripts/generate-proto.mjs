@@ -54,7 +54,7 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
     for (const [stem, names] of bindings) {
       for (const extension of [".js", ".d.ts"]) {
         const relative = `${stem}${extension}`;
-        const bytes = readFileSync(join(temporary, "generated/typescript", relative));
+        const bytes = readFileSync(join(temporary, "generated/typescript", relative), "utf8").replace(/\n+$/u, "\n");
         for (const name of names) {
           const directory = join(root, "typescript/packages", name, "generated/proto");
           const destination = join(directory, relative);
