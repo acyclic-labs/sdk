@@ -6,7 +6,7 @@ use crate::{
     ByteRange, Collection, Delete, Digest, Error, Head, Kind, Manifest, Page, Put, Verified, wire,
 };
 
-use crate::{Retained, Usage};
+use crate::{Released, Retained, Usage};
 use acyclic_stream::Revision;
 
 impl From<Digest> for wire::Digest {
@@ -296,6 +296,13 @@ pub(crate) fn wire_page(value: &Page) -> wire::ListBlobsResponse {
 pub(crate) fn retained(value: &wire::RetainResponse, revision: Option<Revision>) -> Retained {
     Retained {
         references: value.references,
+        revision,
+    }
+}
+
+pub(crate) fn released(value: &wire::ReleaseResponse, revision: Option<Revision>) -> Released {
+    Released {
+        existed: value.existed,
         revision,
     }
 }

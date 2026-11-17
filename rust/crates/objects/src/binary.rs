@@ -188,10 +188,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
         let (reply, revision): (wire::ReleaseResponse, _) = self
             .call("blobs/release", convert::release_request(root))
             .await?;
-        Ok(Released {
-            existed: reply.existed,
-            revision,
-        })
+        Ok(convert::released(&reply, revision))
     }
 
     async fn retain_fenced(
@@ -216,10 +213,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 convert::release_terminal_request(root, fence),
             )
             .await?;
-        Ok(Released {
-            existed: reply.existed,
-            revision,
-        })
+        Ok(convert::released(&reply, revision))
     }
 
     async fn collect(&self) -> Result<Collection, Error> {

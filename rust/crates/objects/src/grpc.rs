@@ -445,10 +445,7 @@ impl Blobs for GrpcObjects {
     async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
         crate::operation::admit(self.context.as_ref(), async {
             let reply = call!(self, release, convert::release_request(root), None)?;
-            Ok(crate::Released {
-                existed: reply.0.existed,
-                revision: reply.1,
-            })
+            Ok(convert::released(&reply.0, reply.1))
         })
         .await
     }
@@ -479,10 +476,7 @@ impl Blobs for GrpcObjects {
                 convert::release_terminal_request(root, fence),
                 None
             )?;
-            Ok(crate::Released {
-                existed: reply.0.existed,
-                revision: reply.1,
-            })
+            Ok(convert::released(&reply.0, reply.1))
         })
         .await
     }
