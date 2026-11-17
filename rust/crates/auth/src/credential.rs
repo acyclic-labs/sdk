@@ -93,7 +93,14 @@ impl From<CredentialCacheError> for CredentialError {
 /// This cannot attest that an original effect was refused before dispatch.
 #[derive(Debug, thiserror::Error)]
 #[error("original response credential admission failed")]
-pub struct ResponseCredentialError(#[source] pub(crate) CredentialError);
+pub struct ResponseCredentialError(#[source] pub(crate) Option<CredentialError>);
+
+impl ResponseCredentialError {
+    /// A browser bridge reported a local refusal after acquiring the request.
+    pub fn from_browser() -> Self {
+        Self(None)
+    }
+}
 
 /// One native renewal invocation, cancelled by dropping its future.
 #[cfg(not(target_arch = "wasm32"))]

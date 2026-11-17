@@ -31,7 +31,7 @@ mod transcripts;
 
 /// Runs a test world seeded, so every run draws the same identities and a
 /// failure prints the same text each time.
-fn seeded<F: Future<Output = Result<()>>>(world: impl FnOnce() -> F) -> Result<()> {
+pub(super) fn seeded<F: Future<Output = Result<()>>>(world: impl FnOnce() -> F) -> Result<()> {
     acyclic_native_runtime::testing::seeded_test(0x4841_524e, world)
         .map_err(|error| Error::Storage(error.to_string()))?
 }

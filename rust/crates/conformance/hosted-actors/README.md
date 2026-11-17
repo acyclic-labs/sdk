@@ -4,8 +4,8 @@ This fixture runs `acyclic_actors::conformance::verify` against real remote
 owners. It contains the same canonical `Package` used by local backends; there
 is no second suite or in-process dispatcher in the controller.
 
-Build `acyclic-hosted-actors-conformance` for `wasm32-unknown-unknown`, then run
-the workspace's pinned wasm-bindgen tool with `--target web` on that artifact.
+`//wasm:hosted-actors` builds the fixture and its pinned web bindings through
+the shared browser-module graph.
 The exported `ActorsDomain` and `ActorsPackage` also belong to the existing
 Cloudflare fixture, which now imports this shared implementation.
 
@@ -38,15 +38,14 @@ uses the original Streams register operation, and deadlines use native Actor
 alarms. Restart deliberately fails each owner and verifies a new incarnation
 at the same durable address. Invocation and cursor failures remain failures.
 
-Build it with `bun scripts/build-hosted-actors-conformance.mjs MANIFEST ENVIRONMENT
-ENTRY OUTPUT`. The input is the host's complete SDK-validated manifest selection,
+Packaging calls `prepareHostedActors` once with the declared browser facades
+available. Seal each deployment with `bun PREPARED/prepare.mjs PREPARED MANIFEST
+ENVIRONMENT ENTRY OUTPUT`. The input is the host's complete SDK-validated manifest selection,
 including a state binding, shared Streams binding and namespace binding back to
 this entry. The producer retains the selected bindings, seals both WebAssembly
 modules as declared assets, and verifies the resulting artifact with the SDK's
 manifest validator. It writes an ordinary `harness-actor.mjs` application entry.
 The host must compare its manifest selection with its pinned SDK census; this
 producer never reduces that selection to the three handles its scheduler uses.
-The consumer first prepares the ordinary harness and manifest wasm artifacts,
-then provides those same verified generated facades in the SDK checkout. This
-producer builds only the hosted-conformance crate; it does not rebuild the
-harness artifact's dependency closure.
+The prepared directory contains the guest template, declared assets and manifest
+validator. Sealing a fresh manifest performs no compilation or SDK checkout.

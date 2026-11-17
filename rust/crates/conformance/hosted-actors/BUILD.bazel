@@ -4,6 +4,8 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library")
 
 FEATURES = []
 
+WASM_FEATURES = []
+
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-hosted-actors-conformance","CARGO_PKG_DESCRIPTION":"Shared Actors conformance over an admitted provider and remote owner controls","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 extract_cargo_lints(
@@ -51,6 +53,70 @@ rust_library(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    visibility = ["//visibility:public"],
+)
+
+rust_shared_library(
+    name = "acyclic_hosted_actors_conformance_wasm_cdylib",
+    crate_name = "acyclic_hosted_actors_conformance",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values())",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        "//rust/crates/actors:acyclic_actors_wasm",
+        "//rust/crates/stream:acyclic_stream_wasm",
+        "@wasm_crates//futures-0.3.34",
+        "@wasm_crates//js-sys-0.3.94",
+        "@wasm_crates//serde-wasm-bindgen-0.6.5",
+        "@wasm_crates//serde_json-1.0.154",
+        "@wasm_crates//wasm-bindgen-0.2.117",
+        "@wasm_crates//wasm-bindgen-futures-0.4.67",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "acyclic_hosted_actors_conformance_wasm",
+    crate_name = "acyclic_hosted_actors_conformance",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values())",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        "//rust/crates/actors:acyclic_actors_wasm",
+        "//rust/crates/stream:acyclic_stream_wasm",
+        "@wasm_crates//futures-0.3.34",
+        "@wasm_crates//js-sys-0.3.94",
+        "@wasm_crates//serde-wasm-bindgen-0.6.5",
+        "@wasm_crates//serde_json-1.0.154",
+        "@wasm_crates//wasm-bindgen-0.2.117",
+        "@wasm_crates//wasm-bindgen-futures-0.4.67",
+    ],
     visibility = ["//visibility:public"],
 )
 
