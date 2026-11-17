@@ -19,7 +19,7 @@ async fn deep_manifests_select_whole_and_partial_bytes_without_recursive_frames(
         .clone();
     for _ in 0..4096 {
         head = blobs
-            .put_manifest(Manifest {
+            .put_manifest(crate::Manifest {
                 parts: vec![crate::Part {
                     digest: head.digest,
                     length: head.length,
