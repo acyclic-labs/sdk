@@ -9,6 +9,10 @@ description = "Deterministic Rust-owned versioned SDK documentation data"
 
 [package.metadata.bazel.test-tools.sdk_docs_test]
 cargo = "//:cargo"
+rustc = "//:rustc"
+
+[package.metadata.bazel.test-data.sdk_docs_test]
+workspace-manifests = "//:workspace-manifests"
 
 [features]
 model-checking = []

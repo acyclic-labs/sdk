@@ -842,28 +842,36 @@ ${rule("platform", [["name", q("linux_musl")], ["constraint_values", list(["@pla
 `;
 // The toolchain's Cargo, as the tests that check real Cargo behaviour start it. Each platform's
 // toolchain repository carries the same release's Cargo beside its rustc.
-const cargoFilegroup = (() => {
+const toolchainFilegroups = (() => {
   const channel = toml("rust-toolchain.toml").toolchain.channel;
   const channelName = /^(beta|nightly)/.test(channel) ? channel.split("/")[0] : "stable";
-  const tools = (name, triple) => `@${name}__${triple}__${channelName}_tools//:cargo`;
-  return `
+  const tools = (name, triple, tool) => `@${name}__${triple}__${channelName}_tools//:${tool}`;
+  const select = tool => `select(${q({
+    "//:linux-x86_64": [tools("rust_linux_x86_64", LINUX_GNU_TRIPLE, tool)],
+    "//:macos-aarch64": [tools("rust_macos_aarch64", "aarch64-apple-darwin", tool)],
+    "//:windows-x86_64": [`@rust_windows_x86_64_tools//:${tool}`],
+  })})`;
+  return ["cargo", "rustc"].map(tool => `
 ${rule("filegroup", [
-    ["name", q("cargo")],
-    ["srcs", `select(${q({
-      "//:linux-x86_64": [tools("rust_linux_x86_64", LINUX_GNU_TRIPLE)],
-      "//:macos-aarch64": [tools("rust_macos_aarch64", "aarch64-apple-darwin")],
-      "//:windows-x86_64": ["@rust_windows_x86_64_tools//:cargo"],
-    })})`],
+    ["name", q(tool)],
+    ["srcs", select(tool)],
+    ["visibility", q(["//visibility:public"])],
+  ])}`).join("");
+})();
+// Every workspace manifest and the lockfile, for tests that validate the scenario source closure.
+const workspaceManifests = `
+${rule("filegroup", [
+    ["name", q("workspace-manifests")],
+    ["srcs", list([...new Set([...members].map(id => `${dir(packages.get(id))}/Cargo.toml`))].sort().map(fileLabel).concat(["Cargo.lock"]))],
     ["visibility", q(["//visibility:public"])],
   ])}
 `;
-})();
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
   ["rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json", workspaceMetadata],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
-${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${linuxMusl}${cargoFilegroup}${windowsCcToolchain()}${sourcesRule}${exportsRule("")}`],
+${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${linuxMusl}${toolchainFilegroups}${workspaceManifests}${windowsCcToolchain()}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}

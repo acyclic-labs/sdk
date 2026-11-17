@@ -10,9 +10,11 @@ default-run = "sdk-generation"
 
 [package.metadata.bazel.test-tools.sdk_generation_test]
 cargo = "//:cargo"
+rustc = "//:rustc"
 
 [package.metadata.bazel.test-tools.main]
 cargo = "//:cargo"
+rustc = "//:rustc"
 
 [package.metadata.bazel.test-data.main]
 workspace-metadata = "//rust/crates/sdk-docs:tests/fixtures/workspace-metadata.json"

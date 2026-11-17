@@ -3030,7 +3030,13 @@
         "bazel": {
           "test-tools": {
             "sdk_docs_test": {
-              "cargo": "//:cargo"
+              "cargo": "//:cargo",
+              "rustc": "//:rustc"
+            }
+          },
+          "test-data": {
+            "sdk_docs_test": {
+              "workspace-manifests": "//:workspace-manifests"
             }
           }
         }
@@ -3150,10 +3156,12 @@
         "bazel": {
           "test-tools": {
             "sdk_generation_test": {
-              "cargo": "//:cargo"
+              "cargo": "//:cargo",
+              "rustc": "//:rustc"
             },
             "main": {
-              "cargo": "//:cargo"
+              "cargo": "//:cargo",
+              "rustc": "//:rustc"
             }
           },
           "test-data": {

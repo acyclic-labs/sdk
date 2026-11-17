@@ -288,10 +288,7 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
             },
         )
         .unwrap();
-        let rustc = cargo
-            .parent()
-            .unwrap()
-            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+        let rustc = PathBuf::from(acyclic_test_support::host_tool!("rustc"));
         let output = Command::new(rustc).arg("-vV").output().unwrap();
         assert!(output.status.success());
         let target = String::from_utf8(output.stdout)

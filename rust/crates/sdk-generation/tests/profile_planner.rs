@@ -8,10 +8,7 @@ fn repository_root() -> PathBuf {
 }
 
 fn host_target() -> String {
-    let rustc = PathBuf::from(acyclic_test_support::host_tool!("cargo"))
-        .parent()
-        .unwrap()
-        .join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+    let rustc = PathBuf::from(acyclic_test_support::host_tool!("rustc"));
     let output = Command::new(rustc).args(["-vV"]).output().unwrap();
     assert!(output.status.success());
     String::from_utf8_lossy(&output.stdout)
