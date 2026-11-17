@@ -1,9 +1,86 @@
 //! The physical key/value medium beneath the one blob engine.
-use crate::{Observation, ObservationSource, Observed, ObservedVersion};
+use crate::{
+    Digest, Error, Observation, ObservationSource, Observed, ObservedVersion, wire::ErrorCode,
+};
 use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::{Arc, PoisonError, RwLock};
+
+/// The SDK-owned meaning of an account-relative medium key.
+///
+/// Adapters can select physical payload I/O without maintaining a second
+/// parser for the Objects engine's persisted key format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediumKey {
+    /// An object envelope.
+    Envelope(Digest),
+    /// One immutable payload generation.
+    Payload {
+        /// The content identity.
+        digest: Digest,
+        /// The generation chosen by the Objects engine.
+        version: [u8; 16],
+    },
+    /// The conditional terminal state for a retained intent.
+    Terminal(Digest),
+    /// An engine-owned retention, reference, epoch, or incarnation record.
+    Control,
+}
+
+impl MediumKey {
+    /// Parses a complete account-relative key, refusing malformed paths.
+    ///
+    /// # Errors
+    /// Returns `InvalidArgument` when the key is outside the engine format.
+    pub fn parse(key: &str) -> Result<Self, Error> {
+        fn hash(text: &str) -> Result<Digest, Error> {
+            if text.len() != 64
+                || !text
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return Err(ErrorCode::InvalidArgument.into());
+            }
+            Digest::from_hex(text)
+        }
+        fn sharded(text: &str) -> Result<Digest, Error> {
+            let (shard, digest) = text.split_once('/').ok_or(ErrorCode::InvalidArgument)?;
+            let parsed = hash(digest)?;
+            if shard.len() != 2 || !digest.starts_with(shard) {
+                return Err(ErrorCode::InvalidArgument.into());
+            }
+            Ok(parsed)
+        }
+        if matches!(key, "epoch" | "incarnation") {
+            return Ok(Self::Control);
+        }
+        let (kind, rest) = key.split_once('/').ok_or(ErrorCode::InvalidArgument)?;
+        match kind {
+            "e" => Ok(Self::Envelope(sharded(rest)?)),
+            "p" => {
+                let (path, version) = rest.rsplit_once('.').ok_or(ErrorCode::InvalidArgument)?;
+                if version.len() != 32
+                    || !version
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                {
+                    return Err(ErrorCode::InvalidArgument.into());
+                }
+                let mut bytes = [0; 16];
+                hex::decode_to_slice(version, &mut bytes)
+                    .map_err(|_| ErrorCode::InvalidArgument)?;
+                Ok(Self::Payload {
+                    digest: sharded(path)?,
+                    version: bytes,
+                })
+            }
+            "t" => Ok(Self::Terminal(hash(rest)?)),
+            "r" | "i" | "f" if !rest.is_empty() => Ok(Self::Control),
+            _ => Err(ErrorCode::InvalidArgument.into()),
+        }
+    }
+}
 
 /// A physical failure. `Ambiguous` means a write may or may not have landed.
 #[derive(Debug, thiserror::Error)]

@@ -56,7 +56,7 @@ pub use error::Error;
 pub use manifest_builder::ManifestBuilder;
 #[cfg(any(test, feature = "test-support"))]
 pub use medium::{Fault, Injected};
-pub use medium::{Medium, MediumError, MemoryMedium};
+pub use medium::{Medium, MediumError, MediumKey, MemoryMedium};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_error::{NativeObjectsCause, NativeObjectsError};
 pub use observation::{Observation, ObservationSource, Observed, ObservedVersion};

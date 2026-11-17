@@ -996,21 +996,22 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     fn digest_from_key(&self, key: &str) -> Result<Digest, Error> {
-        key.rsplit('/')
-            .next()
-            .and_then(|name| name.split('.').next())
-            .ok_or_else(corrupt)
-            .and_then(|hex| Digest::from_hex(hex).map_err(|_| corrupt()))
+        let relative = key.strip_prefix(&self.state.prefix).ok_or_else(corrupt)?;
+        match crate::MediumKey::parse(relative).map_err(|_| corrupt())? {
+            crate::MediumKey::Envelope(digest) | crate::MediumKey::Payload { digest, .. } => {
+                Ok(digest)
+            }
+            _ => Err(corrupt()),
+        }
     }
 
     /// The digest and version a payload key names.
     fn payload_of(&self, key: &str) -> Result<(Digest, [u8; 16]), Error> {
-        let version = key
-            .rsplit_once('.')
-            .and_then(|(_, version)| hex::decode(version).ok())
-            .and_then(|version| version.try_into().ok())
-            .ok_or_else(corrupt)?;
-        Ok((self.digest_from_key(key)?, version))
+        let relative = key.strip_prefix(&self.state.prefix).ok_or_else(corrupt)?;
+        match crate::MediumKey::parse(relative).map_err(|_| corrupt())? {
+            crate::MediumKey::Payload { digest, version } => Ok((digest, version)),
+            _ => Err(corrupt()),
+        }
     }
 
     fn epoch_key(&self) -> String {
