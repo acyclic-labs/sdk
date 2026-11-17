@@ -312,6 +312,7 @@ fn d3_service(transition: &'static str, _dialect: &'static str) -> ScriptedModel
     let failed = Mutex::new(false);
     let responder = move |request: &ModelRequest| {
         if request.summary {
+            eprintln!("D3 summary request for {transition}");
             return Ok(match transition {
                 "compaction_applied" | "background_summary" => manager_rewrite(request),
                 "context_review" => review_decision(),
@@ -511,6 +512,7 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                 .incarnation(None, &prompts)
                 .await
                 .map_err(oracle::failed)?;
+            eprintln!("D3 {transition} {dialect} incarnation done");
             let settled = incarnation.prompts.last().map(|(outcome, _)| outcome);
             let retry_failed = transition == "retry_after"
                 && matches!(settled, Some(Prompted::Failed(message)) if message.contains("429"));
