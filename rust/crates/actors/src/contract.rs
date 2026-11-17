@@ -47,11 +47,10 @@ impl From<std::convert::Infallible> for ContractError {
 fn subscription(value: &wire::SubscriptionSpec) -> bool {
     !value.subscription_id.is_empty()
         && !value.stream_path.is_empty()
-        && matches!(
-            value.start.as_ref().and_then(|start| start.start.as_ref()),
-            Some(wire::subscription_start::Start::Cursor(_))
-                | Some(wire::subscription_start::Start::CurrentHead(true))
-        )
+        && value
+            .start
+            .as_ref()
+            .is_some_and(|start| domain::SubscriptionStart::try_from(start.clone()).is_ok())
 }
 
 fn valid_entry_source(source: Option<&wire::EntrySource>, name: &str) -> bool {
