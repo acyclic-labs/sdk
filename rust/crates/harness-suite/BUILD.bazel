@@ -104,12 +104,7 @@ filegroup(
 )
 
 
-exports_files([
-        "fixtures/conformance/identity/dex/jwks.body",
-        "fixtures/conformance/identity/dex/manifest.json",
-        "fixtures/conformance/identity/dex/token.body",
-        "src/conformance/observe/tests.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",

@@ -111,14 +111,7 @@ filegroup(
 )
 
 
-exports_files([
-        "src/hosting_tests.rs",
-        "src/hosting_tests/editor_input.rs",
-        "src/hosting_tests/machine_results.rs",
-        "src/hosting_tests/merge.rs",
-        "src/hosting_tests/peer_delivery.rs",
-        "src/hosting_tests/session_pages.rs",
-    ], visibility = ["//visibility:public"])
+exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
 
 filegroup(
     name = "tree",
