@@ -204,6 +204,11 @@ mod tests {
         fn executable(line: &str) -> &str {
             line.split_whitespace().next().unwrap_or_default()
         }
+        // Only the command matters; other call options are no part of it.
+        #[derive(serde::Deserialize)]
+        struct Call<'a> {
+            command: &'a str,
+        }
         let mut commands = BTreeSet::new();
         let mut prose = String::new();
         // The tool a following call span invokes: its name span, joined to
@@ -217,9 +222,9 @@ mod tests {
                     continue;
                 }
                 // A call whose command needs JSON escapes stays prose.
-                let call = serde_json::from_str::<std::collections::BTreeMap<&str, &str>>(part)
+                let call = serde_json::from_str::<Call>(part)
                     .ok()
-                    .and_then(|call| call.get("command").copied());
+                    .map(|call| call.command);
                 match (call, tool) {
                     (Some(line), Some("shell")) => {
                         commands.insert(executable(line));
