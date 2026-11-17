@@ -310,11 +310,11 @@ fn bounded_outcome_window_and_failure_overflow_are_exact() -> Result<(), Box<dyn
         },
     );
     let overflow = merge_promotion_failure(prior, 0, nested);
-    assert!(matches!(
-        overflow.error,
-        ObjectStoreError::Work(WorkError::Overflow)
-    ));
-    assert_eq!(*overflow.work().unwrap(), prior);
+    assert!(matches!(overflow.error, ObjectStoreError::Missing));
+    assert_eq!(
+        overflow.work(),
+        Err(crate::WorkObservationError::Work(WorkError::Overflow))
+    );
     Ok(())
 }
 
