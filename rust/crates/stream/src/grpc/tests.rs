@@ -1026,19 +1026,22 @@ proptest::proptest! {
 /// A member's refusal before dispatch replays the same request through the
 /// member the route selects next: the unchanged append lands in the second
 /// member's provider only. A route that declines returns the refusal after
-/// one attempt, and nothing lands anywhere.
+/// one attempt, and nothing lands anywhere. Even a route that selects a former
+/// member cannot dispatch the same refused operation to that member again.
 #[tokio::test]
-async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestResult {
+async fn routed_refusals_preserve_the_request_without_revisiting_a_member() -> TestResult {
     struct Members {
         channels: [Channel; 2],
-        current: AtomicUsize,
-        replay: bool,
+        selections: std::sync::Mutex<std::collections::VecDeque<usize>>,
         refused: std::sync::Mutex<Vec<usize>>,
         served: std::sync::Mutex<Vec<usize>>,
     }
     impl HomeRoute for Members {
         fn current(&self) -> RoutedChannel {
-            let member = self.current.load(Ordering::SeqCst);
+            let member = self
+                .selections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)[0];
             RoutedChannel {
                 member,
                 channel: self.channels[member].clone(),
@@ -1053,10 +1056,12 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(member);
-            if self.replay {
-                self.current.store(member + 1, Ordering::SeqCst);
-            }
-            Box::pin(std::future::ready(self.replay))
+            let mut selections = self
+                .selections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            selections.pop_front();
+            Box::pin(std::future::ready(!selections.is_empty()))
         }
         fn served(&self, member: usize) {
             self.served
@@ -1065,24 +1070,37 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
                 .push(member);
         }
     }
-    for replay in [true, false] {
+    for (selections, serves) in [(vec![0, 1], true), (vec![0], false), (vec![0, 1, 0], false)] {
+        let visits_second = selections.len() > 1;
         let (follower, leader) = (MemoryStream::default(), MemoryStream::default());
         let calls = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
         let refusing = Arc::clone(&calls[0]);
         let serving = Arc::clone(&calls[1]);
+        let mut refusal = Status::with_details(
+            Code::Unavailable,
+            "not the leader",
+            Bytes::from_static(b"original member details"),
+        );
+        refusal
+            .metadata_mut()
+            .insert("acyclic-member", "first".parse()?);
+        let first_refusal = refusal.clone();
         let route = Arc::new(Members {
             channels: [
                 served_channel(follower.clone(), move |_: Request<()>| {
                     refusing.fetch_add(1, Ordering::SeqCst);
-                    Err::<Request<()>, _>(Status::unavailable("not the leader"))
+                    Err::<Request<()>, _>(first_refusal.clone())
                 }),
                 served_channel(leader.clone(), move |request: Request<()>| {
                     serving.fetch_add(1, Ordering::SeqCst);
-                    Ok(request)
+                    if serves {
+                        Ok(request)
+                    } else {
+                        Err(Status::unavailable("account not ready"))
+                    }
                 }),
             ],
-            current: AtomicUsize::new(0),
-            replay,
+            selections: std::sync::Mutex::new(selections.into()),
             refused: std::sync::Mutex::new(Vec::new()),
             served: std::sync::Mutex::new(Vec::new()),
         });
@@ -1101,9 +1119,12 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
             idempotency_key: IdempotencyKey::unique(),
         };
         let result = client.append(request.clone()).await;
-        assert_eq!(result.is_ok(), replay, "{result:?}");
+        assert_eq!(result.is_ok(), serves, "{result:?}");
+        if let Err(error) = &result {
+            assert_eq!(original(&Status::from(error.clone())), original(&refusal));
+        }
         let hits = calls.each_ref().map(|calls| calls.load(Ordering::SeqCst));
-        assert_eq!(hits, [1, usize::from(replay)]);
+        assert_eq!(hits, [1, usize::from(visits_second)]);
         assert_eq!(
             follower
                 .inspect_idempotency(request.idempotency_key.clone())
@@ -1115,7 +1136,7 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
                 .inspect_idempotency(request.idempotency_key.clone())
                 .await?
                 .is_some(),
-            replay,
+            serves,
             "the unchanged request lands only on the member that served it"
         );
         assert_eq!(
@@ -1123,9 +1144,13 @@ async fn a_routed_refusal_replays_the_same_request_on_the_next_member() -> TestR
                 .refused
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
-            vec![0]
+            if visits_second && !serves {
+                vec![0, 1]
+            } else {
+                vec![0]
+            }
         );
-        let served = if replay { vec![1] } else { vec![] };
+        let served = if serves { vec![1] } else { vec![] };
         assert_eq!(
             *route
                 .served
