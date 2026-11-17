@@ -1163,7 +1163,7 @@ const runtimeFilegroups = [...workspaceRuntimeDeps.values()].map(dep => {
     ["visibility", q(["//visibility:public"])],
     ]);
 }).join("\n");
-const wasmNodeModulesRules = runtimeFilegroups + "\n" + runtimeSelections.map(selection => {
+const wasmNodeModulesRules = runtimeFilegroups + (runtimeSelections.length ? "\n" : "") + runtimeSelections.map(selection => {
   const deps = wasmNodeModules.get(selection.name) ?? [];
   const packages = deps.map(dep => [dep.dir ? `:${workspaceTargetName(dep.name)}` : `@${dep.repository}//:files`, `${dep.name}=${dep.dir ?? ""}`]);
   for (const dep of deps.filter(dep => dep.dir)) {
