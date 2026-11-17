@@ -68,37 +68,6 @@ impl StockExecution<'_> {
         Ok((source, ModelContent::Text(instruction)))
     }
 
-    /// The exact leading messages the worker already sent, loaded from the
-    /// request recorded with its response projection. The request is never
-    /// rebuilt or re-transformed.
-    pub(super) async fn response_prefix(
-        &self,
-        journal: &dyn ExecutionJournal,
-        input: &TurnInput,
-        step: u32,
-        canonical: &crate::context::Context,
-    ) -> Result<Vec<ModelMessage>> {
-        let Some(reference) = self
-            .response_projection(journal, input.operation_id, step)
-            .await?
-        else {
-            return Ok(Vec::new());
-        };
-        let (_, prepared) = self.load_response_projection(journal, &reference).await?;
-        let messages = &prepared.request().messages;
-        let prefix = messages
-            .len()
-            .checked_sub(canonical.messages.len())
-            .ok_or_else(|| {
-                stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Storage,
-                    "worker request is shorter than its canonical context",
-                )
-            })?;
-        crate::model::clone_messages(&messages[..prefix], self.io)
-    }
-
     pub(super) async fn manager_window(
         &self,
         journal: &dyn ExecutionJournal,
@@ -148,10 +117,9 @@ impl StockExecution<'_> {
             // selected immutable window escapes this preparation scope.
             let scope = crate::filesystem::PreparationScope::new(self.io)?;
             let session = self.preparing(scope.io());
-            let (source, instruction) =
-                session.manager_material(context, start..end, previous, instruction)?;
+            let material = session.manager_material(context, start..end, previous, instruction)?;
             let admitted = session
-                .admit_summary_window(journal, turn, (source, prefix), instruction, purpose)
+                .admit_summary_window(journal, turn, (material.0, prefix), material.1, purpose)
                 .await;
             drop(session);
             scope.finish(0)?;
@@ -202,29 +170,14 @@ impl StockExecution<'_> {
         let (eligible, message_limit) = selection;
         let (part, previous, _) = progress;
         let start = previous.map_or(0, |summary| summary.source_messages as usize);
-        let prefix = self.response_prefix(journal, input, step, context).await?;
         let end = self
-            .manager_window(journal, turn, context, (eligible, None, &prefix), progress)
+            .manager_window(journal, turn, context, (eligible, None, &[]), progress)
             .await?;
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
         let session = self.preparing(scope.io());
-        let invalid = |reason| stock_boundary(session.io, crate::wire::ErrorCode::Invalid, reason);
         let (source, instruction) =
             session.manager_material(context, start..end, previous, None)?;
-        // The request replaces the source's leading system messages with the
-        // recorded worker prefix, so its message count is the prefix plus the
-        // source after those leading messages. An empty prefix replaces none.
-        let leading = super::summary::replaced_leading(&source, &prefix);
-        let supplied = prefix
-            .len()
-            .checked_add(
-                source
-                    .messages
-                    .len()
-                    .checked_sub(leading)
-                    .ok_or_else(|| invalid("context manager source count underflows"))?,
-            )
-            .ok_or_else(|| invalid("context manager request count overflows"))?;
+        let supplied = source.messages.len();
         let purpose = if part == 0 {
             ModelPurpose::Summary
         } else {
@@ -238,11 +191,11 @@ impl StockExecution<'_> {
                 input.operation_id,
                 step,
                 (source, instruction),
-                &prefix,
                 &mut phase,
                 purpose,
             )
             .await?;
+        let invalid = |reason| stock_boundary(session.io, crate::wire::ErrorCode::Invalid, reason);
         let rewrite: ManagerRewrite = match session.io {
             Some(io) => retain_preparation({
                 let (value, hold) = io.decode(
@@ -259,14 +212,7 @@ impl StockExecution<'_> {
         if rewrite.version != 1 || selected == 0 || selected > supplied {
             return Err(invalid("context manager selected an invalid source range"));
         }
-        let selected = selected
-            .checked_sub(prefix.len())
-            .and_then(|selected| selected.checked_add(leading))
-            .and_then(|selected| selected.checked_sub(usize::from(previous.is_some())))
-            .ok_or_else(|| invalid("context manager selected the request prefix"))?;
-        let through = start
-            .checked_add(selected)
-            .ok_or_else(|| invalid("context manager source range overflows"))?;
+        let through = start + selected - usize::from(previous.is_some());
         if through == start
             && previous.is_none_or(|old| {
                 rewrite.summary.len() as u64 >= old.output.descriptor().byte_length()
