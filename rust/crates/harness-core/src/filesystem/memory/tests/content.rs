@@ -265,16 +265,6 @@ async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> 
     .err()
     .expect("a generic journal writer bypassed the protected storage families");
     assert_eq!(reserved.code(), crate::wire::ErrorCode::Invalid);
-    journal_writer
-        .stage_once(
-            OperationId::new(),
-            "tools/owned/page.txt",
-            b"output",
-            "text/plain",
-            "page.txt",
-            Default::default(),
-        )?
-        .await?;
     let effect = OperationId::new();
     run_admitted_file_case(&storage, Limits::default(), move |task| {
         let journal = Arc::clone(&journal);
@@ -285,33 +275,6 @@ async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> 
                 turn,
                 "publish",
             )?;
-            let io = crate::filesystem::PreparationIo::from_budget(
-                FINITE_CONTENT_BUDGET,
-                &acyclic_fs::CancellationToken::new(),
-            )?;
-            let retained = io.owned_bytes()?;
-            for _ in 0..3 {
-                let (page, hold) = context
-                    .list_tool_directory(
-                        crate::conversation::DirectoryRead {
-                            volume: &journal_volume,
-                            granted_prefix: "tools",
-                            path: "tools/owned",
-                            generation: None,
-                            after: None,
-                            maximum_entries: 1,
-                        },
-                        Some(&io),
-                    )
-                    .await?;
-                assert_eq!(page.entries[0].name, "page.txt");
-                drop((page, hold));
-                assert_eq!(
-                    io.owned_bytes()?,
-                    retained,
-                    "dropped output page retained owned IO"
-                );
-            }
             let original = context
                 .stage_file_once(
                     effect,

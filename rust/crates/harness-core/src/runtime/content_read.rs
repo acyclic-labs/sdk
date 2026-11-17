@@ -9,6 +9,37 @@ pub(super) enum ReadExtent {
     Range(acyclic_fs::ByteRange),
 }
 
+#[cfg(test)]
+#[tokio::test]
+async fn temporary_output_reader_admission_preserves_owned_allocation_credit() -> Result<()> {
+    let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+    let content = storage.content_bindings();
+    let task = Bindings::local()
+        .build()?
+        .agent_context(&crate::Capabilities::default(), content)?
+        .with_execution_journal(storage.journal(), crate::OperationId::new())?;
+    let output = task.journal_output.as_ref().expect("journal output");
+    let io = ContentIo::from_budget(
+        acyclic_fs::performance::work_budget(100_000, 16_000_000),
+        &acyclic_fs::CancellationToken::new(),
+    )?;
+    let retained = io.owned_bytes()?;
+    for _ in 0..3 {
+        let admitted = task.read_content(Some(output), Some(&io))?;
+        assert_eq!(
+            admitted.as_ref().expect("output reader").volume,
+            output.volume
+        );
+        drop(admitted);
+        assert_eq!(
+            io.owned_bytes()?,
+            retained,
+            "temporary output reader retained owned allocation credit"
+        );
+    }
+    Ok(())
+}
+
 // An admitted reader's grants can only be retained or narrowed. In particular,
 // range and full reads cannot pass an arbitrary replacement to authorization.
 pub(super) struct ReadGrants<'a> {
