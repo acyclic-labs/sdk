@@ -27,3 +27,8 @@ tokio = { workspace = true, features = ["test-util", "process", "io-util"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "hooks"
+path = "tests/hooks.rs"
+required-features = ["test-support"]
