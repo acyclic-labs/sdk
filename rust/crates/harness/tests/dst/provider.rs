@@ -787,12 +787,9 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     if incarnation.requests.iter().any(has_file) {
                         return fail("a length-cut summary published a rewrite");
                     }
-                    let after = vec![vec![("d4-after", tag("d4-after"))]];
-                    let reopened = world
-                        .incarnation(None, &after)
-                        .await
-                        .map_err(oracle::failed)?;
-                    if reopened.prompts.is_empty() {
+                    if incarnation.prompts.last().map(|(outcome, _)| outcome)
+                        != Some(&Prompted::Settled(done("d4")))
+                    {
                         return fail("the worker died after its cut summary");
                     }
                 }
