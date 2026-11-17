@@ -390,8 +390,8 @@ mod tests {
 
     #[test]
     fn access_denial_with_a_cause_keeps_permission_denied() {
-        let error = acyclic_stream::StreamError::AccessDenied
-            .with_source(std::io::Error::other("denied"));
+        let error =
+            acyclic_stream::StreamError::AccessDenied.with_source(std::io::Error::other("denied"));
         let DemandError::Io(error) = stream_error(error) else {
             panic!("access denial must map to an IO error");
         };
