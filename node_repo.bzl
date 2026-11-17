@@ -69,6 +69,8 @@ _node_repository = repository_rule(
     attrs = {"version": attr.string(mandatory = True)},
 )
 
+node_build_repository = _node_repository
+
 _node = tag_class(attrs = {"version": attr.string(default = _VERSION)})
 
 def _node_extension_impl(ctx):

@@ -45,6 +45,8 @@ _bun_repository = repository_rule(
     },
 )
 
+bun_build_repository = _bun_repository
+
 def _bun_extension_impl(_ctx):
     _bun_repository(name = "bunjs")
 

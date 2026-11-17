@@ -52,6 +52,6 @@ proto_js = rule(
     attrs = {
         "schemas": attr.label_keyed_string_dict(allow_files = True, mandatory = True),
         "_npm": attr.label(default = "@npm_codegen_packages//:packages", allow_files = True),
-        "_node": attr.label(default = "@nodejs//:node", executable = True, cfg = "exec"),
+        "_node": attr.label(default = "@sdk_build_node//:node", executable = True, cfg = "exec"),
     },
 )
