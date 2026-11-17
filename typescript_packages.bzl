@@ -69,7 +69,7 @@ typescript_packages = rule(
         "protos": attr.label_keyed_string_dict(allow_files = True),
         "tools": attr.label_keyed_string_dict(allow_files = True),
         "_npm": attr.label(default = "@npm_codegen_packages//:packages", allow_files = True),
-        "_node": attr.label(default = "@sdk_build_node//:node", executable = True, cfg = "exec"),
-        "_bun": attr.label(default = "@sdk_build_bun//:bun", executable = True, allow_files = True, cfg = "exec"),
+        "_node": attr.label(default = "@nodejs//:node", executable = True, cfg = "exec"),
+        "_bun": attr.label(default = "@bunjs//:bun", executable = True, allow_files = True, cfg = "exec"),
     },
 )
