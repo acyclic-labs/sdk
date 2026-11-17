@@ -108,8 +108,8 @@ function checkCfgFlags(manifest, features) {
 const configEnv = Object.fromEntries(Object.entries(toml(root, ".cargo/config.toml").env ?? {}).map(([name, entry]) => {
   if (typeof entry === "string") return [name, entry];
   const relative = path.posix.normalize(entry.value);
-  // rules_rust's process wrapper replaces ${pwd} with the execution root; $$ escapes make expansion.
-  return [name, entry.relative ? (relative === "." ? "$${pwd}" : `$\${pwd}/${relative}`) : entry.value];
+  // rules_rust's process wrapper replaces ${exec_root} with the real execution root; $$ escapes make expansion.
+  return [name, entry.relative ? (relative === "." ? "$${exec_root}" : `$\${exec_root}/${relative}`) : entry.value];
 }));
 
 // Every target builds with every feature on, as `cargo test --all-features` does. crate_universe
