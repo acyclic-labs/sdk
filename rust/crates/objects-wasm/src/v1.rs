@@ -35,6 +35,12 @@ pub fn objects_v1_http_type(route: &str, output: bool) -> Result<String, JsValue
     Ok(if output { *response } else { *input }.to_owned())
 }
 
+/// Classifies an HTTP failure without a recognized error detail.
+#[wasm_bindgen]
+#[must_use]
+pub fn objects_v1_http_error_code(status: u16) -> i32 {
+    acyclic_objects::Error::from_http_status(status).code as i32
+}
 /// The BLAKE3-256 digest naming `bytes` as a plain blob.
 #[wasm_bindgen]
 #[must_use]
