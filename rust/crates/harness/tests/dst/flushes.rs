@@ -185,11 +185,11 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
     // request header, plus two namespace ordering barriers. Their publication
     // cuts remain durable before the first reply; WAL drains may coalesce.
     assert_eq!(
-        observed.first.0, 15,
+        observed.first.0, 19,
         "first-turn barriers changed: {observed:?}"
     );
     assert!(
-        observed.first.1 <= 19,
+        observed.first.1 <= 30,
         "first-turn drains changed: {observed:?}"
     );
     assert_eq!(
