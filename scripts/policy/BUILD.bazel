@@ -63,6 +63,7 @@ node_test(
 
 node_test(
     name = "static_ci_test",
+    bun = "@bunjs//:bun",
     srcs = [
         "//:.gitattributes",
         "//:scripts/static-ci.mjs",
