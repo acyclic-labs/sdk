@@ -122,21 +122,18 @@ impl Session {
             self.prices = Arc::new(prices);
             self.price_source = source.map(|file| file.descriptor().clone());
         }
-        self.tree = self
+        let layout = self
             .snapshot
             .files
             .get("layout.json")
             .and_then(Option::as_ref)
-            .map(|file| -> Result<Option<bool>, Failure> {
-                let layout: Value = serde_json::from_str(&file.text)?;
-                match layout.get("tree") {
-                    None => Ok(None),
-                    Some(Value::Bool(value)) => Ok(Some(*value)),
-                    Some(_) => Err("layout.json tree must be boolean".into()),
-                }
-            })
-            .transpose()?
-            .flatten();
+            .map(|file| serde_json::from_str::<Value>(&file.text))
+            .transpose()?;
+        self.tree = match layout.as_ref().and_then(|layout| layout.get("tree")) {
+            None => None,
+            Some(Value::Bool(value)) => Some(*value),
+            Some(_) => return Err("layout.json tree must be boolean".into()),
+        };
         self.catalog = match self.snapshot.files.get(COMMANDS).and_then(Option::as_ref) {
             Some(file) => {
                 let document: CommandFile = serde_json::from_str(&file.text)?;
@@ -149,17 +146,12 @@ impl Session {
             }
             None => CommandCatalog::builtins()?,
         };
-        self.open_view = self
-            .snapshot
-            .files
-            .get("layout.json")
-            .and_then(Option::as_ref)
-            .map(|file| -> Result<Option<String>, Failure> {
-                let layout: Value = serde_json::from_str(&file.text)?;
-                Ok(layout_view(&layout)?.map(str::to_owned))
-            })
+        self.open_view = layout
+            .as_ref()
+            .map(layout_view)
             .transpose()?
-            .flatten();
+            .flatten()
+            .map(str::to_owned);
         for file in ConfigFile::ALL {
             self.config.set_file(
                 Scope::User,
