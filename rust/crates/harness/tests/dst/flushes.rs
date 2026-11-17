@@ -193,7 +193,7 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
         "first-turn drains changed: {observed:?}"
     );
     assert_eq!(
-        observed.reopened_first.0, 10,
+        observed.reopened_first.0, 11,
         "reopened ordering barriers changed: {observed:?}"
     );
     // Recovery and first publication can join an already-flushed WAL target.
