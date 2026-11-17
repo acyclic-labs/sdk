@@ -755,39 +755,6 @@ impl Session {
     }
 }
 
-struct LogBuf {
-    bytes: [u8; 192],
-    len: usize,
-}
-
-impl core::fmt::Write for LogBuf {
-    fn write_str(&mut self, text: &str) -> core::fmt::Result {
-        let end = self.len + text.len();
-        if end > self.bytes.len() {
-            return Err(core::fmt::Error);
-        }
-        self.bytes[self.len..end].copy_from_slice(text.as_bytes());
-        self.len = end;
-        Ok(())
-    }
-}
-
-fn trace_retire(token: u64, kind: u64, events: u32, error: i32, device: i32, control: i32) {
-    use core::fmt::Write as _;
-    let mut buffer = LogBuf {
-        bytes: [0; 192],
-        len: 0,
-    };
-    let _ = write!(
-        &mut buffer,
-        "retire token={token} kind={kind} events={events} error={error} device={device} control={control}\n"
-    );
-    if let Ok(file) = sys::open(c"fuse-host.log", 2 | 0o100 | 0o2000) {
-        let _ = sys::write(file, &buffer.bytes[..buffer.len]);
-        sys::close(file);
-    }
-}
-
 fn frame_length(packet: &Packet) -> usize {
     // SAFETY: callers require four initialized bytes in this live mapping.
     let bytes = unsafe { core::slice::from_raw_parts(packet.bytes, 4) };
@@ -973,16 +940,6 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                 // on the same readable event; other sessions keep progressing.
                 if matches!(result, Err(Errno(sys::EAGAIN))) {
                     continue;
-                }
-                if let Err(error) = &result {
-                    trace_retire(
-                        token,
-                        kind,
-                        event.events,
-                        error.0,
-                        current.device,
-                        current.control,
-                    );
                 }
                 if result.is_err() && current.begin_retirement(queue, &mut notifications) {
                     retire_session(queue, session, &mut first, &mut garbage);
