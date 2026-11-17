@@ -1,4 +1,5 @@
 use super::*;
+use crate::mcp::McpConfigWatchExt as _;
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub(super) fn uses_native_execution(tools: &ToolRegistry) -> Result<bool> {

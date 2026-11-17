@@ -569,7 +569,7 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
 
     #[cfg(target_arch = "wasm32")]
     assert!(
-        crate::http::browser::monotonic_now().is_some(),
+        crate::clock::monotonic_now().is_some(),
         "the browser test runtime supplies a monotonic clock"
     );
 
@@ -877,68 +877,6 @@ fn completed_message_is_bounded_before_admission() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -> Result<()> {
-    use crate::mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
-    for answer in ["", "final λ\n"] {
-        let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
-        let context = Arc::new(admitted_context(scope.clone())?);
-        let parent = OperationId::new();
-        let tool = crate::runtime::ToolContext::new(context, parent, "remote")?;
-        let model = Arc::new(
-            ScriptedModelProvider::new([tool_turn([
-                ModelEvent::Content {
-                    delta: "older answer".into(),
-                },
-                ModelEvent::Content {
-                    delta: answer.into(),
-                },
-                ModelEvent::MessageCompleted {
-                    text: answer.into(),
-                },
-            ])])
-            .with_context_capacity(crate::context::ModelContextCapacity {
-                context_tokens: 65_536,
-                output_tokens: Some(128),
-                output_shares_context: false,
-            }),
-        );
-        let callbacks = McpRuntimeCallbacks::new(
-            uncompacted_executor(
-                Model::new("fixture".into(), "sampling".into(), "1".into())?,
-                model.clone(),
-                ContextPipeline::default(),
-                ToolRegistry::default(),
-            )
-            .with_tool_authority(scope, allowed()?)?,
-            Arc::new(Journal::default()),
-            "fixture".into(),
-            ModelContent::Text("continue".into()),
-            None,
-            None,
-        )?;
-        let request = McpCallbackRequest {
-            parent,
-            policy: McpCallbackPolicy {
-                server: "sample".into(),
-                revision: "1".into(),
-                sampling: true,
-                maximum_requests: 1,
-            },
-            message: json!({"jsonrpc":"2.0","id":"sample","method":"sampling/createMessage",
-                "params":{"messages":[{"role":"user","content":{"type":"text","text":"sample"}}],"maxTokens":128}}),
-        };
-        let mut bounded = request.clone();
-        bounded.message["params"]["maxTokens"] = json!(127);
-        assert!(matches!(callbacks.admit(tool.clone(), &bounded).await,
-            Err(Error::Unsupported(message)) if message.contains("maxTokens")));
-        assert!(model.requests().is_empty());
-        let (_, reply) = callbacks.admit(tool, &request).await?;
-        assert_eq!(reply.pointer("/result/content/text"), Some(&json!(answer)));
-        assert_eq!(model.requests().len(), 1);
-    }
-    Ok(())
-}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]

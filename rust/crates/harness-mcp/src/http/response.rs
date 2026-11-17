@@ -1,0 +1,59 @@
+//! One response decoder for JSON and SSE, independent of platform HTTP I/O.
+use super::{HttpMcpTransport, McpHttpResponse, body::bounded, sse};
+use crate::rpc::rpc_result;
+use acyclic_harness_core::{Error, OperationId, Result, runtime::ToolContext};
+use futures::StreamExt as _;
+use serde_json::Value;
+
+pub(super) async fn decode(
+    response: McpHttpResponse,
+    operation: OperationId,
+    maximum_bytes: Option<u32>,
+    callbacks: Option<(&HttpMcpTransport, ToolContext)>,
+    tools_generation: &std::sync::atomic::AtomicU64,
+) -> Result<Value> {
+    if response.status != 200 {
+        return Err(Error::Indeterminate(operation));
+    }
+    let media = response.headers.get("content-type").map(|value| {
+        value
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase()
+    });
+    match media.as_deref() {
+        Some("text/event-stream") => {
+            return sse::response(
+                response.body,
+                operation,
+                maximum_bytes,
+                callbacks,
+                tools_generation,
+            )
+            .await;
+        }
+        Some("application/json") => {}
+        _ => {
+            return Err(Error::Invalid(
+                "MCP HTTP response content type unsupported".into(),
+            ));
+        }
+    }
+    let mut bytes = Vec::new();
+    let body = bounded(response.body, maximum_bytes, operation);
+    futures::pin_mut!(body);
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk?;
+        bytes.extend_from_slice(&chunk);
+    }
+    let value = acyclic_harness_core::contract::json_from_slice(&bytes).map_err(|error| {
+        if error.is_eof() {
+            Error::Indeterminate(operation)
+        } else {
+            Error::Invalid(error.to_string())
+        }
+    })?;
+    rpc_result(value, operation, None)
+}

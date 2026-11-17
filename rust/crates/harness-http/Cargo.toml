@@ -1,0 +1,43 @@
+[package]
+include = ["clippy.toml", "Cargo.toml", "src/**"]
+name = "acyclic-harness-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared host HTTP boundary behind the acyclic-harness facade"
+documentation = "https://docs.rs/acyclic-harness-http"
+
+[dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+bytes.workspace = true
+futures.workspace = true
+h2 = { version = "0.4", default-features = false }
+http.workspace = true
+httpdate = "1.0.3"
+humantime = "2.4.0"
+hyper = { version = "1", default-features = false }
+reqwest.workspace = true
+rustls.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+proptest.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.67"
+
+[lints]
+workspace = true

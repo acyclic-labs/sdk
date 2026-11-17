@@ -26,6 +26,7 @@ acyclic-harness-provider-response = { path = "../harness-provider-response", ver
 acyclic-model-render = { path = "../model-render", version = "=0.2.0" }
 acyclic-auth = { path = "../auth", version = "=0.2.0" }
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
+acyclic-harness-http = { path = "../harness-http", version = "=0.2.0" }
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 async-stream = "0.3.6"
 base64 = "=0.23.1"
@@ -40,6 +41,7 @@ zeroize.workspace = true
 url = "2.5.7"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-harness-input-watch = { path = "../harness-input-watch", version = "=0.2.0" }
 loom = { version = "0.7.3", optional = true }
 acyclic-harness-local = { path = "../harness-local", version = "=0.2.0", default-features = false, optional = true }
 acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0" }
@@ -66,6 +68,8 @@ httpdate = "1.0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-harness-provider-response = { path = "../harness-provider-response", version = "=0.2.0", features = ["test-support"] }
+acyclic-machines = { path = "../machines", version = "=0.2.0" }
+acyclic-machines-daytona = { path = "../machines-daytona", version = "=0.2.0" }
 harness-mock-model = { path = "../harness-mock-model" }
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false, features = ["conformance"] }
 acyclic-actors = { path = "../actors", version = "=0.2.0" }
@@ -106,3 +110,7 @@ path = "tests/live_cache.rs"
 [[test]]
 name = "prefix-cache"
 path = "tests/prefix_cache_cases.rs"
+
+[[test]]
+name = "daytona-conformance"
+path = "tests/daytona_conformance.rs"

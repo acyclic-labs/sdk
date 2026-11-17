@@ -328,7 +328,7 @@ impl TaskContext {
     }
 
     /// Checks the original content destination without reading or publishing bytes.
-    pub(crate) fn authorize_content_publication(
+    pub fn authorize_content_publication(
         &self,
         path: &str,
         source: Option<&FileRef>,

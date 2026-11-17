@@ -134,17 +134,17 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 default = ["runtime"]
 mcp-stdio-codec = ["dep:acyclic-mcp", "dep:bytes", "dep:rmcp", "dep:tokio-util"]
 reader = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
-core = ["dep:acyclic-harness-core", "dep:futures"]
+core = ["dep:acyclic-harness-core", "dep:futures", "dep:acyclic-harness-native-settings"]
 replay = ["core"]
 bounded-json = ["core", "dep:acyclic-native-runtime"]
-oidc = ["core", "dep:bytes", "dep:acyclic-stream", "dep:p256", "dep:ed25519-dalek"]
+oidc = ["core", "dep:bytes", "dep:acyclic-stream", "dep:acyclic-harness-oidc", "dep:p256", "dep:ed25519-dalek"]
 native-answer = ["native-input", "acyclic-harness/test-support", "dep:acyclic-native-runtime"]
 command-result = ["core", "dep:acyclic-harness"]
 graphcoder = ["dep:acyclic-plugin", "acyclic-plugin/test-support"]
 code-mode = ["core", "dep:tokio"]
 native-arguments = ["core"]
 native-skill-records = ["core"]
-native-settings = ["core", "dep:tempfile"]
+native-settings = ["core", "dep:tempfile", "dep:acyclic-harness-mcp"]
 client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
 native-input = ["dep:acyclic-plugin", "dep:acyclic-harness", "dep:tempfile"]
 runtime = ["dep:acyclic-executable-search", "bounded-json", "native-settings", "graphcoder", "command-result", "native-input", "acyclic-harness/test-support", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
@@ -157,6 +157,9 @@ ed25519-dalek = { version = "3.0.0", optional = true }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"], optional = true }
 acyclic-harness-core = { path = "../harness-core", default-features = false, features = ["test-support"], optional = true }
 acyclic-executable-search = { path = "../executable-search", optional = true }
+acyclic-harness-native-settings = { path = "../harness-native-settings", features = ["test-support"], optional = true }
+acyclic-harness-oidc = { path = "../harness-oidc", optional = true }
+acyclic-harness-mcp = { path = "../harness-mcp", features = ["test-support"], optional = true }
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
 blake3.workspace = true

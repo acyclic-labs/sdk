@@ -1,6 +1,6 @@
 //! Daytona v0 REST adapter. Unsupported native guarantees are explicit.
 use acyclic_auth::secrets::SecretRef;
-use acyclic_harness_core::http::{
+use acyclic_harness_http::{
     AuthorizationScheme, CredentialResolver, CredentialSource, HttpRequest, HttpTransport,
 };
 use acyclic_machines::*;

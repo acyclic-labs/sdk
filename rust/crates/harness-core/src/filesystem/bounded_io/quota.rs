@@ -191,7 +191,8 @@ pub(crate) fn retain_decoded<T>(decoded: (T, DecodeReservation<'_>)) -> Result<T
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn native_decoded<T>(
+/// Decodes a native value under the supplied custody boundary.
+pub fn native_decoded<T>(
     mut decoded: (T, DecodeReservation<'_>),
 ) -> Result<(T, acyclic_fs::NativeAllocation)> {
     let custody = match decoded.1.custody.take() {

@@ -1,0 +1,97 @@
+//! Finite-input oracles over the production HTTP/SSE and JSON-RPC decoders.
+use super::{McpHttpResponse, response};
+use crate::rpc;
+use acyclic_harness_core::{OperationId, test_support::error_observation};
+use bytes::Bytes;
+use serde_json::Value;
+
+fn parse(
+    input: &[u8],
+    width: usize,
+    media: &str,
+    maximum: Option<u32>,
+    operation: OperationId,
+) -> acyclic_harness_core::Result<Value> {
+    let body = futures::stream::unfold(
+        Bytes::copy_from_slice(input),
+        move |mut remaining| async move {
+            if remaining.is_empty() {
+                None
+            } else {
+                let chunk = remaining.split_to(width.min(remaining.len()));
+                Some((Ok(chunk), remaining))
+            }
+        },
+    );
+    let response = McpHttpResponse {
+        status: 200,
+        headers: [("content-type".into(), media.into())].into(),
+        body: Box::pin(body),
+    };
+    futures::executor::block_on(response::decode(
+        response,
+        operation,
+        maximum,
+        None,
+        &std::sync::atomic::AtomicU64::new(0),
+    ))
+}
+
+/// Require positive admission of an actual captured response, rather than only
+/// comparing equivalent refusals across chunk partitions.
+pub fn admit(
+    input: &[u8],
+    media: &str,
+    operation: OperationId,
+    initialization: bool,
+) -> acyclic_harness_core::Result<Value> {
+    let result = parse(input, input.len().max(1), media, Some(u32::MAX), operation)?;
+    if initialization {
+        rpc::initialization(&result, None)?;
+    }
+    Ok(result)
+}
+
+/// Chunking cannot change a result, refusal envelope or outcome uncertainty.
+/// The finite body supplies every event synchronously and closes at its original EOF.
+pub fn check(input: &[u8]) {
+    for media in ["application/json", "text/event-stream"] {
+        for maximum in [None, Some(0), Some(1), Some(u32::MAX)] {
+            let operation = OperationId::from_bytes([7; 16]);
+            let whole = parse(input, input.len().max(1), media, maximum, operation)
+                .map_err(|error| error_observation(&error));
+            for width in [1, 17, 127] {
+                assert_eq!(
+                    whole,
+                    parse(input, width, media, maximum, operation)
+                        .map_err(|error| error_observation(&error)),
+                    "media={media}, maximum={maximum:?}, width={width}, input bytes={}",
+                    input.len()
+                );
+            }
+        }
+    }
+    if let Ok(value) = acyclic_harness_core::contract::json_from_slice::<Value>(input) {
+        let encoded = acyclic_harness_core::contract::canonical_json_bytes(&value).expect("JSON value encodes");
+        let replay =
+            acyclic_harness_core::contract::json_from_slice::<Value>(&encoded).expect("JSON output decodes");
+        assert_eq!(
+            rpc::initialization(&value, None).map_err(|error| error_observation(&error)),
+            rpc::initialization(&replay, None).map_err(|error| error_observation(&error))
+        );
+        assert_eq!(
+            rpc::notification(&value, None).map_err(|error| error_observation(&error)),
+            rpc::notification(&replay, None).map_err(|error| error_observation(&error))
+        );
+    }
+}
+
+/// Capture the actual client request writer. Server response seeds require
+/// retained output from a running server.
+pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+    let operation = OperationId::from_bytes([7; 16]);
+    Ok(vec![(
+        "mcp-request",
+        rpc::request(operation, "ping", serde_json::json!({}))?,
+    )])
+}

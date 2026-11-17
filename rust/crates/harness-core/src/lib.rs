@@ -31,6 +31,9 @@ pub use heap_layout::HeapLayout;
 
 pub mod agent;
 pub mod client_files;
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod clock;
 #[doc(hidden)]
 pub mod command_request;
 #[cfg(not(target_arch = "wasm32"))]
@@ -41,13 +44,10 @@ pub mod context;
 pub mod contract;
 pub mod conversation;
 pub mod core;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod devices;
 pub mod distributed;
 mod effects;
 pub mod evals;
 pub mod executor;
-pub mod experiments;
 pub mod extension;
 pub mod filesystem;
 pub mod goal;
@@ -55,27 +55,20 @@ pub mod goal;
 pub mod hooks;
 #[doc(hidden)]
 pub mod identity;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod input_watch;
 pub mod interaction;
 #[cfg(not(target_arch = "wasm32"))]
 mod javascript_allocator;
 pub mod layers;
 pub mod live;
 pub mod machines;
-pub mod mcp;
 pub mod model;
 #[cfg(any(test, feature = "test-support", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod native_environment;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_host;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod native_settings;
-pub mod objects;
 mod obs;
 /// Cached OIDC verification and admission through the existing workload authority.
-pub mod oidc;
 pub mod plugins;
 pub mod preset;
 /// Pure resolution of versioned model and role files at epoch admission.
@@ -211,5 +204,3 @@ pub mod build_metadata;
 /// File-driven, composable approval policy data and the tool admission gate.
 pub mod approvals;
 
-/// Shared HTTP and host-protected credential boundary.
-pub mod http;

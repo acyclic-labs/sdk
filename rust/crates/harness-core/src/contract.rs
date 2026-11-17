@@ -278,6 +278,16 @@ pub struct Capabilities(pub(crate) BTreeSet<String>);
 crate::core::ownership::owned_tuple!(Capabilities, (values));
 
 impl Capabilities {
+    /// Adds one capability.
+    pub fn insert(&mut self, capability: String) {
+        self.0.insert(capability);
+    }
+
+    /// Adds every capability from `other`.
+    pub fn extend(&mut self, other: &Self) {
+        self.0.extend(other.0.iter().cloned());
+    }
+
     /// Copies borrowed grants on the original native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn copy<'a>(

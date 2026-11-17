@@ -3,6 +3,7 @@
 use super::json::optional_from_js;
 use super::{from_js, js_error};
 use crate::mcp::McpCatalog;
+use crate::mcp::stdio::McpStdioRequestExt as _;
 use serde::Serialize as _;
 use wasm_bindgen::prelude::*;
 

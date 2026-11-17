@@ -1,0 +1,236 @@
+//! Decoder and bounded-ledger properties over the production hook implementation.
+use acyclic_harness_core::hooks::{
+    HookEvent, HookFailure, HookInput, HookOutput, HookRule, budget,
+};
+use acyclic_harness_core::{Result, tool};
+use serde_json::Value;
+
+type CheckResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+fn apply(
+    output: &mut HookOutput,
+    event: HookEvent,
+    policy: HookFailure,
+    result: Result<(Option<i32>, Vec<u8>, Vec<u8>)>,
+) -> CheckResult {
+    // Compare decoding semantics without an aggregate-output fallback changing
+    // the retained approval. The bounded fold is exercised separately below.
+    let mut ledger = budget::Budget::existing(None, output)?;
+    ledger.apply(output, event, policy, result);
+    ledger.finish(output);
+    Ok(())
+}
+/// Checks arbitrary hook bytes against the production decoder and ledger.
+///
+/// # Errors
+/// Returns construction or serialization failures for the fuzz caller to reject.
+///
+/// # Panics
+/// Panics if decoder, event-site, round-trip or bounded-ledger invariants fail.
+pub fn check(bytes: &[u8]) -> CheckResult {
+    crate::codec_fuzz::check(bytes)?;
+    futures::executor::block_on(acyclic_harness_core::hooks::chain_model::check(bytes))?;
+    check_input(bytes)?;
+    check_decisions(bytes)?;
+    check_budget(bytes)?;
+    check_rule(bytes)?;
+    Ok(())
+}
+
+fn check_input(bytes: &[u8]) -> CheckResult {
+    if let Ok(fields) = serde_json::from_slice::<Value>(bytes) {
+        let invocation = tool::ToolInvocation {
+            operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
+            call_id: "fuzz-call".into(),
+            name: "fuzz-tool".into(),
+            arguments: fields.clone(),
+        };
+        let response = tool::ToolResult {
+            value: fields.clone(),
+        };
+        for post in [false, true] {
+            let event = if post {
+                HookEvent::PostToolUse
+            } else {
+                HookEvent::PreToolUse
+            };
+            let input = HookInput::Tool {
+                binding: None,
+                invocation: &invocation,
+                response: post.then_some(&response),
+                session_id: None,
+            };
+            let encoded = input.encode(event, std::path::Path::new("workspace"), None)?;
+            let decoded: Value = serde_json::from_slice(&encoded)?;
+            assert_eq!(decoded.get("tool_input").unwrap_or(&Value::Null), &fields);
+            assert_eq!(decoded.get("tool_response"), post.then_some(&fields));
+            assert_eq!(
+                *decoded.get("hook_event_name").unwrap_or(&Value::Null),
+                event.name()
+            );
+            assert_eq!(*decoded.get("cwd").unwrap_or(&Value::Null), "workspace");
+        }
+        let encoded = HookInput::Fields(&fields).encode(
+            HookEvent::PreToolUse,
+            std::path::Path::new("workspace"),
+            None,
+        );
+        if let Some(fields) = fields.as_object() {
+            let decoded: Value = serde_json::from_slice(&encoded?)?;
+            assert_eq!(*decoded.get("cwd").unwrap_or(&Value::Null), "workspace");
+            assert_eq!(
+                *decoded.get("hook_event_name").unwrap_or(&Value::Null),
+                "PreToolUse"
+            );
+            for (key, value) in fields {
+                if !matches!(key.as_str(), "cwd" | "hook_event_name") {
+                    assert_eq!(decoded.get(key).unwrap_or(&Value::Null), value);
+                }
+            }
+        } else {
+            assert!(encoded.is_err());
+        }
+    }
+    if let Ok(output) = serde_json::from_slice::<HookOutput>(bytes) {
+        let encoded = serde_json::to_vec(&output)?;
+        let decoded: HookOutput = serde_json::from_slice(&encoded)?;
+        assert_eq!(output, decoded);
+    }
+    Ok(())
+}
+
+fn check_decisions(bytes: &[u8]) -> CheckResult {
+    for event in HookEvent::ALL {
+        // Each event is fired by exactly one site, and a single-event site names it.
+        assert_eq!(
+            HookEvent::at(event.site())
+                .filter(|fired| *fired == event)
+                .count(),
+            1
+        );
+        if let Ok(fired) = HookEvent::only(event.site()) {
+            assert_eq!(fired, event);
+        }
+        let mut reports = HookOutput::default();
+        apply(
+            &mut reports,
+            event,
+            HookFailure::Report,
+            Ok((Some(0), bytes.to_vec(), vec![])),
+        )?;
+        let mut merged = HookOutput {
+            approval: Some(acyclic_harness_core::hooks::HookApproval {
+                prompt: "earlier approval".into(),
+                route: acyclic_harness_core::interaction::ApprovalRoute::Human,
+            }),
+            ..HookOutput::default()
+        };
+        apply(
+            &mut merged,
+            event,
+            HookFailure::Report,
+            Ok((Some(0), bytes.to_vec(), vec![])),
+        )?;
+        assert_eq!(
+            merged
+                .approval
+                .as_ref()
+                .map(|approval| approval.prompt.as_str()),
+            Some("earlier approval")
+        );
+        assert_eq!(merged.blocked, reports.blocked);
+        let mut blocks = HookOutput::default();
+        apply(
+            &mut blocks,
+            event,
+            HookFailure::Block,
+            Ok((Some(0), bytes.to_vec(), vec![])),
+        )?;
+        assert_eq!(reports.diagnostics.len(), blocks.diagnostics.len());
+        for (report, block) in reports.diagnostics.iter().zip(&blocks.diagnostics) {
+            assert_eq!(report.cause, block.cause);
+            assert_eq!(block.blocking, event != HookEvent::Stop);
+        }
+        if reports.diagnostics.is_empty() || event == HookEvent::Stop {
+            assert_eq!(reports, blocks);
+        } else {
+            assert!(blocks.blocks());
+            assert!(reports.blocked.is_none());
+            assert!(reports.additional_context.is_empty());
+            assert!(reports.updated_input.is_none());
+            assert!(reports.approval.is_none());
+        }
+        if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+            let canonical = serde_json::to_vec(&value)?;
+            let mut round_trip = HookOutput::default();
+            apply(
+                &mut round_trip,
+                event,
+                HookFailure::Report,
+                Ok((Some(0), canonical, vec![])),
+            )?;
+            // Syntax diagnostics contain byte positions; compare semantics
+            // only when the structured input was accepted.
+            if reports.diagnostics.is_empty() {
+                if event == HookEvent::PreToolUse
+                    && value
+                        .pointer("/hookSpecificOutput/permissionDecision")
+                        .and_then(Value::as_str)
+                        == Some("ask")
+                    && let Some(reason) = value
+                        .pointer("/hookSpecificOutput/permissionDecisionReason")
+                        .and_then(Value::as_str)
+                {
+                    assert_eq!(
+                        reports
+                            .approval
+                            .as_ref()
+                            .map(|approval| approval.prompt.as_str()),
+                        Some(reason)
+                    );
+                }
+                assert_eq!(reports, round_trip);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_budget(bytes: &[u8]) -> CheckResult {
+    // All event-specific deltas, including replacement arguments, must obey
+    // the retained file bound and keep folding a following explicit denial.
+    for event in HookEvent::ALL {
+        // Exercise the production ledger with arbitrary output followed by a guard.
+        // This must stay bounded and cannot abandon a deny after exhaustion.
+        let mut ledger = budget::Budget::new(4096)?;
+        let mut outcome = HookOutput::default();
+        ledger.apply(
+            &mut outcome,
+            event,
+            HookFailure::Report,
+            Ok((Some(0), bytes.to_vec(), vec![])),
+        );
+        ledger.apply(
+            &mut outcome,
+            event,
+            HookFailure::Report,
+            Ok((Some(0), br#"{"continue":false}"#.to_vec(), vec![])),
+        );
+        ledger.finish(&mut outcome);
+        assert!(outcome.blocks());
+        assert!(serde_json::to_vec(&outcome)?.len() <= 4096);
+    }
+    Ok(())
+}
+
+fn check_rule(bytes: &[u8]) -> CheckResult {
+    if let Ok(rule) = serde_json::from_slice::<HookRule>(bytes) {
+        let encoded = serde_json::to_vec(&rule)?;
+        let decoded: HookRule = serde_json::from_slice(&encoded)?;
+        assert_eq!(rule, decoded);
+        for (original, restored) in rule.hooks.iter().zip(&decoded.hooks) {
+            assert_eq!(original.validate().is_ok(), restored.validate().is_ok());
+        }
+    }
+    Ok(())
+}

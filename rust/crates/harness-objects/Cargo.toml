@@ -1,0 +1,31 @@
+[package]
+include = ["clippy.toml", "Cargo.toml", "docs/**", "src/**"]
+name = "acyclic-harness-objects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Object content stores behind the acyclic-harness facade"
+documentation = "https://docs.rs/acyclic-harness-objects"
+
+[dependencies]
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+bytes.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
+tempfile = "3.27.0"
+
+[dev-dependencies]
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support"] }
+
+[lints]
+workspace = true

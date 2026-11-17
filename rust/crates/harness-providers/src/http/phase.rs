@@ -20,7 +20,7 @@ fn now() -> Option<u64> {
     #[cfg(not(target_arch = "wasm32"))]
     let now = super::native_now();
     #[cfg(target_arch = "wasm32")]
-    let now = acyclic_harness_core::http::browser::monotonic_now()?;
+    let now = acyclic_harness_http::browser::monotonic_now()?;
     u64::try_from(now.as_nanos()).ok()
 }
 

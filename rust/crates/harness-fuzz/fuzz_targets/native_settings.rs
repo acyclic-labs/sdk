@@ -1,5 +1,5 @@
 #![no_main]
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
-    acyclic_harness_core::native_settings::test_support::check_settings(bytes);
+    acyclic_harness_mcp::settings_validation::exercise(bytes);
 });

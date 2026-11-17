@@ -390,7 +390,7 @@ impl Roster {
 
     /// Describe a refusal from this same admitted roster. A known-lost target
     /// cannot be advertised as online while its presence update is in flight.
-    pub(crate) fn refusal(&self, target: &str, refused: Refused) -> TargetRefusal {
+    pub fn refusal(&self, target: &str, refused: Refused) -> TargetRefusal {
         TargetRefusal {
             target: target.to_owned(),
             online: self

@@ -1,0 +1,29 @@
+[package]
+include = ["clippy.toml", "Cargo.toml", "src/**", "tests/**"]
+name = "acyclic-harness-native-settings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native settings admission behind the acyclic-harness facade"
+documentation = "https://docs.rs/acyclic-harness-native-settings"
+
+[features]
+test-support = ["acyclic-harness-core/test-support", "dep:futures"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+futures = { workspace = true, optional = true }
+serde.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+tempfile = "3.27.0"
+toml.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["test-util", "process", "io-util"] }
+
+[lints]
+workspace = true

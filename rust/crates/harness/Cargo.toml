@@ -53,11 +53,11 @@ consumer-features = [{ features = ["browser"], target = "wasm32-unknown-unknown"
 [features]
 research = ["acyclic-harness-core/research"]
 conformance = ["dep:acyclic-harness-suite", "acyclic-fs/conformance", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/test-support", "acyclic-harness-core/test-support", "dep:ed25519-dalek"]
-test-support = ["acyclic-harness-hosting/test-support", "acyclic-harness-local/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
+test-support = ["acyclic-harness-hosting/test-support", "acyclic-harness-local/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support", "acyclic-harness-devices/test-support", "acyclic-harness-mcp/test-support", "acyclic-harness-native-settings/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
 browser = ["wasm", "acyclic-objects/javascript", "acyclic-fs/browser", "acyclic-harness-core/browser"]
 wasm-journal = ["browser", "acyclic-stream/wasm-journal"]
-wasm = ["acyclic-stream/wasm", "acyclic-harness-client/wasm", "dep:serde-wasm-bindgen", "dep:tsify", "acyclic-harness-core/wasm"]
+wasm = ["acyclic-stream/wasm", "acyclic-harness-client/wasm", "dep:serde-wasm-bindgen", "dep:tsify", "acyclic-harness-core/wasm", "acyclic-harness-mcp/wasm"]
 
 [dependencies]
 acyclic-fs-work = { version = "=0.2.0", path = "../filesystem-work" }
@@ -71,6 +71,11 @@ acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-harness-hosting = { version = "=0.2.0", path = "../harness-hosting" }
 acyclic-harness-local = { version = "=0.2.0", path = "../harness-local", default-features = false }
 acyclic-harness-suite = { version = "=0.2.0", path = "../harness-suite", optional = true }
+acyclic-harness-http = { version = "=0.2.0", path = "../harness-http" }
+acyclic-harness-experiments = { version = "=0.2.0", path = "../harness-experiments" }
+acyclic-harness-objects = { version = "=0.2.0", path = "../harness-objects" }
+acyclic-harness-oidc = { version = "=0.2.0", path = "../harness-oidc" }
+acyclic-harness-mcp = { version = "=0.2.0", path = "../harness-mcp" }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
@@ -110,6 +115,9 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-harness-native-settings = { version = "=0.2.0", path = "../harness-native-settings" }
+acyclic-harness-input-watch = { version = "=0.2.0", path = "../harness-input-watch" }
+acyclic-harness-devices = { version = "=0.2.0", path = "../harness-devices" }
 ratatui = { version = "=0.30.2", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 dirs = { workspace = true }

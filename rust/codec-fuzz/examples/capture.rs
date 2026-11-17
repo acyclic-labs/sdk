@@ -512,7 +512,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
-    for (name, bytes) in acyclic_harness_core::mcp::http::codec_fuzz::seeds()? {
+    for (name, bytes) in acyclic_harness_mcp::http::codec_fuzz::seeds()? {
         save(
             "harness_codecs",
             name,
@@ -524,7 +524,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
     save(
         "harness_codecs",
         "mcp-stdio-initialize-request",
-        &acyclic_harness_core::mcp::stdio::codec_fuzz::seed()?,
+        &acyclic_harness_mcp::stdio::codec_fuzz::seed()?,
         "McpStdioRequest::exchange production initialization write",
         &mut manifest,
     )?;

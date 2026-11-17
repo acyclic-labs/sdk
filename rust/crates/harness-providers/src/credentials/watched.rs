@@ -14,7 +14,7 @@ struct Observation<T> {
     value: T,
     revision: u64,
     watch: Option<CredentialWatch>,
-    native: Option<acyclic_harness_core::input_watch::InputWatch>,
+    native: Option<acyclic_harness_input_watch::InputWatch>,
     unavailable: bool,
 }
 
@@ -57,7 +57,7 @@ impl<T: Default> Watched<T> {
                 source()
             } else {
                 if state.native.is_none() {
-                    state.native = Some(acyclic_harness_core::input_watch::InputWatch::new(
+                    state.native = Some(acyclic_harness_input_watch::InputWatch::new(
                         self.paths.clone(),
                     )?);
                 }

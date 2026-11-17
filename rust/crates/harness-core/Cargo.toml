@@ -18,10 +18,6 @@ name = "agent-record-corpus"
 path = "examples/agent-record-corpus.rs"
 
 [[example]]
-name = "experiment-analysis"
-path = "examples/experiment-analysis.rs"
-
-[[example]]
 name = "history-codec-corpus"
 path = "examples/history-codec-corpus.rs"
 required-features = ["test-support"]
@@ -41,8 +37,8 @@ path = "tests/computed_ui_records.rs"
 [features]
 research = ["acyclic-observability/research"]
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance", "acyclic-machines/conformance"]
-test-support = ["acyclic-harness-control/test-support", "acyclic-harness-control-checks/repository-checks", "acyclic-harness-sse/test-support", "acyclic-harness-layout/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
-model-checking = ["acyclic-mcp/model-checking", "dep:loom", "dep:same-file", "acyclic-fs/model-checking"]
+test-support = ["acyclic-harness-control/test-support", "acyclic-harness-control-checks/repository-checks", "acyclic-harness-sse/test-support", "acyclic-harness-layout/test-support", "dep:acyclic-test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
+model-checking = ["dep:loom", "dep:same-file", "acyclic-fs/model-checking"]
 browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-harness-model-cache/wasm", "acyclic-stream/wasm", "dep:tsify"]
 
@@ -59,7 +55,6 @@ acyclic-harness-model-cache = { version = "=0.2.0", path = "../harness-model-cac
 memchr = "=2.8.3"
 pulldown-cmark.workspace = true
 tar = { version = "=0.4.46", default-features = false }
-acyclic-mcp = { version = "=0.2.0", path = "../mcp" }
 ring = { version = "=0.17.14", features = ["wasm32_unknown_unknown_js"] }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
@@ -70,6 +65,7 @@ zeroize.workspace = true
 once_cell = "1.21.3"
 pin-project-lite = "0.2.17"
 acyclic-differential = { version = "=0.2.0", path = "../differential", optional = true }
+acyclic-test-support = { path = "../test-support", optional = true }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
@@ -124,7 +120,6 @@ prost-build.workspace = true
 acyclic-fs-native-contract = { version = "=0.2.0", path = "../filesystem-native-contract" }
 acyclic-harness-modules = { version = "=0.2.0", path = "../harness-modules" }
 notify.workspace = true
-acyclic-mcp = { version = "=0.2.0", path = "../mcp", features = ["stdio"] }
 rmcp = { workspace = true, features = ["auth", "reqwest-tls-no-provider"] }
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "futures", "parallel"] }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }

@@ -129,7 +129,8 @@ impl ToolDefinition {
         self.validate_checked(work, &|| Ok(()))
     }
 
-    pub(crate) fn validate_checked(
+    /// Validates the definition against the admitted tool contract.
+    pub fn validate_checked(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
         check: &impl Fn() -> Result<()>,

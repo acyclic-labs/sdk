@@ -131,7 +131,8 @@ impl ToolRegistry {
     }
 
     /// Pins the complete dynamic catalog installation.
-    pub(crate) fn pin_catalog_revision(
+    /// Pins the catalog revision for this selection.
+    pub fn pin_catalog_revision(
         &mut self,
         namespace: &str,
         expected: Option<[u8; 32]>,
