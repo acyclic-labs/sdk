@@ -944,8 +944,7 @@ async fn the_alarm_index_head_is_one_page_for_any_future_population() -> TestRes
         let (clock, _control) = ControlledClock::new(100);
         let clock = Arc::new(clock);
         let store = Store::new(Arc::clone(&provider), root()?)
-            .with_scheduling_shards(std::num::NonZeroU16::MIN)
-            .with_clock(clock.clone());
+            .with_scheduling_shards(std::num::NonZeroU16::MIN);
         let earlier = Runtime::new(
             crate::guest::Requests::default(),
             store.clone(),
