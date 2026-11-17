@@ -9,9 +9,13 @@ description = "JSON admission contracts and literal data decoding for the harnes
 documentation = "https://docs.rs/acyclic-harness-json"
 
 [dependencies]
+arrayvec = { version = "0.7.8", default-features = false }
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true

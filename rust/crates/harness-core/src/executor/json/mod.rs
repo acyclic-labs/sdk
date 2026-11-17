@@ -90,6 +90,28 @@ pub use serialization::{
     canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded, json_value_copy_bounded,
 };
 
+/// Runtime classification and original work events for the shared syntax engine.
+#[derive(Default)]
+pub(crate) struct RuntimeJson;
+
+impl acyclic_harness_json::policy::Policy for RuntimeJson {
+    type Error = Error;
+    type Context = Option<crate::wire::ErrorCode>;
+    type Charge = JsonCodecCharge;
+
+    fn input(kind: JsonInputError, code: Self::Context) -> Error {
+        input_error(kind, code)
+    }
+    fn boundary(reason: &'static str, code: Self::Context) -> Error {
+        boundary(reason, code)
+    }
+    fn overflow(reason: &'static str) -> Error {
+        boundary(reason, Some(crate::wire::ErrorCode::Invalid))
+    }
+    fn item() -> Self::Charge {
+        JsonCodecCharge::Work { bytes: 0, items: 1 }
+    }
+}
 fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(code) = code {
@@ -228,7 +250,7 @@ fn boundary(reason: &'static str, code: Option<crate::wire::ErrorCode>) -> Error
     Error::Invalid(reason.into())
 }
 fn checked<T>(value: Option<T>, reason: &'static str) -> Result<T> {
-    value.ok_or_else(|| boundary(reason, Some(crate::wire::ErrorCode::Invalid)))
+    value.ok_or_else(|| <RuntimeJson as acyclic_harness_json::policy::Policy>::overflow(reason))
 }
 
 /// Closed codec/RawValue diagnostic allowance.
