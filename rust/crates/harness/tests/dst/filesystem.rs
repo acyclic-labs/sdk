@@ -215,13 +215,13 @@ fn read_world(seed: u64) -> std::result::Result<bool, String> {
                     let arguments = match selector {
                         "byte_range" => {
                             let (start, end) = byte_range(position, total);
-                            json!({"path": path, "range": {"start": start, "end": end}})
+                            json!({"path": path, "include_body": true, "range": {"start": start, "end": end}})
                         }
                         "line_selection" => {
                             let (offset, limit) = line_selection(position, lines.len());
-                            json!({"path": path, "selection": {"kind": "lines", "offset": offset, "limit": limit}})
+                            json!({"path": path, "include_body": true, "selection": {"kind": "lines", "offset": offset, "limit": limit}})
                         }
-                        _ => json!({"path": path}),
+                        _ => json!({"path": path, "include_body": true}),
                     };
                     let value = execute(&task, "read", arguments).await?;
                     check_page(&label, &value)?;
@@ -254,13 +254,13 @@ fn read_world(seed: u64) -> std::result::Result<bool, String> {
                 let by_bytes = execute(
                     &task,
                     "read",
-                    json!({"path": path, "range": {"start": start, "end": end}}),
+                    json!({"path": path, "include_body": true, "range": {"start": start, "end": end}}),
                 )
                 .await?;
                 let by_lines = execute(
                     &task,
                     "read",
-                    json!({"path": path, "selection": {"kind": "lines", "offset": offset, "limit": limit}}),
+                    json!({"path": path, "include_body": true, "selection": {"kind": "lines", "offset": offset, "limit": limit}}),
                 )
                 .await?;
                 if text(&by_bytes)? != text(&by_lines)? {
