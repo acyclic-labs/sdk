@@ -7,9 +7,9 @@ if(!root||!workspace||!tmp)throw Error('Bazel test runfiles are required');
 const input=path.join(root,workspace),tree=path.join(input,'deny-workspace');
 const home=path.join(tmp,'cargo-home'),db=path.join(home,'advisory-dbs','advisory-db-3157b0e258782691');
 fs.mkdirSync(db,{recursive:true});
-// The root of WalkDir follows this one symlink; its descendants are regular
-// files in Bazel's cached tree artifact, so no per-test database copy is needed.
-fs.symlinkSync(path.join(input,'deny-advisories','crates'),path.join(db,'crates'),'dir');
+// Resolve the tree artifact before exposing it to the advisory loader, which
+// skips symlinked package directories. The cached tree is never copied here.
+fs.symlinkSync(fs.realpathSync(path.join(input,'deny-advisories','crates')),path.join(db,'crates'),'dir');
 const advisories=fs.readdirSync(path.join(db,'crates'),{recursive:true,withFileTypes:true}).filter(entry=>entry.name.endsWith('.md')&&fs.statSync(path.join(entry.parentPath,entry.name)).isFile());
 if(!advisories.length)throw Error('pinned advisory snapshot contains no regular advisory files');
 // The committed snapshot's actual fetch time, not the time this test happened to run.
