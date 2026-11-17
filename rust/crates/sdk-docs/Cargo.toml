@@ -7,6 +7,9 @@ rust-version = "1.98"
 publish = false
 description = "Deterministic Rust-owned versioned SDK documentation data"
 
+[package.metadata.bazel.test-tools.sdk_docs_test]
+cargo = "//:cargo"
+
 [features]
 model-checking = []
 test-support = ["acyclic-native-runtime/test-support"]

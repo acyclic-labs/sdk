@@ -57,7 +57,7 @@ fn scoped_rustup_homes_select_their_own_commands_targets_and_cfgs() {
                 assert!(rustdoc_targets(&[&host]).is_ok());
                 assert_eq!(
                     nightly_rustdoc_command(&host).unwrap().get_program(),
-                    home.join("bin/cargo")
+                    home.join("bin/cargo").canonicalize().unwrap()
                 );
                 assert!(rustdoc_platform_cfgs()
                     .unwrap()

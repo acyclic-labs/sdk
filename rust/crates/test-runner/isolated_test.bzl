@@ -28,10 +28,18 @@ def _isolated_test_impl(ctx):
         runfiles = runfiles.merge(ctx.runfiles(files = [ctx.file.wrapper] + ctx.files.wrapper_data))
 
     # Cargo's CARGO_BIN_EXE_<name>, relative to the runfiles root; the runner makes it absolute.
+    # A filegroup with one file, such as the toolchain's Cargo, is that executable.
     for target, name in ctx.attr.binaries.items():
         info = target[DefaultInfo]
-        environment["CARGO_BIN_EXE_" + name] = info.files_to_run.executable.short_path
+        files = info.files.to_list()
+        tool = info.files_to_run.executable
+        if tool == None:
+            if len(files) != 1:
+                fail("{}: {} names {} files, not one executable".format(ctx.label, name, len(files)))
+            tool = files[0]
+        environment["CARGO_BIN_EXE_" + name] = tool.short_path
         runfiles = runfiles.merge(info.default_runfiles)
+        runfiles = runfiles.merge(ctx.runfiles(files = files))
     return [
         DefaultInfo(executable = executable, runfiles = runfiles),
         RunEnvironmentInfo(environment = environment),

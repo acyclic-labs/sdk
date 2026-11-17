@@ -79,6 +79,27 @@ const configEnv = Object.fromEntries(Object.entries(toml(root, ".cargo/config.to
 // resolves third-party features its own way, so universeSpecs() pins each crate's all-features set.
 const runs = TRIPLES.map(triple => JSON.parse(execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", triple, "--all-features"], { cwd: root, encoding: "utf8", maxBuffer: 2 ** 31 - 1 })));
 const [base] = runs;
+// The workspace metadata the tests read instead of running Cargo. It holds the workspace members
+// only, with manifest paths relative to the workspace root, so the file is relocatable and small.
+const workspaceMetadata = (() => {
+  const members = new Set(base.workspace_members);
+  const relative = p => path.relative(base.workspace_root, p).replaceAll("\\", "/");
+  return JSON.stringify({
+    packages: base.packages.filter(p => members.has(p.id)).map(p => ({
+      ...p,
+      manifest_path: relative(p.manifest_path),
+      dependencies: [],
+      targets: [],
+    })),
+    workspace_members: base.workspace_members,
+    workspace_default_members: base.workspace_default_members,
+    resolve: null,
+    target_directory: "target",
+    version: base.version,
+    workspace_root: ".",
+    metadata: base.metadata,
+  }, null, 2) + "\n";
+})();
 const packages = new Map(runs.flatMap(run => run.packages.map(p => [p.id, p])));
 const workspace = new Set(runs.flatMap(run => run.workspace_members));
 const members = new Set(workspace);
@@ -482,8 +503,12 @@ function buildFile(p) {
   // [package.metadata.bazel.test-tools.<test>]: ENV = "@repo//:target". The runner names each
   // executable by its Cargo variable, so the test finds it in runfiles without a host path.
   const testTools = (p, test) => Object.fromEntries(Object.entries(p.metadata?.bazel?.["test-tools"]?.[test] ?? {}).map(([name, label]) => [label, name]));
+  // Files a test reads at run time beyond its package, from
+  // [package.metadata.bazel.test-data.<test>]: NAME = "@repo//:target".
+  const testData = (p, test) => Object.values(p.metadata?.bazel?.["test-data"]?.[test] ?? {});
   const test = (wanted, attrs, reads, binaries, id) => {
     const tools = { ...binaries, ...testTools(p, wanted) };
+    reads = [...reads, ...testData(p, wanted)];
     let name = wanted;
     while (names.has(name) || names.has(`${name}_cases`) || profiles.some(({ profile }) => names.has(`${name}_${profile}`))) name += "_test";
     names.add(name).add(`${name}_cases`);
@@ -725,6 +750,9 @@ function moduleFile() {
       ["opt_level", q(optLevels)],
       ["extra_rustc_flags_triples", q(Object.fromEntries(TRIPLES.map(t => [t, t === WINDOWS_TRIPLE ? [...flags, ...WINDOWS_RUSTC_FLAGS] : flags])))],
       ["extra_exec_rustc_flags_triples", q(Object.fromEntries(TRIPLES.map(t => [t, flags])))],
+      // A stable name for the Windows toolchain's tools repository, which rules_rust otherwise
+      // names with a hash. The root BUILD's cargo filegroup selects it by that name.
+      ["aliases", q({ [`rust_windows_x86_64__${WINDOWS_TRIPLE}__${channelName}`]: "rust_windows_x86_64" })],
     ]),
     // rules_rust maps the musl triple to the gnu constraints, so its toolchain carries the
     // repository's musl constraint explicitly and the gnu toolchain cannot be selected for it.
@@ -808,11 +836,30 @@ const linuxMusl = `
 ${rule("config_setting", [["name", q("linux-musl")], ["constraint_values", list(["@platforms//os:linux", "@platforms//cpu:x86_64", ":libc_musl"])]])}
 ${rule("platform", [["name", q("linux_musl")], ["constraint_values", list(["@platforms//os:linux", "@platforms//cpu:x86_64", ":libc_musl"])]])}
 `;
+// The toolchain's Cargo, as the tests that check real Cargo behaviour start it. Each platform's
+// toolchain repository carries the same release's Cargo beside its rustc.
+const cargoFilegroup = (() => {
+  const channel = toml("rust-toolchain.toml").toolchain.channel;
+  const channelName = /^(beta|nightly)/.test(channel) ? channel.split("/")[0] : "stable";
+  const tools = (name, triple) => `@${name}__${triple}__${channelName}_tools//:cargo`;
+  return `
+${rule("filegroup", [
+    ["name", q("cargo")],
+    ["srcs", `select(${q({
+      "//:linux-x86_64": [tools("rust_linux_x86_64", LINUX_GNU_TRIPLE)],
+      "//:macos-aarch64": [tools("rust_macos_aarch64", "aarch64-apple-darwin")],
+      "//:windows-x86_64": ["@rust_windows_x86_64_tools//:cargo"],
+    })})`],
+    ["visibility", q(["//visibility:public"])],
+  ])}
+`;
+})();
 const files = new Map([
   ["cargo.MODULE.bazel", moduleFile()],
+  ["rust/crates/sdk-docs/tests/fixtures/workspace-metadata.json", workspaceMetadata],
   ["BUILD.bazel", `${HEADER}
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
-${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${linuxMusl}${windowsCcToolchain()}${sourcesRule}${exportsRule("")}`],
+${libcConstraints}${platformRules}${windowsPlatform}${macosPlatform}${linuxMusl}${cargoFilegroup}${windowsCcToolchain()}${sourcesRule}${exportsRule("")}`],
   // The Windows C toolchain's config and files read repositories only the root module creates, so
   // they are their own package: a module that depends on this one never loads it.
   [`${WINDOWS_TOOLCHAIN_PACKAGE}/BUILD.bazel`, `${HEADER}
