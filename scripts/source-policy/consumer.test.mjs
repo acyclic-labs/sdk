@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {resolve} from 'node:path';
 import {fuzzProject} from '../no-polling.fuzz.mjs';
 import {newProjectPollingSites} from './project.mjs';
 
@@ -10,6 +11,9 @@ const moduleUrl = source => 'data:text/javascript;base64,' + Buffer.from(source)
 const indexUrl = new URL('./index.mjs', import.meta.url);
 
 test('source-only command preserves the recorded producer/consumer graph', () => {
+ assert.equal(fileURLToPath(import.meta.resolve('typescript-parser')),
+  resolve('node_modules/typescript-parser/lib/typescript.js'),
+  'the declared runfiles package must own parser lookup');
  const capture = JSON.parse(readFileSync(new URL('../fixtures/no-polling/actor-project.json', import.meta.url), 'utf8'));
  const before = new Map(capture.sources);
  const [producer, consumer] = capture.files;
