@@ -729,7 +729,10 @@ extern "C" fn host_child(argument: *mut libc::c_void) -> libc::c_int {
     // SAFETY: dup2 and execveat take only inherited descriptors and the
     // parent-owned argument vectors; no allocation or lock is taken.
     unsafe {
-        if libc::dup2(spawn.listener, 0) < 0
+        // Lead a new process group so a kill of the spawning owner's group
+        // never reaches a host that other owners still use.
+        if libc::setpgid(0, 0) < 0
+            || libc::dup2(spawn.listener, 0) < 0
             || libc::dup2(spawn.admission, 1) < 0
             || libc::dup2(spawn.events, 2) < 0
         {
