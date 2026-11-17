@@ -1146,7 +1146,12 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
         .expect("the effective prompt is a run record");
     let prepared = records
         .iter()
-        .position(|record| matches!(record.event, ExecutionEvent::ContextPrepared { step: 0, .. }))
+        .position(|record| {
+            matches!(
+                record.event,
+                ExecutionEvent::ContextPrepared { step: 0, .. }
+            )
+        })
         .expect("the prepared context is a run record");
     let started = records
         .iter()
@@ -1238,7 +1243,10 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(totals.calls, 1);
     assert_eq!(totals.attempts, 2, "the restarted attempt is counted");
-    assert_eq!(totals.abandoned, usage.abandoned.expect("abandoned attempt"));
+    assert_eq!(
+        totals.abandoned,
+        usage.abandoned.expect("abandoned attempt")
+    );
     let replay = futures::executor::block_on(executor.execute(input, &journal))?;
     assert_eq!(replay, output);
     assert_eq!(provider.requests().len(), 1);

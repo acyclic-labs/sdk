@@ -23,10 +23,7 @@ fn run(seed: u64) -> std::result::Result<(), String> {
 }
 
 fn variants(_: u64) -> Vec<Variant> {
-    vec![BTreeMap::from([
-        ("span", "tool_call"),
-        ("fault", "none"),
-    ])]
+    vec![BTreeMap::from([("span", "tool_call"), ("fault", "none")])]
 }
 
 pub(super) fn world(seed: u64) -> std::result::Result<bool, String> {
