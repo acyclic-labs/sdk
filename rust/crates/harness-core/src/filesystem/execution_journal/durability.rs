@@ -64,6 +64,7 @@ where
             io.charge(
                 authority
                     .spent()
+                    .map_err(acyclic_fs::FsError::from)?
                     .checked_add(acyclic_fs::WorkCounters {
                         durability_operations: 1,
                         ..Default::default()
