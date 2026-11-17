@@ -618,16 +618,29 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
 
 struct LengthState {
     step: usize,
+    summaries: usize,
 }
 
 fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvider {
-    let state = Mutex::new(LengthState { step: 0 });
+    let state = Mutex::new(LengthState {
+        step: 0,
+        summaries: 0,
+    });
     let responder = move |request: &ModelRequest| {
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if request.summary {
-            return Ok(match call {
-                "context_review" => length_stopped_review(),
-                "summary" => length_stopped_rewrite(request),
-                _ => length_stop(content, "dst"),
+            let first = state.summaries == 0;
+            state.summaries += 1;
+            return Ok(if first {
+                length_stop(content, "dst")
+            } else {
+                match call {
+                    "context_review" => length_stopped_review(),
+                    "summary" => length_stopped_rewrite(request),
+                    _ => length_stop(content, "dst"),
+                }
             });
         }
         if request_tag(request, &["d4-after"]).is_some() {
@@ -642,9 +655,6 @@ fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvide
         {
             return Ok(ScriptedTurn::Text(done("d4-warm")));
         }
-        let mut state = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let answer = match call {
             "context_review" => match state.step {
                 0 => {
@@ -702,6 +712,33 @@ fn d4_after_service() -> ScriptedModelProvider {
         }
         Ok(ScriptedTurn::Text(done("d4-after")))
     })
+}
+
+fn d4_valid_cut_service(call: &'static str) -> ScriptedModelProvider {
+    let state = Mutex::new(LengthState {
+        step: 0,
+        summaries: 0,
+    });
+    let responder = move |request: &ModelRequest| {
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if request.summary {
+            return Ok(if call == "context_review" {
+                length_stopped_review()
+            } else {
+                length_stopped_rewrite(request)
+            });
+        }
+        let answer = if call == "context_review" && state.step == 0 {
+            state.step += 1;
+            tool_with_usage()
+        } else {
+            ScriptedTurn::Text(done("d4-valid-cut"))
+        };
+        Ok(answer)
+    };
+    ScriptedModelProvider::responding(responder)
 }
 
 fn d4_capacity(capacity: &str) -> acyclic_harness::context::ModelContextCapacity {
@@ -800,6 +837,18 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     if incarnation.requests.iter().any(has_file) {
                         return fail("a length-cut summary published a rewrite");
                     }
+                    world.service = d4_valid_cut_service(call);
+                    let valid_cut = vec![vec![(
+                        "d4-valid-cut",
+                        format!("d4-content:{content} {} valid cut", tag("d4-valid-cut")),
+                    )]];
+                    let cut = world
+                        .incarnation(None, &valid_cut)
+                        .await
+                        .map_err(oracle::failed)?;
+                    if cut.requests.iter().any(has_file) {
+                        return fail("a valid cut summary published a rewrite");
+                    }
                     world.service = d4_after_service();
                     let after = vec![vec![("d4-after", tag("d4-after"))]];
                     let reopened = world
@@ -823,6 +872,18 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     }
                     if incarnation.requests.iter().any(has_file) {
                         return fail("a length-cut context review published a rewrite");
+                    }
+                    world.service = d4_valid_cut_service(call);
+                    let valid_cut = vec![vec![(
+                        "d4-valid-cut",
+                        format!("d4-content:{content} {} valid cut", tag("d4-valid-cut")),
+                    )]];
+                    let cut = world
+                        .incarnation(None, &valid_cut)
+                        .await
+                        .map_err(oracle::failed)?;
+                    if cut.requests.iter().any(has_file) {
+                        return fail("a valid cut review published a rewrite");
                     }
                 }
                 _ => {
