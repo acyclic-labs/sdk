@@ -138,7 +138,7 @@ fn complete_exchange_cut(source: &[ModelMessage]) -> Option<usize> {
                     pending.insert(call.call_id.clone());
                 }
                 ModelContentPart::ToolResult { call_id, .. } => {
-                    pending.remove(call_id);
+                    pending.remove(call_id.as_str());
                     saw_result = true;
                 }
                 _ => {}

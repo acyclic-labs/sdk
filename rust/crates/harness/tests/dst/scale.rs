@@ -135,7 +135,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             let steady = &steps[1..];
             let first = steady.first().copied().unwrap_or(0);
             let bound = first.saturating_mul(2).saturating_add(64 * 1024);
-            if let Some((index, &step)) = steady.iter().enumerate().find(|(_, &step)| step > bound) {
+            if let Some((index, step)) = steady.iter().enumerate().find(|(_, step)| **step > bound) {
                 return Err(format!(
                     "durable bytes per step grew with history: step {index}, first {first}, step {step}, all {steps:?}"
                 ));
