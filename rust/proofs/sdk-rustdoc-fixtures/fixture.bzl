@@ -27,12 +27,20 @@ def _rustdoc_fixture_impl(ctx):
         if not path.startswith(ctx.attr.fixture_root):
             fail("fixture input is outside its declared root: " + path)
         sources.append((file, path[len(ctx.attr.fixture_root):]))
-    if ctx.file.override:
-        sources = [(file, relative) for file, relative in sources if relative != ctx.attr.override_path]
-        sources.append((ctx.file.override, ctx.attr.override_path))
+    for target, relative in ctx.attr.mapped_sources.items():
+        files = target[DefaultInfo].files.to_list()
+        if len(files) != 1:
+            fail("mapped fixture input must name exactly one file")
+        sources = [(file, existing) for file, existing in sources if existing != relative]
+        sources.append((files[0], relative))
     ctx.actions.write(metadata, json.encode({
         "package": ctx.attr.package,
         "toolchain": toolchain,
+        "manifest_path": ctx.attr.manifest_path,
+        "owner_path": ctx.attr.owner_path,
+        "selected_lock": ctx.attr.selected_lock,
+        "library_name": ctx.attr.library_name or ctx.attr.package.replace("-", "_"),
+        "proc_macro": ctx.attr.proc_macro,
         "cargo_flags": ctx.attr.cargo_flags,
         "sources": [{"file": _repository_path(file.short_path), "relative": relative} for file, relative in sources],
         "output": _repository_path(output.short_path),
@@ -42,6 +50,10 @@ def _rustdoc_fixture_impl(ctx):
     args.add(ctx.file._rustup)
     args.add(toolchain)
     args.add(ctx.attr.package)
+    args.add(ctx.attr.manifest_path)
+    args.add(ctx.attr.selected_lock)
+    args.add(ctx.attr.library_name or ctx.attr.package.replace("-", "_"))
+    args.add("proc-macro" if ctx.attr.proc_macro else "library")
     for file, relative in sources:
         args.add(file)
         args.add(relative)
@@ -63,8 +75,12 @@ rustdoc_fixture = rule(
     attrs = {
         "srcs": attr.label_list(allow_files = True, mandatory = True),
         "fixture_root": attr.string(mandatory = True),
-        "override": attr.label(allow_single_file = True),
-        "override_path": attr.string(),
+        "mapped_sources": attr.label_keyed_string_dict(allow_files = True),
+        "manifest_path": attr.string(default = "Cargo.toml"),
+        "owner_path": attr.string(),
+        "selected_lock": attr.string(),
+        "library_name": attr.string(),
+        "proc_macro": attr.bool(),
         "package": attr.string(mandatory = True),
         "cargo_flags": attr.string_list(),
         "_producer": attr.label(default = ":producer", executable = True, cfg = "exec"),
@@ -72,14 +88,18 @@ rustdoc_fixture = rule(
     },
 )
 
-def rustdoc_fixture_set(srcs, fixture_root, package, profiles, override = None, override_path = ""):
+def rustdoc_fixture_set(srcs, fixture_root, package, profiles, mapped_sources = {}, manifest_path = "Cargo.toml", owner_path = "", selected_lock = "", library_name = "", proc_macro = False):
     for name, flags in profiles.items():
         rustdoc_fixture(
             name = name,
             srcs = srcs,
             fixture_root = fixture_root,
             package = package,
-            override = override,
-            override_path = override_path,
+            mapped_sources = mapped_sources,
+            manifest_path = manifest_path,
+            owner_path = owner_path,
+            selected_lock = selected_lock,
+            library_name = library_name,
+            proc_macro = proc_macro,
             cargo_flags = flags,
         )

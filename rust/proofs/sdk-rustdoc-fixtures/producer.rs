@@ -6,6 +6,10 @@ fn main() {
     let rustup = fs::canonicalize(args.next().unwrap()).unwrap();
     let toolchain = args.next().unwrap().into_string().unwrap();
     let package = args.next().unwrap().into_string().unwrap();
+    let manifest_path = PathBuf::from(args.next().unwrap());
+    let selected_lock = PathBuf::from(args.next().unwrap());
+    let library_name = args.next().unwrap().into_string().unwrap();
+    let proc_macro = args.next().unwrap() == "proc-macro";
     let root = output.with_extension("work");
     let source = root.join("source");
     let target = root.join("target");
@@ -55,10 +59,18 @@ fn main() {
             "--offline",
         ])
         .arg("--manifest-path")
-        .arg(source.join("Cargo.toml"))
+        .arg(source.join(manifest_path))
         .args(["--package", &package, "--lib"])
         .args(["--target", host])
-        .args(args)
+        .args(args);
+    if !selected_lock.as_os_str().is_empty() {
+        let lock = fs::canonicalize(source.join(selected_lock)).unwrap();
+        command.args([
+            "--config",
+            &format!("resolver.lockfile-path={:?}", lock.to_str().unwrap()),
+        ]);
+    }
+    command
         .args(["--", "-Z", "unstable-options", "--output-format", "json"])
         .env("RUSTUP_HOME", home)
         .env(
@@ -85,10 +97,12 @@ fn main() {
         "fixture Rustdoc failed"
     );
     fs::copy(
-        target
-            .join(host)
-            .join("doc")
-            .join(format!("{}.json", package.replace('-', "_"))),
+        (if proc_macro {
+            target.join("doc")
+        } else {
+            target.join(host).join("doc")
+        })
+        .join(format!("{library_name}.json")),
         output,
     )
     .unwrap();
