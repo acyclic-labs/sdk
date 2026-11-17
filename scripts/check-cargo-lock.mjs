@@ -1,5 +1,5 @@
 import {toml} from './policy-core.mjs';
-import {workspacePackages, compareVersions} from './workspace-model.mjs';
+import {workspacePackages, compareVersions, versionMatches} from './workspace-model.mjs';
 
 export function checkLock(root) {
   const lock = toml(root, 'Cargo.lock');
@@ -22,9 +22,22 @@ export function checkLock(root) {
       if (candidates.length !== 1) throw Error(`ambiguous or missing dependency ${dep} in ${identity}`);
     }
   }
-  for (const pkg of workspacePackages(root))
-    if (!lock.package.some(p => !p.source && p.name === pkg.name && p.version === pkg.version))
-      throw Error(`missing local package ${pkg.name}@${pkg.version}`);
+  for (const pkg of workspacePackages(root)) {
+    const locked = lock.package.find(p => !p.source && p.name === pkg.name && p.version === pkg.version);
+    if (!locked) throw Error(`missing local package ${pkg.name}@${pkg.version}`);
+    const declared = pkg.dependencies.filter(dep => pkg.workspace_member || dep.kind !== 'dev');
+    for (const dep of declared) {
+      const present = (locked.dependencies ?? []).some(ref => {
+        const [name, version, source] = ref.split(' ');
+        if (name !== dep.name) return false;
+        return lock.package.some(candidate => candidate.name === name && (!version || candidate.version === version)
+          && (!source || `(${candidate.source})` === source) && versionMatches(candidate.version, dep.req));
+      });
+      if (!present) throw Error(`missing locked dependency ${pkg.name} -> ${dep.name} ${dep.req}`);
+    }
+    for (const ref of locked.dependencies ?? [])
+      if (!declared.some(dep => dep.name === ref.split(' ')[0])) throw Error(`undeclared locked dependency ${pkg.name} -> ${ref}`);
+  }
   // Parsing and checking never rewrites the lockfile or acquires a package-cache lock.
   return lock.package.length;
 }

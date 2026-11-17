@@ -25,5 +25,10 @@ test('lock checking rejects stale local identities and broken edges without rewr
     const broken = check();
     assert.equal(broken.status, 1);
     assert.match(broken.stderr, /missing dependency missing/);
+    writeFileSync(join(root, 'zeta/Cargo.toml'), '[package]\nname = "zeta"\nversion = "0.1.0"\n[dependencies]\nother = "1"\n');
+    writeFileSync(file, 'version = 4\n\n[[package]]\nname = "other"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "' + 'a'.repeat(64) + '"\n\n' + lock.slice('version = 4\n\n'.length));
+    const missingEdge = check();
+    assert.equal(missingEdge.status, 1);
+    assert.match(missingEdge.stderr, /missing locked dependency zeta -> other/);
   } finally {rmSync(root, {recursive: true, force: true});}
 });

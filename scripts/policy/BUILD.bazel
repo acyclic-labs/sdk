@@ -11,6 +11,22 @@ node_test(
 )
 
 node_test(
+    name = "cargo_lock_test",
+    srcs = [
+        "//:scripts/check-cargo-lock.mjs",
+        "//:scripts/check-cargo-lock.test.mjs",
+        "//:scripts/policy-core.mjs",
+        "//:scripts/workspace-model.mjs",
+    ],
+    entry = "scripts/check-cargo-lock.test.mjs",
+)
+
+test_suite(
+    name = "workspace_metadata_test",
+    tests = [":cargo_lock_test", ":workspace_model_test"],
+)
+
+node_test(
     name = "test_features_test",
     srcs = [
         "//:scripts/policy-core.mjs",
