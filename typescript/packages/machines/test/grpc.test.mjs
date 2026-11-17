@@ -84,14 +84,14 @@ test("RPC bridge distinguishes server refusal from expired response custody", as
   const unavailable = createMachinesGrpcTransport({ ...options, credential: () => { throw cause; } });
   t.after(() => unavailable.close());
   const before = createMachinesRpcTransport(unavailable.transport)("create", async () => bytes);
-  await assert.rejects(before.ready, error => error.code === Code.Unavailable && error.requestCredentialAdmission === true && error.cause === cause);
+  await assert.rejects(before.ready, error => error.code === Code.Unavailable && error.requestCredentialAdmission === true && error.responseCredentialAdmission !== true && error.cause === cause);
   before.cancel();
   assert.equal(calls, 0);
   const denied = request();
-  await assert.rejects(denied.ready, error => error.code === Code.PermissionDenied && error.responseCredentialAdmission !== true);
+  await assert.rejects(denied.ready, error => error.code === Code.PermissionDenied && error.requestCredentialAdmission !== true && error.responseCredentialAdmission !== true);
   denied.cancel();
   const expired = request();
-  await assert.rejects(expired.ready, error => error.code === Code.PermissionDenied && error.responseCredentialAdmission === true);
+  await assert.rejects(expired.ready, error => error.code === Code.PermissionDenied && error.requestCredentialAdmission !== true && error.responseCredentialAdmission === true);
   expired.cancel();
   assert.equal(calls, 2);
 });
