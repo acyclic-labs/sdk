@@ -3,7 +3,7 @@ use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_actors::local::{Error, State};
 use acyclic_harness_core::agent::{AgentHost, AgentPath};
 use acyclic_stream::StreamProviderExt as _;
-use acyclic_stream::{CommitMutation, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{CommitMutation, StreamCategory, StreamError, StreamPath, StreamProvider};
 use futures::TryFutureExt as _;
 use futures::future::Either;
 use std::sync::Arc;
@@ -171,7 +171,7 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
         else {
             return Err(format!("cursor crash lost its original publication: {error}").into());
         };
-        if source.as_ref() != &StreamError::Unavailable {
+        if source.category() != StreamCategory::Unavailable {
             return Err(format!("cursor crash changed its original source: {error}").into());
         }
         let (path, cut) = cursor_publication(publication.request().mutations())
