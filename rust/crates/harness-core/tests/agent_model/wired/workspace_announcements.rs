@@ -656,7 +656,13 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
             matches!(turn, 0 | 2 | 3 | 4 | 5 | 9 | 16)
         );
         if let Some(document) = document {
-            let requests = model.requests();
+            // Each turn's own request; its settlement's retrospective only
+            // extends it.
+            let requests: Vec<_> = model
+                .requests()
+                .into_iter()
+                .filter(|request| !acyclic_harness_core::test_support::is_retrospective(request))
+                .collect();
             let request = requests.last().ok_or("missing model request")?;
             let text = selected_text(&files, &document.file).await?;
             // A removal can return to a document already in the prefix.
@@ -724,7 +730,8 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
         }
     }
     let requests = model.requests();
-    assert_eq!(requests.len(), 18);
+    // Each of the 18 turns and its settlement's retrospective.
+    assert_eq!(requests.len(), 2 * 18);
     for request in &requests {
         acyclic_harness_core::model::PreparedModelRequest::prepare(
             request.clone(),
@@ -734,8 +741,8 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
         .projected_file_bytes(projection_limits.file_bytes)?;
     }
     for (at, pair) in requests.windows(2).enumerate() {
-        if at + 1 == 16 {
-            continue; // The history page changes its selected base at this cut.
+        if at + 1 == 2 * 16 {
+            continue; // The history page changes its selected base at turn 16.
         }
         assert!(
             pair[1].messages.starts_with(&pair[0].messages),
@@ -785,7 +792,6 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
                     }),
                 ]),
                 ScriptedTurn::Text("resumed with the original instructions".into()),
-                ScriptedTurn::Text("none".into()),
             ])
             .reading_content(),
         );

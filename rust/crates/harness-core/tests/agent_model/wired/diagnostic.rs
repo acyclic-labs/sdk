@@ -225,7 +225,11 @@ pub(crate) async fn check_diagnostic_read(
         .await?;
     assert_eq!(output.text, "inspected");
     let requests = model.requests();
+    // The call, its continuation and the settlement's retrospective.
     assert_eq!(requests.len(), 3);
+    assert!(acyclic_harness_core::test_support::is_retrospective(
+        &requests[2]
+    ));
     let value = requests[1]
         .messages
         .iter()

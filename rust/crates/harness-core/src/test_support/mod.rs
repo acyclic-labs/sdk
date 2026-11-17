@@ -31,8 +31,8 @@ pub use policy::FixedToolPolicy;
 pub use replay::assert_replay_admission;
 
 pub use scripted::{
-    ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
-    model_visible_messages, read_request_files,
+    RETROSPECTIVE, ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
+    is_retrospective, model_visible_messages, read_request_files,
 };
 
 /// Stages an admitted request through the production versioned producer.

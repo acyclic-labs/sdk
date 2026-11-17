@@ -246,14 +246,10 @@ pub(super) async fn check(
         ScriptedModelProvider::new([
             wait(child),
             ScriptedTurn::Text("child advanced after selection".into()),
-            ScriptedTurn::Text("none".into()),
             ScriptedTurn::Text("selected answer retained".into()),
-            ScriptedTurn::Text("none".into()),
             wait(child),
             ScriptedTurn::Text("child releases deferred wait".into()),
-            ScriptedTurn::Text("none".into()),
             ScriptedTurn::Text("deferred wait finished".into()),
-            ScriptedTurn::Text("none".into()),
         ])
         .with_dispatch_observer(move |_| {
             let gate = dispatch_probe.model_gate.lock().unwrap().take();
@@ -451,13 +447,9 @@ async fn live_activity(
         ScriptedTurn::Text("working child answer".into()),
         selected(&[child], Some(10), None),
         ScriptedTurn::Text("parent observed live progress".into()),
-        ScriptedTurn::Text("none".into()),
         selected(&[child], Some(10), None),
         ScriptedTurn::Text("parent did not wait on unavailable progress".into()),
-        ScriptedTurn::Text("none".into()),
-        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("parent observed the eventual completion".into()),
-        ScriptedTurn::Text("none".into()),
     ]);
     let (entered, observed) = oneshot::channel();
     let (release, gate) = oneshot::channel();
@@ -632,9 +624,7 @@ async fn deadlines(
         selected(&[child], Some(10), None),
         selected(&[child], Some(20), None),
         ScriptedTurn::Text("both original deadlines completed".into()),
-        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("child releases deferred wait".into()),
-        ScriptedTurn::Text("none".into()),
     ]);
     let first = deliver(host, parent, requested("independent-deadlines", parent)).await?;
     assert_eq!(
@@ -683,10 +673,9 @@ async fn deadlines(
     host.drain(child).await?;
     // The parent is idle after its own timeout; the later child settlement
     // now wakes it through the primitive completion event.
-    model.extend([
-        ScriptedTurn::Text("observed completion after deadline".into()),
-        ScriptedTurn::Text("none".into()),
-    ]);
+    model.extend([ScriptedTurn::Text(
+        "observed completion after deadline".into(),
+    )]);
     host.drain(parent).await?;
     Ok(())
 }
@@ -711,7 +700,6 @@ async fn admission(
         model.extend([
             selected(&children, None, Some(1)),
             ScriptedTurn::Text("invalid selection corrected".into()),
-            ScriptedTurn::Text("none".into()),
         ]);
         probe.answers.lock().unwrap().clear();
         let before = model.requests().len();
@@ -767,10 +755,7 @@ async fn parallel(
     };
     let (_, other) = requested_child(parent, inbox)?;
     host.drain(parent).await?;
-    model.extend([
-        ScriptedTurn::Text("parallel child answer".into()),
-        ScriptedTurn::Text("none".into()),
-    ]);
+    model.extend([ScriptedTurn::Text("parallel child answer".into())]);
     host.drain(&other).await?;
     let selected = [
         settled(stream, &within(), child).await?.answer.unwrap(),
@@ -779,7 +764,6 @@ async fn parallel(
     model.extend([
         wait_selected(&[child, &other]),
         ScriptedTurn::Text("parallel wait finished".into()),
-        ScriptedTurn::Text("none".into()),
     ]);
     probe.answers.lock().unwrap().clear();
     let (release, gate) = oneshot::channel();
@@ -833,11 +817,8 @@ async fn stale_settlement(
     model.extend([
         selected(&[child], Some(10), None),
         ScriptedTurn::Text("first settled answer".into()),
-        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("newer settled answer".into()),
-        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("observed actual settlement".into()),
-        ScriptedTurn::Text("none".into()),
     ]);
     deliver(host, parent, requested("wait-current-settlement", parent)).await?;
     let deadline = Phase::Waiting {
@@ -885,7 +866,6 @@ async fn per_call_deadline(
         model.extend([
             selected(&[child], Some(30), None),
             ScriptedTurn::Text("original call deadline observed".into()),
-            ScriptedTurn::Text("none".into()),
         ]);
         let (model_entered, model_observed) = oneshot::channel();
         let (model_release, model_gate) = oneshot::channel();
@@ -962,9 +942,7 @@ async fn per_call_deadline(
     }
     model.extend([
         ScriptedTurn::Text("child work complete".into()),
-        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("parent received completion".into()),
-        ScriptedTurn::Text("none".into()),
     ]);
     host.drain(child).await?;
     host.drain(parent).await?;

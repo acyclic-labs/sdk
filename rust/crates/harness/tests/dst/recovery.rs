@@ -2,7 +2,7 @@
 use super::*;
 use acyclic_harness::{
     model::{ModelDispatch, ModelEvent},
-    test_support::ScriptedReconciliation,
+    test_support::{ScriptedReconciliation, is_retrospective},
 };
 use acyclic_native_runtime::testing::DurableFault;
 use driver::{Driver, Outcome};
@@ -16,6 +16,9 @@ use std::sync::{
 enum Cut {
     FirstTurnWrite,
     FirstModelEvent,
+    /// The first model event of the settled turn's feedback retrospective,
+    /// after its answer is journaled and before the turn settles.
+    Retrospective,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -129,13 +132,21 @@ fn crash_reopen(point: Cut) -> Result<()> {
         let original_dispatch = Arc::clone(&dispatched);
         let dispatch_schedule = schedule.clone();
         let dispatch_ordinal = Arc::clone(&ordinal);
+        let observed = AtomicUsize::new(0);
         let provider = Arc::new(
             ScriptedModelProvider::new([ScriptedTurn::Text(seed.response.clone())])
                 .with_dispatch_observer(move |dispatch| {
                     *original_dispatch
                         .lock()
                         .expect("dispatch observation poisoned") = Some(dispatch);
-                    if matches!(point, Cut::FirstModelEvent) {
+                    // The turn's own request is the first dispatch; its
+                    // retrospective is the second.
+                    let cut = match point {
+                        Cut::FirstTurnWrite => None,
+                        Cut::FirstModelEvent => Some(0),
+                        Cut::Retrospective => Some(1),
+                    };
+                    if cut == Some(observed.fetch_add(1, Ordering::SeqCst)) {
                         dispatch_ordinal.store(
                             dispatch_schedule.cut_next(DurableFault::After),
                             Ordering::SeqCst,
@@ -150,7 +161,7 @@ fn crash_reopen(point: Cut) -> Result<()> {
                 &schedule,
                 Some(point),
                 Arc::clone(&ordinal),
-                provider,
+                Arc::clone(&provider),
                 &seed,
             ))
             .await
@@ -160,7 +171,15 @@ fn crash_reopen(point: Cut) -> Result<()> {
         assert_eq!(cause.ordinal, ordinal.load(Ordering::SeqCst));
         assert_eq!(cause.fault, DurableFault::After);
         let dispatched = *dispatched.lock().expect("dispatch observation poisoned");
-        assert_eq!(dispatched.is_some(), matches!(point, Cut::FirstModelEvent));
+        assert_eq!(dispatched.is_some(), !matches!(point, Cut::FirstTurnWrite));
+        if matches!(point, Cut::Retrospective) {
+            assert!(
+                provider
+                    .last_request()
+                    .is_some_and(|request| is_retrospective(&request)),
+                "the cut missed the retrospective"
+            );
+        }
         drop(schedule);
         drop(crash);
         // Recovery consumes the retained original seed after the crash, not
@@ -171,6 +190,13 @@ fn crash_reopen(point: Cut) -> Result<()> {
         // previously accepted request; no old provider object crosses the cut.
         let mut recovery = Driver::new(seed.recovery_scheduler, None);
         let schedule = recovery.schedule.clone();
+        // The interrupted request completes as it would have: the turn's
+        // answer, or the retrospective's reply, which never replaces it.
+        let continued = if matches!(point, Cut::Retrospective) {
+            "none".to_owned()
+        } else {
+            seed.response.clone()
+        };
         let provider = Arc::new(
             ScriptedModelProvider::new([
                 ScriptedTurn::Text(seed.response.clone()),
@@ -180,9 +206,7 @@ fn crash_reopen(point: Cut) -> Result<()> {
                 orphan: true,
                 observed: vec![],
                 continuation: Some(vec![
-                    ModelEvent::Content {
-                        delta: seed.response.clone(),
-                    },
+                    ModelEvent::Content { delta: continued },
                     ModelEvent::Completed {
                         metadata: serde_json::Value::Null,
                     },
@@ -208,15 +232,25 @@ fn crash_reopen(point: Cut) -> Result<()> {
             provider.reconciliations(),
             dispatched.into_iter().collect::<Vec<_>>()
         );
+        let requests = provider.requests();
+        let (retrospectives, work): (Vec<_>, Vec<_>) = requests
+            .iter()
+            .zip(provider.dispatches())
+            .partition(|(request, _)| is_retrospective(request));
         assert_eq!(
-            provider.request_count(),
+            work.len(),
             1 + usize::from(dispatched.is_none()),
             "the old request was regenerated or the new prompt did not dispatch"
         );
+        // Each settlement asks once; a reconciled retrospective is not asked again.
+        assert_eq!(
+            retrospectives.len(),
+            2 - usize::from(matches!(point, Cut::Retrospective)),
+            "a settlement skipped or repeated its retrospective"
+        );
         if let Some(interrupted) = dispatched {
             assert_ne!(
-                interrupted.operation_id,
-                provider.dispatches()[0].operation_id,
+                interrupted.operation_id, work[0].1.operation_id,
                 "the new prompt reused the interrupted operation"
             );
         }
@@ -232,4 +266,9 @@ fn checkout_reopens_after_first_turn_write() -> Result<()> {
 #[test]
 fn live_f3_killed_head_accepts_a_new_prompt() -> Result<()> {
     crash_reopen(Cut::FirstModelEvent)
+}
+
+#[test]
+fn retrospective_cut_reopens_with_the_original_answer() -> Result<()> {
+    crash_reopen(Cut::Retrospective)
 }
