@@ -4,15 +4,17 @@ mod input;
 use proptest::prelude::*;
 
 #[test]
-fn syntax_data_preserves_bundled_grammars_and_rejects_invalid_envelopes() {
+fn syntax_data_preserves_bundled_grammars_and_rejects_invalid_envelopes()
+-> Result<(), Box<dyn std::error::Error>> {
     let corpus = acyclic_test_support::crate_path!("fuzz/corpus/syntax_data");
-    let theme_data = std::fs::read(corpus.join("default.themedump")).unwrap();
+    let theme_data = std::fs::read(corpus.join("default.themedump"))?;
     syntect::test_support::check_syntax_data(&theme_data);
     // The envelope matrix is a property of the dump type; one packdump runs it.
-    let newlines = std::fs::read(corpus.join("default_newlines.packdump")).unwrap();
+    let newlines = std::fs::read(corpus.join("default_newlines.packdump"))?;
     syntect::test_support::check_syntax_data(&newlines);
-    let nonewlines = std::fs::read(corpus.join("default_nonewlines.packdump")).unwrap();
+    let nonewlines = std::fs::read(corpus.join("default_nonewlines.packdump"))?;
     syntect::test_support::check_syntax_round_trip(&nonewlines);
+    Ok(())
 }
 
 struct SyntaxBundle {
@@ -23,39 +25,49 @@ struct SyntaxBundle {
 
 /// The parsed bundled data, loaded once per case process. Every partition
 /// uses the same bundle instead of decoding the dumps again.
-fn syntax_bundle() -> &'static SyntaxBundle {
-    static BUNDLE: std::sync::OnceLock<SyntaxBundle> = std::sync::OnceLock::new();
-    BUNDLE.get_or_init(|| {
-        let corpus = acyclic_test_support::crate_path!("fuzz/corpus/syntax_data");
-        let themes = syntect::dumps::from_reader(
-            &std::fs::read(corpus.join("default.themedump")).unwrap()[..],
-        )
-        .expect("default.themedump must decode as ThemeSet");
-        let newlines = syntect::dumps::from_uncompressed_data(
-            &std::fs::read(corpus.join("default_newlines.packdump")).unwrap(),
-        )
-        .expect("default_newlines.packdump must decode as SyntaxSet");
-        let nonewlines = syntect::dumps::from_uncompressed_data(
-            &std::fs::read(corpus.join("default_nonewlines.packdump")).unwrap(),
-        )
-        .expect("default_nonewlines.packdump must decode as SyntaxSet");
-        SyntaxBundle {
-            themes,
-            newlines,
-            nonewlines,
-        }
-    })
+fn syntax_bundle() -> Result<&'static SyntaxBundle, &'static str> {
+    static BUNDLE: std::sync::OnceLock<Result<SyntaxBundle, String>> = std::sync::OnceLock::new();
+    BUNDLE
+        .get_or_init(|| {
+            let corpus = acyclic_test_support::crate_path!("fuzz/corpus/syntax_data");
+            let themes = syntect::dumps::from_reader(
+                &std::fs::read(corpus.join("default.themedump"))
+                    .map_err(|error| format!("read default.themedump: {error}"))?[..],
+            )
+            .map_err(|error| format!("default.themedump must decode as ThemeSet: {error}"))?;
+            let newlines = syntect::dumps::from_uncompressed_data(
+                &std::fs::read(corpus.join("default_newlines.packdump"))
+                    .map_err(|error| format!("read default_newlines.packdump: {error}"))?,
+            )
+            .map_err(|error| {
+                format!("default_newlines.packdump must decode as SyntaxSet: {error}")
+            })?;
+            let nonewlines = syntect::dumps::from_uncompressed_data(
+                &std::fs::read(corpus.join("default_nonewlines.packdump"))
+                    .map_err(|error| format!("read default_nonewlines.packdump: {error}"))?,
+            )
+            .map_err(|error| {
+                format!("default_nonewlines.packdump must decode as SyntaxSet: {error}")
+            })?;
+            Ok(SyntaxBundle {
+                themes,
+                newlines,
+                nonewlines,
+            })
+        })
+        .as_ref()
+        .map_err(String::as_str)
 }
 
-fn syntax_total() -> usize {
-    let bundle = syntax_bundle();
-    bundle.newlines.syntaxes().len() + bundle.nonewlines.syntaxes().len()
+fn syntax_total() -> Result<usize, &'static str> {
+    let bundle = syntax_bundle()?;
+    Ok(bundle.newlines.syntaxes().len() + bundle.nonewlines.syntaxes().len())
 }
 
 fn highlight_syntax_partition(assigned: Vec<usize>) -> Result<(), Box<dyn std::error::Error>> {
     use syntect::easy::HighlightLines;
 
-    let bundle = syntax_bundle();
+    let bundle = syntax_bundle()?;
     let theme = bundle
         .themes
         .themes
@@ -86,7 +98,7 @@ fn highlight_syntax_partition(assigned: Vec<usize>) -> Result<(), Box<dyn std::e
 
 acyclic_test_support::partitioned_tests! {
     #[test] fn -> Result<(), Box<dyn std::error::Error>>;
-    HIGHLIGHT_PARTITIONS, syntax_total(), highlight_syntax_partition;
+    HIGHLIGHT_PARTITIONS, syntax_total()?, highlight_syntax_partition;
     0 => highlight_syntax_partition_0,
     1 => highlight_syntax_partition_1,
     2 => highlight_syntax_partition_2,
@@ -98,29 +110,44 @@ acyclic_test_support::partitioned_tests! {
 }
 
 #[test]
-fn streaming_seed_corpus() {
+fn streaming_seed_corpus() -> Result<(), Box<dyn std::error::Error>> {
     let corpus = acyclic_test_support::crate_path!("fuzz/corpus/streaming");
-    for entry in std::fs::read_dir(corpus).unwrap() {
-        input::check(&std::fs::read(entry.unwrap().path()).unwrap());
+    for entry in std::fs::read_dir(corpus)? {
+        input::check(&std::fs::read(entry?.path())?);
     }
+    Ok(())
 }
 
 #[test]
-fn control_before_unicode_punctuation_keeps_literal_delimiters() {
+fn control_before_unicode_punctuation_keeps_literal_delimiters()
+-> Result<(), Box<dyn std::error::Error>> {
     let bytes = include_bytes!("../fuzz/corpus/streaming/control-delimiter-context");
     input::check(bytes);
     let mut variant = *bytes;
-    let control = bytes.iter().position(|&byte| byte == 0x0e).unwrap();
+    let control = bytes
+        .iter()
+        .position(|&byte| byte == 0x0e)
+        .ok_or("the control-delimiter corpus seed has no control byte")?;
     for before in 0..=127 {
-        *variant.get_mut(control).unwrap() = before;
+        *variant
+            .get_mut(control)
+            .ok_or("the control byte is inside the corpus seed")? = before;
         input::check(&variant);
     }
     for count in 1..=8 {
-        let mut escaped = bytes.get(..control).unwrap().to_vec();
+        let mut escaped = bytes
+            .get(..control)
+            .ok_or("the control byte is inside the corpus seed")?
+            .to_vec();
         escaped.extend(std::iter::repeat_n(b'\\', count));
-        escaped.extend_from_slice(bytes.get(control + 1..).unwrap());
+        escaped.extend_from_slice(
+            bytes
+                .get(control + 1..)
+                .ok_or("the control byte is inside the corpus seed")?,
+        );
         input::check(&escaped);
     }
+    Ok(())
 }
 
 #[test]
