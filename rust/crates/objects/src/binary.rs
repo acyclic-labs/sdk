@@ -98,19 +98,8 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     }
 
     async fn put_sealed(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
-        let digest = Digest::sealed(&body);
-        let length = body.bytes().len() as u64;
-        self.publish(
-            "blobs/put",
-            wire::PutBlobRequest {
-                digest: Some(digest.into()),
-                body: Bytes::from_owner(body.into_bytes()),
-                references: convert::wire_digests(&references),
-            },
-            digest,
-            length,
-        )
-        .await
+        let (request, (digest, length)) = convert::put_blob(body, references);
+        self.publish("blobs/put", request, digest, length).await
     }
 
     async fn put_batch_sealed(

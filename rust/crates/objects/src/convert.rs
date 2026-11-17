@@ -271,23 +271,31 @@ pub(crate) fn verified_put(
     Ok(put)
 }
 
+/// Lowers a sealed body once, retaining its original bytes and expected receipt.
+pub(crate) fn put_blob(
+    body: crate::Sealed,
+    references: Vec<Digest>,
+) -> (wire::PutBlobRequest, (Digest, u64)) {
+    let digest = Digest::sealed(&body);
+    let expected = (digest, body.bytes().len() as u64);
+    (
+        wire::PutBlobRequest {
+            digest: Some(digest.into()),
+            body: bytes::Bytes::from_owner(body.into_bytes()),
+            references: wire_digests(&references),
+        },
+        expected,
+    )
+}
+
 /// One put batch's request, and the acknowledgement each member must carry.
 pub(crate) fn put_blobs(
     requests: Vec<(crate::Sealed, Vec<Digest>)>,
 ) -> (wire::PutBlobsRequest, Vec<(Digest, u64)>) {
-    let mut expected = Vec::with_capacity(requests.len());
-    let puts = requests
+    let (puts, expected) = requests
         .into_iter()
-        .map(|(body, references)| {
-            let digest = Digest::sealed(&body);
-            expected.push((digest, body.bytes().len() as u64));
-            wire::PutBlobRequest {
-                digest: Some(digest.into()),
-                body: bytes::Bytes::from_owner(body.into_bytes()),
-                references: wire_digests(&references),
-            }
-        })
-        .collect();
+        .map(|(body, references)| put_blob(body, references))
+        .unzip();
     (wire::PutBlobsRequest { puts }, expected)
 }
 
