@@ -753,6 +753,24 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                     if summary_requests.is_empty() {
                         return fail("the length-cut context review was never requested");
                     }
+                    let tool = incarnation.requests.iter().find(|request| {
+                        !request.summary
+                            && request.messages.iter().any(|message| {
+                                serde_json::to_string(&message.content)
+                                    .unwrap_or_default()
+                                    .contains("d4-read")
+                            })
+                    });
+                    let Some(tool) = tool else {
+                        return fail("the length-cut context review made no tool call");
+                    };
+                    if request_tag(
+                        tool,
+                        &["d4-warm-0", "d4-warm-1", "d4-warm-2", "d4-warm-3", "d4"],
+                    ) != Some("d4")
+                    {
+                        return fail("the length-cut context review tool call answered the warmup");
+                    }
                     if incarnation.prompts.last().map(|(outcome, _)| outcome)
                         != Some(&Prompted::Settled(done("d4")))
                     {
