@@ -348,11 +348,12 @@ const RUNNER_PREFIX: &str = "acyclic-";
 /// it removes what its cases left. So on Unix the runner holds an exclusive `flock` on its
 /// directory for its whole life, which the kernel releases however the process ends, and every
 /// new runner reclaims each runner directory of its own user whose lock it can take: that runner
-/// is gone. Claiming, reclaiming and removal all run under its user's lock file in the root, so a
-/// scan never sees a directory between its creation and its owner's lock or while it is removed.
-/// The lock file is the user's own and readable by no one else, so another user can neither hold
-/// it nor stall these steps; another user's directories are left alone. A root's process ids are not unique across
-/// sandboxes, so the directory is named randomly and created exclusively.
+/// is gone. Claiming, reclaiming and removal all run under its user's lock file in a directory
+/// only that user can write, so a scan never sees a directory between its creation and its
+/// owner's lock or while it is removed. The lock file is the user's own and readable by no one
+/// else, so another user can neither hold it nor stall these steps; another user's directories
+/// are left alone. A root's process ids are not unique across sandboxes, so the directory is
+/// named randomly and created exclusively.
 struct RunnerDirectory {
     path: PathBuf,
     #[cfg(unix)]
