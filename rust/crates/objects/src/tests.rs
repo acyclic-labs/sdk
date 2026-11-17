@@ -1450,11 +1450,18 @@ async fn a_release_never_unpins_a_concurrent_equal_retain() -> Result<(), Box<dy
     Ok(())
 }
 
-/// Two independently opened stores race a terminal release with a retain
-/// parked after reading its original fence, before it can commit its batch.
+/// Two stores race a terminal release against a retain parked after its
+/// original fence read or after writing its batch, before conditional commit.
 #[tokio::test]
 async fn a_terminal_release_fences_a_delayed_retain() -> Result<(), Box<dyn std::error::Error>> {
-    for fence in [0_u64, 1, u64::MAX - 1] {
+    for (fence, operation, key) in [
+        (0_u64, "read", "/t/"),
+        (1, "read", "/t/"),
+        (u64::MAX - 1, "read", "/t/"),
+        (0, "create", "/f/"),
+        (1, "create", "/f/"),
+        (u64::MAX - 1, "create", "/f/"),
+    ] {
         let medium = Shared::default();
         let retaining = Store::new(medium.clone()).account(b"terminal-account")?;
         let releasing = Store::new(medium.clone()).account(b"terminal-account")?;
@@ -1465,7 +1472,7 @@ async fn a_terminal_release_fences_a_delayed_retain() -> Result<(), Box<dyn std:
             .ok_or("unknown put")?
             .digest;
         let root = RootId::new(b"accepted-intent".to_vec())?;
-        let (mut reached, resume) = medium.park("read", "/t/");
+        let (mut reached, resume) = medium.park(operation, key);
         let pending = retaining.retain_fenced(&root, fence, vec![digest]);
         tokio::pin!(pending);
         drive_to_park(pending.as_mut(), &mut reached).await;
@@ -1496,6 +1503,8 @@ async fn a_terminal_release_fences_a_delayed_retain() -> Result<(), Box<dyn std:
         retaining
             .retain_fenced(&root, fence + 1, vec![digest])
             .await?;
+        releasing.release_terminal(&root, fence).await?;
+        releasing.release(&root).await?;
         assert_eq!(retaining.delete(digest).await?.outcome, Delete::Referenced);
     }
     Ok(())
