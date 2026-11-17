@@ -525,7 +525,7 @@ where
             .initial_generation_root(
                 volume_id,
                 initialization,
-                Some(spec.creation.clone()),
+                Some(&spec.creation),
                 accounting,
                 cancellation,
             )
