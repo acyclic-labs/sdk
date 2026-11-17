@@ -314,18 +314,16 @@ async fn an_interrupted_stream_adds_no_item_to_the_next_request() -> Result {
                 attachments: None,
             }),
         };
-        state = Some(
-            super::super::step_to_rest(
-                &driver,
-                &path,
-                state,
-                (2, 0),
-                wake,
-                acyclic_actors::guest::CancellationToken::new(),
-            )
-            .await?
-            .state,
-        );
+        let stepped = super::super::step(
+            &driver,
+            &path,
+            state,
+            (2, 0),
+            wake,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        state = Some(stepped.state);
     }
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
