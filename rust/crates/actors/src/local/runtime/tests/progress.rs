@@ -145,7 +145,7 @@ impl World {
                 delivered_generation: None,
             };
             registration
-                .update_alarm(&alarm)
+                .update_alarm(&alarm, 0)
                 .map_err(|error| error.to_string())?;
             // The fixture's placement admits one initial event. Dormant
             // registration alone must never manufacture that work.
@@ -369,7 +369,7 @@ fn production(registration: &Registration<usize>, alarm: &Alarm, now: u64) -> Re
 
 /// The arming before the fix: the delivered alarm stays a due wake.
 fn reinstalled(registration: &Registration<usize>, alarm: &Alarm, now: u64) -> Result<bool, Error> {
-    registration.update_alarm(alarm)?;
+    registration.update_alarm(alarm, now)?;
     Ok(alarm.pending().is_some_and(|deadline| deadline <= now))
 }
 
