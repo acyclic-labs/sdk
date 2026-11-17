@@ -17,6 +17,7 @@ function checkFixture(setup) {
   try {
     mkdirSync(join(root, "scripts"));
     copyFileSync(checker, join(root, "scripts/check-js-licenses.mjs"));
+    copyFileSync(new URL("./policy-core.mjs", import.meta.url), join(root, "scripts/policy-core.mjs"));
     setup(root);
     const result = spawnSync(process.execPath, [join(root, "scripts/check-js-licenses.mjs")], {
       cwd: root, encoding: "utf8",
@@ -150,6 +151,7 @@ async function withMutant(rewrite, check) {
   try {
     const path = join(root, "checker.mjs");
     writeFileSync(path, rewrite(await readFile(checker, "utf8")));
+    copyFileSync(new URL("./policy-core.mjs", import.meta.url), join(root, "policy-core.mjs"));
     await check((await import(pathToFileURL(path).href)).auditLicenses);
   } finally {
     rmSync(root, { recursive: true, force: true });
