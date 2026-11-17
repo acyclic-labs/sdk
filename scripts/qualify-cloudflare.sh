@@ -19,7 +19,7 @@ step journal-feature cargo check -p acyclic-stream --target wasm32-unknown-unkno
 step host-fixture bash scripts/build-host-fixture.sh
 step typescript-dependencies bun install --frozen-lockfile --ignore-scripts
 step cargo-dependencies cargo fetch --locked
-step guest-facade bun scripts/build-wasm.mjs harness
+step guest-facade bun tools/build-wasm.mjs harness
 step guest-module cp typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm "$crate/generated/agent_guest_bg.wasm"
 step adapter-types bun x --no-install tsc --ignoreConfig --noEmit --strict --skipLibCheck --target es2022 --module nodenext --moduleResolution nodenext typescript/packages/harness/src/cloudflare.ts typescript/packages/harness/src/cloudflare-storage.ts
 step worker-bundle bun build "$crate/worker.ts" --target browser --external cloudflare:workers --external '*.wasm' --outfile "$crate/worker.mjs"

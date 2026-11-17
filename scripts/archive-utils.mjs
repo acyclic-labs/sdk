@@ -106,7 +106,7 @@ export function isWasmArtifactPath(path) {
 function* wasmArtifactPaths(directory, { receipt = false } = {}) {
   const root = lstatSync(directory);
   if (!root.isDirectory() || root.isSymbolicLink()) {
-    throw new Error(`WASM artifact admission failed at ${directory}: expected a real directory; recovery: bun scripts/build-wasm.mjs`);
+    throw new Error(`WASM artifact admission failed at ${directory}: expected a real directory; recovery: bun tools/build-wasm.mjs`);
   }
   function* visit(parent, prefix) {
     for (const entry of readdirSync(parent, { withFileTypes: true })) {
@@ -118,7 +118,7 @@ function* wasmArtifactPaths(directory, { receipt = false } = {}) {
       } else if (entry.isFile() && !entry.isSymbolicLink() && prefix === "") {
         // Source-owned metadata beside the artifacts: neither enumerated, copied nor removed.
       } else {
-        throw new Error(`WASM artifact admission failed at ${path}: non-regular artifact; recovery: bun scripts/build-wasm.mjs`);
+        throw new Error(`WASM artifact admission failed at ${path}: non-regular artifact; recovery: bun tools/build-wasm.mjs`);
       }
     }
   }

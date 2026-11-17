@@ -94,7 +94,7 @@ function qualify(source) {
         planted_sha256: createHash("sha256").update(planted).digest("hex"),
       };
       artifactsCustody = preserveWasmArtifacts(fileURLToPath(new URL(`../${generated}`, import.meta.url)),
-        "node scripts/build-wasm.mjs harness");
+        "node tools/build-wasm.mjs harness");
       try { writeFileSync(join(artifactsCustody.directory, "json.rs"), planted); }
       catch (error) { fail("retain planted admission source", String(error)); }
       try { writeFileSync(production, planted); }
@@ -104,7 +104,7 @@ function qualify(source) {
     // The full shipping Rust export graph, scoped to its one package. This check
     // imports only its generated module and initialization, so other frontend
     // packages and their artifacts are not prerequisites.
-    const build = ["scripts/build-wasm.mjs", "harness"];
+    const build = ["tools/build-wasm.mjs", "harness"];
     if (reuse) {
       try {
         // A retained receipt's artifact paths are relative to its directory. Reuse
@@ -142,7 +142,7 @@ function qualify(source) {
         reused = { source: receipt.source, tree: receipt.tree,
           receipt_sha256: createHash("sha256").update(receiptBytes).digest("hex"),
           qualification: "retained shipping module; no current-tree build or complete dependency parity inferred" };
-        artifactsCustody = preserveWasmArtifacts(join(root, generated), "node scripts/build-wasm.mjs harness");
+        artifactsCustody = preserveWasmArtifacts(join(root, generated), "node tools/build-wasm.mjs harness");
         for (const [modulePath, path] of modules) {
           const destination = join(root, generated, modulePath);
           mkdirSync(dirname(destination), { recursive: true });

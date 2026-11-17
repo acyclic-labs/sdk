@@ -4,13 +4,13 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "no
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkByteSnapshotBoundary } from "./wasm-source-policy.mjs";
-import { packageClosure } from "./package-closure.mjs";
-import { copyWasmArtifacts, isWasmArtifactPath } from "./archive-utils.mjs";
-import { nativeFamily } from "./native-family.mjs";
-import { generationKey, memoizedGeneration } from "./generation-cache.mjs";
-import { memberDirectory } from "./workspace-manifests.mjs";
-import { recordGeneration } from "./generated-bindings.mjs";
+import { checkByteSnapshotBoundary } from "../scripts/wasm-source-policy.mjs";
+import { packageClosure } from "../scripts/package-closure.mjs";
+import { copyWasmArtifacts, isWasmArtifactPath } from "../scripts/archive-utils.mjs";
+import { nativeFamily } from "../scripts/native-family.mjs";
+import { generationKey, memoizedGeneration } from "../scripts/generation-cache.mjs";
+import { memberDirectory } from "../scripts/workspace-manifests.mjs";
+import { recordGeneration } from "../scripts/generated-bindings.mjs";
 
 const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen_(?:[0-9a-f]+)?_+convert__closures_+invoke_[^:\s]*:.*\r?\n/gm;
 const stripHarnessClosureShims = output => {
@@ -110,7 +110,7 @@ async function buildWasm() {
   // strips CARGO_PROFILE_DEV_* still produces the same module and key as the SDK's published dev build.
   if (profile === "dev") process.env.CARGO_PROFILE_DEV_DEBUG = "0";
 
-  const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("./archive-utils.mjs", import.meta.url)), readFileSync(new URL("./wasm-source-policy.mjs", import.meta.url))]);
+  const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("../scripts/archive-utils.mjs", import.meta.url)), readFileSync(new URL("../scripts/wasm-source-policy.mjs", import.meta.url))]);
 
   const grouped = process.env.ACYCLIC_WASM_GROUPS_PREPARED === "1";
   const targets = grouped ? [packageArgument] : packageArgument

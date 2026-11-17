@@ -29,7 +29,7 @@ run("bun", ["install", "--frozen-lockfile", "--ignore-scripts"]);
 run("node", ["scripts/generate.mjs", "filesystem"]);
 // Actors imports auth's WASM-backed addressing and holder APIs. Generation
 // supplies their wire contracts; build the executable declarations before tsc.
-run("node", ["scripts/build-wasm.mjs", "auth"]);
+run("node", ["tools/build-wasm.mjs", "auth"]);
 run("node", ["node_modules/typescript/bin/tsc", "-b", "typescript/packages/actors", "--pretty", "false"]);
 run("cargo", ["build", "-p", "acyclic-fs-napi", "--locked"]);
 

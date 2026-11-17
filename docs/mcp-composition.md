@@ -210,7 +210,7 @@ evidence, not final-source qualification or a landed capability.
   a bounded check of production transitions, not an unrestricted proof.
 - Strict Windows library/test Clippy with the same feature selection and
   `-D warnings`: pass. No lint suppression was added.
-- `node scripts/build-wasm.mjs harness`: pass using two jobs; generated MCP
+- `node tools/build-wasm.mjs harness`: pass using two jobs; generated MCP
   declarations contain one interface each and reuse Rust-derived JSON types.
 - Node WASM catalog/browser bridge tests: five passed,
   zero failures/skips. A real Map-versus-JSON schema mismatch was found and fixed
@@ -810,7 +810,7 @@ WASM/public facade before running:
 ```sh
 cargo test -p acyclic-harness --no-default-features --lib --tests --examples --locked
 cargo clippy -p acyclic-harness --no-default-features --all-targets --locked -- -D warnings
-bun scripts/build-wasm.mjs harness
+bun tools/build-wasm.mjs harness
 bun test typescript/packages/harness/test
 bun run --cwd typescript/packages/harness test:browser:mcp
 bazel test //rust/crates/harness:all

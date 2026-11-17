@@ -121,7 +121,7 @@ function assertWasmReceipt(receipt, files, expectedSource, version) {
   if (!Array.isArray(receipt.artifacts) || receipt.artifacts.length === 0) fail("WASM artifact inventory is missing");
   const expected = new Set(["package/generated/wasm/producer-receipt.json"]);
   for (const artifact of receipt.artifacts) {
-    if (typeof artifact.path !== "string" || !artifact.path.startsWith("generated/wasm/") || !isWasmArtifactPath(artifact.path.slice("generated/wasm/".length))) fail("WASM artifact path is invalid; recovery: bun scripts/build-wasm.mjs");
+    if (typeof artifact.path !== "string" || !artifact.path.startsWith("generated/wasm/") || !isWasmArtifactPath(artifact.path.slice("generated/wasm/".length))) fail("WASM artifact path is invalid; recovery: bun tools/build-wasm.mjs");
     const path = `package/${artifact.path}`;
     if (expected.has(path)) fail("WASM artifact inventory contains duplicates");
     expected.add(path);
@@ -328,7 +328,7 @@ async function main() {
       await cp(join(bundle.path, name), join(artifacts, name));
     }
     run(process.execPath, [
-      join(root, "scripts/build-wasm.mjs"), family.key,
+      join(root, "tools/build-wasm.mjs"), family.key,
       join(parentRoot, "generated/wasm"),
     ]);
     const wasmReceiptPath = join(parentRoot, "generated/wasm/producer-receipt.json");

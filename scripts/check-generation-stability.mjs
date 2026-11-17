@@ -22,7 +22,7 @@ function run(command, args) {
 }
 test("selected generators preserve source mtimes and WASM Cargo freshness", () => {
   const generateBuild = () => run(process.execPath,
-    [join(root, mode === "wasm" ? "scripts/build-wasm.mjs" : "scripts/generate.mjs"), family]);
+    [join(root, mode === "wasm" ? "tools/build-wasm.mjs" : "scripts/generate.mjs"), family]);
   const first = generateBuild();
   const paths = new Set(run("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).output.split("\0").filter(Boolean));
   for (const name of packageClosure(root, family)) for (const suffix of ["generated", "src/generated", "test/generated"]) {

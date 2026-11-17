@@ -166,7 +166,7 @@ The guest Session controls run against the shipping WASM host:
 ```sh
 bun install --frozen-lockfile
 bazel run //typescript/packages/harness-actor:proto
-bun scripts/build-wasm.mjs harness
+bun tools/build-wasm.mjs harness
 bun test typescript/packages/harness/test/host-liveness.test.ts typescript/packages/harness/test/host-session.test.ts
 ```
 
@@ -194,7 +194,7 @@ native filesystem watcher.
 Exercise disposal against the shipping WASM host with:
 
 ```sh
-bun scripts/build-wasm.mjs harness
+bun tools/build-wasm.mjs harness
 bun test typescript/packages/harness/test/host-liveness.test.ts
 ```
 
