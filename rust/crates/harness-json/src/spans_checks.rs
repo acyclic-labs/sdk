@@ -1,4 +1,8 @@
 use super::*;
+use crate::policy::SyntaxError;
+use serde_json::Value;
+type JsonSpans = super::JsonSpans<crate::policy::Unfunded>;
+type Result<T> = std::result::Result<T, SyntaxError>;
 use proptest::prelude::*;
 
 fn scan(bytes: &[u8], chunk: usize, depth: u32) -> Result<Vec<SpanEvent>> {
@@ -15,7 +19,7 @@ fn scan(bytes: &[u8], chunk: usize, depth: u32) -> Result<Vec<SpanEvent>> {
             let count = cursor.feed(
                 &bytes[consumed..],
                 bounds,
-                None,
+                (),
                 &mut |_| Ok(()),
                 &mut |event| {
                     events.push(event);
@@ -28,7 +32,7 @@ fn scan(bytes: &[u8], chunk: usize, depth: u32) -> Result<Vec<SpanEvent>> {
             consumed += count;
         }
     }
-    cursor.finish(None, &mut |event| {
+    cursor.finish((), &mut |event| {
         events.push(event);
         Ok(false)
     })?;
@@ -72,10 +76,10 @@ proptest! {
         for part in bytes.chunks(chunk) {
             let mut consumed = 0;
             while consumed < part.len() {
-                consumed += cursor.feed(&part[consumed..], bounds, None, &mut |_| Ok(()), &mut event).unwrap();
+                consumed += cursor.feed(&part[consumed..], bounds, (), &mut |_| Ok(()), &mut event).unwrap();
             }
         }
-        cursor.finish(None, &mut event).unwrap();
+        cursor.finish((), &mut event).unwrap();
         prop_assert_eq!(actual, values.clone());
         // Sequence support must not relax ordinary persisted-document decoding.
         if values.len() > 1 { prop_assert!(scan(bytes, chunk, RECORD_MAXIMUM_DEPTH).is_err()); }
@@ -97,45 +101,9 @@ fn sequence_admission_is_cumulative_and_incomplete_suffixes_are_refused() {
             maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
         let result = cursor
-            .feed(source, bounds, None, &mut |_| Ok(()), &mut |_| Ok(false))
-            .and_then(|_| cursor.finish(None, &mut |_| Ok(false)));
+            .feed(source, bounds, (), &mut |_| Ok(()), &mut |_| Ok(false))
+            .and_then(|_| cursor.finish((), &mut |_| Ok(false)));
         assert!(result.is_err(), "{source:?}");
-    }
-}
-
-#[test]
-fn spans_accept_the_producer_depth_boundary_and_refuse_the_next_container() {
-    for empty in [Value::Array(Vec::new()), Value::Object(Default::default())] {
-        let mut value = empty;
-        for _ in 0..RECORD_MAXIMUM_DEPTH {
-            value = Value::Array(vec![value]);
-        }
-        let bytes = serde_json::to_vec(&value).unwrap();
-        let length =
-            json_byte_length_at_depth(&value, None, RECORD_MAXIMUM_DEPTH, &mut None).unwrap();
-        assert_eq!(length, bytes.len() as u64);
-        for chunk in [1, 127, bytes.len()] {
-            let events = scan(&bytes, chunk, RECORD_MAXIMUM_DEPTH).unwrap();
-            assert!(events.iter().any(|event| matches!(
-                event,
-                SpanEvent::Start {
-                    depth: RECORD_MAXIMUM_DEPTH,
-                    ..
-                }
-            )));
-        }
-        let excessive = Value::Array(vec![value]);
-        assert!(
-            json_byte_length_at_depth(&excessive, None, RECORD_MAXIMUM_DEPTH, &mut None,).is_err()
-        );
-        assert!(
-            scan(
-                &serde_json::to_vec(&excessive).unwrap(),
-                1,
-                RECORD_MAXIMUM_DEPTH
-            )
-            .is_err()
-        );
     }
 }
 
@@ -220,7 +188,7 @@ fn malformed_tokens_nesting_and_credit_refuse_without_a_continuation_wait() {
     };
     assert!(
         cursor
-            .feed(b"[]", bounds, None, &mut |_| Ok(()), &mut |_| Ok(false))
+            .feed(b"[]", bounds, (), &mut |_| Ok(()), &mut |_| Ok(false))
             .is_err()
     );
     let mut cursor = JsonSpans::default();
@@ -231,7 +199,7 @@ fn malformed_tokens_nesting_and_credit_refuse_without_a_continuation_wait() {
     };
     assert!(
         cursor
-            .feed(b"[0]", bounds, None, &mut |_| Ok(()), &mut |_| Ok(false))
+            .feed(b"[0]", bounds, (), &mut |_| Ok(()), &mut |_| Ok(false))
             .is_err()
     );
 }

@@ -2,8 +2,11 @@
 //! JSON admission contracts shared by the harness codecs and their producers.
 //! Schemas describe opaque values; traversal, work and custody stay with callers.
 
+pub mod lexical;
+pub mod policy;
 #[doc(hidden)]
 pub mod schema;
+pub mod spans;
 pub mod tokens;
 pub use schema::JsonValueSchema;
 mod literal;
