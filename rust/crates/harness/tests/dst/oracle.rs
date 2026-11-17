@@ -232,10 +232,7 @@ struct WorldDirectory {
 impl WorldDirectory {
     fn new(seed: u64) -> std::io::Result<Self> {
         let key = (
-            std::thread::current()
-                .name()
-                .unwrap_or("dst")
-                .to_owned(),
+            std::thread::current().name().unwrap_or("dst").to_owned(),
             seed,
         );
         let slot = WORLD_SLOTS.with(|slots| {
