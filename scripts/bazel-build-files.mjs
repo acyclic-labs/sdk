@@ -98,6 +98,12 @@ const runs = TRIPLES.map(triple => JSON.parse(execFileSync("cargo", ["metadata",
 const [base] = runs;
 const packages = new Map(runs.flatMap(run => run.packages.map(p => [p.id, p])));
 const members = new Set(runs.flatMap(run => run.workspace_members));
+// A first-party path crate outside the workspace still gets a BUILD file. Vendored path crates
+// stay in the crate universe, which resolves them from the workspace manifest.
+for (const p of base.packages) {
+  const relative = path.relative(root, path.dirname(p.manifest_path)).replaceAll("\\", "/");
+  if (p.source === null && !relative.startsWith("rust/vendor/")) members.add(p.id);
+}
 const nodes = runs.map(run => new Map(run.resolve.nodes.map(node => [node.id, node])));
 // The WASM acceptance artifacts build with the selections scripts/wasm-packages.mjs names, not
 // with every feature: a host-only feature such as tokio/net must never enter a wasm32 graph.
