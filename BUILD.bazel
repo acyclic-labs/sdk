@@ -147,7 +147,7 @@ wasm_package(
 
 wasm_package(
     name = "wasm_actors_generated",
-    bindgen = "//rust/crates/actors:acyclic_actors_wasm_bindgen",
+    bindgen = "//rust/crates/actors-wasm:acyclic_actors_wasm_wasm_bindgen",
     out_dir = "typescript/packages/actors/generated/wasm",
     entry = "acyclic_actors_wasm",
     visibility = ["//visibility:public"],
