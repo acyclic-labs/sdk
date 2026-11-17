@@ -70,11 +70,14 @@ fn with_fixture_content(
     provider: &NativeDemandSource,
     relative: &DemandPath,
     stat: HostStat,
-    _context: &mut CallbackWork,
+    context: &mut CallbackWork,
 ) -> Result<HostStat, DemandError> {
-    if stat.file_type() != crate::demand::SourceNodeKind::RegularFile {
+    if stat.file_type() != crate::demand::SourceNodeKind::RegularFile
+        || fixture_times(&stat).is_none()
+    {
         return Ok(stat);
     }
+    context.check()?;
     #[cfg(unix)]
     let path = provider.inner.path.join(relative);
     #[cfg(windows)]
@@ -82,10 +85,26 @@ fn with_fixture_content(
         .inner
         .path
         .join(std::ffi::OsString::from_wide(relative));
-    let Ok(bytes) = std::fs::read(path) else {
+    let Ok(mut file) = std::fs::File::open(path) else {
         return Ok(stat);
     };
-    Ok(stat.with_content(*blake3::hash(&bytes).as_bytes()))
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        context.check()?;
+        let Ok(read) = std::io::Read::read(&mut file, &mut buffer) else {
+            return Ok(stat);
+        };
+        if read == 0 {
+            break;
+        }
+        context.admit(WorkCounters {
+            bytes_hashed: read as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        hasher.update(&buffer[..read]);
+    }
+    Ok(stat.with_content(*hasher.finalize().as_bytes()))
 }
 
 fn version(path: Option<&[u8]>, metadata: &HostStat) -> SourceVersion {

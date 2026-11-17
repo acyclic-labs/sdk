@@ -170,13 +170,8 @@ pub(crate) fn workers(
         .map_err(|error| io::Error::new(error.kind(), error.to_string()))
 }
 
-/// One service worker per available CPU, or one for a seeded world whose
-/// driver polls a single future; queue admission supplies backpressure.
+/// One service worker per available CPU; queue admission supplies backpressure.
 pub(crate) fn parallelism() -> usize {
-    #[cfg(feature = "test-support")]
-    if let Some(seeded) = crate::testing::seeded_parallelism() {
-        return seeded;
-    }
     std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
 }
 

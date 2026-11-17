@@ -245,7 +245,20 @@ impl NativeDemandSource {
             }
         };
         #[cfg(feature = "test-support")]
-        let stat = with_fixture_content(self, &directory.join(&entry.name), stat, work)?;
+        let stat = {
+            #[cfg(unix)]
+            let child = directory.join(&entry.name);
+            #[cfg(windows)]
+            let child = {
+                let mut child = directory.clone();
+                if !child.is_empty() {
+                    child.push(u16::from(b'\\'));
+                }
+                child.extend_from_slice(&entry.name);
+                child
+            };
+            with_fixture_content(self, &child, stat, work)?
+        };
         let ((encoding, bytes), allocation) = source_name(&entry.name, self.inner.profile, work)?;
         backing.bytes += bytes.capacity() as u64;
         if let Some(allocation) = allocation {

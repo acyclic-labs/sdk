@@ -2,7 +2,7 @@
 //! and erasing the scheduler's entropy source changes that trace.
 use super::*;
 use family::{Generator, Variant};
-use oracle::{Plan, Prompted, World, call, failed, service, tag};
+use oracle::{Plan, Prompted, World, call, failed, service, settlements, tag};
 use serde_json::json;
 
 /// The X1 world dimension, in `classes.json` order.
@@ -136,6 +136,24 @@ async fn trace(
     .map_err(failed)?;
     let prompts = [vec![(class, format!("{} seed:{variation}", tag(class)))]];
     let incarnation = world.incarnation(None, &prompts).await.map_err(failed)?;
+    if !matches!(incarnation.prompts.as_slice(), [(Prompted::Settled(_), _)]) {
+        return Err(format!(
+            "X1 {class} seed {world_seed} prompt did not settle: {:?}",
+            incarnation.prompts
+        ));
+    }
+    let settled = incarnation
+        .requests
+        .last()
+        .map(settlements)
+        .transpose()
+        .map_err(failed)?
+        .ok_or_else(|| format!("X1 {class} seed {world_seed} made no model request"))?;
+    if settled.len() != 2 || !settled.iter().all(|call| call.succeeded()) {
+        return Err(format!(
+            "X1 {class} seed {world_seed} did not settle both tool calls: {settled:?}"
+        ));
+    }
     // Every replayed input stays in the digest. The explicit record tree only
     // makes the first differing field nameable when two runs disagree.
     let trace = serde_json::json!({

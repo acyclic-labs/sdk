@@ -166,6 +166,8 @@ impl NativeDemandFile {
             Err(error) => return Err(error),
         };
         let opened = stat_held(&self.provider, &file, context)?;
+        #[cfg(feature = "test-support")]
+        let opened = with_fixture_content(&self.provider, &self.relative, opened, context)?;
         if self.version(&opened) != self.expected {
             return Err(DemandError::StaleVersion);
         }
