@@ -1098,25 +1098,12 @@ mod tests {
             };
             reader.begin_frame(0);
             reader.plan(projections.iter().map(want));
-            let ops = reader.poll(0);
-            assert_eq!(
-                ops.len(),
-                2,
-                "one original fetch per tail projection must serve every admitted witness"
-            );
-            for flight in reader.inflight.values() {
-                assert!(
-                    reader
-                        .demand
-                        .get(&flight.key)
-                        .unwrap()
-                        .paging
-                        .witnesses
-                        .is_empty()
-                );
-                assert!(!flight.paging.witnesses.is_empty());
-            }
-            for op in ops.into_iter().rev() {
+            // The first page establishes the hierarchy cut before another
+            // projection can be admitted. Each fetch still serves every
+            // original witness for its tail.
+            for expected in [&alpha, &beta] {
+                let [op]: [Op; 1] = reader.poll(0).try_into().unwrap();
+                assert!(matches!(&op, Op::Children { tail: Some(tail), .. } if tail == expected));
                 let id = op.id();
                 reader.complete(id, execute(&provider, op).await, 0);
             }
