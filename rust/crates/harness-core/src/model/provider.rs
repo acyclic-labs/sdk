@@ -318,6 +318,11 @@ impl futures::stream::FusedStream for NativeModelStream<'_> {
 #[path = "provider_tests.rs"]
 mod tests;
 impl ModelEvent {
+    /// Transport admission or span observation, not model output.
+    pub(crate) const fn is_observation(&self) -> bool {
+        matches!(self, Self::Wait(_) | Self::Trace { .. })
+    }
+
     pub(crate) fn retained_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
             Self::Restarted | Self::Wait(_) => 0,

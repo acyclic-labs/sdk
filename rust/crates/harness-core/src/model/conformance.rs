@@ -322,6 +322,14 @@ pub async fn deterministic_replay(
 ) -> Result<()> {
     let first: Vec<ModelEvent> = provider.generate(request, dispatch).try_collect().await?;
     let second: Vec<ModelEvent> = provider.generate(request, dispatch).try_collect().await?;
+    let first: Vec<_> = first
+        .into_iter()
+        .filter(|event| !event.is_observation())
+        .collect();
+    let second: Vec<_> = second
+        .into_iter()
+        .filter(|event| !event.is_observation())
+        .collect();
     require(
         first == second && !first.is_empty(),
         "inference replay changed public events",
