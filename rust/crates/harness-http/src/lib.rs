@@ -148,7 +148,3 @@ pub use browser_credentials::BrowserCredentialResolver;
 
 mod retry;
 pub use retry::{response_retry_after, retry_after, retry_after_at};
-
-// Negative-control edit: a leaf crate change must not rebuild its sibling.
-
-// Negative-control edit two: only this leaf crate may rebuild.
