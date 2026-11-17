@@ -1,3 +1,4 @@
+import { wasmSource, wasmSourceSync } from "@acyclic-labs/core/wasm";
 import initMachinesWasm, {
   initSync as initMachinesWasmSync,
   normalize_identity as normalizeIdentityWasm,
@@ -11,12 +12,7 @@ const wasmUrl = new URL("../generated/wasm/acyclic_machines_wasm_bg.wasm", impor
 // through their built-in filesystem API, which avoids a module-level promise
 // that some test workers do not await; other runtimes use top-level await.
 if (!initializeMachinesWasmSync()) {
-  if (wasmUrl.protocol === "file:") {
-    const { readFile } = await import("node:fs/promises");
-    await initMachinesWasm({ module_or_path: Uint8Array.from(await readFile(wasmUrl)) });
-  } else {
-    await initMachinesWasm({ module_or_path: wasmUrl });
-  }
+  await initMachinesWasm({ module_or_path: await wasmSource(wasmUrl) });
 }
 
 /** Normalizes one public identity through the Rust-owned Machines contract. */
@@ -25,14 +21,9 @@ export function normalizeIdentity(kind: string, value: string): string {
 }
 
 function initializeMachinesWasmSync(): boolean {
-  const runtime = globalThis as typeof globalThis & {
-    process?: { getBuiltinModule?: (name: string) => unknown };
-  };
-  const getBuiltinModule = runtime.process?.getBuiltinModule;
-  if (getBuiltinModule === undefined) return false;
-  const filesystem = getBuiltinModule("node:fs") as { readFileSync?: (path: URL) => Uint8Array } | undefined;
-  if (filesystem?.readFileSync === undefined) return false;
-  initMachinesWasmSync({ module: filesystem.readFileSync(wasmUrl) });
+  const source = wasmSourceSync(wasmUrl);
+  if (source === undefined) return false;
+  initMachinesWasmSync({ module: source });
   return true;
 }
 
