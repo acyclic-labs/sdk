@@ -199,7 +199,6 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-
 filegroup(
     name = "workspace-rust-sources",
     srcs = [
@@ -312,6 +311,7 @@ filegroup(
     ],
     visibility = ["//visibility:public"],
 )
+
 
 cc_toolchain(
     name = "windows_cc_toolchain",
