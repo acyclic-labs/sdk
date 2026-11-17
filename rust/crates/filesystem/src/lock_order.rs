@@ -53,7 +53,3 @@ pub(crate) fn lock<T, const RANK: u16>(
 ) -> std::sync::LockResult<MutexGuard<'_, T>> {
     mutex.lock()
 }
-
-#[cfg(test)]
-#[cfg(not(loom))]
-mod tests;

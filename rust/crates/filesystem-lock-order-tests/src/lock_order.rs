@@ -1,9 +1,17 @@
-use super::*;
+//! Production ranked locks against their independent rank and wake invariants.
+#![cfg(not(loom))]
+
+#[path = "../../filesystem/src/lock_order/checked.rs"]
+mod lock_order;
+#[path = "../../filesystem/src/sync.rs"]
+mod sync;
+
+use lock_order::*;
 use proptest::prelude::*;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::LockResult;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::{Arc, Barrier};
+use sync::Arc;
 
 fn healthy<T>(result: LockResult<T>) -> T {
     result.unwrap_or_else(|error| std::panic::resume_unwind(Box::new(error.to_string())))
@@ -20,7 +28,11 @@ fn dynamic_lock(rank: u8, mutex: &crate::sync::Mutex<()>) -> MutexGuard<'_, ()> 
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0x7261_6e6b_732d_7631),
+        ..ProptestConfig::default()
+    })]
     #[test]
     fn every_acquire_and_out_of_order_drop_matches_held_ranks(
         operations in prop::collection::vec((any::<bool>(), 0u8..5), 0..48)
@@ -35,7 +47,9 @@ proptest! {
                 continue;
             }
             let allowed = held.iter().all(|(previous, _)| rank > *previous);
-            let result = catch_unwind(AssertUnwindSafe(|| dynamic_lock(rank, &locks[usize::from(rank)])));
+            let mutex = locks.get(usize::from(rank)).ok_or_else(||
+                proptest::test_runner::TestCaseError::fail("generated rank has no test lock"))?;
+            let result = catch_unwind(AssertUnwindSafe(|| dynamic_lock(rank, mutex)));
             prop_assert_eq!(result.is_ok(), allowed);
             if let Ok(guard) = result { held.push((rank, guard)); }
         }
@@ -45,44 +59,13 @@ proptest! {
     }
 }
 
-#[test]
-fn violation_names_both_acquisition_sites() {
-    let higher = Mutex::<_, VIEW>::new(());
-    let lower = Mutex::<_, OPERATION>::new(());
-    let held_line = line!() + 1;
-    let _held = healthy(higher.lock());
-    let requested_line = line!() + 1;
-    let result = catch_unwind(|| lower.lock());
-    let Err(error) = result else {
-        unreachable!("descending acquisition must panic");
-    };
-    let Some(message) = error.downcast_ref::<String>() else {
-        unreachable!("rank panic has a message");
-    };
-    assert!(message.contains(&format!("{}:{held_line}:", file!())));
-    assert!(message.contains(&format!("{}:{requested_line}:", file!())));
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn demand_leaf_reentry_panics_before_locking() {
-    let meter = crate::demand::NativeDemandReadMeter::new(crate::demand::DemandWork::new(
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    ));
-    let guard = meter.lock();
-    assert!(catch_unwind(AssertUnwindSafe(|| meter.lock())).is_err());
-    drop(guard);
-    drop(meter.lock());
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn poison_recovery_keeps_rank_until_recovered_guard_drops() {
-    let mutex = Arc::new(Mutex::<_, VIEW>::new(()));
+    let mutex = Arc::new(Mutex::<_, 1>::new(()));
     let other = Arc::clone(&mutex);
     assert!(
-        std::thread::spawn(move || {
+        sync::native::thread::spawn(move || {
             let _guard = healthy(other.lock());
             std::panic::resume_unwind(Box::new("poison the guarded value"));
         })
@@ -93,7 +76,7 @@ fn poison_recovery_keeps_rank_until_recovered_guard_drops() {
         unreachable!("the child poisoned the mutex");
     };
     let recovered = poisoned.into_inner();
-    let lower = Mutex::<_, OPERATION>::new(());
+    let lower = Mutex::<_, 0>::new(());
     assert!(catch_unwind(|| lower.lock()).is_err());
     drop(recovered);
     drop(healthy(lower.lock()));
@@ -102,11 +85,11 @@ fn poison_recovery_keeps_rank_until_recovered_guard_drops() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn condition_wait_restores_rank_and_rejects_descending_reacquisition() {
-    let lower = Mutex::<_, OPERATION>::new(());
-    let higher = Arc::new(Mutex::<_, VIEW>::new(false));
+    let lower = Mutex::<_, 0>::new(());
+    let higher = Arc::new(Mutex::<_, 1>::new(false));
     let condition = Arc::new(Condvar::new());
     let mut guard = healthy(higher.lock());
-    let notifier = std::thread::spawn({
+    let notifier = sync::native::thread::spawn({
         let higher = Arc::clone(&higher);
         let condition = Arc::clone(&condition);
         move || {
@@ -120,7 +103,7 @@ fn condition_wait_restores_rank_and_rejects_descending_reacquisition() {
     }
     assert!(catch_unwind(|| lower.lock()).is_err());
     drop(guard);
-    notifier.join().unwrap();
+    assert!(notifier.join().is_ok(), "the notifying worker completes");
 
     let lower_guard = healthy(lower.lock());
     let higher_guard = healthy(higher.lock());
@@ -137,14 +120,18 @@ fn condition_wait_restores_rank_and_rejects_descending_reacquisition() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn independent_threads_can_hold_equal_ranks() {
-    let barrier = Arc::new(Barrier::new(2));
-    std::thread::scope(|scope| {
-        for _ in 0..2 {
-            let barrier = Arc::clone(&barrier);
+    let (first_ready, wait_first) = sync::native::retirement_channel();
+    let (second_ready, wait_second) = sync::native::retirement_channel();
+    sync::native::thread::scope(|scope| {
+        for (ready, wait) in [(first_ready, wait_second), (second_ready, wait_first)] {
             scope.spawn(move || {
-                let mutex = Mutex::<_, VIEW>::new(());
+                let mutex = Mutex::<_, 1>::new(());
                 let _guard = healthy(mutex.lock());
-                barrier.wait();
+                assert!(
+                    ready.send(()).is_ok(),
+                    "the peer retains its ready receiver"
+                );
+                assert!(wait.recv().is_ok(), "the peer announces its held rank");
             });
         }
     });

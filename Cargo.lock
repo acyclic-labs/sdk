@@ -452,6 +452,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-fs-lock-order-tests"
+version = "0.2.0"
+dependencies = [
+ "acyclic-native-runtime",
+ "proptest",
+]
+
+[[package]]
 name = "acyclic-fs-napi"
 version = "0.2.0"
 dependencies = [
