@@ -1,12 +1,12 @@
 // Lock order: copy and release the projection cache before acquiring the source
 // lease. Writers may hold the source lease while updating the projection cache.
-// Retain that lease through both the snapshot decision and the fallback check.
+// Each predicate borrows the admitted lease through its check.
 pub(super) fn cached_binding_matches<State, Binding: Copy, Lease, Error>(
     cache: &crate::sync::Mutex<State>,
     binding: impl FnOnce(&State) -> Option<Binding>,
     lease: impl FnOnce() -> Result<Lease, Error>,
-    current: impl FnOnce(Binding) -> bool,
-    unchanged: impl FnOnce(Binding) -> bool,
+    current: impl FnOnce(Binding, &Lease) -> bool,
+    unchanged: impl FnOnce(Binding, &Lease) -> bool,
 ) -> Result<bool, Error> {
     let binding = binding(
         &cache
@@ -38,11 +38,11 @@ mod proofs {
                 assert!(cache.try_lock().is_ok());
                 Err::<(), _>(7_u8)
             },
-            |()| {
+            |(), _lease| {
                 decisions.set(decisions.get() + 1);
                 true
             },
-            |()| {
+            |(), _lease| {
                 decisions.set(decisions.get() + 1);
                 true
             },

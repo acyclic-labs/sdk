@@ -384,11 +384,11 @@ pub(super) unsafe fn notification(
                             .filter(|binding| binding.host == host && host.links == Some(1))
                     },
                     || source.acquire_binding_lease_with_meter(None, &work),
-                    |binding| {
+                    |binding, _lease| {
                         source.reports_changes_to(binding.file_id)
                             && ReadBasis::sample(source.as_ref()) == Some(binding.basis)
                     },
-                    |binding| {
+                    |binding, _lease| {
                         binding
                             .basis
                             .still_describes(source.as_ref(), &path, Some(binding.file_id))

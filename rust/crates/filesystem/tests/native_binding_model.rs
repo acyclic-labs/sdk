@@ -101,8 +101,8 @@ mod interleavings {
                     );
                     Ok::<_, ()>(())
                 },
-                |()| true,
-                |()| false,
+                |(), _lease| true,
+                |(), _lease| false,
             );
         });
     }
@@ -158,11 +158,11 @@ mod interleavings {
                             lease = Some(gate.read().unwrap());
                             Ok::<_, ()>(())
                         };
-                        let current = |expected| {
+                        let current = |expected, _lease: &()| {
                             reports
                                 && (accept_stale && (related || rebound) || sample() == expected)
                         };
-                        let unchanged = |expected: (u8, u8)| {
+                        let unchanged = |expected: (u8, u8), _lease: &()| {
                             fallback.set(true);
                             let observed = sample();
                             observed.1 == expected.1 && (observed.0 == expected.0 || !related)
