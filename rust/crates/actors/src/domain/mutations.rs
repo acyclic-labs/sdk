@@ -434,16 +434,21 @@ impl RemoveSubscriptionRequest {
         subscription_id: String,
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
-        Self::try_from(wire::RemoveSubscriptionRequest {
+        crate::contract::validate_subscription_identity(&subscription_id, &idempotency_key)?;
+        Ok(Self {
             namespace: None,
             account_id: Vec::new(),
-            actor_id: actor_id.as_str().to_owned(),
+            actor_id,
             subscription_id,
             idempotency_key,
         })
     }
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        crate::validate_remove_subscription(&self.clone().into()).map_err(DomainError::Contract)
+        crate::contract::validate_subscription_identity(
+            &self.subscription_id,
+            &self.idempotency_key,
+        )
+        .map_err(Into::into)
     }
     /// Returns the Actor identity.
     pub fn actor_id(&self) -> &ActorId {
@@ -487,16 +492,21 @@ impl ResumeSubscriptionRequest {
         subscription_id: String,
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
-        Self::try_from(wire::ResumeSubscriptionRequest {
+        crate::contract::validate_subscription_identity(&subscription_id, &idempotency_key)?;
+        Ok(Self {
             namespace: None,
             account_id: Vec::new(),
-            actor_id: actor_id.as_str().to_owned(),
+            actor_id,
             subscription_id,
             idempotency_key,
         })
     }
     fn validate_from_proto(&self) -> Result<(), DomainError> {
-        crate::validate_resume_subscription(&self.clone().into()).map_err(DomainError::Contract)
+        crate::contract::validate_subscription_identity(
+            &self.subscription_id,
+            &self.idempotency_key,
+        )
+        .map_err(Into::into)
     }
     /// Returns the Actor identity.
     pub fn actor_id(&self) -> &ActorId {

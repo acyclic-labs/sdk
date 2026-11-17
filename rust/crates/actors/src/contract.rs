@@ -239,13 +239,20 @@ fn validate_subscription_control(
     subscription: &str,
     identity: &str,
 ) -> Result<(), ContractError> {
-    if !valid_actor_scope(namespace, actor)
-        || !valid_idempotency_key(identity)
-        || subscription.is_empty()
-    {
+    if !valid_actor_scope(namespace, actor) {
         return Err(ContractError::InvalidArgument);
     }
-    Ok(())
+    validate_subscription_identity(subscription, identity)
+}
+
+pub(super) fn validate_subscription_identity(
+    subscription: &str,
+    key: &str,
+) -> Result<(), ContractError> {
+    if subscription.is_empty() {
+        return Err(ContractError::InvalidArgument);
+    }
+    validate_idempotency_key(key)
 }
 
 /// Validates a fork: both Actors share one account and namespace, the child
