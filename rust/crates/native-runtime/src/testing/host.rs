@@ -135,11 +135,16 @@ impl Host {
         Self::with_pool(pool, progress)
     }
 
+    #[cfg(test)]
     pub(super) fn for_workers(
         workers: &crate::NativeWorkers,
         progress: Arc<Progress>,
     ) -> Arc<Self> {
         Self::with_pool(workers.host_pool.clone(), progress)
+    }
+
+    pub(super) fn for_pool(pool: Arc<Pool>, progress: Arc<Progress>) -> Arc<Self> {
+        Self::with_pool(pool, progress)
     }
 
     fn with_pool(pool: Arc<Pool>, progress: Arc<Progress>) -> Arc<Self> {
