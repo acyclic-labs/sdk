@@ -1343,6 +1343,7 @@ rust_test(
         "tests/dst/flushes.rs",
         "tests/dst/grants.rs",
         "tests/dst/main.rs",
+        "tests/dst/observability.rs",
         "tests/dst/oracle.rs",
         "tests/dst/protective.rs",
         "tests/dst/publication.rs",
