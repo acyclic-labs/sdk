@@ -126,10 +126,16 @@ impl<I> Instances<I> {
                 registry: self,
             })?);
             let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-            slots
-                .get_mut(&state.root)
-                .expect("startup owns the root registration")
-                .instance = Arc::downgrade(&instance);
+            let Some(slot) = slots.get_mut(&state.root) else {
+                // Dropping the instance can release its registration, which
+                // acquires this same registry lock.
+                drop(slots);
+                drop(instance);
+                return Err(NativeMountError::Driver(
+                    "startup lost the root registration".into(),
+                ));
+            };
+            slot.instance = Arc::downgrade(&instance);
             drop(slots);
             state.changed.notify_all();
             return Ok(instance);
