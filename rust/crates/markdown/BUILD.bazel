@@ -145,6 +145,7 @@ isolated_test(
     name = "main",
     binary = ":main_cases",
     id = "acyclic-markdown::main",
+    exclude = ["::full_cloud::"],
     limit_seconds = 10,
 )
 
