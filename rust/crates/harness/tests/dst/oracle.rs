@@ -132,6 +132,11 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
     let failed = Mutex::new(Vec::<&'static str>::new());
     let needles: Vec<_> = plans.iter().map(|plan| appears(&tag(plan.tag))).collect();
     let answer = move |request: &ModelRequest| {
+        if request.summary {
+            return ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":1,"summary":"retained older history"}"#.into(),
+            );
+        }
         let messages: Vec<_> = model_visible_messages(&request.messages).collect();
         let found = messages
             .iter()

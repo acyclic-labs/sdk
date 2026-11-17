@@ -38,14 +38,14 @@ pub(super) const SETTLEMENT_LATENCY: Generator = Generator {
 acyclic_test_support::cases! {
     module = every_waiter_has_its_event,
     values: u64,
-    runner = super::run,
+    runner = super::run_wait,
     cases = [seed_0 => 0],
 }
 
 acyclic_test_support::cases! {
     module = every_settlement_reaches_its_parent,
     values: u64,
-    runner = super::run,
+    runner = super::run_settlement,
     cases = [
         seed_0 => 0, seed_1 => 1, seed_2 => 2, seed_3 => 3, seed_4 => 4,
         seed_5 => 5, seed_6 => 6, seed_7 => 7, seed_8 => 8, seed_9 => 9,
@@ -54,12 +54,12 @@ acyclic_test_support::cases! {
     ],
 }
 
-fn run(seed: u64) -> std::result::Result<(), String> {
-    if seed == 0 {
-        WAIT_WITHOUT_EVENT.run(seed)
-    } else {
-        SETTLEMENT_LATENCY.run(seed - 1)
-    }
+fn run_wait(seed: u64) -> std::result::Result<(), String> {
+    WAIT_WITHOUT_EVENT.run(seed)
+}
+
+fn run_settlement(seed: u64) -> std::result::Result<(), String> {
+    SETTLEMENT_LATENCY.run(seed)
 }
 
 const WAITERS: [&str; 8] = [
