@@ -155,14 +155,19 @@ mod tests {
     use super::*;
     use crate::kernel::NamespacePath;
 
-    fn changes_stream(scope: [u8; 16], volume: VolumeId) -> acyclic_stream::StreamPath {
+    fn changes_stream(
+        scope: [u8; 16],
+        volume: VolumeId,
+    ) -> Result<acyclic_stream::StreamPath, Box<dyn std::error::Error>> {
         let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
-        let text = crate::publication_changes::changes_path_text(scope, volume, &mut text).unwrap();
-        acyclic_stream::StreamPath::new(text.to_owned()).unwrap()
+        let text = crate::publication_changes::changes_path_text(scope, volume, &mut text)
+            .ok_or("changes path encoding failed")?;
+        Ok(acyclic_stream::StreamPath::new(text)?)
     }
     use acyclic_stream::wire;
     #[test]
-    fn volume_changes_subtree_checks_lossless_paths_and_appender_identity() {
+    fn volume_changes_subtree_checks_lossless_paths_and_appender_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
         let config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
         let components = vec!["component"; 130];
         let text = components.join("/");
@@ -299,13 +304,13 @@ mod tests {
             headers: appended.headers,
             commit_id: acyclic_stream::CommitId::from_bytes([9; 32]),
             committed_at_micros: 0,
-            origin: changes_stream([0; 16], volume),
+            origin: changes_stream([0; 16], volume)?,
         };
         // The context must name the volume whose changes stream appended the
         // record, which Streams reports: another stream cannot claim it.
         for origin in [
-            changes_stream([0; 16], VolumeId::from_bytes([7; 16])),
-            changes_stream([1; 16], volume),
+            changes_stream([0; 16], VolumeId::from_bytes([7; 16]))?,
+            changes_stream([1; 16], volume)?,
         ] {
             let mut forged = record.clone();
             forged.origin = origin;
@@ -407,7 +412,7 @@ mod tests {
             let mut record = record.clone();
             record.value = appended.value;
             record.headers = appended.headers;
-            record.origin = changes_stream([0; 16], appender);
+            record.origin = changes_stream([0; 16], appender)?;
             let projected = project(
                 record.clone(),
                 Projection {
@@ -466,5 +471,6 @@ mod tests {
                 .is_err()
             );
         }
+        Ok(())
     }
 }
