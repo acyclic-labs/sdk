@@ -9,8 +9,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { isMain, parseToml, trackedFiles } from "./policy-core.mjs";
+import { isMain, parseToml, repositoryRoot, trackedFiles } from "./policy-core.mjs";
 
 const VENDORED = ":(exclude)rust/vendor/**";
 // capture.json, review.json and sources.json within this evidence archive bind
@@ -120,7 +119,7 @@ export async function qualifyRustfmt(root, { write = false } = {}) {
 
 if (isMain(import.meta.url)) {
   const { status, output } = await qualifyRustfmt(
-    resolve(dirname(fileURLToPath(import.meta.url)), ".."),
+    repositoryRoot,
     { write: process.argv.includes("--write") },
   );
   process.stdout.write(output);

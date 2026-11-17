@@ -1,14 +1,12 @@
 // Each Cargo invocation selects exactly one workspace member, so another
 // member's features cannot make its tests compile. Each worker owns a stable
 // target directory so Cargo and target-store leases permit actual overlap.
-import { isMain } from "./policy-core.mjs";
+import { isMain, repositoryRoot as root } from "./policy-core.mjs";
 import { execFileSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { workspaceDefaults } from "./workspace-defaults.mjs";
 import { runCommand } from "./run-command.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export function workspacePackages(metadata) {
   return workspaceDefaults(metadata).map(pkg => pkg.name);

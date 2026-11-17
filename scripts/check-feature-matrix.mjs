@@ -14,19 +14,17 @@
 //        [--external-only] [--target=TRIPLE]
 // Every extra worker uses its own target directory, so Cargo's build lock never
 // serializes them; the compiler cache still deduplicates their dependencies.
-import { isMain } from "./policy-core.mjs";
+import { isMain, repositoryRoot as root } from "./policy-core.mjs";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { localCargoPackages } from "./publish-cargo-crates.mjs";
 import { enabled, featureSets, selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
 import { runCommand } from "./run-command.mjs";
 import { checkCloudNativeFeatures } from "./check-cloud-native-features.mjs";
 export { enabled, featureSets } from "./cargo-feature-selection.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // Keep each (package, feature selection) in the same cache when another crate
 // or feature is added, or when PR and main use different matrix sizes. Absolute
