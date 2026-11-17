@@ -256,6 +256,19 @@
         }
       }
     },
+    "//:npm_test_repo.bzl%npm_test": {
+      "general": {
+        "bzlTransitiveDigest": "dtWHukw6IcfrYI+2ogTuJCxajt9hsKb94hP+nwRyDgA=",
+        "usagesDigest": "Fetlhs36XJ1uxHe4xm7kC5zy7fTMLtk2jjbbl27aZyY=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "npm_test_packages": {
+            "repoRuleId": "@@//:npm_test_repo.bzl%_npm_test_repository",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "//toolchains/kani:repositories.bzl%kani": {
       "general": {
         "bzlTransitiveDigest": "gMZzP1xD7oaj/Z+9mtXgLdhK0Ai5pQnbAcpYvv0rubk=",
