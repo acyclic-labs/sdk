@@ -45,7 +45,8 @@ def _isolated_test_impl(ctx):
                 fail("{}: {} names {} files, not one executable".format(ctx.label, name, len(files)))
             tool = files[0]
         extension = "." + tool.extension if tool.extension else ""
-        path = ctx.label.package + "/.cargo-bin/" + name + extension
+        package = ctx.label.package + "/" if ctx.label.package else ""
+        path = package + ".cargo-bin/" + name + extension
         environment["CARGO_BIN_EXE_" + name] = path
         runfiles = runfiles.merge(ctx.runfiles(symlinks = {path: tool}))
         # The tool's own data runfiles never need its original executable entry; that entry
