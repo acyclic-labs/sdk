@@ -40,8 +40,8 @@ def _generator_executables_impl(ctx):
     ctx.actions.write(manifest, json.encode(entries) + "\n")
     arguments = [output.path, manifest.path] + [executable.path for executable in executables]
     commands = ["mkdir -p \"$1\"", "cp \"$2\" \"$1/executables.json\""]
-    commands.extend("cp \"$%d\" \"$1/%s\"" % (index + 3, executable.basename)
-                    for index, executable in enumerate(executables))
+    for index in range(len(executables)):
+        commands.append("cp \"$%d\" \"$1/%s\"" % (index + 3, executables[index].basename))
     ctx.actions.run_shell(
         inputs = [manifest] + executables,
         outputs = [output],
