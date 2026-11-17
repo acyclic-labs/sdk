@@ -96,14 +96,45 @@ async fn record_agent(
     agent: &AgentPath,
     recording: &mut Recording,
 ) -> Result<()> {
+    let (mut input, mut after) = (0, 0);
     let mut calls = Input::default();
-    let mut current = None;
-    for (input, record) in execution_records(connection, agent).await? {
-        if current != Some(input) {
+    loop {
+        let AgentReply::Events {
+            input: admitted,
+            page,
+            ..
+        } = connection
+            .execute(&AgentCommand::Events {
+                agent: agent.clone(),
+                input,
+                after,
+                wait: false,
+            })
+            .await?
+        else {
+            return Err(unexpected());
+        };
+        // A page is observed and released before the next one is read, so a
+        // long journal costs one page beside the recording, never its whole.
+        if admitted != input {
             calls.flush(recording);
-            current = Some(input);
         }
-        observe(connection, agent, input, &record, &mut calls).await?;
+        input = admitted;
+        let Some(page) = page else {
+            break;
+        };
+        for record in &page.items {
+            observe(connection, agent, input, record, &mut calls).await?;
+        }
+        if let Some(next) = page.next {
+            after = next;
+        } else {
+            calls.flush(recording);
+            input = input
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("recording input continuation overflows".into()))?;
+            after = 0;
+        }
     }
     calls.flush(recording);
     Ok(())

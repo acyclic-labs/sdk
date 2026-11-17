@@ -48,10 +48,23 @@ pub(super) fn world(seed: u64) -> std::result::Result<bool, String> {
             if incarnation.crashed.is_some() {
                 return Ok(false);
             }
-            let (mut prompt, mut start, mut complete, mut usage) = (false, false, false, false);
+            let (mut prepared, mut prompt) = (None, None);
+            let (mut start, mut complete, mut usage) = (false, false, false);
             for record in &incarnation.records {
                 match &record.event {
-                    ExecutionEvent::Prompt { step: 0, .. } => prompt = true,
+                    ExecutionEvent::ContextPrepared {
+                        step: 0,
+                        projection,
+                        ..
+                    } => {
+                        prepared = Some(*projection);
+                    }
+                    ExecutionEvent::Prompt {
+                        step: 0,
+                        projection,
+                    } => {
+                        prompt = Some(*projection);
+                    }
                     ExecutionEvent::ToolStarted { call_id, .. } if call_id == "tool" => {
                         start = record.committed_at_micros.is_some();
                     }
@@ -63,11 +76,14 @@ pub(super) fn world(seed: u64) -> std::result::Result<bool, String> {
                     _ => {}
                 }
             }
+            // The prompt record must pin the exact prepared context the first
+            // model request was admitted from, not merely exist.
+            let prompt = prompt.is_some() && prompt == prepared;
             if prompt && start && complete && usage {
                 Ok(true)
             } else {
                 Err(format!(
-                    "run record lacks prompt={prompt}, tool start time={start}, tool completion time={complete}, or usage={usage}"
+                    "run record lacks the prepared prompt={prompt}, tool start time={start}, tool completion time={complete}, or usage={usage}"
                 ))
             }
         })
