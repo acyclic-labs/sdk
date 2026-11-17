@@ -57,6 +57,7 @@ acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = fa
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
+tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util", "process", "net", "io-util"] }
 
 [lints]

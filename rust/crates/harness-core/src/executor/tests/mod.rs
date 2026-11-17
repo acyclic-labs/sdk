@@ -24,7 +24,6 @@ mod original_preparation;
 #[cfg(not(target_arch = "wasm32"))]
 mod preparation_differential;
 
-#[cfg(not(target_arch = "wasm32"))]
 use serde_json::json;
 
 fn uncompacted_executor(
