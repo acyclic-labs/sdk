@@ -170,7 +170,7 @@ mod tests {
             .child(&parent, &path, &volumes, "worker", None)
             .await?;
         assert_eq!(later.context, SpawnContext::Fork);
-        assert_eq!(later.model, parent.model);
+        assert_eq!(later.model.as_deref(), Some("example/later"));
         assert_ne!(later.template, selected.template);
         let reader = FilesystemContentVerifier::new(
             Arc::clone(&host),
@@ -180,9 +180,11 @@ mod tests {
             None,
         )?;
         let directive = crate::templates::directive(&selected, reader.as_ref()).await?;
+        // A custom template keeps its own directive; the root's delegation
+        // policy is never appended to a role template.
         assert!(matches!(
             &directive.context.messages[0].content,
-            crate::model::ModelContent::Text(text) if text.starts_with("Retain this exact directive.") && text.contains("speculative fork")
+            crate::model::ModelContent::Text(text) if text == "Retain this exact directive."
         ));
         // A child reads its original parent-home template by the same exact
         // external-file grant its turn uses, without gaining that whole volume.
