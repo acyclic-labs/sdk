@@ -351,10 +351,7 @@ impl ExecutionJournal for Journal {
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::Custody>> {
         #[cfg(not(target_arch = "wasm32"))]
-        acyclic_differential::record((
-            "journal load",
-            reference.descriptor().byte_length(),
-        ));
+        acyclic_differential::record(("journal load", reference.descriptor().byte_length()));
         if io.is_some() {
             return Err(crate::Error::Unsupported(
                 "finite test journal IO is unavailable".into(),

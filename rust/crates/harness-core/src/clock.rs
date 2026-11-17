@@ -52,7 +52,9 @@ pub async fn delay(duration: std::time::Duration) -> crate::Result<()> {
         };
         let elapsed = JsFuture::from(promise).await;
         drop(timeout);
-        elapsed.map_err(|_| crate::Error::Invalid("browser platform timer registration failed".into()))?;
+        elapsed.map_err(|_| {
+            crate::Error::Invalid("browser platform timer registration failed".into())
+        })?;
         remaining -= u128::from(interval);
     }
     Ok(())

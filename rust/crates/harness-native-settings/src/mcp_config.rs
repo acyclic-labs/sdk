@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 /// Host-owned connection configuration. Credentials are never serialized into task records.
 #[derive(Clone, Default, PartialEq)]
 pub struct McpConfig {
-        /// Exact declarations keyed by server name.
+    /// Exact declarations keyed by server name.
     pub servers: BTreeMap<String, McpServer>,
 }
 

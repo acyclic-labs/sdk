@@ -1,5 +1,5 @@
-use acyclic_harness_core::Result;
 use acyclic_fs::{NativeAllocation, WorkCounters};
+use acyclic_harness_core::Result;
 use bytes::Bytes;
 
 struct Owned<T> {
@@ -118,8 +118,9 @@ mod tests {
         for release_first in [false, true] {
             let mut budget = acyclic_fs::performance::work_budget(100_000, 8_000_000);
             budget.peak_allocation_bytes = baseline + CAPACITY;
-            let work = NativeMaterializationWork::new(budget, &CancellationToken::new())
-                .map_err(|(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work })?;
+            let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).map_err(
+                |(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work },
+            )?;
             let custody = work.claim(CAPACITY, 0, WorkCounters::UNCHARGED)?;
             let retired_at = Arc::new(AtomicU64::new(u64::MAX));
             let payload = Observed {

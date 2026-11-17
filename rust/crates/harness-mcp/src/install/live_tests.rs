@@ -122,7 +122,8 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
         },
         McpClientLimits::default(),
     )?;
-    tools = acyclic_harness_core::tool::ToolRegistry::default().with_source(Arc::new(Nested(tools)));
+    tools =
+        acyclic_harness_core::tool::ToolRegistry::default().with_source(Arc::new(Nested(tools)));
     let mut grants = acyclic_harness_core::Capabilities::new(["mcp:call:watched"]);
     let direct_model = Arc::new(
         ScriptedModelProvider::new([ScriptedTurn::Text("direct".into())]).with_token_counter(
@@ -221,7 +222,10 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
     )
     .with_compaction_policy(CompactionPolicy::Disabled)
     .with_tool_authority(
-        RuntimeScope::new(grants.clone(), acyclic_harness_core::conversation::Limits::default())?,
+        RuntimeScope::new(
+            grants.clone(),
+            acyclic_harness_core::conversation::Limits::default(),
+        )?,
         Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
     )?;
     let journal = Arc::new(acyclic_harness_core::executor::test_support::Journal::default());
@@ -330,7 +334,10 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
     )
     .with_compaction_policy(CompactionPolicy::Disabled)
     .with_tool_authority(
-        RuntimeScope::new(grants.clone(), acyclic_harness_core::conversation::Limits::default())?,
+        RuntimeScope::new(
+            grants.clone(),
+            acyclic_harness_core::conversation::Limits::default(),
+        )?,
         Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
     )?
     .with_context_epoch(&epoch, journal.clone(), journal.clone(), None)
@@ -357,7 +364,10 @@ async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
     )
     .with_compaction_policy(CompactionPolicy::Disabled)
     .with_tool_authority(
-        RuntimeScope::new(grants, acyclic_harness_core::conversation::Limits::default())?,
+        RuntimeScope::new(
+            grants,
+            acyclic_harness_core::conversation::Limits::default(),
+        )?,
         Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
     )?
     .with_context_epoch(&epoch, journal.clone(), journal.clone(), None)
@@ -601,7 +611,8 @@ async fn role_ceiling_case(compose: bool, configured: bool, allowed: bool) -> Re
         },
         McpClientLimits::default(),
     )?;
-    let mut tools = acyclic_harness_core::tool::ToolRegistry::default().with_source(Arc::new(Nested(tools)));
+    let mut tools =
+        acyclic_harness_core::tool::ToolRegistry::default().with_source(Arc::new(Nested(tools)));
     let mut grants = acyclic_harness_core::Capabilities::new([if configured {
         "mcp:configured"
     } else {

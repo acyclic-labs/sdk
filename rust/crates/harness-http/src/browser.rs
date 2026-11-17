@@ -1,6 +1,8 @@
 use super::invalid;
 use super::{HttpRequest, HttpResponse, HttpTransport};
 use acyclic_harness_core::Result;
+/// Monotonic coordinates in the current realm; unknown without `performance.now`.
+pub use acyclic_harness_core::clock::monotonic_now;
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
@@ -10,8 +12,6 @@ use web_sys::{
     AbortController, Headers, ReadableStreamDefaultReader, RequestCredentials, RequestInit,
     RequestRedirect, Response,
 };
-/// Monotonic coordinates in the current realm; unknown without `performance.now`.
-pub use acyclic_harness_core::clock::monotonic_now;
 
 /// Browser HTTP with an explicitly owned fetch function.
 pub struct BrowserTransport(Function);

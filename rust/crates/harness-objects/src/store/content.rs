@@ -132,7 +132,7 @@ impl ObjectContentStore {
     clippy::needless_pass_by_value,
     reason = "maps the owned provider error at async boundaries"
 )]
-pub(in crate) fn storage(error: acyclic_objects::Error) -> Error {
+pub(crate) fn storage(error: acyclic_objects::Error) -> Error {
     Error::Storage(error.to_string())
 }
 
@@ -143,7 +143,12 @@ impl ContentResidencyVerifier for ObjectContentStore {
         range: acyclic_fs::ByteRange,
         _ceiling: Option<&'a acyclic_harness_core::Capabilities>,
         io: Option<&'a acyclic_harness_core::conversation::ContentIo>,
-    ) -> Result<acyclic_harness_core::conversation::BoundedContentFuture<'a, acyclic_harness_core::conversation::Custody>> {
+    ) -> Result<
+        acyclic_harness_core::conversation::BoundedContentFuture<
+            'a,
+            acyclic_harness_core::conversation::Custody,
+        >,
+    > {
         self.supports_read(file.volume(), io)?;
         acyclic_harness_core::conversation::BoundedContentFuture::new(io, || async move {
             self.read_interval(file, range)
@@ -158,7 +163,12 @@ impl ContentResidencyVerifier for ObjectContentStore {
         maximum_bytes: u64,
         _ceiling: Option<&'a acyclic_harness_core::Capabilities>,
         io: Option<&'a acyclic_harness_core::conversation::ContentIo>,
-    ) -> Result<acyclic_harness_core::conversation::BoundedContentFuture<'a, acyclic_harness_core::conversation::Custody>> {
+    ) -> Result<
+        acyclic_harness_core::conversation::BoundedContentFuture<
+            'a,
+            acyclic_harness_core::conversation::Custody,
+        >,
+    > {
         self.supports_read(reference.volume(), io)?;
         acyclic_harness_core::conversation::BoundedContentFuture::new(io, || async move {
             if reference.descriptor().byte_length() > maximum_bytes {

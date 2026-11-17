@@ -943,11 +943,11 @@ pub struct ModelEventAdmission {
     pub abandoned: ModelAbandonedOutput,
 }
 
-#[cfg(test)]
-pub(crate) mod tests;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support;
+#[cfg(test)]
+pub(crate) mod tests;
 
 mod validation;
 #[doc(hidden)]

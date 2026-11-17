@@ -338,7 +338,6 @@ impl NativeProcessRequest {
         drop(guard);
         Ok(digest)
     }
-
 }
 
 /// Bounded bytes from a completed process. Bytes preserve non-UTF-8 output.

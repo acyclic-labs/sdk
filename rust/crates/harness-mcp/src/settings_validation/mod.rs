@@ -46,11 +46,20 @@ impl Files {
         self.load_bounded(trusted, 512)
     }
 
-    fn load_bounded(&self, trusted: bool, maximum: u64) -> acyclic_harness_core::Result<NativeSettings> {
+    fn load_bounded(
+        &self,
+        trusted: bool,
+        maximum: u64,
+    ) -> acyclic_harness_core::Result<NativeSettings> {
         self.load_trust(trusted, trusted, maximum)
     }
 
-    fn load_trust(&self, hooks: bool, mcp: bool, maximum: u64) -> acyclic_harness_core::Result<NativeSettings> {
+    fn load_trust(
+        &self,
+        hooks: bool,
+        mcp: bool,
+        maximum: u64,
+    ) -> acyclic_harness_core::Result<NativeSettings> {
         // Use the shipped entry and its original native IO completion channel.
         // No test-only constructor or ambient user configuration is selected.
         futures::executor::block_on(NativeSettings::load(self.config(hooks, mcp, maximum)))
@@ -66,7 +75,9 @@ impl Files {
 }
 
 fn native_failure<T>(result: acyclic_harness_core::Result<T>, error: std::io::Error) {
-    let acyclic_harness_core::Error::Process(expected) = acyclic_harness_core::Error::process_io(error) else {
+    let acyclic_harness_core::Error::Process(expected) =
+        acyclic_harness_core::Error::process_io(error)
+    else {
         panic!("native I/O must retain its process classification");
     };
     let Err(acyclic_harness_core::Error::Process(actual)) = result else {

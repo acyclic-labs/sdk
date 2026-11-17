@@ -25,10 +25,10 @@ mod protocol;
 mod remote;
 mod rpc;
 pub mod services;
-pub mod stdio;
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod settings_validation;
+pub mod stdio;
 pub use catalog::{McpCatalog, McpDiscoveryPolicy, McpSchemaExposure};
 pub use protocol::{McpToolDefinition, McpToolTransport, PROTOCOL_VERSION};
 #[cfg(test)]
@@ -93,7 +93,9 @@ impl NativeProcessRequestExt for acyclic_harness_core::filesystem::NativeProcess
             acyclic_harness_core::Error::Unsupported("native request has no MCP exchange".into())
         })?;
         if result.stop.is_some() {
-            return Err(acyclic_harness_core::Error::Indeterminate(exchange.operation));
+            return Err(acyclic_harness_core::Error::Indeterminate(
+                exchange.operation,
+            ));
         }
         stdio::McpStdioRequestExt::decode_response(exchange, &result.stdout)
     }

@@ -26,7 +26,9 @@ pub enum McpSchemaExposure {
 }
 
 /// Local discovery policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, acyclic_harness_core::HeapLayout)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, acyclic_harness_core::HeapLayout,
+)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum McpDiscoveryPolicy {
@@ -77,7 +79,11 @@ impl McpCatalog {
                 "harness/mcp-catalog-install/v1",
                 self,
                 previous
-                    .map(|old| acyclic_harness_core::executor::json::canonical_json_digest(old, None, &mut None))
+                    .map(|old| {
+                        acyclic_harness_core::executor::json::canonical_json_digest(
+                            old, None, &mut None,
+                        )
+                    })
                     .transpose()?,
                 maximum_tools,
                 maximum_bytes,
@@ -160,7 +166,11 @@ impl McpCatalog {
         remaining.validate()?;
         remaining.admit_tools(self.tools.len())?;
         remaining.admit_bytes(self)?;
-        acyclic_harness_core::executor::compile_json_schema(&self.projection_schema, "MCP projection", &mut None)?;
+        acyclic_harness_core::executor::compile_json_schema(
+            &self.projection_schema,
+            "MCP projection",
+            &mut None,
+        )?;
         check()?;
         let mut names = BTreeSet::new();
         for tool in &self.tools {
@@ -178,7 +188,11 @@ impl McpCatalog {
                         "MCP output schema must describe an object".into(),
                     ));
                 }
-                acyclic_harness_core::executor::compile_json_schema(schema, "MCP output", &mut None)?;
+                acyclic_harness_core::executor::compile_json_schema(
+                    schema,
+                    "MCP output",
+                    &mut None,
+                )?;
                 check()?;
             }
         }
@@ -321,7 +335,11 @@ impl McpCatalog {
         next.pin_catalog_revision(
             &prefix,
             previous
-                .map(|old| acyclic_harness_core::executor::json::canonical_json_digest(old, None, &mut None))
+                .map(|old| {
+                    acyclic_harness_core::executor::json::canonical_json_digest(
+                        old, None, &mut None,
+                    )
+                })
                 .transpose()?,
             acyclic_harness_core::executor::json::canonical_json_digest(self, None, &mut None)?,
         )?;

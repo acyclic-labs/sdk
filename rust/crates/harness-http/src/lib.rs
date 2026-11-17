@@ -77,7 +77,9 @@ pub trait HttpTransport: ProviderPlatform {
         {
             let time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| acyclic_harness_core::Error::Invalid("HTTP wall clock unavailable".into()))?;
+                .map_err(|_| {
+                    acyclic_harness_core::Error::Invalid("HTTP wall clock unavailable".into())
+                })?;
             u64::try_from(time.as_millis())
                 .map_err(|_| acyclic_harness_core::Error::Invalid("HTTP clock overflow".into()))
         }
@@ -85,7 +87,9 @@ pub trait HttpTransport: ProviderPlatform {
         {
             let time = js_sys::Date::now();
             if !time.is_finite() || time < 0.0 {
-                return Err(acyclic_harness_core::Error::Invalid("HTTP wall clock unavailable".into()));
+                return Err(acyclic_harness_core::Error::Invalid(
+                    "HTTP wall clock unavailable".into(),
+                ));
             }
             Ok(time as u64)
         }

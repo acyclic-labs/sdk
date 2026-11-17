@@ -1,7 +1,5 @@
 //! Analyze admitted observation objects without retaining their input history.
-use acyclic_harness_experiments::{
-    Error, Observation, analysis::Contrast, plan::PairAssignment,
-};
+use acyclic_harness_experiments::{Error, Observation, analysis::Contrast, plan::PairAssignment};
 use std::{
     fs::File,
     io::{BufReader, BufWriter, Write},

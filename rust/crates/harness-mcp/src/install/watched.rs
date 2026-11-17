@@ -37,31 +37,31 @@ impl McpConfigWatchExt for McpConfig {
         secrets: Arc<dyn acyclic_harness_core::secrets::SecretSource>,
     ) -> impl std::future::Future<Output = Result<McpInstallation>> + Send {
         async move {
-        let watch = InputWatch::new(settings.mcp_paths())?;
-        let revision = watch.revision();
-        watch.arm()?;
-        let config = NativeSettings::load_mcp(settings.clone()).await?;
-        let installed = config
-            .clone()
-            .install(ToolRegistry::default(), workspace, limits, secrets.clone())
-            .await?;
-        let source = Arc::new(WatchedConfig {
-            watch,
-            settings,
-            workspace: workspace.to_owned(),
-            limits,
-            secrets,
-            state: tokio::sync::Mutex::new((revision, config)),
-            tools: std::sync::Mutex::new(installed.tools),
-            removed: std::sync::Mutex::new(Default::default()),
-        });
-        let mut capabilities = installed.capabilities;
-        capabilities.insert("mcp:configured".into());
-        Ok(McpInstallation {
-            tools: tools.with_source(source),
-            capabilities,
-            diagnostics: installed.diagnostics,
-        })
+            let watch = InputWatch::new(settings.mcp_paths())?;
+            let revision = watch.revision();
+            watch.arm()?;
+            let config = NativeSettings::load_mcp(settings.clone()).await?;
+            let installed = config
+                .clone()
+                .install(ToolRegistry::default(), workspace, limits, secrets.clone())
+                .await?;
+            let source = Arc::new(WatchedConfig {
+                watch,
+                settings,
+                workspace: workspace.to_owned(),
+                limits,
+                secrets,
+                state: tokio::sync::Mutex::new((revision, config)),
+                tools: std::sync::Mutex::new(installed.tools),
+                removed: std::sync::Mutex::new(Default::default()),
+            });
+            let mut capabilities = installed.capabilities;
+            capabilities.insert("mcp:configured".into());
+            Ok(McpInstallation {
+                tools: tools.with_source(source),
+                capabilities,
+                diagnostics: installed.diagnostics,
+            })
         }
     }
 }

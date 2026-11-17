@@ -1,8 +1,8 @@
-use acyclic_harness_core::{Error, Result};
 use crate::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use acyclic_harness_core::{Error, Result};
 
 // No locks: the parent publishes cancellation, then awaits physical completion.
 pub(super) struct CancelOnDrop(pub(super) Arc<AtomicBool>);
@@ -21,10 +21,12 @@ impl Drop for CancelOnDrop {
 
 pub(super) fn check_cancelled(flag: &AtomicBool) -> Result<()> {
     if flag.load(Ordering::Acquire) {
-        Err(Error::Process(acyclic_harness_core::ProcessError::Cancelled {
-            exit_code: None,
-            message: "MCP registration cancelled".into(),
-        }))
+        Err(Error::Process(
+            acyclic_harness_core::ProcessError::Cancelled {
+                exit_code: None,
+                message: "MCP registration cancelled".into(),
+            },
+        ))
     } else {
         Ok(())
     }
@@ -115,7 +117,9 @@ mod tests {
                 assert!(
                     matches!(
                         result,
-                        Err(Error::Process(acyclic_harness_core::ProcessError::Cancelled { .. }))
+                        Err(Error::Process(
+                            acyclic_harness_core::ProcessError::Cancelled { .. }
+                        ))
                     ),
                     "cancelled registration must not succeed"
                 );

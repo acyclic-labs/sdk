@@ -62,11 +62,11 @@ pub mod interaction;
 #[cfg(not(target_arch = "wasm32"))]
 mod javascript_allocator;
 mod json_literal;
-#[cfg(not(target_arch = "wasm32"))]
-mod mcp_layouts;
 pub mod layers;
 pub mod live;
 pub mod machines;
+#[cfg(not(target_arch = "wasm32"))]
+mod mcp_layouts;
 pub mod model;
 #[cfg(any(test, feature = "test-support", not(target_arch = "wasm32")))]
 #[doc(hidden)]
@@ -205,4 +205,3 @@ pub mod build_metadata;
 
 /// File-driven, composable approval policy data and the tool admission gate.
 pub mod approvals;
-

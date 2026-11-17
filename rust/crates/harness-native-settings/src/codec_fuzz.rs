@@ -38,7 +38,8 @@ pub fn check(bytes: &[u8]) -> Result<()> {
             continue;
         };
         let mut original = Hooks::default();
-        let original_admitted = original.add_document(acyclic_harness_core::hooks::imports::Document { hooks });
+        let original_admitted =
+            original.add_document(acyclic_harness_core::hooks::imports::Document { hooks });
         if admitted.is_ok() != original_admitted.is_ok() {
             return Err(Error::Invalid(
                 "native and public settings imports disagree on admission".into(),

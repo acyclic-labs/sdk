@@ -877,7 +877,6 @@ fn completed_message_is_bounded_before_admission() -> Result<()> {
     Ok(())
 }
 
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     // Any earlier step text and any UTF-8 delta partition leave the final step

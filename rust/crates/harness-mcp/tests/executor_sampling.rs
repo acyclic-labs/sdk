@@ -45,7 +45,9 @@ fn admitted_context(
 
 #[tokio::test]
 async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -> Result<()> {
-    use acyclic_harness_mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
+    use acyclic_harness_mcp::callbacks::{
+        McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks,
+    };
     for answer in ["", "final λ\n"] {
         let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
         let context = Arc::new(admitted_context(scope.clone())?);

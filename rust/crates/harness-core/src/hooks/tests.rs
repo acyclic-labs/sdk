@@ -287,7 +287,6 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
     Ok(())
 }
 
-
 #[test]
 fn invalid_hook_replacement_is_atomic() -> Result<()> {
     let mut hooks = Hooks::default();

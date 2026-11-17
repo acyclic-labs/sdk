@@ -32,8 +32,14 @@ pub struct McpCallbackPolicy {
 impl McpCallbackPolicy {
     /// Validates the immutable namespace, revision and finite opt-in allowance.
     pub fn validate(&self) -> Result<()> {
-        acyclic_harness_core::contract::validate_component_label(&self.server, "MCP callback server")?;
-        acyclic_harness_core::contract::validate_component_label(&self.revision, "MCP callback revision")?;
+        acyclic_harness_core::contract::validate_component_label(
+            &self.server,
+            "MCP callback server",
+        )?;
+        acyclic_harness_core::contract::validate_component_label(
+            &self.revision,
+            "MCP callback revision",
+        )?;
         if self.server.contains('.') {
             return Err(Error::Invalid(
                 "MCP callback server namespace cannot contain a dot".into(),

@@ -152,7 +152,8 @@ pub(super) fn decode_value(
             },
             error => error,
         })?;
-        let retained = acyclic_harness_core::executor::json::json_value_logical_owned_bytes(&value)?;
+        let retained =
+            acyclic_harness_core::executor::json::json_value_logical_owned_bytes(&value)?;
         let custody = io.into_native_custody(retained)?;
         return Ok((value, Some(custody)));
     }

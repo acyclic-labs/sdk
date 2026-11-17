@@ -98,7 +98,9 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
                     description: payload,
                     input_schema: json!({"type":"object"}),
                     output_schema: json!({}),
-                    projection_schema: acyclic_harness_core::tool::json_projection_schema(json!({})),
+                    projection_schema: acyclic_harness_core::tool::json_projection_schema(
+                        json!({}),
+                    ),
                 },
                 executor: Arc::new(crate::remote::RemoteTool {
                     server: "existing".into(),
@@ -320,7 +322,9 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         if finite {
             assert!(matches!(
                 result,
-                Err(Error::Process(acyclic_harness_core::ProcessError::Timeout { .. }))
+                Err(Error::Process(
+                    acyclic_harness_core::ProcessError::Timeout { .. }
+                ))
             ));
         } else {
             result?;
@@ -562,7 +566,9 @@ async fn startup_deadlines_and_required_failures_are_bounded_without_retries() -
                 assert!(!required);
                 assert_eq!(installed.diagnostics[0].server, "hung");
             }
-            Err(Error::Process(acyclic_harness_core::ProcessError::Timeout { .. })) => assert!(required),
+            Err(Error::Process(acyclic_harness_core::ProcessError::Timeout { .. })) => {
+                assert!(required)
+            }
             _ => panic!("unexpected startup decision"),
         }
     }

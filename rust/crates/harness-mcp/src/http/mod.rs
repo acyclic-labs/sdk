@@ -270,7 +270,10 @@ impl HttpMcpTransport {
                     .await;
                     match result {
                         Ok(false) => return,
-                        Err(error) if error.code() != acyclic_harness_core::wire::ErrorCode::Unavailable => {
+                        Err(error)
+                            if error.code()
+                                != acyclic_harness_core::wire::ErrorCode::Unavailable =>
+                        {
                             let _ = terminal.set((operation, Arc::new(error)));
                             generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                             return;

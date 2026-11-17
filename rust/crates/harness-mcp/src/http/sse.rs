@@ -139,8 +139,10 @@ pub(super) async fn response(
                 }
             }
         };
-        let request: McpHttpRequest =
-            transport.request("POST", acyclic_harness_core::contract::canonical_json_bytes(&reply)?)?;
+        let request: McpHttpRequest = transport.request(
+            "POST",
+            acyclic_harness_core::contract::canonical_json_bytes(&reply)?,
+        )?;
         let acknowledgement = transport
             .provider
             .exchange(callback_operation, request)
@@ -152,7 +154,10 @@ pub(super) async fn response(
     }
 }
 
-fn decode(event: Result<acyclic_harness_core::sse::Frame>, operation: OperationId) -> Result<Option<Value>> {
+fn decode(
+    event: Result<acyclic_harness_core::sse::Frame>,
+    operation: OperationId,
+) -> Result<Option<Value>> {
     let event = event.map_err(|error| match error {
         Error::ModelUnavailable {
             failure: acyclic_harness_core::ModelTransportFailure::Interrupted,
