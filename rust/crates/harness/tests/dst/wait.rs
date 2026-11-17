@@ -101,7 +101,8 @@ fn failed(tag_name: &'static str) -> Plan {
         steps: Vec::new(),
         fail_once: Some((
             0,
-            ScriptedEvent::Error {
+            ScriptedEvent::Refused {
+                status: 400,
                 error: "child turn failed".into(),
             },
         )),
@@ -178,10 +179,13 @@ fn plans(seed: u64) -> Vec<Plan> {
         settled("c3-wake"),
         Plan {
             tag: "c3-mid",
-            steps: vec![
-                vec![spawn("mid-spawn-target", "target", "c3-target")],
-                vec![state_wait(form, "mid-wait", state, "target", "sibling")],
-            ],
+            steps: {
+                let mut spawns = vec![spawn("mid-spawn-target", "target", "c3-target")];
+                if needs_sibling(state) {
+                    spawns.push(spawn("mid-spawn-sibling", "sibling", "c3-sibling"));
+                }
+                vec![spawns, vec![state_wait(form, "mid-wait", state, "target", "sibling")]]
+            },
             fail_once: None,
         },
         Plan {
@@ -277,11 +281,12 @@ fn field_entry<'a>(value: &'a Value, field: &str, name: &str) -> Option<&'a Valu
         .find(|entry| entry.get("name").and_then(Value::as_str) == Some(name))
 }
 
-fn is_done(entry: &Value) -> bool {
-    entry
-        .get("phase")
-        .and_then(|phase| phase.get("done"))
-        .is_some()
+fn is_settled(entry: &Value) -> bool {
+    match entry.get("phase") {
+        Some(Value::String(phase)) => phase == "idle",
+        Some(phase) => phase.get("done").is_some(),
+        None => false,
+    }
 }
 
 fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), String> {
@@ -324,21 +329,21 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
         "running" => {
             let entry = field_entry(value, "unsettled", "target")
                 .ok_or_else(|| format!("wait {id} settled a running child: {value}"))?;
-            if is_done(entry) {
+            if is_settled(entry) {
                 return Err(format!("wait {id} reported running target done: {entry}"));
             }
         }
         "settled_failed" | "archived" | "stopped" => {
             let entry = field_entry(value, "settled", "target")
                 .ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
-            if !is_done(entry) || entry.get("failed").is_none() {
+            if !is_settled(entry) || entry.get("failed").is_none() {
                 return Err(format!("wait {id} hid target's failure: {entry}"));
             }
         }
         _ => {
             let entry = field_entry(value, "settled", "target")
                 .ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
-            if !is_done(entry) || entry.get("failed").is_some() {
+            if !is_settled(entry) || entry.get("failed").is_some() {
                 return Err(format!("wait {id} reported target wrong: {entry}"));
             }
         }
@@ -351,6 +356,35 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
     let relation = relation(seed);
     oracle::simulate(seed, move || {
         entry(async move {
+            if relation == "same_parent_other_runtime" {
+                let mut recovery = vec![vec![("reopen", tag("c3-reopen"))]];
+                if form == "no_agents" {
+                    recovery[0].push(("wake", tag("c3-wake")));
+                }
+                let crash = oracle::Crash {
+                    seed,
+                    files: &[("marker.txt", "marker\n")],
+                    plans: || plans(seed),
+                    prompts: vec![vec![("root", tag("c3-root"))]],
+                    window: (0, 1),
+                    mode: oracle::crash_mode("crash_after", seed).ok_or("crash mode")?,
+                };
+                let (crashed, reopened) = crash.recover(recovery).await?;
+                oracle::all_settled(&reopened.requests)?;
+                if !reopened
+                    .prompts
+                    .iter()
+                    .any(|(outcome, _)| *outcome == oracle::Prompted::Settled(done("c3-reopen")))
+                {
+                    return Err(format!(
+                        "after {crashed}: the reopened root turn did not finish: {:?}",
+                        reopened.prompts
+                    ));
+                }
+                checked(seed, &reopened.requests)
+                    .map_err(|report| format!("after {crashed}: {report}"))?;
+                return Ok(crashed.in_window);
+            }
             let mut world = World::new(seed, &[("marker.txt", "marker\n")], service(plans(seed)))
                 .map_err(oracle::failed)?;
             let mut prompts = vec![vec![("root", tag("c3-root"))]];
@@ -364,35 +398,12 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             oracle::all_settled(&first.requests)?;
             if !first
                 .prompts
-                .first()
-                .is_some_and(|(outcome, _)| *outcome == oracle::Prompted::Settled(done("c3-root")))
+                .iter()
+                .any(|(outcome, _)| *outcome == oracle::Prompted::Settled(done("c3-root")))
             {
                 return Err(format!("the root turn did not finish: {:?}", first.prompts));
             }
-            if relation != "same_parent_other_runtime" {
-                checked(seed, &first.requests)?;
-                return Ok(true);
-            }
-            let mut recovery = vec![vec![("reopen", tag("c3-reopen"))]];
-            if form == "no_agents" {
-                recovery[0].push(("wake", tag("c3-wake")));
-            }
-            let reopened = world
-                .incarnation(None, &recovery)
-                .await
-                .map_err(oracle::failed)?;
-            oracle::all_settled(&reopened.requests)?;
-            if !reopened
-                .prompts
-                .first()
-                .is_some_and(|(outcome, _)| *outcome == oracle::Prompted::Settled(done("c3-reopen")))
-            {
-                return Err(format!(
-                    "the reopened root turn did not finish: {:?}",
-                    reopened.prompts
-                ));
-            }
-            checked(seed, &reopened.requests)?;
+            checked(seed, &first.requests)?;
             Ok(true)
         })
     })
