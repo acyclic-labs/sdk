@@ -30,6 +30,10 @@ name = "creation"
 path = "tests/measured_creation.rs"
 
 [[test]]
+name = "operation_claim"
+path = "tests/operation_claim.rs"
+
+[[test]]
 name = "browser_commit"
 path = "tests/browser_commit.rs"
 required-features = ["browser"]
