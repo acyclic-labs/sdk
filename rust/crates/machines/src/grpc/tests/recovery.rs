@@ -221,11 +221,12 @@ fn credential_failure_preserves_admitted_recovery_keys() {
                     server.await.unwrap().unwrap();
                     if fail_at == 0 {
                         let error = outcome.unwrap_err();
-                        prop_assert!(if unavailable {
+                        let classified = if unavailable {
                             matches!(error.classification(), ProviderError::Unavailable)
                         } else {
                             matches!(error.classification(), ProviderError::Rejected(_))
-                        });
+                        };
+                        prop_assert!(classified);
                         prop_assert!(std::error::Error::source(&error).is_some());
                     } else {
                         prop_assert_eq!(outcome, Err(ProviderError::Indeterminate(key)));
@@ -235,13 +236,6 @@ fn credential_failure_preserves_admitted_recovery_keys() {
                         fail_at + 1
                     );
                     prop_assert_eq!(script.lock().unwrap().calls.clone(), Vec::<&str>::new());
-                    // Rejected discards the key; the same post-admission assertion rejects it.
-                    if fail_at > 0 {
-                        prop_assert_ne!(
-                            Err::<(), _>(ProviderError::Rejected("renewal failed".into())),
-                            Err(ProviderError::Indeterminate(key))
-                        );
-                    }
                     Ok(())
                 })
             },
