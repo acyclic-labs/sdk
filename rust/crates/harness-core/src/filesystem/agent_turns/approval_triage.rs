@@ -152,7 +152,11 @@ where
                     self.review_child_action(agent, &child, &request.id, journal, policy)
                         .await?
                 }
-                _ => (RuleVerdict::Deny, Some(crate::approvals::PARENT_ENDED.to_owned()), Vec::new()),
+                _ => (
+                    RuleVerdict::Deny,
+                    Some(crate::approvals::PARENT_ENDED.to_owned()),
+                    Vec::new(),
+                ),
             };
             let decision = match verdict {
                 RuleVerdict::Allow => Some(crate::interaction::ApprovalVerdict::Approve),

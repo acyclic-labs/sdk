@@ -235,9 +235,7 @@ struct WorldDirectory {
 fn process_nonce() -> u64 {
     static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *NONCE.get_or_init(|| {
-        let nanos = match std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-        {
+        let nanos = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(elapsed) => elapsed.as_nanos(),
             Err(_) => 0,
         };
@@ -255,10 +253,7 @@ fn process_nonce() -> u64 {
 impl WorldDirectory {
     fn new(seed: u64) -> std::io::Result<Self> {
         let key = (
-            std::thread::current()
-                .name()
-                .unwrap_or("dst")
-                .to_owned(),
+            std::thread::current().name().unwrap_or("dst").to_owned(),
             seed,
         );
         let slot = WORLD_SLOTS.with(|slots| {
@@ -307,10 +302,8 @@ impl WorldDirectory {
             &blake3::hash(format!("dst-object:{}:{}", self.key.0, self.key.1).as_bytes())
                 .as_bytes()[..16],
         );
-        let handle = *blake3::hash(
-            format!("dst-handle:{}:{}", self.key.0, self.key.1).as_bytes(),
-        )
-        .as_bytes();
+        let handle = *blake3::hash(format!("dst-handle:{}:{}", self.key.0, self.key.1).as_bytes())
+            .as_bytes();
         (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
     }
 }

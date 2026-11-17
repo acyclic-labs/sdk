@@ -7,43 +7,9 @@ use serde_json::json;
 
 /// The X1 world dimension, in `classes.json` order.
 const WORLDS: [&str; 37] = [
-    "A1",
-    "A2",
-    "A3",
-    "B1",
-    "B2",
-    "B3",
-    "C1",
-    "C2",
-    "C3",
-    "C4",
-    "C5",
-    "D1",
-    "D2",
-    "D3",
-    "D4",
-    "D5",
-    "D6",
-    "E1",
-    "E2",
-    "E3",
-    "F1",
-    "F2",
-    "G1",
-    "H1",
-    "H2",
-    "H3",
-    "H4",
-    "H5",
-    "H6",
-    "I1",
-    "I2",
-    "J1",
-    "J2",
-    "O1",
-    "R1",
-    "S1",
-    "T1",
+    "A1", "A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3", "C4", "C5", "D1", "D2", "D3", "D4", "D5",
+    "D6", "E1", "E2", "E3", "F1", "F2", "G1", "H1", "H2", "H3", "H4", "H5", "H6", "I1", "I2", "J1",
+    "J2", "O1", "R1", "S1", "T1",
 ];
 
 const FILES: [(&str, &str); 1] = [("base.txt", "base\n")];
@@ -139,9 +105,13 @@ fn plans(class: &'static str) -> Vec<Plan> {
                     "ifVersion": "absent",
                 }),
             ),
-            call("x1-read", "read", json!({
-                "path": "out.txt",
-            })),
+            call(
+                "x1-read",
+                "read",
+                json!({
+                    "path": "out.txt",
+                }),
+            ),
         ]],
         fail_once: None,
     }]
@@ -165,10 +135,7 @@ async fn trace(
     }
     .map_err(failed)?;
     let prompts = [vec![(class, format!("{} seed:{variation}", tag(class)))]];
-    let incarnation = world
-        .incarnation(None, &prompts)
-        .await
-        .map_err(failed)?;
+    let incarnation = world.incarnation(None, &prompts).await.map_err(failed)?;
     // Every replayed input stays in the digest. The explicit record tree only
     // makes the first differing field nameable when two runs disagree.
     let trace = serde_json::json!({
@@ -195,7 +162,10 @@ fn first_difference(left: &serde_json::Value, right: &serde_json::Value) -> Stri
     fn walk(path: &str, left: &serde_json::Value, right: &serde_json::Value) -> String {
         match (left, right) {
             (serde_json::Value::Object(left), serde_json::Value::Object(right)) => {
-                let keys = left.keys().chain(right.keys()).collect::<std::collections::BTreeSet<_>>();
+                let keys = left
+                    .keys()
+                    .chain(right.keys())
+                    .collect::<std::collections::BTreeSet<_>>();
                 for key in keys {
                     let path = format!("{path}.{key}");
                     match (left.get(key), right.get(key)) {
@@ -307,7 +277,6 @@ fn two_incarnations_reopen_the_same_state() -> std::result::Result<(), String> {
         })
     })
 }
-
 
 #[test]
 fn seed_1000_maps_to_a_world() -> std::result::Result<(), String> {

@@ -316,11 +316,7 @@ impl NativeDemandFile {
             with_fixture_content(&self.provider, &self.relative, metadata, context)
         });
         if self.version(&held) != self.expected
-            || named
-                .as_ref()
-                .map(|metadata| self.version(metadata))
-                .ok()
-                != Some(self.expected)
+            || named.as_ref().map(|metadata| self.version(metadata)).ok() != Some(self.expected)
         {
             self.provider.check(&self.source, context)?;
             return Err(DemandError::StaleVersion);

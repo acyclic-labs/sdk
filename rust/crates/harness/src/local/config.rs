@@ -638,10 +638,7 @@ impl LocalHarnessConfig {
     /// Supplies fresh source identities from `entropy` instead of OS randomness.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
-    pub fn source_entropy(
-        mut self,
-        entropy: acyclic_fs::demand::native::SourceEntropy,
-    ) -> Self {
+    pub fn source_entropy(mut self, entropy: acyclic_fs::demand::native::SourceEntropy) -> Self {
         self.source_entropy = Some(entropy);
         self
     }

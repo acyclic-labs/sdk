@@ -1687,9 +1687,7 @@ async fn run<T: TurnDriver + ?Sized>(
                 Err(Error::Turn(error))
                     if matches!(
                         *error,
-                        crate::Error::InteractionRejected(
-                            crate::InteractionRejection::Cancelled
-                        )
+                        crate::Error::InteractionRejected(crate::InteractionRejection::Cancelled)
                     ) =>
                 {
                     state.approval_control = None;
