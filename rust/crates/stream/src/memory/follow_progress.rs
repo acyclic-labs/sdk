@@ -7,40 +7,19 @@ impl MemoryStream {
         when_absent: crate::WhenAbsent,
         bootstrap_head: bool,
         until: Option<u64>,
-    ) -> Result<
-        (
-            crate::Revision,
-            crate::StreamSelection,
-            crate::change::Subscription,
-            HistoryCursor,
-        ),
-        StreamError,
-    > {
-        let state = self.state.write().await;
-        let snapshot = state.paths.get(path).cloned();
-        let revision = self.revisions.at(state.decision);
-        let selection = follow_selection(snapshot.as_ref(), from, anchor, bootstrap_head, until)?;
-        let (from, anchor) = (selection.from, selection.preceding);
-        let tail = snapshot.as_ref().map_or(0, |path| path.tail);
-        let registration = state.signals.subscribe_with(path.clone(), Signals::new)?;
-        let signals = registration.value();
-        let changed = signals.changed.subscribe()?;
-        drop(state);
-        let mut cursor = HistoryCursor::initial(
-            snapshot.as_ref(),
+    ) -> Result<PreparedFollow<crate::change::Subscription>, StreamError> {
+        self.prepare_cursor(
+            path,
             from,
             anchor,
             when_absent,
-            #[cfg(not(target_arch = "wasm32"))]
-            self.work.clone(),
+            FollowWindow {
+                bootstrap_head,
+                until,
+            },
+            |signals, _| signals.changed.subscribe(),
         )
-        .await?;
-        cursor.registration = Some(registration);
-        // Capture under the same state lock as interest registration. Even an
-        // absent waiting stream has an empty opening cut, without a tail probe.
-        cursor.opening_tail = Some(tail);
-        cursor.end = selection.end;
-        Ok((revision, selection, changed, cursor))
+        .await
     }
 
     pub(crate) async fn next_follow_update(

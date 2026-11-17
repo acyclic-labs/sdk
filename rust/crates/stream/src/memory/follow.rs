@@ -40,6 +40,8 @@ pub(crate) struct FollowWindow {
     pub(crate) until: Option<u64>,
 }
 
+type PreparedFollow<I> = (crate::Revision, crate::StreamSelection, I, HistoryCursor);
+
 impl MemoryStream {
     /// Refreshes either follow projection from the same checked history cut.
     async fn refresh_follow(
@@ -78,15 +80,22 @@ impl MemoryStream {
         when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
         window: FollowWindow,
-    ) -> Result<
-        (
-            crate::Revision,
-            crate::StreamSelection,
-            crate::follow_index::FollowInterest,
-            HistoryCursor,
-        ),
-        StreamError,
-    > {
+    ) -> Result<PreparedFollow<crate::follow_index::FollowInterest>, StreamError> {
+        self.prepare_cursor(path, from, anchor, when_absent, window, |signals, tail| {
+            crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)
+        })
+        .await
+    }
+
+    async fn prepare_cursor<I>(
+        &self,
+        path: &StreamPath,
+        from: u64,
+        anchor: Option<CommitId>,
+        when_absent: crate::WhenAbsent,
+        window: FollowWindow,
+        subscribe: impl FnOnce(&Signals, u64) -> Result<I, StreamError>,
+    ) -> Result<PreparedFollow<I>, StreamError> {
         let state = self.state.write().await;
         let snapshot = self.observe_follow(|| state.paths.get(path).cloned())?;
         let revision = self.revisions.at(state.decision);
@@ -101,7 +110,7 @@ impl MemoryStream {
         let tail = snapshot.as_ref().map_or(0, |path| path.tail);
         let registration = state.signals.subscribe_with(path.clone(), Signals::new)?;
         let signals = registration.value();
-        let interest = crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)?;
+        let interest = subscribe(signals, tail)?;
         drop(state);
         let mut cursor = HistoryCursor::initial(
             snapshot.as_ref(),
@@ -114,6 +123,8 @@ impl MemoryStream {
         .await?;
         cursor.registration = Some(registration);
         cursor.end = selection.end;
+        // Both projections retain the opening cut captured with registration.
+        cursor.opening_tail = Some(tail);
         Ok((revision, selection, interest, cursor))
     }
 
