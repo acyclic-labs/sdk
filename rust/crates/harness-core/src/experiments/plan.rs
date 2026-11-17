@@ -45,3 +45,17 @@ impl<'de> Deserialize<'de> for PairAssignment {
 
 mod assignments;
 pub use assignments::{Assignment, AssignmentPlan, PlanError};
+
+impl std::fmt::Display for PlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            Self::NoArms => "at least one arm is required",
+            Self::Overflow => "arm-by-replicate count exceeds u64",
+        };
+        write!(
+            f,
+            "plan experiment assignments: {reason}; recovery: correct the positive arm count and representable arm-by-replicate count, then call AssignmentPlan::new again"
+        )
+    }
+}
+impl std::error::Error for PlanError {}
