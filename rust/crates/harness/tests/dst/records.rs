@@ -90,21 +90,47 @@ fn recovery_round_trip<T>(value: &T) -> std::result::Result<(), String>
 where
     T: Serialize + DeserializeOwned,
 {
-    // The durable record path is the same canonical JSON codec the journal
-    // stages; a reader that reopens the record must see the writer's value.
+    // Journal records use the same canonical JSON codec the journal stages;
+    // this is the recovery wire format for those records. Durable agent
+    // records use their own MessagePack path and are checked separately.
     json_round_trip(value)
+}
+
+fn same_json<T: Serialize>(left: &T, right: &T) -> bool {
+    serde_json::to_vec(left).ok() == serde_json::to_vec(right).ok()
+}
+
+fn rows_text(rows: &mut TranscriptRows) -> String {
+    rows.rows(80)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        )
 }
 
 fn tui_text(text: &str) -> std::result::Result<(), String> {
     let mut rows = TranscriptRows::default();
     rows.push(BlockKind::Answer, text);
-    if rows.rows(80).is_empty() {
-        return Err("TUI rendered no answer rows".into());
+    let rendered = rows_text(&mut rows);
+    if !rendered.contains(text) {
+        return Err(format!("TUI lost answer text {text:?}"));
     }
     Ok(())
 }
 
-fn tui_tool(card: &acyclic_harness::executor::ToolCard) -> std::result::Result<(), String> {
+fn tui_tool(
+    card: &acyclic_harness::executor::ToolCard,
+    failed: bool,
+) -> std::result::Result<(), String> {
+    if card.failed != failed {
+        return Err(format!(
+            "tool card failure state {} differs from {failed}",
+            card.failed
+        ));
+    }
     let mut rows = TranscriptRows::default();
     rows.push(
         BlockKind::Tool {
@@ -112,8 +138,9 @@ fn tui_tool(card: &acyclic_harness::executor::ToolCard) -> std::result::Result<(
         },
         &card.text(),
     );
-    if rows.rows(80).is_empty() {
-        return Err("TUI rendered no tool rows".into());
+    let rendered = rows_text(&mut rows);
+    if !rendered.contains(&card.line()) {
+        return Err(format!("TUI lost tool line {:?}", card.line()));
     }
     Ok(())
 }
@@ -166,121 +193,201 @@ fn recorded(call: &ToolCall) -> RecordedInvocation {
     }
 }
 
-fn check_record(kind: &str, reader: &str, emitted: &Emitted) -> std::result::Result<(), String> {
-    match kind {
-        "accounting_header" => {
-            let usage = &emitted.usage;
-            match reader {
-                "tui" => {
-                    let line = acyclic_harness::tui::usage_summary(usage).to_string();
-                    if line.is_empty() {
-                        return Err("TUI rendered no accounting header".into());
+fn reread_output(harness: &Arc<LocalHarness>) -> EntryFuture<'_, Result<TurnOutput>> {
+    entry(async move {
+        let conversation = Conversation::open(entry(harness.connect()).await?);
+        let tail = entry(conversation.settled()).await?;
+        if tail == 0 {
+            return Err(Error::NotFound("no settled conversation entry".into()));
+        }
+        let entries = entry(conversation.entries(0, tail)).await?;
+        let entry = entries
+            .last()
+            .ok_or_else(|| Error::NotFound("no settled conversation entry".into()))?;
+        entry(conversation.output_at(tail - 1, entry)).await
+    })
+}
+
+fn reread_inspection(
+    harness: &Arc<LocalHarness>,
+) -> EntryFuture<'_, Result<(ModelUsageTotals, Option<ContextUsage>)>> {
+    entry(async move {
+        let conversation = Conversation::open(entry(harness.connect()).await?);
+        let mut inspect = entry(conversation.inspect()).await?;
+        while !inspect.snapshot().synchronized {
+            entry(inspect.advance()).await?;
+        }
+        let snapshot = inspect.snapshot();
+        Ok((snapshot.usage.clone(), snapshot.context))
+    })
+}
+
+fn check_record(
+    kind: &str,
+    reader: &str,
+    emitted: &Emitted,
+    harness: &Arc<LocalHarness>,
+) -> EntryFuture<'_, std::result::Result<(), String>> {
+    entry(async move {
+        match kind {
+            "accounting_header" => {
+                let usage = &emitted.usage;
+                match reader {
+                    "tui" => {
+                        let line = acyclic_harness::tui::usage_summary(usage).to_string();
+                        if let Some(input) = usage.input.value()
+                            && !line.contains(&format!("in {input}"))
+                        {
+                            return Err(format!("TUI lost accounting input {input}: {line}"));
+                        }
                     }
-                }
-                "inspect" => json_round_trip(usage)?,
-                "json_output" => json_round_trip(usage)?,
-                _ => recovery_round_trip(usage)?,
-            }
-        }
-        "context_header" => {
-            let context = emitted
-                .context
-                .ok_or("the turn emitted no context header")?;
-            match reader {
-                "tui" => {
-                    let line = acyclic_harness::tui::context_summary(
-                        Some(("scripted", "dst")),
-                        Some(context),
-                        Some(0),
-                    )
-                    .to_string();
-                    if line.is_empty() {
-                        return Err("TUI rendered no context header".into());
-                    }
-                }
-                "inspect" => json_round_trip(&context)?,
-                "json_output" => json_round_trip(&context)?,
-                _ => recovery_round_trip(&context)?,
-            }
-        }
-        "text_delta" => {
-            let event = text_delta(&emitted.output);
-            match reader {
-                "tui" => tui_text(&emitted.output.text)?,
-                "inspect" => json_round_trip(&event)?,
-                "json_output" => json_round_trip(&event)?,
-                _ => recovery_round_trip(&event)?,
-            }
-        }
-        "tool_invocation" => {
-            let call = tool_call(&emitted.output)?;
-            match reader {
-                "tui" => {
-                    let card = emitted
-                        .output
-                        .tool_cards()
-                        .into_iter()
-                        .next()
-                        .ok_or("the turn emitted no tool card")?;
-                    tui_tool(&card)?;
-                }
-                "inspect" => json_round_trip(&call)?,
-                "json_output" => json_round_trip(&call)?,
-                _ => recovery_round_trip(&call)?,
-            }
-        }
-        "recorded_invocation" => {
-            let call = tool_call(&emitted.output)?;
-            let value = recorded(&call);
-            match reader {
-                "tui" => {
-                    let card = emitted
-                        .output
-                        .tool_cards()
-                        .into_iter()
-                        .next()
-                        .ok_or("the turn emitted no tool card")?;
-                    tui_tool(&card)?;
-                }
-                "inspect" => json_round_trip(&value)?,
-                "json_output" => json_round_trip(&value)?,
-                _ => recovery_round_trip(&value)?,
-            }
-        }
-        "settlement" => {
-            let value = settlement(&emitted.output)?;
-            match reader {
-                "tui" => {
-                    let card = emitted
-                        .output
-                        .tool_cards()
-                        .into_iter()
-                        .next()
-                        .ok_or("the turn emitted no tool card")?;
-                    tui_tool(&card)?;
-                }
-                "inspect" => json_round_trip(&value)?,
-                "json_output" => json_round_trip(&value)?,
-                _ => recovery_round_trip(&value)?,
-            }
-        }
-        _ => {
-            let status = &emitted.status;
-            match reader {
-                "tui" => tui_text(&format!("{:?}", status.phase))?,
-                "inspect" => json_round_trip(status)?,
-                "json_output" => json_round_trip(status)?,
-                _ => {
-                    let bytes = status.encode().map_err(oracle::failed)?;
-                    let restored = StatusRecord::decode(&bytes).map_err(oracle::failed)?;
-                    if restored != *status {
-                        return Err("status record lost its writer's value".into());
+                    "inspect" => json_round_trip(usage)?,
+                    "json_output" => json_round_trip(usage)?,
+                    _ => {
+                        let (restored, _) = entry(reread_inspection(harness))
+                            .await
+                            .map_err(oracle::failed)?;
+                        if restored != *usage {
+                            return Err("recovery lost the accounting header".into());
+                        }
                     }
                 }
             }
+            "context_header" => {
+                let context = emitted
+                    .context
+                    .ok_or("the turn emitted no context header")?;
+                match reader {
+                    "tui" => {
+                        let line = acyclic_harness::tui::context_summary(
+                            Some(("scripted", "dst")),
+                            Some(context),
+                            Some(0),
+                        )
+                        .to_string();
+                        if !line.contains("context") {
+                            return Err(format!("TUI lost the context header: {line}"));
+                        }
+                    }
+                    "inspect" => json_round_trip(&context)?,
+                    "json_output" => json_round_trip(&context)?,
+                    _ => {
+                        let (_, restored) = entry(reread_inspection(harness))
+                            .await
+                            .map_err(oracle::failed)?;
+                        if restored != emitted.context {
+                            return Err("recovery lost the context header".into());
+                        }
+                    }
+                }
+            }
+            "text_delta" => {
+                let event = text_delta(&emitted.output);
+                match reader {
+                    "tui" => tui_text(&emitted.output.text)?,
+                    "inspect" => json_round_trip(&event)?,
+                    "json_output" => json_round_trip(&event)?,
+                    _ => {
+                        let restored = entry(reread_output(harness))
+                            .await
+                            .map_err(oracle::failed)?;
+                        if restored.text != emitted.output.text {
+                            return Err("recovery lost the text delta".into());
+                        }
+                    }
+                }
+            }
+            "tool_invocation" => {
+                let call = tool_call(&emitted.output)?;
+                match reader {
+                    "tui" => {
+                        let card = emitted
+                            .output
+                            .tool_cards()
+                            .into_iter()
+                            .next()
+                            .ok_or("the turn emitted no tool card")?;
+                        tui_tool(&card, false)?;
+                    }
+                    "inspect" => json_round_trip(&call)?,
+                    "json_output" => json_round_trip(&call)?,
+                    _ => {
+                        let restored = entry(reread_output(harness))
+                            .await
+                            .map_err(oracle::failed)?;
+                        if tool_call(&restored)? != call {
+                            return Err("recovery lost the tool invocation".into());
+                        }
+                    }
+                }
+            }
+            "recorded_invocation" => {
+                let call = tool_call(&emitted.output)?;
+                let value = recorded(&call);
+                match reader {
+                    "tui" => {
+                        let card = emitted
+                            .output
+                            .tool_cards()
+                            .into_iter()
+                            .next()
+                            .ok_or("the turn emitted no tool card")?;
+                        tui_tool(&card, false)?;
+                    }
+                    "inspect" => json_round_trip(&value)?,
+                    "json_output" => json_round_trip(&value)?,
+                    _ => {
+                        let restored = entry(reread_output(harness))
+                            .await
+                            .map_err(oracle::failed)?;
+                        if !same_json(&recorded(&tool_call(&restored)?), &value) {
+                            return Err("recovery lost the recorded invocation".into());
+                        }
+                    }
+                }
+            }
+            "settlement" => {
+                let value = settlement(&emitted.output)?;
+                match reader {
+                    "tui" => {
+                        let card = emitted
+                            .output
+                            .tool_cards()
+                            .into_iter()
+                            .next()
+                            .ok_or("the turn emitted no tool card")?;
+                        tui_tool(&card, false)?;
+                    }
+                    "inspect" => json_round_trip(&value)?,
+                    "json_output" => json_round_trip(&value)?,
+                    _ => {
+                        let restored = entry(reread_output(harness))
+                            .await
+                            .map_err(oracle::failed)?;
+                        if settlement(&restored)? != value {
+                            return Err("recovery lost the settlement".into());
+                        }
+                    }
+                }
+            }
+            _ => {
+                let status = &emitted.status;
+                match reader {
+                    "tui" => tui_text(&format!("{:?}", status.phase))?,
+                    "inspect" => json_round_trip(status)?,
+                    "json_output" => json_round_trip(status)?,
+                    _ => {
+                        let bytes = status.encode().map_err(oracle::failed)?;
+                        let restored = StatusRecord::decode(&bytes).map_err(oracle::failed)?;
+                        if restored != *status {
+                            return Err("status record lost its writer's value".into());
+                        }
+                    }
+                }
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn status_record(harness: &Arc<LocalHarness>) -> EntryFuture<'_, Result<StatusRecord>> {
@@ -368,7 +475,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
                 .await
                 .map_err(oracle::failed)?;
             for reader in READERS {
-                check_record(kind, reader, &emitted)?;
+                entry(check_record(kind, reader, &emitted, &harness)).await?;
             }
             Ok(true)
         })
