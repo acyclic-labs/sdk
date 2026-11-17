@@ -34,6 +34,8 @@ pub(crate) struct PreparedCommit {
     probes: ReplayProbes,
     codec: NativeCodecReservation<Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
     headers: crate::record_headers::PreparedHeaders,
+    body: crate::PreparedOwnedBytes<acyclic_native_runtime::ReadAllocation>,
+    body_codec: NativeCodecReservation<Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
     key_nodes: Allocation,
     key_probes: ReplayProbes,
     /// Only this admitted append retains the key view it will extend at binding.
@@ -93,11 +95,32 @@ impl MemoryStream {
         let publication_hash = maximum_hash
             .checked_add(identity_bytes())
             .ok_or(StreamError::Capacity)?;
+        let meter = Arc::clone(self.allocation_meter(work));
         let headers = work.record(crate::record_headers::PreparedHeaders::new_shape(
-            self.allocation_meter(work),
+            &meter,
             maximum,
             capacity.keys,
             capacity.attributes,
+        ))?;
+        let mut body_allocation = acyclic_native_runtime::ReadAllocation::empty(&meter);
+        let body_bytes =
+            work.record(crate::native::vector(maximum, &meter, &mut body_allocation))?;
+        let body = work.record(
+            crate::PreparedOwnedBytes::new_buffer(body_bytes, body_allocation, &meter).map_err(
+                |failure| match failure.into_error() {
+                    crate::PreparedOwnedBytesError::Admission(error) => error,
+                    crate::PreparedOwnedBytesError::NotFullyInitialized => {
+                        std::io::ErrorKind::InvalidData.into()
+                    }
+                },
+            ),
+        )?;
+        let body_codec = work.record(NativeCodecReservation::new(
+            Arc::clone(&meter),
+            NativeCodecWork {
+                copied: maximum as u64,
+                ..NativeCodecWork::default()
+            },
         ))?;
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
@@ -206,6 +229,8 @@ impl MemoryStream {
                 probes,
                 codec,
                 headers,
+                body,
+                body_codec,
                 key_nodes,
                 key_probes,
                 base_keys,
@@ -484,8 +509,19 @@ impl PreparedCommit {
             let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
             let time = self.provider.admitted_time(&state, [&body])?;
             let id = commit_identity(decision, digest);
-            self.provider
-                .keep_body(&mut body.value, &mut body.headers)?;
+            let length = body.value.len();
+            let mut prepared_body = self.body;
+            prepared_body
+                .extend_within_capacity(body.value.as_slice())
+                .ok_or(StreamError::InvalidArgument)?;
+            let value = prepared_body
+                .freeze(length)
+                .map_err(|_| StreamError::InvalidArgument)?;
+            work.record(self.body_codec.record(NativeCodecWork {
+                copied: length as u64,
+                ..NativeCodecWork::default()
+            }))?;
+            body.value = value;
             bind_body(&mut self.plan, body)?;
             for history in &mut self.plan.histories {
                 if let History::Batch { records, .. } =
