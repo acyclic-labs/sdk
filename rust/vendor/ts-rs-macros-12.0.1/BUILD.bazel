@@ -91,6 +91,10 @@ rust_proc_macro(
         "--check-cfg=cfg(feature, values(\"no-serde-warnings\", \"serde-compat\", \"termcolor\"))",
     ],
     lint_config = ":lints",
+    target_compatible_with = [
+        "@platforms//os:none",
+        "@platforms//cpu:wasm32",
+    ],
     deps = [
         "@wasm_crates//proc-macro2-1.0.107",
         "@wasm_crates//quote-1.0.47",

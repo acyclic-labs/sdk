@@ -123,6 +123,10 @@ rust_proc_macro(
         "--check-cfg=cfg(tokio_unstable)",
     ],
     lint_config = ":lints",
+    target_compatible_with = [
+        "@platforms//os:none",
+        "@platforms//cpu:wasm32",
+    ],
     deps = [
         "//rust/crates/auth-action:acyclic_auth_action_wasm",
         "@wasm_crates//heck-0.5.0",

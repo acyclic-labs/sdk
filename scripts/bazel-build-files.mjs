@@ -672,6 +672,7 @@ function buildFile(p, graph) {
     ["rustc_env", "PACKAGE_ENV"],
     ["rustc_flags", opt === undefined && !checkCfg.length ? undefined : list([...(opt === undefined ? [] : [`-Copt-level=${opt}`]), ...checkCfg])],
     ["lint_config", q(":lints")],
+    ["target_compatible_with", graph ? list(["@platforms//os:none", "@platforms//cpu:wasm32"]) : undefined],
   ];
   // Rendered dependencies of one target.
   const deps = (kinds, extra = [], extraMacros = []) => {
