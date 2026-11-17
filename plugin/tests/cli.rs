@@ -1743,7 +1743,6 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
 
 #[tokio::test]
 async fn selected_agent_queries_use_the_explicit_owner_state() {
-    use acyclic_harness::local::LocalHarness;
     use acyclic_harness_providers::{Credentials, Registry};
 
     let fixture = fixture();
@@ -1760,33 +1759,30 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         .unwrap()
         .working_directory(&fixture.workspace)
         .unwrap();
-    let local = Arc::new(LocalHarness::open(config).await.unwrap());
-    let connection = local.connect().await.unwrap();
+    let directory = acyclic_harness::local::service::Directory::for_config(&config).unwrap();
+    let service_owner = directory.own().unwrap();
+    let listener = service_owner.listener().unwrap();
+    let (ready, readiness) = tokio::sync::oneshot::channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let result = acyclic_harness::server::serve(
+            listener,
+            acyclic_harness::server::ServerConfig::new(config),
+            |endpoint| {
+                let _ = ready.send(service_owner.publish(endpoint));
+            },
+            async {
+                let _ = stopped.await;
+            },
+        )
+        .await;
+        drop(service_owner);
+        result
+    });
+    readiness.await.unwrap().unwrap();
+    let connection = directory.connect().await.unwrap();
     let agent = connection.root().to_string();
     drop(connection);
-    Arc::try_unwrap(local)
-        .unwrap_or_else(|_| panic!("owner retains a connection"))
-        .disconnect()
-        .await
-        .unwrap();
-
-    let output = graphcoder(
-        &fixture,
-        &model.catalog,
-        vec![
-            "--default-config",
-            "--host-state-directory",
-            state.to_str().unwrap(),
-            "--agent",
-            &agent,
-            "sessions",
-        ],
-        "",
-    )
-    .await;
-    let reply: Value = serde_json::from_str(&succeeded(&output)).unwrap();
-    assert_eq!(reply["items"], json!([]));
-    assert!(reply["next"].is_null());
     let query = |agent: &str, command: &str, peers: bool| {
         let mut process = graphcoder_command(&fixture);
         process
@@ -1807,9 +1803,6 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         assert_eq!(reply["items"], json!([]));
         assert!(reply["next"].is_null());
     }
-    let directory =
-        acyclic_harness::local::service::Directory::for_workspace(&fixture.workspace, Some(&state))
-            .unwrap();
     let owner = directory.connect().await.unwrap();
     let selected = acyclic_harness::local::sessions::create(&owner, "selected-query", None)
         .await
@@ -1846,6 +1839,9 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
         );
     }
     assert_eq!(model.generated(), 0, "observation dispatched model work");
+    drop((owner, selected, other));
+    stop.send(()).unwrap();
+    server.await.unwrap().unwrap();
     model.close().await;
 }
 
