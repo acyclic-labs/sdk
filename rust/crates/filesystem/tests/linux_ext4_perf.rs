@@ -515,7 +515,10 @@ async fn linux_working_set_cost_ledger_is_bounded() -> Result<(), Box<dyn std::e
     let noop = work.receipt().checked_sub_cumulative(&before_noop)?;
     assert_eq!(noop.authority_records_appended, 0);
     assert_eq!(noop.materializations, 0);
-    assert_eq!(lazy.workspace().head(&work, &cancel).await?.id(), published.id());
+    assert_eq!(
+        lazy.workspace().head(&work, &cancel).await?.id(),
+        published.id()
+    );
     Ok(())
 }
 
