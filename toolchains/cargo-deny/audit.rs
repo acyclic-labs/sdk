@@ -106,24 +106,14 @@ fn acknowledgements_cannot_suppress_other_crates_or_vulnerabilities() {
     let notice = serde_json::json!({"informational": "unmaintained"});
     let vulnerability = serde_json::json!({"informational": null});
     validate_acknowledgement("RUSTSEC-test", "example", &notice, &ack);
-    assert!(
-        std::panic::catch_unwind(|| validate_acknowledgement(
-            "RUSTSEC-test",
-            "other",
-            &notice,
-            &ack
-        ))
-        .is_err()
-    );
-    assert!(
-        std::panic::catch_unwind(|| validate_acknowledgement(
-            "RUSTSEC-test",
-            "example",
-            &vulnerability,
-            &ack
-        ))
-        .is_err()
-    );
+    let wrong_crate = std::panic::catch_unwind(|| {
+        validate_acknowledgement("RUSTSEC-test", "other", &notice, &ack)
+    });
+    assert!(wrong_crate.is_err());
+    let vulnerability = std::panic::catch_unwind(|| {
+        validate_acknowledgement("RUSTSEC-test", "example", &vulnerability, &ack)
+    });
+    assert!(vulnerability.is_err());
 }
 
 #[test]
