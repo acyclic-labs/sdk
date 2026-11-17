@@ -169,7 +169,7 @@ wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "=0.3.67"
+wasm-bindgen-test = "=0.3.71"
 
 [lints]
 workspace = true

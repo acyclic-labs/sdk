@@ -85,7 +85,7 @@ rust_library(
         "@sdk_crates//thiserror_2_0_21-2.0.21",
         "@sdk_crates//tsify-0.5.8",
         "@sdk_crates//url-2.5.8",
-        "@sdk_crates//wasm-bindgen-0.2.117",
+        "@sdk_crates//wasm-bindgen-0.2.121",
     ],
     visibility = ["//visibility:public"],
 )
@@ -185,7 +185,7 @@ rust_test(
         "@sdk_crates//tokio-1.54.1",
         "@sdk_crates//tsify-0.5.8",
         "@sdk_crates//url-2.5.8",
-        "@sdk_crates//wasm-bindgen-0.2.117",
+        "@sdk_crates//wasm-bindgen-0.2.121",
     ],
     data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel"], allow_empty = True),
     tags = ["manual"],
