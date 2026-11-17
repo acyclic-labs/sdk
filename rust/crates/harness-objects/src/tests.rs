@@ -19,6 +19,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
         },
     );
     upload_contract(MemoryObjects::memory(), None, &issuer).await?;
+    eprintln!("upload: memory contract complete");
     #[cfg(not(target_arch = "wasm32"))]
     {
         use acyclic_objects::{LocalClose, LocalMedium, Store, binary::BinaryObjects};
@@ -43,6 +44,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
         });
         let (file, uncertain) =
             upload_contract(objects, Some(lost_retain_reply.clone()), &issuer).await?;
+        eprintln!("upload: durable contract complete");
         assert!(!lost_retain_reply.load(Ordering::SeqCst));
         let digest = Digest::from_hex(file.version())?;
         assert_eq!(
@@ -73,6 +75,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
         let store = Store::new(medium);
         let medium = store.medium().clone();
         let read_cut = Arc::new(ReadCut::default());
+        eprintln!("upload: reopened");
         let objects = Arc::new(BinaryObjects::new(LocalCell {
             account: Arc::new(store.account(b"original-owner")?),
             lost_retain_reply: Arc::new(AtomicBool::new(false)),
@@ -99,6 +102,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
                     length: 0,
                 }),
             ] {
+                eprintln!("upload: read {} {range:?}", file.path());
                 let (release, delivered) = tokio::sync::oneshot::channel();
                 *read_cut.delivery.lock().expect("read delivery") = Some(delivered);
                 let before = read_cut.requests.load(Ordering::SeqCst);
@@ -140,6 +144,7 @@ async fn an_upload_retry_naming_other_content_is_refused()
                 Err(Error::Unauthorized(_))
             ));
             for (reference, bound) in [(&file, true), (&forged, false)] {
+                eprintln!("upload: failure disclosure {bound}");
                 let (release, delivered) = tokio::sync::oneshot::channel();
                 *read_cut.delivery.lock().expect("read delivery") = Some(delivered);
                 let (failed, failure) = tokio::sync::oneshot::channel();
