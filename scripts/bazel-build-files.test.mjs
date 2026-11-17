@@ -29,7 +29,7 @@ function fixture({ module = false } = {}) {
   writeFileSync(join(root, "scripts/generate-stream-token-operations.mjs"), readFileSync("scripts/generate-stream-token-operations.mjs"));
   writeFileSync(join(root, "scripts/workspace-model.mjs"), readFileSync("scripts/workspace-model.mjs"));
   if (module) writeFileSync(join(root, "MODULE.bazel"), 'module(name = "fixture")\n');
-  cpSync("scripts/dev-dependency-cycles.mjs", join(root, "scripts/dev-dependency-cycles.mjs"));
+  writeFileSync(join(root, "scripts/dev-dependency-cycles.mjs"), readFileSync("scripts/dev-dependency-cycles.mjs"));
   writeFileSync(join(root, "rust-toolchain.toml"), readFileSync("rust-toolchain.toml"));
   mkdirSync(join(root, ".cargo"));
   writeFileSync(join(root, ".cargo/config.toml"), '[target.x86_64-unknown-linux-gnu]\nlinker = "scripts/mold-linker.sh"\n\n[env]\n');

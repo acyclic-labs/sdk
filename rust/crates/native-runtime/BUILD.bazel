@@ -666,7 +666,7 @@ isolated_test(
 isolated_test(
     name = "observability_full-cloud",
     binary = ":observability_cases",
-    binaries = {":acyclic-process-host":"acyclic-process-host"},
+    binaries = {":acyclic-process-host":"acyclic-process-host","@nodejs//:node":"node"},
     id = "acyclic-native-runtime::observability",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",

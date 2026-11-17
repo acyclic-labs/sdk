@@ -91,6 +91,7 @@ isolated_test(
 isolated_test(
     name = "acyclic_harness_devices_test_full-cloud",
     binary = ":acyclic_harness_devices_test_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-harness-devices",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -155,6 +156,7 @@ isolated_test(
 isolated_test(
     name = "machine_workspace_device_full-cloud",
     binary = ":machine_workspace_device_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-harness-devices::machine_workspace_device",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
@@ -218,6 +220,7 @@ isolated_test(
 isolated_test(
     name = "support_full-cloud",
     binary = ":support_cases",
+    binaries = {"@nodejs//:node":"node"},
     id = "acyclic-harness-devices::support",
     only = "::full_cloud::",
     wrapper = "//:scripts/full-cloud-test.sh",
