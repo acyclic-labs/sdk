@@ -2119,12 +2119,14 @@ async fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Erro
             target: child,
         });
     }
-    state.reported = step.control.reported;
-    if step.report {
+    if step.report && state.open_children.is_empty() {
+        state.reported = step.control.reported;
         state.phase = Phase::Done {
             outcome: AgentOutcome::Archived,
         };
         outs.extend(report(state, &AgentOutcome::Archived));
+    } else if !step.report {
+        state.reported = step.control.reported;
     }
     Ok(())
 }
