@@ -38,6 +38,11 @@ impl<A, O> FilesystemHost<A, O> {
         self.clock.as_ref()
     }
 
+    /// An owned handle for work that must outlive this borrow.
+    pub(in crate::filesystem) fn clock_handle(&self) -> Arc<dyn acyclic_stream::UnixMillisClock> {
+        self.clock.clone()
+    }
+
     pub(in crate::filesystem) fn require(
         &self,
         view: &acyclic_fs::access::PathTrie,
