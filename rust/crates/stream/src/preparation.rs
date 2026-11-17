@@ -43,9 +43,8 @@ pub(crate) fn ephemeral_identity(decision: u64, issued: u64, digest: [u8; 32]) -
     CommitId::from_bytes(hash.finalize().into())
 }
 
-pub(crate) fn committed_time(previous_micros: u64, sampled_millis: u64) -> u64 {
-    previous_micros.max(sampled_millis.saturating_mul(1_000))
-}
+mod clock;
+pub(crate) use clock::committed_time;
 
 /// Evaluate against the backend's authoritative head. The preceding commit is
 /// loaded lazily, only for a Head condition whose tail already matches.
