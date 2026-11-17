@@ -14,12 +14,32 @@ _RELEASES = {
     "windows-x86_64": ("win-x64", "zip", "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2"),
 }
 
+_DEFS = """\
+def _tool_impl(ctx):
+    node = ctx.file.node
+    executable = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.symlink(output = executable, target_file = node, is_executable = True)
+    return [DefaultInfo(
+        executable = executable,
+        files = depset([executable]),
+        runfiles = ctx.runfiles(files = [executable, node]),
+    )]
+
+tool = rule(
+    implementation = _tool_impl,
+    attrs = {"node": attr.label(allow_single_file = True, mandatory = True)},
+    executable = True,
+)
+"""
+
 _BUILD = """\
+load("//:defs.bzl", "tool")
+
 package(default_visibility = ["//visibility:public"])
 
-sh_binary(
+tool(
     name = "node",
-    srcs = ["%s"],
+    node = "%s",
 )
 """
 
@@ -37,6 +57,7 @@ def _node_repository_impl(ctx):
         stripPrefix = stem,
     )
     node = "node.exe" if os == "windows" else "bin/node"
+    ctx.file("defs.bzl", _DEFS)
     ctx.file("BUILD.bazel", _BUILD % node)
 
 _node_repository = repository_rule(
