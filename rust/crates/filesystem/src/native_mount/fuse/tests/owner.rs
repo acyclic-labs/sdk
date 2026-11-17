@@ -404,8 +404,7 @@ const SHARED_HOST_TEST: &str =
 /// the first owner's process tree. Retiring that tree must not abort a second
 /// mount that is still serving.
 #[test]
-fn shared_host_survives_first_owner_tree_retirement()
--> Result<(), Box<dyn std::error::Error>> {
+fn shared_host_survives_first_owner_tree_retirement() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{BufRead as _, BufReader, Write as _};
     if std::env::var_os(SHARED_HOST_CASE).is_some() {
         let root = std::path::PathBuf::from(
@@ -459,7 +458,9 @@ fn shared_host_survives_first_owner_tree_retirement()
     assert_eq!(std::fs::read(parent_root.path().join("parent"))?, b"after");
     // The host belongs to the last attached session. Dropping this one is the
     // detach event that lets the host exit by itself.
-    let host = transport(&session).host_id().ok_or("shared host id absent")?;
+    let host = transport(&session)
+        .host_id()
+        .ok_or("shared host id absent")?;
     let host_exit = process_event(host, false)?;
     drop(session);
     wait_exit(&host_exit)?;

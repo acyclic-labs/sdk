@@ -291,7 +291,6 @@ impl<I: AsRef<HostIo>> PendingReply<I> {
     pub(super) fn owes_reply(&self) -> bool {
         self.unique.get().is_some()
     }
-
 }
 
 impl PendingReply<&Arc<HostIo>> {

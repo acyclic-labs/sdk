@@ -726,22 +726,10 @@ extern "C" fn host_child(argument: *mut libc::c_void) -> libc::c_int {
     let mut stack = [0_u8; 16 * 1024];
     // SAFETY: the second child runs on this local stack until exec replaces
     // it; the first child exits immediately after the clone.
-    let top = unsafe {
-        stack
-            .as_mut_ptr()
-            .add(stack.len())
-            .cast::<libc::c_void>()
-    };
+    let top = unsafe { stack.as_mut_ptr().add(stack.len()).cast::<libc::c_void>() };
     // SAFETY: the argument is the parent-owned record, and CLONE_PARENT makes
     // the host a sibling of the warden that owns this first child.
-    let pid = unsafe {
-        libc::clone(
-            host_exec,
-            top,
-            libc::CLONE_PARENT | libc::SIGCHLD,
-            argument,
-        )
-    };
+    let pid = unsafe { libc::clone(host_exec, top, libc::CLONE_PARENT | libc::SIGCHLD, argument) };
     if pid < 0 {
         // SAFETY: the status descriptor is inherited from the parent.
         unsafe {
@@ -824,12 +812,7 @@ pub(super) fn start_packet_device_host(
     let mut stack = vec![0_u8; 64 * 1024];
     // SAFETY: the top is one past this live allocation, which the child uses
     // as its downward-growing stack until exec replaces it.
-    let top = unsafe {
-        stack
-            .as_mut_ptr()
-            .add(stack.len())
-            .cast::<libc::c_void>()
-    };
+    let top = unsafe { stack.as_mut_ptr().add(stack.len()).cast::<libc::c_void>() };
     // SAFETY: the child entry takes only the parent-owned record and stack;
     // CLONE_PARENT makes the host a sibling of this owner.
     let pid = unsafe {
