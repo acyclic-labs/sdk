@@ -194,7 +194,10 @@ fn crash_reopen(point: Cut) -> Result<()> {
             seed.response.clone()
         };
         let provider = Arc::new(
+            // Each prompt makes its response request and one follow-up.
             ScriptedModelProvider::new([
+                ScriptedTurn::Text(seed.response.clone()),
+                ScriptedTurn::Text(seed.response.clone()),
                 ScriptedTurn::Text(seed.response.clone()),
                 ScriptedTurn::Text(seed.response.clone()),
             ])
