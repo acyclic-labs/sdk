@@ -194,5 +194,5 @@ fn start_workers(name: &'static str, worker_count: usize) -> io::Result<NativeWo
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod demand_tests;
