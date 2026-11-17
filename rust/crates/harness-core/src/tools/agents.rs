@@ -117,8 +117,12 @@ pub struct WaitAgentInput {
 }
 
 /// Resolves a child's selected model to the provider that will serve it.
+#[cfg(not(target_arch = "wasm32"))]
 pub type SpawnProviders =
     dyn Fn(Option<&str>) -> Option<Arc<dyn crate::model::ModelProvider>> + Send + Sync;
+/// Browser providers may own thread-affine platform handles.
+#[cfg(target_arch = "wasm32")]
+pub type SpawnProviders = dyn Fn(Option<&str>) -> Option<Arc<dyn crate::model::ModelProvider>>;
 
 /// What one turn's agent tools act for.
 struct Turn {
