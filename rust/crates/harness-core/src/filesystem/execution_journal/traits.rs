@@ -570,7 +570,9 @@ where
             None,
             io,
             move |receipt| {
-                if !receipt.accepted {
+                // Only a fresh accepted publication has a commit time. A
+                // refusal and a repeated claim both return no timestamp.
+                if !receipt.accepted || receipt.committed_at_micros.is_none() {
                     return Ok(None);
                 }
                 Ok(started_at.or(receipt.committed_at_micros))

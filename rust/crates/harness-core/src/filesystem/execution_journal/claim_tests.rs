@@ -243,6 +243,13 @@ async fn a_claim_persists_its_journal_clock_timestamp_for_resume() -> Result<()>
         Some(200_000),
         "the provider's frame time is not the claim's journal-clock time"
     );
+    assert_eq!(
+        journal
+            .claim_if_tail(operation, 1, "claim", &mut event, None)?
+            .await?,
+        None,
+        "a repeated claim returns no timestamp"
+    );
     Ok(())
 }
 
