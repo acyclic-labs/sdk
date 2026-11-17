@@ -218,9 +218,8 @@ impl NativeDemandSource {
         backing: &mut Owned<Vec<SourceDirectoryEntry>>,
         work: &mut CallbackWork,
     ) -> Result<Option<SourceDirectoryEntry>, DemandError> {
-        let observed;
         let stat = if let Some(stat) = &entry.stat {
-            stat
+            stat.clone()
         } else {
             #[cfg(unix)]
             let result = self
@@ -237,15 +236,16 @@ impl NativeDemandSource {
                 .and_then(|parent| {
                     crate::native_host::stat_windows_leaf(&parent, &entry.name, work)
                 });
-            observed = match result {
+            match result {
                 Ok(stat) => stat,
                 Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                     return Ok(None);
                 }
                 Err(error) => return Err(error),
-            };
-            &observed
+            }
         };
+        #[cfg(feature = "test-support")]
+        let stat = with_fixture_content(self, &directory.join(&entry.name), stat, work)?;
         let ((encoding, bytes), allocation) = source_name(&entry.name, self.inner.profile, work)?;
         backing.bytes += bytes.capacity() as u64;
         if let Some(allocation) = allocation {
@@ -255,7 +255,10 @@ impl NativeDemandSource {
                 .map_err(DemandError::from)?;
         }
         let name = LogicalName::new(encoding, bytes).map_err(|_| DemandError::InvalidRequest)?;
-        let node = Self::node(&child_path_key(logical, &name), stat);
+        let node = Self::node(
+            child_fixture_path_key(logical, &name, &stat).as_deref(),
+            &stat,
+        );
         Ok(Some(SourceDirectoryEntry { name, node }))
     }
     fn page_entries(
@@ -349,7 +352,7 @@ impl NativeDemandSource {
         if !stat.is_dir() {
             return Err(DemandError::NotDirectory);
         }
-        let observed = version(&path_key(directory), &stat);
+        let observed = version(fixture_path_key(directory, &stat).as_deref(), &stat);
         let restore = cursor.is_some();
         let (cursor, state) = if let Some(cursor) = cursor {
             if cursor.source != source {
@@ -458,7 +461,7 @@ impl NativeDemandSource {
         if self
             .metadata(directory, work)?
             .as_ref()
-            .map(|metadata| version(&path_key(directory), metadata))
+            .map(|metadata| version(fixture_path_key(directory, metadata).as_deref(), metadata))
             != Some(observed)
         {
             *lease

@@ -14,6 +14,7 @@ use acyclic_native_runtime::testing::DurableWrite;
 use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
+mod accounting;
 mod clocks;
 mod compaction;
 mod configuration;

@@ -448,6 +448,8 @@ impl NativeDemandSource {
             .root
             .held(context)
             .and_then(|root| root.stat(&relative, context));
+        #[cfg(feature = "test-support")]
+        let result = result.and_then(|stat| with_fixture_content(self, &relative, stat, context));
         drop(relative);
         context.release(allocation)?;
         match result {
@@ -457,7 +459,7 @@ impl NativeDemandSource {
         }
     }
 
-    fn node(path: &[u8], metadata: &HostStat) -> SourceNode {
+    fn node(path: Option<&[u8]>, metadata: &HostStat) -> SourceNode {
         let kind = metadata.file_type();
         SourceNode {
             kind,

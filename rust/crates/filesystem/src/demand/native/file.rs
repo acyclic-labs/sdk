@@ -3,7 +3,8 @@ struct NativeDemandFile {
     provider: NativeDemandSource,
     source: SourceReference,
     relative: DemandPath,
-    path_key: Vec<u8>,
+    #[cfg(feature = "test-support")]
+    path_key: Option<Vec<u8>>,
     expected: SourceVersion,
     logical_bytes: u64,
     #[cfg(windows)]
@@ -32,11 +33,6 @@ impl NativeDemandFile {
         let (relative, allocation) = provider.relative(path, context)?;
         let ownership = SourcePayloadOwnership::new(context)?;
         ownership.retain(allocation, context)?;
-        let controls = std::mem::size_of::<Self>() as u64
-            + std::mem::size_of::<SourceFile>() as u64
-            + 4 * std::mem::size_of::<usize>() as u64;
-        context.claim(controls)?;
-        ownership.retain(controls, context)?;
         #[cfg(windows)]
         let file = provider
             .inner
@@ -58,17 +54,32 @@ impl NativeDemandFile {
             Err(error) => return Err(error),
         };
         let opened = stat_held(&provider, &file, context)?;
+        #[cfg(feature = "test-support")]
+        let opened = with_fixture_content(&provider, &relative, opened, context)?;
         if opened.file_type() != crate::demand::SourceNodeKind::RegularFile {
             return Err(DemandError::NotRegularFile);
         }
-        let path_key = path_key(path);
-        if version(&path_key, &opened) != expected {
+        #[cfg(feature = "test-support")]
+        let path_key = fixture_times(&opened).map(|_| path_key(path));
+        #[cfg(feature = "test-support")]
+        let version = version(path_key.as_deref(), &opened);
+        #[cfg(not(feature = "test-support"))]
+        let version = version(None, &opened);
+        if version != expected {
             return Err(DemandError::StaleVersion);
         }
+        let controls = std::mem::size_of::<Self>() as u64
+            + std::mem::size_of::<SourceFile>() as u64
+            + 4 * std::mem::size_of::<usize>() as u64;
+        #[cfg(feature = "test-support")]
+        let controls = controls + path_key.as_ref().map_or(0, |key| key.capacity() as u64);
+        context.claim(controls)?;
+        ownership.retain(controls, context)?;
         Ok(Self {
             provider,
             source,
             relative,
+            #[cfg(feature = "test-support")]
             path_key,
             _ownership: Arc::new(ownership),
             expected,
@@ -155,7 +166,7 @@ impl NativeDemandFile {
             Err(error) => return Err(error),
         };
         let opened = stat_held(&self.provider, &file, context)?;
-        if version(&opened) != self.expected {
+        if self.version(&opened) != self.expected {
             return Err(DemandError::StaleVersion);
         }
         Ok(file)
@@ -269,12 +280,25 @@ impl NativeDemandFile {
         }
         Ok(filled)
     }
+    fn version(&self, metadata: &HostStat) -> SourceVersion {
+        #[cfg(feature = "test-support")]
+        {
+            version(self.path_key.as_deref(), metadata)
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            version(None, metadata)
+        }
+    }
+
     fn prove_current(
         &self,
         file: &SourceFile,
         context: &mut CallbackWork,
     ) -> Result<(), DemandError> {
         let held = stat_held(&self.provider, file, context)?;
+        #[cfg(feature = "test-support")]
+        let held = with_fixture_content(&self.provider, &self.relative, held, context)?;
         #[cfg(unix)]
         let named = self
             .provider
@@ -289,12 +313,12 @@ impl NativeDemandFile {
             .root
             .held(context)
             .and_then(|root| root.stat(&self.relative, context));
-        if version(&self.path_key, &held) != self.expected
-            || named
-                .as_ref()
-                .map(|metadata| version(&self.path_key, metadata))
-                .ok()
-                != Some(self.expected)
+        #[cfg(feature = "test-support")]
+        let named = named.and_then(|metadata| {
+            with_fixture_content(&self.provider, &self.relative, metadata, context)
+        });
+        if self.version(&held) != self.expected
+            || named.as_ref().map(|metadata| self.version(metadata)).ok() != Some(self.expected)
         {
             self.provider.check(&self.source, context)?;
             return Err(DemandError::StaleVersion);
@@ -305,7 +329,14 @@ impl NativeDemandFile {
 
 impl DemandFile for NativeDemandFile {
     fn logical_owned_bytes(&self) -> u64 {
-        std::mem::size_of::<Self>() as u64
+        let bytes = std::mem::size_of::<Self>() as u64;
+        #[cfg(feature = "test-support")]
+        let bytes = bytes
+            + self
+                .path_key
+                .as_ref()
+                .map_or(0, |key| key.capacity() as u64);
+        bytes
     }
     fn read_range(
         &self,

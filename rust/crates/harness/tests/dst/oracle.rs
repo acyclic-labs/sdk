@@ -220,22 +220,40 @@ thread_local! {
     > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
 }
 
-/// A world directory whose absolute path is a function of its case, seed and
-/// slot, never of the host's random temporary name. Model requests announce
-/// that path, so a random name would make an otherwise identical replay differ.
+/// A world directory whose absolute path is a function of its case, seed,
+/// slot and process, never of the host's random temporary name. Model requests
+/// announce that path, so a random name would make an otherwise identical
+/// replay differ; the process identity keeps concurrent processes apart.
 struct WorldDirectory {
     path: std::path::PathBuf,
     key: (String, u64),
     slot: usize,
 }
 
+/// A process's start nonce, so two processes that reuse a pid still name
+/// different world directories.
+fn process_nonce() -> u64 {
+    static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *NONCE.get_or_init(|| {
+        let nanos = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(elapsed) => elapsed.as_nanos(),
+            Err(_) => 0,
+        };
+        let pid = u64::from(std::process::id());
+        let mut hash = blake3::Hasher::new();
+        hash.update(&pid.to_le_bytes());
+        hash.update(&nanos.to_le_bytes());
+        let bytes = hash.finalize();
+        let mut nonce = [0; 8];
+        nonce.copy_from_slice(&bytes.as_bytes()[..8]);
+        u64::from_le_bytes(nonce)
+    })
+}
+
 impl WorldDirectory {
     fn new(seed: u64) -> std::io::Result<Self> {
         let key = (
-            std::thread::current()
-                .name()
-                .unwrap_or("dst")
-                .to_owned(),
+            std::thread::current().name().unwrap_or("dst").to_owned(),
             seed,
         );
         let slot = WORLD_SLOTS.with(|slots| {
@@ -258,7 +276,12 @@ impl WorldDirectory {
         } else {
             std::env::temp_dir()
         };
-        let path = root.join(format!("acyclic-dst-{}", &digest.to_hex()[..16]));
+        let path = root.join(format!(
+            "acyclic-dst-{}-{}-{}",
+            std::process::id(),
+            process_nonce(),
+            &digest.to_hex()[..16]
+        ));
         if path.exists() {
             std::fs::remove_dir_all(&path)?;
         }
@@ -268,6 +291,20 @@ impl WorldDirectory {
 
     fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The checkout identity is a function of the world's case and seed, not
+    /// of the scheduler incarnation, so every incarnation reopens the same
+    /// state.
+    fn identity(&self) -> ([u8; 16], acyclic_fs::NativeRootGeneration) {
+        let mut object = [0; 16];
+        object.copy_from_slice(
+            &blake3::hash(format!("dst-object:{}:{}", self.key.0, self.key.1).as_bytes())
+                .as_bytes()[..16],
+        );
+        let handle = *blake3::hash(format!("dst-handle:{}:{}", self.key.0, self.key.1).as_bytes())
+            .as_bytes();
+        (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
     }
 }
 
@@ -375,15 +412,9 @@ impl World {
             };
             // The checkout's root identity is a host file handle. A replay
             // supplies its own fixture identity so the owner record and every
-            // later capture are a function of the seed alone.
-            let checkout_identity = {
-                let mut object = [0; 16];
-                object.copy_from_slice(
-                    &blake3::hash(format!("dst-object:{scheduler}").as_bytes()).as_bytes()[..16],
-                );
-                let handle = *blake3::hash(format!("dst-handle:{scheduler}").as_bytes()).as_bytes();
-                (object, acyclic_fs::NativeRootGeneration::FileHandle(handle))
-            };
+            // later capture are a function of the world's case and seed alone,
+            // and every incarnation reopens the same state.
+            let checkout_identity = self.directory.identity();
             let dispatched_at = Arc::new(Mutex::new(Vec::new()));
             let observed = Arc::clone(&dispatched_at);
             let provider = Arc::new(self.service.reopened().with_dispatch_observer(move |_| {
@@ -668,4 +699,19 @@ pub(super) fn simulate<T>(
 
 pub(super) fn failed(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[test]
+fn world_directories_name_their_process() {
+    let directory = WorldDirectory::new(0).expect("world directory");
+    let name = directory
+        .path()
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .expect("world directory name");
+    let process = format!("-{}-", std::process::id());
+    assert!(
+        name.contains(&process),
+        "world directory {name} does not name process {process}"
+    );
 }
