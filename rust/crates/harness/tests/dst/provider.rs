@@ -590,7 +590,50 @@ struct LengthState {
     step: usize,
 }
 
-fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvider {
+/// The newest prompt a request carries, from the warmups or the selected case.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LengthPrompt {
+    Warmup,
+    Current,
+}
+
+fn contains_prompt(body: &str, prompt: &str) -> bool {
+    let digest: [u8; 32] = sha2::Sha256::digest(prompt.as_bytes()).into();
+    body.contains(prompt)
+        || body.contains(&format!(
+            "\"sha256\":{}",
+            serde_json::to_string(&digest).unwrap_or_default()
+        ))
+}
+
+fn newest_length_prompt(
+    request: &ModelRequest,
+    warmups: &[String],
+    current: &str,
+) -> Option<LengthPrompt> {
+    for message in request
+        .messages
+        .iter()
+        .rev()
+        .filter(|message| message.role == ModelRole::User)
+    {
+        let body = serde_json::to_string(&message.content).unwrap_or_default();
+        if contains_prompt(&body, current) {
+            return Some(LengthPrompt::Current);
+        }
+        if warmups.iter().any(|warmup| contains_prompt(&body, warmup)) {
+            return Some(LengthPrompt::Warmup);
+        }
+    }
+    None
+}
+
+fn d4_service(
+    call: &'static str,
+    content: &'static str,
+    warmups: Vec<String>,
+    current: String,
+) -> ScriptedModelProvider {
     let state = Mutex::new(LengthState { step: 0 });
     let responder = move |request: &ModelRequest| {
         if request.summary {
@@ -598,12 +641,8 @@ fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvide
         }
         // The newest relevant prompt decides the answer. A later request
         // still carries the warmup in its history, so matching any older
-        // warmup tag would answer the selected case with the warmup.
-        if let Some(found) = request_tag(
-            request,
-            &["d4-warm-0", "d4-warm-1", "d4-warm-2", "d4-warm-3", "d4"],
-        ) && found != "d4"
-        {
+        // warmup would answer the selected case with the warmup.
+        if newest_length_prompt(request, &warmups, &current) == Some(LengthPrompt::Warmup) {
             return Ok(ScriptedTurn::Text(done("d4-warm")));
         }
         let mut state = state
@@ -690,8 +729,6 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
     oracle::simulate(base, move || {
         entry(async move {
             let files = [("a.txt", "alpha\n")];
-            let service = d4_service(call, content).with_context_capacity(d4_capacity(capacity));
-            let mut world = World::new(base, &files, service).map_err(oracle::failed)?;
             let prompt = format!("d4-content:{content} {}", tag("d4"));
             let groups = if call == "summary" {
                 let (warmups, size) = if capacity == "output_eq_context" {
@@ -721,6 +758,15 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
             } else {
                 vec![vec![("d4", prompt.clone())]]
             };
+            let warmups: Vec<String> = groups
+                .iter()
+                .flatten()
+                .filter(|(id, _)| id.starts_with("d4-warm"))
+                .map(|(_, prompt)| prompt.clone())
+                .collect();
+            let service = d4_service(call, content, warmups, prompt)
+                .with_context_capacity(d4_capacity(capacity));
+            let mut world = World::new(base, &files, service).map_err(oracle::failed)?;
             let incarnation = world
                 .incarnation(None, &groups)
                 .await
