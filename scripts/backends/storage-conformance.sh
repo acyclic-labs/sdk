@@ -85,23 +85,17 @@ step=physical-bucket
 curl --fail --silent --show-error --aws-sigv4 aws:amz:us-east-1:s3 --user storage-local-access:storage-local-secret -X PUT "$STORAGE_S3_ENDPOINT/storage"
 
 step=compile
-cargo build --locked -p acyclic-conformance --features storage-backends --bin storage-conformance
+bazel build //rust/crates/conformance:storage-conformance //rust/crates/conformance/agent-host:main //rust/crates/stream:provider-conformance_example //rust/crates/stream:acyclic_stream_test //rust/crates/objects:acyclic_objects_test
 step=canonical-suites
-cargo run --locked -p acyclic-conformance --features storage-backends --bin storage-conformance
-step=compile-agent-host-baseline
-cargo test --locked -p acyclic-agent-host-conformance --features local --test main --no-run
+bazel run //rust/crates/conformance:storage-conformance
 step=agent-host-baseline
-cargo test --locked -p acyclic-agent-host-conformance --features local --test main
-step=compile-postgres-checks
-cargo build --locked -p acyclic-stream --no-default-features --features conformance --example provider-conformance
+bazel test //rust/crates/conformance/agent-host:main
 step=shared-stream-regressions
-cargo test --locked -p acyclic-stream --lib
+bazel test //rust/crates/stream:acyclic_stream_test
 step=postgres-cross-session
-cargo run --locked -p acyclic-stream --no-default-features --features conformance --example provider-conformance -- --postgres
+bazel run //rust/crates/stream:provider-conformance_example -- --postgres
 step=postgres-scale
-cargo run --locked -p acyclic-stream --no-default-features --features conformance --example provider-conformance -- --postgres --scale
-step=compile-shared-objects-regressions
-cargo test --locked -p acyclic-objects --lib --no-run
+bazel run //rust/crates/stream:provider-conformance_example -- --postgres --scale
 step=shared-objects-regressions
-cargo test --locked -p acyclic-objects --lib
+bazel test //rust/crates/objects:acyclic_objects_test
 step=complete

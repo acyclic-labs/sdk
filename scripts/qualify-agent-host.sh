@@ -13,6 +13,6 @@ step() {
   fi
 }
 
-step native-host cargo test -p acyclic-agent-host-conformance --features local
+step native-host bazel test //rust/crates/conformance/agent-host:main
 step browser-host-compile cargo check -p acyclic-agent-host-conformance --features browser --target wasm32-unknown-unknown --tests
 step browser-host bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-agent-host-conformance --features browser --target wasm32-unknown-unknown
