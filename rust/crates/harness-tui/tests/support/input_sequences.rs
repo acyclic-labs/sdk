@@ -4,10 +4,98 @@ use acyclic_harness_tui::key_event::{
 };
 use acyclic_harness_tui::ratatui::layout::Rect;
 use acyclic_harness_tui::{
-    Editor, InputEffect, InputKeymap, PromptHistory, PromptInput, Viewport, editor_command,
-    prepare_image, windows_editor_command,
+    Editor, InputEffect, InputKeymap, PromptInput, Viewport, editor_command, prepare_image,
+    windows_editor_command,
 };
 use unicode_segmentation::UnicodeSegmentation;
+
+mod history_source {
+    //! Reference source for generated input events. Production owns history in the session.
+    use acyclic_harness_tui::{InputEffect, PromptInput};
+
+    #[derive(Default)]
+    pub struct Source {
+        pub entries: Vec<String>,
+        cursor: Option<usize>,
+        draft: String,
+        search_cursor: Option<usize>,
+        search: Option<String>,
+    }
+
+    impl Source {
+        pub fn new(entries: impl IntoIterator<Item = String>) -> Self {
+            Self {
+                entries: entries.into_iter().collect(),
+                ..Self::default()
+            }
+        }
+
+        pub fn apply(&mut self, input: &mut PromptInput, effects: &[InputEffect], at: u64) {
+            for effect in effects {
+                match effect {
+                    InputEffect::Submit { text, .. } => self.entries.push(text.clone()),
+                    InputEffect::History {
+                        request,
+                        previous,
+                        search,
+                        restart,
+                    } => {
+                        let expected = input.editor.text().to_owned();
+                        let selected = if let Some(query) = search {
+                            if *restart || self.search.as_deref() != Some(query) {
+                                self.search_cursor = None;
+                                self.search = Some(query.clone());
+                            }
+                            let end = self.search_cursor.unwrap_or(self.entries.len());
+                            let found = self
+                                .entries
+                                .iter()
+                                .take(end)
+                                .enumerate()
+                                .rev()
+                                .find(|(_, text)| text.contains(query));
+                            if let Some((index, _)) = found {
+                                self.search_cursor = Some(index);
+                            }
+                            found.map(|(_, text)| text.clone())
+                        } else if *previous {
+                            if *restart || self.cursor.is_none() {
+                                self.draft = expected.clone();
+                                self.cursor = Some(self.entries.len());
+                            }
+                            let index = self.cursor.unwrap_or(0).saturating_sub(1);
+                            self.cursor = Some(index);
+                            self.entries.get(index).cloned()
+                        } else if let Some(index) = self.cursor {
+                            if index + 1 < self.entries.len() {
+                                self.cursor = Some(index + 1);
+                                self.entries.get(index + 1).cloned()
+                            } else {
+                                self.cursor = None;
+                                Some(self.draft.clone())
+                            }
+                        } else {
+                            None
+                        };
+                        assert!(input.resolve_history(
+                            *request,
+                            &expected,
+                            selected.as_deref(),
+                            *previous,
+                            at
+                        ));
+                    }
+                    InputEffect::HistorySearchFinished { .. } => {
+                        self.search_cursor = None;
+                        self.search = None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+use history_source::Source;
 
 /// Exercise input transitions against the shared production semantic oracle.
 ///
@@ -30,12 +118,12 @@ fn exercise_variant(data: &[u8], broken: bool) {
         1,
         data.to_vec(),
     );
-    let (mut input, mut viewport, mut at) = semantic_prelude(data, broken);
+    let (mut input, mut source, mut viewport, mut at) = semantic_prelude(data, broken);
     if let Some(map) = parsed_map {
         input.keymap = map;
     }
     if let Some(history) = parsed_history {
-        input.replace_history(history);
+        source = Source::new(history);
     }
     for chunk in data.chunks(8) {
         let Some((&op, rest)) = chunk.split_first() else {
@@ -67,7 +155,15 @@ fn exercise_variant(data: &[u8], broken: bool) {
             9 => InputEvent::Focus(op > 128),
             _ => InputEvent::Resize(area.width, area.height),
         };
-        dispatch(&mut input, event, area, &mut viewport, at, broken);
+        dispatch(
+            &mut input,
+            &mut source,
+            event,
+            area,
+            &mut viewport,
+            at,
+            broken,
+        );
         invariants(&input, usize::from(area.width));
     }
     // A final pending chord must execute, even if the fuzzer supplied
@@ -78,7 +174,7 @@ fn exercise_variant(data: &[u8], broken: bool) {
 
 /// Keymap and Windows editor command files that parse must round-trip; a
 /// prompt list becomes a history snapshot.
-fn round_trip_files(json: &str) -> (Option<InputKeymap>, Option<PromptHistory>) {
+fn round_trip_files(json: &str) -> (Option<InputKeymap>, Option<Vec<String>>) {
     let mut parsed_map = None;
     if let Ok(map) = InputKeymap::parse(json) {
         let encoded = map.encode();
@@ -86,9 +182,7 @@ fn round_trip_files(json: &str) -> (Option<InputKeymap>, Option<PromptHistory>) 
         parsed_map = Some(map);
     }
     // A prompt list folds into a history snapshot, as a live query's does.
-    let parsed_history = serde_json::from_str::<Vec<String>>(json)
-        .ok()
-        .map(PromptHistory::snapshot);
+    let parsed_history = serde_json::from_str::<Vec<String>>(json).ok();
     let _ = editor_command(json);
     if let Ok((program, args)) = windows_editor_command(json) {
         let lossy = |(program, args): (std::ffi::OsString, Vec<std::ffi::OsString>)| {
@@ -139,6 +233,7 @@ fn chunk_key(chunk: &[u8], op: u8) -> KeyEvent {
 
 fn dispatch(
     input: &mut PromptInput,
+    source: &mut Source,
     event: InputEvent,
     area: Rect,
     viewport: &mut Viewport,
@@ -153,7 +248,9 @@ fn dispatch(
         // bounds and grapheme structure remain valid, so semantics must catch it.
         input.editor.set_cursor(input.editor.text().len(), false);
     }
-    input.event(event, area, viewport, at).collect()
+    let effects: Vec<_> = input.event(event, area, viewport, at).collect();
+    source.apply(input, &effects, at);
+    effects
 }
 
 /// A prompt with a Super chord override and CR/CRLF-separated history.
@@ -162,19 +259,18 @@ fn fixture_input() -> PromptInput {
     let keymap = InputKeymap::parse(r#"{"bindings":{"Super+k":"cursor.line-start"}}"#);
     assert!(keymap.is_ok(), "valid keymap fixture: {keymap:?}");
     input.keymap = keymap.unwrap_or_default();
-    input.replace_history(PromptHistory::snapshot(
-        ["older\r\nprompt", "newer\rhistory"].map(String::from),
-    ));
     input
 }
 
-fn semantic_prelude(data: &[u8], broken: bool) -> (PromptInput, Viewport, u64) {
+fn semantic_prelude(data: &[u8], broken: bool) -> (PromptInput, Source, Viewport, u64) {
     let mut input = fixture_input();
+    let mut source = Source::new(["older\r\nprompt", "newer\rhistory"].map(String::from));
     let mut viewport = Viewport::default();
     let mut at = 0;
     let mut send = |input: &mut PromptInput, event| {
         let effects = dispatch(
             input,
+            &mut source,
             event,
             Rect::new(0, 0, 80, 4),
             &mut viewport,
@@ -234,7 +330,17 @@ fn semantic_prelude(data: &[u8], broken: bool) -> (PromptInput, Viewport, u64) {
     );
     send(&mut input, key(KeyCode::End, KeyModifiers::CONTROL));
     send(&mut input, key(KeyCode::Char('r'), KeyModifiers::CONTROL));
-    send(&mut input, InputEvent::CommittedText("older".into()));
+    send(&mut input, InputEvent::CommittedText("history".into()));
+    assert_eq!(
+        input.editor.text(),
+        "newer\nhistory",
+        "edited search revisits the newest match"
+    );
+    assert_eq!(
+        input.search_status(),
+        Some(("history", true)),
+        "edited search retains its match"
+    );
     send(&mut input, key(KeyCode::Esc, KeyModifiers::NONE));
     send(&mut input, key(KeyCode::Down, KeyModifiers::NONE));
     assert_prompt(
@@ -253,8 +359,8 @@ fn semantic_prelude(data: &[u8], broken: bool) -> (PromptInput, Viewport, u64) {
         }]
     );
     assert_eq!(
-        input.history().entries(),
-        &["older\nprompt", "newer\nhistory", "edited prompt"],
+        source.entries,
+        &["older\r\nprompt", "newer\rhistory", "edited prompt"],
         "edited submissions remain in the shared history file projection"
     );
     assert_prompt(
@@ -263,7 +369,7 @@ fn semantic_prelude(data: &[u8], broken: bool) -> (PromptInput, Viewport, u64) {
         11,
         "editing preserves the live draft",
     );
-    (input, viewport, at)
+    (input, source, viewport, at)
 }
 
 fn key(code: KeyCode, modifiers: KeyModifiers) -> InputEvent {
