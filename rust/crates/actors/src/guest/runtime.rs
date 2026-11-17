@@ -146,14 +146,10 @@ impl AdmittedCaller {
         )
         .map_err(|_| GuestMetadataError("audience"))
     }
-    /// Attach an S1 handle after checking its representation.
-    pub fn with_capability(
-        mut self,
-        capability: CallerCapability,
-    ) -> Result<Self, GuestMetadataError> {
-        handle(capability.version, &capability.handle)?;
+    /// Attach an admitted S1 handle.
+    pub fn with_capability(mut self, capability: CallerCapability) -> Self {
         self.capability = Some(capability);
-        Ok(self)
+        self
     }
 }
 
