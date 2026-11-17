@@ -8,9 +8,7 @@ pub(super) fn open_windows_root_name(
 ) -> io::Result<File> {
     // SAFETY: callers validate the terminated name; success transfers a fresh handle.
     #[cfg(test)]
-    if flags.0 & fs::FILE_FLAG_BACKUP_SEMANTICS.0 != 0 {
-        super::stat_probe::event("CreateFileW");
-    }
+    super::stat_probe::event("CreateFileW");
     let handle = unsafe {
         fs::CreateFileW(
             windows::core::PCWSTR(name.as_ptr()),
