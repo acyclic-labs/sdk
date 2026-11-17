@@ -663,19 +663,13 @@ async fn an_unrooted_blob_survives_the_pass_after_the_one_finding_it()
     Ok(())
 }
 
-/// One shared medium that several [`Store`]s, standing for processes, open.
-/// It parks one operation matching `pause` until released, to force one
-/// interleaving. With `forgetful` the delete protocol's conditional writes
-/// ignore the bytes they were given: a deleter's mark is never stored and its
-/// envelope removal matches whatever is there, the negative control for the
-/// delete protocol. Creates of keys containing `ambiguous` are lost with an
-/// unknown outcome. `lost` counts conditional replaces another writer beat.
+/// Shared medium with deterministic parking, ambiguity and deletion faults.
 #[derive(Clone)]
-struct Shared {
+pub(crate) struct Shared {
     inner: std::sync::Arc<dyn Medium>,
     pause: std::sync::Arc<std::sync::Mutex<Option<Pause>>>,
     forgetful: bool,
-    ambiguous: std::sync::Arc<std::sync::Mutex<Option<&'static str>>>,
+    pub(crate) ambiguous: std::sync::Arc<std::sync::Mutex<Option<&'static str>>>,
     lost: std::sync::Arc<AtomicUsize>,
 }
 
@@ -717,7 +711,7 @@ impl Shared {
     }
 
     /// Parks the first `operation` on a key containing `fragment`, after it applies.
-    fn park(
+    pub(crate) fn park(
         &self,
         operation: &'static str,
         fragment: impl Into<String>,
