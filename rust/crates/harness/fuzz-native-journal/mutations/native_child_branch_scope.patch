@@ -1,7 +1,7 @@
-diff --git a/rust/crates/harness/src/local/host_workspace.rs b/rust/crates/harness/src/local/host_workspace.rs
+diff --git a/rust/crates/harness-local/src/local/host_workspace.rs b/rust/crates/harness-local/src/local/host_workspace.rs
 index d1cfcfad604..3e5322b67cf 100644
---- a/rust/crates/harness/src/local/host_workspace.rs
-+++ b/rust/crates/harness/src/local/host_workspace.rs
+--- a/rust/crates/harness-local/src/local/host_workspace.rs
++++ b/rust/crates/harness-local/src/local/host_workspace.rs
 @@ -277,6 +277,13 @@ impl HostWorkspace {
              selected.workspace().id(),
              self.workspace.store.clone(),

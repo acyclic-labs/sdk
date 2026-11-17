@@ -1,7 +1,7 @@
-diff --git a/rust/crates/harness/src/local/workspace/volumes.rs b/rust/crates/harness/src/local/workspace/volumes.rs
+diff --git a/rust/crates/harness-local/src/local/workspace/volumes.rs b/rust/crates/harness-local/src/local/workspace/volumes.rs
 index 1627fb3d1f..2e2e7bfdf9 100644
---- a/rust/crates/harness/src/local/workspace/volumes.rs
-+++ b/rust/crates/harness/src/local/workspace/volumes.rs
+--- a/rust/crates/harness-local/src/local/workspace/volumes.rs
++++ b/rust/crates/harness-local/src/local/workspace/volumes.rs
 @@ -222,3 +222,3 @@ pub(in crate::local) struct Claims {
      entries: Vec<Claim>,
 -    tasks: acyclic_native_runtime::TaskSpawner,

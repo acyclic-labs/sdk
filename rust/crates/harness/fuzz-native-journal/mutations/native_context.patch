@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/host_process.rs
-+++ b/rust/crates/harness/src/local/host_process.rs
+--- a/rust/crates/harness-local/src/local/host_process.rs
++++ b/rust/crates/harness-local/src/local/host_process.rs
 @@ -341,7 +341,7 @@
              written: 0,
              omitted: false,

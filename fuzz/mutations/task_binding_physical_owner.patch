@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/workspace/projection.rs
-+++ b/rust/crates/harness/src/local/workspace/projection.rs
+--- a/rust/crates/harness-local/src/local/workspace/projection.rs
++++ b/rust/crates/harness-local/src/local/workspace/projection.rs
 @@ -182,7 +182,7 @@ impl MountedVolume {
                  mount,
                  discard: false,

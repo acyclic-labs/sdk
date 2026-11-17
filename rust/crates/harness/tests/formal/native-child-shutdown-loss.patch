@@ -1,6 +1,6 @@
-diff --git a/rust/crates/harness/src/local/host_process/children/tests.rs b/rust/crates/harness/src/local/host_process/children/tests.rs
---- a/rust/crates/harness/src/local/host_process/children/tests.rs
-+++ b/rust/crates/harness/src/local/host_process/children/tests.rs
+diff --git a/rust/crates/harness-local/src/local/host_process/children/tests.rs b/rust/crates/harness-local/src/local/host_process/children/tests.rs
+--- a/rust/crates/harness-local/src/local/host_process/children/tests.rs
++++ b/rust/crates/harness-local/src/local/host_process/children/tests.rs
 @@ -194,7 +194,7 @@ async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
          ready = readiness => ready.map_err(|cause| failed("start native child workspace", cause)),
      };

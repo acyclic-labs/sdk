@@ -1,6 +1,6 @@
-diff --git a/rust/crates/harness/src/local/host_process/launch.rs b/rust/crates/harness/src/local/host_process/launch.rs
---- a/rust/crates/harness/src/local/host_process/launch.rs
-+++ b/rust/crates/harness/src/local/host_process/launch.rs
+diff --git a/rust/crates/harness-local/src/local/host_process/launch.rs b/rust/crates/harness-local/src/local/host_process/launch.rs
+--- a/rust/crates/harness-local/src/local/host_process/launch.rs
++++ b/rust/crates/harness-local/src/local/host_process/launch.rs
 @@ -194,3 +194,3 @@
 -    if session.is_some_and(|reference| {
 +    if false && session.is_some_and(|reference| {

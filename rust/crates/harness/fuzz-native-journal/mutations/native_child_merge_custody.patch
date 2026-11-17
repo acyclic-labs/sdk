@@ -1,7 +1,7 @@
-diff --git b/rust/crates/harness/src/local/host_owner.rs a/rust/crates/harness/src/local/host_owner.rs
+diff --git b/rust/crates/harness-local/src/local/host_owner.rs a/rust/crates/harness-local/src/local/host_owner.rs
 index ad41b18fcf8..da2ffbbfe47 100644
---- b/rust/crates/harness/src/local/host_owner.rs
-+++ a/rust/crates/harness/src/local/host_owner.rs
+--- b/rust/crates/harness-local/src/local/host_owner.rs
++++ a/rust/crates/harness-local/src/local/host_owner.rs
 @@ -336,9 +336,14 @@ impl HostWorkspaceOwner {
          task: &AgentPath,
          command: &str,

@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/host_files.rs
-+++ b/rust/crates/harness/src/local/host_files.rs
+--- a/rust/crates/harness-local/src/local/host_files.rs
++++ b/rust/crates/harness-local/src/local/host_files.rs
 @@ -967,7 +967,7 @@
                  if let Err(cleanup) = remove_projection(&path) {
                      // No withdrawal event can be produced. End the original

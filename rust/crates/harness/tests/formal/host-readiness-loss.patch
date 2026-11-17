@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/host_files.rs
-+++ b/rust/crates/harness/src/local/host_files.rs
+--- a/rust/crates/harness-local/src/local/host_files.rs
++++ b/rust/crates/harness-local/src/local/host_files.rs
 @@ -765,7 +765,8 @@ pub async fn serve_until(
          status,
          _ownership: Arc::clone(&ownership),

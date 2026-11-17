@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/workspace/bindings.rs
-+++ b/rust/crates/harness/src/local/workspace/bindings.rs
+--- a/rust/crates/harness-local/src/local/workspace/bindings.rs
++++ b/rust/crates/harness-local/src/local/workspace/bindings.rs
 @@ -76,6 +76,9 @@ impl Bindings {
              .map_err(storage)?
              .and_then(RetainedWeak::upgrade)

@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/workspace/task_views.rs
-+++ b/rust/crates/harness/src/local/workspace/task_views.rs
+--- a/rust/crates/harness-local/src/local/workspace/task_views.rs
++++ b/rust/crates/harness-local/src/local/workspace/task_views.rs
 @@ -28,6 +28,7 @@
          owner: &dyn super::owner::ViewOwner,
          authority: &crate::filesystem::NativeMountAuthority,

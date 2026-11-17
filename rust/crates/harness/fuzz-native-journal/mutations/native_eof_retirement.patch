@@ -1,7 +1,7 @@
-diff --git a/rust/crates/harness/src/local/host_process/children/tools.rs b/rust/crates/harness/src/local/host_process/children/tools.rs
+diff --git a/rust/crates/harness-local/src/local/host_process/children/tools.rs b/rust/crates/harness-local/src/local/host_process/children/tools.rs
 index 3b84bbcc375..317140006ce 100644
---- a/rust/crates/harness/src/local/host_process/children/tools.rs
-+++ b/rust/crates/harness/src/local/host_process/children/tools.rs
+--- a/rust/crates/harness-local/src/local/host_process/children/tools.rs
++++ b/rust/crates/harness-local/src/local/host_process/children/tools.rs
 @@ -22,24 +22,30 @@ struct Coordination {
      children: Option<NativeChildren>,
  }

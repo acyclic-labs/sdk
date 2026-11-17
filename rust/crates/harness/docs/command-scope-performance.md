@@ -31,7 +31,7 @@ the original checkout SHA and the fixture digest before compiling either tree:
 git rev-parse HEAD
 sha256sum /path/to/command_scope_benchmark.rs
 cat /path/to/command_scope_benchmark.rs >> rust/crates/harness-local/src/local/workspace/volumes.rs
-cargo test --locked -p acyclic-harness --lib -- \
+cargo test --locked -p acyclic-harness-local --lib -- \
   --exact local::workspace::volumes::command_scope_benchmark::command_scope_workload_benchmark \
   --nocapture --test-threads=1
 ```

@@ -1,6 +1,6 @@
-diff --git a/rust/crates/harness/src/local/open.rs b/rust/crates/harness/src/local/open.rs
---- a/rust/crates/harness/src/local/open.rs
-+++ b/rust/crates/harness/src/local/open.rs
+diff --git a/rust/crates/harness-local/src/local/open.rs b/rust/crates/harness-local/src/local/open.rs
+--- a/rust/crates/harness-local/src/local/open.rs
++++ b/rust/crates/harness-local/src/local/open.rs
 @@ -123,5 +123,5 @@ impl Opening {
          // Coordination uses the existing checkout. Only our own native shell
          // needs its auxiliary volumes projected before a command can run.

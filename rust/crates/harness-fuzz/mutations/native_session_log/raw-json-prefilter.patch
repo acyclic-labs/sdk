@@ -1,7 +1,7 @@
-diff --git b/rust/crates/harness/src/local/host_owner/sessions.rs a/rust/crates/harness/src/local/host_owner/sessions.rs
+diff --git b/rust/crates/harness-local/src/local/host_owner/sessions.rs a/rust/crates/harness-local/src/local/host_owner/sessions.rs
 index c109b4d744..ec4fc86191 100644
---- b/rust/crates/harness/src/local/host_owner/sessions.rs
-+++ a/rust/crates/harness/src/local/host_owner/sessions.rs
+--- b/rust/crates/harness-local/src/local/host_owner/sessions.rs
++++ a/rust/crates/harness-local/src/local/host_owner/sessions.rs
 @@ -81,6 +81,13 @@ fn native_session_id(event: &Value) -> Option<&str> {
  /// The last valid native resume id a turn's event log names.
  pub fn logged_session_id(log: &[u8]) -> Option<String> {

@@ -1,6 +1,6 @@
-diff --git a/rust/crates/harness/src/local/host_process.rs b/rust/crates/harness/src/local/host_process.rs
---- a/rust/crates/harness/src/local/host_process.rs
-+++ b/rust/crates/harness/src/local/host_process.rs
+diff --git a/rust/crates/harness-local/src/local/host_process.rs b/rust/crates/harness-local/src/local/host_process.rs
+--- a/rust/crates/harness-local/src/local/host_process.rs
++++ b/rust/crates/harness-local/src/local/host_process.rs
 @@ -442,6 +442,9 @@
  impl EventLog {
      fn record(&mut self, line: &[u8]) -> Result<()> {

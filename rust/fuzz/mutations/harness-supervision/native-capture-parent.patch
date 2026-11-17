@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/checkout_tools/capture/progress.rs
-+++ b/rust/crates/harness/src/local/checkout_tools/capture/progress.rs
+--- a/rust/crates/harness-local/src/local/checkout_tools/capture/progress.rs
++++ b/rust/crates/harness-local/src/local/checkout_tools/capture/progress.rs
 @@ -166,16 +166,19 @@
                      .await;
              }

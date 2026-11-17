@@ -1,5 +1,5 @@
---- a/rust/crates/harness/src/local/host_files.rs
-+++ b/rust/crates/harness/src/local/host_files.rs
+--- a/rust/crates/harness-local/src/local/host_files.rs
++++ b/rust/crates/harness-local/src/local/host_files.rs
 @@ -951,10 +951,8 @@
          };
          if self.known.contains_key(&operation) {
