@@ -33,6 +33,22 @@ const READY_FRAME: u8 = b'\n';
 const FAILURE_FRAME: u8 = b'!';
 
 impl ServiceReadiness {
+    /// Waits on a transferred asynchronous readiness pipe without occupying a worker.
+    /// Uses the same readiness frames as [`Self::wait`].
+    pub async fn wait_from(
+        reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    ) -> io::Result<ServiceStartOutcome> {
+        use tokio::io::AsyncReadExt as _;
+        let mut frame = [0];
+        let read = reader.read(&mut frame).await;
+        if let Some(outcome) = readiness_header(read, frame[0])? {
+            return Ok(outcome);
+        }
+        let mut reason = Vec::new();
+        let result = reader.read_to_end(&mut reason).await.map(|_| ());
+        failed_readiness(reason, result)
+    }
+
     /// Blocks until the service signals that it answers requests, reports why
     /// it could not start, or closes its channel without either. Unrecognized
     /// readiness frames return `InvalidData` without waiting for channel close.
@@ -56,28 +72,41 @@ impl ServiceReadiness {
 
 fn receive(reader: &mut impl Read) -> io::Result<ServiceStartOutcome> {
     let mut frame = [0];
-    match reader.read(&mut frame) {
-        Ok(0) => Ok(ServiceStartOutcome::Exited),
-        Ok(_) if frame[0] == FAILURE_FRAME => {
-            let mut reason = Vec::new();
-            // The original failing service closes its channel on exit.
-            match crate::io_progress::read_to_end(reader, &mut reason) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
-                Err(error) => return Err(error),
-            }
-            let reason = String::from_utf8(reason)
-                .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
-            Ok(ServiceStartOutcome::Failed(reason))
-        }
-        Ok(1) if frame[0] == READY_FRAME => Ok(ServiceStartOutcome::Ready),
+    let read = reader.read(&mut frame);
+    if let Some(outcome) = readiness_header(read, frame[0])? {
+        return Ok(outcome);
+    }
+    let mut reason = Vec::new();
+    let result = crate::io_progress::read_to_end(reader, &mut reason);
+    failed_readiness(reason, result)
+}
+
+fn readiness_header(read: io::Result<usize>, frame: u8) -> io::Result<Option<ServiceStartOutcome>> {
+    match read {
+        Ok(0) => Ok(Some(ServiceStartOutcome::Exited)),
+        Ok(_) if frame == FAILURE_FRAME => Ok(None),
+        Ok(1) if frame == READY_FRAME => Ok(Some(ServiceStartOutcome::Ready)),
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "step=service-readiness-frame; recovery=inspect the service's original readiness output",
         )),
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(ServiceStartOutcome::Exited),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+            Ok(Some(ServiceStartOutcome::Exited))
+        }
         Err(error) => Err(error),
     }
+}
+
+fn failed_readiness(reason: Vec<u8>, result: io::Result<()>) -> io::Result<ServiceStartOutcome> {
+    match result {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
+        Err(error) => return Err(error),
+    }
+    Ok(ServiceStartOutcome::Failed(
+        String::from_utf8(reason)
+            .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned()),
+    ))
 }
 
 fn send(writer: &mut impl io::Write, frame: u8, body: &[u8]) -> io::Result<()> {
