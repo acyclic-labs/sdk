@@ -168,11 +168,28 @@ impl Pool {
     pub(super) fn close_idle(&mut self) {
         // The live-interest count and the close share one lock with every
         // cursor increment and retirement, so a new interest cannot race a
-        // close and lose its link.
-        let lifetime = Arc::clone(&self.lifetime);
-        let _lifetime = lifetime.lock().unwrap_or_else(|error| error.into_inner());
-        if self.active.load(Ordering::Acquire) == 0 {
-            self.close_links();
+        // close and lose its link. Take the state under the lock and drop it
+        // after releasing: dropping a link wakes its waiter, which may take
+        // the same lock.
+        let closed = {
+            let lifetime = Arc::clone(&self.lifetime);
+            let _lifetime = lifetime.lock().unwrap_or_else(|error| error.into_inner());
+            (self.active.load(Ordering::Acquire) == 0).then(|| {
+                (
+                    std::mem::take(&mut self.links),
+                    std::mem::take(&mut self.reads),
+                    std::mem::take(&mut self.dials),
+                    std::mem::take(&mut self.pending),
+                    std::mem::take(&mut self.routes),
+                    std::mem::take(&mut self.home),
+                )
+            })
+        };
+        if let Some(closed) = closed {
+            drop(closed);
+            if let Err(error) = self.admissions.bind_home("") {
+                self.fail(&error);
+            }
         } else {
             let idle = self
                 .dials
