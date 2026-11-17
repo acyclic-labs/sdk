@@ -149,43 +149,55 @@ fn waited(form: &str, id: &str, names: &[&str], timeout: Option<u64>) -> ToolCal
 
 /// The steps that spawn one child per state and wait for it in `form`.
 fn state_steps(form: &str, prefix: &str, include_mid: bool) -> Vec<Vec<ToolCall>> {
-    let names = ["ok", "bad", "run", "idle", "merge", "arch", "stop"];
     let mut steps = Vec::new();
-    // Every long-lived child starts in one step, so a batch spawn and the
-    // child-start path are both exercised before the first wait.
-    let mut spawns: Vec<ToolCall> = names
-        .iter()
-        .map(|name| spawn(&format!("{prefix}-spawn-{name}"), name, state_tag(prefix, name)))
-        .collect();
-    if include_mid {
-        spawns.push(spawn(&format!("{prefix}-spawn-mid"), "mid", mid_tag(prefix)));
-    }
-    steps.push(spawns);
-
     if form == "no_agents" {
-        // The no-agent form wakes on inbox input. A child settles in the
-        // wait's own step, so its settlement is the input that releases it.
+        // The no-agent form is one actor alarm. A child settles in the same
+        // step, so the state under test exists while the alarm is pending.
         steps.push(vec![
-            spawn(&format!("{prefix}-spawn-wake"), "wake", state_tag(prefix, "ok")),
+            spawn(&format!("{prefix}-spawn-ok"), "ok", state_tag(prefix, "ok")),
             call(
-                &format!("{prefix}-input"),
+                &format!("{prefix}-alarm"),
                 "wait",
-                json!({"input": true}),
+                json!({"timeout_ms": 1}),
             ),
         ]);
     } else {
-        // Settled and failed children.
-        steps.push(vec![waited(form, &format!("{prefix}-ok"), &["ok"], None)]);
-        steps.push(vec![waited(form, &format!("{prefix}-bad"), &["bad"], None)]);
-        steps.push(vec![waited(form, &format!("{prefix}-idle"), &["idle"], None)]);
-        // A running child: a settled sibling already meets the quorum, so the
-        // wait returns without a timer and reports the running phase.
-        steps.push(vec![call(
-            &format!("{prefix}-run"),
-            "wait",
-            json!({"agents": ["ok", "run"], "need": 1}),
-        )]);
-        // A child spawned in the wait's own step is still spawning.
+        let spawn_wait = |steps: &mut Vec<Vec<ToolCall>>, name: &str, plan: &'static str, wait: ToolCall| {
+            steps.push(vec![
+                spawn(&format!("{prefix}-spawn-{name}"), name, plan),
+                wait,
+            ]);
+        };
+        // One child at a time: each spawn commits before its wait prepares,
+        // and no earlier child has to run concurrently with a later one.
+        spawn_wait(
+            &mut steps,
+            "ok",
+            state_tag(prefix, "ok"),
+            waited(form, &format!("{prefix}-ok"), &["ok"], None),
+        );
+        spawn_wait(
+            &mut steps,
+            "bad",
+            state_tag(prefix, "bad"),
+            waited(form, &format!("{prefix}-bad"), &["bad"], None),
+        );
+        spawn_wait(
+            &mut steps,
+            "idle",
+            state_tag(prefix, "idle"),
+            waited(form, &format!("{prefix}-idle"), &["idle"], None),
+        );
+        spawn_wait(
+            &mut steps,
+            "run",
+            state_tag(prefix, "run"),
+            call(
+                &format!("{prefix}-run"),
+                "wait",
+                json!({"agents": ["ok", "run"], "need": 1}),
+            ),
+        );
         steps.push(vec![
             spawn(&format!("{prefix}-spawn-start"), "start", state_tag(prefix, "start")),
             call(
@@ -194,14 +206,24 @@ fn state_steps(form: &str, prefix: &str, include_mid: bool) -> Vec<Vec<ToolCall>
                 json!({"agents": ["ok", "start"], "need": 1}),
             ),
         ]);
-        // A settled child's fork is handed back by the host, so the wait
-        // reports the merged state without a separate merge command.
-        steps.push(vec![waited(form, &format!("{prefix}-merged"), &["merge"], None)]);
-        // A settled child in a terminal outcome names the archived and
-        // stopped states without a host control that could outlive the wait.
-        steps.push(vec![waited(form, &format!("{prefix}-archived"), &["arch"], None)]);
-        steps.push(vec![waited(form, &format!("{prefix}-stopped"), &["stop"], None)]);
-        // A quorum over a settled and a failed child.
+        spawn_wait(
+            &mut steps,
+            "merge",
+            state_tag(prefix, "merge"),
+            waited(form, &format!("{prefix}-merged"), &["merge"], None),
+        );
+        spawn_wait(
+            &mut steps,
+            "arch",
+            state_tag(prefix, "arch"),
+            waited(form, &format!("{prefix}-archived"), &["arch"], None),
+        );
+        spawn_wait(
+            &mut steps,
+            "stop",
+            state_tag(prefix, "stop"),
+            waited(form, &format!("{prefix}-stopped"), &["stop"], None),
+        );
         steps.push(vec![call(
             &format!("{prefix}-quorum"),
             "wait",
@@ -209,12 +231,14 @@ fn state_steps(form: &str, prefix: &str, include_mid: bool) -> Vec<Vec<ToolCall>
         )]);
     }
     if include_mid {
-        // Join the middle agent so its own grandchild waits are observed.
-        steps.push(vec![call(
-            &format!("{prefix}-join-mid"),
-            "wait",
-            json!({"agents": ["mid"]}),
-        )]);
+        steps.push(vec![
+            spawn(&format!("{prefix}-spawn-mid"), "mid", mid_tag(prefix)),
+            call(
+                &format!("{prefix}-join-mid"),
+                "wait",
+                json!({"agents": ["mid"]}),
+            ),
+        ]);
     }
     steps
 }
@@ -434,8 +458,8 @@ fn checked(form: &str, requests: &[ModelRequest]) -> std::result::Result<(), Str
     }
     // The no-agent form reports no child, only its reason.
     if form == "no_agents" {
-        let value = result(&results, "c3-root-input")?;
-        if reason(value) != "input" {
+        let value = result(&results, "c3-root-alarm")?;
+        if reason(value) != "deadline" {
             return Err(format!("no-agent wait returned {}: {value}", reason(value)));
         }
         if !value
