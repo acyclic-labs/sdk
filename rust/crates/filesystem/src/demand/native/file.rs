@@ -3,7 +3,6 @@ struct NativeDemandFile {
     provider: NativeDemandSource,
     source: SourceReference,
     relative: DemandPath,
-    expected: SourceVersion,
     physical: SourceVersion,
     logical_bytes: u64,
     #[cfg(windows)]
@@ -71,7 +70,6 @@ impl NativeDemandFile {
             source,
             relative,
             _ownership: Arc::new(ownership),
-            expected,
             physical,
             logical_bytes: opened.len(),
             #[cfg(windows)]
