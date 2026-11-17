@@ -403,6 +403,7 @@ impl NativeCredentialSource {
                                 }
                                 // Observe the original held descriptor once at cold
                                 // publication admission, never on a warm check.
+                                let key = path_key(&state.path);
                                 let original = watch.original.clone();
                                 let (file, identity) = spawn_blocking(move || {
                                     let mut work = original;
@@ -411,7 +412,7 @@ impl NativeCredentialSource {
                                         crate::native_host::stat_file(file.as_file(), &mut work)
                                             .map_err(error)?;
                                     NativeHostWork::check(&work).map_err(error)?;
-                                    Ok::<_, CredentialError>((file, file_identity(&metadata)))
+                                    Ok::<_, CredentialError>((file, file_identity(&key, &metadata)))
                                 })
                                 .await
                                 .map_err(|_| error(CredentialSourceError::Unavailable))??;
