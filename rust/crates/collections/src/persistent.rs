@@ -283,7 +283,7 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
         match &self.before {
             Some(prior) if prior.key <= before => Ok(self.clone()),
             _ => {
-                let allocation = work.claim(std::mem::size_of::<Cut<K, A>>() as u64)?;
+                let allocation = work.claim(arc_allocation_bytes::<Cut<K, A>>() as u64)?;
                 Ok(Self {
                     root: self.root.clone(),
                     before: Some(Arc::new(Cut {
