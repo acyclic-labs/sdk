@@ -4,7 +4,7 @@ import {copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {checkFileCopies, checkManifestFields, featureClosure, readSources, toml, trackedFiles} from '../policy-core.mjs';
+import {checkFileCopies, checkManifestFields, checkTypeScriptReferences, featureClosure, readSources, toml, trackedFiles} from '../policy-core.mjs';
 import {fuzz as licenseGraph} from '../check-js-licenses.fuzz.mjs';
 
 test('shared license graph conformance: aliases, cycles and canonical physical reads', () =>
@@ -94,4 +94,19 @@ test('manifest policy checks declared identities and exact packaged source bytes
   checkFileCopies(root, [['canonical.bin', 'packaged.bin']]);
   writeFileSync(join(root, 'packaged.bin'), Uint8Array.of(0, 0x81));
   assert.throws(() => checkFileCopies(root, [['canonical.bin', 'packaged.bin']]), /packaged source drift/);
+});
+test('the root TypeScript build covers every configured package exactly once', t => {
+  const root = mkdtempSync(join(tmpdir(), 'policy-ts-references-'));
+  t.after(() => rmSync(root, {recursive: true, force: true}));
+  for (const name of ['first', 'second', 'without-config']) mkdirSync(join(root, 'typescript/packages', name), {recursive: true});
+  for (const name of ['first', 'second']) writeFileSync(join(root, 'typescript/packages', name, 'tsconfig.json'), '{}');
+  const check = names => {
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({references: names.map(name => ({path: `./typescript/packages/${name}`}))}));
+    return () => checkTypeScriptReferences(root);
+  };
+  check(['second', 'first'])();
+  checkTypeScriptReferences(root, ['first', 'second']);
+  assert.throws(() => checkTypeScriptReferences(root, ['without-config']), /reference every package/);
+  for (const names of [[], ['first'], ['first', 'second', 'second'], ['first', 'second', 'without-config'], ['first', 'second', 'missing']])
+    assert.throws(check(names), /reference every package/);
 });

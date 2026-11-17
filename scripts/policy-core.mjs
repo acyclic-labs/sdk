@@ -109,6 +109,16 @@ export function featureClosure(features = {}, roots) {
   return reached;
 }
 
+// Every package with a compiler configuration belongs to the root build.
+export function checkTypeScriptReferences(root, required = []) {
+  const packages = readdirSync(join(root, 'typescript/packages'))
+    .filter(name => existsSync(join(root, 'typescript/packages', name, 'tsconfig.json')))
+    .map(name => `./typescript/packages/${name}`).sort();
+  const referenced = parseJson(readUtf8(join(root, 'tsconfig.json'))).references.map(({path}) => path).sort();
+  if (required.some(name => !packages.includes(`./typescript/packages/${name}`)) || JSON.stringify(packages) !== JSON.stringify(referenced))
+    throw new Error(`STEP typescript failed: tsconfig.json references ${JSON.stringify(referenced)}, packages are ${JSON.stringify(packages)}; recovery: reference every package in tsconfig.json`);
+}
+
 // One cfg grammar, with unknown atoms retained for partial platform knowledge.
 export function evaluateCfg(gate, atom, positiveFeatures = false) {
   const tokens = gate.match(/"[^"\\]*(?:\\.[^"\\]*)*"|[A-Za-z_][A-Za-z_0-9]*|[(),=]/g) ?? [];
