@@ -1270,6 +1270,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         if self.store.scheduling_shard(&actor) == shard && self.includes(&actor) {
                             self.due(&actor, true)?;
                             self.register_alarm(&actor).await?;
+                            self.wake(&actor);
                         }
                     }
                     match next {
