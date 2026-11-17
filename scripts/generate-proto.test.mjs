@@ -3,80 +3,21 @@ import { spawnSync } from "node:child_process";
 import { cpSync, symlinkSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { runInNewContext } from "node:vm";
 import test from "node:test";
 import fc from "fast-check";
-import { compatibilityArtifacts, recordGeneration, writeChanged } from "./generated-bindings.mjs";
-import { packagedTypeScriptBindings, retiredTypeScriptBindingPackages } from "./protobuf-bindings.mjs";
+import { packagedTypeScriptBindings, retiredTypeScriptBindingPackages, selectTypeScriptBindings } from "./protobuf-bindings.mjs";
 
-const source = readFileSync(new URL("./generate-proto.mjs", import.meta.url), "utf8");
-const implementation = source.slice(source.indexOf("export function"), source.lastIndexOf("\nif (import.meta.main)"))
-  .replace("export function", "function");
-const names = [...new Set([...packagedTypeScriptBindings.flatMap(([, names]) => names), ...retiredTypeScriptBindingPackages]), "workers"];
-const sources = new Map(packagedTypeScriptBindings.map(([stem, , sourceRoot]) => [stem,
-  sourceRoot ? `${sourceRoot}/proto/${stem.replace(/_pb$/, ".proto")}`
-    : stem === "protocol/v1/protocol_pb" ? "rust/crates/harness-core/proto/protocol/v1/protocol.proto"
-    : stem === "stream/v1/session_pb" ? "rust/crates/stream/proto/stream/v1/session.proto"
-    : compatibilityArtifacts[stem.split("/")[0]].schemaDigest]));
+const names = [...new Set([...packagedTypeScriptBindings.flatMap(([, names]) => names), ...retiredTypeScriptBindingPackages, "workers"])];
 
-function exercise(selected, seed, code = implementation) {
-  const root = mkdtempSync(join(tmpdir(), "sdk-generate-proto-"));
-  const output = name => join(root, "typescript/packages", name, "generated/proto");
-  const chosen = packagedTypeScriptBindings.filter(([, names]) => names.some(name => selected.includes(name)));
-  const payload = stem => Buffer.from(`${seed}:${stem}`);
-  const put = (path, content) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, content); };
-  let calls = 0;
-  let writes = 0;
-  const context = {
-    root, compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, dirname, join, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, recordGeneration,
-    process: { platform: process.platform },
-    writeFileSync: (path, bytes) => { writes++; writeFileSync(path, bytes); },
-    spawnSync: (_command, args) => {
-      calls++;
-      assert.equal(args[0], "generate");
-      assert.equal(args[1], "--output");
-      assert.deepEqual(Array.from(args.slice(3)), chosen.flatMap(([stem]) => ["--path", sources.get(stem)]));
-      for (const [stem] of chosen) for (const extension of [".js", ".d.ts"]) {
-        put(join(args[2], "generated/typescript", stem + extension), payload(stem));
-      }
-      return { status: 0 };
-    },
-  };
-  context.writeChanged = runInNewContext(`(${writeChanged.toString()})`, context);
-  const generate = runInNewContext(`${code}\ngenerateProto`, context);
-  try {
-    for (const name of names) put(join(output(name), "obsolete.js"), "old");
-    const handwritten = join(root, "typescript/packages/filesystem/package.json");
-    put(handwritten, "handwritten metadata");
-    generate(new Set(selected));
-    assert.equal(calls, chosen.length > 0 ? 1 : 0);
-    let expectedWrites = 0;
-    for (const name of names) {
-      const expected = chosen.filter(([, names]) => names.includes(name) && selected.includes(name));
-      assert.equal(existsSync(join(output(name), "obsolete.js")), !selected.includes(name), `obsolete output: ${name}`);
-      for (const [stem] of expected) for (const extension of [".js", ".d.ts"]) {
-        assert.deepEqual(readFileSync(join(output(name), stem + extension)), payload(stem));
-        expectedWrites++;
-      }
-    }
-    assert.equal(writes, expectedWrites);
-    writes = 0;
-    generate(new Set(selected));
-    assert.equal(writes, 0, "unchanged projections must retain their files");
-    assert.equal(readFileSync(handwritten, "utf8"), "handwritten metadata");
-    assert.ok(readdirSync(root).every(name => !name.startsWith("target-proto-")));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-}
-
-test("generation emits exactly the selected package closure and removes only its stale projections", () => {
-  fc.assert(fc.property(fc.subarray(names), fc.integer(), (selected, seed) => exercise(selected, seed)), { numRuns: 64 });
-  assert.throws(() => exercise(["objects"], 0, implementation.replace("rmSync(path);", "void path;")), /obsolete output/);
-  // The former early return stranded a family's final retired binding.
-  exercise(["harness"], 0);
-  assert.throws(() => exercise(["harness"], 0, implementation.replace(
-    "if (bindings.length === 0) { prune(); return; }", "if (bindings.length === 0) return;")), /obsolete output: harness/);
+test("the shared binding plan projects exactly the selected packages", () => {
+  fc.assert(fc.property(fc.subarray(names), selected => {
+    const planned = selectTypeScriptBindings(new Set(selected)).flatMap(([stem, targets, sourceRoot]) =>
+      targets.map(target => [target, stem, sourceRoot]));
+    const expected = selected.flatMap(target => packagedTypeScriptBindings
+      .filter(([, targets]) => targets.includes(target)).map(([stem, , sourceRoot]) => [target, stem, sourceRoot]));
+    const ordered = rows => rows.map(row => JSON.stringify(row)).sort();
+    assert.deepEqual(ordered(planned), ordered(expected));
+  }), { numRuns: 64 });
 });
 
 test("real TypeScript generation needs no network or populated Buf cache", { skip: process.platform !== "linux" }, () => {
@@ -117,11 +58,18 @@ os.execv(sys.argv[1], sys.argv[1:])
       cpSync(path, join(root, path), { recursive: true });
     }
     symlinkSync(resolve("node_modules"), join(root, "node_modules"), "dir");
-    const generate = label => {
+    const output = name => join(root, "typescript/packages", name, "generated/proto");
+    const put = (path, bytes) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
+    for (const name of names) put(join(output(name), "obsolete.js"), "obsolete projection");
+    const handwritten = join(root, "typescript/packages/filesystem/package.json");
+    put(handwritten, "handwritten metadata");
+    const generate = (label, packages = undefined) => {
       const cache = join(root, label);
       mkdirSync(cache);
       assert.deepEqual(readdirSync(cache), []);
-      return spawnSync("python3", ["-c", isolated, process.execPath, "scripts/generate-proto.mjs"], {
+      const args = packages === undefined ? ["scripts/generate-proto.mjs"] : ["--input-type=module", "-e",
+        `import { generateProto } from './scripts/generate-proto.mjs'; generateProto(new Set(${JSON.stringify(packages)}));`];
+      return spawnSync("python3", ["-c", isolated, process.execPath, ...args], {
         cwd: root, encoding: "utf8",
         env: { ...process.env, BUF_CACHE_DIR: join(cache, "buf"), XDG_CACHE_HOME: cache, HOME: cache,
           BUN_INSTALL_CACHE_DIR: join(cache, "bun") },
@@ -130,11 +78,29 @@ os.execv(sys.argv[1], sys.argv[1:])
     const result = generate("empty-cache");
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stdout + result.stderr);
+    const defaults = new Set([...packagedTypeScriptBindings.flatMap(([, names]) => names), ...retiredTypeScriptBindingPackages]);
+    for (const name of names) assert.equal(existsSync(join(output(name), "obsolete.js")), !defaults.has(name));
     for (const [stem, names] of packagedTypeScriptBindings) for (const name of names) {
       for (const extension of [".js", ".d.ts"]) {
         assert.ok(readFileSync(join(root, "typescript/packages", name, "generated/proto", stem + extension)).length > 0);
       }
     }
+    const untouched = join(output("auth"), "auth/v1/auth_pb.js");
+    put(untouched, "unselected projection");
+    put(join(output("stream"), "obsolete.js"), "obsolete projection");
+    const scoped = generate("scoped-cache", ["stream"]);
+    assert.ifError(scoped.error);
+    assert.equal(scoped.status, 0, scoped.stdout + scoped.stderr);
+    assert.equal(readFileSync(untouched, "utf8"), "unselected projection");
+    assert.equal(existsSync(join(output("stream"), "obsolete.js")), false);
+    // An empty binding plan still owns and prunes its retired family's output.
+    put(join(output("harness"), "obsolete.js"), "retired projection");
+    const retired = generate("retired-cache", ["harness"]);
+    assert.ifError(retired.error);
+    assert.equal(retired.status, 0, retired.stdout + retired.stderr);
+    assert.equal(existsSync(join(output("harness"), "obsolete.js")), false);
+    assert.equal(readFileSync(handwritten, "utf8"), "handwritten metadata");
+    assert.ok(readdirSync(root).every(name => !name.startsWith("target-proto-")));
     // Restoring the unused registry dependency must fail under the same filter.
     writeFileSync(join(root, "buf.yaml"), configuration + "\ndeps:\n  - buf.build/googleapis/googleapis\n");
     writeFileSync(join(root, "buf.lock"), `version: v2

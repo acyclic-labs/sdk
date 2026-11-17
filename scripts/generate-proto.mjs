@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { projectGenerated, compatibilityArtifacts, recordGeneration, writeChanged } from "./generated-bindings.mjs";
-import { packagedTypeScriptBindings, retiredTypeScriptBindingPackages } from "./protobuf-bindings.mjs";
+import { packagedTypeScriptBindings, retiredTypeScriptBindingPackages, selectTypeScriptBindings } from "./protobuf-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -29,12 +29,7 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
       }
     }
   };
-  /** @type {[string, string[], string?][]} */
-  const bindings = [];
-  for (const [stem, names, sourceRoot] of packagedTypeScriptBindings) {
-    const selected = names.filter(name => packages.has(name));
-    if (selected.length > 0) bindings.push([stem, selected, sourceRoot]);
-  }
+  const bindings = selectTypeScriptBindings(packages);
   if (bindings.length === 0) { prune(); return; }
   const paths = bindings.map(([stem, , sourceRoot]) => {
     const family = stem.split("/")[0];
