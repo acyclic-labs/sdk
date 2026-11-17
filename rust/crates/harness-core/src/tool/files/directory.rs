@@ -1,6 +1,10 @@
 //! Directory selections preserve provider continuations on the authenticated reader.
 use super::*;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "directory_tests.rs"]
+mod tests;
+
 /// A name's kind at the selected immutable generation.
 #[derive(
     Clone,
@@ -53,6 +57,8 @@ pub struct DirectoryEntry {
     pub kind: DirectoryEntryKind,
     /// Opaque namespace version for reading this entry.
     pub version: String,
+    /// Opaque continuation immediately after this entry in the selected directory.
+    pub cursor: String,
 }
 
 /// A bounded directory page, without invented regular-file metadata.
@@ -132,8 +138,9 @@ struct Entry<'a> {
     path: String,
     kind: DirectoryEntryKind,
     version: String,
+    cursor: String,
     #[serde(skip)]
-    _holds: [acyclic_fs::NativeCustody; 2],
+    _holds: [acyclic_fs::NativeCustody; 3],
 }
 
 pub(super) async fn read(
@@ -157,6 +164,12 @@ pub(super) async fn read(
             ));
         }
     }
+    // Native enumeration is sorted only inside each bounded page. Replaying an
+    // entry position must retain that page's partition, even with new row credit.
+    let maximum_entries = selected
+        .as_ref()
+        .filter(|(cursor, _)| cursor.name.is_some())
+        .map_or(limit, |(cursor, _)| cursor.maximum_entries);
     let (page, _page_hold) = context
         .list_tool_directory(
             crate::conversation::DirectoryRead {
@@ -164,24 +177,58 @@ pub(super) async fn read(
                 granted_prefix: &path,
                 path: &path,
                 generation: selected.as_ref().map(|(cursor, _)| &cursor.generation),
-                after: selected.as_ref().map(|(cursor, _)| cursor.after.as_slice()),
-                maximum_entries: limit,
+                after: selected
+                    .as_ref()
+                    .and_then(|(cursor, _)| cursor.after.as_deref()),
+                maximum_entries,
             },
             io,
         )
         .await?;
+    let page_start = selected
+        .as_ref()
+        .and_then(|(cursor, _)| cursor.after.as_deref());
+    let delivered = selected
+        .as_ref()
+        .and_then(|(cursor, _)| cursor.name.as_deref());
+    let encode_cursor = |after: Option<&[u8]>, name: Option<&str>| {
+        version::encode_token(
+            &DirectoryCursorView {
+                selection: crate::conversation::PathSelectionView {
+                    volume,
+                    path: &path,
+                    generation: &page.generation,
+                },
+                after,
+                name,
+                maximum_entries,
+            },
+            DIRECTORY,
+            work,
+        )
+    };
     let mut vector_hold = edit::allocation(work, std::mem::size_of::<Page<'_>>())?;
     let mut entries = Vec::new();
     edit::reserve_vec(&mut vector_hold, &mut entries, page.entries.len())?;
-    for entry in &page.entries {
+    let mut remaining = page
+        .entries
+        .iter()
+        .filter(|entry| delivered.is_none_or(|name| entry.name.as_bytes() > name.as_bytes()));
+    let mut last_delivered = delivered;
+    for entry in remaining.by_ref().take(limit as usize) {
         let (relative, _relative_hold) = child_path(&path, &entry.name, work)?;
         let (version, version_hold) =
             encode_path_version(volume, &relative, &page.generation, work)?;
         let (public, public_hold) = child_path(public_parent(&input.path), &entry.name, work)?;
+        // Re-read at most one page at the original cut, then skip delivered names.
+        // Provider cookies remain opaque, and current disclosure is checked again.
+        let (cursor, cursor_hold) = encode_cursor(page_start, Some(&entry.name))?;
+        last_delivered = Some(&entry.name);
         entries.push(Entry {
             name: &entry.name,
             path: public,
             version,
+            cursor,
             kind: match entry.kind {
                 crate::conversation::PrivateDirectoryEntryKind::File => DirectoryEntryKind::File,
                 crate::conversation::PrivateDirectoryEntryKind::Directory => {
@@ -210,26 +257,20 @@ pub(super) async fn read(
                     DirectoryEntryKind::Unsupported
                 }
             },
-            _holds: [public_hold, version_hold],
+            _holds: [public_hold, version_hold, cursor_hold],
         });
     }
-    let (next, next_hold) = match &page.next {
-        Some(after) => {
-            let (text, hold) = version::encode_token(
-                &DirectoryCursorView {
-                    selection: crate::conversation::PathSelectionView {
-                        volume,
-                        path: &path,
-                        generation: &page.generation,
-                    },
-                    after,
-                },
-                DIRECTORY,
-                work,
-            )?;
-            (Some(text), hold)
+    let (next, next_hold) = if remaining.next().is_some() {
+        let (text, hold) = encode_cursor(page_start, last_delivered)?;
+        (Some(text), hold)
+    } else {
+        match &page.next {
+            Some(after) => {
+                let (text, hold) = encode_cursor(Some(after), None)?;
+                (Some(text), hold)
+            }
+            None => (None, None),
         }
-        None => (None, None),
     };
     let encoded = value(
         &Page {
@@ -283,12 +324,19 @@ pub(super) fn project(
                 "directory result belongs to another path",
             ));
         }
+        let (cursor, _hold) = decode_cursor(&entry.cursor, work)?;
+        if cursor.name.as_deref() != Some(entry.name.as_str()) {
+            return Err(executor::rejection(
+                work,
+                "directory entry cursor selects another name",
+            ));
+        }
         previous = Some(&entry.name);
     }
     schema::project_json(&result, work)
 }
 
-const DIRECTORY: &str = "directory-v1:";
+const DIRECTORY: &str = "directory-v2:";
 
 #[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -296,14 +344,18 @@ struct DirectoryCursor {
     volume: crate::conversation::VolumeRef,
     path: String,
     generation: crate::resources::GenerationRef,
-    after: Vec<u8>,
+    after: Option<Vec<u8>>,
+    name: Option<String>,
+    maximum_entries: u32,
 }
 
 #[derive(Serialize)]
 struct DirectoryCursorView<'a> {
     #[serde(flatten)]
     selection: crate::conversation::PathSelectionView<'a>,
-    after: &'a [u8],
+    after: Option<&'a [u8]>,
+    name: Option<&'a str>,
+    maximum_entries: u32,
 }
 
 impl crate::filesystem::PreparationRecord for DirectoryCursor {
@@ -334,7 +386,8 @@ fn decode_cursor(
             cursor.volume.logical_owned_bytes()?,
             cursor.path.capacity() as u64,
             cursor.generation.logical_owned_bytes()?,
-            cursor.after.capacity() as u64,
+            cursor.after.as_ref().map_or(0, Vec::capacity) as u64,
+            cursor.name.as_ref().map_or(0, String::capacity) as u64,
         ])?;
         reservation.substitute(retained)?;
         reservation.into_retained()?;
@@ -353,7 +406,13 @@ impl DirectoryCursor {
         if !self.path.is_empty() {
             crate::conversation::validate_content_path(&self.path, work)?;
         }
-        if self.after.is_empty()
+        if let Some(name) = &self.name {
+            crate::conversation::validate_content_path(name, work)?;
+        }
+        if (self.after.is_none() && self.name.is_none())
+            || self.maximum_entries == 0
+            || self.after.as_ref().is_some_and(Vec::is_empty)
+            || self.name.as_ref().is_some_and(|name| name.contains('/'))
             || self.generation.as_resource().provider() != self.volume.provider()
         {
             return Err(crate::store::guarded_boundary(

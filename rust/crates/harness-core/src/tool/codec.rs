@@ -228,6 +228,7 @@ pub(crate) const TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES: u64 = {
         "work",
         "expected_generation",
         "after",
+        "cursor",
         "maximum_entries",
         "request_digest",
         "initial",
