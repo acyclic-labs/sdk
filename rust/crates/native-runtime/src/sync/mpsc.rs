@@ -34,11 +34,10 @@ pub(crate) fn sync_channel<T>(capacity: usize) -> (SyncSender<T>, Receiver<T>) {
 
 impl<T> SyncSender<T> {
     pub(crate) fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        let mut state = self
-            .0
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = match self.0.state.lock() {
+            Ok(state) => state,
+            Err(_) => return Err(TrySendError::Disconnected(value)),
+        };
         if !state.receiver {
             return Err(TrySendError::Disconnected(value));
         }
@@ -52,11 +51,7 @@ impl<T> SyncSender<T> {
 }
 impl<T> Receiver<T> {
     pub(crate) fn recv(&self) -> Result<T, RecvError> {
-        let mut state = self
-            .0
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.0.state.lock().map_err(|_| RecvError)?;
         loop {
             if let Some(value) = state.items.pop_front() {
                 return Ok(value);
@@ -64,16 +59,13 @@ impl<T> Receiver<T> {
             if !state.sender {
                 return Err(RecvError);
             }
-            state = self
-                .0
-                .ready
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = self.0.ready.wait(state).map_err(|_| RecvError)?;
         }
     }
 }
 impl<T> Drop for SyncSender<T> {
     fn drop(&mut self) {
+        // Drop cannot return a channel error, but must still wake a receiver.
         self.0
             .state
             .lock()
