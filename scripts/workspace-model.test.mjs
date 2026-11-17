@@ -68,8 +68,9 @@ test('unselected platforms and disabled optional dependencies do not require reg
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const write = (file, text) => {fs.mkdirSync(path.dirname(path.join(root, file)), {recursive: true}); fs.writeFileSync(path.join(root, file), text);};
   write('Cargo.toml', '[workspace]\nmembers=["app"]\n');
-  write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[target.\'cfg(target_arch = "wasm32")\'.dependencies]\nwasm="1"\n');
-  write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["wasm"]\n[[package]]\nname="wasm"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n[[package]]\nname="unused"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
+  write('app/Cargo.toml', '[package]\nname="app"\nversion="0.1.0"\n[dependencies]\nhelper={path="../helper",default-features=false}\n[target.\'cfg(target_arch = "wasm32")\'.dependencies]\nwasm="1"\n');
+  write('helper/Cargo.toml', '[package]\nname="helper"\nversion="0.1.0"\n[dependencies]\nunused={version="1",optional=true}\n[features]\ndefault=["dep:unused"]\n');
+  write('Cargo.lock', 'version=4\n[[package]]\nname="app"\nversion="0.1.0"\ndependencies=["helper", "wasm"]\n[[package]]\nname="helper"\nversion="0.1.0"\ndependencies=["unused"]\n[[package]]\nname="wasm"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n[[package]]\nname="unused"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n');
   write('cargo-bazel-lock.json', JSON.stringify({conditions: {}, crates: {}}));
   assert.doesNotThrow(() => assertRegistryPinsCurrent(root));
 });

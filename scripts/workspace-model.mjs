@@ -175,22 +175,45 @@ export function registryInputs(root) {
     ...p, features: new Set(), defaultFeatures: false,
   }));
   const inputs = new Set();
-  for (const p of local) {
-    const locked = (lock.package ?? []).find(x => x.name === p.name && x.version === p.version && !x.source);
-    if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
-    for (const d of p.dependencies.filter(d => !d.resolved_path && (!d.optional || Object.values(p.features).flat().some(f => f === `dep:${d.rename ?? d.name}` || f.startsWith(`${d.rename ?? d.name}/`))) &&
-      (!d.target || ['x86_64-unknown-linux-gnu', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc'].some(triple => targetMatches(d.target, triple))))) {
-      const matches = candidates.filter(x => x.name === d.name && versionMatches(x.version, d.req) &&
-        (locked.dependencies ?? []).some(key => key === x.name || key === `${x.name} ${x.version}` || key.startsWith(`${x.name} ${x.version} (`)));
-      if (matches.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
-      const input = matches[0], alias = d.rename ?? d.name;
-      inputs.add(input);
-      for (const feature of d.features) input.features.add(feature);
-      for (const feature of Object.values(p.features).flat()) {
-        const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
-        if (match?.[1] === alias) input.features.add(match[2]);
+  for (const triple of ['x86_64-unknown-linux-gnu', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc']) {
+    const enabled = new Map(local.map(p => [p.id, new Set(p.workspace_member ? Object.keys(p.features) : [])]));
+    const reachable = new Set(local.filter(p => p.workspace_member).map(p => p.id));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const add = (set, value) => { if (!set.has(value)) {set.add(value); changed = true;} };
+      for (const p of local.filter(p => reachable.has(p.id))) {
+        const features = enabled.get(p.id);
+        for (const feature of features) for (const next of p.features[feature] ?? []) add(features, next);
+        const locked = (lock.package ?? []).find(x => x.name === p.name && x.version === p.version && !x.source);
+        if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
+        for (const d of p.dependencies) {
+          const alias = d.rename ?? d.name;
+          if ((d.kind === 'dev' && !p.workspace_member) || !targetMatches(d.target, triple) ||
+              (d.optional && !features.has(`dep:${alias}`) && ![...features].some(f => f.startsWith(`${alias}/`)))) continue;
+          const requested = [...d.features];
+          for (const feature of features) {
+            const match = /^([^/?]+)\??\/(.+)$/.exec(feature);
+            if (match?.[1] === alias) requested.push(match[2]);
+          }
+          if (d.resolved_path) {
+            const dep = local.find(x => path.dirname(x.manifest_path) === d.resolved_path);
+            if (!dep) throw Error(`${p.name}: missing path dependency ${d.name}`);
+            add(reachable, dep.id);
+            const target = enabled.get(dep.id);
+            for (const feature of requested) add(target, feature);
+            if (d.uses_default_features && Object.hasOwn(dep.features, 'default')) add(target, 'default');
+          } else {
+            const matches = candidates.filter(x => x.name === d.name && versionMatches(x.version, d.req) &&
+              (locked.dependencies ?? []).some(key => key === x.name || key === `${x.name} ${x.version}` || key.startsWith(`${x.name} ${x.version} (`)));
+            if (matches.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
+            const input = matches[0];
+            inputs.add(input);
+            for (const feature of requested) input.features.add(feature);
+            input.defaultFeatures ||= d.uses_default_features;
+          }
+        }
       }
-      input.defaultFeatures ||= d.uses_default_features;
     }
   }
   return {inputs: [...inputs], universe};
