@@ -90,20 +90,6 @@ pub fn encode_actor_reference(
         .encode())
 }
 
-/// Resolve only the absent legacy namespace field, preserving the old ID.
-#[wasm_bindgen(js_name = actorReferenceFromLegacyFields)]
-pub fn actor_reference_from_legacy_fields(
-    account: &[u8],
-    namespace: Option<String>,
-    id: &str,
-) -> Result<Vec<u8>, JsValue> {
-    let reference = match namespace {
-        Some(namespace) => ActorReference::from_legacy_fields(account, Some(&namespace), id),
-        None => ActorReference::from_legacy_fields(account, None, id),
-    };
-    Ok(reference.map_err(identity_error)?.encode())
-}
-
 /// Recover an exact actor-reference field after validating the entire encoding.
 #[wasm_bindgen(js_name = actorReferenceField)]
 pub fn actor_reference_field(encoded: &[u8], field: u32) -> Result<Vec<u8>, JsValue> {

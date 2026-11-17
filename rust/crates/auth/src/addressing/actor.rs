@@ -82,18 +82,6 @@ impl ActorReference {
             id,
         })
     }
-    /// Wrap existing fields with an explicitly absent or present namespace.
-    pub fn from_legacy_fields(
-        account: &[u8],
-        namespace: Option<&str>,
-        id: &str,
-    ) -> Result<Self, IdentityError> {
-        Self::new(
-            account,
-            namespace.unwrap_or(DEFAULT_ACTOR_NAMESPACE).as_bytes(),
-            id.as_bytes(),
-        )
-    }
     /// Account bytes, unchanged.
     pub const fn account(&self) -> &AccountId {
         &self.account
