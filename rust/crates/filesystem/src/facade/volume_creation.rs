@@ -547,11 +547,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 let requested = match groups.by_file.value.get(ordinal).copied().flatten() {
                     Some(group) => {
-                        let (_, range) = groups
-                            .groups
-                            .value
-                            .get(group)
-                            .ok_or(FsError::InvalidDiff)?;
+                        let (_, range) =
+                            groups.groups.value.get(group).ok_or(FsError::InvalidDiff)?;
                         groups
                             .ordered
                             .value
@@ -604,10 +601,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     let has_more = listing.value.has_more;
                     let next = match listing.value.entries.last() {
                         Some(entry) => {
-                            let (name, allocation) = crate::kernel::decode_owned(
-                                accounting,
-                                |observe| entry.name.try_clone(&mut |step| observe(step)),
-                            )?;
+                            let (name, allocation) =
+                                crate::kernel::decode_owned(accounting, |observe| {
+                                    entry.name.try_clone(&mut |step| observe(step))
+                                })?;
                             let bytes = crate::foundation::usize_to_u64(name.retained_bytes());
                             Some(crate::kernel::Owned::new(name, allocation, bytes))
                         }
@@ -633,9 +630,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     return Ok(false);
                 }
                 for key in requested {
-                    let attribute = attributes
-                        .get(key.ordinal)
-                        .ok_or(FsError::InvalidDiff)?;
+                    let attribute = attributes.get(key.ordinal).ok_or(FsError::InvalidDiff)?;
                     let actual = checkout
                         .read_named_attribute_with_accounting(
                             &path,
@@ -645,8 +640,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             cancellation,
                         )
                         .await?;
-                    if actual.map(|chunk| chunk.bytes).as_deref()
-                        != Some(attribute.value.as_ref())
+                    if actual.map(|chunk| chunk.bytes).as_deref() != Some(attribute.value.as_ref())
                     {
                         return Ok(false);
                     }
@@ -716,20 +710,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 )?;
                 let mut metadata = FileMetadata::default();
                 if let Some(group) = groups.by_file.value.get(ordinal).copied().flatten() {
-                    let (_, range) = groups
-                        .groups
-                        .value
-                        .get(group)
-                        .ok_or(FsError::InvalidDiff)?;
+                    let (_, range) = groups.groups.value.get(group).ok_or(FsError::InvalidDiff)?;
                     let entries = groups
                         .ordered
                         .value
                         .get(range.clone())
                         .ok_or(FsError::InvalidDiff)?;
                     for key in entries {
-                        let attribute = attributes
-                            .get(key.ordinal)
-                            .ok_or(FsError::InvalidDiff)?;
+                        let attribute = attributes.get(key.ordinal).ok_or(FsError::InvalidDiff)?;
                         metadata = super::attributes::change_attribute(
                             &volume,
                             metadata,
@@ -891,11 +879,10 @@ fn group_creation_attributes<'a>(
     attributes: &'a [CreationAttribute],
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<CreationAttributeGroups<'a>, FsError> {
-    let mut ordered =
-        crate::kernel::Owned::<Vec<CreationAttributeKey<'a>>>::allocate(
-            attributes.len(),
-            accounting,
-        )?;
+    let mut ordered = crate::kernel::Owned::<Vec<CreationAttributeKey<'a>>>::allocate(
+        attributes.len(),
+        accounting,
+    )?;
     for (ordinal, attribute) in attributes.iter().enumerate() {
         accounting.charge(WorkCounters {
             bytes_copied: std::mem::size_of::<CreationAttributeKey<'_>>() as u64,
@@ -912,11 +899,10 @@ fn group_creation_attributes<'a>(
             .cmp(right.path)
             .then_with(|| left.name.cmp(right.name))
     })?;
-    let mut groups =
-        crate::kernel::Owned::<Vec<(&'a str, std::ops::Range<usize>)>>::allocate(
-            attributes.len(),
-            accounting,
-        )?;
+    let mut groups = crate::kernel::Owned::<Vec<(&'a str, std::ops::Range<usize>)>>::allocate(
+        attributes.len(),
+        accounting,
+    )?;
     let mut start = 0;
     while let Some(first) = ordered.value.get(start) {
         let path = first.path;
@@ -944,8 +930,7 @@ fn group_creation_attributes<'a>(
     }
     let mut by_file =
         crate::kernel::Owned::<Vec<Option<usize>>>::allocate(files.len(), accounting)?;
-    let mut matched =
-        crate::kernel::Owned::<Vec<bool>>::allocate(groups.value.len(), accounting)?;
+    let mut matched = crate::kernel::Owned::<Vec<bool>>::allocate(groups.value.len(), accounting)?;
     for _ in 0..groups.value.len() {
         accounting.charge(WorkCounters {
             bytes_copied: std::mem::size_of::<bool>() as u64,
