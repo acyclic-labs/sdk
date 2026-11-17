@@ -348,7 +348,7 @@ const RUNNER_PREFIX: &str = "acyclic-";
 /// it removes what its cases left. So on Unix the runner holds an exclusive `flock` on its
 /// directory for its whole life, which the kernel releases however the process ends, and every
 /// new runner reclaims each runner directory of its own user whose lock it can take: that runner
-/// is gone. The directory is created exclusively under a random name, then locked; a reclaimer
+/// is gone. The directory is created owner-only under a random name, then locked; a reclaimer
 /// that takes it before its owner locks it removes it, and the owner sees the unlinked inode and
 /// retries. Another user's directories are left alone.
 struct RunnerDirectory {
@@ -374,7 +374,13 @@ impl RunnerDirectory {
                 .to_le_bytes();
             let name = u32::from_le_bytes([name[0], name[1], name[2], name[3]]);
             let path = root.join(format!("{RUNNER_PREFIX}{name:08x}"));
-            match fs::create_dir(&path) {
+            let directory = &mut fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                directory.mode(0o700);
+            }
+            match directory.create(&path) {
                 Ok(()) => {}
                 // A live runner already has this name; take another.
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
