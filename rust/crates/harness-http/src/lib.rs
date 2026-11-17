@@ -1,4 +1,7 @@
 //! Shared credential-free HTTP exchange boundary for model and machine adapters.
+
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 use acyclic_harness_core::Result;
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, ProviderPlatform};
 use bytes::Bytes;

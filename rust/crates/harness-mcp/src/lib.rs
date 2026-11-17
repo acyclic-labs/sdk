@@ -1,4 +1,7 @@
 //! MCP clients over the ordinary tool, execution and interaction owners.
+
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 pub mod callbacks;
 mod catalog;
 #[cfg(not(target_arch = "wasm32"))]

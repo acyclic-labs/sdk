@@ -1,6 +1,9 @@
 //! Offline experiment observations and analysis, independent of execution.
 //! Each source problem/cut is one cluster, however many agents it contains.
 
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
+
 use serde::{Deserialize, Serialize};
 
 pub mod analysis;
