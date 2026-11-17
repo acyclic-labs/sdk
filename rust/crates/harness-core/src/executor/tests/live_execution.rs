@@ -213,21 +213,17 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
     Ok(())
 }
 
-/// A started call whose incarnation died, reopened by its successor, which
-/// took the delivery: the call's producer is fenced. A dispatched start is
-/// the record a start published together with its dispatch leaves.
+/// Stop the original attempt while its tool outcome is still pending.
 #[cfg(not(target_arch = "wasm32"))]
-async fn fenced_pending_call(
-    dispatched: bool,
+async fn start_pending_call(
+    journal: &dyn ExecutionJournal,
     retire_on_drop: bool,
 ) -> Result<(
-    Journal,
     Arc<PendingTool>,
     Arc<ScriptedModelProvider>,
     StockExecutor,
     TurnInput,
 )> {
-    let journal = Journal::default();
     let provider = Arc::new(scripted_model());
     let (accepted, acceptance) = tokio::sync::oneshot::channel();
     let tool = Arc::new(PendingTool {
@@ -256,18 +252,29 @@ async fn fenced_pending_call(
         allowed()?,
     )?;
     let input = input();
-    let mut first = Box::pin(executor.execute(input.clone(), &journal));
+    let mut first = Box::pin(executor.execute(input.clone(), journal));
     tokio::select! {
         outcome = &mut first => panic!("execution ended before tool acceptance: {outcome:?}"),
         accepted = acceptance => accepted.expect("tool acceptance producer was dropped"),
     }
-    // The incarnation dies with its producer; the next one reopens the cut.
     drop(first);
-    let reopened = if retire_on_drop {
-        journal
-    } else {
-        journal.reopen_before_tool_completion("call-1")
-    };
+    Ok((tool, provider, executor, input))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn fenced_pending_call(
+    dispatched: bool,
+) -> Result<(
+    Journal,
+    Arc<PendingTool>,
+    Arc<ScriptedModelProvider>,
+    StockExecutor,
+    TurnInput,
+)> {
+    let journal = Journal::default();
+    let (tool, provider, executor, input) = start_pending_call(&journal, false).await?;
+    // The incarnation dies with its producer; the next one reopens the cut.
+    let reopened = journal.reopen_before_tool_completion("call-1");
     if dispatched {
         for record in reopened.0.lock().unwrap().iter_mut() {
             if let ExecutionEvent::ToolStarted { publication, .. } = &mut record.event {
@@ -283,10 +290,16 @@ async fn fenced_pending_call(
 /// model's interrupted failure, the effect never runs again, and the turn
 /// continues instead of staying indeterminate.
 #[cfg(not(target_arch = "wasm32"))]
-async fn pending_redelivery(retire_on_drop: bool) -> Result<()> {
-    let (reopened, tool, provider, executor, input) =
-        fenced_pending_call(false, retire_on_drop).await?;
-    let settled = executor.execute(input.clone(), &reopened).await?;
+async fn pending_redelivery(
+    journal: &dyn ExecutionJournal,
+    (tool, provider, executor, input): (
+        Arc<PendingTool>,
+        Arc<ScriptedModelProvider>,
+        StockExecutor,
+        TurnInput,
+    ),
+) -> Result<()> {
+    let settled = executor.execute(input.clone(), journal).await?;
     assert_eq!(settled.text, "done");
     let text = super::tools_1::tool_error_text(&provider.requests()[1].messages, "call-1")
         .expect("the next model request carries the call's failure");
@@ -294,17 +307,23 @@ async fn pending_redelivery(retire_on_drop: bool) -> Result<()> {
         text.starts_with(ToolFailureKind::Interrupted.message()),
         "{text}"
     );
-    assert!(reopened.0.lock().unwrap().iter().any(|record| matches!(
-        &record.event,
-        ExecutionEvent::ToolFailed { call_id, reason: ToolFailureKind::Interrupted, .. }
-            if call_id == "call-1"
-    )));
+    assert!(
+        journal
+            .replay(input.operation_id, 0, 100, None)?
+            .await?
+            .iter()
+            .any(|record| matches!(
+                &record.event,
+                ExecutionEvent::ToolFailed { call_id, reason: ToolFailureKind::Interrupted, .. }
+                    if call_id == "call-1"
+            ))
+    );
     assert_eq!(
         tool.calls.load(Ordering::SeqCst),
         1,
         "the effect never runs again"
     );
-    assert_eq!(settled, executor.execute(input, &reopened).await?);
+    assert_eq!(settled, executor.execute(input, journal).await?);
     Ok(())
 }
 
@@ -322,8 +341,11 @@ fn seeded_pending_redelivery_settles_without_failing_the_turn() -> std::result::
         seeded_runtime(seed).map_err(|error| error.to_string())?.block_on(async {
             let (schedule, mut boundaries) = Schedule::seeded(seed);
             let history = async {
-                pending_redelivery(false).await?;
-                pending_redelivery(true).await
+                let (reopened, tool, provider, executor, input) = fenced_pending_call(false).await?;
+                pending_redelivery(&reopened, (tool, provider, executor, input)).await?;
+                let (journal, _issuer) = super::publication_observation::journal().await?;
+                let pending = start_pending_call(&journal, true).await?;
+                pending_redelivery(&journal, pending).await
             };
             let mut execution = Box::pin(schedule.scope(history));
             let result = loop {
@@ -351,7 +373,7 @@ fn seeded_pending_redelivery_settles_without_failing_the_turn() -> std::result::
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
 async fn a_fenced_dispatched_call_waits_for_its_host_to_settle_it() -> Result<()> {
-    let (reopened, tool, _, executor, input) = fenced_pending_call(true, false).await?;
+    let (reopened, tool, _, executor, input) = fenced_pending_call(true).await?;
     let retained = executor.execute(input.clone(), &reopened).await;
     assert!(
         matches!(&retained, Err(Error::Indeterminate(id)) if *id == input.operation_id),
