@@ -533,9 +533,7 @@ fn last_record_with<E>(
     if let Some(window) = stream.prefix_window(from, stream.tail) {
         return retain(&window.records, window.start);
     }
-    let Ok(mut history) = PinnedHistory::new(stream, stream.tail, &mut ReadOnlyWork) else {
-        unreachable!("a read-only cut cannot refuse")
-    };
+    let mut history = PinnedHistory::new(stream, stream.tail);
     let window = history.page(from, 1, examine)?;
     match window {
         Some(window) => retain(&window.records, window.start),

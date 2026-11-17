@@ -293,25 +293,24 @@ std::thread_local! { static HISTORY_SEEKS: std::cell::Cell<usize> = const { std:
 struct PinnedHistory {
     root: Option<Arc<History>>,
     ranges: HistoryRanges,
+    ranges_before: u64,
     tail: u64,
 }
 impl PinnedHistory {
-    fn new(
-        path: &PathState,
-        tail: u64,
-        work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
-    ) -> Result<Self, StreamError> {
-        Ok(Self {
+    fn new(path: &PathState, tail: u64) -> Self {
+        Self {
             root: path.history.clone(),
-            ranges: path.ranges.pin(tail, work)?,
+            ranges: path.ranges.newest(),
+            ranges_before: path.ranges.before.map_or(tail, |before| before.min(tail)),
             tail,
-        })
+        }
     }
 
     fn empty(tail: u64) -> Self {
         Self {
             root: None,
             ranges: HistoryRanges::default(),
+            ranges_before: tail,
             tail,
         }
     }
@@ -334,6 +333,9 @@ impl PinnedHistory {
         {
             return Ok(history_window(Arc::clone(records), ceiling, after));
         }
+        if after >= self.ranges_before {
+            return Ok(None);
+        }
         #[cfg(test)]
         HISTORY_SEEKS.with(|count| count.set(count.get() + 1));
         let Some(position) = self
@@ -344,7 +346,11 @@ impl PinnedHistory {
         };
         let ceiling = position
             .before
-            .map_or(ceiling, |before| ceiling.min(u64::from_be_bytes(before)));
+            .map_or(ceiling.min(self.ranges_before), |before| {
+                ceiling
+                    .min(self.ranges_before)
+                    .min(u64::from_be_bytes(before))
+            });
         Ok(history_window(Arc::clone(position.value), ceiling, after))
     }
 }

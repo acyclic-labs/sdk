@@ -358,7 +358,7 @@ fn singleton_reads_retain_the_window_inline_without_allocating() {
             if old {
                 old_cursor = BaselineCursor::new(stream, stream.tail, 0);
             } else {
-                cursor = HistoryCursor::new(stream, stream.tail, 0, None).expect("read-only cut");
+                cursor = HistoryCursor::new(stream, stream.tail, 0);
             }
         });
         measurements.push((allocation.count_total, allocation.bytes_total));
@@ -406,7 +406,7 @@ proptest! {
             let mut baseline_cursor = BaselineCursor::at(start);
             baseline(&mut baseline_cursor, snapshot.history.as_ref(), snapshot.tail);
             let expected: Vec<_> = std::iter::from_fn(|| baseline_cursor.next_record()).map(record_bytes).collect();
-            let mut pinned = PinnedHistory::new(&snapshot, snapshot.tail, &mut ReadOnlyWork).expect("read-only cut");
+            let mut pinned = PinnedHistory::new(&snapshot, snapshot.tail);
             let mut after = start;
             let mut actual = Vec::new();
             while let Some(window) = crate::pages::PageSource::next_page(&mut pinned, after, budget).await.unwrap() {
