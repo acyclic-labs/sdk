@@ -307,7 +307,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 )
                 .await?;
             descendants.retain(|change| match change {
-                SubscriptionChange::Add { id, .. } => !delivery.subscriptions.contains_key(id),
+                SubscriptionChange::Add { id, .. } => delivery.subscriptions.get(id).is_none(),
                 _ => true,
             });
             let remaining = delivery
