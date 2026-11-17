@@ -662,6 +662,10 @@ fn d4_service(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let answer = match call {
+            "summary" => {
+                state.step += 1;
+                text_with_usage(done("d4"), 100)
+            }
             "context_review" => match state.step {
                 0 => {
                     state.step += 1;
@@ -744,22 +748,7 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
             let files = [("a.txt", "alpha\n")];
             let prompt = format!("d4-content:{content} {}", tag("d4"));
             let groups = if call == "summary" {
-                let (warmups, size) = if capacity == "output_eq_context" {
-                    (2, 45_000)
-                } else {
-                    (3, 30_000)
-                };
-                let mut groups: Vec<Vec<(&str, String)>> = (0..warmups)
-                    .map(|index| {
-                        let id = ["d4-warm-0", "d4-warm-1", "d4-warm-2"][index];
-                        vec![(
-                            id,
-                            format!("{} large context {}", tag(id), "x".repeat(size)),
-                        )]
-                    })
-                    .collect();
-                groups.push(vec![("d4", prompt.clone())]);
-                groups
+                vec![vec![("d4", prompt.clone())]]
             } else if call == "context_review" {
                 vec![
                     vec![(
@@ -793,6 +782,16 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                 "summary" => {
                     if summary_requests.is_empty() {
                         return fail("a length-cut summary was never requested");
+                    }
+                    let background = summary_requests.iter().any(|request| {
+                        request.messages.iter().any(|message| {
+                            serde_json::to_string(&message.content)
+                                .unwrap_or_default()
+                                .contains("review_at_input_tokens")
+                        })
+                    });
+                    if !background {
+                        return fail("the length-cut summary was not a background review");
                     }
                     // The cut summary authorises no rewrite: no request may
                     // carry a summary file and the agent stays open.
