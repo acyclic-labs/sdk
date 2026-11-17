@@ -491,7 +491,7 @@ async fn isolation<P: StreamProvider + ?Sized>(
             .await
             .map_err(|error| error.category())
             != Err(StreamCategory::NotFound)
-        || provider.tail(path("ephemeral-copy/source")?).await != Ok(1)
+        || !matches!(provider.tail(path("ephemeral-copy/source")?).await, Ok(1))
     {
         return Err(violated!());
     }

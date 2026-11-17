@@ -191,9 +191,12 @@ mod cuts {
                 "cut discarded the accepted original prefix"
             );
             assert_eq!(
-                reopened.tail(StreamPath::new("batch")?).await,
+                reopened
+                    .tail(StreamPath::new("batch")?)
+                    .await
+                    .map_err(|error| error.category()),
                 if phase == 3 {
-                    Err(StreamError::NotFound)
+                    Err(StreamCategory::NotFound)
                 } else {
                     Ok(if phase == 2 { 2 } else { 1 })
                 }
@@ -231,9 +234,12 @@ mod cuts {
         assert!(futures::poll!(&mut installation).is_pending());
         let failure = LocalStreamFailure::new("write", "original owner lost");
         stream.inner.fail(failure);
-        assert_eq!(
-            futures::poll!(&mut installation),
-            std::task::Poll::Ready(Err(StreamError::Unavailable)),
+        assert!(
+            matches!(
+                futures::poll!(&mut installation),
+                std::task::Poll::Ready(Err(ref error))
+                    if error.category() == StreamCategory::Unavailable
+            ),
             "cut retained a lost original owner"
         );
         assert_eq!(stream.failure(), Some(failure));

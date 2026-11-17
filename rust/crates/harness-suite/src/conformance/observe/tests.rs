@@ -2,6 +2,7 @@ use super::*;
 use crate::conformance::{Result, fixtures, vectors};
 use acyclic_actors::guest::Handler;
 use acyclic_harness_core::agent::Delivered;
+use acyclic_stream::StreamCategory;
 use acyclic_stream::testing::Counted;
 
 #[test]
@@ -60,8 +61,11 @@ async fn counter_only_keeps_effects_and_dispatch_counts_without_request_retentio
         );
         assert_eq!(host.runtime().counts(), (1, 0));
         assert_eq!(
-            provider.tail(StreamPath::new("absent")?).await,
-            Err(StreamError::NotFound)
+            provider
+                .tail(StreamPath::new("absent")?)
+                .await
+                .map_err(|error| error.category()),
+            Err(StreamCategory::NotFound)
         );
         let requests = provider.requests.requests();
         assert_eq!(requests, dispatched.requests(), "unreported provider call");

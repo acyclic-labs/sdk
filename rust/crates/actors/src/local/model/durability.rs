@@ -68,7 +68,7 @@ async fn acknowledged_cuts(
                 Err(Error::Unknown {
                     publication,
                     source,
-                }) if confirmation_faults && source.as_ref() == &StreamError::AccessDenied => {
+                }) if confirmation_faults && source.category() == StreamCategory::AccessDenied => {
                     store.submit(*publication).await?;
                 }
                 _ => return Ok(false),
@@ -138,7 +138,7 @@ async fn acknowledged_cuts(
         let original = match observed {
             Ok(completed) if !confirmation_faults => completed.receipt().call().clone(),
             Err(Error::InvocationDurabilityUnknown { receipt, source })
-                if confirmation_faults && source.as_ref() == &StreamError::AccessDenied =>
+                if confirmation_faults && source.category() == StreamCategory::AccessDenied =>
             {
                 if receipt.outcome
                     != crate::call::Outcome::Ok(Bytes::from_static(b"completed").into())
@@ -267,7 +267,7 @@ async fn control_replay_requires_durability(
         };
         assert!(matches!(
             replay_control(&store, &actor, fork).await,
-            Err(Error::Unknown { source, .. }) if source.as_ref() == &StreamError::AccessDenied
+            Err(Error::Unknown { source, .. }) if source.category() == StreamCategory::AccessDenied
         ));
         let accepted = store.load(&target).await?;
         let state = accepted.state().ok_or("missing accepted state")?;
@@ -295,7 +295,7 @@ async fn control_replay_requires_durability(
         else {
             return Err("unconfirmed subscription replay was acknowledged".into());
         };
-        assert_eq!(*source, StreamError::AccessDenied);
+        assert_eq!(source.category(), StreamCategory::AccessDenied);
         let state_path = store.path(&target)?;
         assert!(envelope.mutations.iter().any(|mutation| match mutation {
             acyclic_stream::CommittedMutation::Append(append) =>

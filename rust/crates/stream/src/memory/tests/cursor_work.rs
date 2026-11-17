@@ -104,8 +104,8 @@ async fn seed(
 ) -> (
     MemoryStream,
     StreamPath,
-    Vec<Result<AppendOutcome, StreamError>>,
-    Vec<Result<ForkReceipt, StreamError>>,
+    Vec<Result<AppendOutcome, StreamCategory>>,
+    Vec<Result<ForkReceipt, StreamCategory>>,
 ) {
     let mut provider =
         MemoryStream::new_with_clock(MemoryLimits::default(), Arc::new(AtomicU64::new(7)));
@@ -126,7 +126,8 @@ async fn seed(
                     if_tail: None,
                     idempotency_key: crate::IdempotencyKey::unique(),
                 })
-                .await,
+                .await
+                .map_err(|error| error.category()),
         );
     }
     let mut forks = Vec::new();
@@ -141,7 +142,8 @@ async fn seed(
                     at_tail: Some((batches / 2) as u64),
                     idempotency_key: crate::IdempotencyKey::unique(),
                 })
-                .await,
+                .await
+                .map_err(|error| error.category()),
         );
         forks.push(
             provider
@@ -152,7 +154,8 @@ async fn seed(
                     at_tail: None,
                     idempotency_key: crate::IdempotencyKey::unique(),
                 })
-                .await,
+                .await
+                .map_err(|error| error.category()),
         );
         target
     } else {
@@ -180,7 +183,7 @@ proptest! {
                 let appended = provider.append(AppendRequest {
                     path: path.clone(), records: vec![(Bytes::from_static(b"new\0bytes")).into()],
                     if_tail: None, idempotency_key: crate::IdempotencyKey::unique(),
-                }).await;
+                }).await.map_err(|error| error.category());
                 let state = provider.state.read().await;
                 let stream = state.paths.get(&path).unwrap();
                 if old { baseline(&mut old_cursor, stream.history.as_ref(), stream.tail); }

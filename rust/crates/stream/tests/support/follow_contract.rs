@@ -1,6 +1,6 @@
 // One independent oracle drives the property suite and the actual fuzz target.
 use acyclic_stream::{
-    CommitId, StreamCategory, StreamError, StreamWatermarks, wire,
+    CommitId, StreamCategory, StreamWatermarks, wire,
     wire_codec::{
         session::{confirm_follow, preceding_follow, record_anchor, record_cursor},
         watermarks_from_wire,
@@ -45,11 +45,13 @@ fn guard(
     {
         <[u8; 32]>::try_from(follow.preceding_commit_id.as_ref())
             .map(Some)
-            .map_err(|_| StreamError::InvalidArgument)
+            .map_err(|_| StreamCategory::InvalidArgument)
     } else {
-        Err(StreamError::InvalidArgument)
+        Err(StreamCategory::InvalidArgument)
     };
-    let mut actual = preceding_follow(follow, resume).map(|anchor| anchor.map(|id| *id.as_bytes()));
+    let mut actual = preceding_follow(follow, resume)
+        .map(|anchor| anchor.map(|id| *id.as_bytes()))
+        .map_err(|error| error.category());
     if fault == Fault::AcceptShortGuard && follow.preceding_commit_id.len() == 31 {
         // Deliberately broken codec pads an invalid guard and accepts it.
         let mut padded = [0; 32];
@@ -79,9 +81,12 @@ fn guard(
             let expected = if echo.as_slice() == anchor {
                 Ok(())
             } else {
-                Err(StreamError::Unsupported)
+                Err(StreamCategory::Unsupported)
             };
-            require(result == expected, "confirmation anchor")?;
+            require(
+                result.map_err(|error| error.category()) == expected,
+                "confirmation anchor",
+            )?;
         }
     }
     Ok(())
@@ -168,15 +173,15 @@ pub(super) fn check(input: &[u8], fault: Fault) -> Result<(), &'static str> {
             };
             round_trip(&response)?;
             let expected = match response.durable {
-                None => Err(StreamError::Unsupported),
-                Some(durable) if durable > response.tail => Err(StreamError::Unavailable),
+                None => Err(StreamCategory::Unsupported),
+                Some(durable) if durable > response.tail => Err(StreamCategory::Unavailable),
                 Some(durable) => Ok(StreamWatermarks {
                     accepted: response.tail,
                     durable,
                 }),
             };
             let accepted = response.tail;
-            let actual = watermarks_from_wire(&response);
+            let actual = watermarks_from_wire(&response).map_err(|error| error.category());
             let actual = if fault == Fault::InferDurability {
                 Ok(StreamWatermarks {
                     accepted,

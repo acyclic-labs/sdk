@@ -527,8 +527,11 @@ async fn a_retired_required_source_refuses_the_consuming_commit() -> Result<(), 
         if retired {
             assert!(matches!(outcome, FilesystemCommitOutcome::Rejected(_)));
             assert_eq!(
-                stream.tail(destination).await,
-                Err(acyclic_stream::StreamError::NotFound)
+                stream
+                    .tail(destination)
+                    .await
+                    .map_err(|error| error.category()),
+                Err(acyclic_stream::StreamCategory::NotFound)
             );
         } else {
             assert!(matches!(outcome, FilesystemCommitOutcome::Committed(_)));

@@ -360,7 +360,10 @@ async fn buffered_observation_ends_when_its_original_response_producer_fails() -
     let original = tonic::Status::from(error);
     assert_eq!(original.code(), tonic::Code::PermissionDenied);
     assert_eq!(original.message(), "original response refused");
-    assert_eq!(records.next().await, Some(Err(error.clone())));
+    assert!(matches!(
+        records.next().await,
+        Some(Err(ref received)) if received.category() == error.category()
+    ));
     Ok(())
 }
 

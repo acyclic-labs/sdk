@@ -374,12 +374,27 @@ fn stream_error(error: acyclic_stream::StreamError) -> DemandError {
         }
         StreamError::Unsupported => DemandError::NativeWorkUnavailable,
         error => DemandError::Io(std::io::Error::new(
-            if error == StreamError::AccessDenied {
+            if error.category() == acyclic_stream::StreamCategory::AccessDenied {
                 std::io::ErrorKind::PermissionDenied
             } else {
                 std::io::ErrorKind::Other
             },
             error,
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn access_denial_with_a_cause_keeps_permission_denied() {
+        let error =
+            acyclic_stream::StreamError::AccessDenied.with_source(std::io::Error::other("denied"));
+        let DemandError::Io(error) = stream_error(error) else {
+            panic!("access denial must map to an IO error");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     }
 }

@@ -204,10 +204,11 @@ fn explorer_prefetch_and_expansion_keep_original_provider_cuts() {
                 .children,
             [StreamPath::new(child.as_str()).unwrap()]
         );
-        assert_eq!(
+        assert!(matches!(
             explorer.reader_ref().issue(&root.membership().unwrap()),
-            Some(&ReadIssue::Refused(acyclic_stream::StreamError::NotFound))
-        );
+            Some(ReadIssue::Refused(error))
+                if error.category() == acyclic_stream::StreamCategory::NotFound
+        ));
         // More logical expansion intents than the former hidden limit. Only
         // the existing visible branch has provider data or consumes credit.
         for index in 0..300u128 {

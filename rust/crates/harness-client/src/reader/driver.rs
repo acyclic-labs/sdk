@@ -749,10 +749,15 @@ mod tests {
                 );
                 assert_eq!(reader.cache.record(&path, u64::MAX - 2).is_none(), invalid);
                 assert!(reader.cache.record(&path, u64::MAX).is_none());
-                assert_eq!(
-                    reader.issues.get(&path),
-                    invalid.then_some(&ReadIssue::Refused(StreamError::InvalidResponse))
-                );
+                assert_eq!(reader.issues.get(&path).is_some(), invalid);
+                if invalid {
+                    assert!(matches!(
+                        reader.issues.get(&path),
+                        Some(ReadIssue::Refused(error))
+                            if error.category()
+                                == acyclic_stream::StreamCategory::InvalidResponse
+                    ));
+                }
                 if !invalid {
                     assert_eq!(
                         reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
@@ -801,10 +806,15 @@ mod tests {
                     if invalid { None } else { Some(u64::MAX) }
                 );
                 assert_eq!(reader.cache.record(&path, sequence).is_none(), invalid);
-                assert_eq!(
-                    reader.issues.get(&parent),
-                    invalid.then_some(&ReadIssue::Refused(StreamError::InvalidResponse))
-                );
+                assert_eq!(reader.issues.get(&parent).is_some(), invalid);
+                if invalid {
+                    assert!(matches!(
+                        reader.issues.get(&parent),
+                        Some(ReadIssue::Refused(error))
+                            if error.category()
+                                == acyclic_stream::StreamCategory::InvalidResponse
+                    ));
+                }
                 reader.plan([(listing.clone(), Priority::Visible)]);
                 assert!(reader.poll(1).is_empty());
             }
@@ -833,7 +843,10 @@ mod tests {
                 original.value.as_slice().as_ptr()
             );
             let (_, accepted, record) = source.next().await.unwrap();
-            assert_eq!(record.unwrap_err(), StreamError::InvalidResponse);
+            assert_eq!(
+                record.unwrap_err().category(),
+                acyclic_stream::StreamCategory::InvalidResponse
+            );
             assert_eq!(accepted, u64::MAX);
             assert_eq!(source.position, u64::MAX);
 
@@ -893,10 +906,11 @@ mod tests {
             assert!(driver.follows.is_empty());
             assert!(driver.waiting.is_empty(), "refused source was requeued");
             assert_eq!(reader.next_deadline(), None);
-            assert_eq!(
+            assert!(matches!(
                 reader.issues.get(&path),
-                Some(&ReadIssue::Refused(StreamError::InvalidResponse))
-            );
+                Some(ReadIssue::Refused(error))
+                    if error.category() == acyclic_stream::StreamCategory::InvalidResponse
+            ));
             assert_eq!(
                 reader.cache.record(&path, u64::MAX - 1).unwrap().as_ptr(),
                 original.value.as_slice().as_ptr()
@@ -948,10 +962,11 @@ mod tests {
                 vec![&path],
                 "a refused read must become observable rather than stay pending"
             );
-            assert_eq!(
+            assert!(matches!(
                 reader.issue(&path),
-                Some(&ReadIssue::Refused(StreamError::NotFound))
-            );
+                Some(ReadIssue::Refused(error))
+                    if error.category() == acyclic_stream::StreamCategory::NotFound
+            ));
             assert!(std::ptr::eq(
                 reader.issue(&path).unwrap(),
                 reader.issues.get(&path).unwrap()
@@ -1004,10 +1019,11 @@ mod tests {
                 b"unrelated committed row",
                 "a definite refusal cannot delay another stream"
             );
-            assert_eq!(
+            assert!(matches!(
                 reader.issue(&path),
-                Some(&ReadIssue::Refused(StreamError::NotFound))
-            );
+                Some(ReadIssue::Refused(error))
+                    if error.category() == acyclic_stream::StreamCategory::NotFound
+            ));
 
             provider
                 .append(AppendRequest {

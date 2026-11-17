@@ -221,7 +221,7 @@ pub struct ListedChild {
 }
 
 /// The driver's report for one op.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum Outcome {
     /// Records from the requested position, ascending.
     Records(Vec<Fetched>),
@@ -274,7 +274,7 @@ impl Failure {
 }
 
 /// A reader discontinuity that applications must show separately from outages.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum ReadIssue {
     /// Authorization failed; cached bytes for the stream were discarded.
     #[error("reader source access denied")]
@@ -861,7 +861,7 @@ impl Reader {
             Want::Range { stream, .. } | Want::Last { stream, .. } => stream,
             Want::Listing { parent, .. } => parent,
         };
-        if self.issues.get(path) == Some(&ReadIssue::AccessDenied) {
+        if matches!(self.issues.get(path), Some(ReadIssue::AccessDenied)) {
             return None;
         }
         match want {
@@ -1803,7 +1803,10 @@ mod reader_tests {
             HeadObservation::Applied
         );
         assert_eq!(reader.cache.tail(&stream), Some(10));
-        assert_eq!(reader.issues.get(&stream), Some(&ReadIssue::RetentionLost));
+        assert!(matches!(
+            reader.issues.get(&stream),
+            Some(ReadIssue::RetentionLost)
+        ));
     }
 
     #[test]
@@ -1847,7 +1850,10 @@ mod reader_tests {
             reader.cache.anchor(&child, 0),
             Some(CommitId::from_bytes([2; 32]))
         );
-        assert_eq!(reader.issues.get(&child), Some(&ReadIssue::RetentionLost));
+        assert!(matches!(
+            reader.issues.get(&child),
+            Some(ReadIssue::RetentionLost)
+        ));
         // A child denial does not revoke an independent source grant.
         reader.denied(&child);
         assert_eq!(reader.cache.record(&source, 0).unwrap().as_ref(), b"new");
@@ -1913,7 +1919,10 @@ mod reader_tests {
             HeadObservation::Applied
         );
         assert_eq!(reader.cache.fork(&stream), Some(&changed));
-        assert_eq!(reader.issues.get(&stream), Some(&ReadIssue::RetentionLost));
+        assert!(matches!(
+            reader.issues.get(&stream),
+            Some(ReadIssue::RetentionLost)
+        ));
 
         // If a later primitive origin observation already won, an older
         // conflicting Head must reobserve before its follow can be accepted.
@@ -2190,10 +2199,12 @@ mod reader_tests {
         reader.complete(op.id(), Outcome::Records(vec![fetched(1, 10)]), 1);
         assert!(reader.cache.record(&child, 1).is_none());
         assert!(!reader.cache.origin_known(&child));
-        assert_eq!(
-            reader.issues().collect::<Vec<_>>(),
-            vec![(&source, ReadIssue::RetentionLost)]
-        );
+        let issues = reader.issues().collect::<Vec<_>>();
+        let [(path, issue)] = issues.as_slice() else {
+            panic!("expected exactly one retained issue");
+        };
+        assert_eq!(*path, &source);
+        assert!(matches!(issue, ReadIssue::RetentionLost));
     }
 
     #[test]
@@ -2362,10 +2373,12 @@ mod reader_tests {
         assert!(reader.cache.record(&child, 0).is_none());
         assert!(reader.cache.record(&grandchild, 0).is_none());
         assert!(reader.cache.record(&stream, 10).is_none());
-        assert_eq!(
-            reader.issues().collect::<Vec<_>>(),
-            vec![(&stream, ReadIssue::AccessDenied)]
-        );
+        let issues = reader.issues().collect::<Vec<_>>();
+        let [(path, issue)] = issues.as_slice() else {
+            panic!("expected exactly one denied issue");
+        };
+        assert_eq!(*path, &stream);
+        assert!(matches!(issue, ReadIssue::AccessDenied));
         // A changed page boundary invalidates only later pages of that
         // parent, even at the largest logical page, without walking history.
         let parent = StreamPath::new("test/pages").unwrap();
@@ -2767,11 +2780,9 @@ mod reader_tests {
             assert!(denied_reads.poll(0).is_empty());
             denied_reads.acknowledge_issue(&denied);
             assert_eq!(denied_reads.issues().count(), heads.len() - 1);
-            assert!(
-                heads.keys().filter(|path| *path != &denied).all(|path| {
-                    denied_reads.issues.get(path) == Some(&ReadIssue::AccessDenied)
-                })
-            );
+            assert!(heads.keys().filter(|path| *path != &denied).all(|path| {
+                matches!(denied_reads.issues.get(path), Some(ReadIssue::AccessDenied))
+            }));
 
             // Mutate only the tail of the actual captured provider fact.
             // Invalid bytes retain the same explicit acknowledgment boundary.
@@ -3156,10 +3167,12 @@ mod reader_tests {
             .insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None, None);
         reader.replaced(&stream);
         assert!(reader.cache.record(&stream, 0).is_none());
-        assert_eq!(
-            reader.issues().collect::<Vec<_>>(),
-            vec![(&stream, ReadIssue::RetentionLost)]
-        );
+        let issues = reader.issues().collect::<Vec<_>>();
+        let [(path, issue)] = issues.as_slice() else {
+            panic!("expected exactly one retained issue");
+        };
+        assert_eq!(*path, &stream);
+        assert!(matches!(issue, ReadIssue::RetentionLost));
         assert_eq!(reader.connectivity(), Connectivity::Online);
         assert_eq!(
             Failure::of(&StreamError::PrefixNotRetained),

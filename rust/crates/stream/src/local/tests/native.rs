@@ -14,8 +14,8 @@ fn cached_lease_result(
 ) {
     assert_eq!(observed, original, "retired receipt was re-executed");
     assert_eq!(
-        tail,
-        &Err(StreamError::NotFound),
+        tail.as_ref().map_err(|error| error.category()),
+        Err(StreamCategory::NotFound),
         "retry resurrected a durable path"
     );
 }

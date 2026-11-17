@@ -1,6 +1,6 @@
 //! Atomic follow preconditions and legacy-peer confirmation compatibility.
 use acyclic_stream::{
-    CommitId, StreamCategory, StreamError, wire,
+    CommitId, StreamCategory, wire,
     wire_codec::session::{confirm_follow, preceding_follow, record_anchor, record_cursor},
 };
 use proptest::prelude::*;
@@ -129,7 +129,12 @@ proptest! {
         prop_assert_eq!(cursor.opaque.as_ref(), &anchor);
         let decoded = wire::SessionCursor::decode(cursor.encode_to_vec().as_slice())?;
         prop_assert_eq!(decoded.opaque.as_ref(), &anchor);
-        prop_assert_eq!(record_anchor(&decoded).map(|id| id.map(|id| *id.as_bytes())), Ok(Some(anchor)));
+        prop_assert_eq!(
+            record_anchor(&decoded)
+                .map(|id| id.map(|id| *id.as_bytes()))
+                .map_err(|error| error.category()),
+            Ok(Some(anchor))
+        );
         prop_assert_eq!(decoded.next, next);
         let error = record_cursor(0, CommitId::from_bytes(anchor)).unwrap_err();
         prop_assert_eq!(error.category(), StreamCategory::InvalidArgument);
@@ -168,9 +173,12 @@ proptest! {
         } else if length == 32 && next > 0 && !latest && !opaque {
             Ok(Some(CommitId::from_bytes([7; 32])))
         } else {
-            Err(StreamError::InvalidArgument)
+            Err(StreamCategory::InvalidArgument)
         };
-        prop_assert_eq!(preceding_follow(&follow, &resume), expected);
+        prop_assert_eq!(
+            preceding_follow(&follow, &resume).map_err(|error| error.category()),
+            expected
+        );
     }
 }
 
@@ -178,10 +186,14 @@ proptest! {
 fn an_older_peer_cannot_confirm_a_checked_follow() {
     let opened = wire::SessionOpened::default();
     assert_eq!(
-        confirm_follow(Some(CommitId::from_bytes([7; 32])), &opened),
-        Err(StreamError::Unsupported)
+        confirm_follow(Some(CommitId::from_bytes([7; 32])), &opened)
+            .map_err(|error| error.category()),
+        Err(StreamCategory::Unsupported)
     );
-    assert_eq!(confirm_follow(None, &opened), Ok(()));
+    assert_eq!(
+        confirm_follow(None, &opened).map_err(|error| error.category()),
+        Ok(())
+    );
 }
 
 fn reject_mutant(fault: Fault, invariant: &str) {
@@ -250,7 +262,7 @@ fn watermark_corpus_seeds_reach_their_named_outcomes() {
     for (seed, expected) in [
         (
             include_bytes!("../fuzz/corpus/follow_contract/watermarks-impossible").as_slice(),
-            Err(StreamError::Unavailable),
+            Err(StreamCategory::Unavailable),
         ),
         (
             include_bytes!("../fuzz/corpus/follow_contract/watermarks-held-flush").as_slice(),
@@ -261,13 +273,14 @@ fn watermark_corpus_seeds_reach_their_named_outcomes() {
         ),
         (
             include_bytes!("../fuzz/corpus/follow_contract/watermarks-legacy").as_slice(),
-            Err(StreamError::Unsupported),
+            Err(StreamCategory::Unsupported),
         ),
     ] {
         let (&selector, bytes) = seed.split_first().unwrap();
         assert_eq!(selector, 2);
         assert_eq!(
-            watermarks_from_wire(&wire::TailResponse::decode(bytes).unwrap()),
+            watermarks_from_wire(&wire::TailResponse::decode(bytes).unwrap())
+                .map_err(|error| error.category()),
             expected
         );
         assert_eq!(check(seed, Fault::None), Ok(()));

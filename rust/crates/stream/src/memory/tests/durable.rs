@@ -121,7 +121,7 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
         let mut prepared = std::pin::pin!(prepared);
         assert!(futures::poll!(prepared.as_mut()).is_pending());
         let read = core.tail(append.path.clone());
-        assert_eq!(read.now_or_never(), Some(Ok(1)));
+        assert!(matches!(read.now_or_never(), Some(Ok(1))));
     }
     assert!(
         core.inspect_idempotency(append.idempotency_key.clone())
@@ -167,7 +167,10 @@ async fn pending_durability_preserves_reads_registration_and_writer_order()
         .now_or_never()
         .ok_or(StreamError::Unavailable)??;
     assert_eq!(envelope.commit_id, initial.commit_id);
-    assert_eq!(core.tail(path.clone()).now_or_never(), Some(Ok(1)));
+    assert!(matches!(
+        core.tail(path.clone()).now_or_never(),
+        Some(Ok(1))
+    ));
     let mut later = request(2)?;
     later.idempotency_key = IdempotencyKey::unique();
     let later = apply(&core, WriteRequest::Append(later), None, async { Ok(()) });

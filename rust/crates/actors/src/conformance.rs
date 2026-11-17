@@ -15,7 +15,7 @@ use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::testing::{RequestLedger, Requests};
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, CommitCondition, CommitEffect, CommitMutation, IdempotencyKey,
-    ProviderPlatform, StreamError, StreamPath, StreamProvider,
+    ProviderPlatform, StreamCategory, StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryFutureExt as _;
@@ -1588,7 +1588,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     .map_err(Error::from)?;
     if !matches!(
         target.store().enqueue_invoke(&changed).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
+        Err(Error::Stream(error)) if error.category() == StreamCategory::IdempotencyMismatch
     ) {
         return fixture.violation("operation accepted changed request bytes".into());
     }
@@ -1620,7 +1620,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     }
     if !matches!(
         target.store().enqueue_invoke(&changed).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
+        Err(Error::Stream(error)) if error.category() == StreamCategory::IdempotencyMismatch
     ) {
         return fixture.violation("completed operation accepted changed bytes".into());
     }
@@ -1886,7 +1886,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     if !matches!(
         pool.reserve(1, first_id.clone(), owner.clone(), deadline)
             .await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
+        Err(Error::Stream(error)) if error.category() == StreamCategory::IdempotencyMismatch
     ) {
         return fixture.violation("reserve accepted changed units under one request id".into());
     }
@@ -1897,7 +1897,7 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     .map_err(Error::from)?;
     if !matches!(
         pool.reserve(2, first_id.clone(), another, deadline).await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::IdempotencyMismatch
+        Err(Error::Stream(error)) if error.category() == StreamCategory::IdempotencyMismatch
     ) {
         return fixture.violation("reserve accepted changed owner evidence".into());
     }
@@ -2083,7 +2083,7 @@ async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
                 AppliedCut::through("inbox".into(), fixture.inbox.clone(), &foreign_input)?
             )
             .await,
-        Err(Error::Stream(error)) if error.as_ref() == &StreamError::PrefixNotRetained
+        Err(Error::Stream(error)) if error.category() == StreamCategory::PrefixNotRetained
     ) {
         return fixture.violation("a consumed cursor accepted a different input history".into());
     }
