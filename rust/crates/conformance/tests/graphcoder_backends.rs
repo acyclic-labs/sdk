@@ -8,9 +8,8 @@
 //! a reconnect while the approval is pending, and must commit the same history
 //! shape.
 //!
-//! Build the binary first, with fixture signing custody:
-//! `cargo build -p acyclic-plugin --features acyclic-native-runtime/test-support`.
-//! `ACYCLIC_TEST_BINARY` names it elsewhere than the shared target directory.
+//! The binary, built with fixture signing custody, is the test's declared
+//! `acyclic` tool; `ACYCLIC_TEST_BINARY` selects another.
 use acyclic_native_runtime::{
     CaptureHandler, CaptureSchedule, ProcessCaptureStream, ProcessCommand, ProcessInput,
     ProcessOutput, ProcessStdio, ProcessTree, TaskSpawner,
@@ -32,20 +31,10 @@ const CHILD_REPLY: &str = "child reply";
 const FOLLOWUP: &str = "conformance follow-up";
 const WRITTEN: &str = "conformance write";
 
-/// The binary every backend runs.
+/// The binary every backend runs: the plugin's `acyclic`, which the test
+/// declares as its tool, or the one `ACYCLIC_TEST_BINARY` selects.
 fn executable() -> PathBuf {
-    if let Some(path) = std::env::var_os("ACYCLIC_TEST_BINARY") {
-        return path.into();
-    }
-    let deps = std::env::current_exe().unwrap();
-    let target = deps.parent().and_then(Path::parent).unwrap();
-    let path = target.join(format!("acyclic{}", std::env::consts::EXE_SUFFIX));
-    assert!(
-        path.exists(),
-        "build the acyclic binary first: cargo build -p acyclic-plugin          --features acyclic-native-runtime/test-support ({})",
-        path.display()
-    );
-    path
+    acyclic_test_support::cargo_binary!("acyclic", std::env::var_os("ACYCLIC_TEST_BINARY"))
 }
 
 /// A Server-Sent Events body of one Responses generation.
