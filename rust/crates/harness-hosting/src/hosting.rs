@@ -701,11 +701,21 @@ where
                     &serde_json::to_vec(command)
                         .map_err(|_| Error::Record("session request cannot encode"))?,
                 );
-                let pending = self
-                    .pending_roots
-                    .lock()
-                    .map_err(|_| Error::Record("session publication owner is poisoned"))?
-                    .remove(&path);
+                let pending = {
+                    let mut roots = self
+                        .pending_roots
+                        .lock()
+                        .map_err(|_| Error::Record("session publication owner is poisoned"))?;
+                    if roots
+                        .get(&path)
+                        .is_some_and(|(original, _)| *original != parameters)
+                    {
+                        return Err(Error::Record(
+                            "uncertain session intent names another request",
+                        ));
+                    }
+                    roots.remove(&path)
+                };
                 if pending.is_none() {
                     match agents.state(&path).await {
                         Ok(state) => {
@@ -736,20 +746,7 @@ where
                     }
                 }
                 let prepared = match pending {
-                    Some((original, prepared)) => {
-                        if original != parameters {
-                            self.pending_roots
-                                .lock()
-                                .map_err(|_| {
-                                    Error::Record("session publication owner is poisoned")
-                                })?
-                                .insert(path, (original, prepared));
-                            return Err(Error::Record(
-                                "uncertain session intent names another request",
-                            ));
-                        }
-                        prepared
-                    }
+                    Some((_, prepared)) => prepared,
                     None => {
                         let mut root = self
                             .platform
