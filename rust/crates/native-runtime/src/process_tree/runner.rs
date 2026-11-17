@@ -802,10 +802,11 @@ pub(super) fn start_packet_device_host(
         return Err(io::Error::last_os_error());
     }
     drop(status_write);
+    let mut status_read = File::from(status_read);
     let mut status = [0_u8; 4];
     let mut filled = 0;
     while filled < status.len() {
-        match (&status_read).read(&mut status[filled..]) {
+        match status_read.read(&mut status[filled..]) {
             Ok(0) => break,
             Ok(length) => filled += length,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
