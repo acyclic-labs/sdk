@@ -248,8 +248,6 @@ impl HostIo {
                 Err(error) => {
                     // Keep the original allocation and custody: a missing
                     // receipt cannot certify physical device retirement.
-                    #[cfg(test)]
-                    eprintln!("FUSE_HOST_RETIRE_ERROR {error:?}");
                     tracing::error!(%error, "FUSE device host retirement failed");
                 }
             }
