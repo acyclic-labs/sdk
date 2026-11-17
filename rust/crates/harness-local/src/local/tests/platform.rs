@@ -294,7 +294,6 @@ async fn gc_wait_waits_resume_on_the_original_platform_clock(mode: Mode) -> Resu
                 }),
             ]),
             ScriptedTurn::Text("original deadline reached".into()),
-            ScriptedTurn::Text("none".into()),
         ])
         .with_context_capacity(capacity())
         .reading_content(),
