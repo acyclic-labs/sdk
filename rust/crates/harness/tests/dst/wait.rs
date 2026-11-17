@@ -289,6 +289,14 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
     let state = state(seed);
     let relation = relation(seed);
     let results = wait_results(requests)?;
+    if results.is_empty() {
+        for (index, request) in requests.iter().enumerate() {
+            eprintln!("request {index}:");
+            for settled in settlements(request).unwrap_or_default() {
+                eprintln!("  {} {} -> {}", settled.call.call_id, settled.call.name, settled.rendered());
+            }
+        }
+    }
     let id = match relation {
         "grandchild" => "mid-wait",
         "same_parent_other_runtime" => "reopen-wait",
