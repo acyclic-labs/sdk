@@ -288,11 +288,7 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
         self.body().map_or(0, |body| body.depth)
     }
 
-    fn cut<W: IndexWork<Allocation = A>>(
-        &self,
-        before: K,
-        work: &mut W,
-    ) -> Result<Self, W::Error> {
+    fn cut<W: IndexWork<Allocation = A>>(&self, before: K, work: &mut W) -> Result<Self, W::Error> {
         match &self.before {
             Some(prior) if prior.key <= before => Ok(self.clone()),
             _ => {
@@ -576,7 +572,9 @@ impl<V, A, const N: usize, C: Copy + Ord, K: KeyCut<N>> Tree<V, A, N, C, K> {
                     let upper = high.visible_body(work)?;
                     work.examine(2 * N as u64)?;
                     if let Some(upper) = upper.filter(|upper| {
-                        before.as_ref().is_none_or(|cut| upper.minimum < *cut.key.key())
+                        before
+                            .as_ref()
+                            .is_none_or(|cut| upper.minimum < *cut.key.key())
                     }) {
                         if upper.minimum <= key {
                             cursor = high;

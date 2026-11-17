@@ -513,7 +513,8 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
                 .get(&selected)
                 .cloned()
                 .unwrap();
-            let mut pinned = PinnedHistory::new(&captured, captured.tail, &mut ReadOnlyWork).expect("read-only cut");
+            let mut pinned = PinnedHistory::new(&captured, captured.tail, &mut ReadOnlyWork)
+                .expect("read-only cut");
             let mut items = 0;
             let mut window = None;
             let allocation = acyclic_test_support::measure(|| {
@@ -544,7 +545,8 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
         .get(&selected)
         .cloned()
         .unwrap();
-    let mut pinned = PinnedHistory::new(&captured, captured.tail, &mut ReadOnlyWork).expect("read-only cut");
+    let mut pinned =
+        PinnedHistory::new(&captured, captured.tail, &mut ReadOnlyWork).expect("read-only cut");
     HISTORY_METADATA_READS.with(|count| count.set(0));
     let refused = pinned.page(2, 64, |_| Err(StreamError::Capacity));
     assert!(matches!(refused, Err(error) if error.category() == StreamCategory::Capacity));
