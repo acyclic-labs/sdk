@@ -187,7 +187,6 @@ pub(super) fn service(plans: Vec<Plan>) -> ScriptedModelProvider {
             made -= calls.len();
             step += 1;
         }
-        eprintln!("DST plan {} step {} failed {:?}", plan.tag, step, plan.fail_once.is_some());
         let Some(calls) = plan.steps.get(step) else {
             return ScriptedTurn::Text(done(plan.tag));
         };

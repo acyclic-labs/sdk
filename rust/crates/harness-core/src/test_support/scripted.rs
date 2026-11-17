@@ -72,6 +72,11 @@ pub enum ScriptedEvent {
         /// Diagnostic retained with the terminal model failure.
         error: String,
     },
+    /// A permanent failure the provider cannot recover from.
+    Fatal {
+        /// Diagnostic retained as the terminal model failure.
+        error: String,
+    },
     /// The provider refused the exchange with this HTTP status (408, 429 or
     /// 5xx), as a rate limit or overload does.
     Refused {
@@ -710,6 +715,7 @@ impl ScriptedTurn {
                             failure: crate::ModelTransportFailure::Interrupted,
                             excerpt: error,
                         }),
+                        ScriptedEvent::Fatal { error } => Err(Error::Invalid(error)),
                         ScriptedEvent::Refused { status, error } => Err(Error::ModelUnavailable {
                             failure: crate::ModelTransportFailure::Status(status),
                             excerpt: error,
