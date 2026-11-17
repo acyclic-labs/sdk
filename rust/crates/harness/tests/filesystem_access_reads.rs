@@ -430,6 +430,89 @@ async fn legacy_label_cannot_bypass_capability_path_or_expiry() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn expiry_crossing_between_authorization_and_read_confirmation_refuses()
+-> Result<(), Box<dyn Error>> {
+    use acyclic_stream::UnixMillisClock as _;
+    let wall = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
+    let expiry = wall / 1000 + 10;
+    let start = wall + 5_000;
+    let (clock, mut control) = acyclic_actors::local::ControlledClock::new(start);
+    let objects = objects::CountingObjects::default();
+    let fs = Fs::new(
+        acyclic_fs::StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default())),
+        objects.clone(),
+        acyclic_fs::EmbeddedCapabilities::MEMORY,
+    );
+    let fixture = Fixture::with_filesystem_clock(fs, true, Arc::new(clock)).await?;
+    let writer = ContentGrant::verify(
+        &fixture.issuer.verifier(&mut None)?,
+        &fixture.scope,
+        &fixture.volume,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    let bytes = objects::blob_text(false);
+    let file = fixture
+        .host
+        .put_content(
+            &fixture.volume,
+            &writer,
+            "secrets/blob",
+            bytes.as_bytes(),
+            "text/plain",
+            "blob",
+            Some(65536),
+            &IdempotencyKey::new("blob")?,
+            None,
+            acyclic_harness::conversation::ContentAccess::default(),
+        )
+        .await?;
+    let capability = Capability {
+        layers: vec![vec![Grant {
+            actions: [Action::Read, Action::ReadHistory].into_iter().collect(),
+            resource: ResourcePattern {
+                lineage_root: None,
+                volume: None,
+                generations: Generations::All,
+                path: "**".into(),
+            },
+        }]],
+        expires_at: Some(expiry),
+    };
+    let scope = fixture.issuer.bootstrap_scope(
+        "expiring-read",
+        &Capabilities::new([
+            fixture.volume.capability(VolumeOperation::Read, &mut None)?,
+            capability.to_scope_label()?,
+        ]),
+        fixture.scope.agent(),
+        &mut None,
+    )?;
+    let reader = fixture.reader(&scope)?;
+    let (entered, release) = objects.pause(acyclic_fs::ObjectKind::BlobChunk)?;
+    let read = async { reader.read(&file, 65536, None, None)?.await };
+    let advance = async {
+        entered.await?;
+        control.advance_to((expiry + 1) * 1000)?;
+        release.send(()).map_err(|_| "read did not resume")?;
+        Ok::<_, Box<dyn Error>>(())
+    };
+    let (result, advanced) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        futures::join!(read, advance)
+    })
+    .await?;
+    advanced?;
+    assert!(
+        matches!(
+            result,
+            Err(ref error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized
+        ),
+        "{result:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn host_clock_ahead_of_wall_time_still_grants_reads() -> Result<(), Box<dyn Error>> {
     use acyclic_stream::UnixMillisClock as _;
     let start = acyclic_stream::SystemUnixMillisClock.now_unix_millis() + 5_000;
