@@ -1,5 +1,5 @@
 use super::*;
-use crate::kernel::{Child, lookup_path_refs};
+use crate::kernel::Child;
 
 async fn deep_directory_fixture(
     store: &MemoryObjectStore,
@@ -133,20 +133,26 @@ async fn deep_directory_lookup_and_mutation_keep_exact_component_counts()
         &cancellation,
     )
     .await?;
-    // Both absent endpoints share the same authenticated parent walk.
-    let removed = lookup_path_refs(
-        &store,
-        &receipt.root,
-        &[&deepest, &renamed],
-        config,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await?;
-    assert_eq!(removed.entries.len(), 2);
-    for entry in removed.entries {
-        assert!(entry.record.is_none());
-        assert_eq!(entry.resolved_components, usize_to_u64(depth - 1));
+    // Both removed names are gone from the deepest surviving directory. Its
+    // record and entries are read by identity in logarithmic work: the counts
+    // above already crossed the 16-bit boundary, and a second complete walk to
+    // depth 65,535 (which equals u16::MAX, so it could not detect saturation
+    // anyway) would only repeat that work.
+    let parent = candidate_record(&store, &receipt.root, identity(depth - 1)?).await?;
+    let FilePayload::Directory { entries } = parent.payload else {
+        return Err("the deepest surviving record is not a directory".into());
+    };
+    for removed in [name("d")?, name("renamed")?] {
+        let entry = crate::kernel::lookup_tree_entry(
+            &store,
+            entries,
+            &removed,
+            DecodeLimits::for_volume(config),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        assert_eq!(entry.value, None);
     }
     // Check the pinned original record through its immutable file-table root,
     // without repeating the complete 65,536-component namespace walk.
