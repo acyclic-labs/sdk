@@ -180,7 +180,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     for (const p of local) {
       const features = enabled.get(p.id);
       for (const feature of features) for (const next of p.features[feature] ?? []) add(features, next);
-      for (const d of p.dependencies.filter(d => matches(d.target) && active(p, d) && d.resolved_path)) {
+      for (const d of p.dependencies.filter(d => (d.kind !== 'dev' || p.workspace_member) && matches(d.target) && active(p, d) && d.resolved_path)) {
         const dependency = local.find(x => path.dirname(x.manifest_path) === d.resolved_path);
         const target = enabled.get(dependency.id), alias = d.rename ?? d.name;
         for (const feature of d.features) add(target, feature);
@@ -196,7 +196,7 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     const locked = lock.package.find(x => x.name === p.name && x.version === p.version && !x.source);
     if (!locked) throw Error(`Cargo.lock lacks local package ${p.name}@${p.version}`);
     const deps = new Map();
-    for (const d of p.dependencies.filter(d => matches(d.target) && active(p, d))) {
+    for (const d of p.dependencies.filter(d => (d.kind !== 'dev' || p.workspace_member) && matches(d.target) && active(p, d))) {
       const candidates = d.resolved_path ? local.filter(x => path.dirname(x.manifest_path) === d.resolved_path) : byName(d.name).filter(x => versionMatches(x.version, d.req) &&
         (locked.dependencies ?? []).some(key => key === x.name || key === `${x.name} ${x.version}` || key.startsWith(`${x.name} ${x.version} (`)));
       if (candidates.length !== 1) throw Error(`${p.name}: ambiguous or missing locked dependency ${d.name}`);
