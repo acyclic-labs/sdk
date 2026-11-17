@@ -85,10 +85,7 @@ fn per_step(
         .windows(2)
         .map(|window| {
             let ((start_index, start), (end_index, end)) = (window[0], window[1]);
-            let bytes = writes[start..end]
-                .iter()
-                .map(|write| write.requested)
-                .sum();
+            let bytes = writes[start..end].iter().map(|write| write.requested).sum();
             let compacted = requests[start_index + 1..=end_index]
                 .iter()
                 .any(|request| request.summary);
@@ -112,7 +109,9 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             match incarnation.prompts.first() {
                 Some((oracle::Prompted::Settled(text), _)) if text.contains(&done("scale")) => {}
                 Some((oracle::Prompted::Settled(text), _)) => {
-                    return Err(format!("the scale prompt settled without its answer: {text}"));
+                    return Err(format!(
+                        "the scale prompt settled without its answer: {text}"
+                    ));
                 }
                 Some((oracle::Prompted::Failed(message), _)) => {
                     return Err(format!("the scale prompt failed: {message}"));
