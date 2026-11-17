@@ -6,7 +6,10 @@ use super::*;
 use acyclic_harness::{
     conversation::{DirectoryTarget, PrivateDirectoryEntryKind},
     local::WorkspaceMounting,
-    model::{ModelContentPart, ModelEvent, ModelRequest, ModelRole, ToolCall, ToolResultContent},
+    model::{
+        ModelContentPart, ModelEvent, ModelMessage, ModelRequest, ModelRole, ToolCall,
+        ToolResultContent,
+    },
     test_support::{ScriptedEvent, model_visible_messages},
 };
 use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
