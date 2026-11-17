@@ -201,10 +201,10 @@ fn reread_output(harness: &Arc<LocalHarness>) -> EntryFuture<'_, Result<TurnOutp
             return Err(Error::NotFound("no settled conversation entry".into()));
         }
         let entries = entry(conversation.entries(0, tail)).await?;
-        let entry = entries
+        let last = entries
             .last()
             .ok_or_else(|| Error::NotFound("no settled conversation entry".into()))?;
-        entry(conversation.output_at(tail - 1, entry)).await
+        entry(conversation.output_at(tail - 1, last)).await
     })
 }
 
@@ -222,12 +222,12 @@ fn reread_inspection(
     })
 }
 
-fn check_record(
-    kind: &str,
-    reader: &str,
-    emitted: &Emitted,
-    harness: &Arc<LocalHarness>,
-) -> EntryFuture<'_, std::result::Result<(), String>> {
+fn check_record<'a>(
+    kind: &'a str,
+    reader: &'a str,
+    emitted: &'a Emitted,
+    harness: &'a Arc<LocalHarness>,
+) -> EntryFuture<'a, std::result::Result<(), String>> {
     entry(async move {
         match kind {
             "accounting_header" => {
