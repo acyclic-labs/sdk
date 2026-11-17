@@ -2,29 +2,15 @@ import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import fc from "fast-check";
 import { readFile, readdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { assertGraphResult, checkGraph, graphFixture, measure } from "./test-support/license-graphs.mjs";
+import { assertGraphResult, checkGraph, graphFixture, linkPackage, measure, packageAt } from "./test-support/license-graphs.mjs";
 import { fuzz } from "./check-js-licenses.fuzz.mjs";
 
 const checker = fileURLToPath(new URL("./check-js-licenses.mjs", import.meta.url));
-
-function packageAt(root, path, metadata) {
-  const directory = join(root, path);
-  mkdirSync(directory, { recursive: true });
-  writeFileSync(join(directory, "package.json"), JSON.stringify({ version: "1.0.0", ...metadata }));
-  return directory;
-}
-
-function linkPackage(root, path, target) {
-  const link = join(root, path);
-  mkdirSync(dirname(link), { recursive: true });
-  symlinkSync(process.platform === "win32" ? target : relative(dirname(link), target), link,
-    process.platform === "win32" ? "junction" : "dir");
-}
 
 function checkFixture(setup) {
   const root = mkdtempSync(join(tmpdir(), "acyclic-js-licenses-"));
