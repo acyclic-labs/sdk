@@ -52,6 +52,20 @@ fn plan() -> Plan {
     }
 }
 
+/// Every call the model saw settled, across the whole turn. A summary may
+/// drop older calls from later requests, so the last request alone is partial.
+fn settled_calls(requests: &[acyclic_harness::model::ModelRequest]) -> Vec<oracle::Settled> {
+    let mut seen = std::collections::BTreeMap::new();
+    for request in requests {
+        if let Ok(settled) = settlements(request) {
+            for settled in settled {
+                seen.insert(settled.call.call_id.clone(), settled);
+            }
+        }
+    }
+    seen.into_values().collect()
+}
+
 /// Durable bytes between each pair of ordinary model dispatches. Summary
 /// requests are not work steps, so they do not open or close an interval.
 fn per_step(
@@ -102,11 +116,7 @@ fn world(seed: u64) -> std::result::Result<bool, String> {
             if !incarnation.requests.iter().any(|request| request.summary) {
                 return Err("the scale world never reached the context manager".into());
             }
-            let last = incarnation
-                .requests
-                .last()
-                .ok_or("the scale world sent no request")?;
-            let settled = settlements(last)?;
+            let settled = settled_calls(&incarnation.requests);
             let expected_writes = STEPS + 1;
             if settled.len() < expected_writes {
                 return Err(format!(
