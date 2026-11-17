@@ -16,4 +16,10 @@ pub struct MemoryLimits {
     /// existing identities still replay exactly. `None` retains all identities
     /// without a count policy. No replay identity is evicted to admit new work.
     pub idempotency_results: Option<usize>,
+    /// Maximum bytes the store keeps for what its native writes leave behind.
+    /// A landed write moves its measured payload from the writer's ledger to
+    /// this one, and a write that would exceed it is refused before
+    /// publication. Writes without native work measure no allocations, so
+    /// this bound applies to native writes only.
+    pub retained_bytes: Option<u64>,
 }

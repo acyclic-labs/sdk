@@ -194,11 +194,13 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     assert_eq!(original, request);
     assert!(matches!(result, Some(Ok(Ok(_)))));
     drop((original, result, storage));
-    // Committed history still physically belongs to the provider. Its native
-    // storage must stay funded until that original owner retires as well.
-    assert!(meter.held.load(Ordering::SeqCst) > 0);
-    drop(provider);
+    // Committed history physically belongs to the provider, so the store's
+    // own capacity funds it until the provider retires, not the writer.
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    let capacity = Arc::clone(&provider.capacity);
+    assert!(capacity.held() > 0);
+    drop(provider);
+    assert_eq!(capacity.held(), 0);
     meter.assert_refunded();
 
     // Producer loss before first poll must terminate both registered waiters.

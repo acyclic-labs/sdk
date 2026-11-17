@@ -69,6 +69,7 @@ impl MemoryStream {
         };
         let (receipt, mut claim) = self.replayed(request, value, self.revisions.at(index))?;
         let envelope = self.selected_envelope(value, accepted, &mut claim)?;
+        self.hand_back(&mut claim)?;
         commit_projection(CommitOutcome::Committed(receipt), envelope)
             .map(|outcome| (outcome, claim))
     }

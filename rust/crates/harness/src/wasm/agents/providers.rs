@@ -72,6 +72,8 @@ impl Providers {
             payload_bytes: limits.payload_bytes.map(|value| value as usize),
             commits: limits.commits.map(|value| value as usize),
             idempotency_results: limits.idempotency_results.map(|value| value as usize),
+            // Wasm writes carry no native work to measure what the store keeps.
+            retained_bytes: None,
         }
     }
 

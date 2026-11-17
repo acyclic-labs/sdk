@@ -8,6 +8,20 @@ pub(crate) type Allocation = Option<ReadAllocation>;
 #[cfg(target_arch = "wasm32")]
 pub(crate) type Allocation = Option<()>;
 
+/// One write's payload custody, as its owner and its allocation-meter view.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct WriteCustody {
+    owner: Arc<acyclic_native_runtime::NativeCustody>,
+    meter: Arc<dyn NativeReadMeter>,
+}
+
+/// Store capacity reserved for a planned write, completed when it installs.
+#[cfg(not(target_arch = "wasm32"))]
+type Retention = Option<acyclic_native_runtime::CustodyTransfer>;
+#[cfg(target_arch = "wasm32")]
+type Retention = ();
+
 #[cfg(not(target_arch = "wasm32"))]
 type CaptureWork<'a> = Option<&'a Work>;
 #[cfg(target_arch = "wasm32")]
@@ -100,6 +114,131 @@ impl MemoryStream {
             return Err(StreamError::Capacity);
         }
         Ok(slot)
+    }
+
+    /// A planning clone whose allocations are one write's custody. The writer
+    /// funds them while it prepares; `reserve_custody` and `keep` then move
+    /// the charge for what the store keeps to the store's own capacity.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn in_custody(&self) -> Result<Self, StreamError> {
+        let Some(work) = &self.work else {
+            return Ok(self.clone());
+        };
+        let owner = work.record(acyclic_native_runtime::NativeCustody::new(&work.meter))?;
+        let meter: Arc<dyn NativeReadMeter> = Arc::clone(&owner) as _;
+        Ok(Self {
+            custody: Some(WriteCustody { owner, meter }),
+            ..self.clone()
+        })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn in_custody(&self) -> Result<Self, StreamError> {
+        Ok(self.clone())
+    }
+
+    /// Hands a result's claim back to the writer: the caller, not the store,
+    /// keeps what a write returns, whether or not the write lands.
+    fn hand_back(&self, _output: &mut Allocation) -> Result<(), StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(work), Some(custody), Some(output)) = (&self.work, &self.custody, _output) {
+            work.record(output.leave_custody(&custody.owner))?;
+        }
+        Ok(())
+    }
+
+    /// Reserves store capacity for everything this write's custody owns, after
+    /// its last allocation and before publication. `output` is handed back to
+    /// the writer first.
+    fn reserve_custody(&self, output: &mut Allocation) -> Result<Retention, StreamError> {
+        self.hand_back(output)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(work), Some(custody)) = (&self.work, &self.custody) {
+            return match custody.owner.reserve(&self.capacity) {
+                Err(error) if error.kind() == std::io::ErrorKind::StorageFull => {
+                    Err(StreamError::Capacity)
+                }
+                reserved => work.record(reserved).map(Some),
+            };
+        }
+        Ok(Default::default())
+    }
+
+    /// Hands a landed write's payload to the store. It cannot fail.
+    fn keep(_retention: Retention) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(transfer) = _retention {
+            transfer.complete();
+        }
+    }
+
+    /// The store's own copy of `path`, funded by this write's custody, so
+    /// what a landed write keeps leaves its writer's ledger with the rest.
+    fn keep_path(&self, path: &StreamPath) -> Result<StreamPath, StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            return work.record(path.bind_native(self.allocation_meter(work)));
+        }
+        Ok(path.clone())
+    }
+
+    /// The store's own copy of a retry key it keeps for replay.
+    fn keep_key(&self, key: &IdempotencyKey) -> Result<IdempotencyKey, StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            return work
+                .record(
+                    key.0
+                        .bind_native(self.allocation_meter(work), &self.capacity),
+                )
+                .map(IdempotencyKey);
+        }
+        Ok(key.clone())
+    }
+
+    /// The store's own copy of a kept record body. A body its caller funds
+    /// would otherwise keep the caller's buffer, and the caller's charge.
+    fn keep_body(
+        &self,
+        _value: &mut Bytes,
+        _headers: &mut crate::RecordHeaders,
+    ) -> Result<(), StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            let meter = self.allocation_meter(work);
+            *_value = work.record(_value.bind_native(meter, &self.capacity))?;
+            *_headers = work.record(_headers.bind_native(meter))?;
+        }
+        Ok(())
+    }
+
+    /// Binds every path a write's facts keep to the store. Each mutation's
+    /// records then share its one bound path.
+    fn keep_facts(&self, facts: &mut [CommittedMutation]) -> Result<(), StreamError> {
+        for fact in facts {
+            let (path, records) = match fact {
+                CommittedMutation::Append(append) => (&mut append.path, &mut append.records),
+                CommittedMutation::Fork(fork) => {
+                    fork.source = self.keep_path(&fork.source)?;
+                    for path in &mut fork.exclude {
+                        *path = self.keep_path(path)?;
+                    }
+                    (&mut fork.destination, &mut fork.records)
+                }
+            };
+            *path = self.keep_path(path)?;
+            for record in records {
+                record.origin = path.clone();
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn allocation_meter<'w>(&'w self, work: &'w Work) -> &'w Arc<dyn NativeReadMeter> {
+        self.custody
+            .as_ref()
+            .map_or(&work.meter, |custody| &custody.meter)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -212,7 +351,7 @@ impl MemoryStream {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             return work
-                .record(ReadAllocation::new(&work.meter, _bytes))
+                .record(ReadAllocation::new(self.allocation_meter(work), _bytes))
                 .map(Some);
         }
         Ok(Default::default())
@@ -223,7 +362,7 @@ impl MemoryStream {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             return work
-                .record(ReadAllocation::adopt(&work.meter, _bytes))
+                .record(ReadAllocation::adopt(self.allocation_meter(work), _bytes))
                 .map(Some);
         }
         Ok(Default::default())
@@ -232,8 +371,9 @@ impl MemoryStream {
     fn vector<T>(&self, length: usize) -> Result<(Vec<T>, Allocation), StreamError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
-            let mut allocation = ReadAllocation::empty(&work.meter);
-            let value = work.record(crate::native::vector(length, &work.meter, &mut allocation))?;
+            let meter = self.allocation_meter(work);
+            let mut allocation = ReadAllocation::empty(meter);
+            let value = work.record(crate::native::vector(length, meter, &mut allocation))?;
             return Ok((value, Some(allocation)));
         }
         let mut value = Vec::new();
@@ -265,7 +405,7 @@ impl MemoryStream {
         if let Some(work) = &self.work {
             let output = work.record(crate::native::clone_envelope(
                 value,
-                &work.meter,
+                self.allocation_meter(work),
                 acyclic_native_runtime::NativeOperationKind::Write,
             ))?;
             let (value, allocation) = output.into_parts();

@@ -4,11 +4,13 @@ mod allocation;
 mod arc;
 mod buffer;
 mod codec;
+mod custody;
 mod reservation;
 pub use allocation::{ReadAllocation, ReadAllocationReservation};
 pub use arc::arc_allocation_bytes;
 pub(crate) use buffer::ReadBuffer;
 pub use codec::{NativeCodecReservation, NativeCodecWork};
+pub use custody::{CustodyTransfer, NativeCapacity, NativeCustody};
 pub use reservation::{NativeByteReservation, NativeOperationReservation};
 pub(crate) use reservation::{native_control_attempt, native_operation_attempt};
 
@@ -38,6 +40,10 @@ pub trait NativeReadMeter: Send + Sync {
     /// `ProcessTreeIo` uses its supplied Arc directly, preserving accounting windows.
     /// Allocation guards resolve this owner before charging or consuming credit.
     fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> {
+        None
+    }
+    /// The store capacity that currently owns this meter's retained bytes.
+    fn store_capacity(&self) -> Option<Arc<NativeCapacity>> {
         None
     }
     /// Withholds a concrete request's possible operations without inventing spent work; allowance remains unavailable to reentrant callbacks.

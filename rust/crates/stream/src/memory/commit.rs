@@ -180,17 +180,11 @@ impl MemoryStream {
                 (bodies.len() * std::mem::size_of::<Record>()) as u64,
             ))?;
         }
-        let records = crate::preparation::records(origin, start, bodies, commit_id, time, buffer)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let records = {
-            let mut records = records;
-            if let Some(work) = &self.work {
-                for record in &mut records {
-                    record.headers = work.record(record.headers.bind_native(&work.meter))?;
-                }
-            }
-            records
-        };
+        let mut records =
+            crate::preparation::records(origin, start, bodies, commit_id, time, buffer)?;
+        for record in &mut records {
+            self.keep_body(&mut record.value, &mut record.headers)?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.record_examination(
@@ -242,6 +236,8 @@ impl MemoryStream {
             },
             output,
         )?;
+        let mut facts = facts;
+        self.keep_facts(&mut facts)?;
         Ok((facts, allocation))
     }
     fn histories(
@@ -465,6 +461,11 @@ impl MemoryStream {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .upgrade();
+        // A custody-funded write owns its growth chain. Sharing it would let
+        // another writer install buffers still charged to the first writer's
+        // custody, with no transfer to the store.
+        #[cfg(not(target_arch = "wasm32"))]
+        let pending = pending.filter(|_| self.custody.is_none());
         if let Some(pending) = pending.as_ref().filter(|pending| pending.segment >= top) {
             return Ok(Some(Arc::clone(pending)));
         }
@@ -562,6 +563,7 @@ impl MemoryStream {
             };
             let (receipt, mut claim) = self.replayed(request, result, self.revisions.at(index))?;
             let envelope = self.selected_envelope(result, accepted, &mut claim)?;
+            self.hand_back(&mut claim)?;
             // A saved success owns its selection and durability. Conditions
             // and lease ownership may have changed since that publication.
             return Ok(Decision::Returned {
@@ -628,6 +630,8 @@ impl MemoryStream {
             } else {
                 crate::WriteOutcome::Commit(result)
             };
+            let mut output_claim = output_claim;
+            self.hand_back(&mut output_claim)?;
             return Ok(Decision::Returned {
                 result: (result, output_claim),
                 ephemeral: false,
@@ -692,6 +696,8 @@ impl MemoryStream {
             durable,
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
+        let key = self.keep_key(&request.idempotency_key)?;
+        let retention = self.reserve_custody(&mut publication.output_claim)?;
         Ok(Decision::Accepted {
             ephemeral: matches!(scope, Scope::Ephemeral(_)),
             bytes,
@@ -718,11 +724,12 @@ impl MemoryStream {
                 let (outcome, allocation) = publication.publish(
                     state,
                     &mut |items| self.record_replay_probe(&mut probes, items),
-                    request.idempotency_key.clone(),
+                    key,
                     digest,
                     &scope,
                     retained,
                 )?;
+                Self::keep(retention);
                 Ok((commit_projection(outcome, envelope)?, allocation))
             },
         })

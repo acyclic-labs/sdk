@@ -299,12 +299,15 @@ async fn native_commit_owns_admitted_and_retained_fork_exclusions() -> MemoryRes
         );
     }
     drop(output);
-    assert!(
-        meter.held.load(Ordering::SeqCst) > 0,
-        "resident facts retain their custody"
+    assert_eq!(
+        meter.held.load(Ordering::SeqCst),
+        0,
+        "resident facts belong to the store, not to their writer"
     );
+    let capacity = Arc::clone(&provider.capacity);
+    assert!(capacity.held() > 0);
     drop(provider);
-    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    assert_eq!(capacity.held(), 0);
     Ok(())
 }
 

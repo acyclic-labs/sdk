@@ -104,11 +104,12 @@ impl MemoryStream {
         let mut state = self.state.write().await;
         match &canonical.command {
             WriteRequest::Append(request) => {
-                let plan = self.plan_append_locked(&mut state, request)?;
+                let core = self.in_custody()?;
+                let plan = core.plan_append_locked(&mut state, request)?;
                 // Only the native local provider leases ephemeral subtrees.
                 #[cfg(not(target_arch = "wasm32"))]
                 let ephemeral = plan.ephemeral();
-                plan.durable(self, state, persist.as_mut())
+                plan.durable(&core, state, persist.as_mut())
                     .await
                     .map(|(result, allocation)| Execution {
                         outcome: WriteOutcome::Append(result),
@@ -118,11 +119,12 @@ impl MemoryStream {
                     })
             }
             WriteRequest::Fork(request) => {
-                let plan = self.plan_fork_locked(&mut state, request)?;
+                let core = self.in_custody()?;
+                let plan = core.plan_fork_locked(&mut state, request)?;
                 // Only the native local provider leases ephemeral subtrees.
                 #[cfg(not(target_arch = "wasm32"))]
                 let ephemeral = plan.ephemeral();
-                plan.durable(self, state, persist.as_mut())
+                plan.durable(&core, state, persist.as_mut())
                     .await
                     .map(|result| Execution {
                         outcome: WriteOutcome::Fork(result),
@@ -133,7 +135,8 @@ impl MemoryStream {
             }
             WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
                 let digest = canonical.digest.ok_or(StreamError::InvalidResponse)?;
-                let plan = self.plan_commit_locked(
+                let core = self.in_custody()?;
+                let plan = core.plan_commit_locked(
                     &mut state,
                     request,
                     digest,
@@ -143,7 +146,7 @@ impl MemoryStream {
                 // Only the native local provider leases ephemeral subtrees.
                 #[cfg(not(target_arch = "wasm32"))]
                 let ephemeral = plan.ephemeral();
-                plan.durable(self, state, persist.as_mut())
+                plan.durable(&core, state, persist.as_mut())
                     .await
                     .map(|(result, allocation)| Execution {
                         outcome: result,

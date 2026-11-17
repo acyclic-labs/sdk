@@ -416,6 +416,45 @@ impl OwnedBytes {
             other => Err(other),
         }
     }
+    /// Gives these bytes to the ledger `meter` funds. Bytes another ledger
+    /// funds are copied once, so whoever keeps them pays for them; unmetered
+    /// bytes and bytes `meter` already funds are shared without a copy.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn bind_native(
+        &self,
+        meter: &Arc<dyn NativeReadMeter>,
+        store: &Arc<acyclic_native_runtime::NativeCapacity>,
+    ) -> io::Result<Self> {
+        if self.data.meter().is_none() || self.matches_meter(meter) || self.matches_store(store) {
+            return Ok(self.clone());
+        }
+        let length = self.len();
+        let copied =
+            u64::try_from(length).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        meter.admit_codec(0, copied, 0)?;
+        let mut claim = ReadAllocation::new(meter, length)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|error| meter.allocation_failed(error))?;
+        claim.reconcile_capacity(bytes.capacity())?;
+        bytes.extend_from_slice(self.as_slice());
+        meter.record_codec(0, copied, 0)?;
+        Self::from_vec_with_guard(bytes, claim, Arc::clone(meter)).map_err(|failure| match failure
+            .into_error()
+        {
+            PreparedOwnedBytesError::Admission(error) => error,
+            PreparedOwnedBytesError::NotFullyInitialized => io::ErrorKind::InvalidData.into(),
+        })
+    }
+    /// Whether these bytes are already funded by `store`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn matches_store(&self, store: &Arc<acyclic_native_runtime::NativeCapacity>) -> bool {
+        self.data
+            .meter()
+            .and_then(|meter| meter.store_capacity())
+            .is_some_and(|capacity| Arc::ptr_eq(&capacity, store))
+    }
     /// Compares the original allocation-owner identity.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]

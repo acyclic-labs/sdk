@@ -1,6 +1,16 @@
 use super::*;
 
 pub(super) const LEAF_HEADER_BYTES: usize = 33;
+const DIGEST_BYTES: usize = 32;
+/// A branch's kind tag and crit bit.
+const BRANCH_HEADER_BYTES: usize = 2;
+const BRANCH_CHILDREN: usize = 2;
+/// The widest canonical sequence varint: seven bits per byte of a `u64`.
+const MAX_SEQUENCE_BYTES: usize = (8 * size_of::<u64>()).div_ceil(7);
+/// The widest branch page: every child at the full sequence width.
+#[cfg(test)]
+pub(in crate::filesystem::execution_journal) const MAX_BRANCH_BYTES: usize =
+    BRANCH_HEADER_BYTES + BRANCH_CHILDREN * (MAX_SEQUENCE_BYTES + DIGEST_BYTES);
 
 #[derive(Clone, Copy)]
 pub(in crate::filesystem::execution_journal) enum Node<'a> {
@@ -11,7 +21,7 @@ pub(in crate::filesystem::execution_journal) enum Node<'a> {
     },
     Branch {
         bit: u16,
-        children: [NodeRef; 2],
+        children: [NodeRef; BRANCH_CHILDREN],
     },
 }
 
@@ -51,10 +61,11 @@ impl<'a> Node<'a> {
             }
             Some(0x21) => {
                 let bit = u16::from(*bytes.get(1).ok_or_else(malformed)?);
-                let mut input = bytes.get(2..).ok_or_else(malformed)?;
+                let mut input = bytes.get(BRANCH_HEADER_BYTES..).ok_or_else(malformed)?;
                 let mut link = || -> Result<NodeRef> {
                     let child_sequence = read_number(&mut input, io)?;
-                    let (digest, rest) = input.split_at_checked(32).ok_or_else(malformed)?;
+                    let (digest, rest) =
+                        input.split_at_checked(DIGEST_BYTES).ok_or_else(malformed)?;
                     let child = NodeRef {
                         sequence: child_sequence,
                         digest: digest.try_into().map_err(|_| malformed())?,
@@ -82,10 +93,12 @@ impl<'a> Node<'a> {
         let length = match self {
             Self::Leaf { value, .. } => value.len().checked_add(LEAF_HEADER_BYTES),
             Self::Branch { children, .. } => Some(
-                66 + children
-                    .iter()
-                    .map(|child| number_len(child.sequence))
-                    .sum::<usize>(),
+                BRANCH_HEADER_BYTES
+                    + BRANCH_CHILDREN * DIGEST_BYTES
+                    + children
+                        .iter()
+                        .map(|child| number_len(child.sequence))
+                        .sum::<usize>(),
             ),
         }
         .filter(|length| *length <= acyclic_stream::MAX_RECORD_BYTES)
@@ -153,10 +166,10 @@ fn write_number(mut value: u64, bytes: &mut Vec<u8>) {
 fn read_number(bytes: &mut &[u8], io: Option<&PreparationIo>) -> Result<u64> {
     let malformed = || invalid(io, "execution index sequence is malformed");
     let mut value = 0;
-    for shift in (0..=63).step_by(7) {
+    for shift in (0..7 * MAX_SEQUENCE_BYTES).step_by(7) {
         let (byte, rest) = bytes.split_first().ok_or_else(malformed)?;
         *bytes = rest;
-        if shift == 63 && *byte > 1 {
+        if shift == 7 * (MAX_SEQUENCE_BYTES - 1) && *byte > 1 {
             return Err(malformed());
         }
         value |= u64::from(byte & 127) << shift;

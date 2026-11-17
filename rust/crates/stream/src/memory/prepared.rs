@@ -34,6 +34,8 @@ pub(crate) struct PreparedCommit {
     probes: ReplayProbes,
     codec: NativeCodecReservation<Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
     headers: crate::record_headers::PreparedHeaders,
+    body: crate::PreparedOwnedBytes<acyclic_native_runtime::ReadAllocation>,
+    body_codec: NativeCodecReservation<Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
     key_nodes: Allocation,
     key_probes: ReplayProbes,
     /// Only this admitted append retains the key view it will extend at binding.
@@ -93,11 +95,32 @@ impl MemoryStream {
         let publication_hash = maximum_hash
             .checked_add(identity_bytes())
             .ok_or(StreamError::Capacity)?;
+        let meter = Arc::clone(self.allocation_meter(work));
         let headers = work.record(crate::record_headers::PreparedHeaders::new_shape(
-            &work.meter,
+            &meter,
             maximum,
             capacity.keys,
             capacity.attributes,
+        ))?;
+        let mut body_allocation = acyclic_native_runtime::ReadAllocation::empty(&meter);
+        let body_bytes =
+            work.record(crate::native::vector(maximum, &meter, &mut body_allocation))?;
+        let body = work.record(
+            crate::PreparedOwnedBytes::new_buffer(body_bytes, body_allocation, &meter).map_err(
+                |failure| match failure.into_error() {
+                    crate::PreparedOwnedBytesError::Admission(error) => error,
+                    crate::PreparedOwnedBytesError::NotFullyInitialized => {
+                        std::io::ErrorKind::InvalidData.into()
+                    }
+                },
+            ),
+        )?;
+        let body_codec = work.record(NativeCodecReservation::new(
+            Arc::clone(&work.meter),
+            NativeCodecWork {
+                copied: maximum as u64,
+                ..NativeCodecWork::default()
+            },
         ))?;
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
@@ -162,7 +185,8 @@ impl MemoryStream {
         )?;
         let namespace = self.namespace_reserve(&append(&plan.result).path)?;
         let conflict = self.vector(2)?;
-        let prototype = self.copy_envelope(&plan.envelope)?;
+        let mut prototype = self.copy_envelope(&plan.envelope)?;
+        self.hand_back(&mut prototype.1)?;
         let effect = request.effects.pop().ok_or(StreamError::InvalidArgument)?;
         let conditions: [CommitCondition; 2] = effect
             .conditions
@@ -171,7 +195,8 @@ impl MemoryStream {
         drop(state);
         drop((effect.mutations, request.effects));
         drop(input);
-        let key = request.idempotency_key;
+        // Bound now: a funded publication allocates nothing after durability.
+        let key = self.keep_key(&request.idempotency_key)?;
         let deadline = request.deadline_unix_millis;
         let recovery = self.prepare_recovery(
             key.clone(),
@@ -204,6 +229,8 @@ impl MemoryStream {
                 probes,
                 codec,
                 headers,
+                body,
+                body_codec,
                 key_nodes,
                 key_probes,
                 base_keys,
@@ -432,7 +459,7 @@ impl PreparedCommit {
                 if stored.digest != digest {
                     return Err(StreamError::IdempotencyMismatch);
                 }
-                let result = copy_outcome(
+                let (result, mut output_claim) = copy_outcome(
                     stored,
                     self.provider.revisions.at(stored.index),
                     crate::PreparedRecordCapacity {
@@ -442,8 +469,9 @@ impl PreparedCommit {
                     },
                     (self.plan.result, self.plan.output_claim),
                 )?;
-                let _ = work.record(record_codec(&mut self.codec, copied_bytes(&result.0), 0));
-                return Ok(result);
+                self.provider.hand_back(&mut output_claim)?;
+                let _ = work.record(record_codec(&mut self.codec, copied_bytes(&result), 0));
+                return Ok((result, output_claim));
             }
             if state.ephemeral_key_is_spent(self.key.as_bytes(), |items| {
                 self.provider.record_replay_probe(&mut self.probes, items);
@@ -473,12 +501,27 @@ impl PreparedCommit {
             if !conflicts.is_empty() {
                 let value = CommitOutcome::Conflict(conflicts);
                 let _ = work.record(record_codec(&mut self.codec, 2 * copied_bytes(&value), 0));
+                let mut output_claim = output_claim;
+                self.provider.hand_back(&mut output_claim)?;
                 return Ok((value, output_claim));
             }
             let bytes = body.payload_bytes();
             let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
             let time = self.provider.admitted_time(&state, [&body])?;
             let id = commit_identity(decision, digest);
+            let length = body.value.len();
+            let mut prepared_body = self.body;
+            prepared_body
+                .extend_within_capacity(body.value.as_slice())
+                .ok_or(StreamError::InvalidArgument)?;
+            let value = prepared_body
+                .freeze(length)
+                .map_err(|_| StreamError::InvalidArgument)?;
+            work.record(self.body_codec.record(NativeCodecWork {
+                copied: length as u64,
+                ..NativeCodecWork::default()
+            }))?;
+            body.value = value;
             bind_body(&mut self.plan, body)?;
             for history in &mut self.plan.histories {
                 if let History::Batch { records, .. } =
@@ -509,6 +552,9 @@ impl PreparedCommit {
                     reserve: Some(&mut self.namespace),
                 },
             )?;
+            let retention = self
+                .provider
+                .reserve_custody(&mut publication.output_claim)?;
             let mut persist = std::pin::pin!(persist);
             Decision::Accepted {
                 ephemeral: false,
@@ -516,14 +562,16 @@ impl PreparedCommit {
                 install: |state: &mut State, _durable, at_millis| {
                     publication.bind_acceptance(state, at_millis, &Scope::Durable)?;
                     let retained = self.provider.install_retained(state, self.retained)?;
-                    publication.publish(
+                    let published = publication.publish(
                         state,
                         &mut |items| self.provider.record_replay_probe(&mut self.probes, items),
                         self.key,
                         digest,
                         &Scope::Durable,
                         PublicationRetention::Durable(retained),
-                    )
+                    )?;
+                    MemoryStream::keep(retention);
+                    Ok(published)
                 },
             }
             .durable(&self.provider, state, persist.as_mut())

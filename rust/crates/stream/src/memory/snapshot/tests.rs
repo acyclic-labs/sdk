@@ -97,6 +97,7 @@ async fn captured_snapshot_keeps_original_native_allocation_custody()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let meter = Arc::new(crate::test_meter::Meter::local());
     let provider = MemoryStream::default();
+    let capacity = Arc::clone(&provider.capacity);
     let output = provider
         .native_append(
             AppendRequest {
@@ -125,19 +126,20 @@ async fn captured_snapshot_keeps_original_native_allocation_custody()
             )
             .await??,
     );
+    let resident = capacity.held();
     drop(provider);
+    // Landed writes leave nothing on their writers: the store keeps them.
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    assert_eq!(later_meter.held.load(Ordering::SeqCst), 0);
+    // The capture keeps the first write resident. No later payload is
+    // retained, but the old tail's weak successor still owns its Arc storage.
     assert!(
-        meter.held.load(Ordering::SeqCst) > 0,
-        "capture lost original resident custody"
-    );
-    // No later payload is retained, but the old tail's weak successor still
-    // owns its Arc storage. Removing the link's original claim refunds early.
-    assert_eq!(
-        later_meter.held.load(Ordering::SeqCst),
-        (std::mem::size_of::<RetainedFact>() + 2 * std::mem::size_of::<usize>()) as u64,
+        capacity.held() > 0 && capacity.held() < resident,
+        "capture lost the store's resident custody"
     );
     assert_eq!(cut.encode(), encoded);
     drop(cut);
+    assert_eq!(capacity.held(), 0);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     meter.assert_refunded();
     assert_eq!(later_meter.held.load(Ordering::SeqCst), 0);
