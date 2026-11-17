@@ -43,7 +43,7 @@ pub struct IndexInsertionBound {
 }
 
 /// One shared exclusive cut and the original funding that keeps it alive.
-struct Cut<K, A> {
+pub(crate) struct Cut<K, A> {
     key: K,
     _allocation: A,
 }
