@@ -36,7 +36,7 @@ register_toolchains("@musl_toolchains_hub//:all", dev_dependency = True)
 
 register_toolchains("@llvm_toolchain//:all", dev_dependency = True)
 
-# The Node.js runtime tests start, from the official release for the host platform. It is this
+# The Node.js runtime tests start, from the official release for the target platform. It is this
 # module's own test setup, so a module that depends on this one fetches no Node.js.
 node = use_extension("//:node_repo.bzl", "node", dev_dependency = True)
 node.node(version = "24.22.2")
