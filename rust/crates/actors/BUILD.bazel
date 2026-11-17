@@ -9,6 +9,10 @@ FEATURES = [
         "test-support",
     ]
 
+WASM_FEATURES = [
+        "conformance",
+    ]
+
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-actors","CARGO_PKG_DESCRIPTION":"Public Actors v1 contract and validation","CARGO_PKG_REPOSITORY":"https://github.com/acyclic-labs/sdk","CARGO_PKG_LICENSE":"Apache-2.0","CARGO_PKG_RUST_VERSION":"1.98"}
 
 extract_cargo_lints(
@@ -398,6 +402,7 @@ rust_binary(
         "//rust/crates/contract-derive:acyclic_contract_derive",
         "@sdk_crates//async-trait-0.1.92",
     ],
+    visibility = ["//visibility:public"],
 )
 
 rust_binary(
@@ -465,6 +470,7 @@ rust_binary(
         "//rust/crates/contract-derive:acyclic_contract_derive",
         "@sdk_crates//async-trait-0.1.92",
     ],
+    visibility = ["//visibility:public"],
 )
 
 rust_binary(
@@ -666,6 +672,93 @@ rust_binary(
         "//rust/crates/contract-derive:acyclic_contract_derive",
         "@sdk_crates//async-trait-0.1.92",
     ],
+)
+
+cargo_build_script(
+    name = "build_script_wasm",
+    crate_root = "build.rs",
+    srcs = [
+        "build.rs",
+        "src/codegen.rs",
+        "src/codegen/path.rs",
+    ],
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    data = glob(["**"], exclude = ["BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    pkg_name = "acyclic-actors",
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"conformance\", \"model-checking\", \"test-support\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    build_script_env = PACKAGE_ENV,
+    deps = [
+        "//compatibility:acyclic_proto_build",
+        "//rust/crates/grpc-observability:acyclic_grpc_observability",
+        "//rust/crates/host-platform:acyclic_host_platform",
+    ],
+)
+
+rust_library(
+    name = "acyclic_actors_wasm",
+    crate_name = "acyclic_actors",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True) + [
+        "tests/fixtures/actors/v1/actors-pre-secrets.bin",
+    ],
+    edition = "2024",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"conformance\", \"model-checking\", \"test-support\"))",
+        "--check-cfg=cfg(fuzzing)",
+        "--check-cfg=cfg(loom)",
+        "--check-cfg=cfg(kani)",
+        "--check-cfg=cfg(tokio_unstable)",
+    ],
+    lint_config = ":lints",
+    deps = [
+        ":build_script_wasm",
+    ] + [
+        "//rust/crates/auth:acyclic_auth_wasm",
+        "//rust/crates/objects:acyclic_objects_wasm",
+        "//rust/crates/observability:acyclic_observability_wasm",
+        "//rust/crates/protobuf-json:acyclic_protobuf_json_wasm",
+        "//rust/crates/stream:acyclic_stream_wasm",
+        "//rust/vendor/tonic-web-wasm-client-0.9.2:tonic_web_wasm_client_wasm",
+        "@wasm_crates//bytes-1.12.1",
+        "@wasm_crates//futures-0.3.34",
+        "@wasm_crates//http-1.5.0",
+        "@wasm_crates//http-body-1.1.0",
+        "@wasm_crates//prost-0.14.4",
+        "@wasm_crates//prost-reflect-0.16.5",
+        "@wasm_crates//serde-1.0.229",
+        "@wasm_crates//serde_bytes-0.11.19",
+        "@wasm_crates//serde_json-1.0.154",
+        "@wasm_crates//sha2-0.11.1",
+        "@wasm_crates//thiserror-2.0.21",
+        "@wasm_crates//tokio-1.54.1",
+        "@wasm_crates//tokio-util-0.7.20",
+        "@wasm_crates//tonic-0.14.9",
+        "@wasm_crates//tonic-prost-0.14.6",
+        "@wasm_crates//ts-rs-12.0.1",
+        "@wasm_crates//url-2.5.8",
+        "@wasm_crates//uuid-1.29.0",
+    ],
+    proc_macro_deps = [
+        "//rust/crates/contract-derive:acyclic_contract_derive",
+    ],
+    visibility = ["//visibility:public"],
 )
 
 filegroup(
