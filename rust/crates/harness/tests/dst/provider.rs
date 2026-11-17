@@ -294,6 +294,19 @@ fn has_file(request: &ModelRequest) -> bool {
         .any(|part| matches!(part, ModelContentPart::File { .. }))
 }
 
+fn has_child_notice(request: &ModelRequest) -> bool {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .any(|part| match part {
+            ModelContentPart::Notices { notices } => {
+                notices.iter().any(|notice| notice.kind == "child.settled")
+            }
+            _ => false,
+        })
+}
+
 fn d3_service(transition: &'static str) -> ScriptedModelProvider {
     let failed = Mutex::new(false);
     let responder = move |request: &ModelRequest| {
@@ -562,6 +575,12 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                     if requests[0].messages != requests[1].messages {
                         return fail("the Retry-After retry changed the request bytes");
                     }
+                }
+                "child_notice_mid_turn" => {
+                    if !incarnation.requests.iter().any(has_child_notice) {
+                        return Ok(false);
+                    }
+                    assert_history(&incarnation.requests, "d3-parent")?;
                 }
                 _ => assert_history(&incarnation.requests, "d3-parent")?,
             }
