@@ -17,7 +17,7 @@ _RELEASES = {
 _DEFS = """\
 def _tool_impl(ctx):
     node = ctx.file.node
-    executable = ctx.actions.declare_file(ctx.label.name + (".exe" if ctx.os.name == "windows" else ""))
+    executable = ctx.actions.declare_file(ctx.label.name + ("." + node.extension if node.extension else ""))
     ctx.actions.symlink(output = executable, target_file = node, is_executable = True)
     return [DefaultInfo(
         executable = executable,
