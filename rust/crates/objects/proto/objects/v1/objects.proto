@@ -80,6 +80,9 @@ message Part {
 message Manifest {
   repeated Part parts = 1 [(acyclic.validation.v1.min_items) = 1];
   repeated Digest edges = 2;
+  // Publisher-declared SHA-256 of the concatenated logical bytes. Admission
+  // does not verify the declaration; consumers requiring it verify the body.
+  optional bytes sha256 = 3;
 }
 message PutManifestRequest {
   Manifest manifest = 1;

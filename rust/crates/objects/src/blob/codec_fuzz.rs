@@ -307,6 +307,7 @@ pub fn check(bytes: &[u8]) -> bool {
     let manifest = Manifest {
         parts,
         edges: references.clone(),
+        sha256: None,
     };
     // Wide arithmetic independently checks the public logical-length boundary.
     let length: u128 = manifest
@@ -331,6 +332,7 @@ pub fn check(bytes: &[u8]) -> bool {
     if (Manifest {
         parts: vec![part, part],
         edges: vec![edge, digest, edge],
+        sha256: None,
     })
     .references()
     .as_slice()
@@ -493,6 +495,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Error> {
             Manifest {
                 parts: vec![Part { digest, length: 22 }],
                 edges: vec![digest],
+                sha256: None,
             }
             .encode()?,
         ),
