@@ -1,3 +1,5 @@
+#![no_std]
+
 #[path = "../../crates/stream/src/preparation/clock.rs"]
 mod production;
 
