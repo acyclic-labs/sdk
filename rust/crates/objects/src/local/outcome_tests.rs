@@ -1,6 +1,6 @@
 //! Outcome controls at the real log's original I/O boundaries.
 use super::*;
-use acyclic_native_runtime::testing::{DurableFault, DurableWrite, Schedule};
+use acyclic_native_runtime::testing::{DurableFault, DurableWrite, Schedule, drive};
 
 fn bytes(value: &[u8]) -> OwnedBytes {
     OwnedBytes::from(value.to_vec())
@@ -13,19 +13,16 @@ async fn empty_ranges_preserve_native_presence_without_dispatch()
 
     async fn counted<T>(operation: impl Future<Output = T>) -> (T, usize) {
         let (schedule, mut events) = Schedule::new();
-        let mut operation = Box::pin(schedule.scope(operation));
         let mut jobs = 0;
-        let result = loop {
-            tokio::select! {
-                result = &mut operation => break result,
-                boundary = events.recv() => {
-                    let boundary = boundary.expect("original read producer ended before its result");
-                    jobs += usize::from(boundary.name == "native:submitted");
-                    boundary.release();
-                }
-            }
-        };
-        schedule.drained().await;
+        let result = drive(
+            &schedule,
+            &mut events,
+            |boundary| {
+                jobs += usize::from(boundary.name == "native:submitted");
+            },
+            operation,
+        )
+        .await;
         (result, jobs)
     }
 
@@ -256,18 +253,10 @@ async fn owned_close_reports_physical_completion_and_failure()
         let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
         assert!(medium.create("key", bytes(b"dirty")).await?);
         let (schedule, mut events) = Schedule::new();
-        let driver = tokio::spawn(async move {
-            while let Some(boundary) = events.recv().await {
-                boundary.release();
-            }
-        });
         if let Some((ordinal, fault)) = cut {
             schedule.cut_at(ordinal, fault);
         }
-        let result = schedule.scope(medium.close()).await;
-        schedule.drained().await;
-        driver.abort();
-        let _ = driver.await;
+        let result = drive(&schedule, &mut events, |_| {}, medium.close()).await;
         let trace = schedule.durable_writes();
         match cut {
             None => {
@@ -417,18 +406,14 @@ async fn mutation_outcome(
         Some(observation(&medium, "key").await)
     };
     let (schedule, mut events) = Schedule::new();
-    let driver = tokio::spawn(async move {
-        while let Some(boundary) = events.recv().await {
-            boundary.release();
-        }
-    });
     schedule.cut_at(0, fault);
-    let result = schedule
-        .scope(apply_mutation(&medium, operation, observed))
-        .await;
-    schedule.drained().await;
-    driver.abort();
-    let _ = driver.await;
+    let result = drive(
+        &schedule,
+        &mut events,
+        |_| {},
+        apply_mutation(&medium, operation, observed),
+    )
+    .await;
     assert!(
         matches!(result, Err(MediumError::Ambiguous(_))),
         "{operation} {fault:?}: {result:?}"
@@ -527,29 +512,20 @@ async fn compacting_mutation(
     medium.flush(&[]).await?;
     let observed = observation(&medium, "key").await;
     let (schedule, mut events) = Schedule::new();
-    let driver = tokio::spawn(async move {
-        while let Some(boundary) = events.recv().await {
-            boundary.release();
-        }
-    });
     if let Some((ordinal, fault)) = cut {
         schedule.cut_at(ordinal, fault);
     }
-    let result = schedule
-        .scope(async {
-            if remove {
-                medium.remove_if(observed).await
-            } else {
-                medium
-                    .replace(observed, bytes(b"new"))
-                    .await
-                    .map(|value| value.is_some())
-            }
-        })
-        .await;
-    schedule.drained().await;
-    driver.abort();
-    let _ = driver.await;
+    let result = drive(&schedule, &mut events, |_| {}, async {
+        if remove {
+            medium.remove_if(observed).await
+        } else {
+            medium
+                .replace(observed, bytes(b"new"))
+                .await
+                .map(|value| value.is_some())
+        }
+    })
+    .await;
     assert!(
         matches!(result, Ok(true)),
         "maintenance {cut:?}: {result:?}"

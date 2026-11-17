@@ -128,15 +128,40 @@ pub fn seeded_test<F: Future>(seed: u64, world: impl FnOnce() -> F) -> std::io::
         // Built inside the scope, so the constructor's own draws are seeded
         // too, and kept on the heap: a test world's future can exceed the
         // test thread's stack, so it is never moved by value.
-        let mut world = Box::pin(schedule.scope(async { world().await }));
-        loop {
-            tokio::select! {
-                output = &mut world => break output,
-                // The schedule holds the sender, so the channel stays open.
-                Some(boundary) = events.recv() => boundary.release(),
+        let world = Box::pin(schedule.scope(async { world().await }));
+        pump_boundaries(&mut events, world, &mut |_| {}).await
+    }))
+}
+
+async fn pump_boundaries<F: Future>(
+    events: &mut mpsc::UnboundedReceiver<Boundary>,
+    future: F,
+    observe: &mut impl FnMut(&Boundary),
+) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    loop {
+        tokio::select! {
+            output = &mut future => return output,
+            Some(boundary) = events.recv() => {
+                observe(&boundary);
+                boundary.release();
             }
         }
-    }))
+    }
+}
+
+/// Drives a finite operation and its accepted descendants to their terminal.
+/// Boundary delivery continues after the operation returns: a detached
+/// physical producer may still need its original submission released.
+pub async fn drive<F: Future>(
+    schedule: &Schedule,
+    events: &mut mpsc::UnboundedReceiver<Boundary>,
+    mut observe: impl FnMut(&Boundary),
+    future: F,
+) -> F::Output {
+    let result = pump_boundaries(events, Box::pin(schedule.scope(future)), &mut observe).await;
+    pump_boundaries(events, schedule.drained(), &mut observe).await;
+    result
 }
 
 #[cfg(test)]

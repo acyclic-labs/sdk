@@ -1,33 +1,10 @@
 //! Seeded operation histories over the shipping Objects implementation.
 use super::*;
-use acyclic_native_runtime::testing::{Schedule, fill_seeded, seeded_runtime};
+use acyclic_native_runtime::testing::{Schedule, drive, fill_seeded, seeded_runtime};
 
 type Failure = Box<dyn std::error::Error>;
 
 mod local;
-
-async fn drive<T>(
-    schedule: &Schedule,
-    boundaries: &mut tokio::sync::mpsc::UnboundedReceiver<
-        acyclic_native_runtime::testing::Boundary,
-    >,
-    future: impl std::future::Future<Output = T>,
-) -> T {
-    let mut turn = Box::pin(schedule.scope(future));
-    let result = loop {
-        tokio::select! {
-            result = &mut turn => break result,
-            boundary = boundaries.recv() => boundary.expect("boundary channel closed").release(),
-        }
-    };
-    drop(turn);
-    loop {
-        tokio::select! {
-            () = schedule.drained() => return result,
-            boundary = boundaries.recv() => boundary.expect("drain channel closed").release(),
-        }
-    }
-}
 
 async fn history() -> Result<(), Failure> {
     let store = Store::new(MemoryMedium::default());
@@ -106,7 +83,7 @@ fn replay(seed: u64) -> Result<(), Failure> {
     seeded_runtime(seed)?.block_on(async {
         tokio::time::pause();
         let (schedule, mut boundaries) = Schedule::seeded(seed);
-        drive(&schedule, &mut boundaries, history()).await
+        drive(&schedule, &mut boundaries, |_| {}, history()).await
     })
 }
 
