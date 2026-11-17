@@ -2,10 +2,13 @@ use crate::{MAX_PATH_BYTES, StreamError};
 use std::{fmt, sync::Arc};
 
 /// Permanent account-relative slash-separated ASCII path.
+/// The value occupies three machine words and shares its path text.
 pub struct StreamPath {
     text: PathText,
     length: usize,
 }
+
+const _: () = assert!(std::mem::size_of::<StreamPath>() == 3 * std::mem::size_of::<usize>());
 
 #[derive(Clone)]
 enum PathText {

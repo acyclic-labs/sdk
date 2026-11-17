@@ -95,18 +95,6 @@ fn ancestor_rejects_the_reviewed_invalid_trailing_separator() {
     assert_eq!(path.ancestor("a").unwrap().as_str(), "a");
 }
 
-#[test]
-fn path_storage_is_three_words_and_old_storage_fails_the_same_bound() {
-    let expected = 3 * std::mem::size_of::<usize>();
-    eprintln!(
-        "path_value_size before={} after={}",
-        std::mem::size_of::<BaselinePath>(),
-        std::mem::size_of::<StreamPath>()
-    );
-    assert_eq!(std::mem::size_of::<StreamPath>(), expected);
-    assert_ne!(std::mem::size_of::<BaselinePath>(), expected);
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 std::thread_local! { static COPY_ON_CLONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 #[cfg(not(target_arch = "wasm32"))]
