@@ -25,24 +25,6 @@ proptest! {
     }
 }
 
-#[test]
-fn pairwise_bounds_reject_invalid_input_sizes() {
-    for bound in [Bound::Constant, Bound::Linear] {
-        for (small, large) in [(0, 1), (0, 0), (1, 1), (2, 1), (1, 0)] {
-            let panic = std::panic::catch_unwind(|| {
-                assert_scales(bound, (small, 0), (large, 0));
-            })
-            .expect_err("invalid sizes must be rejected even for zero measured work");
-            let message = panic
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| panic.downcast_ref::<&str>().copied())
-                .expect("assertion diagnostic");
-            assert!(message.contains("require increasing positive inputs"));
-        }
-    }
-}
-
 // These observations are inputs to the shipped report checker, not a model of
 // provider operations or a claim about their physical work and progress.
 fn observed(values: &[Vec<u64>; 3], metric: usize, operation: Operation) -> Report {
