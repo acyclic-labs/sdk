@@ -69,7 +69,7 @@ impl Attempt {
         if !retryable {
             return None;
         }
-        let computed = Duration::from_millis(u64::from(self.redelivery.delay_ms()));
+        let computed = self.redelivery.delay();
         let wait = retry_after.unwrap_or(computed);
         self.status = None;
         Some(wait)
