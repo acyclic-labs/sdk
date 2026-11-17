@@ -17,10 +17,12 @@ acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 bytes.workspace = true
 futures.workspace = true
-h2 = { version = "0.4", default-features = false }
 http.workspace = true
 httpdate = "1.0.3"
 humantime = "2.4.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+h2 = { version = "0.4", default-features = false }
 hyper = { version = "1", default-features = false }
 reqwest.workspace = true
 rustls.workspace = true
