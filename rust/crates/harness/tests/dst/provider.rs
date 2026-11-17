@@ -225,10 +225,23 @@ fn manager_rewrite(request: &ModelRequest) -> ScriptedTurn {
     )
 }
 
+fn review_decision_text() -> String {
+    json!({"version":1,"summary":null,"review_at_input_tokens":999_999}).to_string()
+}
+
 fn review_decision() -> ScriptedTurn {
-    ScriptedTurn::Text(
-        json!({"version":1,"summary":null,"review_at_input_tokens":999_999}).to_string(),
-    )
+    ScriptedTurn::Text(review_decision_text())
+}
+
+fn length_stopped_review() -> ScriptedTurn {
+    ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Content {
+            delta: review_decision_text(),
+        }),
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: json!({"finish_reason":"length","usage":{"completion_tokens":8192}}),
+        }),
+    ])
 }
 
 fn fail<T>(message: &str) -> std::result::Result<T, String> {
@@ -289,6 +302,17 @@ fn has_file(request: &ModelRequest) -> bool {
         .filter(|message| message.role == ModelRole::Assistant)
         .flat_map(|message| message.content.parts())
         .any(|part| matches!(part, ModelContentPart::File { .. }))
+}
+
+fn has_child_notice(request: &ModelRequest) -> bool {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .any(|part| {
+            matches!(part, ModelContentPart::Notices { notices }
+                if notices.iter().any(|notice| notice.kind == "child.settled"))
+        })
 }
 
 fn d3_service(transition: &'static str) -> ScriptedModelProvider {
@@ -363,7 +387,7 @@ fn d3_service(transition: &'static str) -> ScriptedModelProvider {
                     ScriptedEvent::Event(ModelEvent::ToolCall(oracle::call(
                         "d3-spawn",
                         "spawn",
-                        json!({"task": tag("d3-child"), "name": "worker"}),
+                        json!({"task": tag("d3-child"), "name": "worker", "role": "worker"}),
                     ))),
                     ScriptedEvent::Event(ModelEvent::Completed {
                         metadata: json!({"finish_reason":"tool_calls"}),
@@ -374,6 +398,16 @@ fn d3_service(transition: &'static str) -> ScriptedModelProvider {
                         "d3-read",
                         "read",
                         json!({"path":"a.txt"}),
+                    ))),
+                    ScriptedEvent::Event(ModelEvent::Completed {
+                        metadata: json!({"finish_reason":"tool_calls"}),
+                    }),
+                ]),
+                2 => ScriptedTurn::Events(vec![
+                    ScriptedEvent::Event(ModelEvent::ToolCall(oracle::call(
+                        "d3-wait",
+                        "wait",
+                        json!({"agents":["worker"]}),
                     ))),
                     ScriptedEvent::Event(ModelEvent::Completed {
                         metadata: json!({"finish_reason":"tool_calls"}),
@@ -546,6 +580,12 @@ fn prefix_world(seed: u64) -> std::result::Result<bool, String> {
                         return fail("the context review did not reuse the agent header");
                     }
                 }
+                "child_notice_mid_turn" => {
+                    if !incarnation.requests.iter().any(has_child_notice) {
+                        return fail("the parent never saw a child-settlement notice");
+                    }
+                    assert_history(&incarnation.requests, "d3-parent")?;
+                }
                 "length_continuation" => {
                     assert_history(&incarnation.requests, "d3-parent")?;
                     let continued = incarnation
@@ -571,7 +611,11 @@ fn d4_service(call: &'static str, content: &'static str) -> ScriptedModelProvide
     let state = Mutex::new(LengthState { step: 0 });
     let responder = move |request: &ModelRequest| {
         if request.summary {
-            return Ok(length_stop(content, "dst"));
+            return Ok(if call == "context_review" {
+                length_stopped_review()
+            } else {
+                length_stop(content, "dst")
+            });
         }
         if request_tag(request, &["d4-after"]).is_some() {
             return Ok(ScriptedTurn::Text(done("d4-after")));
