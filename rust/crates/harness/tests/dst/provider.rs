@@ -163,19 +163,23 @@ fn assistant_since_prompt(request: &ModelRequest) -> usize {
         .count()
 }
 
+fn reasoning_block(model: &str, continuity: &[u8]) -> ReasoningBlock {
+    ReasoningBlock {
+        kind: ReasoningKind::Readable,
+        text: Some("reasoning retained".into()),
+        origin: ReasoningOrigin {
+            provider: "scripted".into(),
+            model: model.into(),
+            credential_scope: None,
+        },
+        continuity: continuity.to_vec(),
+        outcome: ReasoningOutcome::PreservedReadable,
+    }
+}
+
 fn reasoning(model: &str, continuity: &[u8]) -> ModelEvent {
     ModelEvent::ReasoningBlock {
-        block: ReasoningBlock {
-            kind: ReasoningKind::Readable,
-            text: Some("reasoning retained".into()),
-            origin: ReasoningOrigin {
-                provider: "scripted".into(),
-                model: model.into(),
-                credential_scope: None,
-            },
-            continuity: continuity.to_vec(),
-            outcome: ReasoningOutcome::PreservedReadable,
-        },
+        block: reasoning_block(model, continuity),
     }
 }
 
@@ -730,12 +734,12 @@ fn d4_capacity(capacity: &str) -> acyclic_harness::context::ModelContextCapacity
     }
 }
 
-fn contains_reasoning(request: &ModelRequest) -> bool {
+fn contains_reasoning(request: &ModelRequest, expected: &ReasoningBlock) -> bool {
     request
         .messages
         .iter()
         .flat_map(|message| message.content.parts())
-        .any(|part| matches!(part, ModelContentPart::Reasoning { .. }))
+        .any(|part| matches!(part, ModelContentPart::Reasoning { block } if block == expected))
 }
 
 fn length_world(seed: u64) -> std::result::Result<bool, String> {
@@ -851,10 +855,17 @@ fn length_world(seed: u64) -> std::result::Result<bool, String> {
                             incarnation.prompts
                         ));
                     }
-                    if content == "reasoning_only"
-                        && !incarnation.requests.iter().any(contains_reasoning)
-                    {
-                        return fail("reasoning did not round-trip into the continuation");
+                    if content == "reasoning_only" {
+                        let expected = reasoning_block("dst", b"exact reasoning");
+                        if !incarnation
+                            .requests
+                            .iter()
+                            .any(|request| contains_reasoning(request, &expected))
+                        {
+                            return fail(
+                                "reasoning did not round-trip into the continuation byte-exactly",
+                            );
+                        }
                     }
                     if content == "partial_tool_call"
                         && incarnation.requests.iter().any(|request| {
