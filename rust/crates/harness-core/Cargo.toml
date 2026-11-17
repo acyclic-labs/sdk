@@ -38,7 +38,7 @@ path = "tests/computed_ui_records.rs"
 research = ["acyclic-observability/research"]
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance", "acyclic-machines/conformance"]
 test-support = ["acyclic-observability/test-support", "acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support", "acyclic-harness-layout/test-support"]
-model-checking = ["dep:loom", "dep:same-file", "acyclic-fs/model-checking", "acyclic-mcp/model-checking"]
+model-checking = ["dep:loom", "dep:same-file", "acyclic-fs/model-checking"]
 browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-stream/wasm", "dep:tsify"]
 
