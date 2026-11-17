@@ -1280,7 +1280,14 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     .unwrap_err()
     .to_string();
     let before = snapshot(fixture._directory.path());
-    let refused = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
+    let mut configured = graphcoder_command(&fixture);
+    configured
+        .arg("--settings-root")
+        .arg(&fixture.settings)
+        .arg("--catalog")
+        .arg(&model.catalog)
+        .arg("doctor");
+    let refused = capture(configured, "").await;
     assert!(!refused.status.success());
     let report: Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert!(
