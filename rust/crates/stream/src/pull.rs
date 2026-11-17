@@ -20,7 +20,8 @@ impl<T, E: Clone> PullCursor<T, E> {
             unavailable,
         }
     }
-    /// Pulls one value; close interrupts the pending source poll.
+    /// Pulls one value; close interrupts the pending source poll. Each call
+    /// constructs exactly one `next` future, so it cannot scan ahead.
     /// Failed ownership, including an outstanding or abandoned pull, returns
     /// the supplied error instead of EOF. A source failure is returned before
     /// closing its cursor.
