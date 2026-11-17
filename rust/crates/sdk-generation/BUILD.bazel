@@ -120,6 +120,7 @@ isolated_test(
     exclude = ["::full_cloud::"],
     workers = 1,
     limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
 )
 
 isolated_test(
@@ -132,6 +133,7 @@ isolated_test(
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     workers = 1,
     limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
     tags = ["manual"],
 )
 
@@ -289,6 +291,7 @@ isolated_test(
     exclude = ["::full_cloud::"],
     workers = 1,
     limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
 )
 
 isolated_test(
@@ -301,6 +304,7 @@ isolated_test(
     wrapper_data = ["//:scripts/local-cloud.mjs"],
     workers = 1,
     limit_seconds = 10,
+    env_inherit = ["PATH","RUSTUP_HOME","CARGO_HOME"],
     tags = ["manual"],
 )
 
