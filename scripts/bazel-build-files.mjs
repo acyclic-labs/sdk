@@ -183,14 +183,37 @@ for (const file of execFileSync("git", ["ls-files", "typescript/packages/*/packa
   const pkg = JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
   if (pkg.name) workspacePackages.set(pkg.name, path.dirname(file).replaceAll("\\", "/"));
 }
-// The workspace packages a wasm package's TypeScript package depends on.
+// Assemble the complete locked runtime closure, including the consumer itself.
+// Its sources and generated artifacts then share one physical package directory.
+const npmLock = JSON.parse(execFileSync("bun", ["-e", "process.stdout.write(JSON.stringify(Bun.JSONC.parse(await Bun.stdin.text())))"],
+  { input: fs.readFileSync(path.join(root, "bun.lock")), encoding: "utf8" }));
+const npmRepositories = new Map();
 const wasmNodeModules = new Map();
 for (const selection of wasmSelections) {
   if (!selection.wasmPackage) continue;
-  const manifest = path.join(root, `typescript/packages/${selection.outputPackage ?? selection.name}`, "package.json");
-  if (!fs.existsSync(manifest)) continue;
-  const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"));
-  wasmNodeModules.set(selection.name, Object.keys(pkg.dependencies ?? {}).filter(name => workspacePackages.has(name)).map(name => ({ name, dir: workspacePackages.get(name) })));
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, `typescript/packages/${selection.outputPackage ?? selection.name}/package.json`), "utf8"));
+  const closure = new Map();
+  const visit = name => {
+    if (closure.has(name)) return;
+    const dir = workspacePackages.get(name);
+    let dependencies;
+    if (dir) {
+      closure.set(name, { name, dir });
+      dependencies = JSON.parse(fs.readFileSync(path.join(root, dir, "package.json"), "utf8"));
+    } else {
+      const locked = npmLock.packages[name];
+      if (!locked || !locked[3]?.startsWith("sha512-")) throw new Error(`No locked registry archive for ${name}`);
+      const resolved = locked[0], at = resolved.lastIndexOf("@");
+      const packageName = resolved.slice(0, at), version = resolved.slice(at + 1);
+      const repository = `npm_${workspaceTargetName(name)}`;
+      npmRepositories.set(repository, { name: packageName, version, integrity: locked[3] });
+      closure.set(name, { name, repository });
+      dependencies = locked[2];
+    }
+    for (const dependency of Object.keys({ ...dependencies.dependencies, ...dependencies.peerDependencies })) visit(dependency);
+  };
+  visit(pkg.name);
+  wasmNodeModules.set(selection.name, [...closure.values()]);
 }
 
 // Every tracked file belongs to the innermost member directory, or to the root package, as in Bazel.
@@ -723,7 +746,7 @@ function buildFile(p) {
       : {};
     const reads = runtimeData(target);
     const consumer = wasmTestConsumers[p.name];
-    if (consumer) reads.push(wasmGeneratedTarget(consumer), wasmNodeModulesTarget(consumer));
+    if (consumer) reads.push(wasmNodeModulesTarget(consumer));
     test(target.name, separate(target), reads, binaries, target.kind.includes("test") ? `${p.name}::${target.name}` : `${p.name}::${target.kind[0]}/${target.name}`);
   }
   for (const example of executables.filter(t => t.kind.includes("example") && !t.test)) {
@@ -970,6 +993,14 @@ function moduleFile() {
     ![...members].some(id => packages.get(id).name === name) && packageOpt(name) !== undefined ? [[name, packageOpt(name)]] : []);
   return [
     HEADER,
+    `npm_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")\n`,
+    ...[...npmRepositories].sort().map(([repository, pkg]) => rule("npm_archive", [
+      ["name", q(repository)],
+      ["urls", list([`https://registry.npmjs.org/${pkg.name}/-/${pkg.name.split("/").at(-1)}-${pkg.version}.tgz`])],
+      ["integrity", q(pkg.integrity)],
+      ["strip_prefix", q("package")],
+      ["build_file_content", q('filegroup(name = "files", srcs = glob(["**"], exclude = ["BUILD.bazel"]), visibility = ["//visibility:public"])\n')],
+    ])),
     `rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")\n`,
     rule("rust.toolchain", [
       ["versions", list([channel])],
@@ -1096,13 +1127,13 @@ const wasmGeneratedRules = wasmGenerated.map(g => rule("wasm_package", [
 ])).join("\n");
 const wasmNodeModulesRules = wasmSelections.filter(selection => selection.wasmPackage).map(selection => {
   const deps = wasmNodeModules.get(selection.name) ?? [];
-  const filegroups = deps.map(dep => rule("filegroup", [
+  const filegroups = deps.filter(dep => dep.dir).map(dep => rule("filegroup", [
     ["name", q(workspaceTargetName(dep.name))],
     ["srcs", glob([`${dep.dir}/**`], [`${dep.dir}/generated/wasm/**`])],
     ["visibility", q(["//visibility:public"])],
   ])).join("\n");
-  const packages = deps.map(dep => [`:${workspaceTargetName(dep.name)}`, `${dep.name}=${dep.dir}`]);
-  for (const dep of deps) {
+  const packages = deps.map(dep => [dep.dir ? `:${workspaceTargetName(dep.name)}` : `@${dep.repository}//:files`, `${dep.name}=${dep.dir ?? ""}`]);
+  for (const dep of deps.filter(dep => dep.dir)) {
     const generated = wasmGenerated.find(g => g.outDir === `${dep.dir}/generated/wasm`);
     if (generated) packages.push([`:${generated.name}`, `${dep.name}/generated/wasm=`]);
   }
