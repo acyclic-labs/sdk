@@ -637,7 +637,10 @@ fn d4_service(
     warmups: Vec<String>,
     current: String,
 ) -> ScriptedModelProvider {
-    let state = Mutex::new(LengthState { step: 0, summary: 0 });
+    let state = Mutex::new(LengthState {
+        step: 0,
+        summary: 0,
+    });
     let responder = move |request: &ModelRequest| {
         if request.summary {
             let mut state = state
