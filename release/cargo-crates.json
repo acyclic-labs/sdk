@@ -29,6 +29,7 @@
   "acyclic-mcp",
   "acyclic-harness-layout",
   "acyclic-harness-modules",
+  "acyclic-harness-json",
   "acyclic-harness-core",
   "acyclic-harness-client",
   "acyclic-harness-hosting",

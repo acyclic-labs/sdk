@@ -1,14 +1,14 @@
 /// Value reachability in one closed SDK record.
 #[derive(Debug)]
 pub struct JsonValueSchema {
-    pub(super) fields: &'static [(&'static str, &'static JsonValueSchema, u8)],
-    pub(super) elements: &'static [&'static JsonValueSchema],
-    pub(super) tag: &'static str,
-    pub(super) tags: &'static [(&'static str, u8)],
+    fields: &'static [(&'static str, &'static JsonValueSchema, u8)],
+    elements: &'static [&'static JsonValueSchema],
+    tag: &'static str,
+    tags: &'static [(&'static str, u8)],
 }
 macro_rules! schema {
-    ($name:ident $(=> $public:ident)?, $tag:literal, [$($label:literal => $mask:literal),*], [$($field:literal => $child:ident : $gate:literal),*], [$($element:ident),*]) => {
-        pub(super) static $name: JsonValueSchema = JsonValueSchema {
+    ($visibility:vis $name:ident $(=> $public:ident)?, $tag:literal, [$($label:literal => $mask:literal),*], [$($field:literal => $child:ident : $gate:literal),*], [$($element:ident),*]) => {
+        $visibility static $name: JsonValueSchema = JsonValueSchema {
             fields: &[$(($field, &$child, $gate)),*], elements: &[$(&$element),*],
             tag: $tag, tags: &[$(($label, $mask)),*],
         };
@@ -18,9 +18,9 @@ macro_rules! schema {
         })?
     };
 }
-schema!(NONE => NONE, "", [], [], []);
-schema!(ROOT => ROOT, "", [], [], []);
-schema!(UNKNOWN, "", [], [], []);
+schema!(pub NONE => NONE, "", [], [], []);
+schema!(pub ROOT => ROOT, "", [], [], []);
+schema!(pub UNKNOWN, "", [], [], []);
 schema!(SCHEDULE => SCHEDULE, "", [], ["body" => ROOT : 0], []);
 // ApprovalSubject::Tool arguments use deserialize_json_value: serde's private
 // marker keys stay literal. Their derived HeapLayout accounts their tree;
@@ -93,13 +93,18 @@ schema!(
 schema!(FORK_PREPARATION_COMMAND_RESULT, "", [], ["value" => FORK_REPORT_OUTCOME : 0], []);
 schema!(FORK_REPORT_OUTCOME, "", [], ["Succeeded" => FORK_REPORT : 0], []);
 schema!(RECURSIVE_PLAN_PAYLOAD, "", [], ["request" => RESOURCE_PREPARATION_REQUEST : 1, "preparation" => TASK_ADMISSION_RECORD : 1, "authorized_source" => PROJECT_SOURCE_AUTHORIZATION : 2], []);
-pub(super) static MODEL_CONTENT: JsonValueSchema = JsonValueSchema {
+static MODEL_CONTENT: JsonValueSchema = JsonValueSchema {
     fields: MODEL_CONTENT_PART.fields,
     tag: MODEL_CONTENT_PART.tag,
     tags: MODEL_CONTENT_PART.tags,
     elements: &[&MODEL_CONTENT_PART],
 };
 impl JsonValueSchema {
+    /// Field selecting the active variant, empty for an untagged schema.
+    pub const fn tag(&self) -> &'static str {
+        self.tag
+    }
+
     /// Selects the schema for one object field or array element.
     pub fn child(&'static self, key: &[u8], index: Option<usize>) -> (&'static Self, u8) {
         if std::ptr::eq(self, &ROOT) || std::ptr::eq(self, &UNKNOWN) {

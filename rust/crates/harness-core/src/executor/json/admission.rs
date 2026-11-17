@@ -261,7 +261,7 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
             }
             let (schema, gate) = self.schema.child(key.as_bytes(), None);
             let tag_field =
-                !self.schema.tag.is_empty() && key.as_bytes() == self.schema.tag.as_bytes();
+                !self.schema.tag().is_empty() && key.as_bytes() == self.schema.tag().as_bytes();
             let raw_field = index == 0 && key.as_bytes() == RAW;
             // No key survives into its value's walk. Unescaped keys borrow
             // the source; an escaped key holds one owned copy only here.
@@ -290,7 +290,7 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
                 .map_err(|error| self.error::<A::Error>(error))?;
             index += 1;
         }
-        if !self.schema.tag.is_empty() {
+        if !self.schema.tag().is_empty() {
             counts
                 .resolve(tag.unwrap_or(0))
                 .map_err(|error| self.error::<A::Error>(error))?;
