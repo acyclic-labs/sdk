@@ -116,7 +116,7 @@ impl MemoryStream {
             ),
         )?;
         let body_codec = work.record(NativeCodecReservation::new(
-            Arc::clone(&meter),
+            Arc::clone(&work.meter),
             NativeCodecWork {
                 copied: maximum as u64,
                 ..NativeCodecWork::default()
