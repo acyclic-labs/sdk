@@ -63,16 +63,31 @@ impl ManifestBuilder {
             if entries.len() < PAGE {
                 return Ok(());
             }
-            part = publish(blobs, std::mem::take(entries)).await?;
+            part = publish(
+                blobs,
+                Manifest {
+                    parts: std::mem::take(entries),
+                    ..Manifest::default()
+                },
+            )
+            .await?;
             level += 1;
         }
     }
 
     /// Publishes the final manifest and returns its canonical BLAKE3 identity.
-    /// The caller commits its own retention before releasing input custody.
-    pub async fn finish<B: Blobs + ?Sized>(mut self, blobs: &B) -> Result<Part, Error> {
+    /// `root` supplies the final manifest's metadata and edges; its parts must
+    /// be empty. Commit root retention before releasing the input custody.
+    pub async fn finish<B: Blobs + ?Sized>(
+        mut self,
+        blobs: &B,
+        mut root: Manifest,
+    ) -> Result<Part, Error> {
         if self.poisoned {
             return Err(ErrorCode::OutcomeUnknown.into());
+        }
+        if !root.parts.is_empty() {
+            return Err(ErrorCode::InvalidArgument.into());
         }
         if self.levels.is_empty() {
             let put = blobs.put(Vec::new().into(), Vec::new()).await?;
@@ -80,10 +95,11 @@ impl ManifestBuilder {
             if verified.digest != Digest::of(&[]) || verified.length != 0 {
                 return Err(ErrorCode::Corrupt.into());
             }
-            return Ok(Part {
+            root.parts.push(Part {
                 digest: verified.digest,
                 length: 0,
             });
+            return publish(blobs, root).await;
         }
         let mut level = 0;
         loop {
@@ -92,24 +108,29 @@ impl ManifestBuilder {
                 level += 1;
                 continue;
             }
-            let page = publish(blobs, entries).await?;
             if self.levels.iter().skip(level + 1).all(Vec::is_empty) {
+                root.parts = entries;
+                let page = publish(blobs, root).await?;
                 if page.length != self.length {
                     return Err(ErrorCode::Corrupt.into());
                 }
                 return Ok(page);
             }
+            let page = publish(
+                blobs,
+                Manifest {
+                    parts: entries,
+                    ..Manifest::default()
+                },
+            )
+            .await?;
             self.append(blobs, level + 1, page).await?;
             level += 1;
         }
     }
 }
 
-async fn publish<B: Blobs + ?Sized>(blobs: &B, parts: Vec<Part>) -> Result<Part, Error> {
-    let manifest = Manifest {
-        parts,
-        ..Manifest::default()
-    };
+async fn publish<B: Blobs + ?Sized>(blobs: &B, manifest: Manifest) -> Result<Part, Error> {
     let length = manifest.length()?;
     let digest = Digest::of(&manifest.encode()?);
     let put = blobs.put_manifest(manifest).await?;
@@ -126,16 +147,17 @@ mod tests {
     use crate::{ByteRange, MemoryObjects, RootId};
 
     #[tokio::test]
-    async fn empty_body_is_the_empty_blob() -> Result<(), Box<dyn std::error::Error>> {
+    async fn empty_body_preserves_root_metadata() -> Result<(), Box<dyn std::error::Error>> {
         let blobs = MemoryObjects::memory();
-        let root = ManifestBuilder::default().finish(&blobs).await?;
-        assert_eq!(
-            root,
-            Part {
-                digest: Digest::of(&[]),
-                length: 0
-            }
-        );
+        let edge = blobs.put(b"edge".to_vec().into(), Vec::new()).await?;
+        let edge = edge.verified().ok_or("unknown put")?.digest;
+        let metadata = Manifest {
+            edges: vec![edge],
+            ..Manifest::default()
+        };
+        let root = ManifestBuilder::default().finish(&blobs, metadata).await?;
+        assert_eq!(root.length, 0);
+        assert!(blobs.head(root.digest).await?.references.contains(&edge));
         assert!(
             blobs
                 .get(root.digest, ByteRange::FULL, 0)
@@ -167,7 +189,7 @@ mod tests {
         for part in parts {
             builder.push(&blobs, part).await?;
         }
-        let result = builder.finish(&blobs).await?;
+        let result = builder.finish(&blobs, Manifest::default()).await?;
         assert_eq!(result.length, expected.len() as u64);
         blobs.retain(&root, vec![result.digest]).await?;
         let selected = blobs
