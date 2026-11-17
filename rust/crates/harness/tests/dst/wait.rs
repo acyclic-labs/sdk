@@ -172,8 +172,6 @@ fn plans(seed: u64) -> Vec<Plan> {
     let form = form(seed);
     let state = state(seed);
     let relation = relation(seed);
-    let target = "c3-target";
-    let sibling = "c3-sibling";
     let mut plans = vec![
         child_plan("c3-target", state),
         settled("c3-sibling"),
@@ -274,7 +272,7 @@ fn reason(value: &Value) -> &str {
     }
 }
 
-fn entry<'a>(value: &'a Value, field: &str, name: &str) -> Option<&'a Value> {
+fn field_entry<'a>(value: &'a Value, field: &str, name: &str) -> Option<&'a Value> {
     value
         .get(field)?
         .as_array()?
@@ -318,28 +316,28 @@ fn checked(seed: u64, requests: &[ModelRequest]) -> std::result::Result<(), Stri
     }
     match state {
         "starting" if relation != "same_parent_other_runtime" => {
-            let entry = entry(value, "unsettled", "target")
+            let entry = field_entry(value, "unsettled", "target")
                 .ok_or_else(|| format!("wait {id} settled a child in its spawn step: {value}"))?;
             if entry.get("phase").and_then(Value::as_str) != Some("spawning") {
                 return Err(format!("wait {id} did not report spawning: {entry}"));
             }
         }
         "running" => {
-            let entry = entry(value, "unsettled", "target")
+            let entry = field_entry(value, "unsettled", "target")
                 .ok_or_else(|| format!("wait {id} settled a running child: {value}"))?;
             if is_done(entry) {
                 return Err(format!("wait {id} reported running target done: {entry}"));
             }
         }
         "settled_failed" | "archived" | "stopped" => {
-            let entry = entry(value, "settled", "target")
+            let entry = field_entry(value, "settled", "target")
                 .ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
             if !is_done(entry) || entry.get("failed").is_none() {
                 return Err(format!("wait {id} hid target's failure: {entry}"));
             }
         }
         _ => {
-            let entry = entry(value, "settled", "target")
+            let entry = field_entry(value, "settled", "target")
                 .ok_or_else(|| format!("wait {id} did not settle target: {value}"))?;
             if !is_done(entry) || entry.get("failed").is_some() {
                 return Err(format!("wait {id} reported target wrong: {entry}"));
