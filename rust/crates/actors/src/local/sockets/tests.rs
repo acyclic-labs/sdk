@@ -795,10 +795,10 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             admitted_close_fixture(&sockets, &format!("paged-{index}")).await?;
         }
         LEDGER_ENCODINGS.set(0);
-        let (allocation, allocated) = provider.pause_write(false);
+        let (allocation, allocated) = provider.pause_write(false)?;
         let mut compact = Box::pin(shared.compact());
         paused(&mut compact, allocated).await?;
-        let (first_page, copying) = provider.pause_write(false);
+        let (first_page, copying) = provider.pause_write(false)?;
         allocation.send(()).map_err(|_| "lost allocation request")?;
         paused(&mut compact, copying).await?;
         assert_eq!(
@@ -854,11 +854,11 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             admitted_close_fixture(&sockets, "unrelated-close").await?;
         let (connection, inbox, _last, open, _frames) =
             close_fixture(&sockets, "delayed-open").await?;
-        let (release, entered) = provider.pause_write(committed);
+        let (release, entered) = provider.pause_write(committed)?;
         let mut opening = Box::pin(shared.commit_open(&connection, &open));
         paused(&mut opening, entered).await?;
         let release = if lose_reply {
-            let (retry, entered) = executor.pause_retry();
+            let (retry, entered) = executor.pause_retry()?;
             // Acceptance is real; losing its reply returns Unavailable to the
             // original retry path. Keep that retry parked until after rotation.
             drop(release);
@@ -951,7 +951,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
             admitted_close_fixture(&sockets, "delayed-close").await?;
         let (unrelated, unrelated_inbox, unrelated_last, _frames) =
             admitted_close_fixture(&sockets, "unrelated-close").await?;
-        let (release, entered) = provider.pause_write(committed);
+        let (release, entered) = provider.pause_write(committed)?;
         let completion = shared
             .begin_close(
                 &connection,
@@ -961,7 +961,7 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         let mut closing = executor.take()?;
         paused(&mut closing, entered).await?;
         let release = if lose_reply {
-            let (retry, entered) = executor.pause_retry();
+            let (retry, entered) = executor.pause_retry()?;
             drop(release);
             paused(&mut closing, entered).await?;
             retry
@@ -1131,17 +1131,20 @@ struct ControlledStream {
 }
 
 impl ControlledStream {
-    fn pause_write(&self, after: bool) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
+    fn pause_write(
+        &self,
+        after: bool,
+    ) -> Result<(oneshot::Sender<()>, oneshot::Receiver<()>), &'static str> {
         let (release, resumed) = oneshot::channel();
         let (entered, observed) = oneshot::channel();
         assert!(
             self.pause
                 .lock()
-                .unwrap()
+                .map_err(|_| "write control poisoned")?
                 .replace((after, entered, resumed))
                 .is_none()
         );
-        (release, observed)
+        Ok((release, observed))
     }
 }
 
@@ -1167,7 +1170,12 @@ impl StreamProvider for ControlledStream {
     }
     async fn durability_barrier(&self) -> Result<(), StreamError> {
         // MemoryStream acceptance is already its durable boundary.
-        match self.durability_fault.lock().unwrap().take() {
+        match self
+            .durability_fault
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .take()
+        {
             Some(error) => Err(error),
             None => Ok(()),
         }
@@ -1212,23 +1220,37 @@ impl StreamProvider for ControlledStream {
         &self,
         request: acyclic_stream::WriteRequest,
     ) -> BoxProviderFuture<'_, Result<acyclic_stream::WriteOutcome, StreamError>> {
-        let pause = self.pause.lock().unwrap().take();
-        let replay = match (&request, self.accepted.lock().unwrap().as_ref()) {
-            (
-                acyclic_stream::WriteRequest::Commit(current)
-                | acyclic_stream::WriteRequest::CommitAccepted(current),
-                Some((
-                    acyclic_stream::WriteRequest::Commit(original)
-                    | acyclic_stream::WriteRequest::CommitAccepted(original),
-                    outcome,
-                )),
-            ) if current.idempotency_key == original.idempotency_key => {
-                assert_eq!(current, original, "retry changed the original request");
-                Some(outcome.clone())
-            }
-            _ => None,
-        };
+        let prepared = (|| {
+            let pause = self
+                .pause
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?
+                .take();
+            let replay = match (
+                &request,
+                self.accepted
+                    .lock()
+                    .map_err(|_| StreamError::Unavailable)?
+                    .as_ref(),
+            ) {
+                (
+                    acyclic_stream::WriteRequest::Commit(current)
+                    | acyclic_stream::WriteRequest::CommitAccepted(current),
+                    Some((
+                        acyclic_stream::WriteRequest::Commit(original)
+                        | acyclic_stream::WriteRequest::CommitAccepted(original),
+                        outcome,
+                    )),
+                ) if current.idempotency_key == original.idempotency_key => {
+                    assert_eq!(current, original, "retry changed the original request");
+                    Some(outcome.clone())
+                }
+                _ => None,
+            };
+            Ok::<_, StreamError>((pause, replay))
+        })();
         Box::pin(async move {
+            let (pause, replay) = prepared?;
             if let Some(original) = replay {
                 let result = self.inner.write(request).await?;
                 assert_eq!(result, original, "retry replaced the original acceptance");
@@ -1237,7 +1259,7 @@ impl StreamProvider for ControlledStream {
             }
             match pause {
                 Some((false, entered, resumed)) => {
-                    entered.send(()).expect("lost held-write observer");
+                    entered.send(()).map_err(|_| StreamError::Unavailable)?;
                     resumed.await.map_err(|_| StreamError::Unavailable)?;
                     self.inner.write(request).await
                 }
@@ -1250,9 +1272,10 @@ impl StreamProvider for ControlledStream {
                             acyclic_stream::WriteOutcome::Commit(CommitOutcome::Committed(_))
                                 | acyclic_stream::WriteOutcome::CommitAccepted(Ok(..))
                         ));
-                        *self.accepted.lock().unwrap() = Some((original, outcome.clone()));
+                        *self.accepted.lock().map_err(|_| StreamError::Unavailable)? =
+                            Some((original, outcome.clone()));
                     }
-                    entered.send(()).expect("lost accepted-write observer");
+                    entered.send(()).map_err(|_| StreamError::Unavailable)?;
                     resumed.await.map_err(|_| StreamError::Unavailable)?;
                     result
                 }
@@ -1300,38 +1323,53 @@ struct HeldCloseExecutor {
 
 impl Executor for HeldCloseExecutor {
     fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
-        self.tasks.lock().unwrap().push_back(future);
+        self.tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(future);
     }
 
     fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
-        let retry = self.retry.lock().unwrap().take();
+        let retry = self
+            .retry
+            .lock()
+            .map(|mut retry| retry.take())
+            .map_err(|_| "retry control poisoned");
         Box::pin(async move {
-            let (entered, retry) = retry.expect("a decided socket operation must not retry");
-            assert_eq!(milliseconds, 1, "unexpected additional transport retry");
-            entered.send(()).expect("lost transport-retry observer");
-            retry.await.expect("lost original transport-retry producer");
+            let result = async {
+                let (entered, retry) = retry?.ok_or("a decided socket operation must not retry")?;
+                assert_eq!(milliseconds, 1, "unexpected additional transport retry");
+                entered
+                    .send(())
+                    .map_err(|_| "lost transport-retry observer")?;
+                retry
+                    .await
+                    .map_err(|_| "lost original transport-retry producer")
+            }
+            .await;
+            assert_eq!(result, Ok(()));
         })
     }
 }
 
 impl HeldCloseExecutor {
-    fn pause_retry(&self) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
+    fn pause_retry(&self) -> Result<(oneshot::Sender<()>, oneshot::Receiver<()>), &'static str> {
         let (release, retry) = oneshot::channel();
         let (entered, observed) = oneshot::channel();
         assert!(
             self.retry
                 .lock()
-                .unwrap()
+                .map_err(|_| "retry control poisoned")?
                 .replace((entered, retry))
                 .is_none()
         );
-        (release, observed)
+        Ok((release, observed))
     }
 
     fn take(&self) -> Result<BoxProviderFuture<'static, ()>, &'static str> {
         self.tasks
             .lock()
-            .unwrap()
+            .map_err(|_| "close task registry poisoned")?
             .pop_front()
             .ok_or("missing owned close task")
     }
@@ -2083,7 +2121,7 @@ async fn accepted_open_retries_uncertain_durability_without_closing() -> TestRes
         let (connection, inbox, _last, open, _frames) =
             close_fixture(&sockets, "durability-open").await?;
         // Record the real acceptance so the adapter checks byte-identical replay.
-        let (release, entered) = provider.pause_write(true);
+        let (release, entered) = provider.pause_write(true)?;
         release.send(()).map_err(|_| "lost Open release")?;
         *provider.durability_fault.lock().unwrap() = Some(error);
         assert!(matches!(

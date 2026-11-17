@@ -113,6 +113,7 @@ fn check(count: u8, bindings: bool, sealed: bool, fault: u8) -> Result<(), &'sta
         bytes_total: bytes,
         bytes_current: bytes as i64,
         bytes_max: bytes,
+        output: (),
     };
     if heap != expected_heap {
         return Err("allocation bound");
