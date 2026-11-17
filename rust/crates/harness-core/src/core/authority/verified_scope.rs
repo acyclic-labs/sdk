@@ -188,14 +188,27 @@ impl AuthorityVerifier {
     }
 
     pub(crate) fn copy_in_quota(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
+        self.copy_with_audience(&self.audience, quota)
+    }
+
+    fn copy_with_audience(
+        &self,
+        audience: &Authority,
+        quota: &mut CodecQuota<'_, '_>,
+    ) -> Result<Self> {
         if quota.work().is_none() {
-            return Ok(self.clone());
+            return Ok(Self {
+                id: self.id.clone(),
+                public: self.public.clone(),
+                admission: self.admission.clone(),
+                audience: audience.clone(),
+            });
         }
         Ok(Self {
             id: copying::copy_text(&self.id, quota)?,
             public: self.public.clone(),
             admission: self.admission.clone(),
-            audience: copying::copy_authority(&self.audience, quota)?,
+            audience: copying::copy_authority(audience, quota)?,
         })
     }
 
@@ -216,14 +229,21 @@ impl AuthorityVerifier {
             kind: AggregateKind::Conversation,
             id: owner.to_string(),
         };
-        let mut primary = self.copy_in_quota(quota)?;
-        let mut alternate = self.copy_in_quota(quota)?;
-        if native {
-            primary.audience = copying::copy_authority(&owner_audience, quota)?;
+        let (primary_audience, alternate_audience) = if native {
+            (
+                &owner_audience,
+                (self.audience != owner_audience).then_some(&self.audience),
+            )
         } else {
-            alternate.audience = copying::copy_authority(&owner_audience, quota)?;
-        }
-        let alternate = (alternate.audience != primary.audience).then_some(alternate);
+            (
+                &self.audience,
+                (self.audience != owner_audience).then_some(&owner_audience),
+            )
+        };
+        let primary = self.copy_with_audience(primary_audience, quota)?;
+        let alternate = alternate_audience
+            .map(|audience| self.copy_with_audience(audience, quota))
+            .transpose()?;
         Ok((primary, alternate))
     }
 

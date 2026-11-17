@@ -154,6 +154,13 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
+#[cfg(test)]
+impl<P: ?Sized, A: 'static, O: 'static> FilesystemExecutionJournal<P, A, O> {
+    pub(crate) fn execution_checkpoint_authority(&self) -> &AuthorityVerifier {
+        &self.execution_checkpoint_verifier
+    }
+}
+
 fn canonical_boundary(
     io: Option<&PreparationIo>,
     code: crate::wire::ErrorCode,

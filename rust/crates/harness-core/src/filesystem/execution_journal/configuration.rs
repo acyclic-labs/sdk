@@ -289,6 +289,8 @@ where
     #[must_use]
     pub fn with_stop(mut self, stop: acyclic_actors::guest::CancellationToken) -> Self {
         self.verifier.bind_checkpoint_stop(&stop);
+        self.execution_checkpoint_verifier
+            .bind_checkpoint_stop(&stop);
         self.stop = Some(stop);
         self
     }
