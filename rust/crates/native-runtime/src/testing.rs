@@ -338,9 +338,13 @@ impl Schedule {
         (Self(inner, Some(controller)), receiver)
     }
 
-    /// The one-worker host handoff owned by this seeded world.
+    /// The host handoff owned by this seeded world. It is sized like the
+    /// shared physical pool so queued callbacks can all start.
     pub(crate) fn host_pool(&self) -> Arc<host::Pool> {
-        self.0.host_pool.get_or_init(|| host::Pool::new(1)).clone()
+        self.0
+            .host_pool
+            .get_or_init(|| host::Pool::new(crate::workers::parallelism()))
+            .clone()
     }
 
     /// Instruments only this explicitly scoped future and its owned descendants.
