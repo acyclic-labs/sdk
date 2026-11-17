@@ -2,6 +2,7 @@
 // authority. Reading them never resolves, downloads or builds a Cargo workspace.
 import fs from 'node:fs';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {toml, tomlFiles} from './policy-core.mjs';
 
 const slash = value => value.replaceAll('\\', '/');
@@ -43,26 +44,67 @@ export function versionMatches(version, requirement) {
   });
 }
 
-export function workspacePackages(root) {
+export function workspacePackages(root, {sourceRoot = root, patchConfig, lockFile} = {}) {
   root = path.resolve(root);
+  sourceRoot = path.resolve(sourceRoot);
+  const withinSource = directory => {
+    const relative = path.relative(sourceRoot, directory);
+    return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  };
+  if (!withinSource(root)) throw Error('workspace escapes source root');
   const rootManifest = toml(root, 'Cargo.toml');
+  const patches = [];
+  const addPatches = (table, base) => {
+    for (const [alias, entry] of Object.entries(table ?? {})) {
+      if (!entry.path) continue;
+      const directory = path.resolve(base, entry.path);
+      if (!withinSource(directory)) throw Error(`workspace patch escapes source root: ${directory}`);
+      patches.push({name: entry.package ?? alias, directory});
+    }
+  };
+  addPatches(rootManifest.patch?.['crates-io'], root);
+  if (patchConfig) {
+    const config = path.resolve(sourceRoot, patchConfig);
+    if (!withinSource(config)) throw Error('workspace patch config escapes source root');
+    addPatches(toml(sourceRoot, patchConfig).patch?.['crates-io'], path.dirname(path.dirname(config)));
+  }
+  if (lockFile && !withinSource(path.resolve(sourceRoot, lockFile))) throw Error('workspace lock escapes source root');
+  const lock = lockFile ? toml(sourceRoot, lockFile) : null;
   const manifests = new Set();
   const expand = pattern => fs.globSync(pattern.replace(/\/$/, '') + '/Cargo.toml', {cwd: root});
-  for (const member of rootManifest.workspace?.members ?? []) for (const file of expand(member)) manifests.add(slash(file));
+  const excluded = file => {
+    let directory = slash(path.dirname(file));
+    while (directory !== '.' && directory !== '..' && !directory.startsWith('../')) {
+      if ((rootManifest.workspace?.exclude ?? []).some(pattern => path.matchesGlob(directory, pattern.replace(/\/$/, '')))) return true;
+      directory = slash(path.dirname(directory));
+    }
+    return false;
+  };
+  for (const member of rootManifest.workspace?.members ?? []) for (const file of expand(member)) if (!excluded(slash(file))) manifests.add(slash(file));
   if (rootManifest.package) manifests.add('Cargo.toml');
   const members = new Set(manifests);
-  for (const patch of Object.values(rootManifest.patch?.['crates-io'] ?? {}))
-    if (patch.path) manifests.add(slash(path.join(patch.path, 'Cargo.toml')));
   const packages = [];
   const pending = [...manifests];
+  for (const file of pending) if (!withinSource(path.dirname(path.resolve(root, file)))) throw Error(`workspace dependency escapes source root: ${file}`);
   tomlFiles(root, pending);
   while (pending.length) {
     const file = pending.shift(), manifest = toml(root, file), directory = path.dirname(path.resolve(root, file));
+    if (!withinSource(directory)) throw Error(`workspace dependency escapes source root: ${file}`);
     if (!manifest.package) throw Error(`${file}: missing package`);
     let workspaceDirectory = directory;
-    if (manifest.package.workspace) workspaceDirectory = path.resolve(directory, manifest.package.workspace);
-    else while (workspaceDirectory !== root && !(exists(path.join(workspaceDirectory, 'Cargo.toml')) && toml(root, slash(path.relative(root, path.join(workspaceDirectory, 'Cargo.toml')))).workspace))
-      workspaceDirectory = path.dirname(workspaceDirectory);
+    if (manifest.package.workspace) {
+      workspaceDirectory = path.resolve(directory, manifest.package.workspace);
+      if (!withinSource(workspaceDirectory)) throw Error(`${file}: workspace escapes source root`);
+    }
+    else {
+      let cursor = directory;
+      while (true) {
+        const candidate = path.join(cursor, 'Cargo.toml');
+        if (exists(candidate) && toml(root, slash(path.relative(root, candidate))).workspace) {workspaceDirectory = cursor; break;}
+        if (cursor === sourceRoot) break;
+        cursor = path.dirname(cursor);
+      }
+    }
     const workspace = toml(root, slash(path.relative(root, path.join(workspaceDirectory, 'Cargo.toml')))).workspace ?? {};
     const own = Object.fromEntries(Object.entries(manifest.package).map(([key, value]) =>
       [key, value?.workspace === true ? workspace.package?.[key] : value]));
@@ -79,11 +121,24 @@ export function workspacePackages(root) {
             declaration = {...entry, ...declaration, features: [...(entry.features ?? []), ...(declaration.features ?? [])]};
             base = workspaceDirectory;
           }
-          const patched = rootManifest.patch?.['crates-io']?.[declaration.package ?? alias];
-          const local = declaration.path ? path.resolve(base, declaration.path) : patched?.path ? path.resolve(root, patched.path) : null;
+          const patched = declaration.path ? [] : patches.filter(patch => {
+            if (patch.name !== (declaration.package ?? alias)) return false;
+            const packageManifest = toml(root, slash(path.relative(root, path.join(patch.directory, 'Cargo.toml')))).package;
+            if (!packageManifest || typeof packageManifest.version !== 'string') throw Error(`patch ${patch.name} lacks an explicit version`);
+            if (!versionMatches(packageManifest.version, requirement(declaration.version))) return false;
+            return !lock || (lock.package ?? []).some(item => item.name === patch.name && item.version === packageManifest.version && !item.source);
+          });
+          if (patched.length > 1) throw Error(`${file}: ambiguous local patch for ${declaration.package ?? alias}`);
+          const local = declaration.path ? path.resolve(base, declaration.path) : patched[0]?.directory ?? null;
           if (local) {
             const next = slash(path.relative(root, path.join(local, 'Cargo.toml')));
+            if (!withinSource(local)) throw Error(`workspace dependency escapes source root: ${next}`);
             if (!manifests.has(next)) {manifests.add(next); pending.push(next);}
+            if (rootManifest.workspace && !next.startsWith('../') && !path.isAbsolute(next) && !excluded(next)) {
+              const dependency = toml(root, next);
+              const explicitWorkspace = dependency.package?.workspace && path.resolve(local, dependency.package.workspace);
+              if (!dependency.workspace && (!explicitWorkspace || explicitWorkspace === root)) members.add(next);
+            }
           }
           dependencies.push({name: declaration.package ?? alias, rename: declaration.package ? alias : null,
             req: requirement(declaration.version), kind, target, optional: declaration.optional ?? false,
@@ -133,7 +188,65 @@ export function workspacePackages(root) {
     p.readme = own.readme === false ? null : own.readme ?? ['README.md', 'README.txt', 'README'].find(name => exists(path.join(directory, name))) ?? null;
     packages.push(p);
   }
+  for (const p of packages) p.workspace_member = members.has(slash(path.relative(root, p.manifest_path)));
   return packages.sort((a, b) => a.name.localeCompare(b.name, 'en'));
+}
+
+function defaultWorkspaceMembers(root, local) {
+  const members = local.filter(p => p.workspace_member);
+  const patterns = toml(root, 'Cargo.toml').workspace?.['default-members'] ?? members.map(p => slash(path.relative(root, path.dirname(p.manifest_path))));
+  return members.filter(p => patterns.some(pattern => path.matchesGlob(slash(path.relative(root, path.dirname(p.manifest_path))), pattern))).map(p => p.id);
+}
+
+// A relocatable Cargo-metadata-shaped graph for profile planning. Keep all
+// local path owners, including excluded dependencies, and their real targets.
+export function workspaceProfileMetadata(root, {workspaceOnly = false, sourceRoot = root, additionalInputs = [], patchConfig, lockFile, universeFile} = {}) {
+  root = path.resolve(root);
+  sourceRoot = path.resolve(sourceRoot);
+  // The resolved variant uses the same lock-validated graph as the Bazel
+  // generator; the workspace-only view matches Cargo's no-deps selection.
+  const options = {sourceRoot, patchConfig, lockFile, universeFile};
+  const resolved = workspaceOnly ? null : workspaceGraph(root, null, options);
+  const packages = workspaceOnly ? workspacePackages(root, options) : resolved.packages.filter(p => p.source === null);
+  const members = packages.filter(p => p.workspace_member).map(p => p.id);
+  const manifest = slash(path.relative(sourceRoot, path.join(root, 'Cargo.toml')));
+  const inputs = new Set([manifest, ...additionalInputs, ...packages.map(p => slash(path.relative(sourceRoot, p.manifest_path)))]);
+  if (exists(path.join(root, 'Cargo.lock'))) inputs.add(slash(path.relative(sourceRoot, path.join(root, 'Cargo.lock'))));
+  if (patchConfig) inputs.add(slash(patchConfig));
+  if (lockFile) inputs.add(slash(lockFile));
+  if (!workspaceOnly) inputs.add(universeFile ? slash(universeFile) : slash(path.relative(sourceRoot, path.join(root, 'cargo-bazel-lock.json'))));
+  const digests = Object.fromEntries([...inputs].sort().map(file => {
+    if (path.isAbsolute(file) || file.split('/').some(part => !part || part === '.' || part === '..') || file.includes('\\')) throw Error(`workspace graph input escapes root: ${file}`);
+    return [file, `sha256:${createHash('sha256').update(fs.readFileSync(path.join(sourceRoot, file))).digest('hex')}`];
+  }));
+  const metadata = toml(root, 'Cargo.toml').workspace?.metadata ?? {};
+  if (Object.hasOwn(metadata, 'acyclic_profile_inputs_v1')) throw Error('workspace metadata uses the reserved profile input key');
+  if (Object.hasOwn(metadata, 'acyclic_profile_manifest_v1')) throw Error('workspace metadata uses the reserved profile manifest key');
+  if (Object.hasOwn(metadata, 'acyclic_profile_local_resolution_v1')) throw Error('workspace metadata uses the reserved profile resolution key');
+  if (Object.hasOwn(metadata, 'acyclic_profile_selection_v1')) throw Error('workspace metadata uses the reserved profile selection key');
+  const reached = new Set(members);
+  if (resolved) {
+    const nodes = new Map(resolved.resolve.nodes.map(node => [node.id, node]));
+    for (const id of reached) {
+      const node = nodes.get(id);
+      if (!node || node.incomplete) throw Error(`workspace graph has an incomplete resolution for ${id}`);
+      for (const dependency of node.deps) reached.add(dependency.pkg);
+    }
+  }
+  return {
+    packages: packages.filter(p => !workspaceOnly || p.workspace_member)
+      .map(({workspace_member, ...p}) => p),
+    workspace_members: members,
+    workspace_default_members: defaultWorkspaceMembers(root, packages),
+    workspace_root: sourceRoot,
+    target_directory: path.join(root, 'target'),
+    version: 1,
+    metadata: {...metadata, acyclic_profile_inputs_v1: digests, acyclic_profile_manifest_v1: manifest,
+      acyclic_profile_selection_v1: {patch_config: patchConfig ? slash(patchConfig) : null,
+        lock_file: lockFile ? slash(lockFile) : slash(path.relative(sourceRoot, path.join(root, 'Cargo.lock')))},
+      ...(resolved ? {acyclic_profile_local_resolution_v1: packages.filter(p => reached.has(p.id)).map(p => p.id)} : {})},
+    resolve: null,
+  };
 }
 
 function targetMatches(cfg, triple) {
@@ -332,12 +445,15 @@ export function workspaceBrowserGraph(root, selections) {
     workspace_root:root, registry_inputs:registryInputs, resolve:{nodes:[...nodes.values()]}};
 }
 
-export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
+export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu', {sourceRoot = root, patchConfig, lockFile, universeFile} = {}) {
   const allPlatforms = triple === null;
   triple ??= 'x86_64-unknown-linux-gnu';
   root = path.resolve(root);
-  const local = workspacePackages(root), lock = toml(root, 'Cargo.lock');
-  const universe = JSON.parse(fs.readFileSync(path.join(root, 'cargo-bazel-lock.json'), 'utf8'));
+  const local = workspacePackages(root, {sourceRoot, patchConfig, lockFile}), lock = lockFile ? toml(sourceRoot, lockFile) : toml(root, 'Cargo.lock');
+  const universePath = universeFile ? path.resolve(sourceRoot, universeFile) : path.join(root, 'cargo-bazel-lock.json');
+  const universeRelative = path.relative(path.resolve(sourceRoot), universePath);
+  if (universeRelative === '..' || universeRelative.startsWith(`..${path.sep}`) || path.isAbsolute(universeRelative)) throw Error('workspace universe escapes source root');
+  const universe = JSON.parse(fs.readFileSync(universePath, 'utf8'));
   const registry = (lock.package ?? []).filter(p => p.source).map(p => {
     const pinned = universe.crates[`${p.name} ${p.version}`];
     const lib = pinned?.targets.find(t => t.Library || t.ProcMacro);
@@ -388,17 +504,17 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
   nodes.push(...registry.map(p => {
     const pinned = universe.crates[`${p.name} ${p.version}`];
     const deps = [];
+    let incomplete = !pinned;
     for (const [attributes, kind] of [[pinned?.common_attrs, null], [pinned?.build_script_attrs, 'build']])
       for (const entry of [...selected(attributes?.deps), ...selected(attributes?.proc_macro_deps)]) {
-        // Registry-internal edges remain Bazel's graph. Only overlays on local
-        // patched crates enter this declaration model.
-        const dependency = local.find(x => `${x.name} ${x.version}` === entry.id);
-        if (!dependency) continue;
+        const candidates = packages.filter(x => `${x.name} ${x.version}` === entry.id);
+        if (candidates.length !== 1) {incomplete = true; continue;}
+        const dependency = candidates[0];
         deps.push({name: entry.alias ?? entry.target, pkg: dependency.id, dep_kinds: [{kind, target: null}]});
       }
-    return {id: p.id, deps, features: Object.keys(p.features)};
+    return {id: p.id, deps, features: Object.keys(p.features), incomplete};
   }));
   return {packages, workspace_members: local.filter(p => p.workspace_member).map(p => p.id), workspace_root: root,
-    workspace_default_members: local.filter(p => p.workspace_member && (toml(root, 'Cargo.toml').workspace?.['default-members'] ?? local.filter(p => p.workspace_member).map(p => slash(path.relative(root,path.dirname(p.manifest_path))))).some(pattern=>path.matchesGlob(slash(path.relative(root,path.dirname(p.manifest_path))),pattern))).map(p=>p.id), version: 1,
+    workspace_default_members: defaultWorkspaceMembers(root, local), version: 1,
     metadata: toml(root, 'Cargo.toml').workspace?.metadata ?? null, resolve: {nodes}};
 }

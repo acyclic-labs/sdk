@@ -41,6 +41,7 @@ node_test(
         "//:scripts/policy-core.mjs",
         "//:scripts/workspace-model.mjs",
         "//:scripts/workspace-model.test.mjs",
+        "//:scripts/workspace-profile-metadata.mjs",
     ],
     entry = "scripts/workspace-model.test.mjs",
 )
