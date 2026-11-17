@@ -267,3 +267,29 @@ fn wildcard_paths_are_restricted_to_private_or_dev_dependencies() {
     assert!(failures.iter().any(|f| f.ends_with("dependency a")));
     assert!(failures.iter().any(|f| f.ends_with("dependency c")));
 }
+
+#[test]
+fn registry_policy_fails_closed_on_sources_yanks_bans_and_license() {
+    let policy: toml::Value = toml::from_str(
+        "[advisories]\nyanked='deny'\n[sources]\nunknown-registry='deny'\nunknown-git='deny'\n[licenses]\nallow=['MIT']\n[bans]\ndeny=[{crate='blocked'}]\n",
+    ).unwrap();
+    let entry = serde_json::json!({"name":"demo", "version":"1.0.0", "license":"MIT", "repository":{"Http":{"url":"https://static.crates.io/crates/demo/1.0.0/download", "sha256":"abc"}}});
+    let registry =
+        serde_json::json!({"crates":{"demo":{"1.0.0":{"yanked":false,"checksum":"abc"}}}});
+    assert!(check(&entry, &registry, &policy).unwrap().is_empty());
+    let mut yanked = registry.clone();
+    yanked["crates"]["demo"]["1.0.0"]["yanked"] = true.into();
+    assert!(check(&entry, &yanked, &policy).unwrap()[0].contains("yanked"));
+    let mut invalid_source = entry.clone();
+    invalid_source["repository"]["Http"]["url"] = "https://example.invalid/demo".into();
+    assert!(check(&invalid_source, &registry, &policy).is_err());
+    let mut invalid_checksum = registry.clone();
+    invalid_checksum["crates"]["demo"]["1.0.0"]["checksum"] = "different".into();
+    assert!(check(&entry, &invalid_checksum, &policy).is_err());
+    let mut bad_license = entry.clone();
+    bad_license["license"] = "GPL-3.0-only".into();
+    assert!(check(&bad_license, &registry, &policy).unwrap()[0].contains("disallowed license"));
+    let banned_policy: toml::Value =
+        toml::from_str(&policy.to_string().replace("blocked", "demo")).unwrap();
+    assert!(check(&entry, &registry, &banned_policy).unwrap()[0].contains("banned dependency"));
+}
