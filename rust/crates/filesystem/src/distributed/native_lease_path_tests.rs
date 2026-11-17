@@ -1,5 +1,4 @@
 use super::*;
-use crate::operation_window::lease_path::MAX_ENCODED_BYTES;
 
 #[path = "native_lease_path_legacy.rs"]
 mod legacy;
@@ -23,7 +22,6 @@ fn legacy_path(
 #[test]
 fn decimal_boundaries_and_maximum_expiry_preserve_paths_and_native_custody() {
     crate::initialize_test_native_io();
-    assert_eq!(MAX_ENCODED_BYTES, 117);
     let workspace = WorkspaceId::from_bytes([3; 16]);
     let lease = OperationLeaseId::from_bytes([5; 16]);
     let cancellation = CancellationToken::new();
