@@ -349,6 +349,7 @@ pub fn check(bytes: &[u8]) -> bool {
         length: word(&fields, 0),
         stored: word(&fields, 8),
         references: references.clone(),
+        sha256: None,
         version: wide(&fields, 16),
         dying: (fields[57] & 1 != 0).then(|| wide(&fields, 32)),
         condemned: word(&fields, 48),
@@ -503,7 +504,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Error> {
         ("incarnation", encode_incarnation(7, 9)),
         ("epoch", encode_epoch(9)),
     ];
-    for (name, dying) in [("head-v2-live", None), ("head-v2-dying", Some([2; 16]))] {
+    for (name, dying) in [("head-v3-live", None), ("head-v3-dying", Some([2; 16]))] {
         seeds.push((
             name,
             Envelope {
@@ -511,6 +512,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Error> {
                 length: 22,
                 stored: 64,
                 references: vec![digest],
+                sha256: None,
                 version: [1; 16],
                 dying,
                 condemned: 9,
