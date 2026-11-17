@@ -146,13 +146,13 @@ wasm_package(
 )
 filegroup(
     name = "workspace_acyclic_labs_core",
-    srcs = glob(["typescript/packages/core/**"]),
+    srcs = glob(["typescript/packages/core/**"], exclude = ["typescript/packages/core/generated/wasm/**"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
 
 filegroup(
     name = "workspace_acyclic_labs_auth",
-    srcs = glob(["typescript/packages/auth/**"]),
+    srcs = glob(["typescript/packages/auth/**"], exclude = ["typescript/packages/auth/generated/wasm/**"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
 
