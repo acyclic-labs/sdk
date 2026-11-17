@@ -244,7 +244,7 @@
     "//:node_repo.bzl%node": {
       "general": {
         "bzlTransitiveDigest": "F9czdKVmcL8GN7NLDdlDiERNVWsr+UwRauYFkmtOUng=",
-        "usagesDigest": "BsrkGOvChU0FMLsMsYZNXDYbIBD/PSSSetG5e116g/E=",
+        "usagesDigest": "FPCFWNrWy4C6DiuAQ/J/op4V14JvAVoA3Mb+qezTQHA=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
           "nodejs": {
