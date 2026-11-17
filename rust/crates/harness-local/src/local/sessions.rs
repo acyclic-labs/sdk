@@ -6,6 +6,7 @@ use crate::{
     agent::{AgentPath, IntentId, StatusRecord, TurnInput},
     client::{AgentCommand, AgentPageRequest, AgentReply},
     client_files::ClientFileChange,
+    ui::TITLE_FILE,
 };
 use acyclic_harness_client::ReadTarget;
 
@@ -309,7 +310,7 @@ pub async fn page_scoped(
                 let AgentReply::FilePreviews { snapshot } = connection
                     .execute(&AgentCommand::AgentFilePreviews {
                         agent: session.agent.clone(),
-                        paths: vec!["ui/title".into()],
+                        paths: vec![TITLE_FILE.into()],
                         after: None,
                         bytes: crate::client::MAX_READ_BYTES,
                     })
@@ -319,7 +320,7 @@ pub async fn page_scoped(
                 };
                 session.title = snapshot
                     .files
-                    .get("ui/title")
+                    .get(TITLE_FILE)
                     .and_then(Option::as_ref)
                     .cloned();
                 if session.title.is_none()
@@ -381,16 +382,16 @@ pub async fn rename(connection: &Connection, operation: OperationId, title: Stri
     let AgentReply::ClientFiles { snapshot } = connection
         .execute(&AgentCommand::AgentFiles {
             agent: agent.clone(),
-            paths: vec!["ui/title".into()],
+            paths: vec![TITLE_FILE.into()],
             after: None,
         })
         .await?
     else {
         return Err(unexpected());
     };
-    let existing = snapshot.files.get("ui/title").and_then(Option::as_ref);
+    let existing = snapshot.files.get(TITLE_FILE).and_then(Option::as_ref);
     let change = ClientFileChange {
-        path: "ui/title".into(),
+        path: TITLE_FILE.into(),
         expected: existing.and_then(|file| file.original().cloned()),
         text: Some(title),
     };

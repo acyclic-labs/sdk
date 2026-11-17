@@ -236,7 +236,7 @@ impl Sidebar {
                     .resolve(
                         files
                             .files
-                            .get("ui/title")
+                            .get(acyclic_harness::ui::TITLE_FILE)
                             .and_then(Option::as_ref)
                             .map(String::as_str),
                         || Ok(path.id().to_string()),

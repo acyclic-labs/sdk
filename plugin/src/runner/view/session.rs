@@ -439,7 +439,7 @@ pub(super) fn follow(
 pub(super) fn title(snapshot: &acyclic_harness::client_files::FilePreviews) -> String {
     snapshot
         .files
-        .get("ui/title")
+        .get(acyclic_harness::ui::TITLE_FILE)
         .and_then(Option::as_ref)
         .map(|text| text.chars().filter(|ch| !ch.is_control()).collect())
         .unwrap_or_default()
@@ -455,7 +455,7 @@ pub(super) fn read_title(
     super::super::phase(|| async move {
         conversation
             .agent_file_previews(
-                vec!["ui/title".into()],
+                vec![acyclic_harness::ui::TITLE_FILE.into()],
                 after,
                 acyclic_harness::client::MAX_READ_BYTES,
             )
