@@ -221,17 +221,15 @@ export function workspaceGraph(root, triple = 'x86_64-unknown-linux-gnu') {
     const deps = [];
     for (const [attributes, kind] of [[pinned?.common_attrs, null], [pinned?.build_script_attrs, 'build']])
       for (const entry of [...selected(attributes?.deps), ...selected(attributes?.proc_macro_deps)]) {
-        const dependency = packages.find(x => `${x.name} ${x.version}` === entry.id);
-        if (!dependency) throw Error(`Bazel crate lock dependency missing: ${entry.id}`);
+        // Registry-internal edges remain Bazel's graph. Only overlays on local
+        // patched crates enter this declaration model.
+        const dependency = local.find(x => `${x.name} ${x.version}` === entry.id);
+        if (!dependency) continue;
         deps.push({name: entry.alias ?? entry.target, pkg: dependency.id, dep_kinds: [{kind, target: null}]});
       }
     return {id: p.id, deps, features: Object.keys(p.features)};
   }));
-  const reached = new Set(packages.map(p => p.id)), pending = [...reached];
-  const byId = new Map(nodes.map(node => [node.id, node]));
-  while (pending.length) for (const dep of byId.get(pending.pop())?.deps ?? [])
-    if (!reached.has(dep.pkg)) {reached.add(dep.pkg); pending.push(dep.pkg);}
-  return {packages: packages.filter(p => reached.has(p.id)), workspace_members: local.filter(p => p.workspace_member).map(p => p.id), workspace_root: root,
+  return {packages, workspace_members: local.filter(p => p.workspace_member).map(p => p.id), workspace_root: root,
     workspace_default_members: local.filter(p => p.workspace_member).map(p => p.id), version: 1,
-    metadata: toml(root, 'Cargo.toml').workspace?.metadata ?? null, resolve: {nodes: nodes.filter(p => reached.has(p.id))}};
+    metadata: toml(root, 'Cargo.toml').workspace?.metadata ?? null, resolve: {nodes}};
 }
