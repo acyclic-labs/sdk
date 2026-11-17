@@ -16,6 +16,12 @@ npm_archive(
     ],
     integrity = "sha512-rjAn8L9KbAZrkwiB8m1qzDsLs74hkYmwwM2iSWuxTPVOTRm/EZw31smKbQqPU50AXqJC5eKKpEnA6Uf/swQOgQ==",
     strip_prefix = "package",
+    patches = [
+        "//:patches/connect-2.3.0.patch",
+    ],
+    patch_args = [
+        "-p1",
+    ],
     build_file_content = "filegroup(name = \"files\", srcs = glob([\"**\"], exclude = [\"BUILD.bazel\"]), visibility = [\"//visibility:public\"])\n",
 )
 npm_archive(
