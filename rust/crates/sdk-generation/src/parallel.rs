@@ -28,7 +28,7 @@ where
     map_with_workers(inputs, workers, operation)
 }
 
-fn map_with_workers<T, R, F>(inputs: Vec<T>, workers: usize, operation: F) -> Vec<R>
+pub(crate) fn map_with_workers<T, R, F>(inputs: Vec<T>, workers: usize, operation: F) -> Vec<R>
 where
     T: Send + 'static,
     R: Send + 'static,
@@ -88,48 +88,4 @@ fn join_all<R>(jobs: Vec<thread::JoinHandle<R>>) -> Vec<R> {
         .into_iter()
         .map(|result| result.unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
         .collect()
-}
-
-#[cfg(all(test, not(loom)))]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    #[test]
-    fn bounded_workers_preserve_input_order_and_visit_every_owner() {
-        let active = Arc::new(AtomicUsize::new(0));
-        let peak = Arc::new(AtomicUsize::new(0));
-        let workers = Arc::new(Mutex::new(std::collections::HashSet::new()));
-        let worker_ids = Arc::clone(&workers);
-        let (running, observed) = (Arc::clone(&active), Arc::clone(&peak));
-        let result = map_with_workers((0..100).collect(), 2, move |index| {
-            worker_ids.lock().unwrap().insert(thread::current().id());
-            let count = running.fetch_add(1, Ordering::SeqCst) + 1;
-            observed.fetch_max(count, Ordering::SeqCst);
-            thread::yield_now();
-            running.fetch_sub(1, Ordering::SeqCst);
-            index * 2
-        });
-        assert_eq!(result, (0..100).map(|index| index * 2).collect::<Vec<_>>());
-        assert!(
-            workers.lock().unwrap().len() <= 2,
-            "owner thread budget exceeded"
-        );
-        assert!(peak.load(Ordering::SeqCst) <= 2);
-        assert_eq!(active.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn panic_drains_queued_owners_before_propagating() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let completed = Arc::clone(&count);
-        assert!(std::panic::catch_unwind(move || {
-            map_with_workers((0..20).collect(), 1, move |index| {
-                completed.fetch_add(1, Ordering::SeqCst);
-                assert_ne!(index, 0, "first owner failed");
-            })
-        })
-        .is_err());
-        assert_eq!(count.load(Ordering::SeqCst), 20);
-    }
 }

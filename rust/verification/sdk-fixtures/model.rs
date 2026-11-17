@@ -11,6 +11,41 @@ use sdk_fixture_verification::{get_or_try_init, InitError};
 #[path = "../../crates/sdk-generation/src/parallel.rs"]
 mod parallel;
 
+#[test]
+fn queued_owners_are_visited_once_in_order_and_drained_after_panic() {
+    for (workers, panic_first) in [(1, true), (2, false), (2, true)] {
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(2);
+        builder.check(move || {
+            let visits = Arc::new([
+                AtomicUsize::new(0),
+                AtomicUsize::new(0),
+                AtomicUsize::new(0),
+            ]);
+            let active = Arc::new(AtomicUsize::new(0));
+            let (seen, running) = (Arc::clone(&visits), Arc::clone(&active));
+            let result = std::panic::catch_unwind(move || {
+                parallel::map_with_workers(vec![0, 1, 2], workers, move |index| {
+                    assert!(running.fetch_add(1, Ordering::SeqCst) < workers);
+                    seen[index].fetch_add(1, Ordering::SeqCst);
+                    running.fetch_sub(1, Ordering::SeqCst);
+                    assert!(!panic_first || index != 0, "owner failed");
+                    index * 2
+                })
+            });
+            if panic_first {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result.unwrap(), vec![0, 2, 4]);
+            }
+            assert_eq!(active.load(Ordering::SeqCst), 0);
+            for count in visits.iter() {
+                assert_eq!(count.load(Ordering::SeqCst), 1);
+            }
+        });
+    }
+}
+
 fn joined_workers(broken: bool) {
     let mut builder = loom::model::Builder::new();
     builder.preemption_bound = Some(2);
