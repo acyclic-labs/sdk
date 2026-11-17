@@ -153,6 +153,7 @@ fn node(length: Option<u64>, sequence: Option<u64>) -> SourceNode {
         },
         logical_bytes: length,
         file_identity: identity,
+        physical_identity: identity,
         link_count: Some(1),
         device: None,
         version: SourceVersion([0; 32]),
