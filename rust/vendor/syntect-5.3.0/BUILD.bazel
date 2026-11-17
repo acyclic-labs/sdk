@@ -15,6 +15,18 @@ FEATURES = [
         "test-support",
     ]
 
+WASM_FEATURES = [
+        "default-syntaxes",
+        "dump-create",
+        "dump-load",
+        "fancy-regex",
+        "flate2",
+        "fnv",
+        "parsing",
+        "regex-fancy",
+        "regex-syntax",
+    ]
+
 PACKAGE_ENV = {"ACYCLIC_BUILD_SOURCE_ROOT":"$${pwd}","CARGO_PKG_NAME":"acyclic-syntect","CARGO_PKG_DESCRIPTION":"library for high quality syntax highlighting and code intelligence using Sublime Text's grammars","CARGO_PKG_REPOSITORY":"https://github.com/trishume/syntect","CARGO_PKG_LICENSE":"MIT"}
 
 extract_cargo_lints(
@@ -49,6 +61,40 @@ rust_library(
         "@sdk_crates//serde_json-1.0.154",
         "@sdk_crates//thiserror-2.0.21",
         "@sdk_crates//walkdir-2.5.0",
+    ],
+    proc_macro_deps = [
+        "@sdk_crates//serde_derive-1.0.229",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "syntect_wasm",
+    crate_name = "syntect",
+    crate_root = "src/lib.rs",
+    srcs = glob(["**/*.rs"], exclude = ["build.rs","tests/**","benches/**","examples/**"], allow_empty = True),
+    compile_data = glob(["**"], exclude = ["**/*.rs","BUILD.bazel","tests/**","benches/**","examples/**"], allow_empty = True),
+    edition = "2021",
+    version = "0.2.0",
+    crate_features = WASM_FEATURES,
+    rustc_env = PACKAGE_ENV,
+    rustc_flags = [
+        "-Copt-level=3",
+        "--check-cfg=cfg(docsrs,test)",
+        "--check-cfg=cfg(feature, values(\"default\", \"default-fancy\", \"default-onig\", \"default-syntaxes\", \"default-themes\", \"dump-create\", \"dump-load\", \"fancy-regex\", \"flate2\", \"fnv\", \"html\", \"metadata\", \"onig\", \"parsing\", \"plist\", \"plist-load\", \"regex-fancy\", \"regex-onig\", \"regex-syntax\", \"test-support\", \"yaml-load\", \"yaml-rust\"))",
+    ],
+    lint_config = ":lints",
+    deps = [
+        "@wasm_crates//fancy-regex-0.20.2",
+        "@wasm_crates//flate2-1.1.10",
+        "@wasm_crates//fnv-1.0.7",
+        "@wasm_crates//once_cell-1.21.4",
+        "@wasm_crates//regex-syntax-0.8.11",
+        "@wasm_crates//rmp-serde-1.3.1",
+        "@wasm_crates//serde-1.0.229",
+        "@wasm_crates//serde_bytes-0.11.19",
+        "@wasm_crates//thiserror-2.0.21",
+        "@wasm_crates//walkdir-2.5.0",
     ],
     proc_macro_deps = [
         "@sdk_crates//serde_derive-1.0.229",
