@@ -95,7 +95,6 @@ pub(crate) struct PoolHandle {
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
     active: Arc<AtomicU64>,
-    lifetime: Arc<Mutex<()>>,
     admissions: Arc<Admissions>,
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
@@ -106,16 +105,8 @@ impl PoolHandle {
         self.admissions.cancel(id, progress, &self.removed);
     }
     fn retire_interest(&self, id: u64, progress: &Progress) {
-        // Every live interest is counted in `active`; a close takes this same
-        // lock, so a retire can never race a link close with a new interest.
-        // Cancel after releasing it: cancellation wakes the pool, whose close
-        // takes the same lock.
-        let lifetime = Arc::clone(&self.lifetime);
-        {
-            let _lifetime = lifetime.lock().unwrap_or_else(|error| error.into_inner());
-            self.active.fetch_sub(1, Ordering::AcqRel);
-        }
         self.cancel_interest(id, progress);
+        self.active.fetch_sub(1, Ordering::AcqRel);
     }
     pub(crate) fn with_revisions(self, revisions: Arc<crate::RevisionTracker>) -> Client {
         Client {
@@ -338,7 +329,6 @@ struct Pool {
     home_channel: Endpoint,
     next_link: u64,
     active: Arc<AtomicU64>,
-    lifetime: Arc<Mutex<()>>,
     admissions: Arc<Admissions>,
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
@@ -441,7 +431,6 @@ impl Client {
         let removed = Arc::new(signal::Signal::new());
         let release_sender = Arc::new(signal::Signal::new());
         let active = Arc::new(AtomicU64::new(0));
-        let lifetime = Arc::new(Mutex::new(()));
         let admissions = Arc::new(Admissions::new());
         let attempt_epoch = Arc::new(AtomicU64::new(0));
         let abandoned = Arc::new(gate::Gate::new());
@@ -462,7 +451,6 @@ impl Client {
             home_channel: channel,
             next_link: 1,
             active: Arc::clone(&active),
-            lifetime: Arc::clone(&lifetime),
             admissions: Arc::clone(&admissions),
             attempt_epoch: Arc::clone(&attempt_epoch),
             abandoned: Arc::clone(&abandoned),
@@ -494,7 +482,6 @@ impl Client {
             removed,
             next_id: Arc::new(AtomicU64::new(1)),
             active,
-            lifetime,
             admissions,
             attempt_epoch,
             abandoned,
@@ -915,10 +902,7 @@ impl Client {
         receiver: mpsc::Receiver<Result<Delivery, StreamError>>,
     ) -> Result<Cursor, StreamError> {
         // Reserve before queueing Open: dispatch may observe a removal before
-        // a concurrent Open, but must retain their shared initialization. The
-        // lifetime lock makes this increment atomic with a link close.
-        let lifetime = Arc::clone(&self.pool.lifetime);
-        let _lifetime = lifetime.lock().unwrap_or_else(|error| error.into_inner());
+        // a concurrent Open, but must retain their shared initialization.
         self.pool
             .active
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {

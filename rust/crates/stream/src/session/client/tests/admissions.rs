@@ -16,7 +16,6 @@ fn ended_sibling(
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(5)),
             active: Arc::clone(&pool.active),
-            lifetime: Arc::clone(&pool.lifetime),
             admissions: Arc::clone(&pool.admissions),
             attempt_epoch: Arc::clone(&pool.attempt_epoch),
             abandoned: Arc::clone(&pool.abandoned),
