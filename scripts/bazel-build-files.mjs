@@ -846,7 +846,7 @@ ${rule("platform", [["name", q("linux_musl")], ["constraint_values", list(["@pla
 // The toolchain's Cargo, as the tests that check real Cargo behaviour start it. Each platform's
 // toolchain repository carries the same release's Cargo beside its rustc.
 const toolchainFilegroups = (() => {
-  const channel = toml("rust-toolchain.toml").toolchain.channel;
+  const channel = toml(root, "rust-toolchain.toml").toolchain.channel;
   const channelName = /^(beta|nightly)/.test(channel) ? channel.split("/")[0] : "stable";
   const tools = (name, triple, tool) => `@${name}__${triple}__${channelName}_tools//:${tool}`;
   const select = tool => `select(${q({
