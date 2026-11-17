@@ -235,17 +235,3 @@ filegroup(
 
 
 exports_files(glob(["**"], exclude = ["BUILD.bazel"], allow_empty = True), visibility = ["//visibility:public"])
-
-genrule(
-    name = "probe_run",
-    outs = ["probe_run.sh.out"],
-    cmd = "printf '#!/usr/bin/env bash\\nset -euo pipefail\\nbun x tsc --version\\nbun x buf --version\\n' > $@ && chmod +x $@",
-    executable = True,
-)
-
-genrule(
-    name = "probe_tools",
-    outs = ["probe_tools.txt"],
-    cmd = "test -x /home/var/.bun/bin/bun && /home/var/.bun/bin/bun --version > $@ && test -x /home/var/tools/node24/node-v24.22.2-linux-x64/bin/node && /home/var/tools/node24/node-v24.22.2-linux-x64/bin/node --version >> $@",
-    local = 1,
-)
