@@ -430,7 +430,7 @@ fn d3_service(transition: &'static str, _dialect: &'static str) -> ScriptedModel
     };
     ScriptedModelProvider::responding(responder).with_context_capacity(
         acyclic_harness::context::ModelContextCapacity {
-            context_tokens: 49_152,
+            context_tokens: 81_920,
             output_tokens: Some(4_096),
             output_shares_context: false,
         },
